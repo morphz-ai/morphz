@@ -1,7 +1,8 @@
 # Morphz HTTP API：AI Agent 接入契约 v1
 
-> 本文描述适合外部客户端和 AI agent 使用的稳定最小接口面：Context、Session、Message、Event 和单 Session WebSocket。  
+> 本文描述适合外部客户端和 AI agent 使用的稳定最小接口面：Context、Session、Message、Event 和单 Session WebSocket；同时定义只面向 Runtime Operator 的只读全局 Overview。
 > 实现依据：`morphz/src/web.rs`、`morphz/src/sdk.rs`、`sdk/typescript/src/index.ts`。  
+> 最后按实现重新导出：2026-07-31。
 > `/api/execution-*`、`/api/edge/*`、`/api/objectives`、Inspector/调度/记忆维护等端点属于内部控制面，不在本文的兼容性承诺内。
 
 ## 1. 给调用方的最短说明
@@ -34,13 +35,20 @@ Morphz 是异步会话 Runtime。调用方应：
 
 ### 服务认证
 
-如果服务配置了访问令牌，HTTP 请求必须携带：
+HTTP 请求使用 Bearer token：
 
 ```http
 Authorization: Bearer <service-token>
 ```
 
-服务也接受 `?token=...`，主要供无法设置 Header 的 WebSocket 握手使用。不应在日志、提示词或普通错误信息中暴露 token。监听非 loopback 地址时，服务强制要求 token。
+服务也接受 `?token=...`，主要供无法设置 Header 的 WebSocket 握手使用。不应在日志、提示词或普通错误信息中暴露 token。
+
+令牌分为两个互不替代的凭证：
+
+- `default` 模式：可选的 `MORPHZ_DASHBOARD_TOKEN` 同时保护 Dashboard 和 HTTP API；未配置时本机请求无需 token。
+- `trusted_gateway` 模式：Gateway 使用 `[server.identity].service_token_env` 指向的服务令牌；Dashboard/Operator 使用独立的 `MORPHZ_DASHBOARD_TOKEN`。
+
+在 `trusted_gateway` 模式中，这两个令牌必须不同。Gateway 不得持有 Dashboard/Operator 管理令牌；管理令牌也不应被当作最终用户身份凭证。监听非 loopback 地址时，至少必须配置一种令牌。
 
 ### Principal 身份
 
@@ -61,6 +69,10 @@ Principal ID 必须来自 Gateway 已认证身份，不能由最终用户文本�
 ```
 
 `principal_id` 与 Header 同时存在时必须一致。Principal 只能访问已绑定给自己的 Session。
+
+Dashboard/Operator 管理令牌通过默认管理身份访问控制面，不允许借助 query 中的 `principal_id` 冒充某个最终用户发送消息。
+
+`GET /api/overview` 是 Runtime Operator 的全局投影，只接受 Dashboard/Operator 管理令牌。在 `trusted_gateway` 模式下，Gateway 服务令牌即使携带合法 Principal 也会收到 `401`，不能借此枚举其他 Principal、Context 或 Session。
 
 ### 错误
 
@@ -88,7 +100,7 @@ Principal ID 必须来自 Gateway 已认证身份，不能由最终用户文本�
 - `403` Principal 无权访问资源
 - `404` 资源不存在
 - `409` ID、状态或版本冲突
-- `413` 消息超过 1,000,000 字符
+- `413` 消息正文或 HTTP Body 超过限制
 - `500` Runtime 内部错误
 
 ## 3. 数据结构
@@ -258,6 +270,8 @@ PATCH Body：
 POST /api/sessions/{session_id}/messages
 ```
 
+纯文本消息：
+
 ```json
 {
   "text": "请分析这个问题",
@@ -265,13 +279,53 @@ POST /api/sessions/{session_id}/messages
 }
 ```
 
+带图片的消息：
+
+```json
+{
+  "text": "请描述这张图",
+  "client_message_id": "caller-generated-unique-id",
+  "attachments": [
+    {
+      "name": "diagram.png",
+      "media_type": "image/png",
+      "data_base64": "iVBORw0KGgoAAA..."
+    }
+  ]
+}
+```
+
+也可直接传完整 Data URL；服务会剥离 `data:*;base64,` 前缀：
+
+```json
+{
+  "text": "",
+  "client_message_id": "image-only-0001",
+  "attachments": [
+    {
+      "name": "photo.jpg",
+      "media_type": "image/jpeg",
+      "data_base64": "data:image/jpeg;base64,/9j/4AAQSk..."
+    }
+  ]
+}
+```
+
 规则：
 
-- `text` 去除首尾空白后不可为空，最多 1,000,000 字符。
+- `text` 最多 1,000,000 字符；正文与附件不能同时为空，因此允许纯附件消息。
 - 强烈建议始终提供 `client_message_id`。
 - 首次接受返回 `202 Accepted`。
 - 使用同一个 `client_message_id` 重试时返回同一个逻辑消息的 `200 OK`，且 `duplicate: true`。
 - 不要因为 HTTP 超时就生成新 ID；先用原 ID重试，否则可能产生两个回合。
+- `attachments` 可省略，最多 8 个。
+- 单个附件解码后最多 20 MiB，一条消息的附件解码后合计最多 40 MiB。
+- `name` 不能为空，最长 255 个字符。服务只保留文件名部分，例如 `../diagram.png` 会归一化为 `diagram.png`。
+- `media_type` 为空时按 `application/octet-stream` 处理；最长 128 个字符，只允许 ASCII 字母、数字和 `/ . + -`。
+- `data_base64` 必须是标准 Base64，或带 `data:*;base64,` 前缀的 Data URL。
+- HTTP JSON Body 上限为 64 MiB。Base64 会比原始文件约增大三分之一，调用方仍需同时满足 Body 和解码后附件限制。
+
+图片没有单独的上传端点，也不使用 `multipart/form-data`；它与消息一起作为 JSON Base64 附件提交。当前附件机制也接受非图片文件，但能否被模型直接理解取决于所用模型和 Provider。
 
 响应：
 
@@ -285,6 +339,25 @@ POST /api/sessions/{session_id}/messages
 ```
 
 此响应不是模型最终答复。
+
+成功持久化后，对应 `chat/user_message` Event 的 `payload.attachments` 只包含元数据，不包含原始 Base64：
+
+```json
+{
+  "attachments": [
+    {
+      "id": "attachment_<sha256>",
+      "name": "diagram.png",
+      "media_type": "image/png",
+      "size_bytes": 12345,
+      "sha256": "<hex-digest>",
+      "storage_path": "<runtime-managed-path>"
+    }
+  ]
+}
+```
+
+`storage_path` 是 Runtime 内部路径，不是公共下载 URL；外部客户端不应依赖它。附件字节按摘要存到配置的 artifact 目录，Event Ledger 不保存附件原文。
 
 ### 读取 Event Ledger
 
@@ -365,6 +438,111 @@ GET /api/sessions/{session_id}/context/encoding
 
 这些接口适合诊断和审计，不应成为发送消息的前置依赖。
 
+### Runtime 全局 Overview（Operator）
+
+```http
+GET /api/overview
+```
+
+可选 query：
+
+| 参数 | 默认值 | 最大值 | 含义 |
+|---|---:|---:|---|
+| `include_archived` | `false` | — | 是否包含已归档 Context 和 Session |
+| `context_limit` | `40` | `100` | 本次返回的 Context 上限 |
+| `sessions_per_context` | `6` | `20` | 每个 Context 展示的 Session 卡片上限 |
+
+示例：
+
+```http
+GET /api/overview?context_limit=40&sessions_per_context=6
+Authorization: Bearer <dashboard-operator-token>
+```
+
+响应是一个有界、只读的 Runtime 权威投影：
+
+```json
+{
+  "generated_at": "2026-07-31T08:00:00Z",
+  "summary": {
+    "contexts": 2,
+    "active_sessions": 4,
+    "total_sessions": 7,
+    "objectives": 3,
+    "open_threads": 5,
+    "running_activations": 2,
+    "attention_required": 1
+  },
+  "contexts": [
+    {
+      "context": {
+        "id": "context_123",
+        "agent_id": "default-agent",
+        "title": "产品开发",
+        "status": "active"
+      },
+      "mind_revision": 42,
+      "delegation": null,
+      "active_session_count": 3,
+      "total_session_count": 5,
+      "hidden_session_count": 1,
+      "objective_count": 2,
+      "open_thread_count": 3,
+      "running_activation_count": 1,
+      "attention_count": 1,
+      "last_activity_at": "2026-07-31T07:59:00Z",
+      "sessions": [
+        {
+          "session": {
+            "id": "session_123",
+            "agent_id": "default-agent",
+            "context_id": "context_123",
+            "title": "修复发布流程",
+            "status": "active",
+            "last_activity_at": "2026-07-31T07:59:00Z"
+          },
+          "principal_ids": ["principal-default"],
+          "state": "running",
+          "attention_required": false,
+          "pending_dialogue_turns": 0,
+          "open_thread_count": 1,
+          "running_activation_count": 1,
+          "current_thread": {
+            "id": "thread_123",
+            "kind": "execution",
+            "phase": "running",
+            "control_state": "active",
+            "objective_id": "objective_123",
+            "target_id": "target-default",
+            "updated_at": "2026-07-31T07:59:00Z"
+          },
+          "current_objective": {
+            "id": "objective_123",
+            "stated_objective": "完成发布流程修复",
+            "status": "active",
+            "status_reason": null,
+            "wait_condition": null,
+            "revision": 7,
+            "updated_at": "2026-07-31T07:58:00Z"
+          }
+        }
+      ]
+    }
+  ],
+  "has_more_contexts": false
+}
+```
+
+约定：
+
+- `state` 为 `needs_attention | waiting_user | running | queued | paused | waiting | idle`。
+- Context 和 Session 按“需要用户关注、正在执行、已排队、存在开放目标/线程、最近活动”依次排序，而不是仅按创建时间或标题排序。
+- `hidden_session_count` 表示该 Context 中未进入本次 Session 卡片窗口的数量；`has_more_contexts` 表示还有未进入本次 Context 窗口的数据。
+- `delegation` 非空表示该 Context 是副 Agent 的子 Context，并给出父 Context、父 Session、子 Session、任务和 Delegation 状态。Dashboard 可以据此把它收束到父 Context，但 API 保留完整记录。
+- Summary 和 Context 计数来自存储层权威投影；接口不会逐卡扫描 Event Ledger，也不会为每张卡片单独查询数据库。
+- 该接口用于全局指挥台、运维控制台和管理 SDK，不属于 Principal-scoped Web App 接口。外部 Gateway 应继续使用自己的 Session 目录，不应调用该端点。
+- Rust SDK 对应方法为 `MorphzSdk::runtime_overview(RuntimeOverviewQuery)`；当前 TypeScript v1 Client 尚未封装该 Operator 端点。
+
 ## 5. 最小调用示例
 
 ```bash
@@ -384,6 +562,15 @@ curl -sS "$BASE_URL/api/sessions/session_123/messages" \
   -H "Content-Type: application/json" \
   -d '{"text":"你好","client_message_id":"request-20260728-0001"}'
 
+IMAGE_BASE64="$(base64 < diagram.png | tr -d '\n')"
+curl -sS "$BASE_URL/api/sessions/session_123/messages" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Morphz-Principal: $PRINCIPAL" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<JSON
+{"text":"请分析这张图","client_message_id":"request-20260730-image-0001","attachments":[{"name":"diagram.png","media_type":"image/png","data_base64":"$IMAGE_BASE64"}]}
+JSON
+
 curl -sS "$BASE_URL/api/sessions/session_123/events?after_sequence=0&limit=200" \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-Morphz-Principal: $PRINCIPAL"
@@ -398,6 +585,7 @@ curl -sS "$BASE_URL/api/sessions/session_123/events?after_sequence=0&limit=200" 
 
 Base URL 由 MORPHZ_BASE_URL 提供，默认 http://127.0.0.1:8080。
 若 MORPHZ_TOKEN 非空，对所有 HTTP 请求发送 Authorization: Bearer <token>。
+trusted_gateway 模式下该值必须是 Gateway 服务令牌，而不是 Dashboard/Operator 管理令牌。
 若 MORPHZ_PRINCIPAL 非空，对 Session HTTP 请求发送 X-Morphz-Principal: <principal>；
 WebSocket 则把 principal_id 和 token 放进 query string。
 
@@ -405,7 +593,10 @@ WebSocket 则把 principal_id 和 token 放进 query string。
 1. POST /api/sessions，body {"title":"..."}，保存响应的 id。
 2. 每次发送消息都生成一个稳定的 client_message_id。
 3. POST /api/sessions/{id}/messages，
-   body {"text":"...","client_message_id":"..."}。
+   纯文本 body {"text":"...","client_message_id":"..."}；
+   图片放进 attachments：
+   [{"name":"image.png","media_type":"image/png","data_base64":"..."}]。
+   最多 8 个附件，单个解码后 20 MiB、合计 40 MiB；也允许 text="" 的纯附件消息。
    202/200 仅表示已接受；网络失败必须复用同一个 client_message_id 重试。
 4. 用 GET /api/sessions/{id}/events?after_sequence={cursor}&limit=200 读取事件，
    或订阅 /ws?session_id={id} 降低延迟。
@@ -428,4 +619,4 @@ WebSocket 则把 principal_id 和 token 放进 query string。
 - `docs/morphz_sdk_and_trusted_gateway_identity_v1.md`：SDK 与身份边界。
 - `sdk/typescript/src/index.ts`：可用的 TypeScript Session Service v1 Client。
 
-当前没有自动生成的 OpenAPI schema，也没有 Swagger UI。本文是基于当前实现核对后的人工契约；若需要让多语言 SDK 自动生成，下一步应把本文稳定接口面编码为 OpenAPI 3.1，并增加 CI 测试防止路由、schema 与实现漂移。
+当前没有自动生成的 OpenAPI schema，也没有 Swagger UI。本文已于 2026-07-31 按当前路由、请求结构、Runtime 限制和测试重新核对；它仍是人工契约。TypeScript v1 Client 当前只封装纯文本 `sendMessage`，使用图片附件或 Operator Overview 时请直接调用对应 HTTP 端点。若需要让多语言 SDK 自动生成，下一步应把本文稳定接口面编码为 OpenAPI 3.1，并增加 CI 测试防止路由、schema 与实现漂移。

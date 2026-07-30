@@ -14,7 +14,7 @@ use crate::memory::{
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
 use crate::runtime::{
     AcknowledgeAttentionCommand, ContextOverviewQuery, LedgerQuery, ModelUsageQuery, MorphzRuntime,
-    SchedulerQuery,
+    RuntimeOverviewQuery, SchedulerQuery,
 };
 use crate::sdk::{
     AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, ClaimEdgeCommand,
@@ -418,6 +418,15 @@ struct ContextOverviewHttpQuery {
 }
 
 #[derive(Default, serde::Deserialize)]
+struct RuntimeOverviewHttpQuery {
+    token: Option<String>,
+    #[serde(default)]
+    include_archived: bool,
+    context_limit: Option<usize>,
+    sessions_per_context: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
 struct ModelUsageHttpQuery {
     token: Option<String>,
     session_id: Option<String>,
@@ -627,6 +636,7 @@ impl Server {
             .route("/icons.svg", get(handle_dashboard_icons))
             .route("/health", get(|| async { StatusCode::OK }))
             .route("/api/status", get(handle_status))
+            .route("/api/overview", get(handle_get_runtime_overview))
             .route(
                 "/api/runtime/secrets",
                 get(handle_list_managed_secrets).post(handle_put_managed_secret),
@@ -3100,6 +3110,28 @@ async fn handle_get_context_overview(
     }
 }
 
+async fn handle_get_runtime_overview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<RuntimeOverviewHttpQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .runtime_overview(RuntimeOverviewQuery {
+            include_archived: query.include_archived,
+            context_limit: query.context_limit,
+            sessions_per_context: query.sessions_per_context,
+        })
+        .await
+    {
+        Ok(overview) => Json(overview).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
 async fn handle_get_model_usage(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
@@ -5372,6 +5404,34 @@ mod tests {
             },
         });
 
+        let gateway_overview = handle_get_runtime_overview(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-1")),
+            Query(RuntimeOverviewHttpQuery {
+                token: None,
+                include_archived: false,
+                context_limit: Some(10),
+                sessions_per_context: Some(4),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(gateway_overview.status(), StatusCode::UNAUTHORIZED);
+
+        let operator_overview = handle_get_runtime_overview(
+            State(Arc::clone(&state)),
+            dashboard_headers(),
+            Query(RuntimeOverviewHttpQuery {
+                token: None,
+                include_archived: false,
+                context_limit: Some(10),
+                sessions_per_context: Some(4),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(operator_overview.status(), StatusCode::OK);
+
         let missing_principal = handle_create_session(
             State(Arc::clone(&state)),
             gateway_headers(None),
@@ -6162,6 +6222,34 @@ mod tests {
             json!("api-observability-session")
         );
         assert!(overview_json["scheduler"].is_object());
+
+        let runtime_overview = handle_get_runtime_overview(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(RuntimeOverviewHttpQuery {
+                token: None,
+                include_archived: false,
+                context_limit: Some(10),
+                sessions_per_context: Some(4),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(runtime_overview.status(), StatusCode::OK);
+        let runtime_overview_body = axum::body::to_bytes(runtime_overview.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let runtime_overview_json: serde_json::Value =
+            serde_json::from_slice(&runtime_overview_body).unwrap();
+        assert_eq!(runtime_overview_json["summary"]["contexts"], json!(1));
+        assert_eq!(
+            runtime_overview_json["contexts"][0]["context"]["id"],
+            json!("context-test")
+        );
+        assert_eq!(
+            runtime_overview_json["contexts"][0]["sessions"][0]["session"]["id"],
+            json!("api-observability-session")
+        );
 
         let full_context = handle_get_session_context(
             State(Arc::clone(&state)),

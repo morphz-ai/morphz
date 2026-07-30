@@ -34,7 +34,8 @@ use crate::runtime::{
     AcknowledgeAttentionCommand, AttentionAcknowledgement, ContextOverview, ContextOverviewQuery,
     ContextTokenBudgetUpdate, DialogueTurnRetryReceipt, LedgerQuery, LedgerQueryPage,
     MessageReceipt, ModelUsagePage, ModelUsageQuery, MorphzRuntime, RuntimeEventStream,
-    RuntimeStatus, SchedulerQuery, SchedulerSnapshot, ThreadDetail,
+    RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus, SchedulerQuery, SchedulerSnapshot,
+    ThreadDetail,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -335,6 +336,18 @@ impl MorphzSdk {
     ) -> SdkResult<ContextOverview> {
         self.runtime
             .context_overview(context_id, query)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    /// Runtime-wide bounded operator projection shared by the embedded
+    /// Dashboard and any trusted host application.
+    pub async fn runtime_overview(
+        &self,
+        query: RuntimeOverviewQuery,
+    ) -> SdkResult<RuntimeOverview> {
+        self.runtime
+            .runtime_overview(query)
             .await
             .map_err(SdkError::internal)
     }

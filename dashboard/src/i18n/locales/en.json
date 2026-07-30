@@ -52,6 +52,58 @@
       "empty": "No live Thread activity"
     }
   },
+  "runtimeOverview": {
+    "eyebrow": "Runtime command board",
+    "heading": "Global runtime overview",
+    "description": "Group shared cognition by Context and expose each Session's dialogue, Objective and execution state.",
+    "refresh": "Refresh",
+    "loading": "Loading the global authoritative projection…",
+    "search": "Search Context, Session, Principal, Objective or Thread…",
+    "filterLabel": "Overview filters",
+    "filters": {
+      "all": "All",
+      "attention": "Attention",
+      "active": "Active",
+      "idle": "Idle"
+    },
+    "summary": {
+      "contexts": "Contexts",
+      "sessions": "Active Sessions",
+      "objectives": "Objectives",
+      "threads": "Open Threads",
+      "running": "running",
+      "attention": "Needs attention"
+    },
+    "context": "Context",
+    "delegation": "Sub-agent Context",
+    "delegations": "{{count}} sub-agents",
+    "openContext": "Open Context",
+    "hiddenSessions": "{{count}} more Sessions — open the Context to inspect them",
+    "emptySessions": "No Sessions are currently available in this Context",
+    "empty": "No matching runtime state",
+    "emptyHint": "Try another search term or filter.",
+    "bounded": "This command board shows a bounded recent Context set; search and drill-down do not scan the Event Ledger.",
+    "states": {
+      "needs_attention": "Needs attention",
+      "waiting_user": "Waiting for you",
+      "running": "Running",
+      "queued": "Queued",
+      "paused": "Paused",
+      "waiting": "Waiting",
+      "idle": "Idle"
+    },
+    "sessionMetrics": {
+      "threads": "{{count}} Threads",
+      "activations": "{{count}} Activations",
+      "queuedMessages": "{{count}} messages queued"
+    },
+    "threadKinds": {
+      "dialogue_turn": "Dialogue Turn",
+      "execution": "Execution Thread",
+      "objective": "Objective Thread",
+      "delivery": "Delivery Thread"
+    }
+  },
   "cognition": {
     "navigationLabel": "Cognition workbench",
     "tabs": {

@@ -1,10 +1,10 @@
 use super::{now_text, parse_time, PostgresStore, StoreError};
 use crate::memory::{
-    AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, ContextTokenBudgetMutation,
-    ContextUpdate, NewAgent, NewCognitiveContext, NewPrincipal, NewSession,
-    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord, SessionAttentionState,
-    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
-    SessionRecord, SessionStatus, SessionUpdate,
+    AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, ContextSessionCount,
+    ContextTokenBudgetMutation, ContextUpdate, NewAgent, NewCognitiveContext, NewPrincipal,
+    NewSession, PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
+    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
+    SessionPrincipalBinding, SessionRecord, SessionStatus, SessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgRow;
@@ -340,6 +340,25 @@ impl SessionDirectoryStore for PostgresStore {
         rows.iter().map(binding_from_row).collect()
     }
 
+    async fn list_session_principal_bindings_bounded(
+        &self,
+        session_ids: &[String],
+    ) -> Result<Vec<SessionPrincipalBinding>, StoreError> {
+        if session_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT session_id, principal_id, bound_at, unbound_at
+               FROM session_principal_bindings
+               WHERE unbound_at IS NULL AND session_id = ANY($1)
+               ORDER BY session_id, principal_id"#,
+        )
+        .bind(session_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(binding_from_row).collect()
+    }
+
     async fn verify_session_principal(
         &self,
         session_id: &str,
@@ -575,6 +594,36 @@ impl SessionDirectoryStore for PostgresStore {
             )
         };
         sqlx::query(&sql)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(context_from_row)
+            .collect()
+    }
+
+    async fn list_recent_contexts(
+        &self,
+        include_archived: bool,
+        limit: usize,
+    ) -> Result<Vec<CognitiveContextRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        sqlx::query(
+            "SELECT c.id, c.agent_id, c.title, c.status, c.created_at, c.updated_at, \
+                    c.seed_context_id, c.seed_context_version, c.seed_snapshot_hash, \
+                    c.seed_projection, c.requested_hard_token_limit, c.token_budget_revision \
+             FROM cognitive_contexts c \
+             LEFT JOIN ( \
+                 SELECT context_id, MAX(last_activity_at) AS last_activity_at \
+                 FROM sessions GROUP BY context_id \
+             ) activity ON activity.context_id = c.id \
+             WHERE ($1 OR c.status = 'active') \
+             ORDER BY GREATEST(c.updated_at, COALESCE(activity.last_activity_at, c.updated_at)) DESC, \
+                      c.id ASC LIMIT $2",
+        )
+            .bind(include_archived)
+            .bind(i64::try_from(limit)?)
             .fetch_all(&self.pool)
             .await?
             .iter()
@@ -896,6 +945,116 @@ impl SessionDirectoryStore for PostgresStore {
             .await?
             .iter()
             .map(session_from_row)
+            .collect()
+    }
+
+    async fn list_context_sessions_bounded(
+        &self,
+        context_ids: &[String],
+        include_archived: bool,
+        per_context_limit: usize,
+    ) -> Result<Vec<SessionRecord>, StoreError> {
+        if context_ids.is_empty() || per_context_limit == 0 {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            r#"WITH ranked AS (
+                 SELECT {SESSION_COLUMNS},
+                        ROW_NUMBER() OVER (
+                          PARTITION BY context_id
+                          ORDER BY
+                            CASE
+                              WHEN EXISTS (
+                                SELECT 1 FROM objectives o
+                                WHERE o.context_id = sessions.context_id
+                                  AND (
+                                    o.coordinator_session_id = sessions.id
+                                    OR o.delivery_session_id = sessions.id
+                                  )
+                                  AND (
+                                    o.status = 'blocked'
+                                    OR (
+                                      o.status = 'active'
+                                      AND o.wait_condition_json ->> 'kind' = 'user_input'
+                                    )
+                                  )
+                              ) THEN 0
+                              WHEN EXISTS (
+                                SELECT 1 FROM thread_activations a
+                                WHERE a.session_id = sessions.id AND a.status = 'running'
+                              ) THEN 1
+                              WHEN EXISTS (
+                                SELECT 1 FROM thread_activations a
+                                WHERE a.session_id = sessions.id AND a.status = 'queued'
+                              ) THEN 2
+                              WHEN EXISTS (
+                                SELECT 1 FROM objectives o
+                                WHERE o.context_id = sessions.context_id
+                                  AND (
+                                    o.coordinator_session_id = sessions.id
+                                    OR o.delivery_session_id = sessions.id
+                                  )
+                                  AND o.status IN ('active', 'paused', 'blocked')
+                              ) OR EXISTS (
+                                SELECT 1 FROM threads t
+                                WHERE t.session_id = sessions.id AND t.status = 'open'
+                              ) THEN 3
+                              ELSE 4
+                            END,
+                            last_activity_at DESC,
+                            id
+                        ) AS rank_in_context
+                 FROM sessions
+                 WHERE context_id = ANY($1) AND ($2 OR status = 'active')
+               )
+               SELECT {SESSION_COLUMNS}
+               FROM ranked
+               WHERE rank_in_context <= $3
+               ORDER BY last_activity_at DESC, id"#
+        );
+        sqlx::query(&sql)
+            .bind(context_ids)
+            .bind(include_archived)
+            .bind(i64::try_from(per_context_limit)?)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(session_from_row)
+            .collect()
+    }
+
+    async fn count_context_sessions(
+        &self,
+        context_ids: &[String],
+    ) -> Result<Vec<ContextSessionCount>, StoreError> {
+        if context_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT context_id,
+                      COUNT(*) FILTER (WHERE status = 'active') AS active_sessions,
+                      COUNT(*) AS total_sessions,
+                      MAX(last_activity_at) AS last_activity_at
+               FROM sessions
+               WHERE context_id = ANY($1)
+               GROUP BY context_id"#,
+        )
+        .bind(context_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(ContextSessionCount {
+                    context_id: row.get("context_id"),
+                    active_sessions: u64::try_from(row.get::<i64, _>("active_sessions"))?,
+                    total_sessions: u64::try_from(row.get::<i64, _>("total_sessions"))?,
+                    last_activity_at: row
+                        .get::<Option<String>, _>("last_activity_at")
+                        .as_deref()
+                        .map(parse_time)
+                        .transpose()?,
+                })
+            })
             .collect()
     }
 

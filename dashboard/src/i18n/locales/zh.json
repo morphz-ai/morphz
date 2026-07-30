@@ -52,6 +52,58 @@
       "empty": "当前没有实时线程活动"
     }
   },
+  "runtimeOverview": {
+    "eyebrow": "运行时指挥台",
+    "heading": "全局运行总览",
+    "description": "按 Context 收束共享认知，平铺各 Session 的对话、目标与执行状态。",
+    "refresh": "刷新",
+    "loading": "正在读取全局权威投影…",
+    "search": "搜索 Context、Session、身份、目标或线程…",
+    "filterLabel": "总览筛选",
+    "filters": {
+      "all": "全部",
+      "attention": "需关注",
+      "active": "进行中",
+      "idle": "空闲"
+    },
+    "summary": {
+      "contexts": "Context",
+      "sessions": "活跃 Session",
+      "objectives": "目标",
+      "threads": "开放线程",
+      "running": "执行中",
+      "attention": "需要关注"
+    },
+    "context": "Context",
+    "delegation": "子代理 Context",
+    "delegations": "{{count}} 个子代理",
+    "openContext": "查看 Context",
+    "hiddenSessions": "另有 {{count}} 个 Session，进入 Context 查看",
+    "emptySessions": "这个 Context 当前没有可显示的 Session",
+    "empty": "没有匹配的运行状态",
+    "emptyHint": "调整搜索词或筛选条件后重试。",
+    "bounded": "这里只展示最近的有界 Context 集合；搜索和详情查询不会扫描整份事件账本。",
+    "states": {
+      "needs_attention": "需要关注",
+      "waiting_user": "等待用户",
+      "running": "执行中",
+      "queued": "已排队",
+      "paused": "已暂停",
+      "waiting": "等待中",
+      "idle": "空闲"
+    },
+    "sessionMetrics": {
+      "threads": "{{count}} 线程",
+      "activations": "{{count}} 执行",
+      "queuedMessages": "{{count}} 条消息待处理"
+    },
+    "threadKinds": {
+      "dialogue_turn": "对话轮次",
+      "execution": "执行线程",
+      "objective": "目标线程",
+      "delivery": "交付线程"
+    }
+  },
   "cognition": {
     "navigationLabel": "认知工作台",
     "tabs": {

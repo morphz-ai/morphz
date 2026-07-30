@@ -909,6 +909,26 @@ impl ActivationStore for PostgresStore {
         rows.iter().map(activation_from_row).collect()
     }
 
+    async fn list_active_thread_activations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT *
+               FROM thread_activations
+               WHERE status NOT IN ('completed', 'cancelled', 'failed')
+               ORDER BY updated_at DESC, id
+               LIMIT $1"#,
+        )
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(activation_from_row).collect()
+    }
+
     async fn list_queued_thread_activations_for_admission(
         &self,
         limit: usize,

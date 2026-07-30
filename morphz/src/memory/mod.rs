@@ -476,6 +476,16 @@ pub struct MindProjectionRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Small, bounded operator read model for a Mind Projection.  Global Runtime
+/// surfaces must not load the opaque (and potentially very large) Mind state
+/// merely to display its revision.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MindProjectionHead {
+    pub context_id: String,
+    pub revision: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewMindProjection {
     pub context_id: String,
@@ -528,6 +538,12 @@ pub trait MindProjectionStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<Option<MindProjectionRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Bounded global projection metadata for operator overview surfaces.
+    async fn list_mind_projection_heads(
+        &self,
+        context_ids: &[String],
+    ) -> Result<Vec<MindProjectionHead>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn get_latest_mind_snapshot(
         &self,
@@ -653,6 +669,17 @@ pub struct SessionPrincipalBinding {
     pub principal_id: String,
     pub bound_at: DateTime<Utc>,
     pub unbound_at: Option<DateTime<Utc>>,
+}
+
+/// Aggregate Session directory metadata used by bounded Runtime overview
+/// projections.  Counts remain separate from the displayed Session window so
+/// an operator can see that more Sessions exist without loading them all.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextSessionCount {
+    pub context_id: String,
+    pub active_sessions: u64,
+    pub total_sessions: u64,
+    pub last_activity_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4262,6 +4289,12 @@ pub trait SessionDirectoryStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<Vec<SessionPrincipalBinding>, Box<dyn std::error::Error + Send + Sync>>;
+    /// One bounded identity lookup for the Sessions already selected by an
+    /// operator projection.  This avoids one query per Session card.
+    async fn list_session_principal_bindings_bounded(
+        &self,
+        session_ids: &[String],
+    ) -> Result<Vec<SessionPrincipalBinding>, Box<dyn std::error::Error + Send + Sync>>;
     async fn verify_session_principal(
         &self,
         session_id: &str,
@@ -4304,6 +4337,12 @@ pub trait SessionDirectoryStore: Send + Sync {
     async fn list_contexts(
         &self,
         include_archived: bool,
+    ) -> Result<Vec<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded Context directory ordered by recent product activity.
+    async fn list_recent_contexts(
+        &self,
+        include_archived: bool,
+        limit: usize,
     ) -> Result<Vec<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Updates Context metadata. Archiving a Context also archives every
     /// Session mounted to it in the same database transaction; Ledger and
@@ -4357,6 +4396,20 @@ pub trait SessionDirectoryStore: Send + Sync {
         context_id: &str,
         include_archived: bool,
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// One bounded query for a set of Contexts.  The per-Context window keeps
+    /// a Runtime overview proportional to its UI budget instead of the total
+    /// Session registry.
+    async fn list_context_sessions_bounded(
+        &self,
+        context_ids: &[String],
+        include_archived: bool,
+        per_context_limit: usize,
+    ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Aggregate counts for a bounded set of Contexts.
+    async fn count_context_sessions(
+        &self,
+        context_ids: &[String],
+    ) -> Result<Vec<ContextSessionCount>, Box<dyn std::error::Error + Send + Sync>>;
     async fn update_session(
         &self,
         id: &str,
@@ -4428,6 +4481,12 @@ pub trait ActivationStore: Send + Sync {
         &self,
         context_id: &str,
         include_terminal: bool,
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded global scheduler projection used by Runtime-level operator
+    /// surfaces. It never scans the Event Ledger.
+    async fn list_active_thread_activations(
+        &self,
+        limit: usize,
     ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Bounded, globally ordered durable admission source. The returned class
     /// is derived from the immutable Trigger Event by the Runtime-owned policy;
@@ -4676,6 +4735,12 @@ pub trait ThreadStore: Send + Sync {
         context_id: &str,
         include_terminal: bool,
     ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded global Thread projection used by Runtime-level operator
+    /// surfaces. Terminal history belongs to the Context detail page.
+    async fn list_open_threads(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Narrow indexed read for completion delivery; avoids scanning every
     /// Thread in a shared Cognitive Context.
     async fn list_session_delivery_threads(
@@ -4884,6 +4949,10 @@ pub trait DelegationStore: Send + Sync {
     async fn list_delegations(
         &self,
     ) -> Result<Vec<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_recent_delegations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn update_delegation_status(
         &self,
         id: &str,
@@ -4954,6 +5023,10 @@ pub trait ObjectiveStore: Send + Sync {
     ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_recoverable_objectives(
         &self,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_recoverable_objectives_bounded(
+        &self,
+        limit: usize,
     ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn edit_objective(
         &self,

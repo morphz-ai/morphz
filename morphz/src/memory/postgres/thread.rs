@@ -31,6 +31,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON threads(context_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_session_delivery
            ON threads(session_id, delivery_status, updated_at, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_session_status
+           ON threads(session_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_supervisor
            ON threads(supervisor_kind, supervisor_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_group
@@ -259,6 +261,23 @@ impl ThreadStore for PostgresStore {
             .fetch_all(&self.pool)
             .await?
         };
+        rows.iter().map(thread_from_row).collect()
+    }
+
+    async fn list_open_threads(&self, limit: usize) -> Result<Vec<ThreadRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT *
+               FROM threads
+               WHERE status NOT IN ('completed', 'failed', 'cancelled')
+               ORDER BY updated_at DESC, id
+               LIMIT $1"#,
+        )
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(thread_from_row).collect()
     }
 

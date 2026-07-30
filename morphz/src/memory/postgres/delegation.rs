@@ -157,6 +157,24 @@ impl DelegationStore for PostgresStore {
         .collect()
     }
 
+    async fn list_recent_delegations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<DelegationRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        sqlx::query(&format!(
+            "SELECT {COLUMNS} FROM delegations ORDER BY updated_at DESC, id LIMIT $1"
+        ))
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(delegation_from_row)
+        .collect()
+    }
+
     async fn update_delegation_status(
         &self,
         id: &str,

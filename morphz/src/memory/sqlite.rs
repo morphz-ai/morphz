@@ -12,21 +12,21 @@ use crate::memory::{
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
     CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextTokenBudgetMutation,
-    ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit,
-    DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore,
-    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
-    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
-    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextSessionCount,
+    ContextTokenBudgetMutation, ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore,
+    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
+    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
+    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
+    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
     ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
-    MindProjectionCommit, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord,
-    NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
+    MindProjectionCommit, MindProjectionHead, MindProjectionRecord, MindProjectionStore,
+    MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
     NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext, NewDelegation,
     NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
     NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
@@ -447,6 +447,8 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_agent_activity
             ON sessions(agent_id, last_activity_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sessions_context_activity
+            ON sessions(context_id, last_activity_at DESC, id);
         CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 
         CREATE TABLE IF NOT EXISTS session_principal_bindings (
@@ -531,6 +533,8 @@ impl SqliteStore {
             ON objectives(context_id, status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_objectives_coordinator_status
             ON objectives(coordinator_session_id, status);
+        CREATE INDEX IF NOT EXISTS idx_objectives_delivery_status
+            ON objectives(delivery_session_id, status);
 
         CREATE TABLE IF NOT EXISTS session_message_requests (
             session_id TEXT NOT NULL,
@@ -621,6 +625,8 @@ impl SqliteStore {
             ON threads(context_id, status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_threads_session_delivery
             ON threads(session_id, delivery_status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_threads_session_status
+            ON threads(session_id, status, updated_at DESC);
 
         CREATE TABLE IF NOT EXISTS execution_targets (
             id TEXT PRIMARY KEY,
@@ -3957,6 +3963,38 @@ impl MindProjectionStore for SqliteStore {
         get_mind_projection_consistent(&self.pool, context_id).await
     }
 
+    async fn list_mind_projection_heads(
+        &self,
+        context_ids: &[String],
+    ) -> Result<Vec<MindProjectionHead>, Box<dyn std::error::Error + Send + Sync>> {
+        if context_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let context_ids_json = serde_json::to_string(context_ids)?;
+        let rows = sqlx::query(
+            r#"SELECT p.context_id, p.revision, p.updated_at
+               FROM mind_projections p
+               JOIN context_heads h ON h.context_id = p.context_id
+                 AND h.revision = p.revision
+                 AND h.projection_hash = p.state_hash
+               WHERE p.context_id IN (SELECT value FROM json_each(?))
+               ORDER BY p.updated_at DESC, p.context_id"#,
+        )
+        .bind(context_ids_json)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(MindProjectionHead {
+                    context_id: row.try_get("context_id")?,
+                    revision: u64::try_from(row.try_get::<i64, _>("revision")?)
+                        .map_err(|_| "Mind Projection revision 不能为负数")?,
+                    updated_at: parse_time(&row.try_get::<String, _>("updated_at")?),
+                })
+            })
+            .collect()
+    }
+
     async fn get_latest_mind_snapshot(
         &self,
         context_id: &str,
@@ -4530,6 +4568,30 @@ impl SessionDirectoryStore for SqliteStore {
             .collect())
     }
 
+    async fn list_session_principal_bindings_bounded(
+        &self,
+        session_ids: &[String],
+    ) -> Result<Vec<SessionPrincipalBinding>, Box<dyn std::error::Error + Send + Sync>> {
+        if session_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let session_ids_json = serde_json::to_string(session_ids)?;
+        let rows = sqlx::query(
+            r#"SELECT session_id, principal_id, bound_at, unbound_at
+               FROM session_principal_bindings
+               WHERE unbound_at IS NULL
+                 AND session_id IN (SELECT value FROM json_each(?))
+               ORDER BY session_id, principal_id"#,
+        )
+        .bind(session_ids_json)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(session_principal_binding_from_row)
+            .collect())
+    }
+
     async fn verify_session_principal(
         &self,
         session_id: &str,
@@ -4762,6 +4824,37 @@ impl SessionDirectoryStore for SqliteStore {
                 .fetch_all(&self.pool)
                 .await?
         };
+        Ok(rows.iter().map(context_from_row).collect())
+    }
+
+    async fn list_recent_contexts(
+        &self,
+        include_archived: bool,
+        limit: usize,
+    ) -> Result<Vec<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| "Context 查询上限超出 SQLite INTEGER 范围")?;
+        let rows = sqlx::query(
+            r#"SELECT c.id, c.agent_id, c.title, c.status, c.created_at, c.updated_at,
+                      c.seed_context_id, c.seed_context_version, c.seed_snapshot_hash,
+                      c.seed_projection, c.requested_hard_token_limit, c.token_budget_revision
+               FROM cognitive_contexts c
+               LEFT JOIN (
+                   SELECT context_id, MAX(last_activity_at) AS last_activity_at
+                   FROM sessions
+                   GROUP BY context_id
+               ) activity ON activity.context_id = c.id
+               WHERE (? OR c.status = 'active')
+               ORDER BY MAX(c.updated_at, COALESCE(activity.last_activity_at, c.updated_at)) DESC,
+                        c.id
+               LIMIT ?"#,
+        )
+        .bind(include_archived)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows.iter().map(context_from_row).collect())
     }
 
@@ -5117,6 +5210,125 @@ impl SessionDirectoryStore for SqliteStore {
                 .await?
         };
         Ok(rows.iter().map(session_from_row).collect())
+    }
+
+    async fn list_context_sessions_bounded(
+        &self,
+        context_ids: &[String],
+        include_archived: bool,
+        per_context_limit: usize,
+    ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if context_ids.is_empty() || per_context_limit == 0 {
+            return Ok(Vec::new());
+        }
+        let context_ids_json = serde_json::to_string(context_ids)?;
+        let per_context_limit = i64::try_from(per_context_limit)
+            .map_err(|_| "Session 每 Context 查询上限超出 SQLite INTEGER 范围")?;
+        let rows = sqlx::query(
+            r#"WITH ranked AS (
+                 SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
+                        s.status, s.created_at, s.updated_at, s.last_activity_at,
+                        sm.attention_state, sm.attention_revision, sm.attention_reason,
+                        sm.attention_changed_at, sm.attention_event_id,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY s.context_id
+                          ORDER BY
+                            CASE
+                              WHEN EXISTS (
+                                SELECT 1 FROM objectives o
+                                WHERE o.context_id = s.context_id
+                                  AND (o.coordinator_session_id = s.id OR o.delivery_session_id = s.id)
+                                  AND (
+                                    o.status = 'blocked'
+                                    OR (
+                                      o.status = 'active'
+                                      AND json_extract(o.wait_condition_json, '$.kind') = 'user_input'
+                                    )
+                                  )
+                              ) THEN 0
+                              WHEN EXISTS (
+                                SELECT 1 FROM thread_activations a
+                                WHERE a.session_id = s.id AND a.status = 'running'
+                              ) THEN 1
+                              WHEN EXISTS (
+                                SELECT 1 FROM thread_activations a
+                                WHERE a.session_id = s.id AND a.status = 'queued'
+                              ) THEN 2
+                              WHEN EXISTS (
+                                SELECT 1 FROM objectives o
+                                WHERE o.context_id = s.context_id
+                                  AND (o.coordinator_session_id = s.id OR o.delivery_session_id = s.id)
+                                  AND o.status IN ('active', 'paused', 'blocked')
+                              ) OR EXISTS (
+                                SELECT 1 FROM threads t
+                                WHERE t.session_id = s.id AND t.status = 'open'
+                              ) THEN 3
+                              ELSE 4
+                            END,
+                            s.last_activity_at DESC,
+                            s.id
+                        ) AS rank_in_context
+                 FROM sessions s
+                 JOIN session_mounts sm
+                   ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+                 WHERE s.context_id IN (SELECT value FROM json_each(?))
+                   AND (? OR s.status = 'active')
+               )
+               SELECT id, agent_id, context_id, parent_session_id, title, status,
+                      created_at, updated_at, last_activity_at, attention_state,
+                      attention_revision, attention_reason, attention_changed_at,
+                      attention_event_id
+               FROM ranked
+               WHERE rank_in_context <= ?
+               ORDER BY last_activity_at DESC, id"#,
+        )
+        .bind(context_ids_json)
+        .bind(include_archived)
+        .bind(per_context_limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(session_from_row).collect())
+    }
+
+    async fn count_context_sessions(
+        &self,
+        context_ids: &[String],
+    ) -> Result<Vec<ContextSessionCount>, Box<dyn std::error::Error + Send + Sync>> {
+        if context_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let context_ids_json = serde_json::to_string(context_ids)?;
+        let rows = sqlx::query(
+            r#"SELECT context_id,
+                      SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_sessions,
+                      COUNT(*) AS total_sessions,
+                      MAX(last_activity_at) AS last_activity_at
+               FROM sessions
+               WHERE context_id IN (SELECT value FROM json_each(?))
+               GROUP BY context_id"#,
+        )
+        .bind(context_ids_json)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let active_sessions = row.try_get::<i64, _>("active_sessions")?;
+                let total_sessions = row.try_get::<i64, _>("total_sessions")?;
+                Ok(ContextSessionCount {
+                    context_id: row.try_get("context_id")?,
+                    active_sessions: u64::try_from(active_sessions)
+                        .map_err(|_| "Context active Session 数量为负数")?,
+                    total_sessions: u64::try_from(total_sessions)
+                        .map_err(|_| "Context Session 数量为负数")?,
+                    last_activity_at: row
+                        .try_get::<Option<String>, _>("last_activity_at")?
+                        .map(|value| {
+                            DateTime::parse_from_rfc3339(&value).map(|dt| dt.with_timezone(&Utc))
+                        })
+                        .transpose()?,
+                })
+            })
+            .collect()
     }
 
     async fn update_session(
@@ -5964,6 +6176,28 @@ impl ActivationStore for SqliteStore {
             .fetch_all(&self.pool)
             .await?
         };
+        rows.iter().map(thread_activation_from_row).collect()
+    }
+
+    async fn list_active_thread_activations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit =
+            i64::try_from(limit).map_err(|_| "Activation 查询上限超出 SQLite INTEGER 范围")?;
+        let rows = sqlx::query(
+            r#"SELECT *
+               FROM thread_activations
+               WHERE status NOT IN ('completed', 'cancelled', 'failed')
+               ORDER BY updated_at DESC, id
+               LIMIT ?"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(thread_activation_from_row).collect()
     }
 
@@ -7512,6 +7746,27 @@ impl ThreadStore for SqliteStore {
                 .fetch_all(&self.pool)
                 .await?
         };
+        rows.iter().map(thread_from_row).collect()
+    }
+
+    async fn list_open_threads(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| "Thread 查询上限超出 SQLite INTEGER 范围")?;
+        let rows = sqlx::query(
+            r#"SELECT *
+               FROM threads
+               WHERE status NOT IN ('completed', 'failed', 'cancelled')
+               ORDER BY updated_at DESC, id
+               LIMIT ?"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(thread_from_row).collect()
     }
 
@@ -9463,6 +9718,22 @@ impl DelegationStore for SqliteStore {
         Ok(rows.iter().map(delegation_from_row).collect())
     }
 
+    async fn list_recent_delegations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, initiating_principal_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations ORDER BY updated_at DESC, id LIMIT ?",
+        )
+        .bind(i64::try_from(limit).map_err(|_| "Delegation 查询上限超出 SQLite INTEGER 范围")?)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(delegation_from_row).collect())
+    }
+
     async fn update_delegation_status(
         &self,
         id: &str,
@@ -9722,6 +9993,22 @@ impl ObjectiveStore for SqliteStore {
         let rows = sqlx::query(&format!(
             "{OBJECTIVE_SELECT} WHERE status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL ORDER BY updated_at"
         ))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn list_recoverable_objectives_bounded(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(&format!(
+            "{OBJECTIVE_SELECT} WHERE status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL ORDER BY updated_at DESC LIMIT ?"
+        ))
+        .bind(i64::try_from(limit).map_err(|_| "Objective 查询上限超出 SQLite INTEGER 范围")?)
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(objective_from_row).collect()

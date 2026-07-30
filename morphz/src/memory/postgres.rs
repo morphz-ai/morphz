@@ -10,13 +10,13 @@
 use crate::event::Event;
 use crate::memory::{
     causal_payload_string, AttentionAcknowledgementRecord, CognitiveClockStore,
-    ContextCognitiveClock, EventAppend, EventStore, MindProjectionCommit, MindProjectionRecord,
-    MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer,
-    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
-    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
-    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
-    SessionProjectionStore, TimerStore,
+    ContextCognitiveClock, EventAppend, EventStore, MindProjectionCommit, MindProjectionHead,
+    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective,
+    NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
+    SessionProjectionMutation, SessionProjectionStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -431,6 +431,10 @@ impl PostgresStore {
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_objectives_context_status_updated
                ON objectives(context_id, status, updated_at DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_objectives_coordinator_status
+               ON objectives(coordinator_session_id, status)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_objectives_delivery_status
+               ON objectives(delivery_session_id, status)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_objectives_recovery
                ON objectives(status, evaluation_lease_expires_at, updated_at)"#,
             r#"ALTER TABLE objectives
@@ -2330,6 +2334,22 @@ impl ObjectiveStore for PostgresStore {
         rows.iter().map(objective_from_row).collect()
     }
 
+    async fn list_recoverable_objectives_bounded(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(&format!(
+            "{OBJECTIVE_SELECT} WHERE status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL ORDER BY updated_at DESC LIMIT $1"
+        ))
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
     async fn edit_objective(
         &self,
         id: &str,
@@ -2925,6 +2945,36 @@ impl MindProjectionStore for PostgresStore {
         context_id: &str,
     ) -> Result<Option<MindProjectionRecord>, StoreError> {
         get_projection_consistent(&self.pool, context_id).await
+    }
+
+    async fn list_mind_projection_heads(
+        &self,
+        context_ids: &[String],
+    ) -> Result<Vec<MindProjectionHead>, StoreError> {
+        if context_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT p.context_id, p.revision, p.updated_at
+               FROM mind_projections p
+               JOIN context_heads h ON h.context_id = p.context_id
+                 AND h.revision = p.revision
+                 AND h.projection_hash = p.state_hash
+               WHERE p.context_id = ANY($1)
+               ORDER BY p.updated_at DESC, p.context_id"#,
+        )
+        .bind(context_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(MindProjectionHead {
+                    context_id: row.get("context_id"),
+                    revision: u64::try_from(row.get::<i64, _>("revision"))?,
+                    updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+                })
+            })
+            .collect()
     }
 
     async fn get_latest_mind_snapshot(

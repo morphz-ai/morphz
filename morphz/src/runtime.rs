@@ -41,17 +41,17 @@ use crate::memory::{
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
     ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
-    ExecutionTargetStore, MessageClaim, MindProjectionStore, NewAgent,
+    ExecutionTargetStore, MessageClaim, MindProjectionHead, MindProjectionStore, NewAgent,
     NewArtifactTransferExecution, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
     NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
     NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
     RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter, ThreadGroupMemberRecord,
-    ThreadGroupRecord, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
-    TimerStore,
+    ScheduleStatus, SessionPrincipalBinding, SessionRecord, SessionStore, SessionUpdate,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
+    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupRecord, ThreadKind, ThreadLifecycle,
+    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -494,6 +494,124 @@ pub struct ContextOverview {
     pub attribution: Option<ContextAttribution>,
     pub objectives: Vec<ObjectiveRecord>,
     pub scheduler: SchedulerSummary,
+}
+
+/// Bounded operator query for the Runtime-wide command board.
+///
+/// This is intentionally independent from `ContextOverviewQuery`: the global
+/// overview may span a very large tenant directory, so both axes are bounded
+/// before any projection rows are materialized.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverviewQuery {
+    pub include_archived: bool,
+    pub context_limit: Option<usize>,
+    pub sessions_per_context: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSessionState {
+    NeedsAttention,
+    WaitingUser,
+    Running,
+    Queued,
+    Paused,
+    Waiting,
+    Idle,
+}
+
+impl RuntimeSessionState {
+    fn priority(self) -> u8 {
+        match self {
+            Self::NeedsAttention => 6,
+            Self::WaitingUser => 5,
+            Self::Running => 4,
+            Self::Queued => 3,
+            Self::Paused => 2,
+            Self::Waiting => 1,
+            Self::Idle => 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverviewThread {
+    pub id: String,
+    pub kind: ThreadKind,
+    pub phase: ThreadPhase,
+    pub control_state: ThreadControlState,
+    pub objective_id: Option<String>,
+    pub target_id: Option<String>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverviewObjective {
+    pub id: String,
+    pub stated_objective: String,
+    pub status: ObjectiveStatus,
+    pub status_reason: Option<String>,
+    pub wait_condition: Option<ObjectiveWaitCondition>,
+    pub revision: u64,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverviewSession {
+    pub session: SessionRecord,
+    pub principal_ids: Vec<String>,
+    pub state: RuntimeSessionState,
+    pub attention_required: bool,
+    pub pending_dialogue_turns: usize,
+    pub open_thread_count: usize,
+    pub running_activation_count: usize,
+    pub current_thread: Option<RuntimeOverviewThread>,
+    pub current_objective: Option<RuntimeOverviewObjective>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverviewDelegation {
+    pub id: String,
+    pub parent_context_id: String,
+    pub parent_session_id: String,
+    pub child_session_id: String,
+    pub task: String,
+    pub status: DelegationStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverviewContext {
+    pub context: CognitiveContextRecord,
+    pub mind_revision: Option<u64>,
+    pub delegation: Option<RuntimeOverviewDelegation>,
+    pub active_session_count: u64,
+    pub total_session_count: u64,
+    pub hidden_session_count: u64,
+    pub objective_count: usize,
+    pub open_thread_count: usize,
+    pub running_activation_count: usize,
+    pub attention_count: usize,
+    pub last_activity_at: chrono::DateTime<chrono::Utc>,
+    pub sessions: Vec<RuntimeOverviewSession>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverviewSummary {
+    pub contexts: usize,
+    pub active_sessions: u64,
+    pub total_sessions: u64,
+    pub objectives: usize,
+    pub open_threads: usize,
+    pub running_activations: usize,
+    pub attention_required: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverview {
+    pub generated_at: chrono::DateTime<chrono::Utc>,
+    pub summary: RuntimeOverviewSummary,
+    pub contexts: Vec<RuntimeOverviewContext>,
+    pub has_more_contexts: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -4461,6 +4579,355 @@ impl MorphzRuntime {
         Ok(record)
     }
 
+    /// Returns one bounded Runtime-wide command-board projection.
+    ///
+    /// The storage reads are deliberately bulk queries. Product surfaces must
+    /// not turn a Context or Session card into a separate database round trip,
+    /// nor reconstruct scheduler state from the immutable Ledger.
+    pub async fn runtime_overview(
+        &self,
+        query: RuntimeOverviewQuery,
+    ) -> Result<RuntimeOverview, RuntimeError> {
+        const DEFAULT_CONTEXT_LIMIT: usize = 40;
+        const MAX_CONTEXT_LIMIT: usize = 100;
+        const DEFAULT_SESSIONS_PER_CONTEXT: usize = 6;
+        const MAX_SESSIONS_PER_CONTEXT: usize = 20;
+        const MAX_ACTIVITY_ROWS: usize = 4_000;
+
+        let context_limit = query
+            .context_limit
+            .unwrap_or(DEFAULT_CONTEXT_LIMIT)
+            .clamp(1, MAX_CONTEXT_LIMIT);
+        let sessions_per_context = query
+            .sessions_per_context
+            .unwrap_or(DEFAULT_SESSIONS_PER_CONTEXT)
+            .clamp(1, MAX_SESSIONS_PER_CONTEXT);
+        // Fetch a wider, still bounded candidate window before applying the
+        // product-facing card limit. Storage ranks attention and active work
+        // ahead of mere recency; the Runtime then applies the same semantic
+        // ordering after joining authoritative scheduler state.
+        let session_candidate_limit = MAX_SESSIONS_PER_CONTEXT;
+        let requested_context_rows = context_limit.saturating_add(1);
+        let mut contexts = self
+            .inner
+            .store
+            .list_recent_contexts(query.include_archived, requested_context_rows)
+            .await?;
+        let has_more_contexts = contexts.len() > context_limit;
+        contexts.truncate(context_limit);
+        if contexts.is_empty() {
+            return Ok(RuntimeOverview {
+                generated_at: chrono::Utc::now(),
+                summary: RuntimeOverviewSummary::default(),
+                contexts: Vec::new(),
+                has_more_contexts,
+            });
+        }
+
+        let context_ids = contexts
+            .iter()
+            .map(|context| context.id.clone())
+            .collect::<Vec<_>>();
+        let context_id_set = context_ids.iter().cloned().collect::<HashSet<_>>();
+        let activity_limit = context_limit
+            .saturating_mul(session_candidate_limit)
+            .saturating_mul(4)
+            .clamp(100, MAX_ACTIVITY_ROWS);
+
+        let (
+            sessions,
+            session_counts,
+            mind_heads,
+            open_threads,
+            active_activations,
+            objectives,
+            delegations,
+        ) = tokio::try_join!(
+            self.inner.store.list_context_sessions_bounded(
+                &context_ids,
+                query.include_archived,
+                session_candidate_limit,
+            ),
+            self.inner.store.count_context_sessions(&context_ids),
+            self.inner.store.list_mind_projection_heads(&context_ids),
+            self.inner.store.list_open_threads(activity_limit),
+            self.inner
+                .store
+                .list_active_thread_activations(activity_limit),
+            self.inner
+                .store
+                .list_recoverable_objectives_bounded(activity_limit),
+            self.inner.store.list_recent_delegations(activity_limit),
+        )?;
+
+        let displayed_session_ids = sessions
+            .iter()
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        let principal_bindings = self
+            .inner
+            .store
+            .list_session_principal_bindings_bounded(&displayed_session_ids)
+            .await?;
+
+        let counts_by_context = session_counts
+            .into_iter()
+            .map(|count| (count.context_id.clone(), count))
+            .collect::<HashMap<_, _>>();
+        let heads_by_context = mind_heads
+            .into_iter()
+            .map(|head| (head.context_id.clone(), head))
+            .collect::<HashMap<String, MindProjectionHead>>();
+        let bindings_by_session = runtime_overview_principals_by_session(principal_bindings);
+
+        let mut threads_by_session: HashMap<String, Vec<ThreadRecord>> = HashMap::new();
+        let mut thread_by_root = HashMap::new();
+        let mut open_thread_count_by_context: HashMap<String, usize> = HashMap::new();
+        for thread in open_threads
+            .into_iter()
+            .filter(|thread| context_id_set.contains(&thread.context_id))
+        {
+            *open_thread_count_by_context
+                .entry(thread.context_id.clone())
+                .or_default() += 1;
+            thread_by_root.insert(thread.root_turn_id.clone(), thread.clone());
+            threads_by_session
+                .entry(thread.session_id.clone())
+                .or_default()
+                .push(thread);
+        }
+        for threads in threads_by_session.values_mut() {
+            threads.sort_by(|left, right| {
+                right
+                    .updated_at
+                    .cmp(&left.updated_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+        }
+
+        let mut activations_by_session: HashMap<String, Vec<ThreadActivationRecord>> =
+            HashMap::new();
+        let mut running_activation_count_by_context: HashMap<String, usize> = HashMap::new();
+        for activation in active_activations
+            .into_iter()
+            .filter(|activation| context_id_set.contains(&activation.context_id))
+        {
+            if activation.status == ThreadActivationStatus::Running {
+                *running_activation_count_by_context
+                    .entry(activation.context_id.clone())
+                    .or_default() += 1;
+            }
+            activations_by_session
+                .entry(activation.session_id.clone())
+                .or_default()
+                .push(activation);
+        }
+
+        let mut objectives_by_session: HashMap<String, Vec<ObjectiveRecord>> = HashMap::new();
+        let mut objectives_by_context: HashMap<String, usize> = HashMap::new();
+        let mut attention_sessions_by_context: HashMap<String, HashSet<String>> = HashMap::new();
+        for objective in objectives
+            .into_iter()
+            .filter(|objective| context_id_set.contains(&objective.context_id))
+        {
+            *objectives_by_context
+                .entry(objective.context_id.clone())
+                .or_default() += 1;
+            if objective.status == ObjectiveStatus::Blocked
+                || matches!(
+                    objective.wait_condition.as_ref(),
+                    Some(ObjectiveWaitCondition::UserInput { .. })
+                )
+            {
+                let attention_sessions = attention_sessions_by_context
+                    .entry(objective.context_id.clone())
+                    .or_default();
+                attention_sessions.insert(objective.coordinator_session_id.clone());
+                attention_sessions.insert(objective.delivery_session_id.clone());
+            }
+            objectives_by_session
+                .entry(objective.coordinator_session_id.clone())
+                .or_default()
+                .push(objective.clone());
+            if objective.delivery_session_id != objective.coordinator_session_id {
+                objectives_by_session
+                    .entry(objective.delivery_session_id.clone())
+                    .or_default()
+                    .push(objective);
+            }
+        }
+        for objectives in objectives_by_session.values_mut() {
+            objectives.sort_by(|left, right| {
+                right
+                    .updated_at
+                    .cmp(&left.updated_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+        }
+
+        let delegation_by_child_context = delegations
+            .into_iter()
+            .filter(|delegation| context_id_set.contains(&delegation.child_context_id))
+            .fold(HashMap::new(), |mut map, delegation| {
+                map.entry(delegation.child_context_id.clone())
+                    .or_insert(delegation);
+                map
+            });
+        let mut sessions_by_context: HashMap<String, Vec<SessionRecord>> = HashMap::new();
+        for session in sessions {
+            sessions_by_context
+                .entry(session.context_id.clone())
+                .or_default()
+                .push(session);
+        }
+
+        let mut projected_contexts = Vec::with_capacity(contexts.len());
+        for context in contexts {
+            let count = counts_by_context.get(&context.id);
+            let mut projected_sessions = sessions_by_context
+                .remove(&context.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|session| {
+                    let threads = threads_by_session
+                        .get(&session.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    let activations = activations_by_session
+                        .get(&session.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    let objectives = objectives_by_session
+                        .get(&session.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    let principal_ids = bindings_by_session
+                        .get(&session.id)
+                        .cloned()
+                        .unwrap_or_default();
+                    runtime_overview_session(
+                        session,
+                        principal_ids,
+                        threads,
+                        activations,
+                        objectives,
+                        &thread_by_root,
+                    )
+                })
+                .collect::<Vec<_>>();
+            projected_sessions.sort_by(|left, right| {
+                right
+                    .attention_required
+                    .cmp(&left.attention_required)
+                    .then_with(|| right.state.priority().cmp(&left.state.priority()))
+                    .then_with(|| {
+                        right
+                            .session
+                            .last_activity_at
+                            .cmp(&left.session.last_activity_at)
+                    })
+                    .then_with(|| left.session.id.cmp(&right.session.id))
+            });
+            projected_sessions.truncate(sessions_per_context);
+
+            // Context counters describe the complete bounded Runtime
+            // projection, not only the Session cards currently displayed.
+            let open_thread_count = open_thread_count_by_context
+                .get(&context.id)
+                .copied()
+                .unwrap_or_default();
+            let running_activation_count = running_activation_count_by_context
+                .get(&context.id)
+                .copied()
+                .unwrap_or_default();
+            let attention_count = attention_sessions_by_context
+                .get(&context.id)
+                .map(HashSet::len)
+                .unwrap_or_default();
+            let total_session_count = count
+                .map(|count| count.total_sessions)
+                .unwrap_or(projected_sessions.len() as u64);
+            let active_session_count = count
+                .map(|count| count.active_sessions)
+                .unwrap_or(projected_sessions.len() as u64);
+            let last_activity_at = count
+                .and_then(|count| count.last_activity_at)
+                .unwrap_or(context.updated_at)
+                .max(context.updated_at);
+            let delegation = delegation_by_child_context
+                .get(&context.id)
+                .map(|delegation| RuntimeOverviewDelegation {
+                    id: delegation.id.clone(),
+                    parent_context_id: delegation.parent_context_id.clone(),
+                    parent_session_id: delegation.parent_session_id.clone(),
+                    child_session_id: delegation.child_session_id.clone(),
+                    task: delegation.task.clone(),
+                    status: delegation.status.clone(),
+                });
+            projected_contexts.push(RuntimeOverviewContext {
+                mind_revision: heads_by_context.get(&context.id).map(|head| head.revision),
+                delegation,
+                active_session_count,
+                total_session_count,
+                hidden_session_count: total_session_count
+                    .saturating_sub(projected_sessions.len() as u64),
+                objective_count: objectives_by_context.get(&context.id).copied().unwrap_or(0),
+                open_thread_count,
+                running_activation_count,
+                attention_count,
+                last_activity_at,
+                sessions: projected_sessions,
+                context,
+            });
+        }
+        projected_contexts.sort_by(|left, right| {
+            right
+                .attention_count
+                .cmp(&left.attention_count)
+                .then_with(|| {
+                    right
+                        .running_activation_count
+                        .cmp(&left.running_activation_count)
+                })
+                .then_with(|| right.last_activity_at.cmp(&left.last_activity_at))
+                .then_with(|| left.context.id.cmp(&right.context.id))
+        });
+
+        let summary = RuntimeOverviewSummary {
+            contexts: projected_contexts.len(),
+            active_sessions: projected_contexts
+                .iter()
+                .map(|context| context.active_session_count)
+                .sum(),
+            total_sessions: projected_contexts
+                .iter()
+                .map(|context| context.total_session_count)
+                .sum(),
+            objectives: projected_contexts
+                .iter()
+                .map(|context| context.objective_count)
+                .sum(),
+            open_threads: projected_contexts
+                .iter()
+                .map(|context| context.open_thread_count)
+                .sum(),
+            running_activations: projected_contexts
+                .iter()
+                .map(|context| context.running_activation_count)
+                .sum(),
+            attention_required: projected_contexts
+                .iter()
+                .map(|context| context.attention_count)
+                .sum(),
+        };
+        Ok(RuntimeOverview {
+            generated_at: chrono::Utc::now(),
+            summary,
+            contexts: projected_contexts,
+            has_more_contexts,
+        })
+    }
+
     pub async fn context_overview(
         &self,
         context_id: &str,
@@ -5142,6 +5609,144 @@ fn scheduler_job_snapshot(
         job,
         approval,
         result,
+    }
+}
+
+fn runtime_overview_principals_by_session(
+    bindings: Vec<SessionPrincipalBinding>,
+) -> HashMap<String, Vec<String>> {
+    let mut by_session: HashMap<String, Vec<String>> = HashMap::new();
+    for binding in bindings
+        .into_iter()
+        .filter(|binding| binding.unbound_at.is_none())
+    {
+        by_session
+            .entry(binding.session_id)
+            .or_default()
+            .push(binding.principal_id);
+    }
+    for principal_ids in by_session.values_mut() {
+        principal_ids.sort();
+        principal_ids.dedup();
+    }
+    by_session
+}
+
+fn runtime_overview_session(
+    session: SessionRecord,
+    principal_ids: Vec<String>,
+    threads: &[ThreadRecord],
+    activations: &[ThreadActivationRecord],
+    objectives: &[ObjectiveRecord],
+    thread_by_root: &HashMap<String, ThreadRecord>,
+) -> RuntimeOverviewSession {
+    let running_activation_count = activations
+        .iter()
+        .filter(|activation| activation.status == ThreadActivationStatus::Running)
+        .count();
+    let queued_activation_count = activations
+        .iter()
+        .filter(|activation| activation.status == ThreadActivationStatus::Queued)
+        .count();
+    let pending_dialogue_turns = activations
+        .iter()
+        .filter(|activation| activation.status == ThreadActivationStatus::Queued)
+        .filter(|activation| {
+            thread_by_root
+                .get(&activation.root_turn_id)
+                .is_some_and(|thread| thread.kind == ThreadKind::DialogueTurn)
+        })
+        .count();
+    let current_objective = objectives
+        .first()
+        .map(|objective| RuntimeOverviewObjective {
+            id: objective.id.clone(),
+            stated_objective: objective.stated_objective.clone(),
+            status: objective.status,
+            status_reason: objective.status_reason.clone(),
+            wait_condition: objective.wait_condition.clone(),
+            revision: objective.revision,
+            updated_at: objective.updated_at,
+        });
+    let current_thread = threads.first().map(|thread| {
+        let activation_statuses = activations
+            .iter()
+            .filter(|activation| activation.root_turn_id == thread.root_turn_id)
+            .map(|activation| activation.status)
+            .collect::<Vec<_>>();
+        let phase = if activation_statuses
+            .iter()
+            .any(|status| *status == ThreadActivationStatus::Running)
+        {
+            ThreadPhase::Running
+        } else if activation_statuses
+            .iter()
+            .any(|status| *status == ThreadActivationStatus::Queued)
+        {
+            ThreadPhase::Runnable
+        } else if thread.control_state == ThreadControlState::Paused {
+            ThreadPhase::Waiting
+        } else {
+            ThreadPhase::Idle
+        };
+        RuntimeOverviewThread {
+            id: thread.id.clone(),
+            kind: thread.kind,
+            phase,
+            control_state: thread.control_state,
+            objective_id: (thread.supervision.supervisor_kind == ThreadSupervisorKind::Objective)
+                .then(|| thread.supervision.supervisor_id.clone())
+                .flatten(),
+            target_id: thread.target_id.clone(),
+            updated_at: thread.updated_at,
+        }
+    });
+
+    let waiting_for_user = objectives.iter().any(|objective| {
+        matches!(
+            objective.wait_condition,
+            Some(ObjectiveWaitCondition::UserInput { .. })
+        )
+    });
+    let blocked = objectives
+        .iter()
+        .any(|objective| objective.status == ObjectiveStatus::Blocked);
+    let paused = objectives
+        .iter()
+        .any(|objective| objective.status == ObjectiveStatus::Paused)
+        || threads
+            .iter()
+            .any(|thread| thread.control_state == ThreadControlState::Paused);
+    let waiting = objectives
+        .iter()
+        .any(|objective| objective.wait_condition.is_some())
+        || !threads.is_empty();
+    let state = if blocked {
+        RuntimeSessionState::NeedsAttention
+    } else if waiting_for_user {
+        RuntimeSessionState::WaitingUser
+    } else if running_activation_count > 0 {
+        RuntimeSessionState::Running
+    } else if queued_activation_count > 0 {
+        RuntimeSessionState::Queued
+    } else if paused {
+        RuntimeSessionState::Paused
+    } else if waiting {
+        RuntimeSessionState::Waiting
+    } else {
+        RuntimeSessionState::Idle
+    };
+
+    RuntimeOverviewSession {
+        session,
+        principal_ids,
+        state,
+        attention_required: blocked || waiting_for_user,
+        pending_dialogue_turns,
+        open_thread_count: threads.len(),
+        running_activation_count,
+        current_thread,
+        current_objective,
     }
 }
 

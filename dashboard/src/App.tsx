@@ -101,6 +101,7 @@ import {
 import { LedgerPage } from './pages/LedgerPage'
 import type { LedgerFilters } from './pages/LedgerPage'
 import { OverviewPage } from './pages/OverviewPage'
+import { RuntimeOverviewPage, type RuntimeOverview } from './pages/RuntimeOverviewPage'
 import { RuntimePage } from './pages/RuntimePage'
 import { ThreadCausalCard } from './pages/ThreadCausalCard'
 import { DashboardApiClient } from './api/client'
@@ -2434,6 +2435,9 @@ export default function App() {
   const [projectionAudit, setProjectionAudit] = useState<MindProjectionAudit | null>(null)
   const [auditingProjection, setAuditingProjection] = useState(false)
   const [contextOverview, setContextOverview] = useState<ContextOverviewResponse | null>(null)
+  const [runtimeOverview, setRuntimeOverview] = useState<RuntimeOverview | null>(null)
+  const [runtimeOverviewLoading, setRuntimeOverviewLoading] = useState(false)
+  const [runtimeOverviewError, setRuntimeOverviewError] = useState('')
   const [modelUsagePage, setModelUsagePage] = useState<ModelUsagePage | null>(null)
   const [ledgerPage, setLedgerPage] = useState<LedgerQueryResponse | null>(null)
   const [mindTransactionPage, setMindTransactionPage] = useState<LedgerQueryResponse | null>(null)
@@ -3051,6 +3055,21 @@ export default function App() {
     }
   }, [])
 
+  const loadRuntimeOverview = useCallback(async () => {
+    setRuntimeOverviewLoading(true)
+    try {
+      const snapshot = await DASHBOARD_API.get<RuntimeOverview>(
+        '/api/overview?context_limit=40&sessions_per_context=6',
+      )
+      setRuntimeOverview(snapshot)
+      setRuntimeOverviewError('')
+    } catch (reason) {
+      setRuntimeOverviewError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setRuntimeOverviewLoading(false)
+    }
+  }, [])
+
   const loadContextTokenBudget = useCallback(async (contextId: string) => {
     if (!contextId) {
       setContextTokenBudget(null)
@@ -3334,11 +3353,6 @@ export default function App() {
   }, [contexts, selectedAgentId, selectedContextId])
 
   useEffect(() => {
-    if (location.pathname !== '/' || !selectedContextId) return
-    navigate(dashboardPath('overview', selectedContextId, selectedSessionId), { replace: true })
-  }, [location.pathname, navigate, selectedContextId, selectedSessionId])
-
-  useEffect(() => {
     selectedScopeRef.current = { sessionId: selectedSessionId, contextId: selectedContextId }
   }, [selectedContextId, selectedSessionId])
 
@@ -3380,29 +3394,42 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedSessionId || !selectedContextId) return
+    if (view === 'overview' && !route.contextId) return
     const initial = window.setTimeout(() => void loadSession(selectedSessionId, selectedContextId), 0)
     const interval = window.setInterval(() => void loadSession(selectedSessionId, selectedContextId), 15000)
     return () => {
       window.clearTimeout(initial)
       window.clearInterval(interval)
     }
-  }, [loadSession, schedulerHistoryLimit, selectedContextId, selectedSessionId, view])
+  }, [loadSession, route.contextId, schedulerHistoryLimit, selectedContextId, selectedSessionId, view])
 
   useEffect(() => {
     if (!selectedContextId || selectedSessionId) return
+    if (view === 'overview' && !route.contextId) return
     const initial = window.setTimeout(() => void loadOverview(selectedContextId, ''), 0)
     const interval = window.setInterval(() => void loadOverview(selectedContextId, ''), 15000)
     return () => {
       window.clearTimeout(initial)
       window.clearInterval(interval)
     }
-  }, [loadOverview, selectedContextId, selectedSessionId])
+  }, [loadOverview, route.contextId, selectedContextId, selectedSessionId, view])
 
   useEffect(() => {
+    if (view !== 'overview' || route.contextId) return
+    const initial = window.setTimeout(() => void loadRuntimeOverview(), 0)
+    const interval = window.setInterval(() => void loadRuntimeOverview(), 10_000)
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(interval)
+    }
+  }, [loadRuntimeOverview, route.contextId, view])
+
+  useEffect(() => {
+    if (view === 'overview' && !route.contextId) return
     const contextId = selectedContextId
     const timer = window.setTimeout(() => void loadContextTokenBudget(contextId), 0)
     return () => window.clearTimeout(timer)
-  }, [loadContextTokenBudget, selectedContextId, status?.model])
+  }, [loadContextTokenBudget, route.contextId, selectedContextId, status?.model, view])
 
   useEffect(() => {
     if (view !== 'cognition' || !selectedContextId || !selectedSessionId) return
@@ -3521,6 +3548,9 @@ export default function App() {
       if (!refreshesSession && invalidated.includes('overview')) {
         void loadOverview(selectedContextId, selectedSessionId)
       }
+      if (activeViewRef.current === 'overview' && !route.contextId && invalidated.includes('overview')) {
+        void loadRuntimeOverview()
+      }
       if (view === 'cognition' && invalidated.includes('session')) {
         setContextEncoding(null)
         void loadContextProjection(selectedSessionId, selectedContextId)
@@ -3542,9 +3572,11 @@ export default function App() {
     loadLedger,
     loadMindTransactions,
     loadOverview,
+    loadRuntimeOverview,
     loadContextProjection,
     loadSession,
     loadThreadDetail,
+    route.contextId,
     route.threadId,
     selectedContextId,
     selectedSessionId,
@@ -3553,6 +3585,7 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedSessionId) return
+    if (view === 'overview' && !route.contextId) return
     let socket: WebSocket | undefined
     let reconnectTimer: number | undefined
     let refreshTimer: number | undefined
@@ -3760,7 +3793,7 @@ export default function App() {
       pendingStreamEvents = []
       socket?.close()
     }
-  }, [loadSession, selectedContextId, selectedSessionId, t])
+  }, [loadSession, route.contextId, selectedContextId, selectedSessionId, t, view])
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
@@ -5689,7 +5722,7 @@ export default function App() {
     <main className="page-shell" data-accent={accentTheme} data-color-mode={resolvedAppearanceMode}>
       <section className={`morphz-shell ${immersiveMode ? 'is-immersive' : ''}`} data-accent={accentTheme} data-view={view}>
         <header className="runtime-header">
-          <button className="brand" type="button" onClick={() => setView('overview')}>
+          <button className="brand" type="button" onClick={() => navigate('/')}>
             <span className="brand-mark">◆</span>
             <span><strong>Morphz</strong><small>{t('header.agentLabel', { title: selectedAgent?.title ?? (selectedAgentId || 'default') })}</small></span>
           </button>
@@ -6041,7 +6074,7 @@ export default function App() {
 
         <div className="runtime-navigation-row">
           <nav className="runtime-navigation" aria-label={t('navigation.label')}>
-            <button className={view === 'overview' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('overview')} aria-current={view === 'overview' ? 'page' : undefined}>
+            <button className={view === 'overview' && !route.contextId ? 'is-active' : ''} type="button" onClick={() => navigate('/')} aria-current={view === 'overview' && !route.contextId ? 'page' : undefined}>
               <CircleDot size={14} /><span>{t('navigation.overview')}</span>
             </button>
             <button className={view === 'dialogue' ? 'is-active' : ''} type="button" disabled={!selectedSessionId} onClick={() => setView('dialogue')} aria-current={view === 'dialogue' ? 'page' : undefined}>
@@ -6225,7 +6258,26 @@ export default function App() {
               <span><strong>{t('runtime.loading')}</strong><small>{t('runtime.loadingHint')}</small></span>
             </div>
           )}
-          {view === 'overview' && (
+          {view === 'overview' && !route.contextId && (
+            <RuntimeOverviewPage
+              overview={runtimeOverview}
+              loading={runtimeOverviewLoading}
+              error={runtimeOverviewError}
+              onRefresh={() => void loadRuntimeOverview()}
+              onOpenContext={contextId => {
+                setSelectedContextId(contextId)
+                navigate(dashboardPath('overview', contextId))
+              }}
+              onOpenSession={(contextId, sessionId) => {
+                const session = sessions.find(item => item.id === sessionId)
+                if (session) setSelectedAgentId(session.agent_id)
+                setSelectedContextId(contextId)
+                setSelectedSessionId(sessionId)
+                navigate(dashboardPath('dialogue', contextId, sessionId))
+              }}
+            />
+          )}
+          {view === 'overview' && Boolean(route.contextId) && (
             <OverviewPage
               contextTitle={contextOverview?.context.title ?? selectedContext?.title}
               sessionTitle={selectedSession?.title}
