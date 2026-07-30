@@ -5387,6 +5387,29 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
+/// Establish the physical boundary shared by every non-interactive `exec`.
+///
+/// Piping stdout/stderr is not enough to make a child non-interactive. Programs
+/// such as OpenSSH may bypass stdin and open the process's controlling
+/// `/dev/tty` directly for host-key or password prompts. A detached session
+/// makes that open fail immediately, while null stdin gives ordinary prompt
+/// readers EOF. `setsid` also creates the process group that
+/// `ProcessGroupGuard` owns, so cancellation can still terminate the complete
+/// descendant tree.
+fn configure_noninteractive_process(command: &mut tokio::process::Command) {
+    command
+        .stdin(std::process::Stdio::null())
+        .env("SSH_ASKPASS_REQUIRE", "never");
+    unsafe {
+        command.pre_exec(|| {
+            if nix::libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecuteCommandArgs {
@@ -5751,6 +5774,7 @@ impl Tool for ExecuteCommandTool {
             .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        configure_noninteractive_process(&mut cmd);
         if profile.shell_environment_policy == ShellEnvironmentPolicy::RemoveSensitive {
             for (key, _) in std::env::vars() {
                 if is_sensitive_environment_name(&key) {
@@ -5792,15 +5816,6 @@ impl Tool for ExecuteCommandTool {
         for (name, value) in resolved_secret_env {
             cmd.env(&name, &value);
             injected_secret_values.push(value);
-        }
-
-        // 必须通过 pre_exec 分配独立的进程组，以便于进程组强杀
-        unsafe {
-            cmd.pre_exec(|| {
-                let pid = nix::libc::getpid();
-                nix::libc::setpgid(pid, pid);
-                Ok(())
-            });
         }
 
         let artifact_dir = std::path::PathBuf::from(&self.background_config.artifact_dir);
@@ -7159,6 +7174,55 @@ mod tests {
     #[cfg(target_os = "macos")]
     static MACOS_SANDBOX_EXEC_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static SECRET_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[test]
+    fn noninteractive_child_probe() {
+        if std::env::var_os("MORPHZ_NONINTERACTIVE_CHILD_PROBE").is_none() {
+            return;
+        }
+
+        assert_eq!(
+            unsafe { nix::libc::getsid(0) },
+            unsafe { nix::libc::getpid() },
+            "child must lead a detached session"
+        );
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            std::io::Read::read(&mut std::io::stdin(), &mut byte).unwrap(),
+            0,
+            "non-interactive stdin must immediately return EOF"
+        );
+        let tty = std::ffi::CString::new("/dev/tty").unwrap();
+        assert_eq!(
+            unsafe { nix::libc::open(tty.as_ptr(), nix::libc::O_RDONLY) },
+            -1,
+            "detached child must not be able to open a controlling terminal"
+        );
+        assert_eq!(std::env::var("SSH_ASKPASS_REQUIRE").as_deref(), Ok("never"));
+    }
+
+    #[tokio::test]
+    async fn noninteractive_process_has_no_input_or_controlling_terminal() {
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .arg("--exact")
+            .arg("tool::tests::noninteractive_child_probe")
+            .arg("--nocapture")
+            .env("MORPHZ_NONINTERACTIVE_CHILD_PROBE", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        configure_noninteractive_process(&mut command);
+
+        let output = tokio::time::timeout(std::time::Duration::from_secs(2), command.output())
+            .await
+            .expect("non-interactive child must not wait for terminal input")
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn skill_frontmatter_parser_supports_inline_and_folded_descriptions() {
