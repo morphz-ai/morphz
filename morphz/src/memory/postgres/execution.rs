@@ -36,6 +36,14 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             executor_kind TEXT NOT NULL,
             executor_id TEXT,
             target_id TEXT,
+            lifetime TEXT NOT NULL DEFAULT 'durable',
+            supervisor_kind TEXT NOT NULL DEFAULT 'legacy',
+            supervisor_id TEXT,
+            supervision_generation BIGINT NOT NULL DEFAULT 1,
+            origin_evaluation_id TEXT,
+            parent_thread_id TEXT,
+            thread_group_id TEXT,
+            completion_contract_json JSONB NOT NULL DEFAULT '{}'::jsonb,
             result_text TEXT,
             result_event_id TEXT,
             delivery_status TEXT NOT NULL DEFAULT 'none',
@@ -60,6 +68,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             status TEXT NOT NULL,
             claimed_by TEXT,
             lease_expires_at TEXT,
+            dialogue_lane_released_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )"#,
@@ -67,8 +76,21 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS target_id TEXT"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS control_state TEXT NOT NULL DEFAULT 'active'"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS lifetime TEXT NOT NULL DEFAULT 'durable'"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS supervisor_kind TEXT NOT NULL DEFAULT 'legacy'"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS supervisor_id TEXT"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS supervision_generation BIGINT NOT NULL DEFAULT 1"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS origin_evaluation_id TEXT"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS parent_thread_id TEXT"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS thread_group_id TEXT"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS completion_contract_json JSONB NOT NULL DEFAULT '{}'::jsonb"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_supervisor
+           ON threads(supervisor_kind, supervisor_id, status, updated_at DESC)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_group
+           ON threads(thread_group_id, status, updated_at DESC)"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
+        r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS dialogue_lane_released_at TEXT"#,
         r#"CREATE TABLE IF NOT EXISTS execution_jobs (
             id TEXT PRIMARY KEY,
             revision BIGINT NOT NULL DEFAULT 1,
@@ -408,13 +430,20 @@ impl ExecutionJobStore for PostgresStore {
         )?;
 
         let now = now_text();
+        execution
+            .thread
+            .supervision
+            .validate(ThreadKind::Execution)?;
         sqlx::query(
             r#"INSERT INTO threads
                (id, revision, agent_id, context_id, session_id, initiating_principal_id,
                 root_turn_id, kind, status, executor_kind, executor_id, target_id,
+                lifetime, supervisor_kind, supervisor_id, supervision_generation,
+                origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
                 delivery_status, created_at, updated_at)
                VALUES ($1, 1, $2, $3, $4, $5, $6, 'execution', 'open',
-                       'artifact_transfer', $7, $8, 'none', $9, $9)
+                       'artifact_transfer', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                       'none', $17, $17)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&execution.thread.id)
@@ -425,6 +454,14 @@ impl ExecutionJobStore for PostgresStore {
         .bind(&execution.thread.root_turn_id)
         .bind(&execution.thread.executor_id)
         .bind(&execution.thread.target_id)
+        .bind(execution.thread.supervision.lifetime.as_str())
+        .bind(execution.thread.supervision.supervisor_kind.as_str())
+        .bind(&execution.thread.supervision.supervisor_id)
+        .bind(i64::try_from(execution.thread.supervision.generation)?)
+        .bind(&execution.thread.supervision.origin_evaluation_id)
+        .bind(&execution.thread.supervision.parent_thread_id)
+        .bind(&execution.thread.supervision.thread_group_id)
+        .bind(&execution.thread.supervision.completion_contract)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -442,6 +479,7 @@ impl ExecutionJobStore for PostgresStore {
             || thread.executor_kind != "artifact_transfer"
             || thread.executor_id != execution.thread.executor_id
             || thread.target_id != execution.thread.target_id
+            || thread.supervision != execution.thread.supervision
         {
             return Err(format!(
                 "Artifact Transfer root '{}' 已被不同 Thread 占用",

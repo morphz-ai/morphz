@@ -13,8 +13,8 @@ use crate::memory::{
     RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallProjectionStore, RecallSearchHit,
     ScheduleRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
     SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionStatus, SessionStore,
-    ThreadActivationRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
-    WorkerCoordinationMode,
+    ThreadActivationRecord, ThreadGroupMemberRecord, ThreadGroupRecord, ThreadOutcomeRecord,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, WorkerCoordinationMode,
 };
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
@@ -804,6 +804,15 @@ pub struct ContextView {
     pub session_working_set: SessionWorkingSetView,
     pub active_activations: Vec<ThreadActivationRecord>,
     pub threads: Vec<ThreadRecord>,
+    /// Open supervision barriers visible to the model. This is the same
+    /// authoritative Group projection used by SDK/HTTP/Dashboard, not an
+    /// inference reconstructed from chat text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread_groups: Vec<ThreadGroupRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread_group_members: Vec<ThreadGroupMemberRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread_outcomes: Vec<ThreadOutcomeRecord>,
     pub thread_signals: Vec<ThreadSignalRecord>,
     pub thread_phases: BTreeMap<String, ThreadPhase>,
     pub schedules: Vec<ScheduleRecord>,
@@ -2564,7 +2573,14 @@ impl ContextEngine {
             });
         let references = ContextReferences::from_events(&events);
         let metadata = observation_metadata(&events, &state);
-        let (threads, schedules, thread_signals) = match &self.session_store {
+        let (
+            threads,
+            thread_groups,
+            thread_group_members,
+            thread_outcomes,
+            schedules,
+            thread_signals,
+        ) = match &self.session_store {
             Some(store) => {
                 let all_threads = store.list_context_threads(context_id, true).await?;
                 let context_thread_ids = all_threads
@@ -2610,9 +2626,46 @@ impl ContextEngine {
                 let pending_signals = store
                     .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
                     .await?;
-                (projected, scheduled, pending_signals)
+                // Context Encoding only needs supervision barriers referenced
+                // by the bounded Thread projection above. Loading every open
+                // group in a long-lived Context would make both Prompt size
+                // and database work grow with historical concurrency.
+                let mut projected_group_ids = projected
+                    .iter()
+                    .filter_map(|thread| thread.supervision.thread_group_id.clone())
+                    .collect::<Vec<_>>();
+                projected_group_ids.sort();
+                projected_group_ids.dedup();
+                projected_group_ids.truncate(32);
+                let mut groups = Vec::new();
+                for group_id in projected_group_ids {
+                    if let Some(group) = store.get_thread_group(&group_id).await? {
+                        groups.push(group);
+                    }
+                }
+                let mut members = Vec::new();
+                let mut outcomes = Vec::new();
+                for group in &groups {
+                    members.extend(store.list_thread_group_members(&group.id).await?);
+                    outcomes.extend(store.list_thread_group_outcomes(&group.id).await?);
+                }
+                (
+                    projected,
+                    groups,
+                    members,
+                    outcomes,
+                    scheduled,
+                    pending_signals,
+                )
             }
-            None => (Vec::new(), Vec::new(), Vec::new()),
+            None => (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
         };
         let activation_signals = match (&self.session_store, activation_record) {
             (Some(store), Some(activation)) => {
@@ -2922,6 +2975,9 @@ impl ContextEngine {
                     session_working_set: &session_working_set,
                     active_activations: &active_activations,
                     threads: &threads,
+                    thread_groups: &thread_groups,
+                    thread_group_members: &thread_group_members,
+                    thread_outcomes: &thread_outcomes,
                     thread_signals: &thread_signals,
                     schedules: &schedules,
                     activation: activation.as_ref(),
@@ -2953,6 +3009,9 @@ impl ContextEngine {
             session_working_set,
             active_activations,
             threads,
+            thread_groups,
+            thread_group_members,
+            thread_outcomes,
             thread_signals,
             thread_phases,
             schedules,
@@ -3086,6 +3145,9 @@ impl ContextEngine {
             session_working_set: &view.session_working_set,
             active_activations: &view.active_activations,
             threads: &view.threads,
+            thread_groups: &view.thread_groups,
+            thread_group_members: &view.thread_group_members,
+            thread_outcomes: &view.thread_outcomes,
             thread_signals: &view.thread_signals,
             schedules: &view.schedules,
             activation: view.activation.as_ref(),
@@ -3184,6 +3246,9 @@ impl ContextEngine {
             session_working_set: &view.session_working_set,
             active_activations: &view.active_activations,
             threads: &view.threads,
+            thread_groups: &view.thread_groups,
+            thread_group_members: &view.thread_group_members,
+            thread_outcomes: &view.thread_outcomes,
             thread_signals: &view.thread_signals,
             schedules: &view.schedules,
             activation: view.activation.as_ref(),
@@ -5303,6 +5368,9 @@ struct ContextRenderInput<'a> {
     session_working_set: &'a SessionWorkingSetView,
     active_activations: &'a [ThreadActivationRecord],
     threads: &'a [ThreadRecord],
+    thread_groups: &'a [ThreadGroupRecord],
+    thread_group_members: &'a [ThreadGroupMemberRecord],
+    thread_outcomes: &'a [ThreadOutcomeRecord],
     thread_signals: &'a [ThreadSignalRecord],
     schedules: &'a [ScheduleRecord],
     activation: Option<&'a ActivationFocus>,
@@ -5594,6 +5662,9 @@ fn render_background_tasks(tasks: &[BackgroundTaskView], references: &ContextRef
 
 fn render_thread_scheduler(
     threads: &[ThreadRecord],
+    thread_groups: &[ThreadGroupRecord],
+    thread_group_members: &[ThreadGroupMemberRecord],
+    thread_outcomes: &[ThreadOutcomeRecord],
     activations: &[ThreadActivationRecord],
     signals: &[ThreadSignalRecord],
     scheduled: &[ScheduleRecord],
@@ -5624,7 +5695,40 @@ fn render_thread_scheduler(
                 pair("revision", atom(thread.revision.to_string())),
                 pair("executor", atom(&thread.executor_kind)),
                 pair("delivery", atom(thread.delivery_status.as_str())),
+                list(
+                    "supervision",
+                    vec![
+                        pair("lifetime", atom(thread.supervision.lifetime.as_str())),
+                        pair(
+                            "supervisor-kind",
+                            atom(thread.supervision.supervisor_kind.as_str()),
+                        ),
+                        pair(
+                            "generation",
+                            atom(thread.supervision.generation.to_string()),
+                        ),
+                        pair(
+                            "completion-contract",
+                            atom(
+                                serde_json::to_string(&thread.supervision.completion_contract)
+                                    .unwrap_or_else(|_| "{}".to_string()),
+                            ),
+                        ),
+                    ],
+                ),
             ];
+            if let Some(supervisor_id) = &thread.supervision.supervisor_id {
+                fields.push(pair("supervisor", atom(supervisor_id)));
+            }
+            if let Some(parent_thread_id) = &thread.supervision.parent_thread_id {
+                fields.push(pair("parent-thread", atom(parent_thread_id)));
+            }
+            if let Some(group_id) = &thread.supervision.thread_group_id {
+                fields.push(pair("thread-group", atom(group_id)));
+            }
+            if let Some(evaluation_id) = &thread.supervision.origin_evaluation_id {
+                fields.push(pair("origin-evaluation", atom(evaluation_id)));
+            }
             if let Some(executor_id) = &thread.executor_id {
                 fields.push(pair("executor-id", atom(executor_id)));
             }
@@ -5669,10 +5773,59 @@ fn render_thread_scheduler(
             list("scheduled", fields)
         })
         .collect::<Vec<_>>();
+    let group_entries = thread_groups
+        .iter()
+        .map(|group| {
+            let members = thread_group_members
+                .iter()
+                .filter(|member| member.group_id == group.id)
+                .map(|member| {
+                    let mut fields = vec![
+                        pair("thread", atom(&member.thread_id)),
+                        pair("required", atom(member.required.to_string())),
+                        pair("status", atom(member.status.as_str())),
+                    ];
+                    if let Some(outcome_id) = &member.outcome_id {
+                        fields.push(pair("outcome", atom(outcome_id)));
+                    }
+                    if let Some(outcome) = thread_outcomes
+                        .iter()
+                        .find(|outcome| outcome.thread_id == member.thread_id)
+                    {
+                        fields.push(pair("terminal-kind", atom(outcome.terminal_kind.as_str())));
+                        if let Some(summary) = &outcome.summary {
+                            let (preview, truncated) = preview_text(summary, 320);
+                            fields.push(pair("summary", atom(&preview)));
+                            if truncated {
+                                fields.push(pair("summary-truncated", atom("true")));
+                            }
+                        }
+                    }
+                    list("member", fields)
+                })
+                .collect();
+            list(
+                "group",
+                vec![
+                    pair("id", atom(&group.id)),
+                    pair("policy", atom(group.policy.as_str())),
+                    pair("status", atom(group.status.as_str())),
+                    pair("supervisor-kind", atom(group.supervisor_kind.as_str())),
+                    pair("supervisor", atom(&group.supervisor_id)),
+                    pair("generation", atom(group.generation.to_string())),
+                    pair("required", atom(group.required_count.to_string())),
+                    pair("terminal", atom(group.terminal_count.to_string())),
+                    pair("successful", atom(group.successful_count.to_string())),
+                    list("members", members),
+                ],
+            )
+        })
+        .collect();
     list(
         "thread-scheduler",
         vec![
             list("threads", thread_entries),
+            list("thread-groups", group_entries),
             list("queue", scheduled_entries),
         ],
     )
@@ -5857,6 +6010,9 @@ fn render_objective_wait(wait: &crate::memory::ObjectiveWaitCondition) -> SExpr 
         ObjectiveWaitCondition::ResourceAvailable { resource } => {
             list("resource-available", vec![pair("resource", atom(resource))])
         }
+        ObjectiveWaitCondition::ThreadGroup { group_id } => {
+            list("thread-group", vec![pair("group-id", atom(group_id))])
+        }
     }
 }
 
@@ -5979,6 +6135,9 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         session_working_set,
         active_activations,
         threads,
+        thread_groups,
+        thread_group_members,
+        thread_outcomes,
         thread_signals,
         schedules,
         activation,
@@ -6074,9 +6233,12 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                 .to_string(),
         ),
     ));
-    if !threads.is_empty() || !schedules.is_empty() {
+    if !threads.is_empty() || !thread_groups.is_empty() || !schedules.is_empty() {
         kernel.push(render_thread_scheduler(
             threads,
+            thread_groups,
+            thread_group_members,
+            thread_outcomes,
             active_activations,
             thread_signals,
             schedules,
@@ -9102,6 +9264,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -9182,6 +9345,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -10199,6 +10363,9 @@ mod tests {
             session_working_set: &working_set,
             active_activations: &[],
             threads: &[],
+            thread_groups: &[],
+            thread_group_members: &[],
+            thread_outcomes: &[],
             thread_signals: &[],
             schedules: &[],
             activation: Some(&evaluation),
@@ -10297,6 +10464,9 @@ mod tests {
             session_working_set: &working_set,
             active_activations: &[],
             threads: &[],
+            thread_groups: &[],
+            thread_group_members: &[],
+            thread_outcomes: &[],
             thread_signals: &[],
             schedules: &[],
             activation: Some(&evaluation),
@@ -10358,6 +10528,9 @@ mod tests {
             session_working_set: &working_set,
             active_activations: &[],
             threads: &[],
+            thread_groups: &[],
+            thread_group_members: &[],
+            thread_outcomes: &[],
             thread_signals: &[],
             schedules: &[],
             activation: Some(&evaluation),
@@ -10396,6 +10569,9 @@ mod tests {
             session_working_set: &working_set,
             active_activations: &[],
             threads: &[],
+            thread_groups: &[],
+            thread_group_members: &[],
+            thread_outcomes: &[],
             thread_signals: &[],
             schedules: &[],
             activation: Some(&evaluation),
@@ -11722,6 +11898,7 @@ mod tests {
                     executor_kind: "self".to_string(),
                     executor_id: None,
                     target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
                 })
                 .await
                 .unwrap();

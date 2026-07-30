@@ -34,16 +34,28 @@ export interface ThreadActivationRecord {
 export interface ThreadRecord {
   id: string
   revision: number
-  generation?: number
+  generation: number
   agent_id: string
   context_id: string
   session_id: string
+  initiating_principal_id?: string
   root_turn_id: string
   kind: 'dialogue_turn' | 'execution' | 'objective' | 'delivery'
   lifecycle: 'open' | 'completed' | 'failed' | 'cancelled'
   control_state: 'active' | 'paused'
   executor_kind: string
   executor_id?: string
+  target_id?: string
+  supervision: {
+    lifetime: 'attached' | 'durable' | 'disposable'
+    supervisor_kind: 'evaluation' | 'objective' | 'runtime' | 'none' | 'legacy'
+    supervisor_id?: string
+    generation: number
+    origin_evaluation_id?: string
+    parent_thread_id?: string
+    thread_group_id?: string
+    completion_contract: unknown
+  }
   result_text?: string
   result_event_id?: string
   delivery_status: 'none' | 'pending' | 'deferred' | 'delivered'
@@ -146,9 +158,68 @@ export interface SchedulerActivationSnapshot {
 export interface SchedulerThreadSnapshot {
   thread: ThreadRecord
   phase: 'idle' | 'runnable' | 'running' | 'waiting'
+  outcome?: ThreadOutcomeRecord
   pending_signals: ThreadSignalRecord[]
   activations: SchedulerActivationSnapshot[]
   schedules: ScheduleRecord[]
+}
+
+export interface ThreadGroupRecord {
+  id: string
+  revision: number
+  context_id: string
+  session_id: string
+  supervisor_kind: 'evaluation' | 'objective' | 'runtime' | 'none' | 'legacy'
+  supervisor_id: string
+  generation: number
+  policy: 'all' | 'any'
+  required_count: number
+  terminal_count: number
+  successful_count: number
+  status: 'open' | 'satisfied' | 'failed' | 'cancelled'
+  completion_contract: unknown
+  terminal_summary: unknown
+  barrier_event_id?: string
+  created_at: string
+  updated_at: string
+  satisfied_at?: string
+}
+
+export interface ThreadGroupMemberRecord {
+  group_id: string
+  thread_id: string
+  ordinal: number
+  required: boolean
+  status: 'pending' | 'completed' | 'failed' | 'cancelled'
+  outcome_id?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ThreadOutcomeRecord {
+  id: string
+  thread_id: string
+  thread_generation: number
+  root_turn_id: string
+  activation_id: string
+  session_id: string
+  terminal_kind: 'completed' | 'failed' | 'cancelled'
+  disposition: string
+  summary?: string
+  result_event_id: string
+  artifact_refs: string[]
+  evidence_refs: string[]
+  check_results: unknown
+  unresolved_failures: string[]
+  terminal_event_sequence?: number
+  created_at: string
+  delivered_at?: string
+}
+
+export interface SchedulerThreadGroupSnapshot {
+  group: ThreadGroupRecord
+  members: ThreadGroupMemberRecord[]
+  outcomes: ThreadOutcomeRecord[]
 }
 
 export interface ThreadDetailResponse {
@@ -205,6 +276,7 @@ export interface SchedulerSnapshot {
   model_provider: Record<string, unknown>
   context_capacity: Record<string, unknown>
   threads: SchedulerThreadSnapshot[]
+  thread_groups: SchedulerThreadGroupSnapshot[]
   orphan_activations: SchedulerActivationSnapshot[]
   orphan_signals: ThreadSignalRecord[]
   orphan_jobs: SchedulerJobSnapshot[]

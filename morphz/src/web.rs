@@ -6253,6 +6253,7 @@ mod tests {
         let scheduler_json: serde_json::Value = serde_json::from_slice(&scheduler_body).unwrap();
         assert_eq!(scheduler_json["context_id"], json!("context-test"));
         assert!(scheduler_json["threads"].is_array());
+        assert!(scheduler_json["thread_groups"].is_array());
         assert!(scheduler_json["admission"].is_object());
         assert!(scheduler_json["model_provider"].is_object());
         assert!(scheduler_json["context_capacity"].is_object());
@@ -6468,6 +6469,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();

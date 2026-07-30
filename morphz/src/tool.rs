@@ -8,10 +8,14 @@ use crate::execution::{
 use crate::llm::ToolDefinition;
 use crate::memory::{
     EdgeOutputStream, EventStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionRetrySafety, NewRuntimeTimer, NewSchedule, NewThread, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus,
-    SessionStatus, SessionStore, ThreadKind,
+    ExecutionJobStore, ExecutionRetrySafety, NewObjective, NewRuntimeTimer, NewSchedule,
+    NewScheduledObjective, NewThread, NewThreadGroup, NewThreadGroupMember, NewThreadGroupPlan,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
+    RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionStatus,
+    SessionStore, ThreadGroupPolicy, ThreadKind, ThreadLifecycle, ThreadLifetime,
+    ThreadPromotionMutation, ThreadPromotionRequest, ThreadSupervision, ThreadSupervisorKind,
 };
+use crate::objective::TYPE_OBJECTIVE_CONTROL;
 use crate::permission::{
     ApprovalContext, ApprovalRequirement, FilesystemAccess, PermissionBroker, PermissionConfig,
     PermissionProfile, SandboxMode, ShellEnvironmentPolicy,
@@ -1771,6 +1775,7 @@ fn schedule_timer_id(schedule_id: &str) -> String {
 pub struct ScheduleTxTool {
     scheduler: Arc<ThreadScheduler>,
     sessions: Arc<dyn SessionStore>,
+    objectives: Option<Arc<dyn ObjectiveStore>>,
 }
 
 impl ScheduleTxTool {
@@ -1778,7 +1783,13 @@ impl ScheduleTxTool {
         Self {
             scheduler,
             sessions,
+            objectives: None,
         }
+    }
+
+    pub fn with_objective_store(mut self, objectives: Arc<dyn ObjectiveStore>) -> Self {
+        self.objectives = Some(objectives);
+        self
     }
 
     async fn execute_control(
@@ -1792,7 +1803,9 @@ impl ScheduleTxTool {
             | ScheduleOperation::Resume { schedule_id, .. }
             | ScheduleOperation::Reschedule { schedule_id, .. }
             | ScheduleOperation::Cancel { schedule_id, .. } => schedule_id,
-            ScheduleOperation::Enqueue { .. } | ScheduleOperation::Spawn { .. } => {
+            ScheduleOperation::Enqueue { .. }
+            | ScheduleOperation::Spawn { .. }
+            | ScheduleOperation::Promote { .. } => {
                 return Err("内部错误：创建操作不能进入 Schedule 控制面".into());
             }
         };
@@ -1866,9 +1879,240 @@ impl ScheduleTxTool {
                     .cancel(&schedule_id, expected_revision)
                     .await?,
             ),
-            ScheduleOperation::Enqueue { .. } | ScheduleOperation::Spawn { .. } => unreachable!(),
+            ScheduleOperation::Enqueue { .. }
+            | ScheduleOperation::Spawn { .. }
+            | ScheduleOperation::Promote { .. } => unreachable!(),
         };
         Ok(schedule_mutation_receipt(operation_name, mutation).to_string())
+    }
+
+    async fn execute_promotion(
+        &self,
+        thread_id: String,
+        expected_revision: u64,
+        objective_binding: ScheduleObjectiveBinding,
+        attempt_id: &str,
+        context_id: &str,
+        session_id: &str,
+        route: &ToolCausalRoute,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let target = self
+            .sessions
+            .get_thread(&thread_id)
+            .await?
+            .ok_or_else(|| format!("待升格 Thread '{thread_id}' 不存在"))?;
+        if target.context_id != context_id || target.session_id != session_id {
+            return Err("只能升格当前 Context/Session 中的 attached Thread".into());
+        }
+        if target.lifecycle != ThreadLifecycle::Open
+            || target.supervision.lifetime != ThreadLifetime::Attached
+            || target.supervision.supervisor_kind != ThreadSupervisorKind::Evaluation
+        {
+            return Err("只有仍 open、由当前 Evaluation 监督的 attached Thread 可以升格".into());
+        }
+        if target.supervision.supervisor_id.as_deref() != Some(route.activation_id.as_str())
+            || target.supervision.origin_evaluation_id.as_deref()
+                != Some(route.activation_id.as_str())
+        {
+            return Err("不能升格其他 Evaluation 拥有的 attached Thread".into());
+        }
+        let source_group_id = target
+            .supervision
+            .thread_group_id
+            .clone()
+            .ok_or("attached Thread 缺少源 Thread Group，不能安全转移监督权")?;
+        let objectives = self
+            .objectives
+            .as_ref()
+            .ok_or("当前 Runtime 未配置 Objective Store，不能升格 durable Thread")?;
+
+        let (objective_id, expected_objective_revision, new_objective_spec, completion_criteria) =
+            match objective_binding {
+                ScheduleObjectiveBinding::Current => {
+                    let objective_id = CURRENT_OBJECTIVE_ID
+                        .try_with(Clone::clone)
+                        .ok()
+                        .flatten()
+                        .ok_or(
+                        "当前 Evaluation 未绑定 Objective，不能使用 objective.mode=current",
+                    )?;
+                    let objective = objectives
+                        .get_objective(&objective_id)
+                        .await?
+                        .ok_or_else(|| format!("Objective '{objective_id}' 不存在"))?;
+                    validate_promotion_objective(&objective, &target)?;
+                    (
+                        objective_id,
+                        Some(objective.revision),
+                        None,
+                        objective.stated_objective,
+                    )
+                }
+                ScheduleObjectiveBinding::Existing { objective_id } => {
+                    let objective_id = objective_id.trim().to_string();
+                    if objective_id.is_empty() {
+                        return Err("objective_id 不能为空".into());
+                    }
+                    let objective = objectives
+                        .get_objective(&objective_id)
+                        .await?
+                        .ok_or_else(|| format!("Objective '{objective_id}' 不存在"))?;
+                    validate_promotion_objective(&objective, &target)?;
+                    (
+                        objective_id,
+                        Some(objective.revision),
+                        None,
+                        objective.stated_objective,
+                    )
+                }
+                ScheduleObjectiveBinding::Create {
+                    stated_objective,
+                    completion_criteria,
+                    token_budget,
+                } => {
+                    let stated_objective = stated_objective.trim().to_string();
+                    let completion_criteria = completion_criteria.trim().to_string();
+                    if stated_objective.is_empty() || completion_criteria.is_empty() {
+                        return Err("objective.mode=create 必须提供非空目标与完成标准".into());
+                    }
+                    let digest = sha256_hex(
+                    format!(
+                        "{attempt_id}\0thread-promote\0{thread_id}\0{stated_objective}\0{completion_criteria}\0{token_budget:?}"
+                    )
+                    .as_bytes(),
+                );
+                    let objective_id = format!("objective-auto-{}", &digest[..24]);
+                    (
+                        objective_id,
+                        None,
+                        Some((stated_objective, completion_criteria.clone(), token_budget)),
+                        completion_criteria,
+                    )
+                }
+            };
+
+        // A supervision transfer creates a new fencing epoch even when the
+        // target Objective itself is still at revision 1.
+        let target_generation = target.supervision.generation.saturating_add(1).max(2);
+        let group_digest = sha256_hex(
+            format!(
+                "{attempt_id}\0thread-promotion-group\0{thread_id}\0{objective_id}\0{target_generation}"
+            )
+            .as_bytes(),
+        );
+        let target_group_id = format!("thread_group_{}", &group_digest[..24]);
+        let target_group = NewThreadGroupPlan {
+            group: NewThreadGroup {
+                id: target_group_id.clone(),
+                context_id: context_id.to_string(),
+                session_id: session_id.to_string(),
+                supervisor_kind: ThreadSupervisorKind::Objective,
+                supervisor_id: objective_id.clone(),
+                generation: target_generation,
+                policy: ThreadGroupPolicy::All,
+                completion_contract: target.supervision.completion_contract.clone(),
+            },
+            members: vec![NewThreadGroupMember {
+                thread_id: thread_id.clone(),
+                ordinal: 0,
+                required: true,
+            }],
+        };
+        let new_objective = new_objective_spec.map(
+            |(stated_objective, new_completion_criteria, token_budget)| {
+                let source_event_id = format!("objective_promoted_{objective_id}");
+                let initial_wait_condition = ObjectiveWaitCondition::ThreadGroup {
+                    group_id: target_group_id.clone(),
+                };
+                NewScheduledObjective {
+                    objective: NewObjective {
+                        id: objective_id.clone(),
+                        agent_id: target.agent_id.clone(),
+                        context_id: target.context_id.clone(),
+                        coordinator_session_id: target.session_id.clone(),
+                        delivery_session_id: target.session_id.clone(),
+                        parent_objective_id: None,
+                        source_event_id: source_event_id.clone(),
+                        initiating_principal_id: target.initiating_principal_id.clone(),
+                        stated_objective: stated_objective.clone(),
+                        token_budget,
+                    },
+                    initial_wait_condition: initial_wait_condition.clone(),
+                    status_reason: format!(
+                        "接管已运行的 attached Thread；验收标准：{new_completion_criteria}"
+                    ),
+                    created_event: Event::new(
+                        source_event_id,
+                        "Agent-Morphz".to_string(),
+                        TYPE_OBJECTIVE_CONTROL.to_string(),
+                        "objective/promoted_created".to_string(),
+                        serde_json::json!({
+                            "objective_id": objective_id,
+                            "agent_id": target.agent_id,
+                            "context_id": target.context_id,
+                            "session_id": target.session_id,
+                            "source_evaluation_id": attempt_id,
+                            "source_thread_id": route.thread_id,
+                            "promoted_thread_id": thread_id,
+                            "stated_objective": stated_objective,
+                            "completion_criteria": new_completion_criteria,
+                            "token_budget": token_budget,
+                            "initial_wait_condition": initial_wait_condition,
+                        })
+                        .as_object()
+                        .expect("promotion objective event payload")
+                        .clone(),
+                    ),
+                }
+            },
+        );
+        let promotion_digest = sha256_hex(
+            format!(
+                "{attempt_id}\0thread-promote-event\0{thread_id}\0{objective_id}\0{expected_revision}"
+            )
+            .as_bytes(),
+        );
+        let promoted_event = Event::new(
+            format!("thread_promoted_{}", &promotion_digest[..24]),
+            "Agent-Morphz".to_string(),
+            TYPE_OBJECTIVE_CONTROL.to_string(),
+            "runtime/thread_promoted".to_string(),
+            serde_json::json!({
+                "agent_id": target.agent_id,
+                "context_id": context_id,
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "root_turn_id": target.root_turn_id,
+                "activation_id": route.activation_id,
+                "source_evaluation_id": attempt_id,
+                "source_group_id": source_group_id,
+                "objective_id": objective_id,
+                "target_group_id": target_group_id,
+                "target_generation": target_generation,
+                "completion_criteria": completion_criteria,
+                "text": format!(
+                    "Thread '{}' 已由当前 Evaluation 原子移交给 Objective '{}'",
+                    thread_id, objective_id
+                ),
+            })
+            .as_object()
+            .expect("thread promotion event payload")
+            .clone(),
+        );
+        let mutation = self
+            .sessions
+            .promote_attached_thread(ThreadPromotionRequest {
+                thread_id,
+                expected_thread_revision: expected_revision,
+                source_group_id,
+                objective_id,
+                expected_objective_revision,
+                new_objective,
+                target_group,
+                promoted_event,
+            })
+            .await?;
+        Ok(thread_promotion_receipt(mutation).to_string())
     }
 }
 
@@ -1899,10 +2143,117 @@ fn schedule_mutation_receipt(operation: &str, mutation: ScheduleMutation) -> ser
     }
 }
 
+fn validate_promotion_objective(
+    objective: &crate::memory::ObjectiveRecord,
+    thread: &crate::memory::ThreadRecord,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if objective.agent_id != thread.agent_id
+        || objective.context_id != thread.context_id
+        || objective.coordinator_session_id != thread.session_id
+        || objective.status != ObjectiveStatus::Active
+    {
+        return Err(format!(
+            "Objective '{}' 不是当前 Agent/Context/Session 中的 active Objective",
+            objective.id
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn thread_promotion_receipt(mutation: ThreadPromotionMutation) -> serde_json::Value {
+    match mutation {
+        ThreadPromotionMutation::Updated(record) => serde_json::json!({
+            "status": "updated",
+            "operation": "promote",
+            "thread": record.thread,
+            "objective": record.objective,
+            "source_group": record.source_group,
+            "target_group": record.target_group,
+            "guidance": "同一 Thread 已转为 durable；原 Evaluation barrier 已释放，后续终态由 Objective Group 验收。不要为同一工作再创建重复 Thread。"
+        }),
+        ThreadPromotionMutation::Conflict {
+            current_thread,
+            current_objective,
+        } => serde_json::json!({
+            "status": "conflict",
+            "operation": "promote",
+            "thread": current_thread,
+            "objective": current_objective,
+            "guidance": "Thread 或 Objective revision 已变化；请依据当前状态重新决策，不要盲目重试旧升格请求。"
+        }),
+        ThreadPromotionMutation::Rejected {
+            current_thread,
+            reason,
+        } => serde_json::json!({
+            "status": "rejected",
+            "operation": "promote",
+            "thread": current_thread,
+            "reason": reason
+        }),
+        ThreadPromotionMutation::NotFound => serde_json::json!({
+            "status": "not_found",
+            "operation": "promote"
+        }),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ScheduleTxArgs {
     operations: Vec<ScheduleOperation>,
+    #[serde(default)]
+    group: Option<ScheduleGroupArgs>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScheduleGroupArgs {
+    #[serde(default = "default_thread_group_policy")]
+    policy: ThreadGroupPolicy,
+    #[serde(default)]
+    completion_contract: serde_json::Value,
+}
+
+fn default_thread_group_policy() -> ThreadGroupPolicy {
+    ThreadGroupPolicy::All
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+enum ScheduleObjectiveBinding {
+    Current,
+    Existing {
+        objective_id: String,
+    },
+    Create {
+        stated_objective: String,
+        completion_criteria: String,
+        #[serde(default)]
+        token_budget: Option<u64>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScheduleCompletionArgs {
+    #[serde(default = "default_required_thread")]
+    required: bool,
+    #[serde(default)]
+    contract: serde_json::Value,
+}
+
+fn default_required_thread() -> bool {
+    true
+}
+
+impl Default for ScheduleCompletionArgs {
+    fn default() -> Self {
+        Self {
+            required: true,
+            contract: serde_json::Value::Object(Default::default()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1933,6 +2284,18 @@ enum ScheduleOperation {
         after: Vec<String>,
         #[serde(default)]
         target: Option<String>,
+        lifetime: ThreadLifetime,
+        #[serde(default)]
+        objective: Option<ScheduleObjectiveBinding>,
+        #[serde(default)]
+        completion: ScheduleCompletionArgs,
+    },
+    /// Transfer an already-running attached Thread from the current
+    /// Evaluation to a durable Objective without starting duplicate work.
+    Promote {
+        thread_id: String,
+        expected_revision: u64,
+        objective: ScheduleObjectiveBinding,
     },
     Inspect {
         schedule_id: String,
@@ -1972,6 +2335,57 @@ impl ScheduleOperation {
                 | Self::Cancel { .. }
         )
     }
+
+    fn is_promotion(&self) -> bool {
+        matches!(self, Self::Promote { .. })
+    }
+}
+
+fn schedule_objective_binding_schema() -> serde_json::Value {
+    serde_json::json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {"mode": {"const": "current"}},
+                "required": ["mode"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {"const": "existing"},
+                    "objective_id": {"type": "string"}
+                },
+                "required": ["mode", "objective_id"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {"const": "create"},
+                    "stated_objective": {"type": "string", "description": "拥有独立暂停、恢复、取消和验收生命周期的新目标"},
+                    "completion_criteria": {"type": "string", "description": "新 Objective 的明确完成标准"},
+                    "token_budget": {"type": "integer", "minimum": 1}
+                },
+                "required": ["mode", "stated_objective", "completion_criteria"],
+                "additionalProperties": false
+            }
+        ]
+    })
+}
+
+fn schedule_promote_operation_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "op": {"const": "promote"},
+            "thread_id": {"type": "string", "description": "当前 Evaluation 拥有的 open attached Thread"},
+            "expected_revision": {"type": "integer", "minimum": 1, "description": "创建/检查 Thread 时返回的 revision；过期值会返回 conflict"},
+            "objective": schedule_objective_binding_schema()
+        },
+        "required": ["op", "thread_id", "expected_revision", "objective"],
+        "additionalProperties": false
+    })
 }
 
 #[async_trait::async_trait]
@@ -1985,9 +2399,11 @@ impl Tool for ScheduleTxTool {
     }
 
     fn definition(&self) -> ToolDefinition {
+        let objective_binding_schema = schedule_objective_binding_schema();
+        let promote_operation_schema = schedule_promote_operation_schema();
         ToolDefinition {
             name: self.name().to_string(),
-            description: "创建或控制持久 Thread 调度计划。enqueue/spawn 可以在一个事务中批量创建；inspect/pause/resume/reschedule/cancel 是带 expected_revision 的单计划 CAS 控制操作，每次调用只能包含一个控制操作。not_before 或 delay_seconds 设置时间，every_seconds 设置周期；after 指定依赖 Thread。定时到期只向目标 Thread mailbox 投递 observation。schedule_tx 必须是本次响应中唯一的工具调用。".to_string(),
+            description: "创建或控制受监督 Thread 调度计划。spawn 必须声明 lifetime：attached 由当前 Evaluation 检查，durable 必须绑定 current/existing/create Objective，disposable 是不保证恢复或交付的尽力执行；多个 sibling 可用 group(all|any) 形成一次权威 barrier。promote 可把当前 Evaluation 已启动的 attached Thread 原子移交给 current/existing/create Objective，不会重复启动工作。objective.mode=create 会把独立 Objective、初始等待、Thread、Group 与 Schedule 原子提交。enqueue/spawn 可原子批量创建；promote 与 inspect/pause/resume/reschedule/cancel 必须单独提交，并使用 expected_revision 防止过期写。not_before 或 delay_seconds 设置时间，every_seconds 设置周期；after 指定依赖 Thread。schedule_tx 必须是本次响应中唯一的工具调用。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2021,11 +2437,29 @@ impl Tool for ScheduleTxTool {
                                         "delay_seconds": {"type": "integer", "minimum": 0},
                                         "every_seconds": {"type": "integer", "minimum": 1, "description": "固定间隔周期；每次到期生成独立 occurrence Thread"},
                                         "after": {"type": "array", "items": {"type": "string"}},
-                                        "target": {"type": "string", "description": "新 Execution Thread 绑定的稳定 Execution Target ID；省略时保持未绑定，首个物理动作决定"}
+                                        "target": {"type": "string", "description": "新 Execution Thread 绑定的稳定 Execution Target ID；省略时保持未绑定，首个物理动作决定"},
+                                        "lifetime": {
+                                            "type": "string",
+                                            "enum": ["attached", "durable", "disposable"],
+                                            "description": "attached 必须由本轮消费结果；durable 必须绑定 Objective；disposable 不得成为 required 依赖"
+                                        },
+                                        "objective": {
+                                            "oneOf": objective_binding_schema["oneOf"].clone(),
+                                            "description": "仅 lifetime=durable 使用；current 指向当前绑定 Objective；create 仅用于真正独立的持久生命周期"
+                                        },
+                                        "completion": {
+                                            "type": "object",
+                                            "properties": {
+                                                "required": {"type": "boolean", "default": true},
+                                                "contract": {"type": "object", "description": "Runtime/Harness 可验证的有界完成契约"}
+                                            },
+                                            "additionalProperties": false
+                                        }
                                     },
-                                    "required": ["op", "intent"],
+                                    "required": ["op", "intent", "lifetime"],
                                     "additionalProperties": false
                                 },
+                                promote_operation_schema,
                                 {
                                     "type": "object",
                                     "properties": {
@@ -2080,6 +2514,15 @@ impl Tool for ScheduleTxTool {
                                 }
                             ]
                         }
+                    },
+                    "group": {
+                        "type": "object",
+                        "properties": {
+                            "policy": {"type": "string", "enum": ["all", "any"], "default": "all"},
+                            "completion_contract": {"type": "object"}
+                        },
+                        "additionalProperties": false,
+                        "description": "为本事务创建的 sibling Thread 建立一个持久 join barrier；attached spawn 会自动建立 all Group"
                     }
                 },
                 "required": ["operations"],
@@ -2126,6 +2569,9 @@ impl Tool for ScheduleTxTool {
             .filter(|operation| operation.is_control())
             .count();
         if control_count > 0 {
+            if args.group.is_some() {
+                return Err("Schedule 控制操作不能携带 group".into());
+            }
             if control_count != 1 || args.operations.len() != 1 {
                 return Err(
                     "Schedule 控制操作必须单独提交，不能与创建操作或其他控制操作混合".into(),
@@ -2146,13 +2592,107 @@ impl Tool for ScheduleTxTool {
             .get_thread(&route.thread_id)
             .await?
             .ok_or("schedule_tx 当前 Thread 不存在")?;
+        let promotion_count = args
+            .operations
+            .iter()
+            .filter(|operation| operation.is_promotion())
+            .count();
+        if promotion_count > 0 {
+            if args.group.is_some() {
+                return Err("Thread 升格会原子建立新的 Objective Group，不能再携带 group".into());
+            }
+            if promotion_count != 1 || args.operations.len() != 1 {
+                return Err("promote 必须单独提交，不能与创建、控制或其他升格操作混合".into());
+            }
+            let ScheduleOperation::Promote {
+                thread_id,
+                expected_revision,
+                objective,
+            } = args
+                .operations
+                .into_iter()
+                .next()
+                .expect("validated one promotion operation")
+            else {
+                unreachable!("validated promotion operation")
+            };
+            return self
+                .execute_promotion(
+                    thread_id,
+                    expected_revision,
+                    objective,
+                    &attempt_id,
+                    &context_id,
+                    &session_id,
+                    &route,
+                )
+                .await;
+        }
+
+        let mut create_spec: Option<(String, String, Option<u64>)> = None;
+        for operation in &args.operations {
+            let ScheduleOperation::Spawn {
+                lifetime,
+                objective:
+                    Some(ScheduleObjectiveBinding::Create {
+                        stated_objective,
+                        completion_criteria,
+                        token_budget,
+                    }),
+                ..
+            } = operation
+            else {
+                continue;
+            };
+            if *lifetime != ThreadLifetime::Durable {
+                return Err("objective.mode=create 只能用于 lifetime=durable".into());
+            }
+            let stated_objective = stated_objective.trim();
+            let completion_criteria = completion_criteria.trim();
+            if stated_objective.is_empty() || completion_criteria.is_empty() {
+                return Err("objective.mode=create 必须提供非空目标与完成标准".into());
+            }
+            let candidate = (
+                stated_objective.to_string(),
+                completion_criteria.to_string(),
+                *token_budget,
+            );
+            if let Some(existing) = &create_spec {
+                if existing != &candidate {
+                    return Err(
+                        "一次 schedule_tx 只能原子创建一个 Objective；多个 spawn 必须复用完全相同的 create 声明"
+                            .into(),
+                    );
+                }
+            } else {
+                create_spec = Some(candidate);
+            }
+        }
+        let created_objective_id = create_spec.as_ref().map(
+            |(stated_objective, completion_criteria, token_budget)| {
+                let digest = sha256_hex(
+                    format!(
+                        "{attempt_id}\0objective-create\0{stated_objective}\0{completion_criteria}\0{token_budget:?}"
+                    )
+                    .as_bytes(),
+                );
+                format!("objective-auto-{}", &digest[..24])
+            },
+        );
 
         let mut threads = Vec::new();
         let mut prepared = Vec::new();
+        let mut prepared_supervisions = Vec::<Option<ThreadSupervision>>::new();
+        let mut prepared_required = Vec::<bool>::new();
         let mut local_refs = HashMap::<String, String>::new();
         for (index, operation) in args.operations.iter().enumerate() {
             if let ScheduleOperation::Spawn {
-                client_id, target, ..
+                client_id,
+                target,
+                lifetime,
+                objective,
+                completion,
+                ..
             } = operation
             {
                 let seed = format!(
@@ -2168,6 +2708,92 @@ impl Tool for ScheduleTxTool {
                     }
                     local_refs.insert(client_id.clone(), thread_id.clone());
                 }
+                let mut supervision = match lifetime {
+                    ThreadLifetime::Attached => {
+                        if objective.is_some() {
+                            return Err(
+                                "lifetime=attached 由当前 Evaluation 监督，不能携带 objective"
+                                    .into(),
+                            );
+                        }
+                        ThreadSupervision::evaluation(
+                            route.activation_id.clone(),
+                            route.thread_id.clone(),
+                        )
+                    }
+                    ThreadLifetime::Durable => {
+                        let binding = objective.as_ref().ok_or(
+                            "lifetime=durable 必须显式绑定 objective=current 或 objective=existing",
+                        )?;
+                        let objective_id = match binding {
+                            ScheduleObjectiveBinding::Current => {
+                                CURRENT_OBJECTIVE_ID
+                                    .try_with(Clone::clone)
+                                    .ok()
+                                    .flatten()
+                                    .ok_or("当前 Evaluation 未绑定 Objective，不能使用 objective.mode=current")?
+                            }
+                            ScheduleObjectiveBinding::Existing { objective_id } => {
+                                objective_id.trim().to_string()
+                            }
+                            ScheduleObjectiveBinding::Create { .. } => created_objective_id
+                                .clone()
+                                .ok_or("objective.mode=create 缺少预备 Objective")?,
+                        };
+                        if objective_id.is_empty() {
+                            return Err("objective_id 不能为空".into());
+                        }
+                        let objective_revision = if created_objective_id.as_deref()
+                            == Some(objective_id.as_str())
+                        {
+                            1
+                        } else {
+                            let objectives = self.objectives.as_ref().ok_or(
+                                "当前 Runtime 未配置 Objective Store，不能创建 durable Thread",
+                            )?;
+                            let objective = objectives
+                                .get_objective(&objective_id)
+                                .await?
+                                .ok_or_else(|| format!("Objective '{}' 不存在", objective_id))?;
+                            if objective.agent_id != session.agent_id
+                                || objective.context_id != context_id
+                                || objective.coordinator_session_id != session_id
+                                || objective.status != ObjectiveStatus::Active
+                            {
+                                return Err(format!(
+                                    "Objective '{}' 不是当前 Agent/Context/Session 中的 active Objective",
+                                    objective_id
+                                )
+                                .into());
+                            }
+                            objective.revision
+                        };
+                        ThreadSupervision::objective(
+                            objective_id,
+                            route.activation_id.clone(),
+                            objective_revision,
+                            Some(route.thread_id.clone()),
+                        )
+                    }
+                    ThreadLifetime::Disposable => {
+                        if objective.is_some() {
+                            return Err(
+                                "lifetime=disposable 不受 Objective 监督，不能携带 objective"
+                                    .into(),
+                            );
+                        }
+                        if completion.required {
+                            return Err(
+                                "disposable Thread 不保证恢复或交付，completion.required 必须为 false"
+                                    .into(),
+                            );
+                        }
+                        ThreadSupervision::disposable(route.activation_id.clone())
+                    }
+                };
+                supervision.completion_contract = completion.contract.clone();
+                prepared_supervisions.push(Some(supervision));
+                prepared_required.push(completion.required);
                 threads.push(NewThread {
                     id: thread_id.clone(),
                     agent_id: session.agent_id.clone(),
@@ -2179,11 +2805,175 @@ impl Tool for ScheduleTxTool {
                     executor_kind: "self".to_string(),
                     executor_id: None,
                     target_id: target.clone(),
+                    // Group identity is installed below after all siblings have
+                    // been validated against one common supervisor.
+                    supervision: prepared_supervisions
+                        .last()
+                        .and_then(Clone::clone)
+                        .expect("spawn supervision prepared"),
                 });
                 prepared.push(thread_id);
             } else {
+                prepared_supervisions.push(None);
+                prepared_required.push(false);
                 prepared.push(String::new());
             }
+        }
+
+        let spawn_indices = prepared_supervisions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, supervision)| supervision.as_ref().map(|_| index))
+            .collect::<Vec<_>>();
+        let attached_spawned = spawn_indices.iter().any(|index| {
+            prepared_supervisions[*index]
+                .as_ref()
+                .is_some_and(|supervision| supervision.lifetime == ThreadLifetime::Attached)
+        });
+        let create_group = args.group.is_some()
+            || attached_spawned
+            // A newly-created Objective must start with one durable wait
+            // authority. A singleton Group may look redundant, but it keeps
+            // creation, terminal wake, restart recovery and later fan-out on
+            // the same barrier protocol instead of inventing a weaker
+            // one-Thread special case.
+            || (created_objective_id.is_some() && !spawn_indices.is_empty());
+        let mut group_plans = Vec::new();
+        if create_group {
+            if spawn_indices.is_empty() {
+                return Err("group 至少需要一个 spawn Thread".into());
+            }
+            let first = prepared_supervisions[spawn_indices[0]]
+                .as_ref()
+                .expect("spawn supervision")
+                .clone();
+            if first.lifetime == ThreadLifetime::Disposable {
+                return Err("disposable Thread 不能加入受监督 Thread Group".into());
+            }
+            for index in &spawn_indices {
+                let supervision = prepared_supervisions[*index]
+                    .as_ref()
+                    .expect("spawn supervision");
+                if supervision.supervisor_kind != first.supervisor_kind
+                    || supervision.supervisor_id != first.supervisor_id
+                    || supervision.generation != first.generation
+                {
+                    return Err(
+                        "同一个 Thread Group 的成员必须拥有相同 lifetime、supervisor 与 generation；请拆成多个 schedule_tx"
+                            .into(),
+                    );
+                }
+            }
+            let digest = sha256_hex(format!("{attempt_id}\0thread-group").as_bytes());
+            let group_id = format!("thread_group_{}", &digest[..24]);
+            for index in &spawn_indices {
+                prepared_supervisions[*index]
+                    .as_mut()
+                    .expect("spawn supervision")
+                    .thread_group_id = Some(group_id.clone());
+                let thread_id = &prepared[*index];
+                threads
+                    .iter_mut()
+                    .find(|thread| thread.id == *thread_id)
+                    .expect("prepared spawn Thread")
+                    .supervision
+                    .thread_group_id = Some(group_id.clone());
+            }
+            let group_args = args.group.as_ref();
+            group_plans.push(NewThreadGroupPlan {
+                group: NewThreadGroup {
+                    id: group_id,
+                    context_id: context_id.clone(),
+                    session_id: session_id.clone(),
+                    supervisor_kind: first.supervisor_kind,
+                    supervisor_id: first
+                        .supervisor_id
+                        .clone()
+                        .ok_or("受监督 Thread Group 缺少 supervisor_id")?,
+                    generation: first.generation,
+                    policy: group_args
+                        .map(|group| group.policy)
+                        .unwrap_or(ThreadGroupPolicy::All),
+                    completion_contract: group_args
+                        .map(|group| group.completion_contract.clone())
+                        .unwrap_or_default(),
+                },
+                members: spawn_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, index)| NewThreadGroupMember {
+                        thread_id: prepared[*index].clone(),
+                        ordinal: ordinal as u64,
+                        required: prepared_required[*index],
+                    })
+                    .collect(),
+            });
+        }
+
+        let mut scheduled_objectives = Vec::new();
+        if let (Some(objective_id), Some((stated_objective, completion_criteria, token_budget))) =
+            (created_objective_id.as_ref(), create_spec.as_ref())
+        {
+            let member_thread_ids = threads
+                .iter()
+                .filter(|thread| {
+                    thread.supervision.supervisor_id.as_deref() == Some(objective_id.as_str())
+                })
+                .map(|thread| thread.id.clone())
+                .collect::<Vec<_>>();
+            if member_thread_ids.is_empty() {
+                return Err("objective.mode=create 没有对应的初始 durable Thread".into());
+            }
+            let initial_wait_condition = if let Some(group) = group_plans.iter().find(|plan| {
+                plan.group.supervisor_id == *objective_id
+                    && plan.group.supervisor_kind == crate::memory::ThreadSupervisorKind::Objective
+            }) {
+                ObjectiveWaitCondition::ThreadGroup {
+                    group_id: group.group.id.clone(),
+                }
+            } else {
+                return Err("新 Objective 的初始 Thread 必须属于同一个受监督 Thread Group".into());
+            };
+            let source_event_id = format!("objective_scheduled_{objective_id}");
+            let created_event = Event::new(
+                source_event_id.clone(),
+                "Agent-Morphz".to_string(),
+                TYPE_OBJECTIVE_CONTROL.to_string(),
+                "objective/scheduled_created".to_string(),
+                serde_json::json!({
+                    "objective_id": objective_id,
+                    "agent_id": session.agent_id,
+                    "context_id": context_id,
+                    "session_id": session_id,
+                    "source_evaluation_id": attempt_id,
+                    "source_thread_id": route.thread_id,
+                    "stated_objective": stated_objective,
+                    "completion_criteria": completion_criteria,
+                    "token_budget": token_budget,
+                    "initial_thread_ids": member_thread_ids,
+                    "initial_wait_condition": initial_wait_condition
+                })
+                .as_object()
+                .expect("objective scheduled event payload")
+                .clone(),
+            );
+            scheduled_objectives.push(NewScheduledObjective {
+                objective: NewObjective {
+                    id: objective_id.clone(),
+                    agent_id: session.agent_id.clone(),
+                    context_id: context_id.clone(),
+                    coordinator_session_id: session_id.clone(),
+                    delivery_session_id: session_id.clone(),
+                    parent_objective_id: None,
+                    source_event_id,
+                    initiating_principal_id: current_thread.initiating_principal_id.clone(),
+                    stated_objective: stated_objective.clone(),
+                    token_budget: *token_budget,
+                },
+                initial_wait_condition,
+                status_reason: format!("等待首批受监督执行完成；验收标准：{completion_criteria}"),
+                created_event,
+            });
         }
 
         let mut intents = Vec::with_capacity(args.operations.len());
@@ -2223,6 +3013,7 @@ impl Tool for ScheduleTxTool {
                     | ScheduleOperation::Pause { .. }
                     | ScheduleOperation::Resume { .. }
                     | ScheduleOperation::Reschedule { .. }
+                    | ScheduleOperation::Promote { .. }
                     | ScheduleOperation::Cancel { .. } => {
                         unreachable!("control operations returned before create transaction")
                     }
@@ -2276,7 +3067,7 @@ impl Tool for ScheduleTxTool {
         }
         let mut records = self
             .sessions
-            .commit_schedule_transaction(&threads, &intents)
+            .commit_schedule_transaction(&scheduled_objectives, &threads, &intents, &group_plans)
             .await?;
         for record in &mut records {
             let continues_current_thread = record.thread_id == route.thread_id
@@ -2299,7 +3090,19 @@ impl Tool for ScheduleTxTool {
             "status": "committed",
             "operations": records,
             "created_thread_ids": threads.iter().map(|thread| &thread.id).collect::<Vec<_>>(),
-            "guidance": "调度计划已原子持久化。到期或依赖满足时，Runtime 会把 intent 作为 observation 投递到目标 Thread mailbox；当前 Evaluation 尚未结束。"
+            "created_objective_ids": scheduled_objectives.iter().map(|objective| &objective.objective.id).collect::<Vec<_>>(),
+            "thread_groups": group_plans.iter().map(|plan| serde_json::json!({
+                "group_id": plan.group.id,
+                "policy": plan.group.policy,
+                "supervisor_kind": plan.group.supervisor_kind,
+                "supervisor_id": plan.group.supervisor_id,
+                "member_thread_ids": plan.members.iter().map(|member| &member.thread_id).collect::<Vec<_>>()
+            })).collect::<Vec<_>>(),
+            "guidance": if group_plans.is_empty() {
+                "调度计划已原子持久化。durable Thread 的终态将唤醒绑定 Objective；disposable Thread 不保证恢复或交付。"
+            } else {
+                "调度计划与 Thread Group 已原子持久化。Group 达到 all/any 条件后只产生一次 barrier；attached 会重新唤醒父 Evaluation，durable 会唤醒绑定 Objective。"
+            }
         })
         .to_string())
     }
@@ -4822,6 +5625,17 @@ impl Tool for ExecuteCommandTool {
         let runtime_managed_ssh = CURRENT_RUNTIME_MANAGED_SSH
             .try_with(|enabled| *enabled)
             .unwrap_or(false);
+        if !runtime_managed_ssh {
+            // Keep this check at the physical exec boundary as well as in the
+            // orchestrator preflight. ExecuteCommandTool is also used by tests
+            // and embedding callers that do not necessarily pass through that
+            // preflight. The transport policy must hold at every entry point.
+            crate::execution_target::reject_unmanaged_ssh_invocation(
+                crate::execution_target::DEFAULT_EXECUTION_TARGET_ID,
+                "exec",
+                arguments,
+            )?;
+        }
         let (prepared, effective_network, approved_secret_env) = if runtime_managed_ssh {
             if !cmd_trimmed.starts_with("'ssh' ")
                 || !args.requested_permissions.network
@@ -6334,7 +7148,7 @@ mod tests {
     use crate::memory::{
         ActivationStore as _, NewAgent, NewCognitiveContext, NewPrincipal, NewSchedule, NewSession,
         NewThreadActivation, ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind,
-        SessionStore, ThreadLifecycle, ThreadStore as _, TimerStore,
+        SessionStore, ThreadGroupStore as _, ThreadLifecycle, ThreadStore as _, TimerStore,
     };
     use crate::permission::PermissionMode;
     #[cfg(target_os = "macos")]
@@ -6590,6 +7404,7 @@ Body
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -6794,6 +7609,7 @@ Body
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -6814,6 +7630,7 @@ Body
         let arguments = serde_json::json!({
             "operations": [{
                 "op": "spawn",
+                "lifetime": "attached",
                 "client_id": "reminder",
                 "intent": "检查长期任务状态并根据真实结果继续",
                 "not_before": due_at
@@ -6861,6 +7678,356 @@ Body
             tokio::time::timeout(std::time::Duration::from_millis(80), receiver.recv())
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_tx_atomically_creates_objective_singleton_group_and_durable_thread() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-objective-schedule".to_string(),
+                title: "Objective Scheduler Agent".to_string(),
+                root_context_id: "context-objective-schedule".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-objective-schedule".to_string(),
+                agent_id: "agent-objective-schedule".to_string(),
+                title: "Objective Scheduler Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_session(NewSession {
+                id: "session-objective-schedule".to_string(),
+                agent_id: "agent-objective-schedule".to_string(),
+                context_id: "context-objective-schedule".to_string(),
+                parent_session_id: None,
+                title: "Objective Scheduler Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: "thread-objective-schedule-current".to_string(),
+                agent_id: "agent-objective-schedule".to_string(),
+                context_id: "context-objective-schedule".to_string(),
+                session_id: "session-objective-schedule".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-objective-schedule-current".to_string(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let sessions = Arc::clone(&store) as Arc<dyn SessionStore>;
+        let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let tool = ScheduleTxTool::new(Arc::clone(&scheduler), sessions)
+            .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>);
+        let arguments = serde_json::json!({
+            "operations": [{
+                "op": "spawn",
+                "lifetime": "durable",
+                "objective": {
+                    "mode": "create",
+                    "stated_objective": "持续验证并发布独立基准",
+                    "completion_criteria": "基准可重复运行且报告包含稳定性结论",
+                    "token_budget": 12000
+                },
+                "client_id": "initial-benchmark",
+                "intent": "建立第一轮基准方案",
+                "delay_seconds": 3600
+            }]
+        })
+        .to_string();
+        let route = Some(ToolCausalRoute {
+            thread_id: "thread-objective-schedule-current".to_string(),
+            activation_id: "evaluation-objective-schedule".to_string(),
+            root_turn_id: "root-objective-schedule-current".to_string(),
+            trigger_event_id: "user-objective-schedule".to_string(),
+            trigger_sequence: 9,
+        });
+        let output = CURRENT_SESSION_ID
+            .scope(
+                "session-objective-schedule".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-objective-schedule".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-objective-schedule".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(route, tool.execute(&arguments)),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let objective_id = receipt["created_objective_ids"][0]
+            .as_str()
+            .expect("created objective id");
+        let thread_id = receipt["created_thread_ids"][0]
+            .as_str()
+            .expect("created thread id");
+        let group_id = receipt["thread_groups"][0]["group_id"]
+            .as_str()
+            .expect("created group id");
+
+        let objective = store
+            .get_objective(objective_id)
+            .await
+            .unwrap()
+            .expect("objective");
+        assert_eq!(objective.status, ObjectiveStatus::Active);
+        assert_eq!(objective.token_budget, Some(12000));
+        assert_eq!(
+            objective.wait_condition,
+            Some(ObjectiveWaitCondition::ThreadGroup {
+                group_id: group_id.to_string()
+            })
+        );
+        let thread = store
+            .get_thread(thread_id)
+            .await
+            .unwrap()
+            .expect("durable thread");
+        assert_eq!(thread.supervision.lifetime, ThreadLifetime::Durable);
+        assert_eq!(
+            thread.supervision.supervisor_id.as_deref(),
+            Some(objective_id)
+        );
+        assert_eq!(
+            thread.supervision.thread_group_id.as_deref(),
+            Some(group_id)
+        );
+        let group = store
+            .get_thread_group(group_id)
+            .await
+            .unwrap()
+            .expect("singleton group");
+        assert_eq!(group.required_count, 1);
+        assert_eq!(group.supervisor_id, objective_id);
+        assert_eq!(
+            store
+                .list_thread_group_members(group_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(objective.source_event_id),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap()
+                .len()
+                == 1
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_tx_promotes_the_same_attached_thread_to_a_durable_objective() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-thread-promotion".to_string(),
+                title: "Thread Promotion Agent".to_string(),
+                root_context_id: "context-thread-promotion".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-thread-promotion".to_string(),
+                agent_id: "agent-thread-promotion".to_string(),
+                title: "Thread Promotion Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_session(NewSession {
+                id: "session-thread-promotion".to_string(),
+                agent_id: "agent-thread-promotion".to_string(),
+                context_id: "context-thread-promotion".to_string(),
+                parent_session_id: None,
+                title: "Thread Promotion Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: "thread-thread-promotion-parent".to_string(),
+                agent_id: "agent-thread-promotion".to_string(),
+                context_id: "context-thread-promotion".to_string(),
+                session_id: "session-thread-promotion".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-thread-promotion".to_string(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let sessions = Arc::clone(&store) as Arc<dyn SessionStore>;
+        let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let tool = ScheduleTxTool::new(Arc::clone(&scheduler), sessions)
+            .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>);
+        let route = Some(ToolCausalRoute {
+            thread_id: "thread-thread-promotion-parent".to_string(),
+            activation_id: "evaluation-thread-promotion".to_string(),
+            root_turn_id: "root-thread-promotion".to_string(),
+            trigger_event_id: "user-thread-promotion".to_string(),
+            trigger_sequence: 3,
+        });
+        let spawn = serde_json::json!({
+            "operations": [{
+                "op": "spawn",
+                "lifetime": "attached",
+                "client_id": "candidate",
+                "intent": "先检查范围，再继续长期处理",
+                "delay_seconds": 3600
+            }]
+        })
+        .to_string();
+        let spawn_output = CURRENT_SESSION_ID
+            .scope(
+                "session-thread-promotion".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-thread-promotion".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-thread-promotion".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(route.clone(), tool.execute(&spawn)),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let spawn_receipt: serde_json::Value =
+            serde_json::from_str(&spawn_output).expect("spawn receipt");
+        let thread_id = spawn_receipt["created_thread_ids"][0]
+            .as_str()
+            .expect("attached thread id")
+            .to_string();
+        let source_group_id = spawn_receipt["thread_groups"][0]["group_id"]
+            .as_str()
+            .expect("source group id")
+            .to_string();
+        let revision = store
+            .get_thread(&thread_id)
+            .await
+            .unwrap()
+            .expect("attached thread")
+            .revision;
+
+        let promote = serde_json::json!({
+            "operations": [{
+                "op": "promote",
+                "thread_id": thread_id,
+                "expected_revision": revision,
+                "objective": {
+                    "mode": "create",
+                    "stated_objective": "持续完成已经开始的长期处理",
+                    "completion_criteria": "产生经过检查的最终结果",
+                    "token_budget": 9000
+                }
+            }]
+        })
+        .to_string();
+        let promote_output = CURRENT_SESSION_ID
+            .scope(
+                "session-thread-promotion".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-thread-promotion".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-thread-promotion".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(route, tool.execute(&promote)),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(&promote_output).expect("promotion receipt");
+        assert_eq!(receipt["status"], "updated");
+        assert_eq!(receipt["thread"]["id"], thread_id);
+        assert_eq!(receipt["thread"]["lifecycle"], "open");
+        assert_eq!(receipt["thread"]["supervision"]["lifetime"], "durable");
+        assert_eq!(
+            receipt["thread"]["supervision"]["supervisor_kind"],
+            "objective"
+        );
+        let objective_id = receipt["objective"]["id"].as_str().expect("objective id");
+        let target_group_id = receipt["target_group"]["id"]
+            .as_str()
+            .expect("target group id");
+        assert_eq!(receipt["source_group"]["id"], source_group_id);
+        assert_eq!(receipt["source_group"]["status"], "satisfied");
+        assert_eq!(
+            store
+                .get_thread(&thread_id)
+                .await
+                .unwrap()
+                .expect("promoted thread")
+                .supervision
+                .supervisor_id
+                .as_deref(),
+            Some(objective_id)
+        );
+        assert_eq!(
+            store
+                .get_objective(objective_id)
+                .await
+                .unwrap()
+                .expect("created objective")
+                .wait_condition,
+            Some(ObjectiveWaitCondition::ThreadGroup {
+                group_id: target_group_id.to_string(),
+            })
+        );
+        let historical = store
+            .list_thread_group_members(&source_group_id)
+            .await
+            .unwrap();
+        assert_eq!(historical.len(), 1);
+        assert!(!historical[0].required);
+        assert_eq!(
+            historical[0].status,
+            crate::memory::ThreadGroupMemberStatus::Cancelled
+        );
+        let current = store
+            .list_thread_group_members(target_group_id)
+            .await
+            .unwrap();
+        assert_eq!(current.len(), 1);
+        assert!(current[0].required);
+        assert_eq!(
+            current[0].status,
+            crate::memory::ThreadGroupMemberStatus::Pending
         );
     }
 
@@ -6913,6 +8080,7 @@ Body
                     executor_kind: "self".to_string(),
                     executor_id: None,
                     target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
                 })
                 .await
                 .unwrap();

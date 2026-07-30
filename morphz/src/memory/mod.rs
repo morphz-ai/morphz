@@ -749,6 +749,12 @@ pub struct ThreadActivationRecord {
     pub status: ThreadActivationStatus,
     pub claimed_by: Option<String>,
     pub lease_expires_at: Option<DateTime<Utc>>,
+    /// The DialogueTurn has finished its conversational decision and handed
+    /// physical work to the execution layer. The Activation may remain
+    /// running, but it no longer serializes later DialogueTurns in the same
+    /// Session. Persisting this boundary makes the queue crash-safe and keeps
+    /// Thread kind/supervision immutable.
+    pub dialogue_lane_released_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -780,11 +786,167 @@ pub enum ActivationOutcomeCommit {
     Existing {
         event_id: String,
     },
+    /// The Evaluation tried to publish a terminal reply while it still owns
+    /// required attached work. The reply is not appended as a Thread outcome;
+    /// the durable Thread Group barrier will wake a successor Activation once
+    /// the children have reached terminal states.
+    DeferredByOpenThreadGroups {
+        group_ids: Vec<String>,
+    },
     StaleGeneration,
     /// The physical Activation was already cancelled or otherwise reached a
     /// terminal state before it claimed an outcome. This durably fences an
     /// expired Objective Evaluation from its replacement.
     StaleActivation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompletionContractEvaluation {
+    pub passed: bool,
+    pub check_results: JsonValue,
+    pub unresolved_failures: Vec<String>,
+}
+
+/// Applies the Runtime-owned, deterministic part of a Thread completion
+/// contract. Domain or semantic checks remain Harness/Supervisor work; their
+/// reported results are preserved under `reported`.
+pub fn evaluate_thread_completion_contract(
+    contract: &JsonValue,
+    terminal_kind: ThreadLifecycle,
+    summary: Option<&str>,
+    artifact_refs: &[JsonValue],
+    evidence_refs: &[JsonValue],
+    reported_checks: &JsonValue,
+    reported_failures: &[JsonValue],
+) -> CompletionContractEvaluation {
+    let object = contract.as_object();
+    let allow_unresolved = object
+        .and_then(|value| value.get("allow_unresolved_failures"))
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let require_summary = object
+        .and_then(|value| value.get("require_summary"))
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let min_artifacts = object
+        .and_then(|value| value.get("min_artifacts"))
+        .and_then(JsonValue::as_u64)
+        .unwrap_or_else(|| {
+            u64::from(
+                object
+                    .and_then(|value| value.get("require_artifacts"))
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false),
+            )
+        });
+    let min_evidence = object
+        .and_then(|value| value.get("min_evidence"))
+        .and_then(JsonValue::as_u64)
+        .unwrap_or_else(|| {
+            u64::from(
+                object
+                    .and_then(|value| value.get("require_evidence"))
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false),
+            )
+        });
+    let mut failures = reported_failures
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        })
+        .collect::<Vec<_>>();
+    let terminal_passed = terminal_kind == ThreadLifecycle::Completed;
+    if !terminal_passed {
+        failures.push(format!("thread_terminal_kind={}", terminal_kind.as_str()));
+    }
+    let summary_passed = !require_summary || summary.is_some_and(|value| !value.trim().is_empty());
+    if !summary_passed {
+        failures.push("completion_contract:summary_required".to_string());
+    }
+    let artifacts_passed = artifact_refs.len() as u64 >= min_artifacts;
+    if !artifacts_passed {
+        failures.push(format!(
+            "completion_contract:artifacts={}<{}",
+            artifact_refs.len(),
+            min_artifacts
+        ));
+    }
+    let evidence_passed = evidence_refs.len() as u64 >= min_evidence;
+    if !evidence_passed {
+        failures.push(format!(
+            "completion_contract:evidence={}<{}",
+            evidence_refs.len(),
+            min_evidence
+        ));
+    }
+    let required_checks = object
+        .and_then(|value| value.get("required_checks"))
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut missing_checks = Vec::new();
+    for name in required_checks.iter().filter_map(JsonValue::as_str) {
+        let passed = reported_checks
+            .get(name)
+            .is_some_and(completion_check_value_passed);
+        if !passed {
+            missing_checks.push(name.to_string());
+            failures.push(format!("completion_contract:check_failed:{name}"));
+        }
+    }
+    failures.sort();
+    failures.dedup();
+    let unresolved_passed = allow_unresolved || failures.is_empty();
+    let passed = terminal_passed
+        && summary_passed
+        && artifacts_passed
+        && evidence_passed
+        && missing_checks.is_empty()
+        && unresolved_passed;
+    CompletionContractEvaluation {
+        passed,
+        check_results: serde_json::json!({
+            "reported": reported_checks,
+            "runtime": {
+                "passed": passed,
+                "terminal": terminal_passed,
+                "summary": summary_passed,
+                "artifacts": {
+                    "actual": artifact_refs.len(),
+                    "minimum": min_artifacts,
+                    "passed": artifacts_passed,
+                },
+                "evidence": {
+                    "actual": evidence_refs.len(),
+                    "minimum": min_evidence,
+                    "passed": evidence_passed,
+                },
+                "required_checks": required_checks,
+                "missing_checks": missing_checks,
+                "allow_unresolved_failures": allow_unresolved,
+            }
+        }),
+        unresolved_failures: failures,
+    }
+}
+
+fn completion_check_value_passed(value: &JsonValue) -> bool {
+    value.as_bool().unwrap_or_else(|| {
+        value
+            .get("passed")
+            .and_then(JsonValue::as_bool)
+            .or_else(|| {
+                value
+                    .get("status")
+                    .and_then(JsonValue::as_str)
+                    .map(|status| matches!(status, "passed" | "success" | "satisfied"))
+            })
+            .unwrap_or(false)
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2066,6 +2228,594 @@ pub struct ActionGroupMemberCommit {
     pub existing: bool,
 }
 
+/// Completion policy for sibling Threads spawned by one Evaluation decision.
+///
+/// This is intentionally different from `ActionGroup`: an ActionGroup joins
+/// tool calls from one model response, while a ThreadGroup joins independently
+/// scheduled causal Threads which may contain many Activations and Attempts.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadGroupPolicy {
+    All,
+    Any,
+}
+
+impl ThreadGroupPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Any => "any",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadGroupStatus {
+    Open,
+    Satisfied,
+    Failed,
+    Cancelled,
+}
+
+impl ThreadGroupStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Satisfied => "satisfied",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Open)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadGroupContractEvaluation {
+    pub status: ThreadGroupStatus,
+    pub contract_results: JsonValue,
+}
+
+/// Evaluates the Runtime-owned, count-based part of a Thread Group contract.
+///
+/// A member only contributes to `successful_count` after its own Thread
+/// completion contract has passed. The Group contract therefore composes
+/// verified Thread outcomes instead of reinterpreting chat text.
+pub fn evaluate_thread_group_contract(
+    policy: ThreadGroupPolicy,
+    required_count: u64,
+    terminal_count: u64,
+    successful_count: u64,
+    contract: &JsonValue,
+) -> ThreadGroupContractEvaluation {
+    let object = contract.as_object();
+    let default_minimum = match policy {
+        ThreadGroupPolicy::All => required_count,
+        ThreadGroupPolicy::Any => u64::from(required_count > 0),
+    };
+    let minimum_successful = object
+        .and_then(|value| value.get("minimum_successful_members"))
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(default_minimum);
+    let default_maximum_failed = required_count.saturating_sub(minimum_successful);
+    let maximum_failed = object
+        .and_then(|value| value.get("maximum_failed_members"))
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(default_maximum_failed);
+    let failed_count = terminal_count.saturating_sub(successful_count);
+    let pending_count = required_count.saturating_sub(terminal_count);
+    let success_reachable = successful_count.saturating_add(pending_count) >= minimum_successful;
+    let success_threshold_met = successful_count >= minimum_successful;
+    let failure_budget_met = failed_count <= maximum_failed;
+    let policy_ready = match policy {
+        ThreadGroupPolicy::All => terminal_count >= required_count,
+        ThreadGroupPolicy::Any => success_threshold_met,
+    };
+    let status = if !failure_budget_met || !success_reachable {
+        ThreadGroupStatus::Failed
+    } else if policy_ready && success_threshold_met {
+        ThreadGroupStatus::Satisfied
+    } else if terminal_count >= required_count {
+        ThreadGroupStatus::Failed
+    } else {
+        ThreadGroupStatus::Open
+    };
+    ThreadGroupContractEvaluation {
+        status,
+        contract_results: serde_json::json!({
+            "passed": status == ThreadGroupStatus::Satisfied,
+            "minimum_successful_members": minimum_successful,
+            "maximum_failed_members": maximum_failed,
+            "successful_members": successful_count,
+            "failed_members": failed_count,
+            "pending_members": pending_count,
+            "success_reachable": success_reachable,
+            "success_threshold_met": success_threshold_met,
+            "failure_budget_met": failure_budget_met,
+        }),
+    }
+}
+
+#[cfg(test)]
+mod supervised_concurrency_contract_tests {
+    use super::*;
+
+    #[test]
+    fn any_group_can_require_more_than_one_verified_success() {
+        let contract = serde_json::json!({
+            "minimum_successful_members": 2,
+            "maximum_failed_members": 1
+        });
+        let open = evaluate_thread_group_contract(ThreadGroupPolicy::Any, 3, 1, 1, &contract);
+        assert_eq!(open.status, ThreadGroupStatus::Open);
+
+        let satisfied = evaluate_thread_group_contract(ThreadGroupPolicy::Any, 3, 2, 2, &contract);
+        assert_eq!(satisfied.status, ThreadGroupStatus::Satisfied);
+    }
+
+    #[test]
+    fn group_fails_when_verified_success_is_no_longer_reachable() {
+        let contract = serde_json::json!({
+            "minimum_successful_members": 2
+        });
+        let failed = evaluate_thread_group_contract(ThreadGroupPolicy::Any, 3, 2, 0, &contract);
+        assert_eq!(failed.status, ThreadGroupStatus::Failed);
+        assert_eq!(
+            failed.contract_results["success_reachable"],
+            JsonValue::Bool(false)
+        );
+    }
+
+    #[test]
+    fn thread_contract_turns_unverified_completion_into_failure() {
+        let evaluated = evaluate_thread_completion_contract(
+            &serde_json::json!({
+                "require_summary": true,
+                "min_artifacts": 1,
+                "required_checks": ["tests"]
+            }),
+            ThreadLifecycle::Completed,
+            Some("implemented"),
+            &[],
+            &[JsonValue::String("event-1".to_string())],
+            &serde_json::json!({"tests": false}),
+            &[],
+        );
+        assert!(!evaluated.passed);
+        assert!(evaluated
+            .unresolved_failures
+            .iter()
+            .any(|failure| failure == "completion_contract:artifacts=0<1"));
+        assert!(evaluated
+            .unresolved_failures
+            .iter()
+            .any(|failure| failure == "completion_contract:check_failed:tests"));
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadGroupMemberStatus {
+    Pending,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl ThreadGroupMemberStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Pending)
+    }
+
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::Completed)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadGroupRecord {
+    pub id: String,
+    pub revision: u64,
+    pub context_id: String,
+    pub session_id: String,
+    pub supervisor_kind: ThreadSupervisorKind,
+    pub supervisor_id: String,
+    pub generation: u64,
+    pub policy: ThreadGroupPolicy,
+    pub required_count: u64,
+    pub terminal_count: u64,
+    pub successful_count: u64,
+    pub status: ThreadGroupStatus,
+    pub completion_contract: JsonValue,
+    pub terminal_summary: JsonValue,
+    pub barrier_event_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub satisfied_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewThreadGroup {
+    pub id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub supervisor_kind: ThreadSupervisorKind,
+    pub supervisor_id: String,
+    pub generation: u64,
+    pub policy: ThreadGroupPolicy,
+    pub completion_contract: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadGroupMemberRecord {
+    pub group_id: String,
+    pub thread_id: String,
+    pub ordinal: u64,
+    pub required: bool,
+    pub status: ThreadGroupMemberStatus,
+    pub outcome_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewThreadGroupMember {
+    pub thread_id: String,
+    pub ordinal: u64,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewThreadGroupPlan {
+    pub group: NewThreadGroup,
+    pub members: Vec<NewThreadGroupMember>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ThreadGroupFilter {
+    pub context_id: Option<String>,
+    pub session_id: Option<String>,
+    pub supervisor_kind: Option<ThreadSupervisorKind>,
+    pub supervisor_id: Option<String>,
+    pub status: Option<ThreadGroupStatus>,
+    pub include_terminal: bool,
+    pub newest_first: bool,
+    pub limit: Option<usize>,
+}
+
+/// Durable, structured result of one causal Thread.
+///
+/// Human-readable text remains optional; supervisors consume the typed
+/// terminal state and references instead of scraping chat prose.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadOutcomeRecord {
+    pub id: String,
+    pub thread_id: String,
+    pub thread_generation: u64,
+    pub root_turn_id: String,
+    pub activation_id: String,
+    pub session_id: String,
+    pub terminal_kind: ThreadLifecycle,
+    pub disposition: String,
+    pub summary: Option<String>,
+    pub result_event_id: String,
+    pub artifact_refs: Vec<String>,
+    pub evidence_refs: Vec<String>,
+    pub check_results: JsonValue,
+    pub unresolved_failures: Vec<String>,
+    pub terminal_event_sequence: Option<u64>,
+    pub created_at: DateTime<Utc>,
+    pub delivered_at: Option<DateTime<Utc>>,
+}
+
+/// Reconstructs the one generation-fenced wake Event represented by a
+/// terminal Thread Group projection.
+///
+/// This is deliberately pure and shared by normal terminal commits and
+/// recovery. A Reconciler must never invent a second payload for the same
+/// deterministic Event id.
+pub fn thread_group_barrier_event(
+    group: &ThreadGroupRecord,
+    parent: Option<&ThreadRecord>,
+) -> Result<crate::event::Event, String> {
+    if !group.status.is_terminal() {
+        return Err(format!("Thread Group '{}' 尚未终止", group.id));
+    }
+    let event_id = format!("thread_group_barrier_{}_g{}", group.id, group.generation);
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "context_id".to_string(),
+        JsonValue::String(group.context_id.clone()),
+    );
+    payload.insert(
+        "thread_group_id".to_string(),
+        JsonValue::String(group.id.clone()),
+    );
+    payload.insert(
+        "thread_group_status".to_string(),
+        JsonValue::String(group.status.as_str().to_string()),
+    );
+    payload.insert(
+        "wake_policy".to_string(),
+        JsonValue::String("immediate".to_string()),
+    );
+    payload.insert(
+        "terminal_summary".to_string(),
+        group.terminal_summary.clone(),
+    );
+    let (topic, event_type) = match group.supervisor_kind {
+        ThreadSupervisorKind::Evaluation => {
+            let parent = parent.ok_or_else(|| {
+                format!("Evaluation Thread Group '{}' 缺少父 Thread 投影", group.id)
+            })?;
+            payload.insert(
+                "session_id".to_string(),
+                JsonValue::String(parent.session_id.clone()),
+            );
+            payload.insert(
+                "thread_id".to_string(),
+                JsonValue::String(parent.id.clone()),
+            );
+            payload.insert(
+                "root_turn_id".to_string(),
+                JsonValue::String(parent.root_turn_id.clone()),
+            );
+            payload.insert(
+                "tool_name".to_string(),
+                JsonValue::String("thread_group".to_string()),
+            );
+            payload.insert(
+                "tool_status".to_string(),
+                JsonValue::String(
+                    if group.status == ThreadGroupStatus::Satisfied {
+                        "success"
+                    } else {
+                        "error"
+                    }
+                    .to_string(),
+                ),
+            );
+            payload.insert(
+                "text".to_string(),
+                JsonValue::String(format!(
+                    "Thread Group '{}' 已终止：{}（{}/{} 成功）",
+                    group.id,
+                    group.status.as_str(),
+                    group.successful_count,
+                    group.required_count
+                )),
+            );
+            (
+                "chat/thread_group_terminal".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            )
+        }
+        ThreadSupervisorKind::Objective => {
+            payload.insert(
+                "session_id".to_string(),
+                JsonValue::String(group.session_id.clone()),
+            );
+            payload.insert(
+                "objective_id".to_string(),
+                JsonValue::String(group.supervisor_id.clone()),
+            );
+            payload.insert(
+                "correlation_id".to_string(),
+                JsonValue::String(group.id.clone()),
+            );
+            (
+                "runtime/thread_group_terminal".to_string(),
+                "runtime_control".to_string(),
+            )
+        }
+        ThreadSupervisorKind::Runtime => {
+            payload.insert(
+                "session_id".to_string(),
+                JsonValue::String(group.session_id.clone()),
+            );
+            payload.insert(
+                "runtime_supervisor_id".to_string(),
+                JsonValue::String(group.supervisor_id.clone()),
+            );
+            (
+                "runtime/thread_group_terminal".to_string(),
+                "runtime_control".to_string(),
+            )
+        }
+        ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
+            return Err(format!(
+                "Thread Group '{}' 不能由 {:?} supervisor 收口",
+                group.id, group.supervisor_kind
+            ));
+        }
+    };
+    let mut event =
+        crate::event::Event::new(event_id, "Runtime".to_string(), event_type, topic, payload);
+    // The barrier is a deterministic projection of the terminal Group, so
+    // recovery must reproduce the exact same immutable Event, including its
+    // timestamp. Using `Utc::now()` here would make an idempotent repair look
+    // like an Event-ID collision on its second pass.
+    event.timestamp = group.satisfied_at.unwrap_or(group.updated_at);
+    Ok(event)
+}
+
+/// Builds the immutable result fact for an operator/runtime cancellation.
+///
+/// The result fact itself never wakes a supervisor. The same transaction
+/// which stores it must either settle the owning Thread Group or append the
+/// direct supervisor barrier returned by `thread_terminal_barrier_event`.
+pub fn thread_cancellation_event(
+    thread: &ThreadRecord,
+    reason: &str,
+    actor: &str,
+) -> crate::event::Event {
+    crate::event::Event::new(
+        format!("thread_cancelled_{}_g{}", thread.id, thread.generation),
+        actor.to_string(),
+        "runtime_control".to_string(),
+        "runtime/thread_cancelled".to_string(),
+        serde_json::json!({
+            "agent_id": thread.agent_id,
+            "context_id": thread.context_id,
+            "session_id": thread.session_id,
+            "thread_id": thread.id,
+            "root_turn_id": thread.root_turn_id,
+            "thread_generation": thread.generation,
+            "terminal_kind": ThreadLifecycle::Cancelled.as_str(),
+            "disposition": "no_reply",
+            "runtime_failure_kind": "thread_cancelled",
+            "wake_policy": "none",
+            "text": reason,
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+    )
+}
+
+/// Builds the one direct supervisor wake for a terminal Thread which is not
+/// joined by a Thread Group.
+pub fn thread_terminal_barrier_event(
+    thread: &ThreadRecord,
+    outcome: &ThreadOutcomeRecord,
+    parent: Option<&ThreadRecord>,
+) -> Result<Option<crate::event::Event>, String> {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "context_id".to_string(),
+        JsonValue::String(thread.context_id.clone()),
+    );
+    payload.insert(
+        "thread_id".to_string(),
+        JsonValue::String(thread.id.clone()),
+    );
+    payload.insert(
+        "thread_generation".to_string(),
+        JsonValue::from(outcome.thread_generation),
+    );
+    payload.insert(
+        "outcome_id".to_string(),
+        JsonValue::String(outcome.id.clone()),
+    );
+    payload.insert(
+        "terminal_kind".to_string(),
+        JsonValue::String(outcome.terminal_kind.as_str().to_string()),
+    );
+    payload.insert(
+        "wake_policy".to_string(),
+        JsonValue::String("immediate".to_string()),
+    );
+    payload.insert(
+        "terminal_summary".to_string(),
+        serde_json::json!({
+            "thread_id": thread.id,
+            "outcome_id": outcome.id,
+            "terminal_kind": outcome.terminal_kind.as_str(),
+            "summary": outcome.summary,
+            "artifact_refs": outcome.artifact_refs,
+            "evidence_refs": outcome.evidence_refs,
+            "check_results": outcome.check_results,
+            "unresolved_failures": outcome.unresolved_failures,
+        }),
+    );
+    let (topic, event_type) =
+        match thread.supervision.supervisor_kind {
+            ThreadSupervisorKind::Evaluation => {
+                let parent = parent
+                    .ok_or_else(|| format!("attached Thread '{}' 缺少父 Thread 投影", thread.id))?;
+                payload.insert(
+                    "session_id".to_string(),
+                    JsonValue::String(parent.session_id.clone()),
+                );
+                payload.insert(
+                    "thread_id".to_string(),
+                    JsonValue::String(parent.id.clone()),
+                );
+                payload.insert(
+                    "root_turn_id".to_string(),
+                    JsonValue::String(parent.root_turn_id.clone()),
+                );
+                payload.insert(
+                    "tool_name".to_string(),
+                    JsonValue::String("thread".to_string()),
+                );
+                payload.insert(
+                    "tool_status".to_string(),
+                    JsonValue::String("error".to_string()),
+                );
+                payload.insert(
+                    "text".to_string(),
+                    JsonValue::String(format!(
+                        "Thread '{}' 已终止：{}",
+                        thread.id,
+                        outcome.terminal_kind.as_str()
+                    )),
+                );
+                (
+                    "chat/thread_terminal".to_string(),
+                    crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                )
+            }
+            ThreadSupervisorKind::Objective => {
+                payload.insert(
+                    "session_id".to_string(),
+                    JsonValue::String(thread.session_id.clone()),
+                );
+                payload.insert(
+                    "objective_id".to_string(),
+                    JsonValue::String(
+                        thread.supervision.supervisor_id.clone().ok_or_else(|| {
+                            format!("durable Thread '{}' 缺少 Objective", thread.id)
+                        })?,
+                    ),
+                );
+                (
+                    "runtime/thread_terminal".to_string(),
+                    "runtime_control".to_string(),
+                )
+            }
+            ThreadSupervisorKind::Runtime => {
+                payload.insert(
+                    "session_id".to_string(),
+                    JsonValue::String(thread.session_id.clone()),
+                );
+                payload.insert(
+                    "runtime_supervisor_id".to_string(),
+                    JsonValue::String(thread.supervision.supervisor_id.clone().ok_or_else(
+                        || format!("Runtime Thread '{}' 缺少 supervisor", thread.id),
+                    )?),
+                );
+                (
+                    "runtime/thread_terminal".to_string(),
+                    "runtime_control".to_string(),
+                )
+            }
+            ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => return Ok(None),
+        };
+    Ok(Some(crate::event::Event::new(
+        format!(
+            "thread_terminal_{}_g{}",
+            thread.id, outcome.thread_generation
+        ),
+        "Runtime".to_string(),
+        event_type,
+        topic,
+        payload,
+    )))
+}
+
 /// Durable authorization state for one exact Execution Job capability request.
 /// Pending human approval has no Runtime timeout and survives process restart.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -2351,6 +3101,177 @@ impl ThreadKind {
     }
 }
 
+/// Declared lifetime of one Thread relative to the Evaluation which created it.
+///
+/// This is control-plane authority, not a UI hint. In particular, a durable
+/// Thread is invalid unless it is supervised by an Objective.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadLifetime {
+    Attached,
+    Durable,
+    Disposable,
+}
+
+impl ThreadLifetime {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Attached => "attached",
+            Self::Durable => "durable",
+            Self::Disposable => "disposable",
+        }
+    }
+}
+
+/// Authority responsible for consuming the terminal outcome of a Thread.
+///
+/// `Runtime` is reserved for kernel-owned lanes such as Delivery. `Legacy`
+/// is a migration marker for rows created before supervision became
+/// first-class; new model-authored Threads must never use it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadSupervisorKind {
+    Evaluation,
+    Objective,
+    Runtime,
+    None,
+    Legacy,
+}
+
+impl ThreadSupervisorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Evaluation => "evaluation",
+            Self::Objective => "objective",
+            Self::Runtime => "runtime",
+            Self::None => "none",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
+/// Durable supervision route stored on the Thread row itself so creation and
+/// scheduling cannot expose an orphan between two transactions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadSupervision {
+    pub lifetime: ThreadLifetime,
+    pub supervisor_kind: ThreadSupervisorKind,
+    pub supervisor_id: Option<String>,
+    pub generation: u64,
+    pub origin_evaluation_id: Option<String>,
+    pub parent_thread_id: Option<String>,
+    pub thread_group_id: Option<String>,
+    #[serde(default)]
+    pub completion_contract: JsonValue,
+}
+
+impl ThreadSupervision {
+    pub fn evaluation(
+        evaluation_id: impl Into<String>,
+        parent_thread_id: impl Into<String>,
+    ) -> Self {
+        let evaluation_id = evaluation_id.into();
+        Self {
+            lifetime: ThreadLifetime::Attached,
+            supervisor_kind: ThreadSupervisorKind::Evaluation,
+            supervisor_id: Some(evaluation_id.clone()),
+            generation: 1,
+            origin_evaluation_id: Some(evaluation_id),
+            parent_thread_id: Some(parent_thread_id.into()),
+            thread_group_id: None,
+            completion_contract: JsonValue::Object(Default::default()),
+        }
+    }
+
+    pub fn objective(
+        objective_id: impl Into<String>,
+        origin_evaluation_id: impl Into<String>,
+        objective_revision: u64,
+        parent_thread_id: Option<String>,
+    ) -> Self {
+        Self {
+            lifetime: ThreadLifetime::Durable,
+            supervisor_kind: ThreadSupervisorKind::Objective,
+            supervisor_id: Some(objective_id.into()),
+            generation: objective_revision.max(1),
+            origin_evaluation_id: Some(origin_evaluation_id.into()),
+            parent_thread_id,
+            thread_group_id: None,
+            completion_contract: JsonValue::Object(Default::default()),
+        }
+    }
+
+    pub fn runtime(supervisor_id: impl Into<String>) -> Self {
+        Self {
+            lifetime: ThreadLifetime::Durable,
+            supervisor_kind: ThreadSupervisorKind::Runtime,
+            supervisor_id: Some(supervisor_id.into()),
+            generation: 1,
+            origin_evaluation_id: None,
+            parent_thread_id: None,
+            thread_group_id: None,
+            completion_contract: JsonValue::Object(Default::default()),
+        }
+    }
+
+    pub fn disposable(origin_evaluation_id: impl Into<String>) -> Self {
+        let origin_evaluation_id = origin_evaluation_id.into();
+        Self {
+            lifetime: ThreadLifetime::Disposable,
+            supervisor_kind: ThreadSupervisorKind::None,
+            supervisor_id: None,
+            generation: 1,
+            origin_evaluation_id: Some(origin_evaluation_id),
+            parent_thread_id: None,
+            thread_group_id: None,
+            completion_contract: JsonValue::Object(Default::default()),
+        }
+    }
+
+    pub fn legacy() -> Self {
+        Self {
+            lifetime: ThreadLifetime::Durable,
+            supervisor_kind: ThreadSupervisorKind::Legacy,
+            supervisor_id: None,
+            generation: 1,
+            origin_evaluation_id: None,
+            parent_thread_id: None,
+            thread_group_id: None,
+            completion_contract: JsonValue::Object(Default::default()),
+        }
+    }
+
+    pub fn validate(&self, _kind: ThreadKind) -> Result<(), String> {
+        if self.generation == 0 {
+            return Err("Thread supervision generation 必须大于 0".to_string());
+        }
+        match (self.lifetime, self.supervisor_kind) {
+            (ThreadLifetime::Attached, ThreadSupervisorKind::Evaluation)
+                if self.supervisor_id.is_some()
+                    && self.origin_evaluation_id.is_some()
+                    && self.parent_thread_id.is_some() => {}
+            (ThreadLifetime::Durable, ThreadSupervisorKind::Objective)
+                if self.supervisor_id.is_some() && self.origin_evaluation_id.is_some() => {}
+            (ThreadLifetime::Durable, ThreadSupervisorKind::Runtime)
+                if self.supervisor_id.is_some() => {}
+            (ThreadLifetime::Disposable, ThreadSupervisorKind::None)
+                if self.supervisor_id.is_none() => {}
+            (_, ThreadSupervisorKind::Legacy) => {}
+            _ => {
+                return Err(format!(
+                    "非法 Thread 监督组合: lifetime={}, supervisor={}",
+                    self.lifetime.as_str(),
+                    self.supervisor_kind.as_str()
+                ));
+            }
+        }
+        if self.lifetime == ThreadLifetime::Disposable && self.thread_group_id.is_some() {
+            return Err("disposable Thread 不能加入 required Thread Group".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadLifecycle {
@@ -2462,6 +3383,7 @@ pub struct ThreadRecord {
     /// Stable physical destination inherited by physical actions in this
     /// Thread. `None` means no physical destination has been chosen yet.
     pub target_id: Option<String>,
+    pub supervision: ThreadSupervision,
     pub result_text: Option<String>,
     pub result_event_id: Option<String>,
     pub delivery_status: DeliveryStatus,
@@ -2482,6 +3404,7 @@ pub struct NewThread {
     pub executor_kind: String,
     pub executor_id: Option<String>,
     pub target_id: Option<String>,
+    pub supervision: ThreadSupervision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2541,6 +3464,56 @@ pub struct NewSchedule {
     pub not_before: Option<DateTime<Utc>>,
     pub interval_seconds: Option<u64>,
     pub dependency_thread_ids: Vec<String>,
+}
+
+/// One Objective created in the same durable transaction as its initial
+/// supervised Thread(s), Thread Group and Schedule intents.  Keeping the
+/// initial wait beside the Objective prevents a newly-created Objective from
+/// racing an independent Evaluation before its first execution plan exists.
+#[derive(Debug, Clone)]
+pub struct NewScheduledObjective {
+    pub objective: NewObjective,
+    pub initial_wait_condition: ObjectiveWaitCondition,
+    pub status_reason: String,
+    pub created_event: crate::event::Event,
+}
+
+/// Atomic transfer of one open attached Thread from its owning Evaluation to
+/// an Objective.  The source Group member is released in the same transaction
+/// which installs the new Objective-owned Group, so neither supervisor can
+/// observe a half-transferred Thread.
+#[derive(Debug, Clone)]
+pub struct ThreadPromotionRequest {
+    pub thread_id: String,
+    pub expected_thread_revision: u64,
+    pub source_group_id: String,
+    pub objective_id: String,
+    pub expected_objective_revision: Option<u64>,
+    pub new_objective: Option<NewScheduledObjective>,
+    pub target_group: NewThreadGroupPlan,
+    pub promoted_event: crate::event::Event,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadPromotionRecord {
+    pub thread: ThreadRecord,
+    pub objective: ObjectiveRecord,
+    pub source_group: ThreadGroupRecord,
+    pub target_group: ThreadGroupRecord,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThreadPromotionMutation {
+    Updated(ThreadPromotionRecord),
+    Conflict {
+        current_thread: ThreadRecord,
+        current_objective: Option<ObjectiveRecord>,
+    },
+    Rejected {
+        current_thread: ThreadRecord,
+        reason: String,
+    },
+    NotFound,
 }
 
 /// Result of a revision-fenced Schedule control-plane mutation. `Rejected`
@@ -2666,6 +3639,12 @@ pub enum ObjectiveWaitCondition {
     },
     Delegation {
         delegation_id: String,
+    },
+    /// Durable barrier for one group of independently scheduled Threads.
+    /// The Group projection is authoritative; the terminal Event only wakes
+    /// the supervisor so it can consume the complete member/outcome snapshot.
+    ThreadGroup {
+        group_id: String,
     },
     Timer {
         deadline: DateTime<Utc>,
@@ -3479,6 +4458,14 @@ pub trait ActivationStore: Send + Sync {
         &self,
         activation_id: &str,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+    /// Persistently releases a running DialogueTurn from the per-Session
+    /// dialogue lane while its physical work continues. Idempotent: returns
+    /// `true` only for the first successful release.
+    async fn release_dialogue_turn_activation(
+        &self,
+        activation_id: &str,
+        released_at: DateTime<Utc>,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
     async fn update_thread_activation(
         &self,
         id: &str,
@@ -3632,6 +4619,43 @@ pub trait PlanExecutionStore: Send + Sync {
     ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Durable join authority for independently scheduled sibling Threads.
+///
+/// Creation is normally part of `commit_schedule_transaction`; these reads
+/// and reconciliation operations are shared by Runtime, SDK and operator
+/// surfaces so none of them infer group state from Events independently.
+#[async_trait::async_trait]
+pub trait ThreadGroupStore: Send + Sync {
+    async fn get_thread_group(
+        &self,
+        id: &str,
+    ) -> Result<Option<ThreadGroupRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_thread_groups(
+        &self,
+        filter: ThreadGroupFilter,
+    ) -> Result<Vec<ThreadGroupRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_thread_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<ThreadGroupMemberRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_thread_outcome(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ThreadOutcomeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_thread_group_outcomes(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<ThreadOutcomeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Idempotently restores the deterministic barrier Event and Signal
+    /// Outbox row represented by a terminal Group projection.
+    ///
+    /// Returns true only when persistent recovery work was performed.
+    async fn repair_thread_group_barrier(
+        &self,
+        group_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Stable Thread lifecycle and completion-delivery projection.
 #[async_trait::async_trait]
 pub trait ThreadStore: Send + Sync {
@@ -3712,6 +4736,8 @@ pub trait ThreadStore: Send + Sync {
         id: &str,
         expected_revision: u64,
         action: ThreadControlAction,
+        reason: Option<&str>,
+        actor: Option<&str>,
     ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Revision-fenced first binding of a Thread to one physical destination.
     /// A bound Thread cannot be silently moved to a different Target.
@@ -3772,9 +4798,18 @@ pub trait ScheduleStore: Send + Sync {
     /// schedule_tx never leaves a partially-created scheduling plan.
     async fn commit_schedule_transaction(
         &self,
+        objectives: &[NewScheduledObjective],
         threads: &[NewThread],
         intents: &[NewSchedule],
+        groups: &[NewThreadGroupPlan],
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Revision-fenced supervision handoff.  Implementations must update the
+    /// Thread, source/target Groups, optional new Objective and immutable audit
+    /// Events in one physical database transaction.
+    async fn promote_attached_thread(
+        &self,
+        request: ThreadPromotionRequest,
+    ) -> Result<ThreadPromotionMutation, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_schedules(
         &self,
         thread_id: Option<&str>,
@@ -3874,6 +4909,7 @@ pub trait SessionStore:
     SessionDirectoryStore
     + ActivationStore
     + ThreadStore
+    + ThreadGroupStore
     + ScheduleStore
     + DeliveryIngressStore
     + DelegationStore
@@ -3884,6 +4920,7 @@ impl<T> SessionStore for T where
     T: SessionDirectoryStore
         + ActivationStore
         + ThreadStore
+        + ThreadGroupStore
         + ScheduleStore
         + DeliveryIngressStore
         + DelegationStore

@@ -1390,6 +1390,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -1753,6 +1754,7 @@ mod tests {
                 executor_kind: "plan_infer".to_string(),
                 executor_id: Some(waiting.id.clone()),
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -1944,6 +1946,7 @@ mod tests {
                 executor_kind: "plan_infer".to_string(),
                 executor_id: Some(waiting.id.clone()),
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();

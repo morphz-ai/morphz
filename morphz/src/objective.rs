@@ -6,7 +6,8 @@ use crate::memory::{
     ActivationStore, DelegationStatus, DelegationStore, EventStore, ExecutionJobRecord,
     ExecutionJobStore, NewObjective, NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord,
     ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, ThreadActivationMutation, ThreadActivationStatus,
+    RuntimeTimerRecord, ThreadActivationMutation, ThreadActivationStatus, ThreadGroupStore,
+    ThreadSupervisorKind,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::timer::{TimerDisposition, TimerEngine};
@@ -514,6 +515,17 @@ impl Tool for ObjectiveUpdateTool {
                             {
                                 "type": "object",
                                 "properties": {
+                                    "kind": { "const": "thread_group" },
+                                    "group_id": {
+                                        "type": "string",
+                                        "description": "schedule_tx 返回的、由当前 Objective 监督的 Thread Group ID"
+                                    }
+                                },
+                                "required": ["kind", "group_id"]
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
                                     "kind": { "const": "timer" },
                                     "deadline": { "type": "string", "format": "date-time" }
                                 },
@@ -878,6 +890,7 @@ pub struct ObjectiveSupervisor {
     audit_store: Arc<dyn EventStore>,
     execution_jobs: Option<Arc<dyn ExecutionJobStore>>,
     delegations: Option<Arc<dyn DelegationStore>>,
+    thread_groups: Option<Arc<dyn ThreadGroupStore>>,
     activation_store: Option<Arc<dyn ActivationStore>>,
     bus: Arc<InMemoryEventBus>,
     evaluations: Arc<ObjectiveEvaluationRegistry>,
@@ -904,6 +917,7 @@ impl ObjectiveSupervisor {
             audit_store,
             execution_jobs: None,
             delegations: None,
+            thread_groups: None,
             activation_store: None,
             bus,
             evaluations,
@@ -929,6 +943,14 @@ impl ObjectiveSupervisor {
     /// Delegations are facts to consume, not conditions that can be awaited.
     pub fn with_delegation_store(mut self, store: Arc<dyn DelegationStore>) -> Self {
         self.delegations = Some(store);
+        self
+    }
+
+    /// Attach the authoritative Thread Group projection. Objective waits bind
+    /// to a real group in the same Context instead of accepting a model-made
+    /// correlation string which could never be satisfied.
+    pub fn with_thread_group_store(mut self, store: Arc<dyn ThreadGroupStore>) -> Self {
+        self.thread_groups = Some(store);
         self
     }
 
@@ -1058,6 +1080,38 @@ impl ObjectiveSupervisor {
                     .into());
                 }
             }
+            ObjectiveWaitCondition::ThreadGroup { group_id } => {
+                let group_id = group_id.trim();
+                if group_id.is_empty() {
+                    return Err("thread_group.group_id 不能为空".into());
+                }
+                let store = self.thread_groups.as_ref().ok_or(
+                    "当前 Runtime 未配置 ThreadGroup Store，不能建立可验证的 thread_group 等待",
+                )?;
+                let group = store
+                    .get_thread_group(group_id)
+                    .await?
+                    .ok_or_else(|| format!("thread_group '{}' 不存在", group_id))?;
+                if group.context_id != objective.context_id
+                    || group.session_id != objective.coordinator_session_id
+                    || group.supervisor_kind != ThreadSupervisorKind::Objective
+                    || group.supervisor_id != objective.id
+                {
+                    return Err(format!(
+                        "thread_group '{}' 未由当前 Objective/Context/Session 监督，拒绝建立跨路由等待",
+                        group_id
+                    )
+                    .into());
+                }
+                if group.status.is_terminal() {
+                    return Err(format!(
+                        "thread_group '{}' 已经结束（status={}），不能再登记等待；请消费现有 Outcome 后继续推进",
+                        group_id,
+                        group.status.as_str()
+                    )
+                    .into());
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1102,7 +1156,11 @@ impl ObjectiveSupervisor {
                 Box::pin(async move { supervisor.handle_objective_event(event).await })
             }),
         );
-        for topic in ["runtime/approval_decision", "runtime/resource_available"] {
+        for topic in [
+            "runtime/approval_decision",
+            "runtime/resource_available",
+            "runtime/thread_group_terminal",
+        ] {
             let supervisor = Arc::clone(&self);
             self.bus.subscribe(
                 topic.to_string(),
@@ -1112,6 +1170,14 @@ impl ObjectiveSupervisor {
                 }),
             );
         }
+        let supervisor = Arc::clone(&self);
+        self.bus.subscribe(
+            "runtime/thread_terminal".to_string(),
+            Arc::new(move |event| {
+                let supervisor = Arc::clone(&supervisor);
+                Box::pin(async move { supervisor.handle_objective_event(event).await })
+            }),
+        );
         for mut objective in self.store.list_recoverable_objectives().await? {
             self.publish_recovery_observation(&objective).await?;
             if objective.status != ObjectiveStatus::Active {
@@ -1179,6 +1245,10 @@ impl ObjectiveSupervisor {
 
     pub fn evaluations(&self) -> Arc<ObjectiveEvaluationRegistry> {
         Arc::clone(&self.evaluations)
+    }
+
+    pub fn store(&self) -> Arc<dyn ObjectiveStore> {
+        Arc::clone(&self.store)
     }
 
     pub async fn create(
@@ -1539,6 +1609,9 @@ impl ObjectiveSupervisor {
             ObjectiveWaitCondition::ResourceAvailable { .. } => {
                 "runtime/resource_available".to_string()
             }
+            ObjectiveWaitCondition::ThreadGroup { .. } => {
+                "runtime/thread_group_terminal".to_string()
+            }
             ObjectiveWaitCondition::ToolTask { .. }
             | ObjectiveWaitCondition::Delegation { .. }
             | ObjectiveWaitCondition::Timer { .. }
@@ -1807,6 +1880,17 @@ impl ObjectiveSupervisor {
                         return Ok(());
                     }
                 }
+                ObjectiveWaitCondition::ThreadGroup { group_id } => {
+                    let group_id = group_id.clone();
+                    self.cancel_wait_timer(&objective.id).await?;
+                    self.remove_external_wait_subscription(&objective.id);
+                    if self
+                        .reconcile_thread_group_wait(objective.clone(), &group_id)
+                        .await?
+                    {
+                        return Ok(());
+                    }
+                }
                 ObjectiveWaitCondition::Timer { deadline } => {
                     self.remove_external_wait_subscription(&objective.id);
                     self.schedule_wait_timer(&objective, *deadline).await?;
@@ -1836,6 +1920,89 @@ impl ObjectiveSupervisor {
             self.revoke_local_evaluation(&objective).await?;
         }
         self.schedule(objective.id).await
+    }
+
+    /// Reconcile a Thread Group wait against the durable Group Projection.
+    /// The barrier Event is only a wake hint; the Projection remains
+    /// authoritative across restart, missed EventBus delivery and duplicate
+    /// terminal events.
+    async fn reconcile_thread_group_wait(
+        self: &Arc<Self>,
+        objective: ObjectiveRecord,
+        group_id: &str,
+    ) -> Result<bool, DynError> {
+        let Some(store) = self.thread_groups.as_ref() else {
+            return Ok(false);
+        };
+        let group = store.get_thread_group(group_id).await?;
+        let (event_kind, caused_by, reason) = match group {
+            Some(group)
+                if group.context_id == objective.context_id
+                    && group.session_id == objective.coordinator_session_id
+                    && group.supervisor_kind == ThreadSupervisorKind::Objective
+                    && group.supervisor_id == objective.id
+                    && !group.status.is_terminal() =>
+            {
+                return Ok(false);
+            }
+            Some(group)
+                if group.context_id == objective.context_id
+                    && group.session_id == objective.coordinator_session_id
+                    && group.supervisor_kind == ThreadSupervisorKind::Objective
+                    && group.supervisor_id == objective.id
+                    && group.status.is_terminal() =>
+            {
+                (
+                    "wait_satisfied",
+                    group.barrier_event_id.clone(),
+                    format!(
+                        "线程组 '{}' 已处于终态 {}（{}/{} 成功）；Runtime 已解除等待并继续求值",
+                        group_id,
+                        group.status.as_str(),
+                        group.successful_count,
+                        group.required_count
+                    ),
+                )
+            }
+            Some(group) => (
+                "wait_invalidated",
+                group.barrier_event_id.clone(),
+                format!(
+                    "thread_group '{}' 未由当前 Objective/Context/Session 监督；Runtime 已取消无效等待",
+                    group.id
+                ),
+            ),
+            None => (
+                "wait_invalidated",
+                None,
+                format!(
+                    "thread_group '{}' 不存在；Runtime 已取消旧版或无效等待",
+                    group_id
+                ),
+            ),
+        };
+        let mutation = self
+            .store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                None,
+                Some(&reason),
+            )
+            .await?;
+        match mutation {
+            ObjectiveMutation::Updated(woken) => {
+                self.publish_state_event(event_kind, &woken, caused_by.as_deref())
+                    .await?;
+                Box::pin(self.reconcile(woken)).await?;
+            }
+            ObjectiveMutation::Conflict { current } => {
+                Box::pin(self.reconcile(current)).await?;
+            }
+            ObjectiveMutation::NotFound => {}
+        }
+        Ok(true)
     }
 
     /// Reconcile a Delegation wait against its durable parent/child projection.
@@ -2646,6 +2813,14 @@ fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {
                     Some("success" | "completed" | "error" | "failed" | "cancelled")
                 )
         }
+        ObjectiveWaitCondition::ThreadGroup { group_id } => {
+            event.topic == "runtime/thread_group_terminal"
+                && payload_str("thread_group_id") == Some(group_id.as_str())
+                && matches!(
+                    payload_str("thread_group_status"),
+                    Some("satisfied" | "failed" | "cancelled")
+                )
+        }
         ObjectiveWaitCondition::Timer { .. } => false,
         ObjectiveWaitCondition::Permission { request_id } => {
             payload_str("approval_id") == Some(request_id.as_str())
@@ -2750,6 +2925,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -3017,6 +3193,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();

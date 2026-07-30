@@ -10,6 +10,7 @@ use morphz::memory::{
     ExecutionTargetAuthorizationScope, ExecutionTargetKind, ExecutionTargetRegistration,
     ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewObjective, NewSession,
     ObjectiveMutation, ObjectiveStatus, SessionMountKind, SessionRecord, SessionStatus,
+    ThreadControlAction, ThreadMutation,
 };
 use morphz::orchestrator::context::{
     FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
@@ -868,6 +869,36 @@ async fn dispatch_runtime_command(
         }
         "scheduler" | "scheduler show" => {
             show_scheduler(&runtime, &invocation, &default_context_id).await
+        }
+        "scheduler thread show" => {
+            show_scheduler_thread(&runtime, &invocation, &default_context_id).await
+        }
+        "scheduler thread pause" => {
+            control_scheduler_thread(
+                &runtime,
+                &invocation,
+                &default_context_id,
+                ThreadControlAction::Pause,
+            )
+            .await
+        }
+        "scheduler thread resume" => {
+            control_scheduler_thread(
+                &runtime,
+                &invocation,
+                &default_context_id,
+                ThreadControlAction::Resume,
+            )
+            .await
+        }
+        "scheduler thread close" => {
+            control_scheduler_thread(
+                &runtime,
+                &invocation,
+                &default_context_id,
+                ThreadControlAction::Close,
+            )
+            .await
         }
         "session" | "session list" => list_sessions(&runtime, &invocation).await,
         "session show" => show_session(&runtime, &invocation).await,
@@ -2171,9 +2202,10 @@ async fn show_scheduler(
     }
 
     println!(
-        "Scheduler context={} threads={} signals={} activations={}/{} jobs={} approvals={} schedules={} provider=queued:{}/in-flight:{}/max:{}/acquired:{} event_writer=queue:{}/events:{}/batches:{}/failed:{}/contention-retries:{}/largest:{} context=tx:{}/conflicts:{}/encodings:{}/events-scanned:{}",
+        "Scheduler context={} threads={} groups={} signals={} activations={}/{} jobs={} approvals={} schedules={} provider=queued:{}/in-flight:{}/max:{}/acquired:{} event_writer=queue:{}/events:{}/batches:{}/failed:{}/contention-retries:{}/largest:{} context=tx:{}/conflicts:{}/encodings:{}/events-scanned:{}",
         snapshot.context_id,
         snapshot.summary.open_threads,
+        snapshot.thread_groups.len(),
         snapshot.summary.pending_signals,
         snapshot.summary.running_activations,
         snapshot.summary.queued_activations,
@@ -2195,13 +2227,22 @@ async fn show_scheduler(
         snapshot.context_capacity.context_encodings_total,
         snapshot.context_capacity.events_scanned_total,
     );
-    for item in snapshot.threads {
+    for item in &snapshot.threads {
         println!(
-            "{}  kind={} lifecycle={} phase={} activations={} jobs={} signals={} schedules={}",
+            "{}  kind={} lifecycle={} phase={} lifetime={} supervisor={}:{} generation={} group={} outcome={} activations={} jobs={} signals={} schedules={}",
             item.thread.id,
             item.thread.kind.as_str(),
             item.thread.lifecycle.as_str(),
             item.phase.as_str(),
+            item.thread.supervision.lifetime.as_str(),
+            item.thread.supervision.supervisor_kind.as_str(),
+            item.thread.supervision.supervisor_id.as_deref().unwrap_or("-"),
+            item.thread.supervision.generation,
+            item.thread.supervision.thread_group_id.as_deref().unwrap_or("-"),
+            item.outcome
+                .as_ref()
+                .map(|outcome| outcome.terminal_kind.as_str())
+                .unwrap_or("-"),
             item.activations.len(),
             item.activations
                 .iter()
@@ -2211,7 +2252,102 @@ async fn show_scheduler(
             item.schedules.len(),
         );
     }
+    for item in &snapshot.thread_groups {
+        println!(
+            "group {}  status={} policy={} supervisor={}:{} generation={} progress={}/{} successful={} barrier={}",
+            item.group.id,
+            item.group.status.as_str(),
+            item.group.policy.as_str(),
+            item.group.supervisor_kind.as_str(),
+            item.group.supervisor_id,
+            item.group.generation,
+            item.group.terminal_count,
+            item.group.required_count,
+            item.group.successful_count,
+            item.group.barrier_event_id.as_deref().unwrap_or("-"),
+        );
+        for member in &item.members {
+            let outcome = item
+                .outcomes
+                .iter()
+                .find(|outcome| outcome.thread_id == member.thread_id);
+            println!(
+                "  member {} required={} status={} outcome={} summary={}",
+                member.thread_id,
+                member.required,
+                member.status.as_str(),
+                member.outcome_id.as_deref().unwrap_or("-"),
+                outcome
+                    .and_then(|outcome| outcome.summary.as_deref())
+                    .unwrap_or("-"),
+            );
+        }
+    }
     Ok(())
+}
+
+async fn show_scheduler_thread(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let context_id = option_value(invocation, "context").unwrap_or(default_context_id);
+    let thread_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz scheduler thread show <THREAD_ID>")?;
+    let detail = MorphzSdk::new(runtime.clone())
+        .thread_detail(context_id, thread_id)
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&detail)?);
+    Ok(())
+}
+
+async fn control_scheduler_thread(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+    action: ThreadControlAction,
+) -> Result<(), AppError> {
+    let context_id = option_value(invocation, "context").unwrap_or(default_context_id);
+    let thread_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz scheduler thread <pause|resume|close> <THREAD_ID> [--reason=TEXT]")?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let detail = sdk.thread_detail(context_id, thread_id).await?;
+    let expected_revision = option_value(invocation, "expected-revision")
+        .map(str::parse::<u64>)
+        .transpose()
+        .map_err(|_| "--expected-revision 必须是非负整数")?
+        .unwrap_or(detail.snapshot.thread.revision);
+    let fallback_reason = match action {
+        ThreadControlAction::Pause => "用户通过 CLI 暂停 Thread",
+        ThreadControlAction::Resume => "用户通过 CLI 继续 Thread",
+        ThreadControlAction::Close => "用户通过 CLI 关闭 Thread",
+    };
+    let reason = option_value(invocation, "reason")
+        .map(str::to_string)
+        .or_else(|| {
+            (invocation.prompt_args().len() > 1).then(|| invocation.prompt_args()[1..].join(" "))
+        })
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback_reason.to_string());
+    match sdk
+        .control_thread(context_id, thread_id, expected_revision, action, &reason)
+        .await?
+    {
+        ThreadMutation::Updated(thread) => {
+            println!("{}", serde_json::to_string_pretty(&thread)?);
+            Ok(())
+        }
+        ThreadMutation::Conflict { current } => Err(format!(
+            "Thread revision 冲突：期望 r{expected_revision}，当前 r{}",
+            current.revision
+        )
+        .into()),
+        ThreadMutation::NotFound => Err(format!("Thread '{thread_id}' 不存在").into()),
+    }
 }
 
 async fn list_sessions(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {

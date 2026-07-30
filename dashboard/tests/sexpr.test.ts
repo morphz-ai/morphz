@@ -8,9 +8,9 @@ test('formats nested S-expressions while keeping leaf lists compact', () => {
   const pretty = prettyPrintSExpression(source)
 
   assert.equal(pretty.valid, true)
-  assert.match(pretty.text, /^\(context\n  \(protocol/u)
-  assert.match(pretty.text, /\n    \(version 26\)/u)
-  assert.match(pretty.text, /\n  \(mind/u)
+  assert.match(pretty.text, /^\(context\n {2}\(protocol/u)
+  assert.match(pretty.text, /\n {4}\(version 26\)/u)
+  assert.match(pretty.text, /\n {2}\(mind/u)
   assert.ok(pretty.tokens.some(token => token.kind === 'operator' && token.text === 'context'))
   assert.ok(pretty.tokens.some(token => token.kind === 'string' && token.text === '"protocol → inbox"'))
 })

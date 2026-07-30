@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, CircleDot, Clock3, LoaderCircle, Pause, Play, Radio, Square, X } from 'lucide-react'
+import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, LoaderCircle, Pause, Play, Radio, Square, X } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { LiveModelAttempt } from '../modelStream'
 import type {
@@ -189,6 +189,8 @@ export function ThreadCausalCard({
   onApproval,
   onSchedule,
   onThreadControl,
+  selectedSupervisorId,
+  onSupervisorFilter,
   onInspect,
 }: {
   snapshot: SchedulerThreadSnapshot
@@ -202,6 +204,8 @@ export function ThreadCausalCard({
   onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
   onSchedule: (schedule: ScheduleRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
   onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => void
+  selectedSupervisorId?: string
+  onSupervisorFilter?: (supervisorId: string) => void
   onInspect?: (threadId: string) => void
 }) {
   const { thread } = snapshot
@@ -210,6 +214,16 @@ export function ThreadCausalCard({
   // whether this aggregate is currently runnable/running/waiting.
   const displayPhase = thread.control_state === 'paused' ? 'paused' : snapshot.phase
   const active = displayPhase !== 'idle'
+  const nextWake = (() => {
+    if (thread.lifecycle !== 'open') return t('work.causal.nextWakeValues.terminal')
+    if (thread.control_state === 'paused') return t('work.causal.nextWakeValues.paused')
+    const signal = snapshot.pending_signals[0]
+    if (signal) return t('work.causal.nextWakeValues.signal', { kind: signal.kind })
+    const schedule = snapshot.schedules.find(item => item.status === 'queued' || item.status === 'paused')
+    if (schedule) return t('work.causal.nextWakeValues.schedule', { intent: schedule.intent })
+    if (thread.supervision.thread_group_id) return t('work.causal.nextWakeValues.group')
+    return t(`work.causal.nextWakeValues.${displayPhase}`)
+  })()
   const activationIds = new Set(snapshot.activations.map(item => item.activation.id))
   const unattachedModelAttemptEvents = modelAttemptEvents.filter(event => {
     const activationId = modelAttemptActivationId(event)
@@ -220,14 +234,47 @@ export function ThreadCausalCard({
     <details className={`causal-thread ${displayPhase}`} open={active}>
       <summary>
         <span className={`status-pill ${displayPhase}`}>{statusLabel(displayPhase, t)}</span>
-        <div><strong>{threadKindLabel(thread.kind, t)}</strong><small>{shortId(thread.id, 30)} · {t('header.session')} {shortId(thread.session_id, 18)} · {t('work.causal.executor')} {thread.executor_kind}{thread.executor_id ? `/${shortId(thread.executor_id, 16)}` : ''}</small></div>
+        <div>
+          <strong>{threadKindLabel(thread.kind, t)}</strong>
+          <small>{shortId(thread.id, 30)} · {t('header.session')} {shortId(thread.session_id, 18)} · {t('work.causal.executor')} {thread.executor_kind}{thread.executor_id ? `/${shortId(thread.executor_id, 16)}` : ''}</small>
+          <small className="thread-supervision-summary">
+            {t(`work.causal.lifetimeValues.${thread.supervision.lifetime}`)}
+            {' · '}
+            {t('work.causal.supervisedBy', {
+              kind: t(`work.causal.supervisorValues.${thread.supervision.supervisor_kind}`),
+              id: thread.supervision.supervisor_id ? shortId(thread.supervision.supervisor_id, 18) : t('work.causal.none'),
+            })}
+            {thread.supervision.thread_group_id ? ` · ${t('work.causal.group')} ${shortId(thread.supervision.thread_group_id, 18)}` : ''}
+          </small>
+        </div>
         <span className="causal-counts">{snapshot.activations.length}A · {snapshot.activations.reduce((sum, item) => sum + item.jobs.length, 0)}J</span>
         <em>{statusLabel(thread.delivery_status, t)}</em>
         <ChevronDown size={14} />
       </summary>
       <div className="causal-thread-body">
+        <section className="thread-supervision-panel">
+          <div><span>{t('work.causal.lifetime')}</span><strong>{t(`work.causal.lifetimeValues.${thread.supervision.lifetime}`)}</strong></div>
+          <div><span>{t('work.causal.supervisor')}</span><strong>{t(`work.causal.supervisorValues.${thread.supervision.supervisor_kind}`)}{thread.supervision.supervisor_id ? ` · ${shortId(thread.supervision.supervisor_id, 24)}` : ''}</strong></div>
+          <div><span>{t('work.causal.generation')}</span><strong>g{thread.supervision.generation}</strong></div>
+          <div><span>{t('work.causal.group')}</span><strong>{thread.supervision.thread_group_id ? shortId(thread.supervision.thread_group_id, 26) : t('work.causal.none')}</strong></div>
+          <div className="thread-next-wake"><span>{t('work.causal.nextWake')}</span><strong>{nextWake}</strong></div>
+          <details>
+            <summary>{t('work.causal.completionContract')}</summary>
+            <pre>{JSON.stringify(thread.supervision.completion_contract ?? {}, null, 2)}</pre>
+          </details>
+        </section>
         <div className="causal-thread-actions">
           {onInspect && <button type="button" onClick={() => onInspect(thread.id)}>{t('work.causal.inspect')}</button>}
+          {onSupervisorFilter && thread.supervision.supervisor_id && (
+            <button
+              type="button"
+              onClick={() => onSupervisorFilter(thread.supervision.supervisor_id ?? '')}
+            >
+              <Filter size={12} /> {selectedSupervisorId === thread.supervision.supervisor_id
+                ? t('work.causal.clearSupervisorFilter')
+                : t('work.causal.filterSupervisor')}
+            </button>
+          )}
           {thread.lifecycle === 'open' && thread.control_state === 'active' && (
             <button disabled={mutatingThreadId === thread.id} type="button" title={t('work.causal.pauseThreadHint')} onClick={() => onThreadControl(thread, 'pause')}><Pause size={12} /> {t('work.causal.pauseThread')}</button>
           )}
@@ -273,6 +320,29 @@ export function ThreadCausalCard({
           <span>{t('work.causal.delivery')}</span><b>{statusLabel(thread.delivery_status, t)}</b>
           {thread.result_text && <p>{thread.result_text}</p>}
         </footer>
+        {snapshot.outcome && (
+          <section className={`thread-outcome ${snapshot.outcome.terminal_kind}`}>
+            <header>
+              <strong>{t('work.causal.outcome')}</strong>
+              <span className={`status-pill ${snapshot.outcome.terminal_kind}`}>{statusLabel(snapshot.outcome.terminal_kind, t)}</span>
+              <code>g{snapshot.outcome.thread_generation}</code>
+            </header>
+            {snapshot.outcome.summary && <p>{snapshot.outcome.summary}</p>}
+            {(snapshot.outcome.artifact_refs.length > 0 || snapshot.outcome.evidence_refs.length > 0) && (
+              <small>{t('work.causal.outcomeRefs', {
+                artifacts: snapshot.outcome.artifact_refs.length,
+                evidence: snapshot.outcome.evidence_refs.length,
+              })}</small>
+            )}
+            {snapshot.outcome.unresolved_failures.length > 0 && (
+              <ul>{snapshot.outcome.unresolved_failures.map(failure => <li key={failure}>{failure}</li>)}</ul>
+            )}
+            <details>
+              <summary>{t('work.causal.checkResults')}</summary>
+              <pre>{JSON.stringify(snapshot.outcome.check_results ?? {}, null, 2)}</pre>
+            </details>
+          </section>
+        )}
       </div>
     </details>
   )

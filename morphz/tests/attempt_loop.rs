@@ -97,11 +97,13 @@ struct EmptyOutputTool;
 struct RoutingProbeTool {
     arguments: Arc<Mutex<Vec<serde_json::Value>>>,
     delay_ms: u64,
+    completion_gate: Option<Arc<tokio::sync::Notify>>,
 }
 
 struct DelayedContextTxTool {
     started: Arc<AtomicUsize>,
     delay_ms: u64,
+    completion_gate: Option<Arc<tokio::sync::Notify>>,
 }
 
 fn text_reply_response(content: impl Into<String>) -> Response {
@@ -231,7 +233,11 @@ impl Tool for RoutingProbeTool {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let value: serde_json::Value = serde_json::from_str(arguments)?;
         self.arguments.lock().unwrap().push(value.clone());
-        tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
+        if let Some(gate) = self.completion_gate.as_ref() {
+            gate.notified().await;
+        } else {
+            tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
+        }
         Ok(format!(
             "probe:{}",
             value["value"].as_str().unwrap_or_default()
@@ -262,7 +268,11 @@ impl Tool for DelayedContextTxTool {
         _arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         self.started.fetch_add(1, Ordering::SeqCst);
-        tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
+        if let Some(gate) = self.completion_gate.as_ref() {
+            gate.notified().await;
+        } else {
+            tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
+        }
         Ok(json!({ "status": "committed", "after_version": 1 }).to_string())
     }
 }
@@ -852,7 +862,7 @@ async fn wait_for_topic_count(
     session_id: &str,
     expected: usize,
 ) -> Vec<Event> {
-    for _ in 0..80 {
+    for _ in 0..200 {
         let events = store
             .query(QueryFilter {
                 session_id: Some(session_id.to_string()),
@@ -1032,6 +1042,7 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: morphz::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -1132,6 +1143,7 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
             executor_kind: "self".to_string(),
             executor_id: None,
             target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
         })
         .await
         .unwrap();
@@ -1214,12 +1226,25 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
             .len(),
         1
     );
-    assert_eq!(client.messages_seen().len(), recovery_sessions.len());
+    let recovered_requests = client.messages_seen();
+    assert_eq!(
+        recovered_requests.len(),
+        recovery_sessions.len(),
+        "each unfinished Activation must be resumed exactly once: {recovered_requests:#?}"
+    );
     let activations = store
         .list_context_thread_activations("recovery-context", true)
         .await
         .unwrap();
-    assert_eq!(activations.len(), recovery_sessions.len() + 1);
+    assert_eq!(
+        activations.len(),
+        recovery_sessions.len() + 2,
+        "recovery must retain the original orphan Activation and add exactly one fenced control Activation: {activations:#?}"
+    );
+    assert!(activations.iter().any(|activation| {
+        activation.id == "activation_control_recovery-orphan-thread_g1"
+            && activation.status == ThreadActivationStatus::Cancelled
+    }));
     assert_eq!(
         activations
             .iter()
@@ -1315,6 +1340,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
             executor_kind: "self".to_string(),
             executor_id: None,
             target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
         })
         .await
         .unwrap();
@@ -1422,6 +1448,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
     registry.register(Arc::new(RoutingProbeTool {
         arguments: Arc::clone(&routed_arguments),
         delay_ms: 0,
+        completion_gate: None,
     }));
     let client = Arc::new(MockClient::new(vec![text_reply_response(
         "recovered plan completed",
@@ -1653,6 +1680,7 @@ async fn runtime_restart_resumes_context_tx_continuation_until_final_reply() {
             executor_kind: "self".to_string(),
             executor_id: None,
             target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
         })
         .await
         .unwrap();
@@ -4417,9 +4445,11 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
     ]));
     let started = Arc::new(AtomicUsize::new(0));
     let registry = Arc::new(Registry::new());
+    let completion_gate = Arc::new(tokio::sync::Notify::new());
     registry.register(Arc::new(DelayedContextTxTool {
         started: Arc::clone(&started),
-        delay_ms: 400,
+        delay_ms: 0,
+        completion_gate: Some(Arc::clone(&completion_gate)),
     }));
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -4445,21 +4475,54 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
     }
     assert_eq!(started.load(Ordering::SeqCst), 1);
     publish_user(&bus, "context-maintenance-dialogue", "second").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    assert!(
+        store
+            .query(QueryFilter {
+                session_id: Some("context-maintenance-dialogue".to_string()),
+                topic: Some("chat/reply".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty(),
+        "the second dialogue turn must remain queued until context maintenance completes"
+    );
+    completion_gate.notify_one();
 
     let replies =
         wait_for_topic_count(&store, "chat/reply", "context-maintenance-dialogue", 2).await;
+    if replies.len() < 2 {
+        let activations = store
+            .list_context_thread_activations("context-maintenance-dialogue", true)
+            .await
+            .unwrap();
+        let events = store
+            .query(QueryFilter {
+                context_id: Some("context-maintenance-dialogue".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        panic!(
+            "context-maintenance dialogue did not resume: replies={replies:#?}\nactivations={activations:#?}\nevents={events:#?}"
+        );
+    }
     assert_eq!(
         replies[0].payload.get("text"),
         Some(&json!("first-after-maintenance"))
     );
     assert_eq!(replies[1].payload.get("text"), Some(&json!("second-reply")));
-    assert!(replies.iter().all(|reply| {
-        reply
-            .payload
-            .get("thread_kind")
-            .and_then(|value| value.as_str())
-            == Some("dialogue_turn")
-    }));
+    assert!(
+        replies.iter().all(|reply| {
+            reply
+                .payload
+                .get("thread_kind")
+                .and_then(|value| value.as_str())
+                == Some("dialogue_turn")
+        }),
+        "maintenance continuations and the next user turn must remain DialogueTurns: {replies:#?}"
+    );
 }
 
 #[tokio::test]
@@ -4483,10 +4546,12 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
         text_reply_response("tool-a-finished"),
     ]));
     let routed_arguments = Arc::new(Mutex::new(Vec::new()));
+    let completion_gate = Arc::new(tokio::sync::Notify::new());
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(RoutingProbeTool {
         arguments: Arc::clone(&routed_arguments),
-        delay_ms: 600,
+        delay_ms: 0,
+        completion_gate: Some(Arc::clone(&completion_gate)),
     }));
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -4513,6 +4578,14 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
     assert_eq!(routed_arguments.lock().unwrap().len(), 1);
     publish_user(&bus, "same-session-tool", "message-b while tool runs").await;
 
+    let replies_before_tool =
+        wait_for_topic_count(&store, "chat/reply", "same-session-tool", 1).await;
+    assert_eq!(
+        replies_before_tool[0].payload.get("text"),
+        Some(&json!("message-b-reply")),
+        "message B must be answered while the earlier physical tool is still blocked"
+    );
+    completion_gate.notify_one();
     let replies = wait_for_topic_count(&store, "chat/reply", "same-session-tool", 2).await;
     let message_b_reply = replies
         .iter()
@@ -4674,6 +4747,7 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
     registry.register(Arc::new(RoutingProbeTool {
         arguments: Arc::clone(&routed_arguments),
         delay_ms: 600,
+        completion_gate: None,
     }));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
     let orchestrator = new_test_orchestrator(

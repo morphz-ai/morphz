@@ -2402,6 +2402,8 @@ export default function App() {
   // overriding a deliberate choice.
   const [tintDimensionChosen, setTintDimensionChosen] = useState(initialTintDimensionChosen)
   const [requestedObjectiveFilterId, setSelectedObjectiveFilterId] = useState('')
+  const [requestedThreadGroupFilterId, setSelectedThreadGroupFilterId] = useState('')
+  const [requestedSupervisorFilterId, setSelectedSupervisorFilterId] = useState('')
   const [dialogueCurrentSessionOnly, setDialogueCurrentSessionOnly] = useState(
     () => initialBooleanPreference('morphz.dashboard.dialogueActivity.currentSessionOnly', false),
   )
@@ -3908,6 +3910,26 @@ export default function App() {
     && objectives.some(objective => objective.id === requestedObjectiveFilterId)
     ? requestedObjectiveFilterId
     : ''
+  const durableThreadGroups = useMemo(
+    () => schedulerSnapshot?.thread_groups ?? [],
+    [schedulerSnapshot?.thread_groups],
+  )
+  const selectedThreadGroupFilterId = requestedThreadGroupFilterId
+    && durableThreadGroups.some(snapshot => snapshot.group.id === requestedThreadGroupFilterId)
+    ? requestedThreadGroupFilterId
+    : ''
+  const selectedThreadGroupMemberIds = useMemo(
+    () => new Set(
+      durableThreadGroups
+        .find(snapshot => snapshot.group.id === selectedThreadGroupFilterId)
+        ?.members.map(member => member.thread_id) ?? [],
+    ),
+    [durableThreadGroups, selectedThreadGroupFilterId],
+  )
+  const selectedSupervisorFilterId = requestedSupervisorFilterId
+    && schedulerThreads.some(snapshot => snapshot.thread.supervision.supervisor_id === requestedSupervisorFilterId)
+    ? requestedSupervisorFilterId
+    : ''
   const objectiveLineage = useMemo<ObjectiveLineageIndex>(
     () => buildObjectiveLineageIndex(
       schedulerThreads.map(snapshot => ({
@@ -4258,8 +4280,10 @@ export default function App() {
   }
   const visibleSchedulerThreads = useMemo(() => {
     const filtered = schedulerThreads.filter(snapshot => (
-      !selectedObjectiveFilterId
-      || (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId)
+      (!selectedObjectiveFilterId
+        || (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId))
+      && (!selectedThreadGroupFilterId || selectedThreadGroupMemberIds.has(snapshot.thread.id))
+      && (!selectedSupervisorFilterId || snapshot.thread.supervision.supervisor_id === selectedSupervisorFilterId)
     ))
     const active = filtered.filter(snapshot => snapshot.phase !== 'idle')
     const activeIds = new Set(active.map(snapshot => snapshot.thread.id))
@@ -4268,10 +4292,14 @@ export default function App() {
       .sort((left, right) => right.thread.updated_at.localeCompare(left.thread.updated_at))
       .slice(0, WORK_HISTORY_THREAD_LIMIT)
     return [...active, ...recentHistory]
-  }, [objectiveLineage, schedulerThreads, selectedObjectiveFilterId])
-  const hiddenSchedulerThreadCount = (selectedObjectiveFilterId
-    ? schedulerThreads.filter(snapshot => (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId))
-    : schedulerThreads).length - visibleSchedulerThreads.length
+  }, [objectiveLineage, schedulerThreads, selectedObjectiveFilterId, selectedSupervisorFilterId, selectedThreadGroupFilterId, selectedThreadGroupMemberIds])
+  const schedulerFilteredThreadCount = schedulerThreads.filter(snapshot => (
+    (!selectedObjectiveFilterId
+      || (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId))
+    && (!selectedThreadGroupFilterId || selectedThreadGroupMemberIds.has(snapshot.thread.id))
+    && (!selectedSupervisorFilterId || snapshot.thread.supervision.supervisor_id === selectedSupervisorFilterId)
+  )).length
+  const hiddenSchedulerThreadCount = schedulerFilteredThreadCount - visibleSchedulerThreads.length
   const schedulerHistoryPageFull = view === 'scheduler'
     && schedulerThreads.length >= schedulerHistoryLimit
     && schedulerThreads.some(snapshot => snapshot.thread.lifecycle !== 'open')
@@ -6770,6 +6798,8 @@ export default function App() {
                       onApproval={(approval, decision) => void decideApproval(approval, decision)}
                       onSchedule={(schedule, action) => void mutateSchedule(schedule, action)}
                       onThreadControl={(thread, action) => void controlThread(thread, action)}
+                      selectedSupervisorId={selectedSupervisorFilterId}
+                      onSupervisorFilter={(supervisorId) => setSelectedSupervisorFilterId(current => current === supervisorId ? '' : supervisorId)}
                     />
                   ) : <div className="small-empty">{t('work.causal.loadingDetail')}</div>}
                 </section>
@@ -6948,8 +6978,73 @@ export default function App() {
                 </details>
               )}
 
+              <section className="thread-group-board">
+                <header>
+                  <span>{t('work.causal.groups.title').toUpperCase()}</span>
+                  <b>{durableThreadGroups.length}</b>
+                  <small>{t('work.causal.groups.subtitle')}</small>
+                </header>
+                <div className="thread-group-grid">
+                  {durableThreadGroups.map(snapshot => {
+                    const selected = selectedThreadGroupFilterId === snapshot.group.id
+                    const outcomesByThread = new Map(snapshot.outcomes.map(outcome => [outcome.thread_id, outcome] as const))
+                    return (
+                      <details className={`thread-group-card ${selected ? 'is-filtered' : ''}`} key={snapshot.group.id} open={snapshot.group.status === 'open'}>
+                        <summary>
+                          <span className={`status-pill ${snapshot.group.status}`}>{statusLabel(snapshot.group.status, t)}</span>
+                          <span>
+                            <strong>{shortId(snapshot.group.id, 36)}</strong>
+                            <small>{t('work.causal.groups.supervision', {
+                              kind: t(`work.causal.supervisorValues.${snapshot.group.supervisor_kind}`),
+                              id: shortId(snapshot.group.supervisor_id, 22),
+                            })}</small>
+                          </span>
+                          <code>{snapshot.group.policy.toUpperCase()} · g{snapshot.group.generation}</code>
+                          <small>{t('work.causal.groups.progress', {
+                            terminal: snapshot.group.terminal_count,
+                            required: snapshot.group.required_count,
+                            successful: snapshot.group.successful_count,
+                          })}</small>
+                          <ChevronDown size={13} />
+                        </summary>
+                        <div className="thread-group-card-body">
+                          <header>
+                            <span>{t('work.causal.groups.barrier')} · {snapshot.group.barrier_event_id ? shortId(snapshot.group.barrier_event_id, 24) : t('work.causal.none')}</span>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedThreadGroupFilterId(current => current === snapshot.group.id ? '' : snapshot.group.id)}
+                            >
+                              <Filter size={11} /> {selected ? t('work.causal.groups.clearFilter') : t('work.causal.groups.filter')}
+                            </button>
+                          </header>
+                          {snapshot.members.map(member => {
+                            const outcome = outcomesByThread.get(member.thread_id)
+                            return (
+                              <button
+                                className="thread-group-member"
+                                type="button"
+                                key={member.thread_id}
+                                onClick={() => navigate(threadPath(selectedContextId, member.thread_id))}
+                              >
+                                <span className={`status-pill ${member.status}`}>{statusLabel(member.status, t)}</span>
+                                <span>
+                                  <strong>{t('work.causal.groups.member')} · {shortId(member.thread_id, 32)}</strong>
+                                  <small>{outcome?.summary ?? outcome?.disposition ?? t('work.causal.none')}</small>
+                                </span>
+                                <small>{member.required ? t('work.causal.groups.required') : t('work.causal.groups.optional')}</small>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </details>
+                    )
+                  })}
+                  {durableThreadGroups.length === 0 && <div className="small-empty">{t('work.causal.groups.empty')}</div>}
+                </div>
+              </section>
+
               <section className="causal-board">
-                <header><span>{t('work.causal.title').toUpperCase()}</span><b>{schedulerThreads.length}</b><small>{t('work.causal.subtitle')}</small></header>
+                <header><span>{t('work.causal.title').toUpperCase()}</span><b>{visibleSchedulerThreads.length}</b><small>{t('work.causal.subtitle')}</small></header>
                 <div className="causal-thread-list">
                   {hiddenSchedulerThreadCount > 0 && (
                     <div className="history-hint">{t('work.causal.historyLimited', { count: hiddenSchedulerThreadCount })}</div>
@@ -6969,6 +7064,8 @@ export default function App() {
                           onApproval={(approval, decision) => void decideApproval(approval, decision)}
                           onSchedule={(schedule, action) => void mutateSchedule(schedule, action)}
                           onThreadControl={(thread, action) => void controlThread(thread, action)}
+                          selectedSupervisorId={selectedSupervisorFilterId}
+                          onSupervisorFilter={(supervisorId) => setSelectedSupervisorFilterId(current => current === supervisorId ? '' : supervisorId)}
                           onInspect={(threadId) => navigate(threadPath(selectedContextId, threadId))}
                         />
                       ))}

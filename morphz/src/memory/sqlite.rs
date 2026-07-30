@@ -2,23 +2,25 @@ use crate::approval_authority::{
     approval_decision_event, stable_approval_identity, stable_grant_id,
 };
 use crate::config::SqliteStorageConfig;
-use crate::event::Event;
+use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
-    causal_payload_string, ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord,
-    ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus, ActionGroupStore,
-    ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
-    ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
-    ApprovalStatus, ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
-    CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
-    ContextTokenBudgetMutation, ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore,
-    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
-    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
-    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
-    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    causal_payload_string, evaluate_thread_completion_contract, evaluate_thread_group_contract,
+    thread_cancellation_event, thread_group_barrier_event, thread_terminal_barrier_event,
+    ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus,
+    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
+    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
+    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
+    CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
+    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextTokenBudgetMutation,
+    ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit,
+    DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
+    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
+    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
@@ -28,18 +30,22 @@ use crate::memory::{
     NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext, NewDelegation,
     NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
     NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
-    NewSchedule, NewSession, NewThread, NewThreadActivation, NewThreadSignal, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
-    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord, QueryFilter, RecallDocument,
-    RecallDocumentKind, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
-    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
-    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
-    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
-    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
-    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadStore, TimerStore,
+    NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
+    NewThreadGroupPlan, NewThreadSignal, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
+    PrincipalDirectoryPage, PrincipalRecord, QueryFilter, RecallDocument, RecallDocumentKind,
+    RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore,
+    RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
+    ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
+    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
+    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadControlAction, ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord,
+    ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus,
+    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation,
+    ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord, ThreadPromotionRequest,
+    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, ThreadSupervision,
+    ThreadSupervisorKind, TimerStore,
 };
 use chrono::{DateTime, Utc};
 // SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
@@ -552,6 +558,7 @@ impl SqliteStore {
             status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'cancelled', 'failed')),
             claimed_by TEXT,
             lease_expires_at TEXT,
+            dialogue_lane_released_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
@@ -591,6 +598,17 @@ impl SqliteStore {
             executor_kind TEXT NOT NULL,
             executor_id TEXT,
             target_id TEXT,
+            lifetime TEXT NOT NULL DEFAULT 'durable'
+                CHECK(lifetime IN ('attached', 'durable', 'disposable')),
+            supervisor_kind TEXT NOT NULL DEFAULT 'legacy'
+                CHECK(supervisor_kind IN ('evaluation', 'objective', 'runtime', 'none', 'legacy')),
+            supervisor_id TEXT,
+            supervision_generation INTEGER NOT NULL DEFAULT 1
+                CHECK(supervision_generation >= 1),
+            origin_evaluation_id TEXT,
+            parent_thread_id TEXT,
+            thread_group_id TEXT,
+            completion_contract_json TEXT NOT NULL DEFAULT '{}',
             result_text TEXT,
             result_event_id TEXT,
             delivery_status TEXT NOT NULL DEFAULT 'none' CHECK(delivery_status IN ('none', 'pending', 'deferred', 'delivered')),
@@ -1050,14 +1068,70 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_schedule_dependencies_thread
             ON schedule_dependencies(dependency_thread_id, schedule_id);
 
+        CREATE TABLE IF NOT EXISTS thread_groups (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            context_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            supervisor_kind TEXT NOT NULL,
+            supervisor_id TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            policy TEXT NOT NULL,
+            required_count INTEGER NOT NULL,
+            terminal_count INTEGER NOT NULL DEFAULT 0,
+            successful_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            completion_contract_json TEXT NOT NULL DEFAULT '{}',
+            terminal_summary_json TEXT NOT NULL DEFAULT '{}',
+            barrier_event_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            satisfied_at TEXT,
+            FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_thread_groups_supervisor
+            ON thread_groups(supervisor_kind, supervisor_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_thread_groups_context_status
+            ON thread_groups(context_id, status, created_at);
+
+        CREATE TABLE IF NOT EXISTS thread_group_members (
+            group_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            required INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'pending',
+            outcome_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(group_id, ordinal),
+            UNIQUE(group_id, thread_id),
+            FOREIGN KEY(group_id) REFERENCES thread_groups(id) ON DELETE CASCADE,
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_thread_group_members_group_status
+            ON thread_group_members(group_id, status, ordinal);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_group_members_pending_thread
+            ON thread_group_members(thread_id) WHERE status = 'pending';
+
         CREATE TABLE IF NOT EXISTS thread_outcomes (
             thread_id TEXT PRIMARY KEY,
+            outcome_id TEXT NOT NULL UNIQUE,
+            thread_generation INTEGER NOT NULL DEFAULT 1,
             root_turn_id TEXT NOT NULL UNIQUE,
             activation_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
+            terminal_kind TEXT NOT NULL DEFAULT 'completed',
             disposition TEXT NOT NULL,
             event_id TEXT NOT NULL UNIQUE,
+            summary TEXT,
+            artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+            evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+            check_results_json TEXT NOT NULL DEFAULT '{}',
+            unresolved_failures_json TEXT NOT NULL DEFAULT '[]',
+            terminal_event_sequence INTEGER,
             created_at TEXT NOT NULL,
+            delivered_at TEXT,
             FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
             FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -1089,6 +1163,7 @@ impl SqliteStore {
         migrate_edge_execution(&pool).await?;
         for (table, column) in [
             ("thread_activations", "initiating_principal_id"),
+            ("thread_activations", "dialogue_lane_released_at"),
             ("threads", "initiating_principal_id"),
             ("thread_signals", "principal_id"),
             ("execution_jobs", "initiating_principal_id"),
@@ -1134,6 +1209,82 @@ impl SqliteStore {
             .execute(&pool)
             .await?;
         }
+        for (column, definition) in [
+            (
+                "lifetime",
+                "TEXT NOT NULL DEFAULT 'durable' CHECK(lifetime IN ('attached', 'durable', 'disposable'))",
+            ),
+            (
+                "supervisor_kind",
+                "TEXT NOT NULL DEFAULT 'legacy' CHECK(supervisor_kind IN ('evaluation', 'objective', 'runtime', 'none', 'legacy'))",
+            ),
+            ("supervisor_id", "TEXT"),
+            (
+                "supervision_generation",
+                "INTEGER NOT NULL DEFAULT 1 CHECK(supervision_generation >= 1)",
+            ),
+            ("origin_evaluation_id", "TEXT"),
+            ("parent_thread_id", "TEXT"),
+            ("thread_group_id", "TEXT"),
+            ("completion_contract_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ] {
+            if !thread_columns.contains(column) {
+                sqlx::query(&format!(
+                    "ALTER TABLE threads ADD COLUMN {column} {definition}"
+                ))
+                .execute(&pool)
+                .await?;
+            }
+        }
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_threads_supervisor
+               ON threads(supervisor_kind, supervisor_id, status, updated_at DESC)"#,
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_threads_group
+               ON threads(thread_group_id, status, updated_at DESC)"#,
+        )
+        .execute(&pool)
+        .await?;
+        migrate_thread_group_member_history(&pool).await?;
+        let outcome_columns = sqlx::query("PRAGMA table_info(thread_outcomes)")
+            .fetch_all(&pool)
+            .await?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        for (column, definition) in [
+            ("outcome_id", "TEXT"),
+            ("thread_generation", "INTEGER NOT NULL DEFAULT 1"),
+            ("terminal_kind", "TEXT NOT NULL DEFAULT 'completed'"),
+            ("summary", "TEXT"),
+            ("artifact_refs_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("evidence_refs_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("check_results_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("unresolved_failures_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("terminal_event_sequence", "INTEGER"),
+            ("delivered_at", "TEXT"),
+        ] {
+            if !outcome_columns.contains(column) {
+                sqlx::query(&format!(
+                    "ALTER TABLE thread_outcomes ADD COLUMN {column} {definition}"
+                ))
+                .execute(&pool)
+                .await?;
+            }
+        }
+        sqlx::query(
+            "UPDATE thread_outcomes SET outcome_id = 'outcome_' || event_id WHERE outcome_id IS NULL OR outcome_id = ''",
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_outcomes_outcome_id ON thread_outcomes(outcome_id)",
+        )
+        .execute(&pool)
+        .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_thread_activations_root_generation_status
                ON thread_activations(root_turn_id, generation, status, updated_at)"#,
@@ -1885,6 +2036,95 @@ async fn migrate_threads_to_canonical_domain(
     Ok(())
 }
 
+/// A Thread may move from an Evaluation-owned Group to an Objective-owned
+/// Group. The old membership is historical supervision evidence, so uniqueness
+/// applies only to the currently pending membership rather than to every row
+/// ever written for the Thread.
+async fn migrate_thread_group_member_history(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let table_sql = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'thread_group_members'",
+    )
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_default();
+    if table_sql.is_empty() || !table_sql.contains("thread_id TEXT NOT NULL UNIQUE") {
+        return Ok(());
+    }
+
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *connection)
+        .await?;
+    let migration = async {
+        let mut tx = connection.begin().await?;
+        sqlx::query("ALTER TABLE thread_group_members RENAME TO thread_group_members_legacy")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"CREATE TABLE thread_group_members (
+                group_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                required INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'pending',
+                outcome_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(group_id, ordinal),
+                UNIQUE(group_id, thread_id),
+                FOREIGN KEY(group_id) REFERENCES thread_groups(id) ON DELETE CASCADE,
+                FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO thread_group_members
+               (group_id, thread_id, ordinal, required, status, outcome_id, created_at, updated_at)
+               SELECT group_id, thread_id, ordinal, required, status, outcome_id, created_at, updated_at
+               FROM thread_group_members_legacy"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE thread_group_members_legacy")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"CREATE INDEX idx_thread_group_members_group_status
+               ON thread_group_members(group_id, status, ordinal)"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"CREATE UNIQUE INDEX idx_thread_group_members_pending_thread
+               ON thread_group_members(thread_id) WHERE status = 'pending'"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .await;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *connection)
+        .await?;
+    migration?;
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&mut *connection)
+        .await?;
+    if !violations.is_empty() {
+        return Err(format!(
+            "Thread Group 成员迁移后发现 {} 条外键违规",
+            violations.len()
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// SQLite cannot widen a CHECK constraint in place. Preserve every Timer row
 /// while adding the Runtime-owned Delivery Flush kind used by completion
 /// coalescing. Runtime timers have no inbound foreign keys, so rebuilding only
@@ -2168,6 +2408,30 @@ fn parse_thread_control_state(
     }
 }
 
+fn parse_thread_lifetime(
+    value: &str,
+) -> Result<ThreadLifetime, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "attached" => Ok(ThreadLifetime::Attached),
+        "durable" => Ok(ThreadLifetime::Durable),
+        "disposable" => Ok(ThreadLifetime::Disposable),
+        other => Err(format!("未知 Thread lifetime：'{other}'").into()),
+    }
+}
+
+fn parse_thread_supervisor_kind(
+    value: &str,
+) -> Result<ThreadSupervisorKind, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "evaluation" => Ok(ThreadSupervisorKind::Evaluation),
+        "objective" => Ok(ThreadSupervisorKind::Objective),
+        "runtime" => Ok(ThreadSupervisorKind::Runtime),
+        "none" => Ok(ThreadSupervisorKind::None),
+        "legacy" => Ok(ThreadSupervisorKind::Legacy),
+        other => Err(format!("未知 Thread supervisor kind：'{other}'").into()),
+    }
+}
+
 fn parse_delivery_status(
     value: &str,
 ) -> Result<DeliveryStatus, Box<dyn std::error::Error + Send + Sync>> {
@@ -2333,6 +2597,9 @@ fn thread_activation_from_row(
         lease_expires_at: row
             .get::<Option<String>, _>("lease_expires_at")
             .map(|value| parse_time(&value)),
+        dialogue_lane_released_at: row
+            .get::<Option<String>, _>("dialogue_lane_released_at")
+            .map(|value| parse_time(&value)),
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
     })
@@ -2378,6 +2645,20 @@ fn thread_from_row(
         executor_kind: row.get("executor_kind"),
         executor_id: row.get("executor_id"),
         target_id: row.get("target_id"),
+        supervision: ThreadSupervision {
+            lifetime: parse_thread_lifetime(&row.get::<String, _>("lifetime"))?,
+            supervisor_kind: parse_thread_supervisor_kind(
+                &row.get::<String, _>("supervisor_kind"),
+            )?,
+            supervisor_id: row.get("supervisor_id"),
+            generation: sqlite_u64(row, "supervision_generation")?,
+            origin_evaluation_id: row.get("origin_evaluation_id"),
+            parent_thread_id: row.get("parent_thread_id"),
+            thread_group_id: row.get("thread_group_id"),
+            completion_contract: serde_json::from_str(
+                &row.get::<String, _>("completion_contract_json"),
+            )?,
+        },
         result_text: row.get("result_text"),
         result_event_id: row.get("result_event_id"),
         delivery_status: parse_delivery_status(&row.get::<String, _>("delivery_status"))?,
@@ -2406,6 +2687,112 @@ fn schedule_from_row(
         dependency_thread_ids,
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
+fn parse_thread_group_policy(
+    value: &str,
+) -> Result<ThreadGroupPolicy, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "all" => Ok(ThreadGroupPolicy::All),
+        "any" => Ok(ThreadGroupPolicy::Any),
+        other => Err(format!("未知 Thread Group policy：'{other}'").into()),
+    }
+}
+
+fn parse_thread_group_status(
+    value: &str,
+) -> Result<ThreadGroupStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "open" => Ok(ThreadGroupStatus::Open),
+        "satisfied" => Ok(ThreadGroupStatus::Satisfied),
+        "failed" => Ok(ThreadGroupStatus::Failed),
+        "cancelled" => Ok(ThreadGroupStatus::Cancelled),
+        other => Err(format!("未知 Thread Group status：'{other}'").into()),
+    }
+}
+
+fn parse_thread_group_member_status(
+    value: &str,
+) -> Result<ThreadGroupMemberStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "pending" => Ok(ThreadGroupMemberStatus::Pending),
+        "completed" => Ok(ThreadGroupMemberStatus::Completed),
+        "failed" => Ok(ThreadGroupMemberStatus::Failed),
+        "cancelled" => Ok(ThreadGroupMemberStatus::Cancelled),
+        other => Err(format!("未知 Thread Group member status：'{other}'").into()),
+    }
+}
+
+fn thread_group_from_row(
+    row: &SqliteRow,
+) -> Result<ThreadGroupRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ThreadGroupRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        context_id: row.get("context_id"),
+        session_id: row.get("session_id"),
+        supervisor_kind: parse_thread_supervisor_kind(&row.get::<String, _>("supervisor_kind"))?,
+        supervisor_id: row.get("supervisor_id"),
+        generation: sqlite_u64(row, "generation")?,
+        policy: parse_thread_group_policy(&row.get::<String, _>("policy"))?,
+        required_count: sqlite_u64(row, "required_count")?,
+        terminal_count: sqlite_u64(row, "terminal_count")?,
+        successful_count: sqlite_u64(row, "successful_count")?,
+        status: parse_thread_group_status(&row.get::<String, _>("status"))?,
+        completion_contract: serde_json::from_str(
+            &row.get::<String, _>("completion_contract_json"),
+        )?,
+        terminal_summary: serde_json::from_str(&row.get::<String, _>("terminal_summary_json"))?,
+        barrier_event_id: row.get("barrier_event_id"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        satisfied_at: row
+            .get::<Option<String>, _>("satisfied_at")
+            .map(|value| parse_time(&value)),
+    })
+}
+
+fn thread_group_member_from_row(
+    row: &SqliteRow,
+) -> Result<ThreadGroupMemberRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ThreadGroupMemberRecord {
+        group_id: row.get("group_id"),
+        thread_id: row.get("thread_id"),
+        ordinal: sqlite_u64(row, "ordinal")?,
+        required: row.get::<i64, _>("required") != 0,
+        status: parse_thread_group_member_status(&row.get::<String, _>("status"))?,
+        outcome_id: row.get("outcome_id"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
+fn thread_outcome_from_row(
+    row: &SqliteRow,
+) -> Result<ThreadOutcomeRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ThreadOutcomeRecord {
+        id: row.get("outcome_id"),
+        thread_id: row.get("thread_id"),
+        thread_generation: sqlite_u64(row, "thread_generation")?,
+        root_turn_id: row.get("root_turn_id"),
+        activation_id: row.get("activation_id"),
+        session_id: row.get("session_id"),
+        terminal_kind: parse_thread_lifecycle(&row.get::<String, _>("terminal_kind"))?,
+        disposition: row.get("disposition"),
+        summary: row.get("summary"),
+        result_event_id: row.get("event_id"),
+        artifact_refs: serde_json::from_str(&row.get::<String, _>("artifact_refs_json"))?,
+        evidence_refs: serde_json::from_str(&row.get::<String, _>("evidence_refs_json"))?,
+        check_results: serde_json::from_str(&row.get::<String, _>("check_results_json"))?,
+        unresolved_failures: serde_json::from_str(
+            &row.get::<String, _>("unresolved_failures_json"),
+        )?,
+        terminal_event_sequence: sqlite_optional_u64(row, "terminal_event_sequence")?,
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        delivered_at: row
+            .get::<Option<String>, _>("delivered_at")
+            .map(|value| parse_time(&value)),
     })
 }
 
@@ -5636,7 +6023,9 @@ impl ActivationStore for SqliteStore {
                           AND running_thread.generation = running.generation
                          WHERE running.session_id = activations.session_id
                            AND running.status = 'running'
+                           AND running.dialogue_lane_released_at IS NULL
                            AND running.id != activations.id
+                           AND running.root_turn_id != activations.root_turn_id
                            AND running_thread.kind = 'dialogue_turn'
                        )
                        AND NOT EXISTS (
@@ -5650,10 +6039,18 @@ impl ActivationStore for SqliteStore {
                            AND older.id != activations.id
                            AND older_thread.kind = 'dialogue_turn'
                            AND (
-                             older.trigger_sequence < activations.trigger_sequence
+                             CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                               < CASE WHEN activations.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                              OR (
-                               older.trigger_sequence = activations.trigger_sequence
-                               AND older.id < activations.id
+                               CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                                 = CASE WHEN activations.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                               AND (
+                                 older.trigger_sequence < activations.trigger_sequence
+                                 OR (
+                                   older.trigger_sequence = activations.trigger_sequence
+                                   AND older.id < activations.id
+                                 )
+                               )
                              )
                            )
                        )
@@ -5733,7 +6130,9 @@ impl ActivationStore for SqliteStore {
                     AND running_thread.generation = running.generation
                    WHERE running.session_id = candidate.session_id
                      AND running.status = 'running'
+                     AND running.dialogue_lane_released_at IS NULL
                      AND running.id != candidate.id
+                     AND running.root_turn_id != candidate.root_turn_id
                      AND running_thread.kind = 'dialogue_turn'
                  ) THEN 0
                  WHEN EXISTS (
@@ -5747,10 +6146,18 @@ impl ActivationStore for SqliteStore {
                      AND older.id != candidate.id
                      AND older_thread.kind = 'dialogue_turn'
                      AND (
-                       older.trigger_sequence < candidate.trigger_sequence
+                       CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                         < CASE WHEN candidate.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                        OR (
-                         older.trigger_sequence = candidate.trigger_sequence
-                         AND older.id < candidate.id
+                         CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                           = CASE WHEN candidate.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                         AND (
+                           older.trigger_sequence < candidate.trigger_sequence
+                           OR (
+                             older.trigger_sequence = candidate.trigger_sequence
+                             AND older.id < candidate.id
+                           )
+                         )
                        )
                      )
                  ) THEN 0
@@ -5766,6 +6173,27 @@ impl ActivationStore for SqliteStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(runnable.map(|value| value != 0).unwrap_or(true))
+    }
+
+    async fn release_dialogue_turn_activation(
+        &self,
+        activation_id: &str,
+        released_at: DateTime<Utc>,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let released_at = released_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE thread_activations
+               SET dialogue_lane_released_at = ?, revision = revision + 1,
+                   updated_at = ?
+               WHERE id = ? AND status = 'running'
+                 AND dialogue_lane_released_at IS NULL"#,
+        )
+        .bind(&released_at)
+        .bind(&released_at)
+        .bind(activation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn update_thread_activation(
@@ -5820,11 +6248,16 @@ impl ActivationStore for SqliteStore {
                             AND thread.generation = activation.generation
                            WHERE activation.session_id = ?
                              AND activation.status = 'running'
+                             AND activation.dialogue_lane_released_at IS NULL
                              AND activation.id != ?
+                             AND activation.root_turn_id != (
+                               SELECT root_turn_id FROM thread_activations WHERE id = ?
+                             )
                              AND thread.kind = 'dialogue_turn'
                            LIMIT 1"#,
                     )
                     .bind(&session_id)
+                    .bind(id)
                     .bind(id)
                     .fetch_optional(&mut *tx)
                     .await?;
@@ -5837,7 +6270,10 @@ impl ActivationStore for SqliteStore {
                            WHERE activation.session_id = ?
                              AND activation.status = 'queued'
                              AND thread.kind = 'dialogue_turn'
-                           ORDER BY activation.trigger_sequence, activation.id
+                           ORDER BY
+                             CASE WHEN activation.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END,
+                             activation.trigger_sequence,
+                             activation.id
                            LIMIT 1"#,
                     )
                     .bind(&session_id)
@@ -5926,10 +6362,23 @@ impl ActivationStore for SqliteStore {
             .ok_or("Evaluation outcome Event 缺少 thread_id")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
+        // Serialize idempotency checks with competing outcome commits. SQLite
+        // transactions are deferred by default; without taking the writer
+        // slot first, two callers can both observe a running Activation and a
+        // missing outcome before one of them appends the globally unique Event.
+        sqlx::query("UPDATE threads SET revision = revision WHERE id = ?")
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await?;
         let activation_route = sqlx::query(
             r#"SELECT activation.generation AS activation_generation,
                       activation.status AS activation_status,
-                      thread.generation AS thread_generation
+                      thread.generation AS thread_generation,
+                      thread.parent_thread_id AS parent_thread_id,
+                      thread.thread_group_id AS thread_group_id,
+                      thread.completion_contract_json AS completion_contract_json,
+                      thread.supervisor_kind AS supervisor_kind,
+                      thread.supervisor_id AS supervisor_id
                FROM thread_activations activation
                JOIN threads thread ON thread.root_turn_id = activation.root_turn_id
                WHERE activation.id = ? AND thread.id = ?"#,
@@ -5946,9 +6395,24 @@ impl ActivationStore for SqliteStore {
         })?;
         let activation_generation: i64 = activation_route.get("activation_generation");
         let thread_generation: i64 = activation_route.get("thread_generation");
+        let parent_thread_id: Option<String> = activation_route.get("parent_thread_id");
+        let thread_group_id: Option<String> = activation_route.get("thread_group_id");
+        let supervisor_kind =
+            parse_thread_supervisor_kind(&activation_route.get::<String, _>("supervisor_kind"))?;
+        let supervisor_id: Option<String> = activation_route.get("supervisor_id");
         if activation_generation != thread_generation {
             tx.commit().await?;
             return Ok(ActivationOutcomeCommit::StaleGeneration);
+        }
+        if let Some(event_id) = sqlx::query_scalar::<_, String>(
+            "SELECT event_id FROM thread_outcomes WHERE root_turn_id = ?",
+        )
+        .bind(root_turn_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            tx.commit().await?;
+            return Ok(ActivationOutcomeCommit::Existing { event_id });
         }
         let activation_status: String = activation_route.get("activation_status");
         if activation_status != ThreadActivationStatus::Running.as_str() {
@@ -5964,16 +6428,134 @@ impl ActivationStore for SqliteStore {
                 None => ActivationOutcomeCommit::StaleActivation,
             });
         }
+        let result_text = event.payload.get("text").and_then(JsonValue::as_str);
+        let terminal_kind = event
+            .payload
+            .get("terminal_kind")
+            .and_then(JsonValue::as_str)
+            .filter(|value| matches!(*value, "completed" | "failed" | "cancelled"))
+            .unwrap_or_else(|| {
+                if event.topic == "chat/reply"
+                    && event.payload.get("runtime_failure_kind").is_some()
+                {
+                    ThreadLifecycle::Failed.as_str()
+                } else {
+                    ThreadLifecycle::Completed.as_str()
+                }
+            });
+        if terminal_kind == ThreadLifecycle::Completed.as_str() {
+            let open_group_ids = sqlx::query_scalar::<_, String>(
+                r#"SELECT id FROM thread_groups
+                   WHERE supervisor_kind = 'evaluation'
+                     AND supervisor_id = ?
+                     AND status = 'open'
+                     AND terminal_count < required_count
+                   ORDER BY created_at, id"#,
+            )
+            .bind(activation_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            if !open_group_ids.is_empty() {
+                tx.commit().await?;
+                return Ok(ActivationOutcomeCommit::DeferredByOpenThreadGroups {
+                    group_ids: open_group_ids,
+                });
+            }
+        }
+        let outcome_id = format!("outcome_{thread_id}_g{thread_generation}");
+        let artifact_refs = event
+            .payload
+            .get("artifact_refs")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut evidence_refs = event
+            .payload
+            .get("evidence_refs")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if evidence_refs.is_empty() {
+            evidence_refs.push(JsonValue::String(event.id.clone()));
+        }
+        let reported_check_results = event
+            .payload
+            .get("check_results")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let reported_failures = event
+            .payload
+            .get("unresolved_failures")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let completion_contract: JsonValue =
+            serde_json::from_str(&activation_route.get::<String, _>("completion_contract_json"))?;
+        let terminal_lifecycle = parse_thread_lifecycle(terminal_kind)?;
+        let mut completion = evaluate_thread_completion_contract(
+            &completion_contract,
+            terminal_lifecycle,
+            result_text,
+            &artifact_refs,
+            &evidence_refs,
+            &reported_check_results,
+            &reported_failures,
+        );
+        if terminal_lifecycle == ThreadLifecycle::Failed
+            && completion.unresolved_failures.is_empty()
+        {
+            completion.unresolved_failures.push(
+                event
+                    .payload
+                    .get("runtime_failure_kind")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("thread_failed")
+                    .to_string(),
+            );
+        }
+        let check_results = completion.check_results;
+        let unresolved_failures = completion
+            .unresolved_failures
+            .iter()
+            .cloned()
+            .map(JsonValue::String)
+            .collect::<Vec<_>>();
+        append_event_in_transaction(&mut tx, event).await?;
+        let terminal_event_sequence =
+            sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
+                .bind(&event.id)
+                .fetch_one(&mut *tx)
+                .await?;
         let result = sqlx::query(
-            "INSERT INTO thread_outcomes (thread_id, root_turn_id, activation_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(root_turn_id) DO NOTHING",
+            r#"INSERT INTO thread_outcomes
+               (thread_id, outcome_id, thread_generation, root_turn_id, activation_id,
+                session_id, terminal_kind, disposition, event_id, summary,
+                artifact_refs_json, evidence_refs_json, check_results_json,
+                unresolved_failures_json, terminal_event_sequence, created_at, delivered_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(root_turn_id) DO NOTHING"#,
         )
         .bind(thread_id)
+        .bind(&outcome_id)
+        .bind(thread_generation)
         .bind(root_turn_id)
         .bind(activation_id)
         .bind(session_id)
+        .bind(terminal_kind)
         .bind(disposition)
         .bind(&event.id)
+        .bind(result_text)
+        .bind(serde_json::to_string(&artifact_refs)?)
+        .bind(serde_json::to_string(&evidence_refs)?)
+        .bind(serde_json::to_string(&check_results)?)
+        .bind(serde_json::to_string(&unresolved_failures)?)
+        .bind(terminal_event_sequence)
         .bind(&now)
+        .bind(if event.topic == "chat/reply" {
+            Some(now.as_str())
+        } else {
+            None
+        })
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 0 {
@@ -5982,18 +6564,12 @@ impl ActivationStore for SqliteStore {
                     .bind(root_turn_id)
                     .fetch_one(&mut *tx)
                     .await?;
-            tx.commit().await?;
+            tx.rollback().await?;
             return Ok(ActivationOutcomeCommit::Existing {
                 event_id: existing.get("event_id"),
             });
         }
-        let result_text = event.payload.get("text").and_then(JsonValue::as_str);
-        let thread_status =
-            if event.topic == "chat/reply" && event.payload.get("runtime_failure_kind").is_some() {
-                ThreadLifecycle::Failed.as_str()
-            } else {
-                ThreadLifecycle::Completed.as_str()
-            };
+        let thread_status = terminal_kind;
         let (delivery_status, delivery_event_id) = match event.topic.as_str() {
             "chat/reply" => ("delivered", Some(event.id.as_str())),
             "runtime/thread_result" => ("pending", None),
@@ -6028,6 +6604,377 @@ impl ActivationStore for SqliteStore {
                 thread_id
             )
             .into());
+        }
+        if let Some(group_id) = thread_group_id.as_deref() {
+            let member_status = match terminal_kind {
+                "completed" if completion.passed => ThreadGroupMemberStatus::Completed,
+                "completed" => ThreadGroupMemberStatus::Failed,
+                "cancelled" => ThreadGroupMemberStatus::Cancelled,
+                _ => ThreadGroupMemberStatus::Failed,
+            };
+            let member = sqlx::query(
+                r#"UPDATE thread_group_members
+                   SET status = ?, outcome_id = ?, updated_at = ?
+                   WHERE group_id = ? AND thread_id = ? AND status = 'pending'"#,
+            )
+            .bind(member_status.as_str())
+            .bind(&outcome_id)
+            .bind(&now)
+            .bind(group_id)
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await?;
+            if member.rows_affected() == 1 {
+                let group = sqlx::query(
+                    r#"SELECT policy, required_count, status, supervisor_kind,
+                              supervisor_id, generation, context_id, session_id,
+                              completion_contract_json
+                       FROM thread_groups WHERE id = ?"#,
+                )
+                .bind(group_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                let required_count = u64::try_from(group.get::<i64, _>("required_count"))?;
+                let counts = sqlx::query(
+                    r#"SELECT
+                         SUM(CASE WHEN required = 1 AND status <> 'pending' THEN 1 ELSE 0 END)
+                           AS terminal_count,
+                         SUM(CASE WHEN required = 1 AND status = 'completed' THEN 1 ELSE 0 END)
+                           AS successful_count
+                       FROM thread_group_members WHERE group_id = ?"#,
+                )
+                .bind(group_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                let terminal_count = u64::try_from(counts.get::<i64, _>("terminal_count"))?;
+                let successful_count = u64::try_from(counts.get::<i64, _>("successful_count"))?;
+                let policy = parse_thread_group_policy(&group.get::<String, _>("policy"))?;
+                let current_status = parse_thread_group_status(&group.get::<String, _>("status"))?;
+                let group_contract: JsonValue =
+                    serde_json::from_str(&group.get::<String, _>("completion_contract_json"))?;
+                let group_evaluation = evaluate_thread_group_contract(
+                    policy,
+                    required_count,
+                    terminal_count,
+                    successful_count,
+                    &group_contract,
+                );
+                let next_status = group_evaluation.status;
+                let terminal_summary = serde_json::json!({
+                    "group_id": group_id,
+                    "status": next_status.as_str(),
+                    "policy": policy.as_str(),
+                    "required_count": required_count,
+                    "terminal_count": terminal_count,
+                    "successful_count": successful_count,
+                    "completion_contract": group_contract,
+                    "contract_results": group_evaluation.contract_results,
+                    "last_outcome_id": outcome_id,
+                    "last_thread_id": thread_id,
+                });
+                let barrier_event_id = format!(
+                    "thread_group_barrier_{}_g{}",
+                    group_id,
+                    group.get::<i64, _>("generation")
+                );
+                let group_update = sqlx::query(
+                    r#"UPDATE thread_groups
+                       SET revision = revision + 1, terminal_count = ?,
+                           successful_count = ?, status = ?,
+                           terminal_summary_json = ?, barrier_event_id = ?,
+                           updated_at = ?, satisfied_at = ?
+                       WHERE id = ? AND status = 'open'"#,
+                )
+                .bind(i64::try_from(terminal_count)?)
+                .bind(i64::try_from(successful_count)?)
+                .bind(next_status.as_str())
+                .bind(serde_json::to_string(&terminal_summary)?)
+                .bind(if next_status.is_terminal() {
+                    Some(barrier_event_id.as_str())
+                } else {
+                    None
+                })
+                .bind(&now)
+                .bind(if next_status.is_terminal() {
+                    Some(now.as_str())
+                } else {
+                    None
+                })
+                .bind(group_id)
+                .execute(&mut *tx)
+                .await?;
+                if current_status == ThreadGroupStatus::Open
+                    && next_status.is_terminal()
+                    && group_update.rows_affected() == 1
+                {
+                    let supervisor_kind =
+                        parse_thread_supervisor_kind(&group.get::<String, _>("supervisor_kind"))?;
+                    let supervisor_id: String = group.get("supervisor_id");
+                    let group_context_id: String = group.get("context_id");
+                    let group_session_id: String = group.get("session_id");
+                    let mut payload = serde_json::Map::new();
+                    payload.insert(
+                        "context_id".to_string(),
+                        JsonValue::String(group_context_id.clone()),
+                    );
+                    payload.insert(
+                        "thread_group_id".to_string(),
+                        JsonValue::String(group_id.to_string()),
+                    );
+                    payload.insert(
+                        "thread_group_status".to_string(),
+                        JsonValue::String(next_status.as_str().to_string()),
+                    );
+                    payload.insert(
+                        "wake_policy".to_string(),
+                        JsonValue::String("immediate".into()),
+                    );
+                    payload.insert("terminal_summary".to_string(), terminal_summary);
+                    let (topic, event_type) = match supervisor_kind {
+                        ThreadSupervisorKind::Evaluation => {
+                            let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
+                                format!(
+                                    "Evaluation Thread Group '{}' 的成员 '{}' 缺少 parent_thread_id",
+                                    group_id, thread_id
+                                )
+                            })?;
+                            let parent = sqlx::query(
+                                "SELECT session_id, root_turn_id FROM threads WHERE id = ?",
+                            )
+                            .bind(parent_id)
+                            .fetch_one(&mut *tx)
+                            .await?;
+                            payload.insert(
+                                "session_id".to_string(),
+                                JsonValue::String(parent.get("session_id")),
+                            );
+                            payload.insert(
+                                "thread_id".to_string(),
+                                JsonValue::String(parent_id.to_string()),
+                            );
+                            payload.insert(
+                                "root_turn_id".to_string(),
+                                JsonValue::String(parent.get("root_turn_id")),
+                            );
+                            payload.insert(
+                                "tool_name".to_string(),
+                                JsonValue::String("thread_group".into()),
+                            );
+                            payload.insert(
+                                "tool_status".to_string(),
+                                JsonValue::String(
+                                    if next_status == ThreadGroupStatus::Satisfied {
+                                        "success"
+                                    } else {
+                                        "error"
+                                    }
+                                    .into(),
+                                ),
+                            );
+                            payload.insert(
+                                "text".to_string(),
+                                JsonValue::String(format!(
+                                    "Thread Group '{}' 已终止：{}（{}/{} 成功）",
+                                    group_id,
+                                    next_status.as_str(),
+                                    successful_count,
+                                    required_count
+                                )),
+                            );
+                            ("chat/thread_group_terminal", TYPE_TOOL_OUTPUT.to_string())
+                        }
+                        ThreadSupervisorKind::Objective => {
+                            payload.insert(
+                                "session_id".to_string(),
+                                JsonValue::String(group_session_id),
+                            );
+                            payload.insert(
+                                "objective_id".to_string(),
+                                JsonValue::String(supervisor_id),
+                            );
+                            payload.insert(
+                                "correlation_id".to_string(),
+                                JsonValue::String(group_id.to_string()),
+                            );
+                            (
+                                "runtime/thread_group_terminal",
+                                "runtime_control".to_string(),
+                            )
+                        }
+                        ThreadSupervisorKind::Runtime => {
+                            payload.insert(
+                                "session_id".to_string(),
+                                JsonValue::String(group_session_id),
+                            );
+                            payload.insert(
+                                "runtime_supervisor_id".to_string(),
+                                JsonValue::String(supervisor_id),
+                            );
+                            (
+                                "runtime/thread_group_terminal",
+                                "runtime_control".to_string(),
+                            )
+                        }
+                        ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
+                            return Err(format!(
+                                "Thread Group '{}' 不能由 {:?} supervisor 收口",
+                                group_id, supervisor_kind
+                            )
+                            .into());
+                        }
+                    };
+                    let barrier = Event::new(
+                        barrier_event_id,
+                        "Runtime".to_string(),
+                        event_type,
+                        topic.to_string(),
+                        payload,
+                    );
+                    append_event_in_transaction(&mut tx, &barrier).await?;
+                    append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
+                }
+            }
+        } else {
+            let terminal_event_id = format!("thread_terminal_{thread_id}_g{thread_generation}");
+            let mut payload = serde_json::Map::new();
+            payload.insert(
+                "context_id".to_string(),
+                event
+                    .payload
+                    .get("context_id")
+                    .cloned()
+                    .ok_or("Evaluation outcome Event 缺少 context_id")?,
+            );
+            payload.insert(
+                "thread_id".to_string(),
+                JsonValue::String(thread_id.to_string()),
+            );
+            payload.insert(
+                "thread_generation".to_string(),
+                JsonValue::from(thread_generation),
+            );
+            payload.insert(
+                "outcome_id".to_string(),
+                JsonValue::String(outcome_id.clone()),
+            );
+            payload.insert(
+                "terminal_kind".to_string(),
+                JsonValue::String(terminal_kind.to_string()),
+            );
+            payload.insert(
+                "wake_policy".to_string(),
+                JsonValue::String("immediate".into()),
+            );
+            payload.insert(
+                "terminal_summary".to_string(),
+                serde_json::json!({
+                    "thread_id": thread_id,
+                    "outcome_id": outcome_id,
+                    "terminal_kind": terminal_kind,
+                    "summary": result_text,
+                    "artifact_refs": artifact_refs,
+                    "evidence_refs": evidence_refs,
+                    "check_results": check_results,
+                    "unresolved_failures": unresolved_failures,
+                }),
+            );
+            let (topic, event_type) = match supervisor_kind {
+                ThreadSupervisorKind::Evaluation => {
+                    let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
+                        format!(
+                            "attached Thread '{}' 缺少 parent_thread_id，无法向 Evaluation 交付",
+                            thread_id
+                        )
+                    })?;
+                    let parent =
+                        sqlx::query("SELECT session_id, root_turn_id FROM threads WHERE id = ?")
+                            .bind(parent_id)
+                            .fetch_one(&mut *tx)
+                            .await?;
+                    payload.insert(
+                        "session_id".to_string(),
+                        JsonValue::String(parent.get("session_id")),
+                    );
+                    payload.insert(
+                        "thread_id".to_string(),
+                        JsonValue::String(parent_id.to_string()),
+                    );
+                    payload.insert(
+                        "completed_thread_id".to_string(),
+                        JsonValue::String(thread_id.to_string()),
+                    );
+                    payload.insert(
+                        "root_turn_id".to_string(),
+                        JsonValue::String(parent.get("root_turn_id")),
+                    );
+                    payload.insert("tool_name".to_string(), JsonValue::String("thread".into()));
+                    payload.insert(
+                        "tool_status".to_string(),
+                        JsonValue::String(
+                            if terminal_kind == ThreadLifecycle::Completed.as_str() {
+                                "success"
+                            } else {
+                                "error"
+                            }
+                            .into(),
+                        ),
+                    );
+                    payload.insert(
+                        "text".to_string(),
+                        JsonValue::String(format!(
+                            "Thread '{}' 已终止：{}",
+                            thread_id, terminal_kind
+                        )),
+                    );
+                    ("chat/thread_terminal", TYPE_TOOL_OUTPUT.to_string())
+                }
+                ThreadSupervisorKind::Objective => {
+                    payload.insert(
+                        "session_id".to_string(),
+                        JsonValue::String(session_id.to_string()),
+                    );
+                    payload.insert(
+                        "objective_id".to_string(),
+                        JsonValue::String(
+                            supervisor_id
+                                .clone()
+                                .ok_or("durable Thread 缺少 Objective supervisor_id")?,
+                        ),
+                    );
+                    payload.insert(
+                        "correlation_id".to_string(),
+                        JsonValue::String(thread_id.to_string()),
+                    );
+                    ("runtime/thread_terminal", "runtime_control".to_string())
+                }
+                ThreadSupervisorKind::Runtime => {
+                    payload.insert(
+                        "session_id".to_string(),
+                        JsonValue::String(session_id.to_string()),
+                    );
+                    payload.insert(
+                        "runtime_supervisor_id".to_string(),
+                        JsonValue::String(
+                            supervisor_id
+                                .clone()
+                                .ok_or("Runtime Thread 缺少 supervisor_id")?,
+                        ),
+                    );
+                    ("runtime/thread_terminal", "runtime_control".to_string())
+                }
+                ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => ("", String::new()),
+            };
+            if !topic.is_empty() {
+                let terminal_event = Event::new(
+                    terminal_event_id,
+                    "Runtime".to_string(),
+                    event_type,
+                    topic.to_string(),
+                    payload,
+                );
+                append_event_in_transaction(&mut tx, &terminal_event).await?;
+                append_signal_outbox_in_transaction(&mut tx, &terminal_event).await?;
+            }
         }
         if let Some(covers) = event.payload.get("covers").and_then(JsonValue::as_array) {
             for thread_id in covers.iter().filter_map(JsonValue::as_str) {
@@ -6075,7 +7022,6 @@ impl ActivationStore for SqliteStore {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
-        append_event_in_transaction(&mut tx, event).await?;
         let activity_at = event
             .timestamp
             .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
@@ -6246,18 +7192,222 @@ impl ActivationStore for SqliteStore {
 }
 
 #[async_trait::async_trait]
+impl ThreadGroupStore for SqliteStore {
+    async fn get_thread_group(
+        &self,
+        id: &str,
+    ) -> Result<Option<ThreadGroupRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query("SELECT * FROM thread_groups WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(thread_group_from_row).transpose()
+    }
+
+    async fn list_thread_groups(
+        &self,
+        filter: ThreadGroupFilter,
+    ) -> Result<Vec<ThreadGroupRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut query = QueryBuilder::new("SELECT * FROM thread_groups WHERE 1=1");
+        if let Some(context_id) = filter.context_id {
+            query.push(" AND context_id = ").push_bind(context_id);
+        }
+        if let Some(session_id) = filter.session_id {
+            query.push(" AND session_id = ").push_bind(session_id);
+        }
+        if let Some(supervisor_kind) = filter.supervisor_kind {
+            query
+                .push(" AND supervisor_kind = ")
+                .push_bind(supervisor_kind.as_str());
+        }
+        if let Some(supervisor_id) = filter.supervisor_id {
+            query.push(" AND supervisor_id = ").push_bind(supervisor_id);
+        }
+        if let Some(status) = filter.status {
+            query.push(" AND status = ").push_bind(status.as_str());
+        } else if !filter.include_terminal {
+            query.push(" AND status = 'open'");
+        }
+        query.push(if filter.newest_first {
+            " ORDER BY created_at DESC, id DESC"
+        } else {
+            " ORDER BY created_at, id"
+        });
+        if let Some(limit) = filter.limit {
+            query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
+        }
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(thread_group_from_row).collect()
+    }
+
+    async fn list_thread_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<ThreadGroupMemberRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            "SELECT * FROM thread_group_members WHERE group_id = ? ORDER BY ordinal, thread_id",
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(thread_group_member_from_row).collect()
+    }
+
+    async fn get_thread_outcome(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ThreadOutcomeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query("SELECT * FROM thread_outcomes WHERE thread_id = ?")
+            .bind(thread_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(thread_outcome_from_row).transpose()
+    }
+
+    async fn list_thread_group_outcomes(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<ThreadOutcomeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT outcome.*
+               FROM thread_group_members member
+               JOIN thread_outcomes outcome ON outcome.thread_id = member.thread_id
+               WHERE member.group_id = ?
+               ORDER BY member.ordinal, outcome.created_at"#,
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(thread_outcome_from_row).collect()
+    }
+
+    async fn repair_thread_group_barrier(
+        &self,
+        group_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let mut tx = self.pool.begin().await?;
+        let Some(group_row) = sqlx::query("SELECT * FROM thread_groups WHERE id = ?")
+            .bind(group_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(false);
+        };
+        let group = thread_group_from_row(&group_row)?;
+        if !group.status.is_terminal() {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        let deterministic_id = format!("thread_group_barrier_{}_g{}", group.id, group.generation);
+        if group
+            .barrier_event_id
+            .as_deref()
+            .is_some_and(|stored| stored != deterministic_id)
+        {
+            return Err(format!(
+                "Thread Group '{}' 的 barrier_event_id '{}' 与 generation {} 不一致",
+                group.id,
+                group.barrier_event_id.as_deref().unwrap_or_default(),
+                group.generation
+            )
+            .into());
+        }
+        let parent = if group.supervisor_kind == ThreadSupervisorKind::Evaluation {
+            sqlx::query(
+                r#"SELECT parent.*
+                   FROM thread_group_members member
+                   JOIN threads child ON child.id = member.thread_id
+                   JOIN threads parent ON parent.id = child.parent_thread_id
+                   WHERE member.group_id = ?
+                   ORDER BY member.ordinal, member.thread_id
+                   LIMIT 1"#,
+            )
+            .bind(&group.id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .as_ref()
+            .map(thread_from_row)
+            .transpose()?
+        } else {
+            None
+        };
+        let barrier = thread_group_barrier_event(&group, parent.as_ref())?;
+        let mut repaired = false;
+        if group.barrier_event_id.is_none() {
+            let update = sqlx::query(
+                r#"UPDATE thread_groups
+                   SET revision = revision + 1, barrier_event_id = ?, updated_at = ?
+                   WHERE id = ? AND barrier_event_id IS NULL"#,
+            )
+            .bind(&deterministic_id)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .bind(&group.id)
+            .execute(&mut *tx)
+            .await?;
+            repaired |= update.rows_affected() == 1;
+        }
+        repaired |= append_event_idempotent_in_transaction(&mut tx, &barrier).await?;
+
+        let signal_exists: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_signals WHERE event_id = ?")
+                .bind(&barrier.id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let outbox = sqlx::query("SELECT status, signal_id FROM signal_outbox WHERE event_id = ?")
+            .bind(&barrier.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if signal_exists == 0 {
+            match outbox {
+                None => {
+                    append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
+                    repaired = true;
+                }
+                Some(row)
+                    if row.get::<String, _>("status") == "materialized"
+                        && row.get::<Option<String>, _>("signal_id").is_some() =>
+                {
+                    let reset = sqlx::query(
+                        r#"UPDATE signal_outbox
+                           SET status = 'pending', signal_id = NULL, resolved_at = NULL
+                           WHERE event_id = ? AND status = 'materialized'
+                             AND NOT EXISTS (
+                               SELECT 1 FROM thread_signals
+                               WHERE id = signal_outbox.signal_id
+                             )"#,
+                    )
+                    .bind(&barrier.id)
+                    .execute(&mut *tx)
+                    .await?;
+                    repaired |= reset.rows_affected() == 1;
+                }
+                Some(_) => {}
+            }
+        }
+        tx.commit().await?;
+        Ok(repaired)
+    }
+}
+
+#[async_trait::async_trait]
 impl ThreadStore for SqliteStore {
     async fn ensure_thread(
         &self,
         thread: NewThread,
     ) -> Result<ThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
+        thread.supervision.validate(thread.kind)?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let completion_contract_json =
+            serde_json::to_string(&thread.supervision.completion_contract)?;
         sqlx::query(
             r#"INSERT OR IGNORE INTO threads
                (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
-                kind, status, executor_kind, executor_id, target_id, delivery_status,
-                created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 'none', ?, ?)"#,
+                kind, status, executor_kind, executor_id, target_id,
+                lifetime, supervisor_kind, supervisor_id, supervision_generation,
+                origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
+                delivery_status, created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
         )
         .bind(&thread.id)
         .bind(&thread.agent_id)
@@ -6269,6 +7419,14 @@ impl ThreadStore for SqliteStore {
         .bind(&thread.executor_kind)
         .bind(&thread.executor_id)
         .bind(&thread.target_id)
+        .bind(thread.supervision.lifetime.as_str())
+        .bind(thread.supervision.supervisor_kind.as_str())
+        .bind(&thread.supervision.supervisor_id)
+        .bind(i64::try_from(thread.supervision.generation)?)
+        .bind(&thread.supervision.origin_evaluation_id)
+        .bind(&thread.supervision.parent_thread_id)
+        .bind(&thread.supervision.thread_group_id)
+        .bind(&completion_contract_json)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -6305,6 +7463,9 @@ impl ThreadStore for SqliteStore {
                 thread.root_turn_id
             )
             .into());
+        }
+        if existing.kind != thread.kind || existing.supervision != thread.supervision {
+            return Err(format!("Root Turn '{}' 已被不同监督契约占用", thread.root_turn_id).into());
         }
         Ok(existing)
     }
@@ -6740,14 +7901,282 @@ impl ThreadStore for SqliteStore {
         id: &str,
         expected_revision: u64,
         action: ThreadControlAction,
+        reason: Option<&str>,
+        actor: Option<&str>,
     ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>> {
         let expected_revision = i64::try_from(expected_revision)
             .map_err(|_| "Thread revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        if action == ThreadControlAction::Close {
+            let mut tx = self.pool.begin().await?;
+            let row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let Some(row) = row else {
+                tx.commit().await?;
+                return Ok(ThreadMutation::NotFound);
+            };
+            let current = thread_from_row(&row)?;
+            if i64::try_from(current.revision)? != expected_revision
+                || current.lifecycle != ThreadLifecycle::Open
+            {
+                tx.commit().await?;
+                return Ok(ThreadMutation::Conflict { current });
+            }
+
+            let reason = reason.unwrap_or("Thread 被操作员关闭");
+            let actor = actor.unwrap_or("Runtime-Operator");
+            let result_event = thread_cancellation_event(&current, reason, actor);
+            append_event_in_transaction(&mut tx, &result_event).await?;
+            let terminal_event_sequence =
+                sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
+                    .bind(&result_event.id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            let outcome_id = format!("outcome_{}_g{}", current.id, current.generation);
+            let activation_id =
+                format!("activation_control_{}_g{}", current.id, current.generation);
+            sqlx::query(
+                r#"INSERT INTO thread_activations
+                   (id, revision, generation, agent_id, context_id, session_id,
+                    initiating_principal_id, trigger_event_id, trigger_sequence, trigger_kind,
+                    parent_activation_id, root_turn_id, status, claimed_by,
+                    created_at, updated_at)
+                   VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'cancelled', ?, ?, ?)"#,
+            )
+            .bind(&activation_id)
+            .bind(i64::try_from(current.generation)?)
+            .bind(&current.agent_id)
+            .bind(&current.context_id)
+            .bind(&current.session_id)
+            .bind(&current.initiating_principal_id)
+            .bind(&result_event.id)
+            .bind(terminal_event_sequence)
+            .bind(&result_event.event_type)
+            .bind(&current.root_turn_id)
+            .bind(actor)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            let evidence_refs = vec![result_event.id.clone()];
+            let unresolved_failures = vec![reason.to_string()];
+            let check_results = serde_json::json!({
+                "passed": false,
+                "cancelled_by": actor,
+                "reason": reason,
+            });
+            let inserted = sqlx::query(
+                r#"INSERT INTO thread_outcomes
+                   (thread_id, outcome_id, thread_generation, root_turn_id, activation_id,
+                    session_id, terminal_kind, disposition, event_id, summary,
+                    artifact_refs_json, evidence_refs_json, check_results_json,
+                    unresolved_failures_json, terminal_event_sequence, created_at, delivered_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'cancelled', 'no_reply', ?, ?, '[]', ?, ?, ?, ?, ?, NULL)
+                   ON CONFLICT(root_turn_id) DO NOTHING"#,
+            )
+            .bind(&current.id)
+            .bind(&outcome_id)
+            .bind(i64::try_from(current.generation)?)
+            .bind(&current.root_turn_id)
+            .bind(&activation_id)
+            .bind(&current.session_id)
+            .bind(&result_event.id)
+            .bind(reason)
+            .bind(serde_json::to_string(&evidence_refs)?)
+            .bind(serde_json::to_string(&check_results)?)
+            .bind(serde_json::to_string(&unresolved_failures)?)
+            .bind(terminal_event_sequence)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            if inserted.rows_affected() != 1 {
+                tx.rollback().await?;
+                let current = self
+                    .get_thread(id)
+                    .await?
+                    .ok_or("Thread 关闭冲突后无法读取")?;
+                return Ok(ThreadMutation::Conflict { current });
+            }
+            let updated = sqlx::query(
+                r#"UPDATE threads
+                   SET revision = revision + 1, generation = generation + 1,
+                       control_state = 'active', status = 'cancelled',
+                       result_text = ?, result_event_id = ?, updated_at = ?
+                   WHERE id = ? AND revision = ? AND status = 'open'"#,
+            )
+            .bind(reason)
+            .bind(&result_event.id)
+            .bind(&now)
+            .bind(id)
+            .bind(expected_revision)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() != 1 {
+                tx.rollback().await?;
+                let current = self
+                    .get_thread(id)
+                    .await?
+                    .ok_or("Thread 关闭冲突后无法读取")?;
+                return Ok(ThreadMutation::Conflict { current });
+            }
+
+            let outcome = ThreadOutcomeRecord {
+                id: outcome_id.clone(),
+                thread_id: current.id.clone(),
+                thread_generation: current.generation,
+                root_turn_id: current.root_turn_id.clone(),
+                activation_id,
+                session_id: current.session_id.clone(),
+                terminal_kind: ThreadLifecycle::Cancelled,
+                disposition: "no_reply".to_string(),
+                summary: Some(reason.to_string()),
+                result_event_id: result_event.id.clone(),
+                artifact_refs: Vec::new(),
+                evidence_refs,
+                check_results,
+                unresolved_failures,
+                terminal_event_sequence: Some(u64::try_from(terminal_event_sequence)?),
+                created_at: parse_time(&now),
+                delivered_at: None,
+            };
+
+            if let Some(group_id) = current.supervision.thread_group_id.as_deref() {
+                let member = sqlx::query(
+                    r#"UPDATE thread_group_members
+                       SET status = 'cancelled', outcome_id = ?, updated_at = ?
+                       WHERE group_id = ? AND thread_id = ? AND status = 'pending'"#,
+                )
+                .bind(&outcome_id)
+                .bind(&now)
+                .bind(group_id)
+                .bind(&current.id)
+                .execute(&mut *tx)
+                .await?;
+                if member.rows_affected() != 1 {
+                    return Err(format!(
+                        "关闭 Thread '{}' 时无法原子收口 Group '{}' 成员",
+                        current.id, group_id
+                    )
+                    .into());
+                }
+                let group_row = sqlx::query("SELECT * FROM thread_groups WHERE id = ?")
+                    .bind(group_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                let group = thread_group_from_row(&group_row)?;
+                let counts = sqlx::query(
+                    r#"SELECT
+                         COALESCE(SUM(CASE WHEN required = 1 AND status <> 'pending' THEN 1 ELSE 0 END), 0)
+                           AS terminal_count,
+                         COALESCE(SUM(CASE WHEN required = 1 AND status = 'completed' THEN 1 ELSE 0 END), 0)
+                           AS successful_count
+                       FROM thread_group_members WHERE group_id = ?"#,
+                )
+                .bind(group_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                let terminal_count = u64::try_from(counts.get::<i64, _>("terminal_count"))?;
+                let successful_count = u64::try_from(counts.get::<i64, _>("successful_count"))?;
+                let evaluation = evaluate_thread_group_contract(
+                    group.policy,
+                    group.required_count,
+                    terminal_count,
+                    successful_count,
+                    &group.completion_contract,
+                );
+                let terminal_summary = serde_json::json!({
+                    "group_id": group.id,
+                    "status": evaluation.status.as_str(),
+                    "policy": group.policy.as_str(),
+                    "required_count": group.required_count,
+                    "terminal_count": terminal_count,
+                    "successful_count": successful_count,
+                    "completion_contract": group.completion_contract,
+                    "contract_results": evaluation.contract_results,
+                    "last_outcome_id": outcome_id,
+                    "last_thread_id": current.id,
+                });
+                let barrier_id = format!("thread_group_barrier_{}_g{}", group.id, group.generation);
+                sqlx::query(
+                    r#"UPDATE thread_groups
+                       SET revision = revision + 1, terminal_count = ?,
+                           successful_count = ?, status = ?,
+                           terminal_summary_json = ?, barrier_event_id = ?,
+                           updated_at = ?, satisfied_at = ?
+                       WHERE id = ? AND status = 'open'"#,
+                )
+                .bind(i64::try_from(terminal_count)?)
+                .bind(i64::try_from(successful_count)?)
+                .bind(evaluation.status.as_str())
+                .bind(serde_json::to_string(&terminal_summary)?)
+                .bind(if evaluation.status.is_terminal() {
+                    Some(barrier_id.as_str())
+                } else {
+                    None
+                })
+                .bind(&now)
+                .bind(if evaluation.status.is_terminal() {
+                    Some(now.as_str())
+                } else {
+                    None
+                })
+                .bind(group_id)
+                .execute(&mut *tx)
+                .await?;
+                if evaluation.status.is_terminal() {
+                    let terminal_group_row =
+                        sqlx::query("SELECT * FROM thread_groups WHERE id = ?")
+                            .bind(group_id)
+                            .fetch_one(&mut *tx)
+                            .await?;
+                    let terminal_group = thread_group_from_row(&terminal_group_row)?;
+                    let parent =
+                        if let Some(parent_id) = current.supervision.parent_thread_id.as_deref() {
+                            sqlx::query("SELECT * FROM threads WHERE id = ?")
+                                .bind(parent_id)
+                                .fetch_optional(&mut *tx)
+                                .await?
+                                .as_ref()
+                                .map(thread_from_row)
+                                .transpose()?
+                        } else {
+                            None
+                        };
+                    let barrier = thread_group_barrier_event(&terminal_group, parent.as_ref())?;
+                    append_event_in_transaction(&mut tx, &barrier).await?;
+                    append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
+                }
+            } else {
+                let parent =
+                    if let Some(parent_id) = current.supervision.parent_thread_id.as_deref() {
+                        sqlx::query("SELECT * FROM threads WHERE id = ?")
+                            .bind(parent_id)
+                            .fetch_optional(&mut *tx)
+                            .await?
+                            .as_ref()
+                            .map(thread_from_row)
+                            .transpose()?
+                    } else {
+                        None
+                    };
+                if let Some(barrier) =
+                    thread_terminal_barrier_event(&current, &outcome, parent.as_ref())?
+                {
+                    append_event_in_transaction(&mut tx, &barrier).await?;
+                    append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
+                }
+            }
+            tx.commit().await?;
+            return Ok(ThreadMutation::Updated(
+                self.get_thread(id).await?.ok_or("Thread 关闭后无法读取")?,
+            ));
+        }
         let (control_state, lifecycle, generation_delta, predicate) = match action {
             ThreadControlAction::Pause => ("paused", "open", 0_i64, "control_state = 'active'"),
             ThreadControlAction::Resume => ("active", "open", 0_i64, "control_state = 'paused'"),
-            ThreadControlAction::Close => ("active", "cancelled", 1_i64, "status = 'open'"),
+            ThreadControlAction::Close => unreachable!("Close 已由终态事务处理"),
         };
         let result = sqlx::query(&format!(
             "UPDATE threads SET revision = revision + 1, generation = generation + ?, control_state = ?, status = ?, updated_at = ? WHERE id = ? AND revision = ? AND status = 'open' AND {predicate}"
@@ -7024,18 +8453,41 @@ impl ScheduleStore for SqliteStore {
 
     async fn commit_schedule_transaction(
         &self,
+        objectives: &[NewScheduledObjective],
         threads: &[NewThread],
         intents: &[NewSchedule],
+        groups: &[NewThreadGroupPlan],
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut validated_objectives = Vec::with_capacity(objectives.len());
+        for scheduled in objectives {
+            validated_objectives.push(validate_new_objective(self, &scheduled.objective).await?);
+        }
         let mut tx = self.pool.begin().await?;
+        for (scheduled, (stated_objective, token_budget)) in
+            objectives.iter().zip(validated_objectives.iter())
+        {
+            insert_new_objective_in_transaction(
+                &mut tx,
+                &scheduled.objective,
+                stated_objective,
+                *token_budget,
+            )
+            .await?;
+        }
         for thread in threads {
+            thread.supervision.validate(thread.kind)?;
+            let completion_contract_json =
+                serde_json::to_string(&thread.supervision.completion_contract)?;
             sqlx::query(
                 r#"INSERT OR IGNORE INTO threads
                    (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
-                    kind, status, executor_kind, executor_id, delivery_status,
-                    created_at, updated_at)
-                   VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, 'none', ?, ?)"#,
+                    kind, status, executor_kind, executor_id, target_id,
+                    lifetime, supervisor_kind, supervisor_id, supervision_generation,
+                    origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
+                    delivery_status, created_at, updated_at)
+                   VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           'none', ?, ?)"#,
             )
             .bind(&thread.id)
             .bind(&thread.agent_id)
@@ -7046,10 +8498,155 @@ impl ScheduleStore for SqliteStore {
             .bind(thread.kind.as_str())
             .bind(&thread.executor_kind)
             .bind(&thread.executor_id)
+            .bind(&thread.target_id)
+            .bind(thread.supervision.lifetime.as_str())
+            .bind(thread.supervision.supervisor_kind.as_str())
+            .bind(&thread.supervision.supervisor_id)
+            .bind(i64::try_from(thread.supervision.generation)?)
+            .bind(&thread.supervision.origin_evaluation_id)
+            .bind(&thread.supervision.parent_thread_id)
+            .bind(&thread.supervision.thread_group_id)
+            .bind(&completion_contract_json)
             .bind(&now)
             .bind(&now)
             .execute(&mut *tx)
             .await?;
+        }
+        for plan in groups {
+            if plan.group.generation == 0 {
+                return Err("Thread Group generation 必须大于 0".into());
+            }
+            if plan.members.is_empty() {
+                return Err(format!("Thread Group '{}' 没有成员", plan.group.id).into());
+            }
+            if matches!(
+                plan.group.supervisor_kind,
+                ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy
+            ) {
+                return Err(format!(
+                    "Thread Group '{}' 必须绑定 Evaluation、Objective 或 Runtime supervisor",
+                    plan.group.id
+                )
+                .into());
+            }
+            let required_count = plan.members.iter().filter(|member| member.required).count();
+            if required_count == 0 {
+                return Err(format!("Thread Group '{}' 没有 required 成员", plan.group.id).into());
+            }
+            let completion_contract = serde_json::to_string(&plan.group.completion_contract)?;
+            sqlx::query(
+                r#"INSERT OR IGNORE INTO thread_groups
+                   (id, revision, context_id, session_id, supervisor_kind, supervisor_id,
+                    generation, policy, required_count, terminal_count, successful_count,
+                    status, completion_contract_json, terminal_summary_json,
+                    created_at, updated_at)
+                   VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'open', ?, '{}', ?, ?)"#,
+            )
+            .bind(&plan.group.id)
+            .bind(&plan.group.context_id)
+            .bind(&plan.group.session_id)
+            .bind(plan.group.supervisor_kind.as_str())
+            .bind(&plan.group.supervisor_id)
+            .bind(i64::try_from(plan.group.generation)?)
+            .bind(plan.group.policy.as_str())
+            .bind(i64::try_from(required_count)?)
+            .bind(&completion_contract)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            for member in &plan.members {
+                let thread = sqlx::query(
+                    "SELECT context_id, session_id, supervisor_kind, supervisor_id, supervision_generation, thread_group_id FROM threads WHERE id = ?",
+                )
+                .bind(&member.thread_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "Thread Group '{}' 成员 Thread '{}' 不存在",
+                        plan.group.id, member.thread_id
+                    )
+                })?;
+                let group_id: Option<String> = thread.get("thread_group_id");
+                let member_context_id: String = thread.get("context_id");
+                let member_session_id: String = thread.get("session_id");
+                let member_supervisor_kind: String = thread.get("supervisor_kind");
+                let member_supervisor_id: Option<String> = thread.get("supervisor_id");
+                if group_id.as_deref() != Some(plan.group.id.as_str())
+                    || member_context_id != plan.group.context_id
+                    || member_session_id != plan.group.session_id
+                    || member_supervisor_kind != plan.group.supervisor_kind.as_str()
+                    || member_supervisor_id.as_deref() != Some(plan.group.supervisor_id.as_str())
+                    || u64::try_from(thread.get::<i64, _>("supervision_generation"))?
+                        != plan.group.generation
+                {
+                    return Err(format!(
+                        "Thread Group '{}' 与成员 Thread '{}' 的监督路由不一致",
+                        plan.group.id, member.thread_id
+                    )
+                    .into());
+                }
+                sqlx::query(
+                    r#"INSERT OR IGNORE INTO thread_group_members
+                       (group_id, thread_id, ordinal, required, status, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, 'pending', ?, ?)"#,
+                )
+                .bind(&plan.group.id)
+                .bind(&member.thread_id)
+                .bind(i64::try_from(member.ordinal)?)
+                .bind(if member.required { 1_i64 } else { 0_i64 })
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        for scheduled in objectives {
+            let wait_json = serde_json::to_string(&scheduled.initial_wait_condition)?;
+            match &scheduled.initial_wait_condition {
+                ObjectiveWaitCondition::ThreadGroup { group_id } => {
+                    let row = sqlx::query(
+                        "SELECT supervisor_kind, supervisor_id FROM thread_groups WHERE id = ?",
+                    )
+                    .bind(group_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                            "Objective '{}' 的初始等待 Thread Group '{}' 不存在",
+                            scheduled.objective.id, group_id
+                        )
+                    })?;
+                    if row.get::<String, _>("supervisor_kind") != "objective"
+                        || row.get::<String, _>("supervisor_id") != scheduled.objective.id
+                    {
+                        return Err(format!(
+                            "Objective '{}' 的初始等待 Thread Group '{}' 未由该 Objective 监督",
+                            scheduled.objective.id, group_id
+                        )
+                        .into());
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "schedule_tx 创建 Objective 只能以 Thread 或 Thread Group 作为初始等待，收到 {other:?}"
+                    )
+                    .into());
+                }
+            }
+            sqlx::query(
+                r#"UPDATE objectives
+                   SET wait_condition_json = ?, status_reason = ?, updated_at = ?
+                   WHERE id = ? AND revision = 1 AND status = 'active'"#,
+            )
+            .bind(&wait_json)
+            .bind(scheduled.status_reason.trim())
+            .bind(&now)
+            .bind(&scheduled.objective.id)
+            .execute(&mut *tx)
+            .await?;
+            append_event_in_transaction(&mut tx, &scheduled.created_event).await?;
         }
         for intent in intents {
             let target = sqlx::query("SELECT status FROM threads WHERE id = ?")
@@ -7121,6 +8718,349 @@ impl ScheduleStore for SqliteStore {
             );
         }
         Ok(records)
+    }
+
+    async fn promote_attached_thread(
+        &self,
+        request: ThreadPromotionRequest,
+    ) -> Result<ThreadPromotionMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if request.target_group.members.len() != 1
+            || request.target_group.members[0].thread_id != request.thread_id
+            || !request.target_group.members[0].required
+        {
+            return Err("Thread 升格必须创建恰好包含目标 Thread 的 required 单成员 Group".into());
+        }
+        if request.target_group.group.supervisor_kind != ThreadSupervisorKind::Objective
+            || request.target_group.group.supervisor_id != request.objective_id
+        {
+            return Err("Thread 升格目标 Group 必须由目标 Objective 监督".into());
+        }
+        if request.target_group.group.generation == 0 {
+            return Err("Thread 升格目标 generation 必须大于 0".into());
+        }
+        if request.new_objective.is_some() != request.expected_objective_revision.is_none() {
+            return Err(
+                "Thread 升格必须在 new_objective 与 expected_objective_revision 中恰好选择一个"
+                    .into(),
+            );
+        }
+
+        let validated_new_objective = if let Some(scheduled) = request.new_objective.as_ref() {
+            if scheduled.objective.id != request.objective_id {
+                return Err("Thread 升格的新 Objective ID 与目标监督者不一致".into());
+            }
+            if scheduled.initial_wait_condition
+                != (ObjectiveWaitCondition::ThreadGroup {
+                    group_id: request.target_group.group.id.clone(),
+                })
+            {
+                return Err("Thread 升格创建的 Objective 必须等待目标 Thread Group".into());
+            }
+            Some(validate_new_objective(self, &scheduled.objective).await?)
+        } else {
+            None
+        };
+        let expected_thread_revision = i64::try_from(request.expected_thread_revision)
+            .map_err(|_| "Thread revision 超出 SQLite INTEGER 范围")?;
+        let target_generation = i64::try_from(request.target_group.group.generation)
+            .map_err(|_| "Thread supervision generation 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+
+        // The first statement is the revision-fenced ownership transfer. On
+        // SQLite this also acquires the writer before any dependent reads,
+        // avoiding a deferred read->write upgrade race.
+        let promoted = sqlx::query(
+            r#"UPDATE threads
+               SET revision = revision + 1,
+                   lifetime = 'durable',
+                   supervisor_kind = 'objective',
+                   supervisor_id = ?,
+                   supervision_generation = ?,
+                   thread_group_id = ?,
+                   updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'open'
+                 AND lifetime = 'attached' AND supervisor_kind = 'evaluation'
+                 AND thread_group_id = ?"#,
+        )
+        .bind(&request.objective_id)
+        .bind(target_generation)
+        .bind(&request.target_group.group.id)
+        .bind(&now)
+        .bind(&request.thread_id)
+        .bind(expected_thread_revision)
+        .bind(&request.source_group_id)
+        .execute(&mut *tx)
+        .await?;
+        if promoted.rows_affected() != 1 {
+            tx.rollback().await?;
+            let Some(current_thread) = self.get_thread(&request.thread_id).await? else {
+                return Ok(ThreadPromotionMutation::NotFound);
+            };
+            let current_objective = self.get_objective(&request.objective_id).await?;
+            if current_thread.revision != request.expected_thread_revision {
+                return Ok(ThreadPromotionMutation::Conflict {
+                    current_thread,
+                    current_objective,
+                });
+            }
+            return Ok(ThreadPromotionMutation::Rejected {
+                current_thread,
+                reason: "Thread 不是指定 Evaluation Group 中仍然 open 的 attached Thread"
+                    .to_string(),
+            });
+        }
+
+        let source_group_row = sqlx::query("SELECT * FROM thread_groups WHERE id = ?")
+            .bind(&request.source_group_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("源 Thread Group '{}' 不存在", request.source_group_id))?;
+        let source_group_before = thread_group_from_row(&source_group_row)?;
+        if source_group_before.status != ThreadGroupStatus::Open
+            || source_group_before.supervisor_kind != ThreadSupervisorKind::Evaluation
+        {
+            return Err(format!(
+                "源 Thread Group '{}' 不是 open Evaluation Group",
+                request.source_group_id
+            )
+            .into());
+        }
+
+        let objective_row = if let (Some(scheduled), Some((stated_objective, token_budget))) = (
+            request.new_objective.as_ref(),
+            validated_new_objective.as_ref(),
+        ) {
+            insert_new_objective_in_transaction(
+                &mut tx,
+                &scheduled.objective,
+                stated_objective,
+                *token_budget,
+            )
+            .await?;
+            let wait_json = serde_json::to_string(&scheduled.initial_wait_condition)?;
+            sqlx::query(
+                r#"UPDATE objectives
+                   SET wait_condition_json = ?, status_reason = ?, updated_at = ?
+                   WHERE id = ? AND revision = 1 AND status = 'active'"#,
+            )
+            .bind(wait_json)
+            .bind(scheduled.status_reason.trim())
+            .bind(&now)
+            .bind(&scheduled.objective.id)
+            .execute(&mut *tx)
+            .await?;
+            append_event_in_transaction(&mut tx, &scheduled.created_event).await?;
+            sqlx::query("SELECT * FROM objectives WHERE id = ?")
+                .bind(&request.objective_id)
+                .fetch_one(&mut *tx)
+                .await?
+        } else {
+            let expected_revision = i64::try_from(
+                request
+                    .expected_objective_revision
+                    .expect("validated existing Objective revision"),
+            )
+            .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+            sqlx::query(
+                "SELECT * FROM objectives WHERE id = ? AND revision = ? AND status = 'active'",
+            )
+            .bind(&request.objective_id)
+            .bind(expected_revision)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Objective '{}' 不存在、不是 active 或 revision 已变化",
+                    request.objective_id
+                )
+            })?
+        };
+        let objective = objective_from_row(&objective_row)?;
+        let promoted_thread_row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+            .bind(&request.thread_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let promoted_thread = thread_from_row(&promoted_thread_row)?;
+        if objective.agent_id != promoted_thread.agent_id
+            || objective.context_id != promoted_thread.context_id
+            || objective.coordinator_session_id != promoted_thread.session_id
+        {
+            return Err("Objective 与升格 Thread 的 Agent/Context/Session 所有权不一致".into());
+        }
+        if request.target_group.group.context_id != promoted_thread.context_id
+            || request.target_group.group.session_id != promoted_thread.session_id
+        {
+            return Err("升格目标 Group 与 Thread 的 Context/Session 不一致".into());
+        }
+
+        sqlx::query(
+            r#"INSERT INTO thread_groups
+               (id, revision, context_id, session_id, supervisor_kind, supervisor_id,
+                generation, policy, required_count, terminal_count, successful_count,
+                status, completion_contract_json, terminal_summary_json,
+                created_at, updated_at)
+               VALUES (?, 1, ?, ?, 'objective', ?, ?, ?, 1, 0, 0, 'open', ?, '{}', ?, ?)"#,
+        )
+        .bind(&request.target_group.group.id)
+        .bind(&request.target_group.group.context_id)
+        .bind(&request.target_group.group.session_id)
+        .bind(&request.objective_id)
+        .bind(target_generation)
+        .bind(request.target_group.group.policy.as_str())
+        .bind(serde_json::to_string(
+            &request.target_group.group.completion_contract,
+        )?)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let released = sqlx::query(
+            r#"UPDATE thread_group_members
+               SET required = 0, status = 'cancelled', updated_at = ?
+               WHERE group_id = ? AND thread_id = ? AND required = 1 AND status = 'pending'"#,
+        )
+        .bind(&now)
+        .bind(&request.source_group_id)
+        .bind(&request.thread_id)
+        .execute(&mut *tx)
+        .await?;
+        if released.rows_affected() != 1 {
+            return Err("源 Thread Group 成员已经终止或已被其他升格事务释放".into());
+        }
+        sqlx::query(
+            r#"INSERT INTO thread_group_members
+               (group_id, thread_id, ordinal, required, status, created_at, updated_at)
+               VALUES (?, ?, 0, 1, 'pending', ?, ?)"#,
+        )
+        .bind(&request.target_group.group.id)
+        .bind(&request.thread_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let counts = sqlx::query(
+            r#"SELECT
+                 SUM(CASE WHEN required = 1 THEN 1 ELSE 0 END) AS required_count,
+                 SUM(CASE WHEN required = 1 AND status <> 'pending' THEN 1 ELSE 0 END)
+                   AS terminal_count,
+                 SUM(CASE WHEN required = 1 AND status = 'completed' THEN 1 ELSE 0 END)
+                   AS successful_count
+               FROM thread_group_members WHERE group_id = ?"#,
+        )
+        .bind(&request.source_group_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let required_count = u64::try_from(counts.get::<i64, _>("required_count"))?;
+        let terminal_count = u64::try_from(counts.get::<i64, _>("terminal_count"))?;
+        let successful_count = u64::try_from(counts.get::<i64, _>("successful_count"))?;
+        let source_evaluation = evaluate_thread_group_contract(
+            source_group_before.policy,
+            required_count,
+            terminal_count,
+            successful_count,
+            &source_group_before.completion_contract,
+        );
+        let source_status = source_evaluation.status;
+        let source_summary = serde_json::json!({
+            "group_id": request.source_group_id,
+            "status": source_status.as_str(),
+            "policy": source_group_before.policy.as_str(),
+            "required_count": required_count,
+            "terminal_count": terminal_count,
+            "successful_count": successful_count,
+            "completion_contract": source_group_before.completion_contract,
+            "contract_results": source_evaluation.contract_results,
+            "released_thread_id": request.thread_id,
+            "promoted_to_objective_id": request.objective_id,
+            "promoted_to_group_id": request.target_group.group.id,
+        });
+        let source_barrier_id = format!(
+            "thread_group_barrier_{}_g{}",
+            request.source_group_id, source_group_before.generation
+        );
+        sqlx::query(
+            r#"UPDATE thread_groups
+               SET revision = revision + 1, required_count = ?, terminal_count = ?,
+                   successful_count = ?, status = ?, terminal_summary_json = ?,
+                   barrier_event_id = ?, updated_at = ?, satisfied_at = ?
+               WHERE id = ? AND status = 'open'"#,
+        )
+        .bind(i64::try_from(required_count)?)
+        .bind(i64::try_from(terminal_count)?)
+        .bind(i64::try_from(successful_count)?)
+        .bind(source_status.as_str())
+        .bind(serde_json::to_string(&source_summary)?)
+        .bind(if source_status.is_terminal() {
+            Some(source_barrier_id.as_str())
+        } else {
+            None
+        })
+        .bind(&now)
+        .bind(if source_status.is_terminal() {
+            Some(now.as_str())
+        } else {
+            None
+        })
+        .bind(&request.source_group_id)
+        .execute(&mut *tx)
+        .await?;
+        if source_status.is_terminal() {
+            let parent_thread_id = promoted_thread
+                .supervision
+                .parent_thread_id
+                .as_deref()
+                .ok_or("升格 Thread 缺少原 Evaluation parent_thread_id")?;
+            let parent = sqlx::query("SELECT session_id, root_turn_id FROM threads WHERE id = ?")
+                .bind(parent_thread_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let barrier = Event::new(
+                source_barrier_id,
+                "Runtime".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/thread_group_terminal".to_string(),
+                serde_json::json!({
+                    "context_id": promoted_thread.context_id,
+                    "session_id": parent.get::<String, _>("session_id"),
+                    "thread_id": parent_thread_id,
+                    "root_turn_id": parent.get::<String, _>("root_turn_id"),
+                    "thread_group_id": request.source_group_id,
+                    "thread_group_status": source_status.as_str(),
+                    "wake_policy": "immediate",
+                    "tool_name": "thread_group",
+                    "tool_status": "success",
+                    "text": format!(
+                        "Thread '{}' 已升格为 Objective '{}' 的 durable Thread；原 Evaluation Group 已释放该成员",
+                        request.thread_id, request.objective_id
+                    ),
+                    "terminal_summary": source_summary,
+                })
+                .as_object()
+                .expect("promotion barrier payload")
+                .clone(),
+            );
+            append_event_in_transaction(&mut tx, &barrier).await?;
+            append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
+        }
+        append_event_in_transaction(&mut tx, &request.promoted_event).await?;
+
+        let source_group_row = sqlx::query("SELECT * FROM thread_groups WHERE id = ?")
+            .bind(&request.source_group_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let target_group_row = sqlx::query("SELECT * FROM thread_groups WHERE id = ?")
+            .bind(&request.target_group.group.id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let record = ThreadPromotionRecord {
+            thread: promoted_thread,
+            objective,
+            source_group: thread_group_from_row(&source_group_row)?,
+            target_group: thread_group_from_row(&target_group_row)?,
+        };
+        tx.commit().await?;
+        Ok(ThreadPromotionMutation::Updated(record))
     }
 
     async fn list_schedules(
@@ -10067,13 +12007,22 @@ impl ExecutionJobStore for SqliteStore {
         .map_err(|_| "Artifact Transfer request Event sequence 不能为负数")?;
 
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        execution
+            .thread
+            .supervision
+            .validate(ThreadKind::Execution)?;
+        let completion_contract_json =
+            serde_json::to_string(&execution.thread.supervision.completion_contract)?;
         sqlx::query(
             r#"INSERT OR IGNORE INTO threads
                (id, revision, agent_id, context_id, session_id, initiating_principal_id,
                 root_turn_id, kind, status, executor_kind, executor_id, target_id,
+                lifetime, supervisor_kind, supervisor_id, supervision_generation,
+                origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
                 delivery_status, created_at, updated_at)
                VALUES (?, 1, ?, ?, ?, ?, ?, 'execution', 'open',
-                       'artifact_transfer', ?, ?, 'none', ?, ?)"#,
+                       'artifact_transfer', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       'none', ?, ?)"#,
         )
         .bind(&execution.thread.id)
         .bind(&execution.thread.agent_id)
@@ -10083,6 +12032,14 @@ impl ExecutionJobStore for SqliteStore {
         .bind(&execution.thread.root_turn_id)
         .bind(&execution.thread.executor_id)
         .bind(&execution.thread.target_id)
+        .bind(execution.thread.supervision.lifetime.as_str())
+        .bind(execution.thread.supervision.supervisor_kind.as_str())
+        .bind(&execution.thread.supervision.supervisor_id)
+        .bind(i64::try_from(execution.thread.supervision.generation)?)
+        .bind(&execution.thread.supervision.origin_evaluation_id)
+        .bind(&execution.thread.supervision.parent_thread_id)
+        .bind(&execution.thread.supervision.thread_group_id)
+        .bind(&completion_contract_json)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -10101,6 +12058,7 @@ impl ExecutionJobStore for SqliteStore {
             || thread.executor_kind != "artifact_transfer"
             || thread.executor_id != execution.thread.executor_id
             || thread.target_id != execution.thread.target_id
+            || thread.supervision != execution.thread.supervision
         {
             return Err(format!(
                 "Artifact Transfer root '{}' 已被不同 Thread 占用",
@@ -13260,6 +15218,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -13308,6 +15267,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap_err();
@@ -13903,6 +15863,7 @@ mod tests {
                     executor_kind: "self".to_string(),
                     executor_id: None,
                     target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
                 })
                 .await
                 .unwrap();
@@ -13962,6 +15923,7 @@ mod tests {
                         executor_kind: "self".to_string(),
                         executor_id: None,
                         target_id: None,
+                        supervision: crate::memory::ThreadSupervision::legacy(),
                     })
                     .await
                     .unwrap(),
@@ -14528,6 +16490,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -17271,6 +19234,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -17743,6 +19707,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -17962,6 +19927,7 @@ mod tests {
                     executor_kind: "self".to_string(),
                     executor_id: None,
                     target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
                 })
                 .await
                 .unwrap();
@@ -18231,6 +20197,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -18585,6 +20552,7 @@ mod tests {
                     executor_kind: "self".to_string(),
                     executor_id: None,
                     target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
                 })
                 .await
                 .unwrap();
@@ -18730,6 +20698,31 @@ mod tests {
                 .all(|(activation, _)| activation.id != next.id),
             "a blocked DialogueTurn must not busy-loop through the admission refill window",
         );
+        assert!(store
+            .release_dialogue_turn_activation(&first.id, Utc::now())
+            .await
+            .unwrap());
+        let first = store
+            .get_thread_activation(&first.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .dialogue_turn_activation_runnable(&next.id)
+                .await
+                .unwrap(),
+            "a DialogueTurn that handed physical work to its Execution phase must release the durable lane before that work reaches terminal state",
+        );
+        assert!(
+            store
+                .list_queued_thread_activations_for_admission(32, 8, 60_000)
+                .await
+                .unwrap()
+                .iter()
+                .any(|(activation, _)| activation.id == next.id),
+            "the refill source must expose the next turn after durable lane release",
+        );
 
         let joined = store
             .claim_thread_signal_batch(signal(3), activation(3), 32)
@@ -18768,6 +20761,24 @@ mod tests {
             2,
             "redelivery must not duplicate a batched input",
         );
+        let next = match store
+            .update_thread_activation(
+                &next.id,
+                next.revision,
+                ThreadActivationStatus::Running,
+                Some("worker-b"),
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(updated) => updated,
+            other => panic!(
+                "the next DialogueTurn must run while released physical work remains active: {other:?}"
+            ),
+        };
+        assert_eq!(next.status, ThreadActivationStatus::Running);
 
         let first = match store
             .update_thread_activation(
@@ -18785,36 +20796,6 @@ mod tests {
             other => panic!("unexpected first completion mutation: {other:?}"),
         };
         assert!(first.status.is_terminal());
-        assert!(
-            store
-                .dialogue_turn_activation_runnable(&next.id)
-                .await
-                .unwrap(),
-            "the queued DialogueTurn becomes runnable after the current turn leaves the lane",
-        );
-        assert!(
-            store
-                .list_queued_thread_activations_for_admission(32, 8, 60_000)
-                .await
-                .unwrap()
-                .iter()
-                .any(|(activation, _)| activation.id == next.id),
-            "the refill source must expose the next turn once its predecessor finishes",
-        );
-        assert!(matches!(
-            store
-                .update_thread_activation(
-                    &next.id,
-                    next.revision,
-                    ThreadActivationStatus::Running,
-                    Some("worker-b"),
-                    None,
-                    None,
-                )
-                .await
-                .unwrap(),
-            ThreadActivationMutation::Updated(_)
-        ));
     }
 
     #[tokio::test]
@@ -18854,12 +20835,19 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
 
         let paused = match store
-            .control_thread(&thread.id, thread.revision, ThreadControlAction::Pause)
+            .control_thread(
+                &thread.id,
+                thread.revision,
+                ThreadControlAction::Pause,
+                None,
+                None,
+            )
             .await
             .unwrap()
         {
@@ -18871,14 +20859,26 @@ mod tests {
 
         assert!(matches!(
             store
-                .control_thread(&paused.id, thread.revision, ThreadControlAction::Resume,)
+                .control_thread(
+                    &paused.id,
+                    thread.revision,
+                    ThreadControlAction::Resume,
+                    None,
+                    None,
+                )
                 .await
                 .unwrap(),
             ThreadMutation::Conflict { .. }
         ));
 
         let resumed = match store
-            .control_thread(&paused.id, paused.revision, ThreadControlAction::Resume)
+            .control_thread(
+                &paused.id,
+                paused.revision,
+                ThreadControlAction::Resume,
+                None,
+                None,
+            )
             .await
             .unwrap()
         {
@@ -18889,7 +20889,13 @@ mod tests {
         assert_eq!(resumed.lifecycle, ThreadLifecycle::Open);
 
         let closed = match store
-            .control_thread(&resumed.id, resumed.revision, ThreadControlAction::Close)
+            .control_thread(
+                &resumed.id,
+                resumed.revision,
+                ThreadControlAction::Close,
+                Some("test close"),
+                Some("test"),
+            )
             .await
             .unwrap()
         {
@@ -18899,6 +20905,209 @@ mod tests {
         assert_eq!(closed.lifecycle, ThreadLifecycle::Cancelled);
         assert_eq!(closed.generation, resumed.generation + 1);
         assert_eq!(closed.control_state, ThreadControlState::Active);
+        let outcome = store
+            .get_thread_outcome(&closed.id)
+            .await
+            .unwrap()
+            .expect("closing a Thread must atomically persist its terminal Outcome");
+        assert_eq!(outcome.thread_generation, resumed.generation);
+        assert_eq!(outcome.terminal_kind, ThreadLifecycle::Cancelled);
+        assert_eq!(outcome.summary.as_deref(), Some("test close"));
+        assert!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(format!(
+                        "thread_cancelled_{}_g{}",
+                        resumed.id, resumed.generation
+                    )),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len()
+                == 1,
+            "the immutable cancellation fact must commit with the control mutation",
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_thread_group_barrier_is_atomic_and_repairable() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "group-control-context".to_string(),
+                agent_id: "group-control-agent".to_string(),
+                title: "Group Control Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "group-control-session".to_string(),
+                agent_id: "group-control-agent".to_string(),
+                context_id: "group-control-context".to_string(),
+                parent_session_id: None,
+                title: "Group Control Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let mut supervision = crate::memory::ThreadSupervision::runtime("runtime-supervisor");
+        supervision.thread_group_id = Some("group-control".to_string());
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "group-control-thread".to_string(),
+                agent_id: "group-control-agent".to_string(),
+                context_id: "group-control-context".to_string(),
+                session_id: "group-control-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "group-control-root".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision,
+            })
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO thread_groups
+               (id, revision, context_id, session_id, supervisor_kind, supervisor_id,
+                generation, policy, required_count, terminal_count, successful_count,
+                status, completion_contract_json, terminal_summary_json,
+                created_at, updated_at)
+               VALUES (?, 1, ?, ?, 'runtime', ?, 1, 'all', 1, 0, 0,
+                       'open', '{}', '{}', ?, ?)"#,
+        )
+        .bind("group-control")
+        .bind("group-control-context")
+        .bind("group-control-session")
+        .bind("runtime-supervisor")
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO thread_group_members
+               (group_id, thread_id, ordinal, required, status, created_at, updated_at)
+               VALUES (?, ?, 0, 1, 'pending', ?, ?)"#,
+        )
+        .bind("group-control")
+        .bind(&thread.id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let closed = match store
+            .control_thread(
+                &thread.id,
+                thread.revision,
+                ThreadControlAction::Close,
+                Some("cancel required member"),
+                Some("test"),
+            )
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected close mutation: {other:?}"),
+        };
+        assert_eq!(closed.lifecycle, ThreadLifecycle::Cancelled);
+        let group = store
+            .get_thread_group("group-control")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(group.status, ThreadGroupStatus::Failed);
+        assert_eq!(group.terminal_count, 1);
+        assert_eq!(group.successful_count, 0);
+        let barrier_id = "thread_group_barrier_group-control_g1";
+        assert_eq!(group.barrier_event_id.as_deref(), Some(barrier_id));
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(barrier_id.to_string()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1,
+        );
+        let pending_barriers: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM signal_outbox WHERE event_id = ?")
+                .bind(barrier_id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(pending_barriers, 1);
+        assert!(matches!(
+            store
+                .control_thread(
+                    &thread.id,
+                    thread.revision,
+                    ThreadControlAction::Close,
+                    Some("duplicate close"),
+                    Some("test"),
+                )
+                .await
+                .unwrap(),
+            ThreadMutation::Conflict { .. }
+        ));
+
+        // Simulate the durable fault window where the terminal projection
+        // survived but its deterministic wake Event was never materialized.
+        let repair_now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO thread_groups
+               (id, revision, context_id, session_id, supervisor_kind, supervisor_id,
+                generation, policy, required_count, terminal_count, successful_count,
+                status, completion_contract_json, terminal_summary_json,
+                created_at, updated_at, satisfied_at)
+               VALUES (?, 1, ?, ?, 'runtime', ?, 3, 'all', 1, 1, 0,
+                       'failed', '{}', '{"status":"failed"}', ?, ?, ?)"#,
+        )
+        .bind("group-repair")
+        .bind("group-control-context")
+        .bind("group-control-session")
+        .bind("runtime-supervisor")
+        .bind(&repair_now)
+        .bind(&repair_now)
+        .bind(&repair_now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .repair_thread_group_barrier("group-repair")
+            .await
+            .unwrap());
+        assert!(!store
+            .repair_thread_group_barrier("group-repair")
+            .await
+            .unwrap());
+        let repair_barrier_id = "thread_group_barrier_group-repair_g3";
+        let repaired_event_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE id = ?")
+                .bind(repair_barrier_id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        let repaired_outbox_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM signal_outbox WHERE event_id = ?")
+                .bind(repair_barrier_id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(repaired_event_count, 1);
+        assert_eq!(repaired_outbox_count, 1);
     }
 
     #[tokio::test]

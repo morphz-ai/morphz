@@ -701,7 +701,7 @@ impl UiState {
             .count();
         self.context_status = if self.locale.is_chinese() {
             format!(
-                "{} · {}/{} · {} 个认知框架 · {}+{} 个会话 · {} 项求值 · {} 个目标",
+                "{} · {}/{} · {} 个认知框架 · {}+{} 个会话 · {} 项求值 · {} 个线程组 · {} 个目标",
                 localized_pressure(self.locale, &view.pressure.level),
                 compact_count(view.pressure.estimated_tokens),
                 compact_count(view.pressure.hard_limit),
@@ -709,11 +709,12 @@ impl UiState {
                 view.session_working_set.full_session_ids.len(),
                 view.session_working_set.metadata_only_session_ids.len(),
                 view.active_activations.len(),
+                view.thread_groups.len(),
                 active_objectives
             )
         } else {
             format!(
-                "{} · {}/{} · {} frames · {}+{} sessions · {} evaluations · {} objectives",
+                "{} · {}/{} · {} frames · {}+{} sessions · {} evaluations · {} thread groups · {} objectives",
                 localized_pressure(self.locale, &view.pressure.level),
                 compact_count(view.pressure.estimated_tokens),
                 compact_count(view.pressure.hard_limit),
@@ -721,6 +722,7 @@ impl UiState {
                 view.session_working_set.full_session_ids.len(),
                 view.session_working_set.metadata_only_session_ids.len(),
                 view.active_activations.len(),
+                view.thread_groups.len(),
                 active_objectives
             )
         };
@@ -1618,6 +1620,16 @@ impl UiState {
         }
 
         if let Some(view) = self.context_view.as_ref() {
+            if !view.thread_groups.is_empty() {
+                lines.push(section_title(
+                    self.tr("SUPERVISED THREAD GROUPS", "受监督线程组"),
+                    view.thread_groups.len(),
+                    self.theme.focus,
+                    self.theme.text_muted,
+                ));
+                lines.extend(self.thread_group_panel_lines(false));
+                lines.push(Line::from(""));
+            }
             if !view.active_activations.is_empty() {
                 lines.push(section_title(
                     self.tr("MODEL EVALUATIONS", "模型求值"),
@@ -2565,6 +2577,84 @@ impl UiState {
         lines
     }
 
+    fn thread_group_panel_lines(&self, detailed: bool) -> Vec<Line<'static>> {
+        let Some(view) = self.context_view.as_ref() else {
+            return Vec::new();
+        };
+        if view.thread_groups.is_empty() {
+            return vec![empty_state_line(
+                self.tr("No supervised Thread Groups", "没有受监督线程组"),
+                self.theme.text_muted,
+            )];
+        }
+
+        view.thread_groups
+            .iter()
+            .flat_map(|group| {
+                let members = view
+                    .thread_group_members
+                    .iter()
+                    .filter(|member| member.group_id == group.id)
+                    .count();
+                let outcomes = view
+                    .thread_outcomes
+                    .iter()
+                    .filter(|outcome| {
+                        view.thread_group_members.iter().any(|member| {
+                            member.group_id == group.id && member.thread_id == outcome.thread_id
+                        })
+                    })
+                    .count();
+                let mut lines = vec![Line::from(vec![
+                    Span::styled(
+                        if group.status.as_str() == "open" {
+                            "◒ "
+                        } else {
+                            "● "
+                        },
+                        Style::default().fg(if group.status.as_str() == "open" {
+                            self.theme.warning
+                        } else {
+                            self.theme.success
+                        }),
+                    ),
+                    Span::styled(
+                        short_id(&group.id),
+                        Style::default()
+                            .fg(self.theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(
+                            "  ·  {} / {}  ·  {} {outcomes}/{members}",
+                            group.policy.as_str(),
+                            group.status.as_str(),
+                            self.tr("outcomes", "结果")
+                        ),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ])];
+                if detailed {
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "  {}:{} · generation {}{}",
+                            group.supervisor_kind.as_str(),
+                            short_id(&group.supervisor_id),
+                            group.generation,
+                            group
+                                .barrier_event_id
+                                .as_deref()
+                                .map(|id| format!(" · barrier/{}", short_id(id)))
+                                .unwrap_or_default()
+                        ),
+                        Style::default().fg(self.theme.text_muted),
+                    )));
+                }
+                lines
+            })
+            .collect()
+    }
+
     fn render_tasks_view(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if area.width < 94 || area.height < 16 {
             let lines = if self.show_task_diagnostics {
@@ -2590,6 +2680,11 @@ impl UiState {
             ])
             .split(rows[0]);
         let (activations, objectives, background, delegations) = self.runtime_task_counts();
+        let thread_groups = self
+            .context_view
+            .as_ref()
+            .map(|view| view.thread_groups.len())
+            .unwrap_or_default();
         self.render_metric_card(
             frame,
             metrics[0],
@@ -2623,7 +2718,7 @@ impl UiState {
             self.theme.tool,
         );
 
-        let total = activations + objectives + background + delegations;
+        let total = activations + objectives + background + delegations + thread_groups;
         if total == 0 {
             self.render_tasks_empty_state(frame, rows[1]);
             return;
@@ -2646,12 +2741,25 @@ impl UiState {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
             .split(task_rows[1]);
+        let mut execution_lines = self.execution_panel_lines(self.show_task_diagnostics);
+        if thread_groups > 0 {
+            if !execution_lines.is_empty() {
+                execution_lines.push(Line::from(""));
+            }
+            execution_lines.push(section_title(
+                self.tr("THREAD GROUPS", "线程组"),
+                thread_groups,
+                self.theme.focus,
+                self.theme.text_muted,
+            ));
+            execution_lines.extend(self.thread_group_panel_lines(self.show_task_diagnostics));
+        }
         self.render_section_panel(
             frame,
             execution[0],
             self.tr("EXECUTION", "执行"),
-            activations + background,
-            self.execution_panel_lines(self.show_task_diagnostics),
+            activations + background + thread_groups,
+            execution_lines,
             self.theme.success,
         );
         self.render_section_panel(
@@ -4837,6 +4945,13 @@ fn format_objective_wait(wait: &ObjectiveWaitCondition, locale: Locale) -> Strin
                 format!("资源 {resource}")
             } else {
                 format!("resource {resource}")
+            }
+        }
+        ObjectiveWaitCondition::ThreadGroup { group_id } => {
+            if locale.is_chinese() {
+                format!("线程组 {}", short_id(group_id))
+            } else {
+                format!("thread group {}", short_id(group_id))
             }
         }
     }

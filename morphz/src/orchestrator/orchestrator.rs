@@ -38,8 +38,9 @@ use crate::memory::{
     PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind,
     RuntimeTimerRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
     SessionMountKind, SessionStatus, SessionStore, SessionUpdate, SignalOutboxStatus,
-    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadKind,
-    ThreadLifecycle, ThreadMutation, ThreadRecord,
+    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
+    ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord,
+    ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
@@ -325,6 +326,7 @@ const SIGNAL_OUTBOX_DISPATCH_BATCH: usize = 128;
 const SIGNAL_OUTBOX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const PLAN_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const PLAN_RECONCILE_BATCH: usize = 128;
+const SUPERVISION_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"你是 Morphz，一个能够管理自身工作 Context 的 AI Agent。
 
@@ -2479,19 +2481,28 @@ impl Orchestrator {
             }),
         );
 
+        // Reconcile authoritative scheduler state before redispatching any
+        // model Activation. Event dispatch starts concurrent handler futures;
+        // running it first lets those futures contend with startup repairs for
+        // the same SQLite writer and can make an otherwise healthy restart
+        // fail with SQLITE_BUSY.
         self.rebuild_activation_admission_queue().await?;
-        self.recover_thread_activations().await?;
-        self.dispatch_pending_signal_outbox().await?;
+        self.reconcile_supervision_barriers().await?;
         self.reconcile_durable_plans().await?;
-        self.recover_pending_thread_signals().await?;
         self.recover_delegations().await?;
         self.reconcile_orphaned_threads().await?;
         self.reconcile_orphaned_execution_jobs().await?;
         self.recover_pending_delivery_flushes().await?;
+        self.dispatch_pending_signal_outbox().await?;
+        self.recover_pending_thread_signals().await?;
+        // Activation redispatch is deliberately last: after this point model
+        // and tool continuations may write concurrently with the caller.
+        self.recover_thread_activations().await?;
         self.refill_activation_admission_queue().await?;
         self.start_activation_admission_refill();
         self.start_signal_outbox_dispatcher();
         self.start_plan_reconciler();
+        self.start_supervision_reconciler();
         Ok(())
     }
 
@@ -2563,6 +2574,182 @@ impl Orchestrator {
                 }
             }
         });
+    }
+
+    fn start_supervision_reconciler(self: &Arc<Self>) {
+        let orchestrator = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(SUPERVISION_RECONCILE_INTERVAL).await;
+                let Some(orchestrator) = orchestrator.upgrade() else {
+                    break;
+                };
+                if let Err(error) = orchestrator.reconcile_supervision_barriers().await {
+                    tracing::error!(
+                        %error,
+                        "Thread Supervision 周期恢复失败；权威终态保留，等待下一轮重试"
+                    );
+                }
+            }
+        });
+    }
+
+    /// Reconciles durable supervision ownership and the crash window between
+    /// a terminal Thread Group projection and its supervisor wake.
+    ///
+    /// The Group row is authoritative. Recovery reconstructs the same
+    /// generation-fenced Event id and payload used by the normal terminal
+    /// path, then restores only the missing Ledger/Outbox projection. The
+    /// ordinary Outbox dispatcher performs Signal materialization afterwards.
+    async fn reconcile_supervision_barriers(&self) -> Result<usize, DynError> {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(0);
+        };
+        let mut repaired = 0usize;
+        for context in session_store.list_contexts(false).await? {
+            let groups = session_store
+                .list_thread_groups(ThreadGroupFilter {
+                    context_id: Some(context.id),
+                    include_terminal: true,
+                    newest_first: false,
+                    limit: None,
+                    ..Default::default()
+                })
+                .await?;
+            for group in groups {
+                if group.status.is_terminal() {
+                    if session_store.repair_thread_group_barrier(&group.id).await? {
+                        repaired = repaired.saturating_add(1);
+                    }
+                    continue;
+                }
+
+                let orphan_reason = match group.supervisor_kind {
+                    ThreadSupervisorKind::Evaluation => {
+                        match session_store
+                            .get_thread_activation(&group.supervisor_id)
+                            .await?
+                        {
+                            Some(owner) if !owner.status.is_terminal() => None,
+                            Some(owner) => Some(format!(
+                                "attached Thread Group '{}' 的 owner Evaluation '{}' 已进入终态 '{}'，但成员仍未收口",
+                                group.id,
+                                owner.id,
+                                owner.status.as_str()
+                            )),
+                            None => Some(format!(
+                                "attached Thread Group '{}' 的 owner Evaluation '{}' 不存在",
+                                group.id, group.supervisor_id
+                            )),
+                        }
+                    }
+                    ThreadSupervisorKind::Objective => {
+                        let Some(supervisor) = self.objective_supervisor.as_ref() else {
+                            tracing::error!(
+                                thread_group_id = %group.id,
+                                objective_id = %group.supervisor_id,
+                                "durable Thread Group 缺少可用的 Objective Supervisor；保留 open 状态等待 Runtime 修复"
+                            );
+                            continue;
+                        };
+                        match supervisor.get(&group.supervisor_id).await? {
+                            Some(objective) if !objective.status.is_terminal() => None,
+                            Some(objective) => Some(format!(
+                                "durable Thread Group '{}' 的 Objective '{}' 已进入终态 '{}'，但成员仍未收口",
+                                group.id,
+                                objective.id,
+                                objective.status.as_str()
+                            )),
+                            None => {
+                                for member in
+                                    session_store.list_thread_group_members(&group.id).await?
+                                {
+                                    let Some(thread) =
+                                        session_store.get_thread(&member.thread_id).await?
+                                    else {
+                                        continue;
+                                    };
+                                    if thread.lifecycle == ThreadLifecycle::Open
+                                        && thread.control_state
+                                            == crate::memory::ThreadControlState::Active
+                                    {
+                                        let _ = session_store
+                                            .control_thread(
+                                                &thread.id,
+                                                thread.revision,
+                                                ThreadControlAction::Pause,
+                                                Some(
+                                                    "durable Thread 的 Objective 不存在；已暂停并等待 Runtime 修复",
+                                                ),
+                                                Some("Runtime-Recovery"),
+                                            )
+                                            .await?;
+                                    }
+                                }
+                                tracing::error!(
+                                    thread_group_id = %group.id,
+                                    objective_id = %group.supervisor_id,
+                                    "durable Thread Group 引用了不存在的 Objective；成员已暂停，禁止继续派发"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    ThreadSupervisorKind::Runtime => None,
+                    ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
+                        tracing::error!(
+                            thread_group_id = %group.id,
+                            supervisor_kind = %group.supervisor_kind.as_str(),
+                            "open Thread Group 缺少受支持的监督者；保留持久状态等待 Runtime 修复"
+                        );
+                        None
+                    }
+                };
+
+                let Some(orphan_reason) = orphan_reason else {
+                    continue;
+                };
+                for member in session_store.list_thread_group_members(&group.id).await? {
+                    if member.status.is_terminal() {
+                        continue;
+                    }
+                    let Some(thread) = session_store.get_thread(&member.thread_id).await? else {
+                        continue;
+                    };
+                    if thread.lifecycle != ThreadLifecycle::Open {
+                        continue;
+                    }
+                    match session_store
+                        .control_thread(
+                            &thread.id,
+                            thread.revision,
+                            ThreadControlAction::Close,
+                            Some(&orphan_reason),
+                            Some("Runtime-Recovery"),
+                        )
+                        .await?
+                    {
+                        ThreadMutation::Updated(_) => {
+                            repaired = repaired.saturating_add(1);
+                            tracing::warn!(
+                                thread_id = %thread.id,
+                                thread_group_id = %group.id,
+                                reason = %orphan_reason,
+                                "Supervision Reconciler 已取消失去监督者的 Thread"
+                            );
+                        }
+                        ThreadMutation::Conflict { .. } | ThreadMutation::NotFound => {}
+                    }
+                }
+            }
+        }
+        if repaired > 0 {
+            tracing::info!(
+                repaired_thread_group_barriers = repaired,
+                "Thread Supervision barrier 恢复完成"
+            );
+        }
+        Ok(repaired)
     }
 
     async fn reconcile_durable_plans(&self) -> Result<(), DynError> {
@@ -2996,18 +3183,14 @@ impl Orchestrator {
                 {
                     continue;
                 }
-                let event_id = format!("thread_reconciled_{}_r{}", thread.id, thread.revision);
                 let reason = "Runtime 重启时检测到 active Thread 没有非终态 Thread Activation、待执行调度或已提交终态；已将遗留孤儿状态标记为 cancelled。";
                 match session_store
-                    .update_thread(
+                    .control_thread(
                         &thread.id,
                         thread.revision,
-                        None,
-                        Some(ThreadLifecycle::Cancelled),
+                        ThreadControlAction::Close,
                         Some(reason),
-                        Some(&event_id),
-                        None,
-                        None,
+                        Some("Runtime-Recovery"),
                     )
                     .await?
                 {
@@ -3027,26 +3210,24 @@ impl Orchestrator {
                         );
                         self.bus
                             .publish(Event::new(
-                                event_id,
-                                "Runtime-Recovery".to_string(),
+                                format!("thread_reconciled_{}_g{}", thread.id, thread.generation),
+                                "Runtime".to_string(),
                                 "runtime_control".to_string(),
                                 "runtime/thread_reconciled".to_string(),
-                                vec![
-                                    ("agent_id".to_string(), json!(thread.agent_id)),
-                                    ("context_id".to_string(), json!(thread.context_id)),
-                                    ("session_id".to_string(), json!(thread.session_id)),
-                                    ("thread_id".to_string(), json!(thread.id)),
-                                    ("root_turn_id".to_string(), json!(thread.root_turn_id)),
-                                    ("thread_kind".to_string(), json!(thread.kind.as_str())),
-                                    ("status".to_string(), json!("cancelled")),
-                                    (
-                                        "reason".to_string(),
-                                        json!("orphaned_after_runtime_restart"),
-                                    ),
-                                    ("text".to_string(), json!(reason)),
-                                ]
-                                .into_iter()
-                                .collect(),
+                                serde_json::json!({
+                                    "agent_id": thread.agent_id,
+                                    "context_id": thread.context_id,
+                                    "session_id": thread.session_id,
+                                    "thread_id": thread.id,
+                                    "root_turn_id": thread.root_turn_id,
+                                    "thread_generation": thread.generation,
+                                    "terminal_kind": "cancelled",
+                                    "wake_policy": "none",
+                                    "text": reason,
+                                })
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
                             ))
                             .await?;
                     }
@@ -4183,7 +4364,19 @@ impl Orchestrator {
             .map(ToOwned::to_owned)
             .or_else(|| parent.as_ref().map(|item| item.root_turn_id.clone()))
             .unwrap_or_else(|| event.id.clone());
-        let initial_thread_kind = if event.topic == "chat/thread_completion_ready" {
+        let objective_route = event
+            .payload
+            .get("objective_id")
+            .and_then(|value| value.as_str())
+            .zip(
+                event
+                    .payload
+                    .get("objective_evaluation_id")
+                    .and_then(|value| value.as_str()),
+            );
+        let derived_thread_kind = if objective_route.is_some() {
+            ThreadKind::Objective
+        } else if event.topic == "chat/thread_completion_ready" {
             ThreadKind::Delivery
         } else if is_dialogue_trigger(event) {
             ThreadKind::DialogueTurn
@@ -4195,6 +4388,44 @@ impl Orchestrator {
             .get("plan_execution_id")
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned);
+        // A Thread's supervision route is immutable for its entire logical
+        // root. In particular, an Objective control tool can bump the
+        // Objective revision before its tool result is routed; recomputing the
+        // supervision generation here would make the continuation appear to be
+        // a different owner and strand the Evaluation after the tool call.
+        //
+        // Thread kind has exactly one legacy-compatible transition:
+        // DialogueTurn -> Execution after a physical assistant plan is durable.
+        // That transition is performed in run_attempt from the persisted plan,
+        // never inferred from a process-local gate.
+        let existing_thread = session_store.get_thread_by_root(&root_turn_id).await?;
+        let initial_thread_kind = existing_thread
+            .as_ref()
+            .map(|thread| thread.kind)
+            .unwrap_or(derived_thread_kind);
+        let supervision = if let Some(thread) = existing_thread.as_ref() {
+            thread.supervision.clone()
+        } else if let Some((objective_id, evaluation_id)) = objective_route {
+            ThreadSupervision::objective(
+                objective_id,
+                evaluation_id,
+                event
+                    .payload
+                    .get("objective_revision")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(1),
+                parent
+                    .as_ref()
+                    .map(|activation| stable_thread_id(&activation.root_turn_id)),
+            )
+        } else {
+            ThreadSupervision::runtime(match initial_thread_kind {
+                ThreadKind::DialogueTurn => "dialogue-router",
+                ThreadKind::Delivery => "delivery-router",
+                ThreadKind::Objective => unreachable!("Objective route handled above"),
+                ThreadKind::Execution => "event-router",
+            })
+        };
         let thread = session_store
             .ensure_thread(NewThread {
                 id: stable_thread_id(&root_turn_id),
@@ -4211,11 +4442,11 @@ impl Orchestrator {
                 },
                 executor_id: plan_execution_id,
                 target_id: None,
+                supervision,
             })
             .await?;
+        let activation_id = stable_activation_id(&event.id);
         let digest = Sha256::digest(event.id.as_bytes());
-        let activation_id = format!("work_{:x}", digest);
-        let activation_id = activation_id[..29].to_string();
         let signal_id = format!("signal_{:x}", digest);
         let signal_id = signal_id[..31].to_string();
         let Some(activation) = session_store
@@ -5705,10 +5936,21 @@ impl Orchestrator {
         activation: &ThreadActivationRecord,
     ) -> Result<(), DynError> {
         let attempt_id = activation.id.clone();
-        let persisted_assistant_call = self
+        let mut persisted_assistant_call = self
             .context_engine
             .find_event(&activation.context_id, &format!("call_{}", activation.id))
             .await?;
+        if persisted_assistant_call.is_none() {
+            if let Some(parent_activation_id) = activation.parent_activation_id.as_deref() {
+                persisted_assistant_call = self
+                    .context_engine
+                    .find_event(
+                        &activation.context_id,
+                        &format!("call_{parent_activation_id}"),
+                    )
+                    .await?;
+            }
+        }
         let persisted_physical_plan = persisted_assistant_call
             .as_ref()
             .is_some_and(event_contains_physical_tool_plan);
@@ -5733,19 +5975,6 @@ impl Orchestrator {
         let mut dialogue_lease = dialogue_bound.then(|| {
             DialogueThreadLease::new(Arc::clone(&dialogue_gate), activation.root_turn_id.clone())
         });
-        let thread_kind = if activation.trigger_kind == "chat/thread_completion_ready" {
-            "delivery"
-        } else if self
-            .objective_evaluations
-            .get_for_activation(&activation.id)
-            .is_some()
-        {
-            "objective"
-        } else if dialogue_bound {
-            "dialogue_turn"
-        } else {
-            "execution"
-        };
         let session_store = self
             .context_engine
             .session_store()
@@ -5754,12 +5983,42 @@ impl Orchestrator {
             .get_thread_by_root(&activation.root_turn_id)
             .await?
             .ok_or_else(|| format!("Root Turn '{}' 缺少 Thread", activation.root_turn_id))?;
-        let desired_kind = match thread_kind {
-            "dialogue_turn" => ThreadKind::DialogueTurn,
-            "objective" => ThreadKind::Objective,
-            "delivery" => ThreadKind::Delivery,
-            _ => ThreadKind::Execution,
-        };
+        // A physical assistant plan is the durable boundary at which the
+        // current DialogueTurn becomes an Execution Thread. Gate ownership is
+        // intentionally irrelevant: Context-maintenance continuations remain
+        // DialogueTurns even if another durable turn is queued.
+        if thread.kind == ThreadKind::DialogueTurn && persisted_physical_plan {
+            match session_store
+                .update_thread(
+                    &thread.id,
+                    thread.revision,
+                    Some(ThreadKind::Execution),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?
+            {
+                ThreadMutation::Updated(updated) => thread = updated,
+                ThreadMutation::Conflict { current } if current.kind == ThreadKind::Execution => {
+                    thread = current;
+                }
+                ThreadMutation::Conflict { current } => {
+                    return Err(format!(
+                        "Thread '{}' 的物理执行升级发生并发冲突：当前类型为 '{}'",
+                        current.id,
+                        current.kind.as_str()
+                    )
+                    .into());
+                }
+                ThreadMutation::NotFound => {
+                    return Err(format!("Thread '{}' 在物理执行升级时消失", thread.id).into());
+                }
+            }
+        }
+        let thread_kind = thread.kind.as_str();
         let delivery_thread_ids = if thread_kind == "delivery" {
             self.context_engine
                 .find_event(&activation.context_id, &activation.trigger_event_id)
@@ -5780,23 +6039,6 @@ impl Orchestrator {
         } else {
             Vec::new()
         };
-        if thread.kind != desired_kind {
-            if let ThreadMutation::Updated(updated) = session_store
-                .update_thread(
-                    &thread.id,
-                    thread.revision,
-                    Some(desired_kind),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await?
-            {
-                thread = updated;
-            }
-        }
         self.activation_routes.insert(
             attempt_id.clone(),
             ActivationRoute {
@@ -6917,10 +7159,35 @@ impl Orchestrator {
                 .tool_calls
                 .iter()
                 .all(|call| call.func_name == "context_tx");
+            let context_maintenance_continuations = if context_maintenance_only {
+                response
+                    .tool_calls
+                    .iter()
+                    .map(|call| stable_activation_id(&format!("output_{attempt_id}_{}", call.id)))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             if !context_maintenance_only {
+                if dialogue_lease.is_some()
+                    && session_store
+                        .release_dialogue_turn_activation(&activation.id, Utc::now())
+                        .await?
+                {
+                    tracing::debug!(
+                        activation_id = %activation.id,
+                        session_id,
+                        "DialogueTurn 已持久离开对话通道；物理工具继续在原 Activation 中执行"
+                    );
+                }
                 if let Some(lease) = dialogue_lease.as_mut() {
                     lease.release();
                 }
+                // A later user message may already be durably queued behind
+                // this Activation. Releasing the process-local gate alone
+                // cannot wake the DB-backed admission queue, so refill it at
+                // the same semantic boundary.
+                self.refill_activation_admission_queue().await?;
             }
             let result = self
                 .execute_tool_calls(
@@ -6950,6 +7217,16 @@ impl Orchestrator {
                         "Context maintenance owner 已提交事务；等待者将从新 Projection 重新求值"
                     );
                 }
+                // A maintenance-only response is an intermediate DialogueTurn
+                // boundary. Its tool receipt must materialize the same-root
+                // continuation before this Activation becomes terminal;
+                // otherwise a later user turn can win durable admission while
+                // the process-local lane is still owned by the maintenance
+                // root, leaving both roots waiting on each other.
+                for continuation_id in &context_maintenance_continuations {
+                    self.wait_for_continuation_activation(continuation_id)
+                        .await?;
+                }
             }
             if context_maintenance_only {
                 if let Some(lease) = dialogue_lease.as_mut() {
@@ -6960,6 +7237,27 @@ impl Orchestrator {
         }
 
         unreachable!("无工具响应应由终态协议分类、纠错或熔断处理")
+    }
+
+    async fn wait_for_continuation_activation(&self, activation_id: &str) -> Result<(), DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Context maintenance continuation 需要持久化 SessionStore")?;
+        for _ in 0..500 {
+            if session_store
+                .get_thread_activation(activation_id)
+                .await?
+                .is_some()
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        Err(format!(
+            "Context maintenance continuation Activation '{activation_id}' 未在 5 秒内物化"
+        )
+        .into())
     }
 
     async fn execution_result_is_interactive(
@@ -7827,6 +8125,15 @@ impl Orchestrator {
                     duplicate_event_id = %event.id,
                     committed_event_id = %event_id,
                     "抑制同一 Thread Activation 的重复终态输出"
+                );
+                false
+            }
+            ActivationOutcomeCommit::DeferredByOpenThreadGroups { ref group_ids } => {
+                tracing::info!(
+                    activation_id = %route.activation_id,
+                    event_id = %event.id,
+                    thread_group_ids = ?group_ids,
+                    "Evaluation 仍有 required attached Thread；拒绝提前提交终态，等待 Group barrier 唤醒"
                 );
                 false
             }
@@ -11847,6 +12154,12 @@ fn stable_thread_id(root_turn_id: &str) -> String {
     id[..31].to_string()
 }
 
+fn stable_activation_id(trigger_event_id: &str) -> String {
+    let digest = Sha256::digest(trigger_event_id.as_bytes());
+    let id = format!("work_{digest:x}");
+    id[..29].to_string()
+}
+
 fn delivery_flush_timer_id(session_id: &str) -> String {
     let digest = Sha256::digest(format!("delivery-flush:{session_id}").as_bytes());
     format!("delivery-flush:{digest:x}")
@@ -13366,6 +13679,7 @@ mod tests {
             status,
             claimed_by: Some("runtime:999".to_string()),
             lease_expires_at,
+            dialogue_lane_released_at: None,
             created_at: now,
             updated_at: now,
         };

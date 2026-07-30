@@ -3,12 +3,14 @@ use super::{
     thread::thread_from_row, PostgresStore, StoreError,
 };
 use crate::admission::AdmissionClass;
-use crate::event::Event;
+use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
-    ActivationOutcomeCommit, ActivationStore, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
-    NewThreadActivation, NewThreadSignal, SessionAttentionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadKind, ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus,
+    evaluate_thread_completion_contract, evaluate_thread_group_contract, ActivationOutcomeCommit,
+    ActivationStore, DialogueTurnRetryMutation, DialogueTurnRetryRequest, NewThreadActivation,
+    NewThreadSignal, SessionAttentionUpdate, SignalOutboxRecord, SignalOutboxStatus,
+    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadGroupPolicy,
+    ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus,
+    ThreadSupervisorKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -19,6 +21,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
+        r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS dialogue_lane_released_at TEXT"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_session_status
            ON thread_activations(session_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_context_status
@@ -53,13 +56,35 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         )"#,
         r#"CREATE TABLE IF NOT EXISTS thread_outcomes (
             thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+            outcome_id TEXT NOT NULL UNIQUE,
+            thread_generation BIGINT NOT NULL DEFAULT 1,
             root_turn_id TEXT NOT NULL UNIQUE,
             activation_id TEXT NOT NULL REFERENCES thread_activations(id) ON DELETE CASCADE,
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            terminal_kind TEXT NOT NULL DEFAULT 'completed',
             disposition TEXT NOT NULL,
             event_id TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL
+            summary TEXT,
+            artifact_refs_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+            evidence_refs_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+            check_results_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            unresolved_failures_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+            terminal_event_sequence BIGINT,
+            created_at TEXT NOT NULL,
+            delivered_at TEXT
         )"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS outcome_id TEXT"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS thread_generation BIGINT NOT NULL DEFAULT 1"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS terminal_kind TEXT NOT NULL DEFAULT 'completed'"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS summary TEXT"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS artifact_refs_json JSONB NOT NULL DEFAULT '[]'::jsonb"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS evidence_refs_json JSONB NOT NULL DEFAULT '[]'::jsonb"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS check_results_json JSONB NOT NULL DEFAULT '{}'::jsonb"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS unresolved_failures_json JSONB NOT NULL DEFAULT '[]'::jsonb"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS terminal_event_sequence BIGINT"#,
+        r#"ALTER TABLE thread_outcomes ADD COLUMN IF NOT EXISTS delivered_at TEXT"#,
+        r#"UPDATE thread_outcomes SET outcome_id = 'outcome_' || event_id WHERE outcome_id IS NULL OR outcome_id = ''"#,
+        r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_thread_outcomes_outcome_id ON thread_outcomes(outcome_id)"#,
         r#"CREATE TABLE IF NOT EXISTS evaluation_outcomes (
             activation_id TEXT PRIMARY KEY REFERENCES thread_activations(id) ON DELETE CASCADE,
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -127,6 +152,11 @@ pub(super) fn activation_from_row(row: &PgRow) -> Result<ThreadActivationRecord,
         claimed_by: row.get("claimed_by"),
         lease_expires_at: row
             .get::<Option<String>, _>("lease_expires_at")
+            .as_deref()
+            .map(parse_time)
+            .transpose()?,
+        dialogue_lane_released_at: row
+            .get::<Option<String>, _>("dialogue_lane_released_at")
             .as_deref()
             .map(parse_time)
             .transpose()?,
@@ -925,7 +955,9 @@ impl ActivationStore for PostgresStore {
                           AND running_thread.generation = running.generation
                          WHERE running.session_id = activations.session_id
                            AND running.status = 'running'
+                           AND running.dialogue_lane_released_at IS NULL
                            AND running.id != activations.id
+                           AND running.root_turn_id != activations.root_turn_id
                            AND running_thread.kind = 'dialogue_turn'
                        )
                        AND NOT EXISTS (
@@ -939,10 +971,18 @@ impl ActivationStore for PostgresStore {
                            AND older.id != activations.id
                            AND older_thread.kind = 'dialogue_turn'
                            AND (
-                             older.trigger_sequence < activations.trigger_sequence
+                             CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                               < CASE WHEN activations.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                              OR (
-                               older.trigger_sequence = activations.trigger_sequence
-                               AND older.id < activations.id
+                               CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                                 = CASE WHEN activations.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                               AND (
+                                 older.trigger_sequence < activations.trigger_sequence
+                                 OR (
+                                   older.trigger_sequence = activations.trigger_sequence
+                                   AND older.id < activations.id
+                                 )
+                               )
                              )
                            )
                        )
@@ -1002,7 +1042,9 @@ impl ActivationStore for PostgresStore {
                     AND running_thread.generation = running.generation
                    WHERE running.session_id = candidate.session_id
                      AND running.status = 'running'
+                     AND running.dialogue_lane_released_at IS NULL
                      AND running.id != candidate.id
+                     AND running.root_turn_id != candidate.root_turn_id
                      AND running_thread.kind = 'dialogue_turn'
                  ) THEN FALSE
                  WHEN EXISTS (
@@ -1016,10 +1058,18 @@ impl ActivationStore for PostgresStore {
                      AND older.id != candidate.id
                      AND older_thread.kind = 'dialogue_turn'
                      AND (
-                       older.trigger_sequence < candidate.trigger_sequence
+                       CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                         < CASE WHEN candidate.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                        OR (
-                         older.trigger_sequence = candidate.trigger_sequence
-                         AND older.id < candidate.id
+                         CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                           = CASE WHEN candidate.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
+                         AND (
+                           older.trigger_sequence < candidate.trigger_sequence
+                           OR (
+                             older.trigger_sequence = candidate.trigger_sequence
+                             AND older.id < candidate.id
+                           )
+                         )
                        )
                      )
                  ) THEN FALSE
@@ -1035,6 +1085,26 @@ impl ActivationStore for PostgresStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(runnable.unwrap_or(true))
+    }
+
+    async fn release_dialogue_turn_activation(
+        &self,
+        activation_id: &str,
+        released_at: DateTime<Utc>,
+    ) -> Result<bool, StoreError> {
+        let released_at = released_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE thread_activations
+               SET dialogue_lane_released_at = $1, revision = revision + 1,
+                   updated_at = $1
+               WHERE id = $2 AND status = 'running'
+                 AND dialogue_lane_released_at IS NULL"#,
+        )
+        .bind(released_at)
+        .bind(activation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn update_thread_activation(
@@ -1077,7 +1147,11 @@ impl ActivationStore for PostgresStore {
                             AND thread.generation = activation.generation
                            WHERE activation.session_id = $1
                              AND activation.status = 'running'
+                             AND activation.dialogue_lane_released_at IS NULL
                              AND activation.id != $2
+                             AND activation.root_turn_id != (
+                               SELECT root_turn_id FROM thread_activations WHERE id = $2
+                             )
                              AND thread.kind = 'dialogue_turn'
                            LIMIT 1"#,
                     )
@@ -1094,7 +1168,10 @@ impl ActivationStore for PostgresStore {
                            WHERE activation.session_id = $1
                              AND activation.status = 'queued'
                              AND thread.kind = 'dialogue_turn'
-                           ORDER BY activation.trigger_sequence, activation.id
+                           ORDER BY
+                             CASE WHEN activation.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END,
+                             activation.trigger_sequence,
+                             activation.id
                            LIMIT 1"#,
                     )
                     .bind(&session_id)
@@ -1184,7 +1261,12 @@ impl ActivationStore for PostgresStore {
         let activation_route = sqlx::query(
             r#"SELECT activation.generation AS activation_generation,
                       activation.status AS activation_status,
-                      thread.generation AS thread_generation
+                      thread.generation AS thread_generation,
+                      thread.parent_thread_id AS parent_thread_id,
+                      thread.thread_group_id AS thread_group_id,
+                      thread.completion_contract_json AS completion_contract_json,
+                      thread.supervisor_kind AS supervisor_kind,
+                      thread.supervisor_id AS supervisor_id
                FROM thread_activations activation
                JOIN threads thread ON thread.root_turn_id = activation.root_turn_id
                WHERE activation.id = $1 AND thread.id = $2
@@ -1202,9 +1284,33 @@ impl ActivationStore for PostgresStore {
         })?;
         let activation_generation: i64 = activation_route.get("activation_generation");
         let thread_generation: i64 = activation_route.get("thread_generation");
+        let parent_thread_id: Option<String> = activation_route.get("parent_thread_id");
+        let thread_group_id: Option<String> = activation_route.get("thread_group_id");
+        let supervisor_kind = match activation_route
+            .get::<String, _>("supervisor_kind")
+            .as_str()
+        {
+            "evaluation" => ThreadSupervisorKind::Evaluation,
+            "objective" => ThreadSupervisorKind::Objective,
+            "runtime" => ThreadSupervisorKind::Runtime,
+            "none" => ThreadSupervisorKind::None,
+            "legacy" => ThreadSupervisorKind::Legacy,
+            other => return Err(format!("未知 Thread supervisor kind: {other}").into()),
+        };
+        let supervisor_id: Option<String> = activation_route.get("supervisor_id");
         if activation_generation != thread_generation {
             tx.commit().await?;
             return Ok(ActivationOutcomeCommit::StaleGeneration);
+        }
+        if let Some(event_id) = sqlx::query_scalar::<_, String>(
+            "SELECT event_id FROM thread_outcomes WHERE root_turn_id = $1",
+        )
+        .bind(root_turn_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            tx.commit().await?;
+            return Ok(ActivationOutcomeCommit::Existing { event_id });
         }
         let activation_status: String = activation_route.get("activation_status");
         if activation_status != ThreadActivationStatus::Running.as_str() {
@@ -1220,19 +1326,139 @@ impl ActivationStore for PostgresStore {
                 None => ActivationOutcomeCommit::StaleActivation,
             });
         }
+        let result_text = event.payload.get("text").and_then(JsonValue::as_str);
+        let terminal_kind = event
+            .payload
+            .get("terminal_kind")
+            .and_then(JsonValue::as_str)
+            .filter(|value| matches!(*value, "completed" | "failed" | "cancelled"))
+            .unwrap_or_else(|| {
+                if event.topic == "chat/reply"
+                    && event.payload.get("runtime_failure_kind").is_some()
+                {
+                    ThreadLifecycle::Failed.as_str()
+                } else {
+                    ThreadLifecycle::Completed.as_str()
+                }
+            });
+        if terminal_kind == ThreadLifecycle::Completed.as_str() {
+            let open_group_ids = sqlx::query_scalar::<_, String>(
+                r#"SELECT id FROM thread_groups
+                   WHERE supervisor_kind = 'evaluation'
+                     AND supervisor_id = $1
+                     AND status = 'open'
+                     AND terminal_count < required_count
+                   ORDER BY created_at, id"#,
+            )
+            .bind(activation_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            if !open_group_ids.is_empty() {
+                tx.commit().await?;
+                return Ok(ActivationOutcomeCommit::DeferredByOpenThreadGroups {
+                    group_ids: open_group_ids,
+                });
+            }
+        }
+        let outcome_id = format!("outcome_{thread_id}_g{thread_generation}");
+        let artifact_refs = event
+            .payload
+            .get("artifact_refs")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut evidence_refs = event
+            .payload
+            .get("evidence_refs")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if evidence_refs.is_empty() {
+            evidence_refs.push(JsonValue::String(event.id.clone()));
+        }
+        let reported_check_results = event
+            .payload
+            .get("check_results")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let reported_failures = event
+            .payload
+            .get("unresolved_failures")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let completion_contract: JsonValue = activation_route.get("completion_contract_json");
+        let terminal_lifecycle = match terminal_kind {
+            "completed" => ThreadLifecycle::Completed,
+            "failed" => ThreadLifecycle::Failed,
+            "cancelled" => ThreadLifecycle::Cancelled,
+            other => return Err(format!("未知 Thread terminal kind: {other}").into()),
+        };
+        let mut completion = evaluate_thread_completion_contract(
+            &completion_contract,
+            terminal_lifecycle,
+            result_text,
+            &artifact_refs,
+            &evidence_refs,
+            &reported_check_results,
+            &reported_failures,
+        );
+        if terminal_lifecycle == ThreadLifecycle::Failed
+            && completion.unresolved_failures.is_empty()
+        {
+            completion.unresolved_failures.push(
+                event
+                    .payload
+                    .get("runtime_failure_kind")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("thread_failed")
+                    .to_string(),
+            );
+        }
+        let check_results = completion.check_results;
+        let unresolved_failures = completion
+            .unresolved_failures
+            .iter()
+            .cloned()
+            .map(JsonValue::String)
+            .collect::<Vec<_>>();
+        append_event_in_tx(&mut tx, event).await?;
+        let terminal_event_sequence =
+            sqlx::query_scalar::<_, i64>("SELECT sequence FROM events WHERE id = $1")
+                .bind(&event.id)
+                .fetch_one(&mut *tx)
+                .await?;
         let result = sqlx::query(
             r#"INSERT INTO thread_outcomes
-               (thread_id, root_turn_id, activation_id, session_id, disposition, event_id, created_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               (thread_id, outcome_id, thread_generation, root_turn_id, activation_id,
+                session_id, terminal_kind, disposition, event_id, summary,
+                artifact_refs_json, evidence_refs_json, check_results_json,
+                unresolved_failures_json, terminal_event_sequence, created_at, delivered_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                       $13, $14, $15, $16, $17)
                ON CONFLICT(root_turn_id) DO NOTHING"#,
         )
         .bind(thread_id)
+        .bind(&outcome_id)
+        .bind(thread_generation)
         .bind(root_turn_id)
         .bind(activation_id)
         .bind(session_id)
+        .bind(terminal_kind)
         .bind(disposition)
         .bind(&event.id)
+        .bind(result_text)
+        .bind(JsonValue::Array(artifact_refs.clone()))
+        .bind(JsonValue::Array(evidence_refs.clone()))
+        .bind(check_results.clone())
+        .bind(JsonValue::Array(unresolved_failures.clone()))
+        .bind(terminal_event_sequence)
         .bind(&now)
+        .bind(if event.topic == "chat/reply" {
+            Some(now.as_str())
+        } else {
+            None
+        })
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 0 {
@@ -1242,16 +1468,10 @@ impl ActivationStore for PostgresStore {
             .bind(root_turn_id)
             .fetch_one(&mut *tx)
             .await?;
-            tx.commit().await?;
+            tx.rollback().await?;
             return Ok(ActivationOutcomeCommit::Existing { event_id: existing });
         }
-        let result_text = event.payload.get("text").and_then(JsonValue::as_str);
-        let thread_status =
-            if event.topic == "chat/reply" && event.payload.get("runtime_failure_kind").is_some() {
-                ThreadLifecycle::Failed.as_str()
-            } else {
-                ThreadLifecycle::Completed.as_str()
-            };
+        let thread_status = terminal_kind;
         let (delivery_status, delivery_event_id) = match event.topic.as_str() {
             "chat/reply" => ("delivered", Some(event.id.as_str())),
             "runtime/thread_result" => ("pending", None),
@@ -1279,6 +1499,398 @@ impl ActivationStore for PostgresStore {
             return Err(
                 format!("Evaluation outcome 无法原子提交 Thread '{thread_id}' 终态").into(),
             );
+        }
+        if let Some(group_id) = thread_group_id.as_deref() {
+            let member_status = match terminal_kind {
+                "completed" if completion.passed => "completed",
+                "completed" => "failed",
+                "cancelled" => "cancelled",
+                _ => "failed",
+            };
+            let member = sqlx::query(
+                r#"UPDATE thread_group_members
+                   SET status = $1, outcome_id = $2, updated_at = $3
+                   WHERE group_id = $4 AND thread_id = $5 AND status = 'pending'"#,
+            )
+            .bind(member_status)
+            .bind(&outcome_id)
+            .bind(&now)
+            .bind(group_id)
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await?;
+            if member.rows_affected() == 1 {
+                let group = sqlx::query(
+                    r#"SELECT policy, required_count, status, supervisor_kind,
+                              supervisor_id, generation, context_id, session_id,
+                              completion_contract_json
+                       FROM thread_groups WHERE id = $1 FOR UPDATE"#,
+                )
+                .bind(group_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                let required_count = u64::try_from(group.get::<i64, _>("required_count"))?;
+                let counts = sqlx::query(
+                    r#"SELECT
+                         COUNT(*) FILTER (WHERE required AND status <> 'pending')
+                           AS terminal_count,
+                         COUNT(*) FILTER (WHERE required AND status = 'completed')
+                           AS successful_count
+                       FROM thread_group_members WHERE group_id = $1"#,
+                )
+                .bind(group_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                let terminal_count = u64::try_from(counts.get::<i64, _>("terminal_count"))?;
+                let successful_count = u64::try_from(counts.get::<i64, _>("successful_count"))?;
+                let policy = match group.get::<String, _>("policy").as_str() {
+                    "all" => ThreadGroupPolicy::All,
+                    "any" => ThreadGroupPolicy::Any,
+                    other => {
+                        return Err(format!("未知 Thread Group policy: {other}").into());
+                    }
+                };
+                let current_status = match group.get::<String, _>("status").as_str() {
+                    "open" => ThreadGroupStatus::Open,
+                    "satisfied" => ThreadGroupStatus::Satisfied,
+                    "failed" => ThreadGroupStatus::Failed,
+                    "cancelled" => ThreadGroupStatus::Cancelled,
+                    other => {
+                        return Err(format!("未知 Thread Group status: {other}").into());
+                    }
+                };
+                let group_contract: JsonValue = group.get("completion_contract_json");
+                let group_evaluation = evaluate_thread_group_contract(
+                    policy,
+                    required_count,
+                    terminal_count,
+                    successful_count,
+                    &group_contract,
+                );
+                let next_status = group_evaluation.status;
+                let terminal_summary = serde_json::json!({
+                    "group_id": group_id,
+                    "status": next_status.as_str(),
+                    "policy": policy.as_str(),
+                    "required_count": required_count,
+                    "terminal_count": terminal_count,
+                    "successful_count": successful_count,
+                    "completion_contract": group_contract,
+                    "contract_results": group_evaluation.contract_results,
+                    "last_outcome_id": outcome_id,
+                    "last_thread_id": thread_id,
+                });
+                let barrier_event_id = format!(
+                    "thread_group_barrier_{}_g{}",
+                    group_id,
+                    group.get::<i64, _>("generation")
+                );
+                let group_update = sqlx::query(
+                    r#"UPDATE thread_groups
+                       SET revision = revision + 1, terminal_count = $1,
+                           successful_count = $2, status = $3,
+                           terminal_summary_json = $4, barrier_event_id = $5,
+                           updated_at = $6, satisfied_at = $7
+                       WHERE id = $8 AND status = 'open'"#,
+                )
+                .bind(i64::try_from(terminal_count)?)
+                .bind(i64::try_from(successful_count)?)
+                .bind(next_status.as_str())
+                .bind(&terminal_summary)
+                .bind(if next_status.is_terminal() {
+                    Some(barrier_event_id.as_str())
+                } else {
+                    None
+                })
+                .bind(&now)
+                .bind(if next_status.is_terminal() {
+                    Some(now.as_str())
+                } else {
+                    None
+                })
+                .bind(group_id)
+                .execute(&mut *tx)
+                .await?;
+                if current_status == ThreadGroupStatus::Open
+                    && next_status.is_terminal()
+                    && group_update.rows_affected() == 1
+                {
+                    let supervisor_kind = match group.get::<String, _>("supervisor_kind").as_str() {
+                        "evaluation" => ThreadSupervisorKind::Evaluation,
+                        "objective" => ThreadSupervisorKind::Objective,
+                        "runtime" => ThreadSupervisorKind::Runtime,
+                        "none" => ThreadSupervisorKind::None,
+                        "legacy" => ThreadSupervisorKind::Legacy,
+                        other => {
+                            return Err(format!("未知 Thread supervisor kind: {other}").into());
+                        }
+                    };
+                    let supervisor_id: String = group.get("supervisor_id");
+                    let group_context_id: String = group.get("context_id");
+                    let group_session_id: String = group.get("session_id");
+                    let mut payload = serde_json::Map::new();
+                    payload.insert(
+                        "context_id".to_string(),
+                        JsonValue::String(group_context_id),
+                    );
+                    payload.insert(
+                        "thread_group_id".to_string(),
+                        JsonValue::String(group_id.to_string()),
+                    );
+                    payload.insert(
+                        "thread_group_status".to_string(),
+                        JsonValue::String(next_status.as_str().to_string()),
+                    );
+                    payload.insert(
+                        "wake_policy".to_string(),
+                        JsonValue::String("immediate".into()),
+                    );
+                    payload.insert("terminal_summary".to_string(), terminal_summary);
+                    let (topic, event_type) = match supervisor_kind {
+                        ThreadSupervisorKind::Evaluation => {
+                            let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
+                                format!(
+                                    "Evaluation Thread Group '{}' 的成员 '{}' 缺少 parent_thread_id",
+                                    group_id, thread_id
+                                )
+                            })?;
+                            let parent = sqlx::query(
+                                "SELECT session_id, root_turn_id FROM threads WHERE id = $1",
+                            )
+                            .bind(parent_id)
+                            .fetch_one(&mut *tx)
+                            .await?;
+                            payload.insert(
+                                "session_id".to_string(),
+                                JsonValue::String(parent.get("session_id")),
+                            );
+                            payload.insert(
+                                "thread_id".to_string(),
+                                JsonValue::String(parent_id.to_string()),
+                            );
+                            payload.insert(
+                                "root_turn_id".to_string(),
+                                JsonValue::String(parent.get("root_turn_id")),
+                            );
+                            payload.insert(
+                                "tool_name".to_string(),
+                                JsonValue::String("thread_group".into()),
+                            );
+                            payload.insert(
+                                "tool_status".to_string(),
+                                JsonValue::String(
+                                    if next_status == ThreadGroupStatus::Satisfied {
+                                        "success"
+                                    } else {
+                                        "error"
+                                    }
+                                    .into(),
+                                ),
+                            );
+                            payload.insert(
+                                "text".to_string(),
+                                JsonValue::String(format!(
+                                    "Thread Group '{}' 已终止：{}（{}/{} 成功）",
+                                    group_id,
+                                    next_status.as_str(),
+                                    successful_count,
+                                    required_count
+                                )),
+                            );
+                            ("chat/thread_group_terminal", TYPE_TOOL_OUTPUT.to_string())
+                        }
+                        ThreadSupervisorKind::Objective => {
+                            payload.insert(
+                                "session_id".to_string(),
+                                JsonValue::String(group_session_id),
+                            );
+                            payload.insert(
+                                "objective_id".to_string(),
+                                JsonValue::String(supervisor_id),
+                            );
+                            payload.insert(
+                                "correlation_id".to_string(),
+                                JsonValue::String(group_id.to_string()),
+                            );
+                            (
+                                "runtime/thread_group_terminal",
+                                "runtime_control".to_string(),
+                            )
+                        }
+                        ThreadSupervisorKind::Runtime => {
+                            payload.insert(
+                                "session_id".to_string(),
+                                JsonValue::String(group_session_id),
+                            );
+                            payload.insert(
+                                "runtime_supervisor_id".to_string(),
+                                JsonValue::String(supervisor_id),
+                            );
+                            (
+                                "runtime/thread_group_terminal",
+                                "runtime_control".to_string(),
+                            )
+                        }
+                        ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
+                            return Err(format!(
+                                "Thread Group '{}' 不能由 {:?} supervisor 收口",
+                                group_id, supervisor_kind
+                            )
+                            .into());
+                        }
+                    };
+                    let barrier = Event::new(
+                        barrier_event_id,
+                        "Runtime".to_string(),
+                        event_type,
+                        topic.to_string(),
+                        payload,
+                    );
+                    append_event_in_tx(&mut tx, &barrier).await?;
+                    append_signal_outbox_in_tx(&mut tx, &barrier).await?;
+                }
+            }
+        } else {
+            let terminal_event_id = format!("thread_terminal_{thread_id}_g{thread_generation}");
+            let mut payload = serde_json::Map::new();
+            payload.insert(
+                "context_id".to_string(),
+                event
+                    .payload
+                    .get("context_id")
+                    .cloned()
+                    .ok_or("Evaluation outcome Event 缺少 context_id")?,
+            );
+            payload.insert(
+                "thread_id".to_string(),
+                JsonValue::String(thread_id.to_string()),
+            );
+            payload.insert(
+                "thread_generation".to_string(),
+                JsonValue::from(thread_generation),
+            );
+            payload.insert(
+                "outcome_id".to_string(),
+                JsonValue::String(outcome_id.clone()),
+            );
+            payload.insert(
+                "terminal_kind".to_string(),
+                JsonValue::String(terminal_kind.to_string()),
+            );
+            payload.insert(
+                "wake_policy".to_string(),
+                JsonValue::String("immediate".into()),
+            );
+            payload.insert(
+                "terminal_summary".to_string(),
+                serde_json::json!({
+                    "thread_id": thread_id,
+                    "outcome_id": outcome_id,
+                    "terminal_kind": terminal_kind,
+                    "summary": result_text,
+                    "artifact_refs": artifact_refs,
+                    "evidence_refs": evidence_refs,
+                    "check_results": check_results,
+                    "unresolved_failures": unresolved_failures,
+                }),
+            );
+            let (topic, event_type) = match supervisor_kind {
+                ThreadSupervisorKind::Evaluation => {
+                    let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
+                        format!(
+                            "attached Thread '{}' 缺少 parent_thread_id，无法向 Evaluation 交付",
+                            thread_id
+                        )
+                    })?;
+                    let parent =
+                        sqlx::query("SELECT session_id, root_turn_id FROM threads WHERE id = $1")
+                            .bind(parent_id)
+                            .fetch_one(&mut *tx)
+                            .await?;
+                    payload.insert(
+                        "session_id".to_string(),
+                        JsonValue::String(parent.get("session_id")),
+                    );
+                    payload.insert(
+                        "thread_id".to_string(),
+                        JsonValue::String(parent_id.to_string()),
+                    );
+                    payload.insert(
+                        "completed_thread_id".to_string(),
+                        JsonValue::String(thread_id.to_string()),
+                    );
+                    payload.insert(
+                        "root_turn_id".to_string(),
+                        JsonValue::String(parent.get("root_turn_id")),
+                    );
+                    payload.insert("tool_name".to_string(), JsonValue::String("thread".into()));
+                    payload.insert(
+                        "tool_status".to_string(),
+                        JsonValue::String(
+                            if terminal_kind == ThreadLifecycle::Completed.as_str() {
+                                "success"
+                            } else {
+                                "error"
+                            }
+                            .into(),
+                        ),
+                    );
+                    payload.insert(
+                        "text".to_string(),
+                        JsonValue::String(format!(
+                            "Thread '{}' 已终止：{}",
+                            thread_id, terminal_kind
+                        )),
+                    );
+                    ("chat/thread_terminal", TYPE_TOOL_OUTPUT.to_string())
+                }
+                ThreadSupervisorKind::Objective => {
+                    payload.insert(
+                        "session_id".to_string(),
+                        JsonValue::String(session_id.to_string()),
+                    );
+                    payload.insert(
+                        "objective_id".to_string(),
+                        JsonValue::String(
+                            supervisor_id
+                                .clone()
+                                .ok_or("durable Thread 缺少 Objective supervisor_id")?,
+                        ),
+                    );
+                    payload.insert(
+                        "correlation_id".to_string(),
+                        JsonValue::String(thread_id.to_string()),
+                    );
+                    ("runtime/thread_terminal", "runtime_control".to_string())
+                }
+                ThreadSupervisorKind::Runtime => {
+                    payload.insert(
+                        "session_id".to_string(),
+                        JsonValue::String(session_id.to_string()),
+                    );
+                    payload.insert(
+                        "runtime_supervisor_id".to_string(),
+                        JsonValue::String(
+                            supervisor_id
+                                .clone()
+                                .ok_or("Runtime Thread 缺少 supervisor_id")?,
+                        ),
+                    );
+                    ("runtime/thread_terminal", "runtime_control".to_string())
+                }
+                ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => ("", String::new()),
+            };
+            if !topic.is_empty() {
+                let terminal_event = Event::new(
+                    terminal_event_id,
+                    "Runtime".to_string(),
+                    event_type,
+                    topic.to_string(),
+                    payload,
+                );
+                append_event_in_tx(&mut tx, &terminal_event).await?;
+                append_signal_outbox_in_tx(&mut tx, &terminal_event).await?;
+            }
         }
         if let Some(covers) = event.payload.get("covers").and_then(JsonValue::as_array) {
             for covered_thread in covers.iter().filter_map(JsonValue::as_str) {
@@ -1332,7 +1944,6 @@ impl ActivationStore for PostgresStore {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
-        append_event_in_tx(&mut tx, event).await?;
         let activity_at = event
             .timestamp
             .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);

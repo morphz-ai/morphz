@@ -43,6 +43,7 @@ mod schedule;
 mod session;
 mod target;
 mod thread;
+mod thread_group;
 
 pub struct PostgresStore {
     pool: PgPool,
@@ -130,6 +131,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration("20260718_04_threads", thread::migrate(&store.pool))
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260730_01_thread_groups",
+                    thread_group::migrate(&store.pool),
+                )
                 .await?;
             store
                 .run_versioned_migration(
@@ -2160,7 +2167,7 @@ const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
     time_used_seconds, created_at, updated_at
     FROM objectives"#;
 
-async fn validate_new_objective(
+pub(super) async fn validate_new_objective(
     store: &PostgresStore,
     objective: &NewObjective,
 ) -> Result<(String, Option<i64>), StoreError> {
@@ -2220,7 +2227,7 @@ async fn validate_new_objective(
     ))
 }
 
-async fn insert_new_objective_in_tx(
+pub(super) async fn insert_new_objective_in_tx(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     objective: &NewObjective,
     stated_objective: &str,

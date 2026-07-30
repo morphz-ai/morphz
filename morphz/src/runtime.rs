@@ -48,8 +48,10 @@ use crate::memory::{
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
     RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
     ScheduleStatus, SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, TimerStore,
+    ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter, ThreadGroupMemberRecord,
+    ThreadGroupRecord, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
+    TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -313,9 +315,21 @@ pub struct SchedulerActivationSnapshot {
 pub struct SchedulerThreadSnapshot {
     pub thread: ThreadRecord,
     pub phase: ThreadPhase,
+    pub outcome: Option<ThreadOutcomeRecord>,
     pub pending_signals: Vec<ThreadSignalRecord>,
     pub activations: Vec<SchedulerActivationSnapshot>,
     pub schedules: Vec<ScheduleRecord>,
+}
+
+/// One authoritative supervision barrier and all of its persisted evidence.
+///
+/// SDK, HTTP, CLI and Dashboard consume this same projection instead of
+/// reconstructing Group state from Events or counting terminal Threads.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerThreadGroupSnapshot {
+    pub group: ThreadGroupRecord,
+    pub members: Vec<ThreadGroupMemberRecord>,
+    pub outcomes: Vec<ThreadOutcomeRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,6 +369,7 @@ pub struct SchedulerSnapshot {
     pub model_provider: crate::orchestrator::orchestrator::ModelProviderMetricsSnapshot,
     pub context_capacity: crate::orchestrator::context::ContextCapacityMetricsSnapshot,
     pub threads: Vec<SchedulerThreadSnapshot>,
+    pub thread_groups: Vec<SchedulerThreadGroupSnapshot>,
     pub orphan_activations: Vec<SchedulerActivationSnapshot>,
     pub orphan_signals: Vec<ThreadSignalRecord>,
     pub orphan_jobs: Vec<SchedulerJobSnapshot>,
@@ -930,6 +945,7 @@ impl MorphzRuntimeBuilder {
             )
             .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>)
             .with_delegation_store(Arc::clone(&store) as Arc<dyn crate::memory::DelegationStore>)
+            .with_thread_group_store(Arc::clone(&store) as Arc<dyn crate::memory::ThreadGroupStore>)
             .with_activation_store(Arc::clone(&store) as Arc<dyn crate::memory::ActivationStore>),
         );
         objective_supervisor.register_timer_handlers()?;
@@ -1256,12 +1272,15 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
             .session_store()
             .expect("Runtime ContextEngine 必须配置 SessionStore"),
     )));
-    registry.register(Arc::new(ScheduleTxTool::new(
-        Arc::clone(thread_scheduler),
-        context_engine
-            .session_store()
-            .expect("Runtime ContextEngine 必须配置 SessionStore"),
-    )));
+    registry.register(Arc::new(
+        ScheduleTxTool::new(
+            Arc::clone(thread_scheduler),
+            context_engine
+                .session_store()
+                .expect("Runtime ContextEngine 必须配置 SessionStore"),
+        )
+        .with_objective_store(objective_supervisor.store()),
+    ));
     registry.register(Arc::new(VerifyIdentityTool::new(
         context_engine
             .session_store()
@@ -2668,6 +2687,7 @@ impl MorphzRuntime {
                     executor_kind: ARTIFACT_TRANSFER_EXECUTOR_KIND.to_string(),
                     executor_id: Some(identity.job_id.clone()),
                     target_id: Some(request.destination.target_id.clone()),
+                    supervision: ThreadSupervision::runtime("artifact-transfer-ingress"),
                 },
                 activation: NewThreadActivation {
                     id: identity.activation_id,
@@ -4210,8 +4230,39 @@ impl MorphzRuntime {
             }
         }
 
+        let mut thread_groups = Vec::new();
+        for group in self
+            .inner
+            .store
+            .list_thread_groups(ThreadGroupFilter {
+                context_id: Some(context_id.to_string()),
+                include_terminal,
+                newest_first: false,
+                limit: Some(limit),
+                ..ThreadGroupFilter::default()
+            })
+            .await?
+        {
+            let members = self
+                .inner
+                .store
+                .list_thread_group_members(&group.id)
+                .await?;
+            let outcomes = self
+                .inner
+                .store
+                .list_thread_group_outcomes(&group.id)
+                .await?;
+            thread_groups.push(SchedulerThreadGroupSnapshot {
+                group,
+                members,
+                outcomes,
+            });
+        }
+
         let mut threads = Vec::with_capacity(all_threads.len());
         for thread in all_threads {
+            let outcome = self.inner.store.get_thread_outcome(&thread.id).await?;
             let pending_signals = pending_signals_by_thread
                 .remove(&thread.id)
                 .unwrap_or_default();
@@ -4222,6 +4273,7 @@ impl MorphzRuntime {
             threads.push(SchedulerThreadSnapshot {
                 thread,
                 phase,
+                outcome,
                 pending_signals,
                 activations: thread_activations,
                 schedules,
@@ -4322,6 +4374,7 @@ impl MorphzRuntime {
             model_provider: self.inner.orchestrator.model_provider_metrics(),
             context_capacity: self.inner.orchestrator.context_capacity_metrics(),
             threads,
+            thread_groups,
             orphan_activations,
             orphan_signals,
             orphan_jobs,
@@ -4758,6 +4811,7 @@ impl MorphzRuntime {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
+                outcome: self.inner.store.get_thread_outcome(&thread.id).await?,
                 thread,
                 phase,
                 pending_signals,
@@ -4792,7 +4846,13 @@ impl MorphzRuntime {
         let mutation = self
             .inner
             .store
-            .control_thread(thread_id, expected_revision, action)
+            .control_thread(
+                thread_id,
+                expected_revision,
+                action,
+                Some(reason),
+                Some("Runtime-Operator"),
+            )
             .await?;
         if let ThreadMutation::Updated(updated) = &mutation {
             match action {
@@ -7456,6 +7516,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -7729,6 +7790,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -7902,6 +7964,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -9523,6 +9586,7 @@ mod tests {
                     executor_kind: "self".to_string(),
                     executor_id: None,
                     target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
                 })
                 .await
                 .unwrap();
@@ -9796,6 +9860,7 @@ mod tests {
                     executor_kind: "self".to_string(),
                     executor_id: None,
                     target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
                 })
                 .await
                 .unwrap();
@@ -9925,6 +9990,7 @@ mod tests {
                     executor_kind: "self".to_string(),
                     executor_id: None,
                     target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
                 })
                 .await
                 .unwrap();
@@ -9976,6 +10042,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -10364,6 +10431,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -10547,6 +10615,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -11801,6 +11870,7 @@ mod tests {
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();

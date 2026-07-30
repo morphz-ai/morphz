@@ -3,6 +3,8 @@
 > 状态：v1 已实现并通过确定性验收
 > 日期：2026-07-14
 > 目标：让长期目标跨多次 Context Evaluation、进程重启和异步等待持续存在，同时保持 Runtime 控制论与 LLM 认识论的边界
+>
+> 并发 Thread 与 Objective 的监督关系、结果检查和恢复协议见：[受监督并发模型与实现设计 v1](./morphz_supervised_concurrency_model_v1.md)。
 
 ## 1. 设计结论
 

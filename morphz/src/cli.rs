@@ -52,6 +52,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "scope",
     "scope-id",
     "revision",
+    "expected-revision",
     "thread-id",
     "context-id",
     "ttl",
@@ -1402,49 +1403,120 @@ fn scheduler_command(locale: Locale) -> Command {
             "Inspect authoritative Scheduler state",
             "检查权威调度器状态",
         ))
-        .subcommand(output_examples(
+        .subcommands([
+            output_examples(
+                locale,
+                Command::new("show")
+                    .about(locale.text(
+                        "Show Threads, activations, jobs, approvals and schedules",
+                        "显示线程、求值、作业、审批和调度计划",
+                    ))
+                    .arg(local_switch_arg(
+                        "include-terminal",
+                        "include-terminal",
+                        locale.text(
+                            "Include terminal Scheduler records",
+                            "包含已终止的调度器记录",
+                        ),
+                    ))
+                    .arg(
+                        local_value_arg(
+                            "limit",
+                            "limit",
+                            "N",
+                            locale.text("Limit Scheduler history", "限制调度器历史数量"),
+                        )
+                            .value_parser(StringValueParser::new().try_map(move |value| {
+                                value
+                                    .parse::<usize>()
+                                    .ok()
+                                    .filter(|value| (1..=2_000).contains(value))
+                                    .map(|_| value.clone())
+                                    .ok_or_else(|| {
+                                        locale
+                                            .text(
+                                                "must be an integer in 1..=2000",
+                                                "必须是 1 到 2000 之间的整数",
+                                            )
+                                            .to_string()
+                                    })
+                            })),
+                    ),
+                "Example:\n  morphz scheduler show --context=context-default --include-terminal --limit=50",
+            ),
+            scheduler_thread_command(locale),
+        ])
+        .after_help(locale.text(
+            "Run `morphz scheduler <COMMAND> --help` for command-specific help.",
+            "运行 `morphz scheduler <COMMAND> --help` 查看具体命令的帮助。",
+        ))
+}
+
+fn scheduler_thread_command(locale: Locale) -> Command {
+    let lifecycle_command = |name: &'static str, english: &'static str, chinese: &'static str| {
+        output_examples(
             locale,
-            Command::new("show")
-                .about(locale.text(
-                    "Show Threads, activations, jobs, approvals and schedules",
-                    "显示线程、求值、作业、审批和调度计划",
-                ))
-                .arg(local_switch_arg(
-                    "include-terminal",
-                    "include-terminal",
+            Command::new(name)
+                .about(locale.text(english, chinese))
+                .arg(local_value_arg(
+                    "expected-revision",
+                    "expected-revision",
+                    "N",
                     locale.text(
-                        "Include terminal Scheduler records",
-                        "包含已终止的调度器记录",
+                        "Require one exact Thread revision (defaults to the current revision)",
+                        "要求匹配精确 Thread 修订号（默认读取当前修订号）",
+                    ),
+                ))
+                .arg(local_value_arg(
+                    "reason",
+                    "reason",
+                    "TEXT",
+                    locale.text(
+                        "Record an auditable control reason",
+                        "记录可审计的控制原因",
                     ),
                 ))
                 .arg(
-                    local_value_arg(
-                        "limit",
-                        "limit",
-                        "N",
-                        locale.text("Limit Scheduler history", "限制调度器历史数量"),
-                    )
-                        .value_parser(StringValueParser::new().try_map(move |value| {
-                            value
-                                .parse::<usize>()
-                                .ok()
-                                .filter(|value| (1..=2_000).contains(value))
-                                .map(|_| value.clone())
-                                .ok_or_else(|| {
-                                    locale
-                                        .text(
-                                            "must be an integer in 1..=2000",
-                                            "必须是 1 到 2000 之间的整数",
-                                        )
-                                        .to_string()
-                                })
-                        })),
+                    prompt_arg("THREAD_ID [REASON]", 1, None)
+                        .help(locale.text("Thread ID and optional reason", "Thread 标识和可选原因")),
                 ),
-            "Example:\n  morphz scheduler show --context=context-default --include-terminal --limit=50",
+            match name {
+                "pause" => {
+                    "Example:\n  morphz scheduler thread pause thread_123 --reason='Waiting for input'"
+                }
+                "resume" => "Example:\n  morphz scheduler thread resume thread_123",
+                _ => {
+                    "Example:\n  morphz scheduler thread close thread_123 --reason='No longer needed'"
+                }
+            },
+        )
+    };
+    Command::new("thread")
+        .about(locale.text(
+            "Inspect and control one durable Thread",
+            "检查和控制一条持久 Thread",
         ))
+        .subcommands([
+            output_examples(
+                locale,
+                Command::new("show")
+                    .about(locale.text(
+                        "Show one Thread causal chain and structured Outcome",
+                        "显示一条 Thread 的因果链和结构化 Outcome",
+                    ))
+                    .arg(
+                        prompt_arg("THREAD_ID", 1, Some(1))
+                            .help(locale.text("Thread identity", "Thread 标识")),
+                    ),
+                "Example:\n  morphz scheduler thread show thread_123 --context=context-default",
+            ),
+            lifecycle_command("pause", "Pause a Thread", "暂停 Thread"),
+            lifecycle_command("resume", "Resume a Thread", "继续 Thread"),
+            lifecycle_command("close", "Close a Thread", "关闭 Thread"),
+        ])
         .after_help(locale.text(
-            "Run `morphz scheduler show --help` for command-specific help.",
-            "运行 `morphz scheduler show --help` 查看具体命令的帮助。",
+            "Thread controls are revision-checked and use the same Runtime contract as the SDK and HTTP API.",
+            "Thread 控制会校验修订号，并与 SDK、HTTP API 使用同一 Runtime 契约。",
         ))
 }
 
@@ -2033,6 +2105,44 @@ mod tests {
         assert_eq!(cancel.command_path(), ["execution", "cancel"]);
         assert_eq!(cancel.prompt_args(), ["job-a"]);
         assert_eq!(cancel.option("revision").unwrap().last_value(), Some("3"));
+    }
+
+    #[test]
+    fn scheduler_thread_commands_share_one_revision_checked_control_contract() {
+        let show = parse(&[
+            "scheduler",
+            "thread",
+            "show",
+            "thread-123",
+            "--context=context-a",
+        ]);
+        assert_eq!(show.command_path(), ["scheduler", "thread", "show"]);
+        assert_eq!(show.prompt_args(), ["thread-123"]);
+        assert_eq!(
+            show.option("context").unwrap().last_value(),
+            Some("context-a")
+        );
+
+        for action in ["pause", "resume", "close"] {
+            let invocation = parse(&[
+                "scheduler",
+                "thread",
+                action,
+                "thread-123",
+                "--expected-revision=7",
+                "--reason=operator-control",
+            ]);
+            assert_eq!(invocation.command_path(), ["scheduler", "thread", action]);
+            assert_eq!(invocation.prompt_args(), ["thread-123"]);
+            assert_eq!(
+                invocation.option("expected-revision").unwrap().last_value(),
+                Some("7")
+            );
+            assert_eq!(
+                invocation.option("reason").unwrap().last_value(),
+                Some("operator-control")
+            );
+        }
     }
 
     #[test]

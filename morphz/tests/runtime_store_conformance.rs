@@ -367,6 +367,7 @@ where
         executor_kind: "runtime".to_string(),
         executor_id: None,
         target_id: None,
+        supervision: morphz::memory::ThreadSupervision::legacy(),
     };
     let first = {
         let store = Arc::clone(&store);
@@ -414,6 +415,7 @@ where
             executor_kind: "model".to_string(),
             executor_id: None,
             target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
         })
         .await
         .unwrap();
@@ -556,6 +558,7 @@ where
             executor_kind: "model".to_string(),
             executor_id: None,
             target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
         })
         .await
         .unwrap();
@@ -712,6 +715,116 @@ where
         1
     );
 
+    let successor_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-dialogue-successor-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: "root-conformance-dialogue-successor".to_string(),
+            kind: ThreadKind::DialogueTurn,
+            executor_kind: "model".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
+        })
+        .await
+        .unwrap();
+    let successor_event = Event::new(
+        "conformance-dialogue-successor-event".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store
+        .append_with_signal_outbox(successor_event.clone())
+        .await
+        .unwrap();
+    let successor_sequence = store
+        .query(QueryFilter {
+            event_id: Some(successor_event.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()[0]
+        .sequence
+        .unwrap();
+    let successor = store
+        .claim_thread_signal_batch(
+            NewThreadSignal {
+                id: "conformance-dialogue-successor-signal".to_string(),
+                thread_id: successor_thread.id.clone(),
+                event_id: successor_event.id.clone(),
+                principal_id: None,
+                sequence: successor_sequence,
+                kind: successor_event.topic.clone(),
+                parent_activation_id: None,
+            },
+            NewThreadActivation {
+                id: "conformance-dialogue-successor-activation".to_string(),
+                agent_id: successor_thread.agent_id.clone(),
+                context_id: successor_thread.context_id.clone(),
+                session_id: successor_thread.session_id.clone(),
+                initiating_principal_id: None,
+                trigger_event_id: successor_event.id.clone(),
+                trigger_sequence: successor_sequence,
+                trigger_kind: successor_event.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: successor_thread.root_turn_id.clone(),
+            },
+            8,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !store
+            .dialogue_turn_activation_runnable(&successor.id)
+            .await
+            .unwrap(),
+        "a running DialogueTurn must hold the durable Session lane"
+    );
+    assert!(store
+        .release_dialogue_turn_activation(&first.id, chrono::Utc::now())
+        .await
+        .unwrap());
+    assert!(
+        !store
+            .release_dialogue_turn_activation(&first.id, chrono::Utc::now())
+            .await
+            .unwrap(),
+        "durable Dialogue lane release must be idempotent"
+    );
+    assert!(
+        store
+            .dialogue_turn_activation_runnable(&successor.id)
+            .await
+            .unwrap(),
+        "the next DialogueTurn must become runnable while earlier physical work continues"
+    );
+    assert!(matches!(
+        store
+            .update_thread_activation(
+                &successor.id,
+                successor.revision,
+                ThreadActivationStatus::Running,
+                Some("successor-worker"),
+                Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+                Some(1),
+            )
+            .await
+            .unwrap(),
+        ThreadActivationMutation::Updated(_)
+    ));
+
     let outcome_thread = store
         .ensure_thread(NewThread {
             id: "conformance-outcome-thread".to_string(),
@@ -724,6 +837,7 @@ where
             executor_kind: "runtime".to_string(),
             executor_id: None,
             target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
         })
         .await
         .unwrap();
@@ -820,6 +934,7 @@ where
                 executor_kind: "runtime".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: morphz::memory::ThreadSupervision::legacy(),
             })
             .await
             .unwrap();
@@ -1001,6 +1116,7 @@ where
 
     let failed = store
         .commit_schedule_transaction(
+            &[],
             &[NewThread {
                 id: "conformance-schedule-rolled-back-thread".to_string(),
                 agent_id: "conformance-agent".to_string(),
@@ -1012,6 +1128,7 @@ where
                 executor_kind: "runtime".to_string(),
                 executor_id: None,
                 target_id: None,
+                supervision: morphz::memory::ThreadSupervision::legacy(),
             }],
             &[morphz::memory::NewSchedule {
                 id: "conformance-invalid-schedule".to_string(),
@@ -1022,6 +1139,7 @@ where
                 interval_seconds: None,
                 dependency_thread_ids: Vec::new(),
             }],
+            &[],
         )
         .await;
     assert!(failed.is_err());
@@ -1176,6 +1294,7 @@ where
             executor_kind: "runtime".to_string(),
             executor_id: None,
             target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
         })
         .await
         .unwrap();
@@ -3379,6 +3498,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
             executor_kind: "runtime".to_string(),
             executor_id: None,
             target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
         })
         .await
         .unwrap();

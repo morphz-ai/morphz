@@ -6,7 +6,7 @@
 >
 > 适用范围：Runtime 调度、Session 并发、工具执行、Objective、Delegation、定时任务与结果交付
 >
-> 相关文档：[Session Thread Model v1](./morphz_session_thread_model_v1.md)、[First-Class Objective Supervisor v1](./morphz_first_class_objective_supervisor_v1.md)、[共享 Context 多 Session 架构](./morphz_shared_context_multisession_architecture.md)、[单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)
+> 相关文档：[Session Thread Model v1](./morphz_session_thread_model_v1.md)、[First-Class Objective Supervisor v1](./morphz_first_class_objective_supervisor_v1.md)、[受监督并发模型与实现设计 v1](./morphz_supervised_concurrency_model_v1.md)、[共享 Context 多 Session 架构](./morphz_shared_context_multisession_architecture.md)、[单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)
 
 ## 1. 背景
 
