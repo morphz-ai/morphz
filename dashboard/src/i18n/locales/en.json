@@ -320,6 +320,24 @@
     "actualCost": "Cost {{amount}} {{currency}} (pricing {{version}})",
     "costUnavailable": "No pricing configured; only actual tokens are counted"
   },
+  "contextBudget": {
+    "eyebrow": "Current Context",
+    "title": "Token capacity budget",
+    "description": "Limits the prompt capacity available to subsequent evaluations in this Context. Auto uses the physical input capacity declared for the current Provider + Model; a custom value cannot exceed it.",
+    "auto": "Auto",
+    "autoPlaceholder": "Auto (model capacity)",
+    "slider": "Adjust this Context's hard limit",
+    "requested": "Requested hard limit (tokens)",
+    "effective": "Effective hard",
+    "physical": "Model physical",
+    "soft": "Soft limit",
+    "reserve": "Maintenance reserve",
+    "invalid": "Enter a positive safe integer, or leave blank to restore Auto.",
+    "clamped": "The request exceeds the model's physical input capacity and will be clamped to {{physical}}.",
+    "nextEvaluation": "Only affects subsequent evaluations; active requests are unchanged.",
+    "save": "Apply",
+    "saving": "Applying…"
+  },
   "connection": {
     "connected": "connected",
     "connecting": "connecting",

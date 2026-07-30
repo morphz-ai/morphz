@@ -29,7 +29,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
@@ -610,6 +610,37 @@ pub struct ContextPressure {
     pub active_observations: usize,
 }
 
+/// Operator-declared physical prompt capacity for the model currently selected
+/// by this Runtime. It is shared with `ContextEngine` so a runtime model switch
+/// changes the budget of the next Evaluation without mutating Context policy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelContextCapacity {
+    pub provider: Option<String>,
+    pub model: String,
+    pub prompt_token_limit: usize,
+    pub context_window_tokens: Option<usize>,
+    pub max_output_tokens: Option<usize>,
+    /// `provider-model-config` or `runtime-default`.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextTokenBudget {
+    pub context_id: String,
+    pub requested_hard_token_limit: Option<u64>,
+    pub effective_hard_token_limit: usize,
+    pub soft_token_limit: usize,
+    pub maintenance_reserve_tokens: usize,
+    pub critical_token_limit: usize,
+    pub token_budget_revision: u64,
+    pub provider: Option<String>,
+    pub model: String,
+    pub physical_prompt_token_limit: usize,
+    pub physical_context_window_tokens: Option<usize>,
+    pub max_output_tokens: Option<usize>,
+    pub capacity_source: String,
+}
+
 /// 完整 Prompt 的可解释占用归因。`estimated_tokens` 是按本地稳定权重将
 /// 本轮 Prompt 总量分摊到组件后的估算，绝不是 Provider 返回的计费事实。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -1056,6 +1087,7 @@ pub struct ContextEngine {
     execution_target_authorization_store: Option<Arc<dyn ExecutionTargetAuthorizationStore>>,
     worker_coordination_mode: WorkerCoordinationMode,
     config: OrchestratorConfig,
+    model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
     context_locks: DashMap<String, Arc<Mutex<()>>>,
     capacity_metrics: ContextCapacityMetrics,
     recall_cursor_secret: [u8; 32],
@@ -1074,6 +1106,14 @@ impl ContextEngine {
                 .as_bytes(),
             ));
         }
+        let fallback_capacity = ModelContextCapacity {
+            provider: None,
+            model: String::new(),
+            prompt_token_limit: config.context_hard_token_limit,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            source: "runtime-default".to_string(),
+        };
         Self {
             store,
             session_store: None,
@@ -1086,6 +1126,7 @@ impl ContextEngine {
             execution_target_authorization_store: None,
             worker_coordination_mode: WorkerCoordinationMode::ExclusiveProcess,
             config,
+            model_context_capacity: Arc::new(RwLock::new(fallback_capacity)),
             context_locks: DashMap::new(),
             capacity_metrics: ContextCapacityMetrics::default(),
             recall_cursor_secret,
@@ -1095,6 +1136,94 @@ impl ContextEngine {
     pub fn with_session_store(mut self, session_store: Arc<dyn SessionStore>) -> Self {
         self.session_store = Some(session_store);
         self
+    }
+
+    pub fn with_model_context_capacity(
+        mut self,
+        model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
+    ) -> Self {
+        self.model_context_capacity = model_context_capacity;
+        self
+    }
+
+    pub async fn context_token_budget(
+        &self,
+        context_id: &str,
+    ) -> Result<ContextTokenBudget, DynError> {
+        let context = match &self.session_store {
+            Some(store) => store.get_context(context_id).await?,
+            None => None,
+        };
+        if self.session_store.is_some() && context.is_none() {
+            return Err(format!("Context '{context_id}' 不存在").into());
+        }
+        Ok(self.resolve_context_token_budget(
+            context_id,
+            context
+                .as_ref()
+                .and_then(|record| record.requested_hard_token_limit),
+            context
+                .as_ref()
+                .map_or(0, |record| record.token_budget_revision),
+        ))
+    }
+
+    fn resolve_context_token_budget(
+        &self,
+        context_id: &str,
+        requested_hard_token_limit: Option<u64>,
+        token_budget_revision: u64,
+    ) -> ContextTokenBudget {
+        let capacity = self
+            .model_context_capacity
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let requested = requested_hard_token_limit
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0);
+        let effective_hard_token_limit = requested
+            .unwrap_or(capacity.prompt_token_limit)
+            .min(capacity.prompt_token_limit)
+            .max(1);
+        let soft_token_limit = effective_hard_token_limit
+            .saturating_sub(effective_hard_token_limit / 4)
+            .max(1)
+            .min(effective_hard_token_limit);
+        let maintenance_reserve_tokens = effective_hard_token_limit
+            .checked_div(8)
+            .unwrap_or_default()
+            .max(1)
+            .min(effective_hard_token_limit.saturating_sub(1));
+        let critical_token_limit =
+            effective_hard_token_limit.saturating_sub(maintenance_reserve_tokens);
+        ContextTokenBudget {
+            context_id: context_id.to_string(),
+            requested_hard_token_limit,
+            effective_hard_token_limit,
+            soft_token_limit,
+            maintenance_reserve_tokens,
+            critical_token_limit,
+            token_budget_revision,
+            provider: capacity.provider,
+            model: capacity.model,
+            physical_prompt_token_limit: capacity.prompt_token_limit,
+            physical_context_window_tokens: capacity.context_window_tokens,
+            max_output_tokens: capacity.max_output_tokens,
+            capacity_source: capacity.source,
+        }
+    }
+
+    async fn effective_budget_config(
+        &self,
+        context_id: &str,
+    ) -> Result<(OrchestratorConfig, ContextTokenBudget), DynError> {
+        let budget = self.context_token_budget(context_id).await?;
+        let mut config = self.config.clone();
+        config.context_hard_token_limit = budget.effective_hard_token_limit;
+        config.context_soft_token_limit = budget.soft_token_limit;
+        config.context_maintenance_reserve_tokens = budget.maintenance_reserve_tokens;
+        Ok((config, budget))
     }
 
     pub fn with_mind_projection_store(
@@ -2113,6 +2242,7 @@ impl ContextEngine {
         target_session_id: &str,
         additional_prompt: &str,
     ) -> Result<SessionProjectionSeedPlan, DynError> {
+        let (budget_config, _) = self.effective_budget_config(source_context_id).await?;
         let projection_store = self.session_projection_store.as_ref().ok_or(
             "current_session delegation 需要 SessionProjectionStore；禁止回退到 Ledger 全量重放",
         )?;
@@ -2185,18 +2315,17 @@ impl ContextEngine {
             )
             .saturating_add(estimate_text_tokens(additional_prompt))
             .saturating_add(1_000);
-        let work_limit = self
-            .config
+        let work_limit = budget_config
             .context_hard_token_limit
-            .saturating_sub(self.config.context_maintenance_reserve_tokens)
+            .saturating_sub(budget_config.context_maintenance_reserve_tokens)
             .max(1);
         if target_estimated_tokens > work_limit {
             return Err(format!(
                 "DELEGATION_CONTEXT_LIMIT_EXCEEDED：子 Context 创建前估算 {} tokens，工作上限 {}（hard={}，maintenance-reserve={}）；父 Session active observations={}。请先维护父 Context 或使用 mind_only",
                 target_estimated_tokens,
                 work_limit,
-                self.config.context_hard_token_limit,
-                self.config.context_maintenance_reserve_tokens,
+                budget_config.context_hard_token_limit,
+                budget_config.context_maintenance_reserve_tokens,
                 source_events.len()
             )
             .into());
@@ -2339,6 +2468,7 @@ impl ContextEngine {
         activation_record: Option<&ThreadActivationRecord>,
         include_encoding: bool,
     ) -> Result<ContextView, DynError> {
+        let (budget_config, _) = self.effective_budget_config(context_id).await?;
         self.finalize_due_frame_retirements(context_id, active_session_id)
             .await?;
         let state = self.load_current_mind(context_id, None).await?;
@@ -2616,10 +2746,9 @@ impl ContextEngine {
                     .map(|observation| estimate_text_tokens(&observation.preview) + 128)
                     .sum::<usize>()
                 + 1_000;
-            let work_budget = self
-                .config
+            let work_budget = budget_config
                 .context_hard_token_limit
-                .saturating_sub(self.config.context_maintenance_reserve_tokens)
+                .saturating_sub(budget_config.context_maintenance_reserve_tokens)
                 .max(1);
             if candidate_tokens <= work_budget {
                 break (candidate_observations, candidate_tokens);
@@ -2649,7 +2778,7 @@ impl ContextEngine {
             estimated_tokens,
             active_frames.len(),
             observations.len(),
-            &self.config,
+            &budget_config,
         );
         let session_events = events
             .iter()
@@ -2930,11 +3059,15 @@ impl ContextEngine {
             .iter()
             .filter(|frame| !view.state.retired.contains(&frame.id))
             .count();
+        let mut budget_config = self.config.clone();
+        budget_config.context_soft_token_limit = view.pressure.soft_limit;
+        budget_config.context_hard_token_limit = view.pressure.hard_limit;
+        budget_config.context_maintenance_reserve_tokens = view.pressure.maintenance_reserve;
         let mut pressure = pressure_for(
             count.tokens,
             active_frames,
             view.observations.len(),
-            &self.config,
+            &budget_config,
         );
         pressure.token_source = count.source.clone();
         pressure.token_accuracy = count.accuracy.as_str().to_string();
@@ -8800,6 +8933,68 @@ mod tests {
             text_weight_units("ascii中文"),
             text_weight_units("ascii") + text_weight_units("中文")
         );
+    }
+
+    #[tokio::test]
+    async fn per_context_token_budget_clamps_requested_limit_to_current_model_capacity() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("token-budget.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_context(NewCognitiveContext {
+                id: "budget-context".to_string(),
+                agent_id: "budget-agent".to_string(),
+                title: "Budget Context".to_string(),
+            })
+            .await
+            .unwrap();
+        let capacity = Arc::new(RwLock::new(ModelContextCapacity {
+            provider: Some("proxy".to_string()),
+            model: "model-a".to_string(),
+            prompt_token_limit: 200_000,
+            context_window_tokens: Some(256_000),
+            max_output_tokens: Some(56_000),
+            source: "provider-model-config".to_string(),
+        }));
+        let engine = ContextEngine::new(store.clone(), OrchestratorConfig::default())
+            .with_session_store(store.clone())
+            .with_model_context_capacity(capacity.clone());
+
+        let automatic = engine.context_token_budget("budget-context").await.unwrap();
+        assert_eq!(automatic.requested_hard_token_limit, None);
+        assert_eq!(automatic.effective_hard_token_limit, 200_000);
+        assert_eq!(automatic.soft_token_limit, 150_000);
+        assert_eq!(automatic.maintenance_reserve_tokens, 25_000);
+        assert_eq!(automatic.critical_token_limit, 175_000);
+
+        assert!(matches!(
+            store
+                .update_context_token_budget("budget-context", Some(240_000), 0)
+                .await
+                .unwrap(),
+            crate::memory::ContextTokenBudgetMutation::Updated(_)
+        ));
+        let clamped = engine.context_token_budget("budget-context").await.unwrap();
+        assert_eq!(clamped.requested_hard_token_limit, Some(240_000));
+        assert_eq!(clamped.effective_hard_token_limit, 200_000);
+        assert_eq!(clamped.token_budget_revision, 1);
+
+        *capacity.write().unwrap() = ModelContextCapacity {
+            provider: Some("proxy".to_string()),
+            model: "model-b".to_string(),
+            prompt_token_limit: 500_000,
+            context_window_tokens: Some(512_000),
+            max_output_tokens: Some(12_000),
+            source: "provider-model-config".to_string(),
+        };
+        let after_model_switch = engine.context_token_budget("budget-context").await.unwrap();
+        assert_eq!(after_model_switch.requested_hard_token_limit, Some(240_000));
+        assert_eq!(after_model_switch.effective_hard_token_limit, 240_000);
+        assert_eq!(after_model_switch.soft_token_limit, 180_000);
+        assert_eq!(after_model_switch.model, "model-b");
     }
 
     #[tokio::test]

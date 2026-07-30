@@ -514,6 +514,18 @@ where
     }
 }
 
+fn deserialize_optional_positive_usize<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<usize>::deserialize(deserializer)?;
+    if value == Some(0) {
+        Err(serde::de::Error::custom("该配置值必须大于等于 1"))
+    } else {
+        Ok(value)
+    }
+}
+
 impl Default for SessionWorkingSetConfig {
     fn default() -> Self {
         Self {
@@ -754,10 +766,42 @@ pub struct ProviderConfig {
     pub protocol: ModelProtocol,
     pub base_url: String,
     pub credential: Option<String>,
+    /// Operator-declared physical capabilities keyed by the exact model name
+    /// accepted by this Provider endpoint. Morphz never probes a remote model
+    /// in the request path; an absent entry falls back to the global Runtime
+    /// context limit.
+    pub models: BTreeMap<String, ProviderModelConfig>,
     /// 非敏感静态 Header。
     pub headers: BTreeMap<String, String>,
     /// Header 名到环境变量名的映射，用于额外敏感 Header。
     pub env_headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProviderModelConfig {
+    /// Total model context window, including input and generated output.
+    #[serde(deserialize_with = "deserialize_optional_positive_usize")]
+    pub context_window_tokens: Option<usize>,
+    /// Explicit prompt/input ceiling. When present it is more authoritative
+    /// than deriving a ceiling from `context_window_tokens`.
+    #[serde(deserialize_with = "deserialize_optional_positive_usize")]
+    pub max_input_tokens: Option<usize>,
+    /// Output allowance reserved when deriving the physical prompt ceiling.
+    #[serde(deserialize_with = "deserialize_optional_positive_usize")]
+    pub max_output_tokens: Option<usize>,
+}
+
+impl ProviderModelConfig {
+    pub fn prompt_token_limit(&self) -> Option<usize> {
+        self.max_input_tokens.or_else(|| {
+            self.context_window_tokens.and_then(|window| {
+                window
+                    .checked_sub(self.max_output_tokens.unwrap_or_default())
+                    .filter(|limit| *limit > 0)
+            })
+        })
+    }
 }
 
 /// 后台任务配置：Runtime 只负责超时通知，不自动 kill。
@@ -2322,5 +2366,57 @@ mod tests {
         let max = toml::from_str::<AppConfig>("[llm]\nreasoning_effort='max'\n").unwrap();
         assert_eq!(max.llm.reasoning_effort, Some(ReasoningEffort::Max));
         assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='xhigh'\n").is_err());
+    }
+
+    #[test]
+    fn provider_model_context_capacity_is_keyed_by_exact_model_name() {
+        let config = toml::from_str::<AppConfig>(
+            r#"
+[providers.proxy]
+protocol = "openai-responses"
+base_url = "http://localhost:8317/v1"
+
+[providers.proxy.models."model-large"]
+context_window_tokens = 1_000_000
+max_output_tokens = 32_000
+
+[providers.proxy.models."model-input-capped"]
+context_window_tokens = 1_000_000
+max_input_tokens = 700_000
+max_output_tokens = 64_000
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.providers["proxy"].models["model-large"].prompt_token_limit(),
+            Some(968_000)
+        );
+        assert_eq!(
+            config.providers["proxy"].models["model-input-capped"].prompt_token_limit(),
+            Some(700_000)
+        );
+        assert!(!config.providers["proxy"].models.contains_key("MODEL-LARGE"));
+    }
+
+    #[test]
+    fn provider_model_context_capacity_rejects_zero_and_invalid_derived_prompt_limit() {
+        assert!(toml::from_str::<AppConfig>(
+            r#"
+[providers.proxy]
+protocol = "openai-responses"
+base_url = "http://localhost:8317/v1"
+[providers.proxy.models.bad]
+max_input_tokens = 0
+"#,
+        )
+        .is_err());
+
+        let profile = ProviderModelConfig {
+            context_window_tokens: Some(32_000),
+            max_input_tokens: None,
+            max_output_tokens: Some(32_000),
+        };
+        assert_eq!(profile.prompt_token_limit(), None);
     }
 }

@@ -758,6 +758,22 @@ interface ContextRecord {
   status: string
 }
 
+interface ContextTokenBudget {
+  context_id: string
+  requested_hard_token_limit?: number | null
+  effective_hard_token_limit: number
+  soft_token_limit: number
+  maintenance_reserve_tokens: number
+  critical_token_limit: number
+  token_budget_revision: number
+  provider?: string | null
+  model: string
+  physical_prompt_token_limit: number
+  physical_context_window_tokens?: number | null
+  max_output_tokens?: number | null
+  capacity_source: string
+}
+
 interface SessionRecord {
   id: string
   agent_id: string
@@ -2465,6 +2481,10 @@ export default function App() {
   const [sending, setSending] = useState(false)
   const [changingReasoning, setChangingReasoning] = useState(false)
   const [changingModel, setChangingModel] = useState(false)
+  const [contextTokenBudget, setContextTokenBudget] = useState<ContextTokenBudget | null>(null)
+  const [contextTokenBudgetDraft, setContextTokenBudgetDraft] = useState('')
+  const [contextTokenBudgetOpen, setContextTokenBudgetOpen] = useState(false)
+  const [changingContextTokenBudget, setChangingContextTokenBudget] = useState(false)
   const [pausingObjectiveId, setPausingObjectiveId] = useState('')
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
   const [editingObjectiveId, setEditingObjectiveId] = useState('')
@@ -2511,6 +2531,7 @@ export default function App() {
   const conversationSessionSelectorRef = useRef<HTMLDivElement>(null)
   const principalSelectorRef = useRef<HTMLDivElement>(null)
   const themeSelectorRef = useRef<HTMLDivElement>(null)
+  const contextTokenBudgetRef = useRef<HTMLDivElement>(null)
   const appDialogRef = useRef<AppDialogRequest | null>(null)
   const appDialogSequence = useRef(0)
   const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
@@ -3028,6 +3049,28 @@ export default function App() {
     }
   }, [])
 
+  const loadContextTokenBudget = useCallback(async (contextId: string) => {
+    if (!contextId) {
+      setContextTokenBudget(null)
+      setContextTokenBudgetDraft('')
+      return
+    }
+    try {
+      const budget = await DASHBOARD_API.get<ContextTokenBudget>(
+        `/api/contexts/${encodeURIComponent(contextId)}/token-budget`,
+      )
+      if (selectedScopeRef.current.contextId !== contextId) return
+      setContextTokenBudget(budget)
+      setContextTokenBudgetDraft(
+        budget.requested_hard_token_limit == null
+          ? ''
+          : String(budget.requested_hard_token_limit),
+      )
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [])
+
   const loadLedger = useCallback(async (contextId: string, filters: LedgerFilters, beforeSequence = '') => {
     if (!contextId) return
     try {
@@ -3352,6 +3395,12 @@ export default function App() {
       window.clearInterval(interval)
     }
   }, [loadOverview, selectedContextId, selectedSessionId])
+
+  useEffect(() => {
+    const contextId = selectedContextId
+    const timer = window.setTimeout(() => void loadContextTokenBudget(contextId), 0)
+    return () => window.clearTimeout(timer)
+  }, [loadContextTokenBudget, selectedContextId, status?.model])
 
   useEffect(() => {
     if (view !== 'cognition' || !selectedContextId || !selectedSessionId) return
@@ -3759,14 +3808,43 @@ export default function App() {
       if (themeMenuOpen && themeSelectorRef.current && !themeSelectorRef.current.contains(target)) {
         setThemeMenuOpen(false)
       }
+      if (contextTokenBudgetOpen
+        && contextTokenBudgetRef.current
+        && !contextTokenBudgetRef.current.contains(target)) {
+        setContextTokenBudgetOpen(false)
+      }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [contextMenuOpen, conversationSessionMenuOpen, principalMenuOpen, sessionMenuOpen, themeMenuOpen])
+  }, [
+    contextMenuOpen,
+    contextTokenBudgetOpen,
+    conversationSessionMenuOpen,
+    principalMenuOpen,
+    sessionMenuOpen,
+    themeMenuOpen,
+  ])
 
   const selectedSession = sessions.find(item => item.id === selectedSessionId)
   const selectedContext = contexts.find(item => item.id === selectedContextId)
   const selectedAgent = agents.find(item => item.id === selectedAgentId)
+  const parsedContextTokenBudgetDraft = contextTokenBudgetDraft.trim() === ''
+    ? null
+    : Number(contextTokenBudgetDraft)
+  const contextTokenBudgetDraftValid = parsedContextTokenBudgetDraft === null
+    || (Number.isSafeInteger(parsedContextTokenBudgetDraft) && parsedContextTokenBudgetDraft > 0)
+  const contextTokenBudgetChanged = contextTokenBudgetDraftValid
+    && parsedContextTokenBudgetDraft !== (contextTokenBudget?.requested_hard_token_limit ?? null)
+  const contextTokenBudgetSliderMax = Math.max(
+    1_024,
+    contextTokenBudget?.physical_prompt_token_limit ?? 1_024,
+  )
+  const contextTokenBudgetSliderValue = Math.min(
+    contextTokenBudgetSliderMax,
+    parsedContextTokenBudgetDraft ?? contextTokenBudget?.effective_hard_token_limit ?? 1_024,
+  )
+  const contextTokenBudgetPresets = [64_000, 128_000, 256_000, 512_000, 1_000_000]
+    .filter(value => value <= contextTokenBudgetSliderMax)
   const visibleContexts = contexts
     .filter(item => item.agent_id === selectedAgentId && item.status === 'active')
     .sort((left, right) => left.title.localeCompare(right.title))
@@ -5054,6 +5132,41 @@ export default function App() {
     }
   }
 
+  const changeContextTokenBudget = async (requestedHardTokenLimit: number | null) => {
+    if (!selectedContextId || !contextTokenBudget || changingContextTokenBudget) return
+    if (requestedHardTokenLimit !== null
+      && (!Number.isSafeInteger(requestedHardTokenLimit) || requestedHardTokenLimit <= 0)) {
+      setError(t('contextBudget.invalid'))
+      return
+    }
+    setChangingContextTokenBudget(true)
+    try {
+      const response = await DASHBOARD_API.command<{
+        outcome: 'updated'
+        budget: ContextTokenBudget
+      }>(
+        `/api/contexts/${encodeURIComponent(selectedContextId)}/token-budget`,
+        'PATCH',
+        {
+          requested_hard_token_limit: requestedHardTokenLimit,
+          expected_revision: contextTokenBudget.token_budget_revision,
+        },
+      )
+      setContextTokenBudget(response.budget)
+      setContextTokenBudgetDraft(
+        response.budget.requested_hard_token_limit == null
+          ? ''
+          : String(response.budget.requested_hard_token_limit),
+      )
+      setError('')
+    } catch (reason) {
+      await loadContextTokenBudget(selectedContextId)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setChangingContextTokenBudget(false)
+    }
+  }
+
   const auditMindProjection = async () => {
     if (!selectedContextId || auditingProjection) return
     setAuditingProjection(true)
@@ -5757,6 +5870,99 @@ export default function App() {
                 ))}
               </select>
             </label>
+            <div className="context-budget-selector" ref={contextTokenBudgetRef}>
+              <button
+                className={`theme-button context-budget-button ${contextTokenBudgetOpen ? 'is-active' : ''}`}
+                type="button"
+                aria-expanded={contextTokenBudgetOpen}
+                disabled={!selectedContextId}
+                title={t('contextBudget.title')}
+                onClick={() => setContextTokenBudgetOpen(open => !open)}
+              >
+                <CircleDot size={15} />
+                <span>{contextTokenBudget ? compactTokens(contextTokenBudget.effective_hard_token_limit) : '—'}</span>
+              </button>
+              {contextTokenBudgetOpen && contextTokenBudget && (
+                <div className="context-budget-popover">
+                  <header>
+                    <span>
+                      <small>{t('contextBudget.eyebrow').toUpperCase()}</small>
+                      <strong>{t('contextBudget.title')}</strong>
+                    </span>
+                    <em>{shortId(contextTokenBudget.context_id, 22)}</em>
+                  </header>
+                  <p>{t('contextBudget.description')}</p>
+                  <div className="context-budget-mode">
+                    <button
+                      className={contextTokenBudgetDraft.trim() === '' ? 'is-selected' : ''}
+                      type="button"
+                      onClick={() => setContextTokenBudgetDraft('')}
+                    >
+                      {t('contextBudget.auto')}
+                    </button>
+                    {contextTokenBudgetPresets.map(value => (
+                      <button
+                        className={parsedContextTokenBudgetDraft === value ? 'is-selected' : ''}
+                        key={value}
+                        type="button"
+                        onClick={() => setContextTokenBudgetDraft(String(value))}
+                      >
+                        {compactTokens(value)}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    aria-label={t('contextBudget.slider')}
+                    type="range"
+                    min={Math.min(1_024, contextTokenBudgetSliderMax)}
+                    max={contextTokenBudgetSliderMax}
+                    step={1_024}
+                    value={contextTokenBudgetSliderValue}
+                    onChange={event => setContextTokenBudgetDraft(event.target.value)}
+                  />
+                  <label className="context-budget-exact">
+                    <span>{t('contextBudget.requested')}</span>
+                    <input
+                      inputMode="numeric"
+                      min="1"
+                      placeholder={t('contextBudget.autoPlaceholder')}
+                      type="number"
+                      value={contextTokenBudgetDraft}
+                      onChange={event => setContextTokenBudgetDraft(event.target.value)}
+                    />
+                  </label>
+                  <div className="context-budget-metrics">
+                    <span><small>{t('contextBudget.effective')}</small><strong>{compactTokens(contextTokenBudget.effective_hard_token_limit)}</strong></span>
+                    <span><small>{t('contextBudget.physical')}</small><strong>{compactTokens(contextTokenBudget.physical_prompt_token_limit)}</strong></span>
+                    <span><small>{t('contextBudget.soft')}</small><strong>{compactTokens(contextTokenBudget.soft_token_limit)}</strong></span>
+                    <span><small>{t('contextBudget.reserve')}</small><strong>{compactTokens(contextTokenBudget.maintenance_reserve_tokens)}</strong></span>
+                  </div>
+                  <div className="context-budget-source">
+                    <span>{contextTokenBudget.provider ?? t('runtime.providerUnknown')} · {contextTokenBudget.model}</span>
+                    <code>{contextTokenBudget.capacity_source}</code>
+                  </div>
+                  {!contextTokenBudgetDraftValid && (
+                    <p className="context-budget-validation">{t('contextBudget.invalid')}</p>
+                  )}
+                  {parsedContextTokenBudgetDraft !== null
+                    && parsedContextTokenBudgetDraft > contextTokenBudget.physical_prompt_token_limit && (
+                    <p className="context-budget-warning">{t('contextBudget.clamped', {
+                      physical: compactTokens(contextTokenBudget.physical_prompt_token_limit),
+                    })}</p>
+                  )}
+                  <footer>
+                    <small>{t('contextBudget.nextEvaluation')}</small>
+                    <button
+                      type="button"
+                      disabled={!contextTokenBudgetChanged || changingContextTokenBudget}
+                      onClick={() => void changeContextTokenBudget(parsedContextTokenBudgetDraft)}
+                    >
+                      {changingContextTokenBudget ? t('contextBudget.saving') : t('contextBudget.save')}
+                    </button>
+                  </footer>
+                </div>
+              )}
+            </div>
             <label className="reasoning-control" title={t('reasoning.title')}>
               <span>{t('reasoning.label').toUpperCase()}</span>
               <select

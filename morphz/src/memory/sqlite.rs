@@ -11,14 +11,14 @@ use crate::memory::{
     ApprovalStatus, ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
     CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
-    ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit,
-    DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore,
-    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
-    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
-    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ContextTokenBudgetMutation, ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore,
+    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
+    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
+    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
+    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
@@ -364,7 +364,9 @@ impl SqliteStore {
             seed_context_id TEXT,
             seed_context_version INTEGER,
             seed_snapshot_hash TEXT,
-            seed_projection TEXT
+            seed_projection TEXT,
+            requested_hard_token_limit INTEGER,
+            token_budget_revision INTEGER NOT NULL DEFAULT 0 CHECK(token_budget_revision >= 0)
         );
         CREATE INDEX IF NOT EXISTS idx_contexts_agent_updated
             ON cognitive_contexts(agent_id, updated_at DESC);
@@ -1063,6 +1065,26 @@ impl SqliteStore {
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
+        let context_columns = sqlx::query("PRAGMA table_info(cognitive_contexts)")
+            .fetch_all(&pool)
+            .await?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        if !context_columns.contains("requested_hard_token_limit") {
+            sqlx::query(
+                "ALTER TABLE cognitive_contexts ADD COLUMN requested_hard_token_limit INTEGER",
+            )
+            .execute(&pool)
+            .await?;
+        }
+        if !context_columns.contains("token_budget_revision") {
+            sqlx::query(
+                "ALTER TABLE cognitive_contexts ADD COLUMN token_budget_revision INTEGER NOT NULL DEFAULT 0 CHECK(token_budget_revision >= 0)",
+            )
+            .execute(&pool)
+            .await?;
+        }
         migrate_execution_targets(&pool).await?;
         migrate_edge_execution(&pool).await?;
         for (table, column) in [
@@ -2419,6 +2441,11 @@ fn context_from_row(row: &sqlx::sqlite::SqliteRow) -> CognitiveContextRecord {
             .and_then(|version| u64::try_from(version).ok()),
         seed_snapshot_hash: row.get("seed_snapshot_hash"),
         seed_projection: row.get("seed_projection"),
+        requested_hard_token_limit: row
+            .get::<Option<i64>, _>("requested_hard_token_limit")
+            .and_then(|value| u64::try_from(value).ok()),
+        token_budget_revision: u64::try_from(row.get::<i64, _>("token_budget_revision"))
+            .expect("Context token budget revision 不能为负数"),
     }
 }
 
@@ -4327,7 +4354,7 @@ impl SessionDirectoryStore for SqliteStore {
         id: &str,
     ) -> Result<Option<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let row = sqlx::query(
-            "SELECT id, agent_id, title, status, created_at, updated_at, seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection FROM cognitive_contexts WHERE id = ?",
+            "SELECT id, agent_id, title, status, created_at, updated_at, seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection, requested_hard_token_limit, token_budget_revision FROM cognitive_contexts WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -4340,11 +4367,11 @@ impl SessionDirectoryStore for SqliteStore {
         include_archived: bool,
     ) -> Result<Vec<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_archived {
-            sqlx::query("SELECT id, agent_id, title, status, created_at, updated_at, seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection FROM cognitive_contexts ORDER BY updated_at DESC")
+            sqlx::query("SELECT id, agent_id, title, status, created_at, updated_at, seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection, requested_hard_token_limit, token_budget_revision FROM cognitive_contexts ORDER BY updated_at DESC")
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query("SELECT id, agent_id, title, status, created_at, updated_at, seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection FROM cognitive_contexts WHERE status = 'active' ORDER BY updated_at DESC")
+            sqlx::query("SELECT id, agent_id, title, status, created_at, updated_at, seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection, requested_hard_token_limit, token_budget_revision FROM cognitive_contexts WHERE status = 'active' ORDER BY updated_at DESC")
                 .fetch_all(&self.pool)
                 .await?
         };
@@ -4390,6 +4417,48 @@ impl SessionDirectoryStore for SqliteStore {
         }
         tx.commit().await?;
         self.get_context(id).await
+    }
+
+    async fn update_context_token_budget(
+        &self,
+        id: &str,
+        requested_hard_token_limit: Option<u64>,
+        expected_revision: u64,
+    ) -> Result<ContextTokenBudgetMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if requested_hard_token_limit == Some(0) {
+            return Err("Context hard token limit 必须大于 0".into());
+        }
+        let requested = requested_hard_token_limit
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "Context hard token limit 超出 SQLite INTEGER 范围")?;
+        let expected = i64::try_from(expected_revision)
+            .map_err(|_| "Context token budget revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE cognitive_contexts
+               SET requested_hard_token_limit = ?,
+                   token_budget_revision = token_budget_revision + 1,
+                   updated_at = ?
+               WHERE id = ? AND token_budget_revision = ?"#,
+        )
+        .bind(requested)
+        .bind(&now)
+        .bind(id)
+        .bind(expected)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ContextTokenBudgetMutation::Updated(
+                self.get_context(id)
+                    .await?
+                    .ok_or("Context budget 更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_context(id).await? {
+            Some(current) => ContextTokenBudgetMutation::Conflict(current),
+            None => ContextTokenBudgetMutation::NotFound,
+        })
     }
 
     async fn set_context_seed(
@@ -19173,6 +19242,120 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn context_token_budget_update_is_revision_checked_and_persistent() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_string_lossy().to_string();
+        let store = SqliteStore::new(&path).await.unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "context-budget-cas".to_string(),
+                agent_id: "agent-main".to_string(),
+                title: "Budget CAS".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let initial = store
+            .get_context("context-budget-cas")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(initial.requested_hard_token_limit, None);
+        assert_eq!(initial.token_budget_revision, 0);
+
+        let updated = store
+            .update_context_token_budget("context-budget-cas", Some(128_000), 0)
+            .await
+            .unwrap();
+        let ContextTokenBudgetMutation::Updated(updated) = updated else {
+            panic!("expected updated token budget");
+        };
+        assert_eq!(updated.requested_hard_token_limit, Some(128_000));
+        assert_eq!(updated.token_budget_revision, 1);
+
+        let stale = store
+            .update_context_token_budget("context-budget-cas", Some(64_000), 0)
+            .await
+            .unwrap();
+        let ContextTokenBudgetMutation::Conflict(current) = stale else {
+            panic!("expected revision conflict");
+        };
+        assert_eq!(current.requested_hard_token_limit, Some(128_000));
+        assert_eq!(current.token_budget_revision, 1);
+
+        let automatic = store
+            .update_context_token_budget("context-budget-cas", None, 1)
+            .await
+            .unwrap();
+        let ContextTokenBudgetMutation::Updated(automatic) = automatic else {
+            panic!("expected update back to automatic mode");
+        };
+        assert_eq!(automatic.requested_hard_token_limit, None);
+        assert_eq!(automatic.token_budget_revision, 2);
+
+        drop(store);
+        let reopened = SqliteStore::new(&path).await.unwrap();
+        let persisted = reopened
+            .get_context("context-budget-cas")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.requested_hard_token_limit, None);
+        assert_eq!(persisted.token_budget_revision, 2);
+    }
+
+    #[tokio::test]
+    async fn startup_migrates_existing_context_table_with_token_budget_columns() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_path_buf();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE cognitive_contexts (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                seed_context_id TEXT,
+                seed_context_version INTEGER,
+                seed_snapshot_hash TEXT,
+                seed_projection TEXT
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cognitive_contexts (id, agent_id, title, status, created_at, updated_at) VALUES ('legacy-context', 'agent-main', 'Legacy', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        let migrated = store.get_context("legacy-context").await.unwrap().unwrap();
+        assert_eq!(migrated.requested_hard_token_limit, None);
+        assert_eq!(migrated.token_budget_revision, 0);
+        assert!(matches!(
+            store
+                .update_context_token_budget("legacy-context", Some(96_000), 0)
+                .await
+                .unwrap(),
+            ContextTokenBudgetMutation::Updated(_)
+        ));
     }
 
     #[tokio::test]

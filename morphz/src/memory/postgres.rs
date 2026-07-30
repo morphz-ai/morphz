@@ -169,6 +169,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260730_01_context_token_budget",
+                    store.migrate_context_token_budget(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260725_01_recall_segmented_index",
                     store.resegment_recall_documents(),
                 )
@@ -255,7 +261,9 @@ impl PostgresStore {
                 seed_context_id TEXT,
                 seed_context_version BIGINT,
                 seed_snapshot_hash TEXT,
-                seed_projection TEXT
+                seed_projection TEXT,
+                requested_hard_token_limit BIGINT,
+                token_budget_revision BIGINT NOT NULL DEFAULT 0
             )"#,
             r#"CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -603,6 +611,20 @@ impl PostgresStore {
              ON events(context_id, topic text_pattern_ops, timestamp, sequence)",
             "CREATE INDEX IF NOT EXISTS idx_pg_events_context_session_topic_prefix_time \
              ON events(context_id, session_id, topic text_pattern_ops, timestamp, sequence)",
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    async fn migrate_context_token_budget(&self) -> Result<(), StoreError> {
+        for statement in [
+            "ALTER TABLE cognitive_contexts ADD COLUMN IF NOT EXISTS requested_hard_token_limit BIGINT",
+            "ALTER TABLE cognitive_contexts ADD COLUMN IF NOT EXISTS token_budget_revision BIGINT NOT NULL DEFAULT 0",
+            "ALTER TABLE cognitive_contexts DROP CONSTRAINT IF EXISTS cognitive_contexts_requested_hard_token_limit_check",
+            "ALTER TABLE cognitive_contexts ADD CONSTRAINT cognitive_contexts_requested_hard_token_limit_check CHECK (requested_hard_token_limit IS NULL OR requested_hard_token_limit > 0)",
+            "ALTER TABLE cognitive_contexts DROP CONSTRAINT IF EXISTS cognitive_contexts_token_budget_revision_check",
+            "ALTER TABLE cognitive_contexts ADD CONSTRAINT cognitive_contexts_token_budget_revision_check CHECK (token_budget_revision >= 0)",
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }

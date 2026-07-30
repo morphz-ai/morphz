@@ -1,9 +1,10 @@
 use super::{now_text, parse_time, PostgresStore, StoreError};
 use crate::memory::{
-    AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, ContextUpdate, NewAgent,
-    NewCognitiveContext, NewPrincipal, NewSession, PrincipalDirectoryEntry, PrincipalDirectoryPage,
-    PrincipalRecord, SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore,
-    SessionMountKind, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionUpdate,
+    AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, ContextTokenBudgetMutation,
+    ContextUpdate, NewAgent, NewCognitiveContext, NewPrincipal, NewSession,
+    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord, SessionAttentionState,
+    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
+    SessionRecord, SessionStatus, SessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgRow;
@@ -11,7 +12,8 @@ use sqlx::Row;
 
 const AGENT_COLUMNS: &str = "id, title, status, root_context_id, created_at, updated_at";
 const CONTEXT_COLUMNS: &str = "id, agent_id, title, status, created_at, updated_at, \
-seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection";
+seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection, \
+requested_hard_token_limit, token_budget_revision";
 const SESSION_COLUMNS: &str = "id, agent_id, context_id, parent_session_id, title, status, \
 created_at, updated_at, last_activity_at, attention_state, attention_revision, \
 attention_reason, attention_changed_at, attention_event_id";
@@ -58,6 +60,11 @@ fn context_from_row(row: &PgRow) -> Result<CognitiveContextRecord, StoreError> {
             .transpose()?,
         seed_snapshot_hash: row.get("seed_snapshot_hash"),
         seed_projection: row.get("seed_projection"),
+        requested_hard_token_limit: row
+            .get::<Option<i64>, _>("requested_hard_token_limit")
+            .map(u64::try_from)
+            .transpose()?,
+        token_budget_revision: u64::try_from(row.get::<i64, _>("token_budget_revision"))?,
     })
 }
 
@@ -614,6 +621,45 @@ impl SessionDirectoryStore for PostgresStore {
         }
         tx.commit().await?;
         self.get_context(id).await
+    }
+
+    async fn update_context_token_budget(
+        &self,
+        id: &str,
+        requested_hard_token_limit: Option<u64>,
+        expected_revision: u64,
+    ) -> Result<ContextTokenBudgetMutation, StoreError> {
+        if requested_hard_token_limit == Some(0) {
+            return Err("Context hard token limit 必须大于 0".into());
+        }
+        let requested = requested_hard_token_limit
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "Context hard token limit 超出 PostgreSQL BIGINT 范围")?;
+        let expected = i64::try_from(expected_revision)
+            .map_err(|_| "Context token budget revision 超出 PostgreSQL BIGINT 范围")?;
+        let now = now_text();
+        let row = sqlx::query(&format!(
+            r#"UPDATE cognitive_contexts
+               SET requested_hard_token_limit = $1,
+                   token_budget_revision = token_budget_revision + 1,
+                   updated_at = $2
+               WHERE id = $3 AND token_budget_revision = $4
+               RETURNING {CONTEXT_COLUMNS}"#
+        ))
+        .bind(requested)
+        .bind(now)
+        .bind(id)
+        .bind(expected)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(row) = row {
+            return Ok(ContextTokenBudgetMutation::Updated(context_from_row(&row)?));
+        }
+        Ok(match self.get_context(id).await? {
+            Some(current) => ContextTokenBudgetMutation::Conflict(current),
+            None => ContextTokenBudgetMutation::NotFound,
+        })
     }
 
     async fn set_context_seed(

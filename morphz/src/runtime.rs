@@ -33,11 +33,11 @@ use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalRecord,
     ApprovalResolution, ApprovalStore, ArtifactTransferExecutionRecord,
     AttentionAcknowledgementRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate, DelegationRecord,
-    DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
-    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore,
-    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
+    CapabilityLeaseRecord, CognitiveContextRecord, ContextTokenBudgetMutation, ContextUpdate,
+    DelegationRecord, DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
     ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
@@ -55,9 +55,9 @@ use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
 };
 use crate::orchestrator::context::{
-    ContextAttribution, ContextEngine, ContextPressure, ContextRecallService, ContextView,
-    FrameRecallPage, FrameRecallRequest, ProjectedSession, RecallSearchPage, RecallSearchRequest,
-    SessionWorkingSetView,
+    ContextAttribution, ContextEngine, ContextPressure, ContextRecallService, ContextTokenBudget,
+    ContextView, FrameRecallPage, FrameRecallRequest, ModelContextCapacity, ProjectedSession,
+    RecallSearchPage, RecallSearchRequest, SessionWorkingSetView,
 };
 use crate::orchestrator::orchestrator::{DurableApprovalServices, Orchestrator};
 use crate::permission::{
@@ -77,10 +77,44 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, RwLock, Weak};
 use tokio::io::AsyncWriteExt;
 
 pub type RuntimeError = Box<dyn std::error::Error + Send + Sync>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ContextTokenBudgetUpdate {
+    Updated(ContextTokenBudget),
+    Conflict(ContextTokenBudget),
+    NotFound,
+}
+
+fn resolve_model_context_capacity(config: &AppConfig, model: &str) -> ModelContextCapacity {
+    let provider_id = config.llm.provider.clone();
+    let profile = provider_id
+        .as_deref()
+        .and_then(|provider_id| config.providers.get(provider_id))
+        .and_then(|provider| provider.models.get(model));
+    let configured_prompt_token_limit =
+        profile.and_then(crate::config::ProviderModelConfig::prompt_token_limit);
+    let prompt_token_limit = configured_prompt_token_limit
+        .unwrap_or(config.orchestrator.context_hard_token_limit)
+        .max(1);
+    ModelContextCapacity {
+        provider: provider_id,
+        model: model.to_string(),
+        prompt_token_limit,
+        context_window_tokens: profile.and_then(|profile| profile.context_window_tokens),
+        max_output_tokens: profile
+            .and_then(|profile| profile.max_output_tokens)
+            .or(config.llm.max_output_tokens.map(|value| value as usize)),
+        source: if configured_prompt_token_limit.is_some() {
+            "provider-model-config".to_string()
+        } else {
+            "runtime-default".to_string()
+        },
+    }
+}
 
 static RUNTIME_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RUNTIME_DEFAULT_IDENTITY_PROVIDER_ID: &str = "runtime-default";
@@ -816,12 +850,17 @@ impl MorphzRuntimeBuilder {
             persist_harness_package(store.as_ref(), &package).await?;
             harness_registry.register_package(package)?;
         }
+        let model_context_capacity = Arc::new(RwLock::new(resolve_model_context_capacity(
+            &self.config,
+            &self.config.llm.model,
+        )));
         let context_engine = Arc::new(
             ContextEngine::new(
                 Arc::clone(&store) as Arc<dyn EventStore>,
                 self.config.orchestrator.clone(),
             )
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_model_context_capacity(Arc::clone(&model_context_capacity))
             .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
             .with_session_projection_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::SessionProjectionStore>
@@ -1135,6 +1174,7 @@ impl MorphzRuntimeBuilder {
                 store,
                 registry,
                 harness_registry,
+                model_context_capacity,
                 context_engine,
                 orchestrator,
                 objective_supervisor,
@@ -1295,6 +1335,7 @@ struct RuntimeInner {
     store: Arc<dyn RuntimeStore>,
     registry: Arc<Registry>,
     harness_registry: Arc<DomainHarnessRegistry>,
+    model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
     context_engine: Arc<ContextEngine>,
     orchestrator: Arc<Orchestrator>,
     objective_supervisor: Arc<ObjectiveSupervisor>,
@@ -1768,7 +1809,46 @@ impl MorphzRuntime {
         {
             return Err(format!("模型 '{model}' 未在 llm.models 中配置，拒绝运行期切换").into());
         }
-        self.inner.client.set_model(model).map_err(Into::into)
+        self.inner.client.set_model(model)?;
+        let capacity = resolve_model_context_capacity(&self.inner.config, model);
+        *self
+            .inner
+            .model_context_capacity
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
+        Ok(())
+    }
+
+    pub async fn context_token_budget(
+        &self,
+        context_id: &str,
+    ) -> Result<ContextTokenBudget, RuntimeError> {
+        self.inner
+            .context_engine
+            .context_token_budget(context_id)
+            .await
+    }
+
+    pub async fn update_context_token_budget(
+        &self,
+        context_id: &str,
+        requested_hard_token_limit: Option<u64>,
+        expected_revision: u64,
+    ) -> Result<ContextTokenBudgetUpdate, RuntimeError> {
+        let mutation = self
+            .inner
+            .store
+            .update_context_token_budget(context_id, requested_hard_token_limit, expected_revision)
+            .await?;
+        match mutation {
+            ContextTokenBudgetMutation::Updated(_) => Ok(ContextTokenBudgetUpdate::Updated(
+                self.context_token_budget(context_id).await?,
+            )),
+            ContextTokenBudgetMutation::Conflict(_) => Ok(ContextTokenBudgetUpdate::Conflict(
+                self.context_token_budget(context_id).await?,
+            )),
+            ContextTokenBudgetMutation::NotFound => Ok(ContextTokenBudgetUpdate::NotFound),
+        }
     }
 
     pub fn set_reasoning_effort(
@@ -5575,6 +5655,7 @@ fn env_flag_enabled(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ProviderConfig, ProviderModelConfig};
     use crate::llm::{Message, Response, ToolCallRepr, ToolDefinition};
     use crate::memory::SessionDirectoryStore as _;
     use crate::permission::PermissionMode;
@@ -5582,6 +5663,34 @@ mod tests {
     use tempfile::NamedTempFile;
 
     struct ReplyClient;
+
+    #[test]
+    fn model_context_capacity_uses_exact_provider_model_profile_and_falls_back() {
+        let mut config = AppConfig::default();
+        config.llm.provider = Some("proxy".to_string());
+        config.orchestrator.context_hard_token_limit = 262_144;
+        let mut provider = ProviderConfig::default();
+        provider.models.insert(
+            "model-a".to_string(),
+            ProviderModelConfig {
+                context_window_tokens: Some(1_000_000),
+                max_input_tokens: None,
+                max_output_tokens: Some(32_000),
+            },
+        );
+        config.providers.insert("proxy".to_string(), provider);
+
+        let configured = resolve_model_context_capacity(&config, "model-a");
+        assert_eq!(configured.prompt_token_limit, 968_000);
+        assert_eq!(configured.context_window_tokens, Some(1_000_000));
+        assert_eq!(configured.max_output_tokens, Some(32_000));
+        assert_eq!(configured.source, "provider-model-config");
+
+        let fallback = resolve_model_context_capacity(&config, "MODEL-A");
+        assert_eq!(fallback.prompt_token_limit, 262_144);
+        assert_eq!(fallback.context_window_tokens, None);
+        assert_eq!(fallback.source, "runtime-default");
+    }
 
     #[tokio::test]
     async fn message_attachments_store_bytes_outside_the_ledger_by_digest() {

@@ -422,6 +422,12 @@ pub struct CognitiveContextRecord {
     pub seed_snapshot_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed_projection: Option<String>,
+    /// Operator/user preference. Runtime caps this value by the selected
+    /// Provider+Model's physical prompt capacity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_hard_token_limit: Option<u64>,
+    #[serde(default)]
+    pub token_budget_revision: u64,
 }
 
 /// Persistent logical activity clock for one shared Cognitive Context.
@@ -446,6 +452,13 @@ pub struct NewCognitiveContext {
 pub struct ContextUpdate {
     pub title: Option<String>,
     pub status: Option<SessionStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ContextTokenBudgetMutation {
+    Updated(CognitiveContextRecord),
+    Conflict(CognitiveContextRecord),
+    NotFound,
 }
 
 /// Rebuildable online materialization of one Cognitive Context's current Mind.
@@ -3321,6 +3334,14 @@ pub trait SessionDirectoryStore: Send + Sync {
         id: &str,
         update: ContextUpdate,
     ) -> Result<Option<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Compare-and-swap the Context-scoped requested hard limit. `None`
+    /// restores automatic mode while preserving the monotonic revision fence.
+    async fn update_context_token_budget(
+        &self,
+        id: &str,
+        requested_hard_token_limit: Option<u64>,
+        expected_revision: u64,
+    ) -> Result<ContextTokenBudgetMutation, Box<dyn std::error::Error + Send + Sync>>;
     async fn set_context_seed(
         &self,
         context_id: &str,

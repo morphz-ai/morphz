@@ -320,6 +320,24 @@
     "actualCost": "费用 {{amount}} {{currency}}（价格版本 {{version}}）",
     "costUnavailable": "未配置价格，只统计真实词元"
   },
+  "contextBudget": {
+    "eyebrow": "当前上下文",
+    "title": "词元容量预算",
+    "description": "限制当前 Context 后续求值可使用的 Prompt 容量。自动模式采用当前 Provider + Model 的物理输入容量；自定义值不会突破物理上限。",
+    "auto": "自动",
+    "autoPlaceholder": "自动（模型容量）",
+    "slider": "调整当前 Context 的硬上限",
+    "requested": "请求的硬上限（词元）",
+    "effective": "有效硬上限",
+    "physical": "模型物理上限",
+    "soft": "软上限",
+    "reserve": "维护预留",
+    "invalid": "请输入大于 0 的安全整数，或留空恢复自动模式。",
+    "clamped": "请求值高于模型物理输入容量，实际会裁剪为 {{physical}}。",
+    "nextEvaluation": "仅影响后续求值；不会中断当前请求。",
+    "save": "应用",
+    "saving": "应用中…"
+  },
   "connection": {
     "connected": "已连接",
     "connecting": "连接中",

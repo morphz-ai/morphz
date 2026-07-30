@@ -174,6 +174,12 @@ struct UpdateContextRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct UpdateContextTokenBudgetRequest {
+    requested_hard_token_limit: Option<u64>,
+    expected_revision: u64,
+}
+
+#[derive(serde::Deserialize)]
 struct UpdateSessionRequest {
     title: Option<String>,
     status: Option<SessionStatus>,
@@ -642,6 +648,10 @@ impl Server {
                 get(handle_list_contexts).post(handle_create_context),
             )
             .route("/api/contexts/:context_id", patch(handle_update_context))
+            .route(
+                "/api/contexts/:context_id/token-budget",
+                get(handle_get_context_token_budget).patch(handle_update_context_token_budget),
+            )
             .route(
                 "/api/execution-targets",
                 get(handle_list_execution_targets).post(handle_register_execution_target),
@@ -3460,6 +3470,65 @@ async fn handle_update_context(
     }
 }
 
+async fn handle_get_context_token_budget(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.sdk.context_token_budget(&context_id).await {
+        Ok(budget) => Json(budget).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_update_context_token_budget(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<UpdateContextTokenBudgetRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if request.requested_hard_token_limit == Some(0) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "requested_hard_token_limit 必须大于 0；使用 null 恢复自动模式",
+        );
+    }
+    match state
+        .sdk
+        .update_context_token_budget(
+            &context_id,
+            request.requested_hard_token_limit,
+            request.expected_revision,
+        )
+        .await
+    {
+        Ok(crate::runtime::ContextTokenBudgetUpdate::Updated(budget)) => {
+            Json(json!({ "outcome": "updated", "budget": budget })).into_response()
+        }
+        Ok(crate::runtime::ContextTokenBudgetUpdate::Conflict(budget)) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "outcome": "conflict",
+                "error": "Context token budget 已被其他写者更新",
+                "budget": budget,
+            })),
+        )
+            .into_response(),
+        Ok(crate::runtime::ContextTokenBudgetUpdate::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Context 不存在")
+        }
+        Err(error) => sdk_error_response(error),
+    }
+}
+
 async fn handle_create_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5583,6 +5652,106 @@ mod tests {
         .into_response();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         assert_eq!(runtime.model(), "fixture-model");
+    }
+
+    #[tokio::test]
+    async fn context_token_budget_http_control_is_revision_fenced_and_reversible() {
+        let (state, _) = test_state().await;
+
+        let initial = handle_get_context_token_budget(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(initial.status(), StatusCode::OK);
+        let initial_body = axum::body::to_bytes(initial.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let initial_json: serde_json::Value = serde_json::from_slice(&initial_body).unwrap();
+        assert_eq!(initial_json["requested_hard_token_limit"], json!(null));
+        assert_eq!(initial_json["token_budget_revision"], json!(0));
+
+        let missing = handle_get_context_token_budget(
+            State(Arc::clone(&state)),
+            Path("context-missing".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let updated = handle_update_context_token_budget(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateContextTokenBudgetRequest {
+                requested_hard_token_limit: Some(12_000),
+                expected_revision: 0,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(updated.status(), StatusCode::OK);
+        let updated_body = axum::body::to_bytes(updated.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let updated_json: serde_json::Value = serde_json::from_slice(&updated_body).unwrap();
+        assert_eq!(
+            updated_json["budget"]["requested_hard_token_limit"],
+            json!(12_000)
+        );
+        assert_eq!(
+            updated_json["budget"]["effective_hard_token_limit"],
+            json!(12_000)
+        );
+        assert_eq!(updated_json["budget"]["soft_token_limit"], json!(9_000));
+        assert_eq!(
+            updated_json["budget"]["maintenance_reserve_tokens"],
+            json!(1_500)
+        );
+        assert_eq!(updated_json["budget"]["token_budget_revision"], json!(1));
+
+        let conflict = handle_update_context_token_budget(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateContextTokenBudgetRequest {
+                requested_hard_token_limit: Some(8_000),
+                expected_revision: 0,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+
+        let automatic = handle_update_context_token_budget(
+            State(state),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateContextTokenBudgetRequest {
+                requested_hard_token_limit: None,
+                expected_revision: 1,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(automatic.status(), StatusCode::OK);
+        let automatic_body = axum::body::to_bytes(automatic.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let automatic_json: serde_json::Value = serde_json::from_slice(&automatic_body).unwrap();
+        assert_eq!(
+            automatic_json["budget"]["requested_hard_token_limit"],
+            json!(null)
+        );
+        assert_eq!(automatic_json["budget"]["token_budget_revision"], json!(2));
     }
 
     #[tokio::test]

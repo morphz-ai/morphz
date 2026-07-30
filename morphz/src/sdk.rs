@@ -29,12 +29,12 @@ use crate::memory::{
     PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate, ThreadControlAction,
     ThreadMutation,
 };
-use crate::orchestrator::context::MindProjectionAudit;
+use crate::orchestrator::context::{ContextTokenBudget, MindProjectionAudit};
 use crate::runtime::{
     AcknowledgeAttentionCommand, AttentionAcknowledgement, ContextOverview, ContextOverviewQuery,
-    DialogueTurnRetryReceipt, LedgerQuery, LedgerQueryPage, MessageReceipt, ModelUsagePage,
-    ModelUsageQuery, MorphzRuntime, RuntimeEventStream, RuntimeStatus, SchedulerQuery,
-    SchedulerSnapshot, ThreadDetail,
+    ContextTokenBudgetUpdate, DialogueTurnRetryReceipt, LedgerQuery, LedgerQueryPage,
+    MessageReceipt, ModelUsagePage, ModelUsageQuery, MorphzRuntime, RuntimeEventStream,
+    RuntimeStatus, SchedulerQuery, SchedulerSnapshot, ThreadDetail,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -592,6 +592,37 @@ impl MorphzSdk {
                     format!("Context '{context_id}' 不存在"),
                 )
             })
+    }
+
+    pub async fn context_token_budget(&self, context_id: &str) -> SdkResult<ContextTokenBudget> {
+        if self
+            .runtime
+            .get_context(context_id)
+            .await
+            .map_err(SdkError::internal)?
+            .is_none()
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                format!("Context '{context_id}' 不存在"),
+            ));
+        }
+        self.runtime
+            .context_token_budget(context_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn update_context_token_budget(
+        &self,
+        context_id: &str,
+        requested_hard_token_limit: Option<u64>,
+        expected_revision: u64,
+    ) -> SdkResult<ContextTokenBudgetUpdate> {
+        self.runtime
+            .update_context_token_budget(context_id, requested_hard_token_limit, expected_revision)
+            .await
+            .map_err(SdkError::internal)
     }
 
     pub async fn list_execution_targets(
