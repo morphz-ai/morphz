@@ -65,6 +65,10 @@ use crate::orchestrator::orchestrator::{DurableApprovalServices, Orchestrator};
 use crate::permission::{
     ApprovalRequirement, PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode,
 };
+use crate::scheduler::{
+    ControlThreadCommand, KernelCommand, KernelCommandHeader, KernelCommandPayload, KernelResult,
+    SchedulerKernel,
+};
 use crate::secret_store::{
     ManagedSecret, SecretBackendStatus, SecretImportCandidate, SecretScopeKind, SecretStore,
     SecretUseAuditRecord,
@@ -1055,6 +1059,9 @@ impl MorphzRuntimeBuilder {
             .max(3);
         let objective_evaluations = Arc::new(ObjectiveEvaluationRegistry::default());
         let timer_engine = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let scheduler_kernel = Arc::new(SchedulerKernel::new(
+            Arc::clone(&store) as Arc<dyn RuntimeStore>
+        ));
         let objective_supervisor = Arc::new(
             ObjectiveSupervisor::new(
                 Arc::clone(&store) as Arc<dyn ObjectiveStore>,
@@ -1070,7 +1077,8 @@ impl MorphzRuntimeBuilder {
             .with_activation_store(Arc::clone(&store) as Arc<dyn crate::memory::ActivationStore>)
             .with_scheduler_dependency_store(
                 Arc::clone(&store) as Arc<dyn crate::scheduler::SchedulerDependencyStore>
-            ),
+            )
+            .with_scheduler_kernel(Arc::clone(&scheduler_kernel)),
         );
         objective_supervisor.register_timer_handlers()?;
         let registry = Arc::new(Registry::new());
@@ -1098,6 +1106,7 @@ impl MorphzRuntimeBuilder {
             permissions: &permissions,
             bus: &bus,
             thread_scheduler: &thread_scheduler,
+            scheduler_kernel: &scheduler_kernel,
             background_scheduler: &background_scheduler,
             secret_store: &secret_store,
             config: &self.config,
@@ -1277,6 +1286,7 @@ impl MorphzRuntimeBuilder {
             Arc::clone(&bus),
             Arc::clone(&store) as Arc<dyn EventStore>,
             Some(Arc::clone(&store) as Arc<dyn RuntimeStore>),
+            Some(Arc::clone(&scheduler_kernel)),
             self.client,
             Arc::clone(&registry),
             self.config.orchestrator.clone(),
@@ -1319,6 +1329,7 @@ impl MorphzRuntimeBuilder {
                 orchestrator,
                 objective_supervisor,
                 thread_scheduler,
+                scheduler_kernel,
                 execution_jobs,
                 execution_targets,
                 artifact_transfer_stages,
@@ -1345,6 +1356,7 @@ struct DefaultToolDependencies<'a> {
     permissions: &'a Arc<PermissionBroker>,
     bus: &'a Arc<InMemoryEventBus>,
     thread_scheduler: &'a Arc<ThreadScheduler>,
+    scheduler_kernel: &'a Arc<SchedulerKernel>,
     background_scheduler: &'a Arc<BackgroundTaskScheduler>,
     secret_store: &'a Arc<SecretStore>,
     config: &'a AppConfig,
@@ -1362,6 +1374,7 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         permissions,
         bus,
         thread_scheduler,
+        scheduler_kernel,
         background_scheduler,
         secret_store,
         config,
@@ -1403,7 +1416,8 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
                 .session_store()
                 .expect("Runtime ContextEngine 必须配置 SessionStore"),
         )
-        .with_objective_store(objective_supervisor.store()),
+        .with_objective_store(objective_supervisor.store())
+        .with_scheduler_kernel(Arc::clone(scheduler_kernel)),
     ));
     registry.register(Arc::new(VerifyIdentityTool::new(
         context_engine
@@ -1483,6 +1497,7 @@ struct RuntimeInner {
     orchestrator: Arc<Orchestrator>,
     objective_supervisor: Arc<ObjectiveSupervisor>,
     thread_scheduler: Arc<ThreadScheduler>,
+    scheduler_kernel: Arc<SchedulerKernel>,
     execution_jobs: Arc<ExecutionJobManager<dyn ExecutionJobStore>>,
     execution_targets: Arc<crate::execution_target::ExecutionTargetDispatcher>,
     artifact_transfer_stages: crate::artifact::ArtifactTransferStageStore,
@@ -5364,17 +5379,32 @@ impl MorphzRuntime {
             return Ok(ThreadMutation::NotFound);
         }
 
-        let mutation = self
+        let command_material = format!(
+            "runtime-control-thread\0{thread_id}\0{expected_revision}\0{action:?}\0{reason}"
+        );
+        let command_digest = format!("{:x}", Sha256::digest(command_material.as_bytes()));
+        let mutation = match self
             .inner
-            .store
-            .control_thread(
-                thread_id,
-                expected_revision,
-                action,
-                Some(reason),
-                Some("Runtime-Operator"),
-            )
-            .await?;
+            .scheduler_kernel
+            .execute(KernelCommand {
+                header: KernelCommandHeader::new(
+                    format!("kernel_control_thread_{}", &command_digest[..32]),
+                    thread_id,
+                    context_id,
+                    "Runtime-Operator",
+                )
+                .with_fence(expected_revision, Some(current.generation)),
+                payload: KernelCommandPayload::ControlThread(ControlThreadCommand {
+                    thread_id: thread_id.to_string(),
+                    action,
+                    reason: Some(reason.to_string()),
+                }),
+            })
+            .await?
+        {
+            KernelResult::ThreadControlled(mutation) => mutation,
+            _ => return Err("Scheduler Kernel 返回了错误的 Thread control 结果".into()),
+        };
         if let ThreadMutation::Updated(updated) = &mutation {
             match action {
                 ThreadControlAction::Pause => {}

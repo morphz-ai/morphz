@@ -11,9 +11,10 @@ use crate::memory::{
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::scheduler::{
-    derive_objective_readiness, ObjectiveReadiness, SchedulerDependencyFilter,
+    derive_objective_readiness, ControlObjectiveCommand, KernelCommand, KernelCommandHeader,
+    KernelCommandPayload, KernelResult, ObjectiveReadiness, SchedulerDependencyFilter,
     SchedulerDependencyKind, SchedulerDependencyOwnerKind, SchedulerDependencyStatus,
-    SchedulerDependencyStore,
+    SchedulerDependencyStore, SchedulerKernel,
 };
 use crate::timer::{TimerDisposition, TimerEngine};
 use crate::tool::{
@@ -956,6 +957,7 @@ pub struct ObjectiveSupervisor {
     thread_groups: Option<Arc<dyn ThreadGroupStore>>,
     activation_store: Option<Arc<dyn ActivationStore>>,
     scheduler_dependencies: Option<Arc<dyn SchedulerDependencyStore>>,
+    scheduler_kernel: Option<Arc<SchedulerKernel>>,
     bus: Arc<InMemoryEventBus>,
     evaluations: Arc<ObjectiveEvaluationRegistry>,
     timers: Arc<TimerEngine>,
@@ -1007,6 +1009,7 @@ impl ObjectiveSupervisor {
             thread_groups: None,
             activation_store: None,
             scheduler_dependencies: None,
+            scheduler_kernel: None,
             bus,
             evaluations,
             timers,
@@ -1058,6 +1061,14 @@ impl ObjectiveSupervisor {
         store: Arc<dyn SchedulerDependencyStore>,
     ) -> Self {
         self.scheduler_dependencies = Some(store);
+        self
+    }
+
+    /// Attach the sole production mutation boundary for scheduler state.
+    /// Tests that construct the policy module in isolation retain the narrow
+    /// direct-store fallback until their fixtures are migrated.
+    pub fn with_scheduler_kernel(mut self, kernel: Arc<SchedulerKernel>) -> Self {
+        self.scheduler_kernel = Some(kernel);
         self
     }
 
@@ -1553,10 +1564,44 @@ impl ObjectiveSupervisor {
         wait_condition: Option<ObjectiveWaitCondition>,
         reason: Option<&str>,
     ) -> Result<ObjectiveMutation, DynError> {
-        let mut mutation = self
-            .store
-            .update_objective_state(id, expected_revision, status, wait_condition, reason)
-            .await?;
+        let mut mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            let current = self
+                .store
+                .get_objective(id)
+                .await?
+                .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+            let command_id = format!(
+                "objective_control_{id}_r{expected_revision}_{}_g{}",
+                status.as_str(),
+                current.generation
+            );
+            match kernel
+                .execute(KernelCommand {
+                    header: KernelCommandHeader::new(
+                        command_id,
+                        id,
+                        &current.context_id,
+                        "ObjectiveSupervisor",
+                    )
+                    .with_fence(expected_revision, Some(current.generation)),
+                    payload: KernelCommandPayload::ControlObjective(ControlObjectiveCommand {
+                        objective_id: id.to_string(),
+                        status,
+                        wait_condition,
+                        reason: reason.map(str::to_string),
+                    }),
+                })
+                .await?
+            {
+                KernelResult::ObjectiveControlled(mutation) => mutation,
+                _ => return Err("Scheduler Kernel 返回了错误的 Objective control 结果".into()),
+            }
+        } else {
+            // Compatibility fixture path only. Runtime always injects Kernel.
+            self.store
+                .update_objective_state(id, expected_revision, status, wait_condition, reason)
+                .await?
+        };
         if let ObjectiveMutation::Updated(updated) = &mutation {
             if matches!(
                 updated.status,

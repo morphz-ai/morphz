@@ -24,6 +24,10 @@ use crate::permission::{
 use crate::sandbox::{
     EnforcementStatus, NativeSandbox, NetworkPolicy, SandboxPolicy, ShellRequest,
 };
+use crate::scheduler::{
+    KernelCommand, KernelCommandHeader, KernelCommandPayload, KernelResult, PromoteThreadCommand,
+    SchedulerKernel, SpawnSupervisedGroupCommand,
+};
 use crate::timer::{TimerDisposition, TimerEngine};
 use dashmap::DashMap;
 use glob::Pattern;
@@ -1777,6 +1781,7 @@ pub struct ScheduleTxTool {
     scheduler: Arc<ThreadScheduler>,
     sessions: Arc<dyn SessionStore>,
     objectives: Option<Arc<dyn ObjectiveStore>>,
+    kernel: Option<Arc<SchedulerKernel>>,
 }
 
 impl ScheduleTxTool {
@@ -1785,11 +1790,17 @@ impl ScheduleTxTool {
             scheduler,
             sessions,
             objectives: None,
+            kernel: None,
         }
     }
 
     pub fn with_objective_store(mut self, objectives: Arc<dyn ObjectiveStore>) -> Self {
         self.objectives = Some(objectives);
+        self
+    }
+
+    pub fn with_scheduler_kernel(mut self, kernel: Arc<SchedulerKernel>) -> Self {
+        self.kernel = Some(kernel);
         self
     }
 
@@ -2100,19 +2111,40 @@ impl ScheduleTxTool {
             .expect("thread promotion event payload")
             .clone(),
         );
-        let mutation = self
-            .sessions
-            .promote_attached_thread(ThreadPromotionRequest {
-                thread_id,
-                expected_thread_revision: expected_revision,
-                source_group_id,
-                objective_id,
-                expected_objective_revision,
-                new_objective,
-                target_group,
-                promoted_event,
-            })
-            .await?;
+        let request = ThreadPromotionRequest {
+            thread_id,
+            expected_thread_revision: expected_revision,
+            source_group_id,
+            objective_id,
+            expected_objective_revision,
+            new_objective,
+            target_group,
+            promoted_event,
+        };
+        let mutation = if let Some(kernel) = &self.kernel {
+            let command_id = format!("kernel_command_{}", request.promoted_event.id);
+            match kernel
+                .execute(KernelCommand {
+                    header: KernelCommandHeader::new(
+                        command_id,
+                        route.trigger_event_id.clone(),
+                        route.root_turn_id.clone(),
+                        "Agent-Morphz",
+                    )
+                    .with_fence(expected_revision, Some(target_generation)),
+                    payload: KernelCommandPayload::PromoteThread(PromoteThreadCommand { request }),
+                })
+                .await?
+            {
+                KernelResult::ThreadPromoted(mutation) => mutation,
+                _ => return Err("Scheduler Kernel 返回了错误的 Thread promotion 结果".into()),
+            }
+        } else {
+            // Constructor compatibility for narrow unit fixtures. Runtime
+            // assembly always injects the Kernel and therefore cannot use this
+            // direct Store bridge.
+            self.sessions.promote_attached_thread(request).await?
+        };
         Ok(thread_promotion_receipt(mutation).to_string())
     }
 }
@@ -3156,16 +3188,62 @@ impl Tool for ScheduleTxTool {
                 }
             }
         }
-        let mut records = self
-            .sessions
-            .commit_schedule_transaction(
-                &scheduled_objectives,
-                &objective_waits,
-                &threads,
-                &intents,
-                &group_plans,
-            )
-            .await?;
+        let mut records = if let Some(kernel) = &self.kernel {
+            let command_material = format!(
+                "{attempt_id}\0{}\0{}\0{}",
+                threads
+                    .iter()
+                    .map(|thread| thread.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\0"),
+                intents
+                    .iter()
+                    .map(|intent| intent.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\0"),
+                group_plans
+                    .iter()
+                    .map(|group| group.group.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\0")
+            );
+            let command_digest = sha256_hex(command_material.as_bytes());
+            match kernel
+                .execute(KernelCommand {
+                    header: KernelCommandHeader::new(
+                        format!("kernel_schedule_{}", &command_digest[..32]),
+                        route.trigger_event_id.clone(),
+                        route.root_turn_id.clone(),
+                        "Agent-Morphz",
+                    ),
+                    payload: KernelCommandPayload::SpawnSupervisedGroup(
+                        SpawnSupervisedGroupCommand {
+                            objectives: scheduled_objectives.clone(),
+                            objective_waits: objective_waits.clone(),
+                            threads: threads.clone(),
+                            schedules: intents.clone(),
+                            groups: group_plans.clone(),
+                        },
+                    ),
+                })
+                .await?
+            {
+                KernelResult::SupervisedGroupSpawned { schedules } => schedules,
+                _ => return Err("Scheduler Kernel 返回了错误的 schedule transaction 结果".into()),
+            }
+        } else {
+            // Narrow unit fixtures may still construct ScheduleTxTool around a
+            // SessionStore. Production Runtime never takes this bridge.
+            self.sessions
+                .commit_schedule_transaction(
+                    &scheduled_objectives,
+                    &objective_waits,
+                    &threads,
+                    &intents,
+                    &group_plans,
+                )
+                .await?
+        };
         for record in &mut records {
             let continues_current_thread = record.thread_id == route.thread_id
                 && record.not_before.is_none()

@@ -1585,6 +1585,10 @@ pub struct Orchestrator {
     /// separate from the read/write EventStore surface so tests may assemble a
     /// deliberately smaller Orchestrator without silently weakening eval.
     plan_store: Option<Arc<dyn crate::memory::RuntimeStore>>,
+    /// Sole production mutation facade for scheduler authority. Narrow tests
+    /// may omit it while they migrate fixtures; Runtime assembly always
+    /// injects the Kernel.
+    scheduler_kernel: Option<Arc<crate::scheduler::SchedulerKernel>>,
     client: Arc<dyn Client>,
     registry: Arc<Registry>,
     tool_definitions: Vec<crate::llm::ToolDefinition>,
@@ -2138,6 +2142,7 @@ impl Orchestrator {
         bus: Arc<InMemoryEventBus>,
         store: Arc<dyn EventStore>,
         plan_store: Option<Arc<dyn crate::memory::RuntimeStore>>,
+        scheduler_kernel: Option<Arc<crate::scheduler::SchedulerKernel>>,
         client: Arc<dyn Client>,
         registry: Arc<Registry>,
         orchestrator_config: OrchestratorConfig,
@@ -2178,6 +2183,7 @@ impl Orchestrator {
             bus,
             store,
             plan_store,
+            scheduler_kernel,
             client,
             registry,
             tool_definitions,
@@ -2241,6 +2247,7 @@ impl Orchestrator {
         let orchestrator = Self::assemble_with_scheduler_kernel(
             bus,
             store,
+            None,
             None,
             client,
             registry,
@@ -8206,16 +8213,44 @@ impl Orchestrator {
             self.bus.publish(event.clone()).await?;
             return Ok(true);
         };
-        let session_store = self
-            .context_engine
-            .session_store()
-            .ok_or("Evaluation outcome 需要持久化 SessionStore")?;
         let mut committed = None;
         for retry in 0..5u64 {
-            match session_store
-                .commit_activation_outcome(&route.activation_id, event)
-                .await
-            {
+            let result = if let Some(kernel) = self.scheduler_kernel.as_ref() {
+                kernel
+                    .execute(crate::scheduler::KernelCommand {
+                        header: crate::scheduler::KernelCommandHeader::new(
+                            format!("commit_thread_outcome_{}", event.id),
+                            &route.activation_id,
+                            event
+                                .payload
+                                .get("root_turn_id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or(&route.activation_id),
+                            "Orchestrator",
+                        ),
+                        payload: crate::scheduler::KernelCommandPayload::CommitThreadOutcome(
+                            crate::scheduler::CommitThreadOutcomeCommand {
+                                activation_id: route.activation_id.clone(),
+                                event: event.clone(),
+                            },
+                        ),
+                    })
+                    .await
+                    .map(|result| match result {
+                        crate::scheduler::KernelResult::ThreadOutcomeCommitted(outcome) => outcome,
+                        _ => unreachable!("CommitThreadOutcome command returned wrong result"),
+                    })
+                    .map_err(|error| Box::new(error) as DynError)
+            } else {
+                let session_store = self
+                    .context_engine
+                    .session_store()
+                    .ok_or("Evaluation outcome 需要持久化 SessionStore")?;
+                session_store
+                    .commit_activation_outcome(&route.activation_id, event)
+                    .await
+            };
+            match result {
                 Ok(commit) => {
                     committed = Some(commit);
                     break;
