@@ -2703,82 +2703,12 @@ pub fn thread_group_barrier_event(
     };
     let mut event =
         crate::event::Event::new(event_id, "Runtime".to_string(), event_type, topic, payload);
-    // The barrier is a deterministic projection of the terminal Group, so
-    // recovery must reproduce the exact same immutable Event, including its
-    // timestamp. Using `Utc::now()` here would make an idempotent repair look
-    // like an Event-ID collision on its second pass.
+    // The barrier is a deterministic projection of the terminal Group. A
+    // retried Kernel command must therefore reproduce the exact same immutable
+    // Event, including its timestamp; the Reconciler never synthesizes a
+    // missing barrier after the terminal transaction has committed.
     event.timestamp = group.satisfied_at.unwrap_or(group.updated_at);
     Ok(event)
-}
-
-/// Verifies that an already-persisted immutable Event is the terminal barrier
-/// represented by the current Thread Group projection.
-///
-/// Older Runtime builds created the barrier a few milliseconds after storing
-/// `satisfied_at`, and some paths used a more specific human-readable `text`.
-/// Those fields are immutable historical facts, not reasons to replace the
-/// Event. Recovery therefore validates the stable routing/fencing contract and
-/// reuses the persisted Event instead of requiring byte-for-byte regeneration.
-pub fn validate_thread_group_barrier_event(
-    group: &ThreadGroupRecord,
-    parent: Option<&ThreadRecord>,
-    event: &crate::event::Event,
-) -> Result<(), String> {
-    let expected = thread_group_barrier_event(group, parent)?;
-    if event.id != expected.id
-        || event.actor != expected.actor
-        || event.event_type != expected.event_type
-        || event.topic != expected.topic
-    {
-        return Err(format!(
-            "Thread Group '{}' 的既有 barrier Event '{}' 类型或路由不匹配",
-            group.id, event.id
-        ));
-    }
-
-    let mut stable_keys = vec![
-        "context_id",
-        "session_id",
-        "thread_group_id",
-        "thread_group_status",
-    ];
-    match group.supervisor_kind {
-        ThreadSupervisorKind::Evaluation => {
-            stable_keys.extend(["thread_id", "root_turn_id", "tool_name", "tool_status"]);
-        }
-        ThreadSupervisorKind::Objective => {
-            stable_keys.extend(["objective_id", "correlation_id"]);
-        }
-        ThreadSupervisorKind::Runtime => {
-            stable_keys.push("runtime_supervisor_id");
-        }
-        ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
-            unreachable!("thread_group_barrier_event 已拒绝无有效 supervisor 的终态 Group")
-        }
-    }
-    for key in stable_keys {
-        if event.payload.get(key) != expected.payload.get(key) {
-            return Err(format!(
-                "Thread Group '{}' 的既有 barrier Event '{}' 字段 '{}' 与权威投影不匹配",
-                group.id, event.id, key
-            ));
-        }
-    }
-    // `immediate` is the immutable spelling used by the legacy
-    // Event→Signal-Outbox bridge. New barriers use `direct_signal` because
-    // their mailbox row is committed atomically with the Event. Recovery must
-    // accept both historical encodings without trying to overwrite the
-    // existing Event ID.
-    if !matches!(
-        event.payload.get("wake_policy").and_then(JsonValue::as_str),
-        Some("immediate" | "direct_signal")
-    ) {
-        return Err(format!(
-            "Thread Group '{}' 的既有 barrier Event '{}' wake_policy 非法",
-            group.id, event.id
-        ));
-    }
-    Ok(())
 }
 
 /// Builds the immutable result fact for an operator/runtime cancellation.
@@ -4834,14 +4764,6 @@ pub trait ThreadGroupStore: Send + Sync {
         &self,
         group_id: &str,
     ) -> Result<Vec<ThreadOutcomeRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    /// Idempotently restores the deterministic barrier Event and Signal
-    /// Outbox row represented by a terminal Group projection.
-    ///
-    /// Returns true only when persistent recovery work was performed.
-    async fn repair_thread_group_barrier(
-        &self,
-        group_id: &str,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Stable Thread lifecycle and completion-delivery projection.

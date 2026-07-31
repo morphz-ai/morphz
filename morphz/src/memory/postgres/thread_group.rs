@@ -1,14 +1,9 @@
-use super::{
-    append_direct_thread_signal_in_tx, append_event_in_tx, parse_time, stored_event_in_tx,
-    thread::thread_from_row, PostgresStore, StoreError,
-};
+use super::{parse_time, PostgresStore, StoreError};
 use crate::memory::{
-    thread_group_barrier_event, validate_thread_group_barrier_event, ThreadGroupFilter,
-    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
-    ThreadGroupStatus, ThreadGroupStore, ThreadLifecycle, ThreadOutcomeRecord,
+    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy,
+    ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadLifecycle, ThreadOutcomeRecord,
     ThreadSupervisorKind,
 };
-use chrono::Utc;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
@@ -265,113 +260,5 @@ impl ThreadGroupStore for PostgresStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(outcome_from_row).collect()
-    }
-
-    async fn repair_thread_group_barrier(&self, group_id: &str) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await?;
-        let Some(group_row) = sqlx::query("SELECT * FROM thread_groups WHERE id = $1 FOR UPDATE")
-            .bind(group_id)
-            .fetch_optional(&mut *tx)
-            .await?
-        else {
-            tx.commit().await?;
-            return Ok(false);
-        };
-        let group = group_from_row(&group_row)?;
-        if !group.status.is_terminal() {
-            tx.commit().await?;
-            return Ok(false);
-        }
-        let deterministic_id = format!("thread_group_barrier_{}_g{}", group.id, group.generation);
-        if group
-            .barrier_event_id
-            .as_deref()
-            .is_some_and(|stored| stored != deterministic_id)
-        {
-            return Err(format!(
-                "Thread Group '{}' 的 barrier_event_id '{}' 与 generation {} 不一致",
-                group.id,
-                group.barrier_event_id.as_deref().unwrap_or_default(),
-                group.generation
-            )
-            .into());
-        }
-        let parent = if group.supervisor_kind == ThreadSupervisorKind::Evaluation {
-            sqlx::query(
-                r#"SELECT parent.*
-                   FROM thread_group_members member
-                   JOIN threads child ON child.id = member.thread_id
-                   JOIN threads parent ON parent.id = child.parent_thread_id
-                   WHERE member.group_id = $1
-                   ORDER BY member.ordinal, member.thread_id
-                   LIMIT 1"#,
-            )
-            .bind(&group.id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .as_ref()
-            .map(thread_from_row)
-            .transpose()?
-        } else {
-            None
-        };
-        let expected_barrier = thread_group_barrier_event(&group, parent.as_ref())?;
-        let mut repaired = false;
-        if group.barrier_event_id.is_none() {
-            let update = sqlx::query(
-                r#"UPDATE thread_groups
-                   SET revision = revision + 1, barrier_event_id = $1, updated_at = $2
-                   WHERE id = $3 AND barrier_event_id IS NULL"#,
-            )
-            .bind(&deterministic_id)
-            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-            .bind(&group.id)
-            .execute(&mut *tx)
-            .await?;
-            repaired |= update.rows_affected() == 1;
-        }
-        let barrier =
-            match stored_event_in_tx(&mut tx, &deterministic_id, &group.context_id).await? {
-                Some(existing) => {
-                    validate_thread_group_barrier_event(&group, parent.as_ref(), &existing)?;
-                    existing
-                }
-                None => {
-                    repaired |= append_event_in_tx(&mut tx, &expected_barrier).await?;
-                    expected_barrier
-                }
-            };
-
-        match group.supervisor_kind {
-            ThreadSupervisorKind::Evaluation => {
-                let parent = parent
-                    .as_ref()
-                    .ok_or("Evaluation Thread Group repair 缺少 parent Thread")?;
-                repaired |=
-                    append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id).await?;
-            }
-            ThreadSupervisorKind::Objective => {
-                let updated = sqlx::query(
-                    r#"UPDATE scheduler_dependencies
-                       SET status = 'satisfied', satisfied_by_event_id = $1,
-                           satisfied_at = COALESCE(satisfied_at, $2), updated_at = $2
-                       WHERE dependency_kind = 'thread_group'
-                         AND dependency_id = $3 AND dependency_generation = $4
-                         AND status = 'pending'"#,
-                )
-                .bind(&barrier.id)
-                .bind(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-                .bind(&group.id)
-                .bind(i64::try_from(group.generation)?)
-                .execute(&mut *tx)
-                .await?;
-                repaired |= updated.rows_affected() > 0;
-            }
-            ThreadSupervisorKind::Runtime
-            | ThreadSupervisorKind::None
-            | ThreadSupervisorKind::Legacy => {}
-        }
-        tx.commit().await?;
-        Ok(repaired)
     }
 }

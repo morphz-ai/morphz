@@ -6,11 +6,11 @@ use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
     causal_payload_string, evaluate_thread_completion_contract, evaluate_thread_group_contract,
     stable_thread_id, stable_thread_signal_id, thread_cancellation_event,
-    thread_group_barrier_event, thread_terminal_barrier_event, validate_thread_group_barrier_event,
-    ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus,
-    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
-    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
-    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    thread_group_barrier_event, thread_terminal_barrier_event, ActionGroupFilter,
+    ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus, ActionGroupRecord,
+    ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit, ActivationStore,
+    AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter, ApprovalMutation,
+    ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
     CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
     CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextSessionCount,
@@ -8037,121 +8037,6 @@ impl ThreadGroupStore for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(thread_outcome_from_row).collect()
-    }
-
-    async fn repair_thread_group_barrier(
-        &self,
-        group_id: &str,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let mut tx = self.pool.begin().await?;
-        let Some(group_row) = sqlx::query("SELECT * FROM thread_groups WHERE id = ?")
-            .bind(group_id)
-            .fetch_optional(&mut *tx)
-            .await?
-        else {
-            tx.commit().await?;
-            return Ok(false);
-        };
-        let group = thread_group_from_row(&group_row)?;
-        if !group.status.is_terminal() {
-            tx.commit().await?;
-            return Ok(false);
-        }
-        let deterministic_id = format!("thread_group_barrier_{}_g{}", group.id, group.generation);
-        if group
-            .barrier_event_id
-            .as_deref()
-            .is_some_and(|stored| stored != deterministic_id)
-        {
-            return Err(format!(
-                "Thread Group '{}' 的 barrier_event_id '{}' 与 generation {} 不一致",
-                group.id,
-                group.barrier_event_id.as_deref().unwrap_or_default(),
-                group.generation
-            )
-            .into());
-        }
-        let parent = if group.supervisor_kind == ThreadSupervisorKind::Evaluation {
-            sqlx::query(
-                r#"SELECT parent.*
-                   FROM thread_group_members member
-                   JOIN threads child ON child.id = member.thread_id
-                   JOIN threads parent ON parent.id = child.parent_thread_id
-                   WHERE member.group_id = ?
-                   ORDER BY member.ordinal, member.thread_id
-                   LIMIT 1"#,
-            )
-            .bind(&group.id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .as_ref()
-            .map(thread_from_row)
-            .transpose()?
-        } else {
-            None
-        };
-        let expected_barrier = thread_group_barrier_event(&group, parent.as_ref())?;
-        let mut repaired = false;
-        if group.barrier_event_id.is_none() {
-            let update = sqlx::query(
-                r#"UPDATE thread_groups
-                   SET revision = revision + 1, barrier_event_id = ?, updated_at = ?
-                   WHERE id = ? AND barrier_event_id IS NULL"#,
-            )
-            .bind(&deterministic_id)
-            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-            .bind(&group.id)
-            .execute(&mut *tx)
-            .await?;
-            repaired |= update.rows_affected() == 1;
-        }
-        let barrier =
-            match stored_event_in_transaction(&mut tx, &deterministic_id, &group.context_id).await?
-            {
-                Some(existing) => {
-                    validate_thread_group_barrier_event(&group, parent.as_ref(), &existing)?;
-                    existing
-                }
-                None => {
-                    repaired |=
-                        append_event_idempotent_in_transaction(&mut tx, &expected_barrier).await?;
-                    expected_barrier
-                }
-            };
-
-        match group.supervisor_kind {
-            ThreadSupervisorKind::Evaluation => {
-                let parent = parent
-                    .as_ref()
-                    .ok_or("Evaluation Thread Group repair 缺少 parent Thread")?;
-                repaired |=
-                    append_direct_thread_signal_in_transaction(&mut tx, &barrier, &parent.id)
-                        .await?;
-            }
-            ThreadSupervisorKind::Objective => {
-                let updated = sqlx::query(
-                    r#"UPDATE scheduler_dependencies
-                       SET status = 'satisfied', satisfied_by_event_id = ?,
-                           satisfied_at = COALESCE(satisfied_at, ?), updated_at = ?
-                       WHERE dependency_kind = 'thread_group'
-                         AND dependency_id = ? AND dependency_generation = ?
-                         AND status = 'pending'"#,
-                )
-                .bind(&barrier.id)
-                .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-                .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-                .bind(&group.id)
-                .bind(i64::try_from(group.generation)?)
-                .execute(&mut *tx)
-                .await?;
-                repaired |= updated.rows_affected() > 0;
-            }
-            ThreadSupervisorKind::Runtime
-            | ThreadSupervisorKind::None
-            | ThreadSupervisorKind::Legacy => {}
-        }
-        tx.commit().await?;
-        Ok(repaired)
     }
 }
 
@@ -20879,6 +20764,60 @@ mod tests {
             .unwrap()
             .clone(),
         );
+        // Inject a failure after the immutable outcome Event has been appended
+        // but before the terminal projection can be inserted. SQLite must roll
+        // the entire Kernel transaction back: no Event, terminal Thread,
+        // terminal Activation, acknowledged Signal, Group or Delivery fragment
+        // may survive for a Reconciler to repair later.
+        sqlx::query(
+            r#"CREATE TRIGGER fail_thread_outcome_insert
+               BEFORE INSERT ON thread_outcomes
+               BEGIN
+                 SELECT RAISE(ABORT, 'injected terminal commit failure');
+               END"#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .commit_activation_outcome(&running.id, &failure)
+            .await
+            .is_err());
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(failure.id.clone()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .get_thread_activation(&running.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ThreadActivationStatus::Running
+        );
+        assert_eq!(
+            store
+                .get_thread("retry-thread")
+                .await
+                .unwrap()
+                .unwrap()
+                .lifecycle,
+            ThreadLifecycle::Open
+        );
+        assert_eq!(
+            store.list_activation_signals(&running.id).await.unwrap()[0].status,
+            ThreadSignalStatus::Claimed
+        );
+        sqlx::query("DROP TRIGGER fail_thread_outcome_insert")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
         assert_eq!(
             store
                 .commit_activation_outcome(&running.id, &failure)
@@ -22430,7 +22369,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_thread_group_barrier_is_atomic_and_repairable() {
+    async fn terminal_thread_group_barrier_is_atomic_and_not_repaired_afterward() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
@@ -22561,87 +22500,6 @@ mod tests {
                 .unwrap(),
             ThreadMutation::Conflict { .. }
         ));
-
-        // Simulate the durable fault window where the terminal projection
-        // survived but its deterministic wake Event was never materialized.
-        let repair_now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        sqlx::query(
-            r#"INSERT INTO thread_groups
-               (id, revision, context_id, session_id, supervisor_kind, supervisor_id,
-                generation, policy, required_count, terminal_count, successful_count,
-                status, completion_contract_json, terminal_summary_json,
-                created_at, updated_at, satisfied_at)
-               VALUES (?, 1, ?, ?, 'runtime', ?, 3, 'all', 1, 1, 0,
-                       'failed', '{}', '{"status":"failed"}', ?, ?, ?)"#,
-        )
-        .bind("group-repair")
-        .bind("group-control-context")
-        .bind("group-control-session")
-        .bind("runtime-supervisor")
-        .bind(&repair_now)
-        .bind(&repair_now)
-        .bind(&repair_now)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-        assert!(store
-            .repair_thread_group_barrier("group-repair")
-            .await
-            .unwrap());
-        assert!(!store
-            .repair_thread_group_barrier("group-repair")
-            .await
-            .unwrap());
-        let repair_barrier_id = "thread_group_barrier_group-repair_g3";
-        let repaired_event_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE id = ?")
-                .bind(repair_barrier_id)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-        let repaired_outbox_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM signal_outbox WHERE event_id = ?")
-                .bind(repair_barrier_id)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-        assert_eq!(repaired_event_count, 1);
-        assert_eq!(repaired_outbox_count, 0);
-
-        // Legacy builds persisted an `immediate` barrier before the direct
-        // mailbox Signal existed. Recovery accepts that immutable spelling
-        // and timestamp, but never recreates the obsolete Outbox bridge for a
-        // Runtime-supervised Group.
-        let legacy_barrier_timestamp = (Utc::now() + chrono::Duration::milliseconds(50))
-            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        sqlx::query(
-            r#"UPDATE events
-               SET timestamp = ?, payload = json_set(payload, '$.wake_policy', 'immediate')
-               WHERE id = ?"#,
-        )
-        .bind(&legacy_barrier_timestamp)
-        .bind(repair_barrier_id)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-        assert!(!store
-            .repair_thread_group_barrier("group-repair")
-            .await
-            .unwrap());
-        let preserved_timestamp: String =
-            sqlx::query_scalar("SELECT timestamp FROM events WHERE id = ?")
-                .bind(repair_barrier_id)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-        assert_eq!(preserved_timestamp, legacy_barrier_timestamp);
-        let obsolete_outbox_rows: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM signal_outbox WHERE event_id = ?")
-                .bind(repair_barrier_id)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-        assert_eq!(obsolete_outbox_rows, 0);
     }
 
     #[tokio::test]
