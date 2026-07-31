@@ -16,6 +16,7 @@ use crate::memory::{
     ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, NewExecutionJob, QueryFilter,
     WorkerCoordinationMode,
 };
+use crate::scheduler::{KernelResult, SchedulerKernel};
 
 pub type ExecutionResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -376,11 +377,20 @@ pub struct RestartReconcileReport {
 #[derive(Debug, Clone)]
 pub struct ExecutionJobManager<S: ?Sized> {
     store: Arc<S>,
+    scheduler_kernel: Option<Arc<SchedulerKernel>>,
 }
 
 impl<S: ?Sized> ExecutionJobManager<S> {
     pub fn new(store: Arc<S>) -> Self {
-        Self { store }
+        Self {
+            store,
+            scheduler_kernel: None,
+        }
+    }
+
+    pub fn with_scheduler_kernel(mut self, scheduler_kernel: Arc<SchedulerKernel>) -> Self {
+        self.scheduler_kernel = Some(scheduler_kernel);
+        self
     }
 
     pub fn store(&self) -> &Arc<S> {
@@ -469,10 +479,23 @@ where
         claim_token: Option<&str>,
         outcome: JobOutcome,
     ) -> ExecutionResult<JobReceipt> {
-        let mutation = self
-            .store
-            .finish_execution_job(id, expected_revision, claim_token, outcome.into())
-            .await?;
+        let terminal = outcome.into();
+        let mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            commit_execution_job_outcome(
+                kernel,
+                id,
+                expected_revision,
+                claim_token,
+                terminal,
+                None,
+                false,
+            )
+            .await?
+        } else {
+            self.store
+                .finish_execution_job(id, expected_revision, claim_token, terminal)
+                .await?
+        };
         Ok(JobReceipt::from_mutation(JobOperation::Finish, mutation))
     }
 
@@ -485,17 +508,30 @@ where
         event: &Event,
         wake_thread: bool,
     ) -> ExecutionResult<JobReceipt> {
-        let mutation = self
-            .store
-            .finish_execution_job_with_event(
+        let terminal = outcome.into();
+        let mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            commit_execution_job_outcome(
+                kernel,
                 id,
                 expected_revision,
                 claim_token,
-                outcome.into(),
-                event,
+                terminal,
+                Some(event.clone()),
                 wake_thread,
             )
-            .await?;
+            .await?
+        } else {
+            self.store
+                .finish_execution_job_with_event(
+                    id,
+                    expected_revision,
+                    claim_token,
+                    terminal,
+                    event,
+                    wake_thread,
+                )
+                .await?
+        };
         Ok(JobReceipt::from_mutation(JobOperation::Finish, mutation))
     }
 
@@ -621,6 +657,32 @@ where
         }
 
         Ok(report)
+    }
+}
+
+async fn commit_execution_job_outcome(
+    kernel: &SchedulerKernel,
+    id: &str,
+    expected_revision: u64,
+    claim_token: Option<&str>,
+    outcome: ExecutionJobTerminal,
+    event: Option<Event>,
+    wake_thread: bool,
+) -> ExecutionResult<ExecutionJobMutation> {
+    let result = kernel
+        .execute(crate::controllers::ExecutionController::commit_job_outcome(
+            id,
+            expected_revision,
+            claim_token,
+            outcome,
+            event,
+            wake_thread,
+            "Execution-Job-Manager",
+        ))
+        .await?;
+    match result {
+        KernelResult::ExecutionJobOutcomeCommitted(mutation) => Ok(mutation),
+        other => Err(format!("Execution Job Kernel 返回意外结果：{other:?}").into()),
     }
 }
 

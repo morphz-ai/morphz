@@ -13,11 +13,12 @@ pub mod snapshot;
 pub mod store;
 
 pub use commands::{
-    stable_command_id, ClaimObjectiveEvaluationCommand, CommitThreadOutcomeCommand,
-    ControlObjectiveCommand, ControlThreadCommand, FinishObjectiveEvaluationCommand, KernelCommand,
-    KernelCommandHeader, KernelCommandPayload, KernelResult, PromoteThreadCommand,
-    RegisterDependencyCommand, RenewObjectiveEvaluationCommand, RestartDialogueTurnCommand,
-    SatisfyDependencyCommand, SpawnSupervisedGroupCommand, TransitionActivationCommand,
+    stable_command_id, ClaimObjectiveEvaluationCommand, CommitDeliveryOutcomeCommand,
+    CommitExecutionJobOutcomeCommand, CommitThreadOutcomeCommand, ControlObjectiveCommand,
+    ControlThreadCommand, FinishObjectiveEvaluationCommand, KernelCommand, KernelCommandHeader,
+    KernelCommandPayload, KernelResult, PromoteThreadCommand, RegisterDependencyCommand,
+    RenewObjectiveEvaluationCommand, RestartDialogueTurnCommand, SatisfyDependencyCommand,
+    SpawnSupervisedGroupCommand, TransitionActivationCommand,
 };
 pub use domain::{
     audit_scheduler_invariants, derive_objective_readiness, objective_wait_dependency_key,

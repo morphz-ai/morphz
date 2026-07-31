@@ -1,8 +1,8 @@
 # Morphz Scheduler Kernel v2 稳定化重构设计
 
-> 状态：设计冻结，尚未完成实现
+> 状态：核心实现完成，进入运行期观察
 >
-> 日期：2026-07-31
+> 日期：2026-08-01
 >
 > 适用范围：Thread、Activation、Objective、Thread Group、Signal、Execution Job、Delivery、Timer、Plan/Harness 与 Runtime 恢复
 >
@@ -500,7 +500,9 @@ Runtime 的内部基础设施错误不得直接把 Objective 标记为业务 `bl
 
 ## 15. 实施阶段
 
-### Phase 0：行为冻结与故障基线
+截至 2026-08-01，Phase 0—5 的核心实现已经完成，Phase 6 的自动化故障与并发验证已完成本轮范围；长期 soak 属于持续运行验证，不再作为架构迁移的阻塞条件。
+
+### Phase 0：行为冻结与故障基线（已完成）
 
 - 整理现有状态机和所有写入点；
 - 建立 Scheduler Conformance Suite；
@@ -510,7 +512,7 @@ Runtime 的内部基础设施错误不得直接把 Objective 标记为业务 `bl
 
 完成标准：所有已知故障都有可重复测试，SQLite/PostgreSQL 行为差异可见。
 
-### Phase 1：SchedulerKernel Facade
+### Phase 1：SchedulerKernel Facade（已完成）
 
 - 定义 `KernelCommand`、`KernelResult` 和 `KernelError`；
 - 建立统一事务接口；
@@ -519,7 +521,7 @@ Runtime 的内部基础设施错误不得直接把 Objective 标记为业务 `bl
 
 完成标准：required durable Thread 创建和终态收口只经过 Kernel。
 
-### Phase 2：持久依赖与 Readiness
+### Phase 2：持久依赖与 Readiness（已完成）
 
 - 引入 `scheduler_dependencies`；
 - Objective continuation 改为 readiness 查询；
@@ -528,7 +530,7 @@ Runtime 的内部基础设施错误不得直接把 Objective 标记为业务 `bl
 
 完成标准：Objective 的调度不依赖单个可陈旧 wait 字段。
 
-### Phase 3：内部 Direct Signal
+### Phase 3：内部 Direct Signal（已完成）
 
 - Kernel 事务直接写 ThreadSignal；
 - 移除内部 Signal Outbox；
@@ -537,7 +539,7 @@ Runtime 的内部基础设施错误不得直接把 Objective 标记为业务 `bl
 
 完成标准：内部唤醒没有 Event→Outbox→Signal 循环等待路径。
 
-### Phase 4：统一终态事务
+### Phase 4：统一终态事务（已完成）
 
 - Thread、Activation、Group、Dependency、Delivery 原子收口；
 - Job outcome 与 owning Thread Signal 原子提交；
@@ -546,7 +548,7 @@ Runtime 的内部基础设施错误不得直接把 Objective 标记为业务 `bl
 
 完成标准：故障注入到任意事务步骤都不会产生部分终态。
 
-### Phase 5：拆分 Orchestrator
+### Phase 5：拆分 Orchestrator（核心边界已完成）
 
 将当前大型 Orchestrator 拆为：
 
@@ -565,7 +567,7 @@ recovery/reconciler
 
 完成标准：Controller 只表达策略，Kernel 独占调度写权限。
 
-### Phase 6：故障与并发验证
+### Phase 6：故障与并发验证（自动化范围已完成，持续 soak 中）
 
 覆盖：
 
@@ -609,7 +611,71 @@ recovery/reconciler
 
 同一 fixture 同时运行 SQLite 和 PostgreSQL，包括唯一约束、事务隔离、claim、lease、revision conflict 和恢复行为。
 
-## 17. 关键决策
+## 17. 实装结果
+
+### 17.1 Kernel Command 的实际 lowering
+
+设计中的命令名称表达领域意图；源码不为每个近义动作保留一个重复枚举，而是 lowering 到以下可组合命令：
+
+| 领域意图 | 实际 Kernel Command / 事务 |
+|---|---|
+| SpawnThread、CreateSchedule、创建 required Group | `SpawnSupervisedGroup` |
+| ClaimActivation、RenewActivationLease | `TransitionActivation` |
+| CommitActivationDecision、CommitThreadOutcome | `CommitThreadOutcome` / `commit_activation_outcome` |
+| Objective claim、renew、finish、control | 对应的 fenced Objective Command |
+| Dialogue Turn 失败后重启 | `RestartDialogueTurn` |
+| Execution Job 终态、结果 Event、Thread 唤醒 | `CommitExecutionJobOutcome` |
+| Delivery Timer、回复 Event、Delivery Thread | `CommitDeliveryOutcome` |
+| RegisterDependency、SatisfyDependency | 同名结构化依赖 Command |
+| FireSchedule | 持久 Timer claim 后提交精确 Signal / dependency satisfaction |
+| RecoverExpiredLease | 仅由 Reconciler 执行物理资格恢复，不进入正常业务 Controller |
+
+这样既保留设计语义，也避免为了名字对称创建多套能表达同一物理事务的写入口。
+
+### 17.2 生产写入口审计
+
+组装完成的 `MorphzRuntime` 创建一个共享 `SchedulerKernel`，并注入：
+
+- Objective Supervisor；
+- Orchestrator 的 Dialogue、Delivery 与模型求值路径；
+- 模型可调用的调度工具；
+- Execution Job Manager；
+- HTTP、SDK、CLI 和 Dashboard 所复用的 Runtime 控制接口。
+
+源码仍允许少数隔离单测在没有完整 Runtime assembly 时直接构造 Controller；这些 fallback 不是生产兼容路径。生产环境剩余的 Store 直写只属于两类：
+
+1. Kernel 内部调用的后端原子事务原语；
+2. Reconciler 对过期 lease、丢失 worker 和可重放物理 Job 的资格恢复。
+
+Reconciler 不再创建 barrier、猜测 Objective wait 或补造 Thread 业务终态。
+
+### 17.3 依赖、Signal 与迁移
+
+- SQLite 与 PostgreSQL 均实现 `scheduler_dependencies`、owner/dependency generation fencing 及 Snapshot 查询索引；
+- Objective readiness 从结构化依赖派生，旧 `wait_condition` 只在可验证的旧数据迁移中作为展示桥；
+- 同库内部 Signal 与引发它的 Event/状态迁移同事务提交；
+- 正常路径停止写入内部 Signal Outbox；旧 pending internal rows 只做一次性消费/清理；
+- barrier Event 使用稳定不可变内容，正常路径不再依靠周期 repair 改写同一 Event ID；
+- Thread terminal 会原子关闭 live Activation、清理 lease、更新 Group、满足依赖并产生精确唤醒。
+
+### 17.4 已执行的验证矩阵
+
+同一套 `runtime_store_conformance` 已在 SQLite 和真实 PostgreSQL 上通过，覆盖：
+
+- Context revision/CAS 并发；
+- Activation outcome 与 pause/cancel 控制竞争；
+- Group 多成员并发终态与唯一 barrier；
+- dependency owner generation 与 dependency generation fencing；
+- Objective Evaluation claim、续租、完成和旧 owner 拒绝；
+- Dialogue Turn retry 的精确重放；
+- Execution Job + result Event + Thread Signal 原子终态；
+- Delivery Timer + reply Event / Delivery Thread 原子终态；
+- Thread terminal 对 live Activation 与 lease 的原子清理；
+- SQLite/PostgreSQL 对相同 fixture 的语义一致性。
+
+同时通过 Scheduler Kernel 单元测试、库编译检查与格式检查。尚未声称完成无限时长压力测试或数据库每条语句级别的穷尽式 crash injection；这些属于持续验证，而非再保留旧双写架构的理由。
+
+## 18. 关键决策
 
 本设计冻结三条不可退让的纪律：
 

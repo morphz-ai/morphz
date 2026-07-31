@@ -8189,10 +8189,29 @@ impl Orchestrator {
                 .collect(),
             );
             reply.timestamp = delivery_flush_timestamp(&timer);
-            match store
-                .commit_delivery_flush_reply(&timer.id, timer.generation, &reply)
-                .await?
-            {
+            let commit = if let Some(kernel) = self.scheduler_kernel.as_ref() {
+                let result = kernel
+                    .execute(
+                        crate::controllers::DeliveryController::commit_delivery_outcome(
+                            &timer.id,
+                            timer.generation,
+                            reply.clone(),
+                            None,
+                            &session_id,
+                            "Delivery-Controller",
+                        ),
+                    )
+                    .await?;
+                match result {
+                    crate::scheduler::KernelResult::DeliveryOutcomeCommitted(commit) => commit,
+                    other => return Err(format!("Delivery Kernel 返回意外结果：{other:?}").into()),
+                }
+            } else {
+                store
+                    .commit_delivery_flush_reply(&timer.id, timer.generation, &reply)
+                    .await?
+            };
+            match commit {
                 DeliveryFlushCommit::Committed | DeliveryFlushCommit::Existing { .. } => {
                     self.bus.dispatch_persisted(reply).await?;
                 }
@@ -8245,10 +8264,29 @@ impl Orchestrator {
             target_id: None,
             supervision: ThreadSupervision::runtime("delivery-router"),
         };
-        match store
-            .commit_delivery_flush(&timer.id, timer.generation, &event, &delivery_thread)
-            .await?
-        {
+        let commit = if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            let result = kernel
+                .execute(
+                    crate::controllers::DeliveryController::commit_delivery_outcome(
+                        &timer.id,
+                        timer.generation,
+                        event.clone(),
+                        Some(delivery_thread.clone()),
+                        &session_id,
+                        "Delivery-Controller",
+                    ),
+                )
+                .await?;
+            match result {
+                crate::scheduler::KernelResult::DeliveryOutcomeCommitted(commit) => commit,
+                other => return Err(format!("Delivery Kernel 返回意外结果：{other:?}").into()),
+            }
+        } else {
+            store
+                .commit_delivery_flush(&timer.id, timer.generation, &event, &delivery_thread)
+                .await?
+        };
+        match commit {
             DeliveryFlushCommit::Committed => {
                 self.bus.dispatch_persisted(event).await?;
             }

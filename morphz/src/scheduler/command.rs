@@ -1,5 +1,6 @@
 use crate::memory::{
-    ActivationOutcomeCommit, DialogueTurnRetryMutation, DialogueTurnRetryRequest, NewSchedule,
+    ActivationOutcomeCommit, DeliveryFlushCommit, DialogueTurnRetryMutation,
+    DialogueTurnRetryRequest, ExecutionJobMutation, ExecutionJobTerminal, NewSchedule,
     NewScheduledObjective, NewThread, NewThreadGroupPlan, ObjectiveMutation, ObjectiveStatus,
     ObjectiveWaitCondition, ScheduleRecord, ScheduledObjectiveWaitBinding,
     ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction, ThreadMutation,
@@ -56,6 +57,11 @@ impl KernelCommandHeader {
     pub fn with_fence(mut self, expected_revision: u64, generation: Option<u64>) -> Self {
         self.expected_revision = Some(expected_revision);
         self.generation = generation;
+        self
+    }
+
+    pub fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = Some(generation);
         self
     }
 }
@@ -123,6 +129,27 @@ pub struct CommitThreadOutcomeCommand {
     pub event: crate::event::Event,
 }
 
+/// Atomically terminalizes one physical Execution Job together with its
+/// immutable result Event and optional exact Thread wakeup.
+#[derive(Debug, Clone)]
+pub struct CommitExecutionJobOutcomeCommand {
+    pub job_id: String,
+    pub claim_token: Option<String>,
+    pub outcome: ExecutionJobTerminal,
+    pub event: Option<crate::event::Event>,
+    pub wake_thread: bool,
+}
+
+/// Fenced finalization of one Delivery timer generation. A direct reply has
+/// no Thread; a model-routed delivery commits its Event and Delivery Thread in
+/// the same transaction.
+#[derive(Debug, Clone)]
+pub struct CommitDeliveryOutcomeCommand {
+    pub timer_id: String,
+    pub event: crate::event::Event,
+    pub delivery_thread: Option<NewThread>,
+}
+
 /// Fenced lifecycle/lease transition for one physical Evaluation Activation.
 ///
 /// Activation rows are scheduler authority, not incidental worker metadata:
@@ -166,6 +193,8 @@ pub enum KernelCommandPayload {
     FinishObjectiveEvaluation(FinishObjectiveEvaluationCommand),
     TransitionActivation(TransitionActivationCommand),
     RestartDialogueTurn(RestartDialogueTurnCommand),
+    CommitExecutionJobOutcome(CommitExecutionJobOutcomeCommand),
+    CommitDeliveryOutcome(CommitDeliveryOutcomeCommand),
     CommitThreadOutcome(CommitThreadOutcomeCommand),
     RegisterDependency(RegisterDependencyCommand),
     SatisfyDependency(SatisfyDependencyCommand),
@@ -191,6 +220,8 @@ pub enum KernelResult {
     ObjectiveEvaluationMutated(ObjectiveMutation),
     ActivationTransitioned(ThreadActivationMutation),
     DialogueTurnRestarted(DialogueTurnRetryMutation),
+    ExecutionJobOutcomeCommitted(ExecutionJobMutation),
+    DeliveryOutcomeCommitted(DeliveryFlushCommit),
     ThreadOutcomeCommitted(ActivationOutcomeCommit),
     DependencyRegistered(SchedulerDependencyMutation),
     DependencySatisfied(SchedulerDependencyMutation),

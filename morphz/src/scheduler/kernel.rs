@@ -33,6 +33,14 @@ pub struct SchedulerKernel {
     store: Arc<dyn RuntimeStore>,
 }
 
+impl fmt::Debug for SchedulerKernel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SchedulerKernel")
+            .finish_non_exhaustive()
+    }
+}
+
 impl SchedulerKernel {
     pub fn new(store: Arc<dyn RuntimeStore>) -> Self {
         Self { store }
@@ -246,6 +254,55 @@ impl SchedulerKernel {
                     .await
                     .map_err(store_error)?;
                 Ok(KernelResult::DialogueTurnRestarted(mutation))
+            }
+            KernelCommandPayload::CommitExecutionJobOutcome(payload) => {
+                let expected_revision = required_revision(&command.header)?;
+                let mutation = if let Some(event) = payload.event.as_ref() {
+                    self.store
+                        .finish_execution_job_with_event(
+                            &payload.job_id,
+                            expected_revision,
+                            payload.claim_token.as_deref(),
+                            payload.outcome,
+                            event,
+                            payload.wake_thread,
+                        )
+                        .await
+                } else {
+                    self.store
+                        .finish_execution_job(
+                            &payload.job_id,
+                            expected_revision,
+                            payload.claim_token.as_deref(),
+                            payload.outcome,
+                        )
+                        .await
+                }
+                .map_err(store_error)?;
+                Ok(KernelResult::ExecutionJobOutcomeCommitted(mutation))
+            }
+            KernelCommandPayload::CommitDeliveryOutcome(payload) => {
+                let generation = command.header.generation.ok_or_else(|| {
+                    KernelError::InvalidCommand(
+                        "generation is required for Delivery outcome commands".into(),
+                    )
+                })?;
+                let commit = if let Some(thread) = payload.delivery_thread.as_ref() {
+                    self.store
+                        .commit_delivery_flush(
+                            &payload.timer_id,
+                            generation,
+                            &payload.event,
+                            thread,
+                        )
+                        .await
+                } else {
+                    self.store
+                        .commit_delivery_flush_reply(&payload.timer_id, generation, &payload.event)
+                        .await
+                }
+                .map_err(store_error)?;
+                Ok(KernelResult::DeliveryOutcomeCommitted(commit))
             }
             KernelCommandPayload::CommitThreadOutcome(payload) => {
                 let outcome = self

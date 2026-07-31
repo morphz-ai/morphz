@@ -911,9 +911,6 @@ impl MorphzRuntimeBuilder {
             )
             .with_worker_coordination_mode(store.worker_coordination_mode()),
         );
-        let execution_jobs = Arc::new(ExecutionJobManager::new(
-            Arc::clone(&store) as Arc<dyn ExecutionJobStore>
-        ));
         let human_approval_hub = HumanApprovalHub::default();
         let permission_profile = Arc::new(PermissionProfile::from_config(&permission_config)?);
         if permission_profile.sandbox_mode == SandboxMode::DangerFullAccess {
@@ -955,6 +952,10 @@ impl MorphzRuntimeBuilder {
         let scheduler_kernel = Arc::new(SchedulerKernel::new(
             Arc::clone(&store) as Arc<dyn RuntimeStore>
         ));
+        let execution_jobs = Arc::new(
+            ExecutionJobManager::new(Arc::clone(&store) as Arc<dyn ExecutionJobStore>)
+                .with_scheduler_kernel(Arc::clone(&scheduler_kernel)),
+        );
         let objective_supervisor = Arc::new(
             ObjectiveSupervisor::new(
                 Arc::clone(&store) as Arc<dyn ObjectiveStore>,

@@ -6,12 +6,14 @@
 
 pub mod delivery;
 pub mod dialogue;
+pub mod execution;
 pub mod objective;
 pub mod plan;
 pub mod timer;
 
 pub use delivery::DeliveryController;
 pub use dialogue::DialogueController;
+pub use execution::ExecutionController;
 pub use objective::ObjectiveController;
 pub use plan::PlanController;
 pub use timer::TimerController;

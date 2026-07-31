@@ -37,9 +37,9 @@ use morphz::memory::{
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
 use morphz::scheduler::{
-    NewSchedulerDependency, SchedulerDependencyFilter, SchedulerDependencyKind,
+    KernelResult, NewSchedulerDependency, SchedulerDependencyFilter, SchedulerDependencyKind,
     SchedulerDependencyMutation, SchedulerDependencyOwnerKind, SchedulerDependencyStatus,
-    SchedulerDependencyStore,
+    SchedulerDependencyStore, SchedulerKernel,
 };
 use serde_json::json;
 use std::future::Future;
@@ -360,7 +360,7 @@ where
 
 async fn assert_thread_store_conformance<S>(store: Arc<S>)
 where
-    S: EventStore + ThreadStore + TimerStore + Send + Sync + 'static,
+    S: morphz::memory::RuntimeStore + 'static,
 {
     let thread = NewThread {
         id: "conformance-thread".to_string(),
@@ -532,28 +532,27 @@ where
         target_id: None,
         supervision: morphz::memory::ThreadSupervision::legacy(),
     };
+    let kernel = SchedulerKernel::new(Arc::clone(&store) as Arc<dyn morphz::memory::RuntimeStore>);
+    let delivery_command = morphz::controllers::DeliveryController::commit_delivery_outcome(
+        &timer.id,
+        timer.generation,
+        delivery_event.clone(),
+        Some(delivery_thread),
+        "conformance-session",
+        "Store-Conformance",
+    );
     assert_eq!(
-        store
-            .commit_delivery_flush(
-                &timer.id,
-                timer.generation,
-                &delivery_event,
-                &delivery_thread,
-            )
-            .await
-            .unwrap(),
+        match kernel.execute(delivery_command.clone()).await.unwrap() {
+            KernelResult::DeliveryOutcomeCommitted(commit) => commit,
+            result => panic!("unexpected Delivery Kernel result: {result:?}"),
+        },
         DeliveryFlushCommit::Committed
     );
     assert_eq!(
-        store
-            .commit_delivery_flush(
-                &timer.id,
-                timer.generation,
-                &delivery_event,
-                &delivery_thread,
-            )
-            .await
-            .unwrap(),
+        match kernel.execute(delivery_command).await.unwrap() {
+            KernelResult::DeliveryOutcomeCommitted(commit) => commit,
+            result => panic!("unexpected Delivery Kernel replay result: {result:?}"),
+        },
         DeliveryFlushCommit::Existing {
             event_id: delivery_event.id.clone()
         }
@@ -3328,7 +3327,7 @@ where
 
 async fn assert_execution_job_conformance<S>(store: Arc<S>)
 where
-    S: EventStore + ExecutionJobStore + Send + Sync + 'static,
+    S: morphz::memory::RuntimeStore + 'static,
 {
     let created = store
         .create_execution_job(execution_job("conformance-job", "tool-call-a"))
@@ -3435,34 +3434,29 @@ where
         error: None,
         exit_code: Some(0),
     };
-    let finished = match store
-        .finish_execution_job_with_event(
-            &heartbeat.id,
-            heartbeat.revision,
-            heartbeat.claim_token.as_deref(),
-            terminal.clone(),
-            &result_event,
-            false,
-        )
-        .await
-        .unwrap()
-    {
-        ExecutionJobMutation::Updated(job) => job,
-        mutation => panic!("unexpected terminal mutation: {mutation:?}"),
+    let kernel = SchedulerKernel::new(Arc::clone(&store) as Arc<dyn morphz::memory::RuntimeStore>);
+    let outcome_command = morphz::controllers::ExecutionController::commit_job_outcome(
+        &heartbeat.id,
+        heartbeat.revision,
+        heartbeat.claim_token.as_deref(),
+        terminal.clone(),
+        Some(result_event.clone()),
+        false,
+        "Store-Conformance",
+    );
+    let finished = match kernel.execute(outcome_command.clone()).await.unwrap() {
+        KernelResult::ExecutionJobOutcomeCommitted(mutation) => match mutation {
+            ExecutionJobMutation::Updated(job) => job,
+            mutation => panic!("unexpected terminal mutation: {mutation:?}"),
+        },
+        result => panic!("unexpected Execution Kernel result: {result:?}"),
     };
     assert_eq!(finished.status, ExecutionJobStatus::Succeeded);
     assert!(matches!(
-        store
-            .finish_execution_job_with_event(
-                &finished.id,
-                finished.revision,
-                heartbeat.claim_token.as_deref(),
-                terminal,
-                &result_event,
-                false,
-            )
-            .await
-            .unwrap(),
+        match kernel.execute(outcome_command).await.unwrap() {
+            KernelResult::ExecutionJobOutcomeCommitted(mutation) => mutation,
+            result => panic!("unexpected Execution Kernel replay result: {result:?}"),
+        },
         ExecutionJobMutation::Existing(_)
     ));
     assert_eq!(
