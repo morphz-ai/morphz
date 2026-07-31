@@ -1,14 +1,14 @@
 use super::{
-    append_event_in_tx, append_signal_outbox_in_tx, now_text, parse_time,
-    thread_group::group_from_row, timer_from_row, PostgresStore, StoreError,
+    append_direct_thread_signal_in_tx, append_event_in_tx, append_signal_outbox_in_tx, now_text,
+    parse_time, thread_group::group_from_row, timer_from_row, PostgresStore, StoreError,
 };
 use crate::event::Event;
 use crate::memory::{
     evaluate_thread_group_contract, thread_cancellation_event, thread_group_barrier_event,
-    thread_terminal_barrier_event, DeliveryFlushCommit, DeliveryStatus, RuntimeTimerRecord,
-    ThreadControlAction, ThreadControlState, ThreadKind, ThreadLifecycle, ThreadLifetime,
-    ThreadMutation, ThreadOutcomeRecord, ThreadRecord, ThreadStore, ThreadSupervision,
-    ThreadSupervisorKind,
+    thread_terminal_barrier_event, DeliveryFlushCommit, DeliveryStatus, ObjectiveWaitCondition,
+    RuntimeTimerRecord, ThreadControlAction, ThreadControlState, ThreadKind, ThreadLifecycle,
+    ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadRecord, ThreadStore,
+    ThreadSupervision, ThreadSupervisorKind,
 };
 use chrono::Duration;
 use serde_json::{json, Value as JsonValue};
@@ -876,7 +876,49 @@ impl ThreadStore for PostgresStore {
                         };
                     let barrier = thread_group_barrier_event(&terminal_group, parent.as_ref())?;
                     append_event_in_tx(&mut tx, &barrier).await?;
-                    append_signal_outbox_in_tx(&mut tx, &barrier).await?;
+                    match terminal_group.supervisor_kind {
+                        ThreadSupervisorKind::Evaluation => {
+                            let parent = parent
+                                .as_ref()
+                                .ok_or("Evaluation Thread Group 关闭缺少 parent Thread")?;
+                            append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id)
+                                .await?;
+                        }
+                        ThreadSupervisorKind::Objective => {
+                            sqlx::query(
+                                r#"UPDATE scheduler_dependencies
+                                   SET status = 'satisfied', satisfied_by_event_id = $1,
+                                       satisfied_at = COALESCE(satisfied_at, $2), updated_at = $2
+                                   WHERE dependency_kind = 'thread_group'
+                                     AND dependency_id = $3 AND dependency_generation = $4
+                                     AND status = 'pending'"#,
+                            )
+                            .bind(&barrier.id)
+                            .bind(&now)
+                            .bind(&terminal_group.id)
+                            .bind(i64::try_from(terminal_group.generation)?)
+                            .execute(&mut *tx)
+                            .await?;
+                            let legacy_wait =
+                                serde_json::to_value(&ObjectiveWaitCondition::ThreadGroup {
+                                    group_id: terminal_group.id.clone(),
+                                })?;
+                            sqlx::query(
+                                r#"UPDATE objectives
+                                   SET wait_condition_json = NULL, status_reason = NULL,
+                                       revision = revision + 1, updated_at = $1
+                                   WHERE id = $2 AND wait_condition_json = $3"#,
+                            )
+                            .bind(&now)
+                            .bind(&terminal_group.supervisor_id)
+                            .bind(legacy_wait)
+                            .execute(&mut *tx)
+                            .await?;
+                        }
+                        ThreadSupervisorKind::Runtime
+                        | ThreadSupervisorKind::None
+                        | ThreadSupervisorKind::Legacy => {}
+                    }
                 }
             } else {
                 let parent =
@@ -895,7 +937,12 @@ impl ThreadStore for PostgresStore {
                     thread_terminal_barrier_event(&current, &outcome, parent.as_ref())?
                 {
                     append_event_in_tx(&mut tx, &barrier).await?;
-                    append_signal_outbox_in_tx(&mut tx, &barrier).await?;
+                    if current.supervision.supervisor_kind == ThreadSupervisorKind::Evaluation {
+                        let parent = parent
+                            .as_ref()
+                            .ok_or("Evaluation Thread 关闭缺少 parent Thread")?;
+                        append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id).await?;
+                    }
                 }
             }
             tx.commit().await?;

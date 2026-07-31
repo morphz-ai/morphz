@@ -809,7 +809,12 @@ pub enum ThreadActivationMutation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivationOutcomeCommit {
-    Committed,
+    Committed {
+        /// Ledger Events whose authoritative Thread Signals were created in
+        /// the same transaction. The Runtime only has to notify the live
+        /// executor; it must not infer or materialize another route.
+        ready_signal_event_ids: Vec<String>,
+    },
     Existing {
         event_id: String,
     },
@@ -1037,6 +1042,9 @@ impl ThreadSignalStatus {
 pub struct ThreadSignalRecord {
     pub id: String,
     pub thread_id: String,
+    /// Fences this mailbox fact to the exact logical Thread generation that
+    /// existed when the causative Kernel transaction committed it.
+    pub thread_generation: u64,
     pub event_id: String,
     pub principal_id: Option<String>,
     pub sequence: u64,
@@ -1052,11 +1060,21 @@ pub struct ThreadSignalRecord {
 pub struct NewThreadSignal {
     pub id: String,
     pub thread_id: String,
+    pub thread_generation: u64,
     pub event_id: String,
     pub principal_id: Option<String>,
     pub sequence: u64,
     pub kind: String,
     pub parent_activation_id: Option<String>,
+}
+
+/// Stable scheduler identity for the one mailbox Signal caused by an
+/// immutable Event.  Every backend and recovery path uses this helper so an
+/// idempotent replay cannot invent a second Signal identity.
+pub fn stable_thread_signal_id(event_id: &str) -> String {
+    let digest = sha2::Sha256::digest(event_id.as_bytes());
+    let id = format!("signal_{digest:x}");
+    id[..31].to_string()
 }
 
 /// Durable handoff between the immutable Ledger and the Scheduler mailbox.
@@ -2576,7 +2594,7 @@ pub fn thread_group_barrier_event(
     );
     payload.insert(
         "wake_policy".to_string(),
-        JsonValue::String("immediate".to_string()),
+        JsonValue::String("direct_signal".to_string()),
     );
     payload.insert(
         "terminal_summary".to_string(),
@@ -2708,7 +2726,6 @@ pub fn validate_thread_group_barrier_event(
         "session_id",
         "thread_group_id",
         "thread_group_status",
-        "wake_policy",
     ];
     match group.supervisor_kind {
         ThreadSupervisorKind::Evaluation => {
@@ -2731,6 +2748,20 @@ pub fn validate_thread_group_barrier_event(
                 group.id, event.id, key
             ));
         }
+    }
+    // `immediate` is the immutable spelling used by the legacy
+    // Event→Signal-Outbox bridge. New barriers use `direct_signal` because
+    // their mailbox row is committed atomically with the Event. Recovery must
+    // accept both historical encodings without trying to overwrite the
+    // existing Event ID.
+    if !matches!(
+        event.payload.get("wake_policy").and_then(JsonValue::as_str),
+        Some("immediate" | "direct_signal")
+    ) {
+        return Err(format!(
+            "Thread Group '{}' 的既有 barrier Event '{}' wake_policy 非法",
+            group.id, event.id
+        ));
     }
     Ok(())
 }
@@ -2799,7 +2830,7 @@ pub fn thread_terminal_barrier_event(
     );
     payload.insert(
         "wake_policy".to_string(),
-        JsonValue::String("immediate".to_string()),
+        JsonValue::String("direct_signal".to_string()),
     );
     payload.insert(
         "terminal_summary".to_string(),
@@ -4148,9 +4179,11 @@ pub trait ExecutionJobStore: Send + Sync {
         terminal: ExecutionJobTerminal,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically commits the terminal physical fact and its immutable result
-    /// Event. `signal_outbox` is true only for a standalone Action whose own
-    /// result is the continuation boundary. Group members pass false and arm
-    /// exactly one deterministic ActionGroup-settled Event instead.
+    /// Event. `wake_thread` is true only for a standalone Action whose own
+    /// result is the continuation boundary. The Store then appends the exact
+    /// target Thread's durable Signal in this same transaction. Group members
+    /// pass false and arm exactly one deterministic ActionGroup-settled Signal
+    /// when the Group itself settles.
     #[allow(clippy::too_many_arguments)]
     async fn finish_execution_job_with_event(
         &self,
@@ -4159,7 +4192,7 @@ pub trait ExecutionJobStore: Send + Sync {
         claim_token: Option<&str>,
         terminal: ExecutionJobTerminal,
         event: &crate::event::Event,
-        signal_outbox: bool,
+        wake_thread: bool,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Repairs a stale non-terminal Job projection from an immutable result
     /// Event which is already present in the Ledger. Unlike normal `finish`,
@@ -4173,14 +4206,14 @@ pub trait ExecutionJobStore: Send + Sync {
         expected_revision: u64,
         terminal: ExecutionJobTerminal,
         event: &crate::event::Event,
-        signal_outbox: bool,
+        wake_thread: bool,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Durable coordination authority for sibling Actions emitted by one model
 /// response. Individual result Events are immutable and immediately visible;
 /// only the final member transition appends the deterministic settled Event
-/// and its Signal Outbox.
+/// and, when requested by its route, the exact owning Thread's durable Signal.
 #[async_trait::async_trait]
 pub trait ActionGroupStore: Send + Sync {
     async fn create_action_group(
@@ -4204,7 +4237,7 @@ pub trait ActionGroupStore: Send + Sync {
     /// exist because a physical ExecutionJob commits its terminal fact and
     /// Event first; exact Event replay is therefore required to be idempotent.
     /// If this is the final pending member, the Store atomically settles the
-    /// Group and appends `settled_event` with one Signal Outbox record.
+    /// Group and appends `settled_event` with one direct Thread Signal.
     async fn commit_action_group_member_result(
         &self,
         group_id: &str,

@@ -1,5 +1,5 @@
 use super::{
-    append_event_in_tx, append_signal_outbox_in_tx, parse_time, stored_event_in_tx,
+    append_direct_thread_signal_in_tx, append_event_in_tx, parse_time, stored_event_in_tx,
     thread::thread_from_row, PostgresStore, StoreError,
 };
 use crate::memory::{
@@ -342,55 +342,34 @@ impl ThreadGroupStore for PostgresStore {
                 }
             };
 
-        let signal_exists: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM thread_signals WHERE event_id = $1")
-                .bind(&barrier.id)
-                .fetch_one(&mut *tx)
-                .await?;
-        let outbox = sqlx::query("SELECT status, signal_id FROM signal_outbox WHERE event_id = $1")
-            .bind(&barrier.id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        if signal_exists == 0 {
-            match outbox {
-                None => {
-                    append_signal_outbox_in_tx(&mut tx, &barrier).await?;
-                    repaired = true;
-                }
-                Some(row)
-                    if row.get::<String, _>("status") == "materialized"
-                        && row.get::<Option<String>, _>("signal_id").is_some() =>
-                {
-                    let reset = sqlx::query(
-                        r#"UPDATE signal_outbox
-                           SET status = 'pending', signal_id = NULL, resolved_at = NULL
-                           WHERE event_id = $1 AND status = 'materialized'
-                             AND NOT EXISTS (
-                               SELECT 1 FROM thread_signals
-                               WHERE id = signal_outbox.signal_id
-                             )"#,
-                    )
-                    .bind(&barrier.id)
-                    .execute(&mut *tx)
-                    .await?;
-                    repaired |= reset.rows_affected() == 1;
-                }
-                Some(row) if row.get::<String, _>("status") == "discarded" => {
-                    // Compatibility repair for builds whose Outbox filter
-                    // incorrectly treated the durable Objective barrier as an
-                    // unroutable historical control event.
-                    let reset = sqlx::query(
-                        r#"UPDATE signal_outbox
-                           SET status = 'pending', signal_id = NULL, resolved_at = NULL
-                           WHERE event_id = $1 AND status = 'discarded'"#,
-                    )
-                    .bind(&barrier.id)
-                    .execute(&mut *tx)
-                    .await?;
-                    repaired |= reset.rows_affected() == 1;
-                }
-                Some(_) => {}
+        match group.supervisor_kind {
+            ThreadSupervisorKind::Evaluation => {
+                let parent = parent
+                    .as_ref()
+                    .ok_or("Evaluation Thread Group repair 缺少 parent Thread")?;
+                repaired |=
+                    append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id).await?;
             }
+            ThreadSupervisorKind::Objective => {
+                let updated = sqlx::query(
+                    r#"UPDATE scheduler_dependencies
+                       SET status = 'satisfied', satisfied_by_event_id = $1,
+                           satisfied_at = COALESCE(satisfied_at, $2), updated_at = $2
+                       WHERE dependency_kind = 'thread_group'
+                         AND dependency_id = $3 AND dependency_generation = $4
+                         AND status = 'pending'"#,
+                )
+                .bind(&barrier.id)
+                .bind(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                .bind(&group.id)
+                .bind(i64::try_from(group.generation)?)
+                .execute(&mut *tx)
+                .await?;
+                repaired |= updated.rows_affected() > 0;
+            }
+            ThreadSupervisorKind::Runtime
+            | ThreadSupervisorKind::None
+            | ThreadSupervisorKind::Legacy => {}
         }
         tx.commit().await?;
         Ok(repaired)

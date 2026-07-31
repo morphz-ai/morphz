@@ -6,7 +6,8 @@
 //! Outbox record, so one model response produces exactly one continuation.
 
 use super::{
-    append_event_in_tx, append_signal_outbox_in_tx, now_text, parse_time, PostgresStore, StoreError,
+    append_direct_thread_signal_in_tx, append_event_in_tx, now_text, parse_time, PostgresStore,
+    StoreError,
 };
 use crate::event::Event;
 use crate::memory::{
@@ -427,7 +428,14 @@ impl ActionGroupStore for PostgresStore {
         let settled_now = terminal_member_count == group.member_count;
         if settled_now {
             append_event_in_tx(&mut tx, settled_event).await?;
-            append_signal_outbox_in_tx(&mut tx, settled_event).await?;
+            if settled_event
+                .payload
+                .get("wake_policy")
+                .and_then(JsonValue::as_str)
+                == Some("direct_signal")
+            {
+                append_direct_thread_signal_in_tx(&mut tx, settled_event, &group.thread_id).await?;
+            }
             sqlx::query(
                 r#"UPDATE action_groups
                    SET revision = revision + 1, status = 'settled',

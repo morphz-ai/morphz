@@ -4560,14 +4560,13 @@ impl Orchestrator {
             })
             .await?;
         let activation_id = stable_activation_id(&event.id);
-        let digest = Sha256::digest(event.id.as_bytes());
-        let signal_id = format!("signal_{:x}", digest);
-        let signal_id = signal_id[..31].to_string();
+        let signal_id = crate::memory::stable_thread_signal_id(&event.id);
         let Some(activation) = session_store
             .claim_thread_signal_batch(
                 NewThreadSignal {
                     id: signal_id,
                     thread_id: thread.id,
+                    thread_generation: thread.generation,
                     event_id: event.id.clone(),
                     principal_id: initiating_principal_id.clone(),
                     sequence: trigger_sequence,
@@ -8272,8 +8271,10 @@ impl Orchestrator {
             }
         }
         let commit = committed.ok_or("Evaluation outcome 持久化没有产生结果")?;
-        let should_dispatch = match commit {
-            ActivationOutcomeCommit::Committed => true,
+        let (should_dispatch, ready_signal_event_ids) = match commit {
+            ActivationOutcomeCommit::Committed {
+                ready_signal_event_ids,
+            } => (true, ready_signal_event_ids),
             ActivationOutcomeCommit::Existing { ref event_id } if event_id == &event.id => {
                 // The process may have committed the immutable outcome and
                 // failed before dispatching it.  Redispatching that exact
@@ -8283,7 +8284,7 @@ impl Orchestrator {
                     event_id = %event.id,
                     "恢复已持久化但尚未确认派发的 Evaluation outcome"
                 );
-                true
+                (true, Vec::new())
             }
             ActivationOutcomeCommit::Existing { ref event_id } => {
                 tracing::warn!(
@@ -8292,7 +8293,7 @@ impl Orchestrator {
                     committed_event_id = %event_id,
                     "抑制同一 Thread Activation 的重复终态输出"
                 );
-                false
+                (false, Vec::new())
             }
             ActivationOutcomeCommit::DeferredByOpenThreadGroups { ref group_ids } => {
                 tracing::info!(
@@ -8301,7 +8302,7 @@ impl Orchestrator {
                     thread_group_ids = ?group_ids,
                     "Evaluation 仍有 required attached Thread；拒绝提前提交终态，等待 Group barrier 唤醒"
                 );
-                false
+                (false, Vec::new())
             }
             ActivationOutcomeCommit::StaleGeneration => {
                 tracing::warn!(
@@ -8309,7 +8310,7 @@ impl Orchestrator {
                     event_id = %event.id,
                     "抑制已被 DialogueTurn generation fencing 的过期终态输出"
                 );
-                false
+                (false, Vec::new())
             }
             ActivationOutcomeCommit::StaleActivation => {
                 tracing::warn!(
@@ -8317,7 +8318,7 @@ impl Orchestrator {
                     event_id = %event.id,
                     "抑制已被取消或终结的物理 Activation 过期输出"
                 );
-                false
+                (false, Vec::new())
             }
         };
         if should_dispatch {
@@ -8352,6 +8353,28 @@ impl Orchestrator {
                     dispatch_error.unwrap_or_else(|| "unknown dispatch error".to_string())
                 )
                 .into());
+            }
+            // The outcome transaction may have made an exact parent Thread
+            // Signal ready.  The Signal already exists durably and carries a
+            // generation fence; dispatching its source Event is only a live
+            // executor notification, never a second routing decision.
+            for signal_event_id in ready_signal_event_ids {
+                let signal_event = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(signal_event_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|candidate| candidate.id == signal_event_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "Outcome transaction 返回的 Signal Event '{}' 不存在",
+                            signal_event_id
+                        )
+                    })?;
+                self.bus.dispatch_persisted(signal_event).await?;
             }
             self.revoke_thread_capability_leases(
                 &route.thread_id,
@@ -13258,7 +13281,11 @@ fn action_group_settled_event(
         ),
         (
             "wake_policy".to_string(),
-            json!(if wake_on_output { "immediate" } else { "none" }),
+            json!(if wake_on_output {
+                "direct_signal"
+            } else {
+                "none"
+            }),
         ),
     ]);
     if let Some(objective) = objective {
@@ -13443,17 +13470,18 @@ fn required_payload_str<'a>(event: &'a Event, key: &str) -> Result<&'a str, DynE
 }
 
 fn event_needs_signal_outbox(event: &Event) -> bool {
-    event
-        .payload
-        .get("wake_policy")
-        .and_then(|value| value.as_str())
-        != Some("none")
-        && !(event.event_type == TYPE_TOOL_OUTPUT
-            && event
-                .payload
-                .get("plan_execution_id")
-                .and_then(|value| value.as_str())
-                .is_some())
+    !matches!(
+        event
+            .payload
+            .get("wake_policy")
+            .and_then(|value| value.as_str()),
+        Some("none" | "direct_signal")
+    ) && !(event.event_type == TYPE_TOOL_OUTPUT
+        && event
+            .payload
+            .get("plan_execution_id")
+            .and_then(|value| value.as_str())
+            .is_some())
         && ((event.topic.starts_with("chat/")
             && matches!(
                 event.event_type.as_str(),

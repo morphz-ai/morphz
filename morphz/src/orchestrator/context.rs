@@ -11154,6 +11154,7 @@ mod tests {
             .map(|event| ThreadSignalRecord {
                 id: format!("signal:{}", event.id),
                 thread_id: "thread:next-dialogue".to_string(),
+                thread_generation: 1,
                 event_id: event.id.clone(),
                 principal_id: Some("principal-default".to_string()),
                 sequence: event.sequence.unwrap(),
@@ -11908,6 +11909,7 @@ mod tests {
                     crate::memory::NewThreadSignal {
                         id: format!("retirement-mail-{tick}"),
                         thread_id,
+                        thread_generation: 1,
                         event_id: event_id.clone(),
                         principal_id: None,
                         sequence,

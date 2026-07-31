@@ -27,7 +27,7 @@ use morphz::memory::{
     SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation,
     SessionProjectionStore, SessionStatus, SessionUpdate, SignalOutboxStatus,
     ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadStore, TimerStore,
+    ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use morphz::memory::{
     ActivationStore, EdgeCommandMutation, EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream,
@@ -591,6 +591,7 @@ where
     let signal = NewThreadSignal {
         id: "conformance-signal-a".to_string(),
         thread_id: thread.id.clone(),
+        thread_generation: thread.generation,
         event_id: event.id.clone(),
         principal_id: None,
         sequence,
@@ -762,6 +763,7 @@ where
             NewThreadSignal {
                 id: "conformance-dialogue-successor-signal".to_string(),
                 thread_id: successor_thread.id.clone(),
+                thread_generation: successor_thread.generation,
                 event_id: successor_event.id.clone(),
                 principal_id: None,
                 sequence: successor_sequence,
@@ -893,7 +895,9 @@ where
             .commit_activation_outcome(&outcome_activation.id, &outcome_event)
             .await
             .unwrap(),
-        ActivationOutcomeCommit::Committed
+        ActivationOutcomeCommit::Committed {
+            ready_signal_event_ids: Vec::new()
+        }
     );
     assert_eq!(
         store
@@ -2332,7 +2336,8 @@ where
             "thread_id": "conformance-thread",
             "root_turn_id": "root-conformance-thread",
             "action_group_id": "conformance-action-group",
-            "member_count": 2
+            "member_count": 2,
+            "wake_policy": "direct_signal"
         })
         .as_object()
         .unwrap()
@@ -2411,6 +2416,20 @@ where
             .len(),
         1
     );
+    let continuation_signals = store
+        .list_context_thread_signals("conformance-context", Some(ThreadSignalStatus::Pending))
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|signal| signal.event_id == settled.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        continuation_signals.len(),
+        1,
+        "the settled Event must own exactly one direct durable continuation"
+    );
+    assert_eq!(continuation_signals[0].thread_id, "conformance-thread");
+    assert_eq!(continuation_signals[0].thread_generation, 1);
     assert_eq!(
         store
             .list_signal_outbox(SignalOutboxStatus::Pending, 100)
@@ -2419,8 +2438,8 @@ where
             .iter()
             .filter(|entry| entry.event_id == settled.id)
             .count(),
-        1,
-        "the settled Event must own exactly one durable continuation"
+        0,
+        "same-database ActionGroup completion must not detour through Signal Outbox"
     );
 }
 

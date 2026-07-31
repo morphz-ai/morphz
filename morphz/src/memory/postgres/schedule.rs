@@ -1,7 +1,7 @@
 use super::{
-    append_event_in_tx, append_signal_outbox_in_tx, insert_new_objective_in_tx, now_text,
-    objective_from_row, parse_time, thread::thread_from_row, thread_group::group_from_row,
-    validate_new_objective, PostgresStore, StoreError,
+    append_direct_thread_signal_in_tx, append_event_in_tx, append_signal_outbox_in_tx,
+    insert_new_objective_in_tx, now_text, objective_from_row, parse_time, thread::thread_from_row,
+    thread_group::group_from_row, validate_new_objective, PostgresStore, StoreError,
 };
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
@@ -1045,7 +1045,7 @@ impl ScheduleStore for PostgresStore {
                     "root_turn_id": parent.get::<String, _>("root_turn_id"),
                     "thread_group_id": request.source_group_id,
                     "thread_group_status": source_status.as_str(),
-                    "wake_policy": "immediate",
+                    "wake_policy": "direct_signal",
                     "tool_name": "thread_group",
                     "tool_status": "success",
                     "text": format!(
@@ -1059,7 +1059,7 @@ impl ScheduleStore for PostgresStore {
                 .clone(),
             );
             append_event_in_tx(&mut tx, &barrier).await?;
-            append_signal_outbox_in_tx(&mut tx, &barrier).await?;
+            append_direct_thread_signal_in_tx(&mut tx, &barrier, parent_thread_id).await?;
         }
         append_event_in_tx(&mut tx, &request.promoted_event).await?;
         let source_group_row = sqlx::query("SELECT * FROM thread_groups WHERE id = $1")

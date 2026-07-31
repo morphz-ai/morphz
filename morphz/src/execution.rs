@@ -483,7 +483,7 @@ where
         claim_token: Option<&str>,
         outcome: JobOutcome,
         event: &Event,
-        signal_outbox: bool,
+        wake_thread: bool,
     ) -> ExecutionResult<JobReceipt> {
         let mutation = self
             .store
@@ -493,7 +493,7 @@ where
                 claim_token,
                 outcome.into(),
                 event,
-                signal_outbox,
+                wake_thread,
             )
             .await?;
         Ok(JobReceipt::from_mutation(JobOperation::Finish, mutation))
@@ -505,7 +505,7 @@ where
         expected_revision: u64,
         outcome: JobOutcome,
         event: &Event,
-        signal_outbox: bool,
+        wake_thread: bool,
     ) -> ExecutionResult<JobReceipt> {
         let mutation = self
             .store
@@ -514,7 +514,7 @@ where
                 expected_revision,
                 outcome.into(),
                 event,
-                signal_outbox,
+                wake_thread,
             )
             .await?;
         Ok(JobReceipt::from_mutation(
@@ -544,20 +544,14 @@ where
         for job in jobs {
             if let Some(event) = durable_result_event_for_job(events, &job).await? {
                 let outcome = observed_job_outcome(&event);
-                let signal_outbox = event.payload.get("action_group_id").is_none()
+                let wake_thread = event.payload.get("action_group_id").is_none()
                     && event
                         .payload
                         .get("wake_policy")
                         .and_then(serde_json::Value::as_str)
                         != Some("delegation_result");
                 let receipt = self
-                    .reconcile_observed_result(
-                        &job.id,
-                        job.revision,
-                        outcome,
-                        &event,
-                        signal_outbox,
-                    )
+                    .reconcile_observed_result(&job.id, job.revision, outcome, &event, wake_thread)
                     .await?;
                 match &receipt {
                     JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {

@@ -1022,6 +1022,7 @@ impl SqliteStore {
         CREATE TABLE IF NOT EXISTS thread_signals (
             id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL,
+            thread_generation INTEGER NOT NULL DEFAULT 1 CHECK(thread_generation >= 1),
             event_id TEXT NOT NULL UNIQUE,
             principal_id TEXT,
             sequence INTEGER NOT NULL CHECK(sequence >= 0),
@@ -1282,6 +1283,24 @@ impl SqliteStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_threads_group
                ON threads(thread_group_id, status, updated_at DESC)"#,
+        )
+        .execute(&pool)
+        .await?;
+        let signal_columns = sqlx::query("PRAGMA table_info(thread_signals)")
+            .fetch_all(&pool)
+            .await?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        if !signal_columns.contains("thread_generation") {
+            sqlx::query(
+                "ALTER TABLE thread_signals ADD COLUMN thread_generation INTEGER NOT NULL DEFAULT 1",
+            )
+            .execute(&pool)
+            .await?;
+        }
+        sqlx::query(
+            "UPDATE thread_signals SET thread_generation = COALESCE((SELECT generation FROM threads WHERE threads.id = thread_signals.thread_id), 1)",
         )
         .execute(&pool)
         .await?;
@@ -2659,6 +2678,7 @@ fn thread_signal_from_row(
     Ok(ThreadSignalRecord {
         id: row.get("id"),
         thread_id: row.get("thread_id"),
+        thread_generation: sqlite_u64(row, "thread_generation")?,
         event_id: row.get("event_id"),
         principal_id: row.get("principal_id"),
         sequence: sqlite_u64(row, "sequence")?,
@@ -4025,6 +4045,87 @@ async fn append_signal_outbox_in_transaction(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// Append the authoritative mailbox fact for an already-persisted internal
+/// scheduler Event.  Event, Signal and the projection transition which caused
+/// them share the caller's transaction, removing the former crash window
+/// between Ledger append and Signal Outbox materialization.
+async fn append_direct_thread_signal_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+    thread_id: &str,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let thread =
+        sqlx::query("SELECT generation, initiating_principal_id, status FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| format!("Direct Thread Signal 目标 Thread '{thread_id}' 不存在"))?;
+    let status: String = thread.get("status");
+    if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+        return Err(format!(
+            "Direct Thread Signal 不能投递到已终结 Thread '{thread_id}' ({status})"
+        )
+        .into());
+    }
+    let sequence: i64 = sqlx::query_scalar("SELECT rowid FROM events WHERE id = ?")
+        .bind(&event.id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let signal_id = crate::memory::stable_thread_signal_id(&event.id);
+    let thread_generation: i64 = thread.get("generation");
+    let principal_id: Option<String> = thread.get("initiating_principal_id");
+    let inserted = sqlx::query(
+        r#"INSERT OR IGNORE INTO thread_signals
+           (id, thread_id, thread_generation, event_id, principal_id, sequence, kind,
+            parent_activation_id, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?)"#,
+    )
+    .bind(&signal_id)
+    .bind(thread_id)
+    .bind(thread_generation)
+    .bind(&event.id)
+    .bind(&principal_id)
+    .bind(sequence)
+    .bind(&event.topic)
+    .bind(
+        event
+            .timestamp
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+    )
+    .execute(&mut **tx)
+    .await?;
+    let stored = sqlx::query(
+        "SELECT id, thread_id, thread_generation, sequence, kind FROM thread_signals WHERE event_id = ?",
+    )
+    .bind(&event.id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if stored.get::<String, _>("id") != signal_id
+        || stored.get::<String, _>("thread_id") != thread_id
+        || stored.get::<i64, _>("thread_generation") != thread_generation
+        || stored.get::<i64, _>("sequence") != sequence
+        || stored.get::<String, _>("kind") != event.topic
+    {
+        return Err(format!(
+            "Event '{}' 已被不同的 Direct Thread Signal route 占用",
+            event.id
+        )
+        .into());
+    }
+    // Compatibility cleanup for databases written by the old bridge. The
+    // immutable Event remains; only its obsolete transport envelope retires.
+    sqlx::query(
+        r#"UPDATE signal_outbox SET status = 'discarded', signal_id = ?, resolved_at = ?
+           WHERE event_id = ? AND status != 'discarded'"#,
+    )
+    .bind(&signal_id)
+    .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+    .bind(&event.id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(inserted.rows_affected() == 1)
 }
 
 #[async_trait::async_trait]
@@ -5572,7 +5673,8 @@ impl ActivationStore for SqliteStore {
                 && candidate_thread.kind == ThreadKind::DialogueTurn
             {
                 let queued = sqlx::query(
-                    r#"SELECT queued.*, thread.id AS routed_thread_id
+                    r#"SELECT queued.*, thread.id AS routed_thread_id,
+                              thread.generation AS routed_thread_generation
                    FROM thread_activations queued
                    JOIN threads thread
                      ON thread.root_turn_id = queued.root_turn_id
@@ -5606,6 +5708,7 @@ impl ActivationStore for SqliteStore {
                 .await?;
                 if let Some(row) = queued {
                     signal.thread_id = row.get("routed_thread_id");
+                    signal.thread_generation = sqlite_u64(&row, "routed_thread_generation")?;
                     joined_dialogue_activation = Some(thread_activation_from_row(&row)?);
                 }
             }
@@ -5616,12 +5719,13 @@ impl ActivationStore for SqliteStore {
         // Orchestrator asks the scheduler to materialize its mailbox Signal.
         let inserted_signal = sqlx::query(
             r#"INSERT OR IGNORE INTO thread_signals
-               (id, thread_id, event_id, principal_id, sequence, kind, parent_activation_id,
+               (id, thread_id, thread_generation, event_id, principal_id, sequence, kind, parent_activation_id,
                 status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)"#,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)"#,
         )
         .bind(&signal.id)
         .bind(&signal.thread_id)
+        .bind(i64::try_from(signal.thread_generation)?)
         .bind(&signal.event_id)
         .bind(&signal.principal_id)
         .bind(sequence)
@@ -5660,8 +5764,47 @@ impl ActivationStore for SqliteStore {
                     .await?
                     .get("principal_id");
         }
+        let routed_generation: i64 =
+            sqlx::query_scalar("SELECT generation FROM threads WHERE id = ?")
+                .bind(&stored_signal.thread_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if stored_signal.thread_generation != u64::try_from(routed_generation)? {
+            sqlx::query(
+                r#"UPDATE thread_signals
+                   SET status = 'acknowledged', acknowledged_at = ?
+                   WHERE id = ? AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&stored_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE signal_outbox SET status = 'discarded', resolved_at = ?
+                   WHERE event_id = ? AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&stored_signal.event_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            tracing::warn!(
+                signal_id = %stored_signal.id,
+                signal_generation = stored_signal.thread_generation,
+                thread_generation = routed_generation,
+                "隔离过期 generation 的 Thread Signal"
+            );
+            return Ok(None);
+        }
         if stored_signal.thread_id != signal.thread_id {
             return Err(format!("Event '{}' 已路由到不同 Thread Signal", signal.event_id).into());
+        }
+        if stored_signal.thread_generation != signal.thread_generation {
+            return Err(format!(
+                "Event '{}' 的 Thread Signal generation {} != {}",
+                signal.event_id, stored_signal.thread_generation, signal.thread_generation
+            )
+            .into());
         }
         if signal.principal_id.is_some() && stored_signal.principal_id != signal.principal_id {
             return Err(format!(
@@ -6143,8 +6286,11 @@ impl ActivationStore for SqliteStore {
         thread_id: &str,
     ) -> Result<Option<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
         sqlx::query(
-            r#"SELECT * FROM thread_signals WHERE thread_id = ? AND status = 'pending'
-               ORDER BY sequence, id LIMIT 1"#,
+            r#"SELECT signals.* FROM thread_signals signals
+               JOIN threads thread ON thread.id = signals.thread_id
+               WHERE signals.thread_id = ? AND signals.status = 'pending'
+                 AND signals.thread_generation = thread.generation
+               ORDER BY signals.sequence, signals.id LIMIT 1"#,
         )
         .bind(thread_id)
         .fetch_optional(&self.pool)
@@ -6912,6 +7058,7 @@ impl ActivationStore for SqliteStore {
             )
             .into());
         }
+        let mut ready_signal_event_ids = Vec::new();
         if let Some(group_id) = thread_group_id.as_deref() {
             let member_status = match terminal_kind {
                 "completed" if completion.passed => ThreadGroupMemberStatus::Completed,
@@ -7034,10 +7181,10 @@ impl ActivationStore for SqliteStore {
                     );
                     payload.insert(
                         "wake_policy".to_string(),
-                        JsonValue::String("immediate".into()),
+                        JsonValue::String("direct_signal".into()),
                     );
                     payload.insert("terminal_summary".to_string(), terminal_summary);
-                    let (topic, event_type) = match supervisor_kind {
+                    let (topic, event_type, signal_target_thread_id) = match supervisor_kind {
                         ThreadSupervisorKind::Evaluation => {
                             let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
                                 format!(
@@ -7088,7 +7235,11 @@ impl ActivationStore for SqliteStore {
                                     required_count
                                 )),
                             );
-                            ("chat/thread_group_terminal", TYPE_TOOL_OUTPUT.to_string())
+                            (
+                                "chat/thread_group_terminal",
+                                TYPE_TOOL_OUTPUT.to_string(),
+                                Some(parent_id.to_string()),
+                            )
                         }
                         ThreadSupervisorKind::Objective => {
                             payload.insert(
@@ -7106,6 +7257,7 @@ impl ActivationStore for SqliteStore {
                             (
                                 "runtime/thread_group_terminal",
                                 "runtime_control".to_string(),
+                                None,
                             )
                         }
                         ThreadSupervisorKind::Runtime => {
@@ -7120,6 +7272,7 @@ impl ActivationStore for SqliteStore {
                             (
                                 "runtime/thread_group_terminal",
                                 "runtime_control".to_string(),
+                                None,
                             )
                         }
                         ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
@@ -7172,7 +7325,15 @@ impl ActivationStore for SqliteStore {
                         .execute(&mut *tx)
                         .await?;
                     }
-                    append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
+                    if let Some(target_thread_id) = signal_target_thread_id.as_deref() {
+                        append_direct_thread_signal_in_transaction(
+                            &mut tx,
+                            &barrier,
+                            target_thread_id,
+                        )
+                        .await?;
+                        ready_signal_event_ids.push(barrier.id.clone());
+                    }
                 }
             }
         } else {
@@ -7204,7 +7365,7 @@ impl ActivationStore for SqliteStore {
             );
             payload.insert(
                 "wake_policy".to_string(),
-                JsonValue::String("immediate".into()),
+                JsonValue::String("direct_signal".into()),
             );
             payload.insert(
                 "terminal_summary".to_string(),
@@ -7219,7 +7380,7 @@ impl ActivationStore for SqliteStore {
                     "unresolved_failures": unresolved_failures,
                 }),
             );
-            let (topic, event_type) = match supervisor_kind {
+            let (topic, event_type, signal_target_thread_id) = match supervisor_kind {
                 ThreadSupervisorKind::Evaluation => {
                     let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
                         format!(
@@ -7267,7 +7428,11 @@ impl ActivationStore for SqliteStore {
                             thread_id, terminal_kind
                         )),
                     );
-                    ("chat/thread_terminal", TYPE_TOOL_OUTPUT.to_string())
+                    (
+                        "chat/thread_terminal",
+                        TYPE_TOOL_OUTPUT.to_string(),
+                        Some(parent_id.to_string()),
+                    )
                 }
                 ThreadSupervisorKind::Objective => {
                     payload.insert(
@@ -7286,7 +7451,11 @@ impl ActivationStore for SqliteStore {
                         "correlation_id".to_string(),
                         JsonValue::String(thread_id.to_string()),
                     );
-                    ("runtime/thread_terminal", "runtime_control".to_string())
+                    (
+                        "runtime/thread_terminal",
+                        "runtime_control".to_string(),
+                        None,
+                    )
                 }
                 ThreadSupervisorKind::Runtime => {
                     payload.insert(
@@ -7301,9 +7470,15 @@ impl ActivationStore for SqliteStore {
                                 .ok_or("Runtime Thread 缺少 supervisor_id")?,
                         ),
                     );
-                    ("runtime/thread_terminal", "runtime_control".to_string())
+                    (
+                        "runtime/thread_terminal",
+                        "runtime_control".to_string(),
+                        None,
+                    )
                 }
-                ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => ("", String::new()),
+                ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
+                    ("", String::new(), None)
+                }
             };
             if !topic.is_empty() {
                 let terminal_event = Event::new(
@@ -7314,7 +7489,15 @@ impl ActivationStore for SqliteStore {
                     payload,
                 );
                 append_event_in_transaction(&mut tx, &terminal_event).await?;
-                append_signal_outbox_in_transaction(&mut tx, &terminal_event).await?;
+                if let Some(target_thread_id) = signal_target_thread_id.as_deref() {
+                    append_direct_thread_signal_in_transaction(
+                        &mut tx,
+                        &terminal_event,
+                        target_thread_id,
+                    )
+                    .await?;
+                    ready_signal_event_ids.push(terminal_event.id.clone());
+                }
             }
         }
         if let Some(covers) = event.payload.get("covers").and_then(JsonValue::as_array) {
@@ -7373,7 +7556,9 @@ impl ActivationStore for SqliteStore {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(ActivationOutcomeCommit::Committed)
+        Ok(ActivationOutcomeCommit::Committed {
+            ready_signal_event_ids,
+        })
     }
 
     async fn restart_dialogue_turn(
@@ -7702,57 +7887,36 @@ impl ThreadGroupStore for SqliteStore {
                 }
             };
 
-        let signal_exists: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM thread_signals WHERE event_id = ?")
-                .bind(&barrier.id)
-                .fetch_one(&mut *tx)
-                .await?;
-        let outbox = sqlx::query("SELECT status, signal_id FROM signal_outbox WHERE event_id = ?")
-            .bind(&barrier.id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        if signal_exists == 0 {
-            match outbox {
-                None => {
-                    append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
-                    repaired = true;
-                }
-                Some(row)
-                    if row.get::<String, _>("status") == "materialized"
-                        && row.get::<Option<String>, _>("signal_id").is_some() =>
-                {
-                    let reset = sqlx::query(
-                        r#"UPDATE signal_outbox
-                           SET status = 'pending', signal_id = NULL, resolved_at = NULL
-                           WHERE event_id = ? AND status = 'materialized'
-                             AND NOT EXISTS (
-                               SELECT 1 FROM thread_signals
-                               WHERE id = signal_outbox.signal_id
-                             )"#,
-                    )
-                    .bind(&barrier.id)
-                    .execute(&mut *tx)
-                    .await?;
-                    repaired |= reset.rows_affected() == 1;
-                }
-                Some(row) if row.get::<String, _>("status") == "discarded" => {
-                    // Older dispatchers did not recognize
-                    // runtime/thread_group_terminal as a routable control
-                    // event and incorrectly discarded this valid Objective
-                    // wake. The Group projection proves the barrier is
-                    // authoritative, so restore it for ordinary delivery.
-                    let reset = sqlx::query(
-                        r#"UPDATE signal_outbox
-                           SET status = 'pending', signal_id = NULL, resolved_at = NULL
-                           WHERE event_id = ? AND status = 'discarded'"#,
-                    )
-                    .bind(&barrier.id)
-                    .execute(&mut *tx)
-                    .await?;
-                    repaired |= reset.rows_affected() == 1;
-                }
-                Some(_) => {}
+        match group.supervisor_kind {
+            ThreadSupervisorKind::Evaluation => {
+                let parent = parent
+                    .as_ref()
+                    .ok_or("Evaluation Thread Group repair 缺少 parent Thread")?;
+                repaired |=
+                    append_direct_thread_signal_in_transaction(&mut tx, &barrier, &parent.id)
+                        .await?;
             }
+            ThreadSupervisorKind::Objective => {
+                let updated = sqlx::query(
+                    r#"UPDATE scheduler_dependencies
+                       SET status = 'satisfied', satisfied_by_event_id = ?,
+                           satisfied_at = COALESCE(satisfied_at, ?), updated_at = ?
+                       WHERE dependency_kind = 'thread_group'
+                         AND dependency_id = ? AND dependency_generation = ?
+                         AND status = 'pending'"#,
+                )
+                .bind(&barrier.id)
+                .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                .bind(&group.id)
+                .bind(i64::try_from(group.generation)?)
+                .execute(&mut *tx)
+                .await?;
+                repaired |= updated.rows_affected() > 0;
+            }
+            ThreadSupervisorKind::Runtime
+            | ThreadSupervisorKind::None
+            | ThreadSupervisorKind::Legacy => {}
         }
         tx.commit().await?;
         Ok(repaired)
@@ -8536,7 +8700,52 @@ impl ThreadStore for SqliteStore {
                         };
                     let barrier = thread_group_barrier_event(&terminal_group, parent.as_ref())?;
                     append_event_in_transaction(&mut tx, &barrier).await?;
-                    append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
+                    match terminal_group.supervisor_kind {
+                        ThreadSupervisorKind::Evaluation => {
+                            let parent = parent
+                                .as_ref()
+                                .ok_or("Evaluation Thread Group 关闭缺少 parent Thread")?;
+                            append_direct_thread_signal_in_transaction(
+                                &mut tx, &barrier, &parent.id,
+                            )
+                            .await?;
+                        }
+                        ThreadSupervisorKind::Objective => {
+                            sqlx::query(
+                                r#"UPDATE scheduler_dependencies
+                                   SET status = 'satisfied', satisfied_by_event_id = ?,
+                                       satisfied_at = COALESCE(satisfied_at, ?), updated_at = ?
+                                   WHERE dependency_kind = 'thread_group'
+                                     AND dependency_id = ? AND dependency_generation = ?
+                                     AND status = 'pending'"#,
+                            )
+                            .bind(&barrier.id)
+                            .bind(&now)
+                            .bind(&now)
+                            .bind(&terminal_group.id)
+                            .bind(i64::try_from(terminal_group.generation)?)
+                            .execute(&mut *tx)
+                            .await?;
+                            let legacy_wait =
+                                serde_json::to_string(&ObjectiveWaitCondition::ThreadGroup {
+                                    group_id: terminal_group.id.clone(),
+                                })?;
+                            sqlx::query(
+                                r#"UPDATE objectives
+                                   SET wait_condition_json = NULL, status_reason = NULL,
+                                       revision = revision + 1, updated_at = ?
+                                   WHERE id = ? AND wait_condition_json = ?"#,
+                            )
+                            .bind(&now)
+                            .bind(&terminal_group.supervisor_id)
+                            .bind(legacy_wait)
+                            .execute(&mut *tx)
+                            .await?;
+                        }
+                        ThreadSupervisorKind::Runtime
+                        | ThreadSupervisorKind::None
+                        | ThreadSupervisorKind::Legacy => {}
+                    }
                 }
             } else {
                 let parent =
@@ -8555,7 +8764,13 @@ impl ThreadStore for SqliteStore {
                     thread_terminal_barrier_event(&current, &outcome, parent.as_ref())?
                 {
                     append_event_in_transaction(&mut tx, &barrier).await?;
-                    append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
+                    if current.supervision.supervisor_kind == ThreadSupervisorKind::Evaluation {
+                        let parent = parent
+                            .as_ref()
+                            .ok_or("Evaluation Thread 关闭缺少 parent Thread")?;
+                        append_direct_thread_signal_in_transaction(&mut tx, &barrier, &parent.id)
+                            .await?;
+                    }
                 }
             }
             tx.commit().await?;
@@ -9929,7 +10144,7 @@ impl ScheduleStore for SqliteStore {
                     "root_turn_id": parent.get::<String, _>("root_turn_id"),
                     "thread_group_id": request.source_group_id,
                     "thread_group_status": source_status.as_str(),
-                    "wake_policy": "immediate",
+                    "wake_policy": "direct_signal",
                     "tool_name": "thread_group",
                     "tool_status": "success",
                     "text": format!(
@@ -9943,7 +10158,7 @@ impl ScheduleStore for SqliteStore {
                 .clone(),
             );
             append_event_in_transaction(&mut tx, &barrier).await?;
-            append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
+            append_direct_thread_signal_in_transaction(&mut tx, &barrier, parent_thread_id).await?;
         }
         append_event_in_transaction(&mut tx, &request.promoted_event).await?;
 
@@ -11603,7 +11818,19 @@ impl ActionGroupStore for SqliteStore {
         let settled_now = terminal_member_count == group.member_count;
         if settled_now {
             append_event_idempotent_in_transaction(&mut tx, settled_event).await?;
-            append_signal_outbox_in_transaction(&mut tx, settled_event).await?;
+            if settled_event
+                .payload
+                .get("wake_policy")
+                .and_then(JsonValue::as_str)
+                == Some("direct_signal")
+            {
+                append_direct_thread_signal_in_transaction(
+                    &mut tx,
+                    settled_event,
+                    &group.thread_id,
+                )
+                .await?;
+            }
             sqlx::query(
                 r#"UPDATE action_groups
                    SET revision = revision + 1, status = 'settled',
@@ -13543,7 +13770,7 @@ impl ExecutionJobStore for SqliteStore {
         claim_token: Option<&str>,
         terminal: ExecutionJobTerminal,
         event: &Event,
-        signal_outbox: bool,
+        wake_thread: bool,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
         if !terminal.status.is_terminal() {
             return Err("Execution Job finish 只能提交终态".into());
@@ -13620,8 +13847,9 @@ impl ExecutionJobStore for SqliteStore {
                 && current.exit_code == terminal.exit_code;
             if exact_replay {
                 append_event_idempotent_in_transaction(&mut tx, event).await?;
-                if signal_outbox {
-                    append_signal_outbox_in_transaction(&mut tx, event).await?;
+                if wake_thread {
+                    append_direct_thread_signal_in_transaction(&mut tx, event, &current.thread_id)
+                        .await?;
                 }
                 tx.commit().await?;
                 return Ok(ExecutionJobMutation::Existing(current));
@@ -13744,8 +13972,8 @@ impl ExecutionJobStore for SqliteStore {
             .await;
         }
         append_event_idempotent_in_transaction(&mut tx, event).await?;
-        if signal_outbox {
-            append_signal_outbox_in_transaction(&mut tx, event).await?;
+        if wake_thread {
+            append_direct_thread_signal_in_transaction(&mut tx, event, &current.thread_id).await?;
         }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
             .bind(id)
@@ -13762,7 +13990,7 @@ impl ExecutionJobStore for SqliteStore {
         expected_revision: u64,
         terminal: ExecutionJobTerminal,
         event: &Event,
-        signal_outbox: bool,
+        wake_thread: bool,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
         if !terminal.status.is_terminal() {
             return Err("Execution Job reconcile 只能提交终态".into());
@@ -13801,8 +14029,9 @@ impl ExecutionJobStore for SqliteStore {
                 && current.error == error
                 && current.exit_code == terminal.exit_code;
             if exact_replay {
-                if signal_outbox {
-                    append_signal_outbox_in_transaction(&mut tx, event).await?;
+                if wake_thread {
+                    append_direct_thread_signal_in_transaction(&mut tx, event, &current.thread_id)
+                        .await?;
                 }
                 tx.commit().await?;
                 return Ok(ExecutionJobMutation::Existing(current));
@@ -13851,8 +14080,8 @@ impl ExecutionJobStore for SqliteStore {
             )
             .await;
         }
-        if signal_outbox {
-            append_signal_outbox_in_transaction(&mut tx, event).await?;
+        if wake_thread {
+            append_direct_thread_signal_in_transaction(&mut tx, event, &current.thread_id).await?;
         }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
             .bind(id)
@@ -16291,6 +16520,7 @@ mod tests {
                 NewThreadSignal {
                     id: "identity-signal".to_string(),
                     thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
                     event_id: "identity-event-a".to_string(),
                     principal_id: Some("principal:a".to_string()),
                     sequence,
@@ -18963,7 +19193,7 @@ mod tests {
                 Some("claim-atomic"),
                 terminal.clone(),
                 &result_event,
-                false,
+                true,
             )
             .await
             .unwrap()
@@ -18992,6 +19222,14 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+        let signals = store
+            .list_context_thread_signals(&created.context_id, Some(ThreadSignalStatus::Pending))
+            .await
+            .unwrap();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].thread_id, created.thread_id);
+        assert_eq!(signals[0].thread_generation, 1);
+        assert_eq!(signals[0].event_id, result_event.id);
 
         assert!(matches!(
             store
@@ -19001,7 +19239,7 @@ mod tests {
                     Some("claim-atomic"),
                     terminal,
                     &result_event,
-                    false,
+                    true,
                 )
                 .await
                 .unwrap(),
@@ -20307,6 +20545,7 @@ mod tests {
                 NewThreadSignal {
                     id: "retry-root-signal".to_string(),
                     thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
                     event_id: root.id.clone(),
                     principal_id: None,
                     sequence: root_sequence,
@@ -20369,7 +20608,9 @@ mod tests {
                 .commit_activation_outcome(&running.id, &failure)
                 .await
                 .unwrap(),
-            ActivationOutcomeCommit::Committed
+            ActivationOutcomeCommit::Committed {
+                ready_signal_event_ids: Vec::new()
+            }
         );
         // Reproduce a crash after the atomic failure outcome has committed but
         // before the Activation projection is closed.  The retry primitive
@@ -20493,6 +20734,7 @@ mod tests {
                 NewThreadSignal {
                     id: "retry-generation-2-signal".to_string(),
                     thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
                     event_id: retry_event.id.clone(),
                     principal_id: None,
                     sequence: retry_sequence,
@@ -20550,6 +20792,7 @@ mod tests {
                 NewThreadSignal {
                     id: "retry-late-tool-signal".to_string(),
                     thread_id: thread.id,
+                    thread_generation: thread.generation,
                     event_id: late_tool.id,
                     principal_id: None,
                     sequence: late_sequence,
@@ -20780,6 +21023,7 @@ mod tests {
                 NewThreadSignal {
                     id: "outbox-signal".to_string(),
                     thread_id: thread.id,
+                    thread_generation: thread.generation,
                     event_id: event.id.clone(),
                     principal_id: None,
                     sequence,
@@ -21000,6 +21244,7 @@ mod tests {
                     NewThreadSignal {
                         id: format!("admission-signal-{name}"),
                         thread_id: thread.id,
+                        thread_generation: thread.generation,
                         event_id: event_id.clone(),
                         principal_id: None,
                         sequence,
@@ -21307,6 +21552,7 @@ mod tests {
         let signal = |index: usize| NewThreadSignal {
             id: format!("signal-{index}"),
             thread_id: thread.id.clone(),
+            thread_generation: thread.generation,
             event_id: format!("signal-event-{index}"),
             principal_id: None,
             sequence: sequence(&format!("signal-event-{index}")),
@@ -21495,6 +21741,7 @@ mod tests {
                     NewThreadSignal {
                         id: "signal-4".to_string(),
                         thread_id: "signal-thread".to_string(),
+                        thread_generation: 1,
                         event_id: "signal-event-4".to_string(),
                         principal_id: None,
                         sequence: sequence_4,
@@ -21524,6 +21771,7 @@ mod tests {
                     NewThreadSignal {
                         id: "signal-5".to_string(),
                         thread_id: "signal-thread".to_string(),
+                        thread_generation: 1,
                         event_id: "signal-event-5".to_string(),
                         principal_id: None,
                         sequence: sequence_5,
@@ -21671,6 +21919,7 @@ mod tests {
         let signal = |index: usize| NewThreadSignal {
             id: format!("dialogue-batch-signal-{index}"),
             thread_id: format!("dialogue-batch-thread-{index}"),
+            thread_generation: 1,
             event_id: format!("dialogue-batch-event-{index}"),
             principal_id: Some("principal-reader".to_string()),
             sequence: sequence(index),
@@ -22106,13 +22355,13 @@ mod tests {
                 .len(),
             1,
         );
-        let pending_barriers: i64 =
+        let obsolete_outbox_rows: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM signal_outbox WHERE event_id = ?")
                 .bind(barrier_id)
                 .fetch_one(&store.pool)
                 .await
                 .unwrap();
-        assert_eq!(pending_barriers, 1);
+        assert_eq!(obsolete_outbox_rows, 0);
         assert!(matches!(
             store
                 .control_thread(
@@ -22171,42 +22420,28 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(repaired_event_count, 1);
-        assert_eq!(repaired_outbox_count, 1);
+        assert_eq!(repaired_outbox_count, 0);
 
-        // Builds before the thread-group route was added to the Outbox
-        // predicate could persist the authoritative barrier and then discard
-        // it as "not routable". Periodic reconciliation must turn that exact
-        // row back into pending work instead of considering the barrier done.
+        // Legacy builds persisted an `immediate` barrier before the direct
+        // mailbox Signal existed. Recovery accepts that immutable spelling
+        // and timestamp, but never recreates the obsolete Outbox bridge for a
+        // Runtime-supervised Group.
+        let legacy_barrier_timestamp = (Utc::now() + chrono::Duration::milliseconds(50))
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query(
-            "UPDATE signal_outbox SET status = 'discarded', resolved_at = ? WHERE event_id = ?",
+            r#"UPDATE events
+               SET timestamp = ?, payload = json_set(payload, '$.wake_policy', 'immediate')
+               WHERE id = ?"#,
         )
-        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(&legacy_barrier_timestamp)
         .bind(repair_barrier_id)
         .execute(&store.pool)
         .await
         .unwrap();
-        // Builds before barrier construction was centralized used Event::new
-        // after committing the Group terminal timestamp. Preserve that
-        // immutable historical timestamp while repairing its Outbox route.
-        let legacy_barrier_timestamp = (Utc::now() + chrono::Duration::milliseconds(50))
-            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        sqlx::query("UPDATE events SET timestamp = ? WHERE id = ?")
-            .bind(&legacy_barrier_timestamp)
-            .bind(repair_barrier_id)
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        assert!(store
+        assert!(!store
             .repair_thread_group_barrier("group-repair")
             .await
             .unwrap());
-        let repaired_status: String =
-            sqlx::query_scalar("SELECT status FROM signal_outbox WHERE event_id = ?")
-                .bind(repair_barrier_id)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-        assert_eq!(repaired_status, "pending");
         let preserved_timestamp: String =
             sqlx::query_scalar("SELECT timestamp FROM events WHERE id = ?")
                 .bind(repair_barrier_id)
@@ -22214,10 +22449,13 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(preserved_timestamp, legacy_barrier_timestamp);
-        assert!(!store
-            .repair_thread_group_barrier("group-repair")
-            .await
-            .unwrap());
+        let obsolete_outbox_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM signal_outbox WHERE event_id = ?")
+                .bind(repair_barrier_id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(obsolete_outbox_rows, 0);
     }
 
     #[tokio::test]

@@ -5,8 +5,8 @@
 //! publish a terminal result.
 
 use super::{
-    activation::activation_from_row, append_event_in_tx, append_signal_outbox_in_tx, now_text,
-    parse_time, thread::thread_from_row, PostgresStore, StoreError,
+    activation::activation_from_row, append_direct_thread_signal_in_tx, append_event_in_tx,
+    now_text, parse_time, thread::thread_from_row, PostgresStore, StoreError,
 };
 use crate::event::Event;
 use crate::memory::{
@@ -912,7 +912,7 @@ impl ExecutionJobStore for PostgresStore {
         claim_token: Option<&str>,
         terminal: ExecutionJobTerminal,
         event: &Event,
-        signal_outbox: bool,
+        wake_thread: bool,
     ) -> Result<ExecutionJobMutation, StoreError> {
         if !terminal.status.is_terminal() {
             return Err("Execution Job finish 只能提交终态".into());
@@ -945,8 +945,8 @@ impl ExecutionJobStore for PostgresStore {
                 && current.exit_code == terminal.exit_code;
             if exact_replay {
                 append_event_in_tx(&mut tx, event).await?;
-                if signal_outbox {
-                    append_signal_outbox_in_tx(&mut tx, event).await?;
+                if wake_thread {
+                    append_direct_thread_signal_in_tx(&mut tx, event, &current.thread_id).await?;
                 }
                 tx.commit().await?;
                 return Ok(ExecutionJobMutation::Existing(current));
@@ -1015,8 +1015,8 @@ impl ExecutionJobStore for PostgresStore {
             .await;
         }
         append_event_in_tx(&mut tx, event).await?;
-        if signal_outbox {
-            append_signal_outbox_in_tx(&mut tx, event).await?;
+        if wake_thread {
+            append_direct_thread_signal_in_tx(&mut tx, event, &current.thread_id).await?;
         }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = $1")
             .bind(id)
@@ -1033,7 +1033,7 @@ impl ExecutionJobStore for PostgresStore {
         expected_revision: u64,
         terminal: ExecutionJobTerminal,
         event: &Event,
-        signal_outbox: bool,
+        wake_thread: bool,
     ) -> Result<ExecutionJobMutation, StoreError> {
         if !terminal.status.is_terminal() {
             return Err("Execution Job reconcile 只能提交终态".into());
@@ -1066,8 +1066,8 @@ impl ExecutionJobStore for PostgresStore {
                 && current.error == error
                 && current.exit_code == terminal.exit_code;
             if exact_replay {
-                if signal_outbox {
-                    append_signal_outbox_in_tx(&mut tx, event).await?;
+                if wake_thread {
+                    append_direct_thread_signal_in_tx(&mut tx, event, &current.thread_id).await?;
                 }
                 tx.commit().await?;
                 return Ok(ExecutionJobMutation::Existing(current));
@@ -1113,8 +1113,8 @@ impl ExecutionJobStore for PostgresStore {
             )
             .await;
         }
-        if signal_outbox {
-            append_signal_outbox_in_tx(&mut tx, event).await?;
+        if wake_thread {
+            append_direct_thread_signal_in_tx(&mut tx, event, &current.thread_id).await?;
         }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = $1")
             .bind(id)

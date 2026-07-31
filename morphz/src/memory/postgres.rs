@@ -1383,6 +1383,87 @@ async fn append_signal_outbox_in_tx(
     Ok(())
 }
 
+/// PostgreSQL counterpart of SQLite's direct internal scheduler delivery.
+/// The caller owns the transaction which appended `event`, so no durable
+/// internal state is ever represented by an eventually interpreted Outbox
+/// row.
+async fn append_direct_thread_signal_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event: &Event,
+    thread_id: &str,
+) -> Result<bool, StoreError> {
+    let thread = sqlx::query(
+        "SELECT generation, initiating_principal_id, status FROM threads WHERE id = $1 FOR SHARE",
+    )
+    .bind(thread_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| format!("Direct Thread Signal 目标 Thread '{thread_id}' 不存在"))?;
+    let status: String = thread.get("status");
+    if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+        return Err(format!(
+            "Direct Thread Signal 不能投递到已终结 Thread '{thread_id}' ({status})"
+        )
+        .into());
+    }
+    let sequence: i64 = sqlx::query_scalar("SELECT sequence FROM events WHERE id = $1")
+        .bind(&event.id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let signal_id = crate::memory::stable_thread_signal_id(&event.id);
+    let thread_generation: i64 = thread.get("generation");
+    let principal_id: Option<String> = thread.get("initiating_principal_id");
+    let inserted = sqlx::query(
+        r#"INSERT INTO thread_signals
+           (id, thread_id, thread_generation, event_id, principal_id, sequence, kind,
+            parent_activation_id, status, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, 'pending', $8)
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(&signal_id)
+    .bind(thread_id)
+    .bind(thread_generation)
+    .bind(&event.id)
+    .bind(&principal_id)
+    .bind(sequence)
+    .bind(&event.topic)
+    .bind(
+        event
+            .timestamp
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+    )
+    .execute(&mut **tx)
+    .await?;
+    let stored = sqlx::query(
+        "SELECT id, thread_id, thread_generation, sequence, kind FROM thread_signals WHERE event_id = $1",
+    )
+    .bind(&event.id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if stored.get::<String, _>("id") != signal_id
+        || stored.get::<String, _>("thread_id") != thread_id
+        || stored.get::<i64, _>("thread_generation") != thread_generation
+        || stored.get::<i64, _>("sequence") != sequence
+        || stored.get::<String, _>("kind") != event.topic
+    {
+        return Err(format!(
+            "Event '{}' 已被不同的 Direct Thread Signal route 占用",
+            event.id
+        )
+        .into());
+    }
+    sqlx::query(
+        r#"UPDATE signal_outbox SET status = 'discarded', signal_id = $1, resolved_at = $2
+           WHERE event_id = $3 AND status != 'discarded'"#,
+    )
+    .bind(&signal_id)
+    .bind(now_text())
+    .bind(&event.id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(inserted.rows_affected() == 1)
+}
+
 async fn insert_snapshot_in_tx(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     projection: &NewMindProjection,

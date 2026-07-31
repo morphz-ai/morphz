@@ -8247,6 +8247,7 @@ mod tests {
                 crate::memory::NewThreadSignal {
                     id: "signal-scheduler-snapshot".to_string(),
                     thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
                     event_id: signal_event.id.clone(),
                     principal_id: None,
                     sequence: trigger_sequence,
@@ -8521,6 +8522,7 @@ mod tests {
                     crate::memory::NewThreadSignal {
                         id: format!("signal-scheduler-pagination-{index}"),
                         thread_id: thread.id.clone(),
+                        thread_generation: thread.generation,
                         event_id: event.id.clone(),
                         principal_id: None,
                         sequence,
@@ -8690,6 +8692,7 @@ mod tests {
                 crate::memory::NewThreadSignal {
                     id: "signal-orphaned-approved-job".to_string(),
                     thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
                     event_id: event.id.clone(),
                     principal_id: None,
                     sequence,
@@ -11131,6 +11134,7 @@ mod tests {
                 crate::memory::NewThreadSignal {
                     id: "signal-live-activation-recovery".to_string(),
                     thread_id: "thread-live-activation-recovery".to_string(),
+                    thread_generation: 1,
                     event_id: trigger.id.clone(),
                     principal_id: None,
                     sequence: trigger_sequence,
@@ -11315,6 +11319,7 @@ mod tests {
                 crate::memory::NewThreadSignal {
                     id: "signal-activation-recovery".to_string(),
                     thread_id: "thread-activation-recovery".to_string(),
+                    thread_generation: 1,
                     event_id: trigger.id.clone(),
                     principal_id: None,
                     sequence: trigger_sequence,

@@ -1,6 +1,6 @@
 use super::{
-    append_event_in_tx, append_signal_outbox_in_tx, now_text, parse_time, stored_event_in_tx,
-    thread::thread_from_row, PostgresStore, StoreError,
+    append_direct_thread_signal_in_tx, append_event_in_tx, append_signal_outbox_in_tx, now_text,
+    parse_time, stored_event_in_tx, thread::thread_from_row, PostgresStore, StoreError,
 };
 use crate::admission::AdmissionClass;
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
@@ -35,6 +35,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"CREATE TABLE IF NOT EXISTS thread_signals (
             id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+            thread_generation BIGINT NOT NULL DEFAULT 1,
             event_id TEXT NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,
             principal_id TEXT,
             sequence BIGINT NOT NULL,
@@ -45,6 +46,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             claimed_at TEXT,
             acknowledged_at TEXT
         )"#,
+        r#"ALTER TABLE thread_signals ADD COLUMN IF NOT EXISTS thread_generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE thread_signals ADD COLUMN IF NOT EXISTS principal_id TEXT"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_signals_thread_status_sequence
            ON thread_signals(thread_id, status, sequence, id)"#,
@@ -169,6 +171,7 @@ fn signal_from_row(row: &PgRow) -> Result<ThreadSignalRecord, StoreError> {
     Ok(ThreadSignalRecord {
         id: row.get("id"),
         thread_id: row.get("thread_id"),
+        thread_generation: u64::try_from(row.get::<i64, _>("thread_generation"))?,
         event_id: row.get("event_id"),
         principal_id: row.get("principal_id"),
         sequence: u64::try_from(row.get::<i64, _>("sequence"))?,
@@ -291,7 +294,8 @@ impl ActivationStore for PostgresStore {
             && candidate_thread.kind == ThreadKind::DialogueTurn
         {
             if let Some(row) = sqlx::query(
-                r#"SELECT queued.*, thread.id AS routed_thread_id
+                r#"SELECT queued.*, thread.id AS routed_thread_id,
+                          thread.generation AS routed_thread_generation
                    FROM thread_activations queued
                    JOIN threads thread
                      ON thread.root_turn_id = queued.root_turn_id
@@ -319,18 +323,21 @@ impl ActivationStore for PostgresStore {
             .await?
             {
                 signal.thread_id = row.get("routed_thread_id");
+                signal.thread_generation =
+                    u64::try_from(row.get::<i64, _>("routed_thread_generation"))?;
                 joined_dialogue_activation = Some(activation_from_row(&row)?);
             }
         }
         sqlx::query(
             r#"INSERT INTO thread_signals
-               (id, thread_id, event_id, principal_id, sequence, kind, parent_activation_id,
+               (id, thread_id, thread_generation, event_id, principal_id, sequence, kind, parent_activation_id,
                 status, created_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&signal.id)
         .bind(&signal.thread_id)
+        .bind(i64::try_from(signal.thread_generation)?)
         .bind(&signal.event_id)
         .bind(&signal.principal_id)
         .bind(i64::try_from(signal.sequence)?)
@@ -358,8 +365,46 @@ impl ActivationStore for PostgresStore {
                     .fetch_one(&mut *tx)
                     .await?;
         }
+        let routed_generation: i64 =
+            sqlx::query_scalar("SELECT generation FROM threads WHERE id = $1 FOR UPDATE")
+                .bind(&stored_signal.thread_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if stored_signal.thread_generation != u64::try_from(routed_generation)? {
+            sqlx::query(
+                r#"UPDATE thread_signals SET status = 'acknowledged', acknowledged_at = $1
+                   WHERE id = $2 AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&stored_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE signal_outbox SET status = 'discarded', resolved_at = $1
+                   WHERE event_id = $2 AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&stored_signal.event_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            tracing::warn!(
+                signal_id = %stored_signal.id,
+                signal_generation = stored_signal.thread_generation,
+                thread_generation = routed_generation,
+                "隔离过期 generation 的 Thread Signal"
+            );
+            return Ok(None);
+        }
         if stored_signal.thread_id != signal.thread_id {
             return Err(format!("Event '{}' 已路由到不同 Thread Signal", signal.event_id).into());
+        }
+        if stored_signal.thread_generation != signal.thread_generation {
+            return Err(format!(
+                "Event '{}' 的 Thread Signal generation {} != {}",
+                signal.event_id, stored_signal.thread_generation, signal.thread_generation
+            )
+            .into());
         }
         if signal.principal_id.is_some() && stored_signal.principal_id != signal.principal_id {
             return Err(format!(
@@ -799,8 +844,11 @@ impl ActivationStore for PostgresStore {
         thread_id: &str,
     ) -> Result<Option<ThreadSignalRecord>, StoreError> {
         sqlx::query(
-            r#"SELECT * FROM thread_signals WHERE thread_id = $1 AND status = 'pending'
-               ORDER BY sequence, id LIMIT 1"#,
+            r#"SELECT signals.* FROM thread_signals signals
+               JOIN threads thread ON thread.id = signals.thread_id
+               WHERE signals.thread_id = $1 AND signals.status = 'pending'
+                 AND signals.thread_generation = thread.generation
+               ORDER BY signals.sequence, signals.id LIMIT 1"#,
         )
         .bind(thread_id)
         .fetch_optional(&self.pool)
@@ -1520,6 +1568,7 @@ impl ActivationStore for PostgresStore {
                 format!("Evaluation outcome 无法原子提交 Thread '{thread_id}' 终态").into(),
             );
         }
+        let mut ready_signal_event_ids = Vec::new();
         if let Some(group_id) = thread_group_id.as_deref() {
             let member_status = match terminal_kind {
                 "completed" if completion.passed => "completed",
@@ -1663,10 +1712,10 @@ impl ActivationStore for PostgresStore {
                     );
                     payload.insert(
                         "wake_policy".to_string(),
-                        JsonValue::String("immediate".into()),
+                        JsonValue::String("direct_signal".into()),
                     );
                     payload.insert("terminal_summary".to_string(), terminal_summary);
-                    let (topic, event_type) = match supervisor_kind {
+                    let (topic, event_type, signal_target_thread_id) = match supervisor_kind {
                         ThreadSupervisorKind::Evaluation => {
                             let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
                                 format!(
@@ -1717,7 +1766,11 @@ impl ActivationStore for PostgresStore {
                                     required_count
                                 )),
                             );
-                            ("chat/thread_group_terminal", TYPE_TOOL_OUTPUT.to_string())
+                            (
+                                "chat/thread_group_terminal",
+                                TYPE_TOOL_OUTPUT.to_string(),
+                                Some(parent_id.to_string()),
+                            )
                         }
                         ThreadSupervisorKind::Objective => {
                             payload.insert(
@@ -1735,6 +1788,7 @@ impl ActivationStore for PostgresStore {
                             (
                                 "runtime/thread_group_terminal",
                                 "runtime_control".to_string(),
+                                None,
                             )
                         }
                         ThreadSupervisorKind::Runtime => {
@@ -1749,6 +1803,7 @@ impl ActivationStore for PostgresStore {
                             (
                                 "runtime/thread_group_terminal",
                                 "runtime_control".to_string(),
+                                None,
                             )
                         }
                         ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
@@ -1798,7 +1853,11 @@ impl ActivationStore for PostgresStore {
                         .execute(&mut *tx)
                         .await?;
                     }
-                    append_signal_outbox_in_tx(&mut tx, &barrier).await?;
+                    if let Some(target_thread_id) = signal_target_thread_id.as_deref() {
+                        append_direct_thread_signal_in_tx(&mut tx, &barrier, target_thread_id)
+                            .await?;
+                        ready_signal_event_ids.push(barrier.id.clone());
+                    }
                 }
             }
         } else {
@@ -1830,7 +1889,7 @@ impl ActivationStore for PostgresStore {
             );
             payload.insert(
                 "wake_policy".to_string(),
-                JsonValue::String("immediate".into()),
+                JsonValue::String("direct_signal".into()),
             );
             payload.insert(
                 "terminal_summary".to_string(),
@@ -1845,7 +1904,7 @@ impl ActivationStore for PostgresStore {
                     "unresolved_failures": unresolved_failures,
                 }),
             );
-            let (topic, event_type) = match supervisor_kind {
+            let (topic, event_type, signal_target_thread_id) = match supervisor_kind {
                 ThreadSupervisorKind::Evaluation => {
                     let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
                         format!(
@@ -1893,7 +1952,11 @@ impl ActivationStore for PostgresStore {
                             thread_id, terminal_kind
                         )),
                     );
-                    ("chat/thread_terminal", TYPE_TOOL_OUTPUT.to_string())
+                    (
+                        "chat/thread_terminal",
+                        TYPE_TOOL_OUTPUT.to_string(),
+                        Some(parent_id.to_string()),
+                    )
                 }
                 ThreadSupervisorKind::Objective => {
                     payload.insert(
@@ -1912,7 +1975,11 @@ impl ActivationStore for PostgresStore {
                         "correlation_id".to_string(),
                         JsonValue::String(thread_id.to_string()),
                     );
-                    ("runtime/thread_terminal", "runtime_control".to_string())
+                    (
+                        "runtime/thread_terminal",
+                        "runtime_control".to_string(),
+                        None,
+                    )
                 }
                 ThreadSupervisorKind::Runtime => {
                     payload.insert(
@@ -1927,9 +1994,15 @@ impl ActivationStore for PostgresStore {
                                 .ok_or("Runtime Thread 缺少 supervisor_id")?,
                         ),
                     );
-                    ("runtime/thread_terminal", "runtime_control".to_string())
+                    (
+                        "runtime/thread_terminal",
+                        "runtime_control".to_string(),
+                        None,
+                    )
                 }
-                ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => ("", String::new()),
+                ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
+                    ("", String::new(), None)
+                }
             };
             if !topic.is_empty() {
                 let terminal_event = Event::new(
@@ -1940,7 +2013,11 @@ impl ActivationStore for PostgresStore {
                     payload,
                 );
                 append_event_in_tx(&mut tx, &terminal_event).await?;
-                append_signal_outbox_in_tx(&mut tx, &terminal_event).await?;
+                if let Some(target_thread_id) = signal_target_thread_id.as_deref() {
+                    append_direct_thread_signal_in_tx(&mut tx, &terminal_event, target_thread_id)
+                        .await?;
+                    ready_signal_event_ids.push(terminal_event.id.clone());
+                }
             }
         }
         if let Some(covers) = event.payload.get("covers").and_then(JsonValue::as_array) {
@@ -2004,7 +2081,9 @@ impl ActivationStore for PostgresStore {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(ActivationOutcomeCommit::Committed)
+        Ok(ActivationOutcomeCommit::Committed {
+            ready_signal_event_ids,
+        })
     }
 
     async fn restart_dialogue_turn(
