@@ -16,8 +16,8 @@ pub use commands::{
     stable_command_id, ClaimObjectiveEvaluationCommand, CommitThreadOutcomeCommand,
     ControlObjectiveCommand, ControlThreadCommand, FinishObjectiveEvaluationCommand, KernelCommand,
     KernelCommandHeader, KernelCommandPayload, KernelResult, PromoteThreadCommand,
-    RegisterDependencyCommand, RenewObjectiveEvaluationCommand, SatisfyDependencyCommand,
-    SpawnSupervisedGroupCommand, TransitionActivationCommand,
+    RegisterDependencyCommand, RenewObjectiveEvaluationCommand, RestartDialogueTurnCommand,
+    SatisfyDependencyCommand, SpawnSupervisedGroupCommand, TransitionActivationCommand,
 };
 pub use domain::{
     audit_scheduler_invariants, derive_objective_readiness, objective_wait_dependency_key,

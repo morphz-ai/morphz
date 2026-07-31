@@ -228,6 +228,25 @@ impl SchedulerKernel {
                     .map_err(store_error)?;
                 Ok(KernelResult::ActivationTransitioned(mutation))
             }
+            KernelCommandPayload::RestartDialogueTurn(payload) => {
+                let expected_revision = required_revision(&command.header)?;
+                if payload.request.expected_thread_revision != expected_revision {
+                    return Err(KernelError::InvalidCommand(
+                        "DialogueTurn retry revision disagrees with command fence".into(),
+                    ));
+                }
+                // `restart_dialogue_turn` owns the revision/generation fence and checks the retry
+                // Event ID before mutating the Thread. Keeping that decision inside the same
+                // transaction is required for exact replay: after the first accepted retry the
+                // Thread generation has advanced, but replaying the identical command must return
+                // `Existing` instead of being rejected by an outer stale-generation check.
+                let mutation = self
+                    .store
+                    .restart_dialogue_turn(payload.request)
+                    .await
+                    .map_err(store_error)?;
+                Ok(KernelResult::DialogueTurnRestarted(mutation))
+            }
             KernelCommandPayload::CommitThreadOutcome(payload) => {
                 let outcome = self
                     .store

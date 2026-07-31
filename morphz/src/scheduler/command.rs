@@ -1,8 +1,9 @@
 use crate::memory::{
-    ActivationOutcomeCommit, NewSchedule, NewScheduledObjective, NewThread, NewThreadGroupPlan,
-    ObjectiveMutation, ObjectiveStatus, ObjectiveWaitCondition, ScheduleRecord,
-    ScheduledObjectiveWaitBinding, ThreadActivationMutation, ThreadActivationStatus,
-    ThreadControlAction, ThreadMutation, ThreadPromotionMutation, ThreadPromotionRequest,
+    ActivationOutcomeCommit, DialogueTurnRetryMutation, DialogueTurnRetryRequest, NewSchedule,
+    NewScheduledObjective, NewThread, NewThreadGroupPlan, ObjectiveMutation, ObjectiveStatus,
+    ObjectiveWaitCondition, ScheduleRecord, ScheduledObjectiveWaitBinding,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction, ThreadMutation,
+    ThreadPromotionMutation, ThreadPromotionRequest,
 };
 use crate::scheduler::{
     NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyOwnerKind,
@@ -137,6 +138,11 @@ pub struct TransitionActivationCommand {
 }
 
 #[derive(Debug, Clone)]
+pub struct RestartDialogueTurnCommand {
+    pub request: DialogueTurnRetryRequest,
+}
+
+#[derive(Debug, Clone)]
 pub struct RegisterDependencyCommand {
     pub dependency: NewSchedulerDependency,
 }
@@ -159,6 +165,7 @@ pub enum KernelCommandPayload {
     RenewObjectiveEvaluation(RenewObjectiveEvaluationCommand),
     FinishObjectiveEvaluation(FinishObjectiveEvaluationCommand),
     TransitionActivation(TransitionActivationCommand),
+    RestartDialogueTurn(RestartDialogueTurnCommand),
     CommitThreadOutcome(CommitThreadOutcomeCommand),
     RegisterDependency(RegisterDependencyCommand),
     SatisfyDependency(SatisfyDependencyCommand),
@@ -183,6 +190,7 @@ pub enum KernelResult {
     ObjectiveControlled(ObjectiveMutation),
     ObjectiveEvaluationMutated(ObjectiveMutation),
     ActivationTransitioned(ThreadActivationMutation),
+    DialogueTurnRestarted(DialogueTurnRetryMutation),
     ThreadOutcomeCommitted(ActivationOutcomeCommit),
     DependencyRegistered(SchedulerDependencyMutation),
     DependencySatisfied(SchedulerDependencyMutation),

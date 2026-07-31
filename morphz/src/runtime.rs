@@ -6293,16 +6293,25 @@ impl SessionHandle {
                 ("runtime_force_evaluation".to_string(), json!(true)),
             ]),
         );
-        let mutation = self
+        let restart_request = DialogueTurnRetryRequest {
+            expected_thread_revision,
+            expected_result_event_id,
+            event: event.clone(),
+        };
+        let mutation = match self
             .runtime
             .inner
-            .store
-            .restart_dialogue_turn(DialogueTurnRetryRequest {
-                expected_thread_revision,
-                expected_result_event_id,
-                event: event.clone(),
-            })
-            .await?;
+            .scheduler_kernel
+            .execute(crate::controllers::DialogueController::restart_turn(
+                &thread,
+                restart_request,
+                "Runtime-DialogueRetry",
+            ))
+            .await?
+        {
+            crate::scheduler::KernelResult::DialogueTurnRestarted(mutation) => mutation,
+            _ => return Err("Scheduler Kernel 返回了错误的 DialogueTurn restart 结果".into()),
+        };
         let (thread_id, generation, duplicate) = match mutation {
             DialogueTurnRetryMutation::Accepted {
                 thread_id,

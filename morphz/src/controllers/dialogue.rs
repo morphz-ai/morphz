@@ -1,9 +1,10 @@
 use crate::memory::{
-    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadRecord,
+    DialogueTurnRetryRequest, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
+    ThreadRecord,
 };
 use crate::scheduler::{
     ControlThreadCommand, KernelCommand, KernelCommandHeader, KernelCommandPayload,
-    TransitionActivationCommand,
+    RestartDialogueTurnCommand, TransitionActivationCommand,
 };
 use chrono::{DateTime, Utc};
 
@@ -13,6 +14,29 @@ use chrono::{DateTime, Utc};
 pub struct DialogueController;
 
 impl DialogueController {
+    pub fn restart_turn(
+        thread: &ThreadRecord,
+        request: DialogueTurnRetryRequest,
+        actor: &str,
+    ) -> KernelCommand {
+        let material = format!(
+            "dialogue-restart\0{}\0{}\0{}\0{}",
+            thread.id, thread.revision, thread.generation, request.event.id
+        );
+        KernelCommand {
+            header: KernelCommandHeader::new(
+                crate::scheduler::stable_command_id("dialogue-restart", &material),
+                &request.event.id,
+                &thread.context_id,
+                actor,
+            )
+            .with_fence(thread.revision, Some(thread.generation)),
+            payload: KernelCommandPayload::RestartDialogueTurn(RestartDialogueTurnCommand {
+                request,
+            }),
+        }
+    }
+
     pub fn transition_activation(
         activation: &ThreadActivationRecord,
         status: ThreadActivationStatus,
