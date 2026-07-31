@@ -27,10 +27,10 @@ use crate::llm::{
     ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
 };
 use crate::memory::{
-    ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit, ApprovalFilter,
-    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStore, DelegationStatus,
-    DeliveryFlushCommit, EventAppend, EventStore, ExecutionApprovalMutation,
+    stable_thread_id, ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit,
+    ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus,
+    ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStore,
+    DelegationStatus, DeliveryFlushCommit, EventAppend, EventStore, ExecutionApprovalMutation,
     ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, NewActionGroup, NewActionGroupMember, NewApprovalRequest,
     NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob, NewRuntimeTimer,
@@ -322,7 +322,6 @@ impl DurableEventWriter {
         }
     }
 }
-const MAX_ACTIVATION_SIGNAL_BATCH: usize = 32;
 const SIGNAL_OUTBOX_DISPATCH_BATCH: usize = 128;
 const SIGNAL_OUTBOX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const PLAN_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -4599,7 +4598,7 @@ impl Orchestrator {
                     parent_activation_id,
                     root_turn_id,
                 },
-                MAX_ACTIVATION_SIGNAL_BATCH,
+                crate::memory::DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
             )
             .await?
         else {
@@ -12389,12 +12388,6 @@ fn recovery_owns_activation(
     }
 }
 
-fn stable_thread_id(root_turn_id: &str) -> String {
-    let digest = Sha256::digest(root_turn_id.as_bytes());
-    let id = format!("thread_{digest:x}");
-    id[..31].to_string()
-}
-
 fn stable_activation_id(trigger_event_id: &str) -> String {
     let digest = Sha256::digest(trigger_event_id.as_bytes());
     let id = format!("work_{digest:x}");
@@ -13522,6 +13515,11 @@ fn required_payload_str<'a>(event: &'a Event, key: &str) -> Result<&'a str, DynE
 }
 
 fn event_needs_signal_outbox(event: &Event) -> bool {
+    // User ingress owns the authoritative Event + Dialogue Thread Signal
+    // transaction.  EventBus only dispatches that already-persisted fact.
+    if event.event_type == TYPE_USER_MESSAGE && event.topic == "chat/user_message" {
+        return false;
+    }
     !matches!(
         event
             .payload
@@ -14271,8 +14269,17 @@ mod tests {
             ("context_id".to_string(), json!("context-1")),
             ("session_id".to_string(), json!("session-1")),
         ]);
+        assert!(
+            !event_needs_signal_outbox(&Event::new(
+                "user-ingress-direct-signal".to_string(),
+                "fixture".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                routed_payload.clone(),
+            )),
+            "用户入口已经原子提交 Dialogue Thread Signal，不能重新生成 Outbox"
+        );
         for (event_type, topic) in [
-            (TYPE_USER_MESSAGE, "chat/user_message"),
             (TYPE_TOOL_OUTPUT, "chat/tool_output"),
             (crate::event::TYPE_INFER_REQUEST, "chat/infer_request"),
             ("runtime_control", "runtime/action_group_settled"),

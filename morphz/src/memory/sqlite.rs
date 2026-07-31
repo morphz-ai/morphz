@@ -5,23 +5,23 @@ use crate::config::SqliteStorageConfig;
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
     causal_payload_string, evaluate_thread_completion_contract, evaluate_thread_group_contract,
-    thread_cancellation_event, thread_group_barrier_event, thread_terminal_barrier_event,
-    validate_thread_group_barrier_event, ActionGroupFilter, ActionGroupMemberCommit,
-    ActionGroupMemberRecord, ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus,
-    ActionGroupStore, ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
-    ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
-    ApprovalStatus, ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
-    CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
-    ContextSessionCount, ContextTokenBudgetMutation, ContextUpdate, DelegationRecord,
-    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
-    DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
-    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeExecutionStore,
-    EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore, ExecutionApprovalMutation,
-    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation,
-    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    stable_thread_id, stable_thread_signal_id, thread_cancellation_event,
+    thread_group_barrier_event, thread_terminal_barrier_event, validate_thread_group_barrier_event,
+    ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus,
+    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
+    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
+    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
+    CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
+    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextSessionCount,
+    ContextTokenBudgetMutation, ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore,
+    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
+    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
+    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
+    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
@@ -47,6 +47,7 @@ use crate::memory::{
     ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
     ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
     ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
@@ -3597,6 +3598,176 @@ async fn append_event_in_transaction(
         enqueue_event_recall_in_transaction(tx, event, context_id, false).await?;
     }
     project_observation_in_transaction(tx, event).await?;
+    Ok(())
+}
+
+/// Commit the scheduler mailbox fact caused by one user message in the same
+/// transaction as the immutable Ledger Event.  A process crash after this
+/// function commits can delay dispatch, but it cannot leave an Event without
+/// its authoritative Signal.
+async fn append_dialogue_signal_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    session: &SessionRecord,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let principal_id = event
+        .payload
+        .get("principal_id")
+        .and_then(JsonValue::as_str);
+    let sequence = sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
+        .bind(&event.id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+
+    // Prefer the already-queued next DialogueTurn.  Its model input has not
+    // started, so a consecutive user message belongs to that same batch.
+    let queued = sqlx::query(
+        r#"SELECT activation.id AS activation_id, thread.id AS thread_id,
+                  thread.generation AS thread_generation
+           FROM thread_activations activation
+           JOIN threads thread
+             ON thread.root_turn_id = activation.root_turn_id
+            AND thread.generation = activation.generation
+           WHERE activation.session_id = ?
+             AND activation.status = 'queued'
+             AND activation.trigger_kind = 'chat/user_message'
+             AND thread.kind = 'dialogue_turn'
+             AND thread.status = 'open'
+             AND thread.control_state = 'active'
+             AND (
+               SELECT COUNT(*) FROM activation_signals links
+               WHERE links.activation_id = activation.id
+             ) < ?
+             AND (
+               activation.initiating_principal_id = ?
+               OR (activation.initiating_principal_id IS NULL AND ? IS NULL)
+             )
+           ORDER BY activation.trigger_sequence, activation.id
+           LIMIT 1"#,
+    )
+    .bind(&session.id)
+    .bind(batch_limit)
+    .bind(principal_id)
+    .bind(principal_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let (thread_id, thread_generation, activation_id) = if let Some(row) = queued {
+        (
+            row.get::<String, _>("thread_id"),
+            row.get::<i64, _>("thread_generation"),
+            Some(row.get::<String, _>("activation_id")),
+        )
+    } else {
+        // There may be a durable next batch whose Event+Signal committed just
+        // before EventBus created its Activation. Fold into that oldest batch
+        // rather than racing a second DialogueTurn into existence.
+        let pending = sqlx::query(
+            r#"SELECT thread.id AS thread_id, thread.generation AS thread_generation
+               FROM threads thread
+               JOIN thread_signals signal ON signal.thread_id = thread.id
+               WHERE thread.session_id = ?
+                 AND thread.kind = 'dialogue_turn'
+                 AND thread.status = 'open'
+                 AND thread.control_state = 'active'
+                 AND signal.status = 'pending'
+                 AND (
+                   thread.initiating_principal_id = ?
+                   OR (thread.initiating_principal_id IS NULL AND ? IS NULL)
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM thread_activations activation
+                   WHERE activation.root_turn_id = thread.root_turn_id
+                     AND activation.generation = thread.generation
+                     AND activation.status IN ('queued', 'running')
+                 )
+               GROUP BY thread.id, thread.generation
+               HAVING COUNT(*) < ?
+               ORDER BY MIN(signal.sequence), thread.id
+               LIMIT 1"#,
+        )
+        .bind(&session.id)
+        .bind(principal_id)
+        .bind(principal_id)
+        .bind(batch_limit)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some(row) = pending {
+            (
+                row.get::<String, _>("thread_id"),
+                row.get::<i64, _>("thread_generation"),
+                None,
+            )
+        } else {
+            let thread_id = stable_thread_id(&event.id);
+            sqlx::query(
+                r#"INSERT INTO threads
+                   (id, revision, generation, agent_id, context_id, session_id,
+                    initiating_principal_id, root_turn_id, kind, status, control_state,
+                    executor_kind, lifetime, supervisor_kind, supervisor_id,
+                    supervision_generation, completion_contract_json, delivery_status,
+                    created_at, updated_at)
+                   VALUES (?, 1, 1, ?, ?, ?, ?, ?, 'dialogue_turn', 'open', 'active',
+                           'self', 'durable', 'runtime', 'dialogue-router', 1, '{}',
+                           'none', ?, ?)"#,
+            )
+            .bind(&thread_id)
+            .bind(&session.agent_id)
+            .bind(&session.context_id)
+            .bind(&session.id)
+            .bind(principal_id)
+            .bind(&event.id)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut **tx)
+            .await?;
+            (thread_id, 1, None)
+        }
+    };
+
+    let signal_id = stable_thread_signal_id(&event.id);
+    let status = if activation_id.is_some() {
+        "claimed"
+    } else {
+        "pending"
+    };
+    sqlx::query(
+        r#"INSERT INTO thread_signals
+           (id, thread_id, thread_generation, event_id, principal_id, sequence, kind,
+            parent_activation_id, status, created_at, claimed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)"#,
+    )
+    .bind(&signal_id)
+    .bind(&thread_id)
+    .bind(thread_generation)
+    .bind(&event.id)
+    .bind(principal_id)
+    .bind(sequence)
+    .bind(&event.topic)
+    .bind(status)
+    .bind(&now)
+    .bind(activation_id.as_ref().map(|_| now.as_str()))
+    .execute(&mut **tx)
+    .await?;
+
+    if let Some(activation_id) = activation_id {
+        let ordinal: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM activation_signals WHERE activation_id = ?",
+        )
+        .bind(&activation_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO activation_signals (activation_id, signal_id, ordinal) VALUES (?, ?, ?)",
+        )
+        .bind(activation_id)
+        .bind(signal_id)
+        .bind(ordinal)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(())
 }
 
@@ -10456,7 +10627,7 @@ impl DeliveryIngressStore for SqliteStore {
                 .timestamp
                 .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
             append_event_in_transaction(&mut tx, event).await?;
-            append_signal_outbox_in_transaction(&mut tx, event).await?;
+            append_dialogue_signal_in_transaction(&mut tx, &session, event).await?;
             sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
                 .bind(&timestamp)
                 .bind(&timestamp)
@@ -20830,7 +21001,7 @@ mod tests {
             .claim_thread_signal_batch(
                 NewThreadSignal {
                     id: "retry-late-tool-signal".to_string(),
-                    thread_id: thread.id,
+                    thread_id: thread.id.clone(),
                     thread_generation: thread.generation,
                     event_id: late_tool.id,
                     principal_id: None,
@@ -20958,7 +21129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn signal_outbox_survives_the_event_to_signal_crash_window() {
+    async fn user_message_commits_its_thread_signal_before_dispatch() {
         let tmp_file = NamedTempFile::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let store = Arc::new(SqliteStore::new(path).await.unwrap());
@@ -21011,26 +21182,30 @@ mod tests {
                 .unwrap(),
             MessageClaim::Accepted
         );
-        let pending = store
+        assert!(store
             .list_signal_outbox(SignalOutboxStatus::Pending, 16)
             .await
+            .unwrap()
+            .is_empty());
+        let thread = store.get_thread_by_root(&event.id).await.unwrap().unwrap();
+        let pending = store
+            .next_pending_thread_signal(&thread.id)
+            .await
+            .unwrap()
             .unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].event_id, event.id);
+        assert_eq!(pending.event_id, event.id);
 
-        // Simulate a process crash after the user Event transaction committed
-        // but before EventBus could invoke the Orchestrator.
+        // Simulate a process crash after the Event+Signal transaction
+        // committed but before EventBus could invoke the Orchestrator.
         store.pool.close().await;
         drop(store);
         let store = Arc::new(SqliteStore::new(path).await.unwrap());
-        assert_eq!(
-            store
-                .list_signal_outbox(SignalOutboxStatus::Pending, 16)
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
+        let thread = store.get_thread_by_root(&event.id).await.unwrap().unwrap();
+        assert!(store
+            .next_pending_thread_signal(&thread.id)
+            .await
+            .unwrap()
+            .is_some());
         let stored_event = store
             .query(QueryFilter {
                 event_id: Some(event.id.clone()),
@@ -21041,27 +21216,11 @@ mod tests {
             .pop()
             .unwrap();
         let sequence = stored_event.sequence.unwrap();
-        let thread = store
-            .ensure_thread(NewThread {
-                id: "outbox-thread".to_string(),
-                agent_id: "outbox-agent".to_string(),
-                context_id: "outbox-context".to_string(),
-                session_id: "outbox-session".to_string(),
-                initiating_principal_id: None,
-                root_turn_id: event.id.clone(),
-                kind: ThreadKind::DialogueTurn,
-                executor_kind: "self".to_string(),
-                executor_id: None,
-                target_id: None,
-                supervision: crate::memory::ThreadSupervision::legacy(),
-            })
-            .await
-            .unwrap();
         let activation = store
             .claim_thread_signal_batch(
                 NewThreadSignal {
-                    id: "outbox-signal".to_string(),
-                    thread_id: thread.id,
+                    id: stable_thread_signal_id(&event.id),
+                    thread_id: thread.id.clone(),
                     thread_generation: thread.generation,
                     event_id: event.id.clone(),
                     principal_id: None,
@@ -21092,23 +21251,11 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
-        let materialized = store
-            .list_signal_outbox(SignalOutboxStatus::Materialized, 16)
-            .await
-            .unwrap();
-        assert_eq!(materialized.len(), 1);
-        assert_eq!(materialized[0].signal_id.as_deref(), Some("outbox-signal"));
-
-        // Re-appending the same routed Event cannot reopen the handoff.
-        store
-            .append_with_signal_outbox(event.clone())
-            .await
-            .unwrap();
         assert!(store
-            .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+            .next_pending_thread_signal(&thread.id)
             .await
             .unwrap()
-            .is_empty());
+            .is_none());
     }
 
     #[tokio::test]

@@ -1077,6 +1077,21 @@ pub fn stable_thread_signal_id(event_id: &str) -> String {
     id[..31].to_string()
 }
 
+/// Stable scheduler identity for the logical Thread rooted at one immutable
+/// Ledger fact.  Ingress, recovery and the Orchestrator must derive the same
+/// identity so a crash between durable commit and in-process dispatch cannot
+/// create a second Thread.
+pub fn stable_thread_id(root_turn_id: &str) -> String {
+    let digest = sha2::Sha256::digest(root_turn_id.as_bytes());
+    let id = format!("thread_{digest:x}");
+    id[..31].to_string()
+}
+
+/// Maximum number of consecutive immutable Signals folded into one physical
+/// model Activation.  This is a scheduler contract shared by ingress and
+/// activation claiming, not an Orchestrator-local tuning knob.
+pub const DEFAULT_THREAD_SIGNAL_BATCH_LIMIT: usize = 32;
+
 /// Durable handoff between the immutable Ledger and the Scheduler mailbox.
 /// `pending` means the Event is committed but has not yet been materialized as
 /// a Thread Signal. `materialized` means `signal_id` is the durable successor.

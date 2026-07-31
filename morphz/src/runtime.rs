@@ -6118,7 +6118,11 @@ impl SessionHandle {
                 duplicate: true,
             }),
             MessageClaim::Accepted => {
-                self.runtime.publish(event).await?;
+                // claim_message committed the immutable Event and its
+                // Dialogue Thread Signal atomically.  Dispatch only the
+                // already-durable fact; routing it through publish() would
+                // re-enter the legacy Event -> Signal Outbox bridge.
+                self.runtime.inner.bus.dispatch_persisted(event).await?;
                 Ok(MessageReceipt {
                     event_id,
                     client_message_id,

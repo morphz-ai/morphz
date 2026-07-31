@@ -1,8 +1,11 @@
-use super::{append_event_in_tx, append_signal_outbox_in_tx, now_text, PostgresStore, StoreError};
+use super::{append_event_in_tx, now_text, PostgresStore, StoreError};
 use crate::event::Event;
-use crate::memory::{DeliveryIngressStore, MessageClaim};
+use crate::memory::{
+    stable_thread_id, stable_thread_signal_id, DeliveryIngressStore, MessageClaim,
+    DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+};
 use serde_json::{json, Value as JsonValue};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
@@ -18,6 +21,161 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON session_message_requests(event_id)"#,
     ] {
         sqlx::query(statement).execute(pool).await?;
+    }
+    Ok(())
+}
+
+async fn append_dialogue_signal_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    agent_id: &str,
+    context_id: &str,
+    session_id: &str,
+    event: &Event,
+) -> Result<(), StoreError> {
+    let principal_id = event
+        .payload
+        .get("principal_id")
+        .and_then(JsonValue::as_str);
+    let sequence: i64 = sqlx::query_scalar("SELECT sequence FROM events WHERE id = $1")
+        .bind(&event.id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
+    let now = now_text();
+
+    let queued = sqlx::query(
+        r#"SELECT activation.id AS activation_id, thread.id AS thread_id,
+                  thread.generation AS thread_generation
+           FROM thread_activations activation
+           JOIN threads thread
+             ON thread.root_turn_id = activation.root_turn_id
+            AND thread.generation = activation.generation
+           WHERE activation.session_id = $1
+             AND activation.status = 'queued'
+             AND activation.trigger_kind = 'chat/user_message'
+             AND thread.kind = 'dialogue_turn'
+             AND thread.status = 'open'
+             AND thread.control_state = 'active'
+             AND (
+               SELECT COUNT(*) FROM activation_signals links
+               WHERE links.activation_id = activation.id
+             ) < $2
+             AND activation.initiating_principal_id IS NOT DISTINCT FROM $3
+           ORDER BY activation.trigger_sequence, activation.id
+           LIMIT 1
+           FOR UPDATE OF activation, thread"#,
+    )
+    .bind(session_id)
+    .bind(batch_limit)
+    .bind(principal_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let (thread_id, thread_generation, activation_id) = if let Some(row) = queued {
+        (
+            row.get::<String, _>("thread_id"),
+            row.get::<i64, _>("thread_generation"),
+            Some(row.get::<String, _>("activation_id")),
+        )
+    } else {
+        let pending = sqlx::query(
+            r#"SELECT thread.id AS thread_id, thread.generation AS thread_generation
+               FROM threads thread
+               JOIN thread_signals signal ON signal.thread_id = thread.id
+               WHERE thread.session_id = $1
+                 AND thread.kind = 'dialogue_turn'
+                 AND thread.status = 'open'
+                 AND thread.control_state = 'active'
+                 AND signal.status = 'pending'
+                 AND thread.initiating_principal_id IS NOT DISTINCT FROM $2
+                 AND NOT EXISTS (
+                   SELECT 1 FROM thread_activations activation
+                   WHERE activation.root_turn_id = thread.root_turn_id
+                     AND activation.generation = thread.generation
+                     AND activation.status IN ('queued', 'running')
+                 )
+               GROUP BY thread.id, thread.generation
+               HAVING COUNT(*) < $3
+               ORDER BY MIN(signal.sequence), thread.id
+               LIMIT 1"#,
+        )
+        .bind(session_id)
+        .bind(principal_id)
+        .bind(batch_limit)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some(row) = pending {
+            (
+                row.get::<String, _>("thread_id"),
+                row.get::<i64, _>("thread_generation"),
+                None,
+            )
+        } else {
+            let thread_id = stable_thread_id(&event.id);
+            sqlx::query(
+                r#"INSERT INTO threads
+                   (id, revision, generation, agent_id, context_id, session_id,
+                    initiating_principal_id, root_turn_id, kind, status, control_state,
+                    executor_kind, lifetime, supervisor_kind, supervisor_id,
+                    supervision_generation, completion_contract_json, delivery_status,
+                    created_at, updated_at)
+                   VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'dialogue_turn', 'open',
+                           'active', 'self', 'durable', 'runtime', 'dialogue-router', 1,
+                           '{}'::jsonb, 'none', $7, $7)"#,
+            )
+            .bind(&thread_id)
+            .bind(agent_id)
+            .bind(context_id)
+            .bind(session_id)
+            .bind(principal_id)
+            .bind(&event.id)
+            .bind(&now)
+            .execute(&mut **tx)
+            .await?;
+            (thread_id, 1, None)
+        }
+    };
+
+    let signal_id = stable_thread_signal_id(&event.id);
+    let status = if activation_id.is_some() {
+        "claimed"
+    } else {
+        "pending"
+    };
+    sqlx::query(
+        r#"INSERT INTO thread_signals
+           (id, thread_id, thread_generation, event_id, principal_id, sequence, kind,
+            parent_activation_id, status, created_at, claimed_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10)"#,
+    )
+    .bind(&signal_id)
+    .bind(&thread_id)
+    .bind(thread_generation)
+    .bind(&event.id)
+    .bind(principal_id)
+    .bind(sequence)
+    .bind(&event.topic)
+    .bind(status)
+    .bind(&now)
+    .bind(activation_id.as_ref().map(|_| now.as_str()))
+    .execute(&mut **tx)
+    .await?;
+
+    if let Some(activation_id) = activation_id {
+        let ordinal: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM activation_signals WHERE activation_id = $1",
+        )
+        .bind(&activation_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO activation_signals (activation_id, signal_id, ordinal) VALUES ($1, $2, $3)",
+        )
+        .bind(activation_id)
+        .bind(signal_id)
+        .bind(ordinal)
+        .execute(&mut **tx)
+        .await?;
     }
     Ok(())
 }
@@ -81,7 +239,7 @@ impl DeliveryIngressStore for PostgresStore {
             .ok_or("用户消息缺少 context_id")?;
         let mut tx = self.pool.begin().await?;
         let session = sqlx::query(
-            r#"SELECT context_id, attention_state, attention_revision
+            r#"SELECT agent_id, context_id, attention_state, attention_revision
                FROM sessions WHERE id = $1 FOR UPDATE"#,
         )
         .bind(session_id)
@@ -123,7 +281,14 @@ impl DeliveryIngressStore for PostgresStore {
         }
 
         append_event_in_tx(&mut tx, event).await?;
-        append_signal_outbox_in_tx(&mut tx, event).await?;
+        append_dialogue_signal_in_tx(
+            &mut tx,
+            &session.get::<String, _>("agent_id"),
+            &registry_context_id,
+            session_id,
+            event,
+        )
+        .await?;
         let timestamp = event
             .timestamp
             .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
