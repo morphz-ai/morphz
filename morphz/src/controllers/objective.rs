@@ -1,7 +1,8 @@
 use crate::memory::{ObjectiveRecord, ObjectiveStatus, ObjectiveWaitCondition};
 use crate::scheduler::{
     derive_objective_readiness, ControlObjectiveCommand, KernelCommand, KernelCommandHeader,
-    KernelCommandPayload, ObjectiveReadiness, SchedulerDependencyRecord,
+    KernelCommandPayload, ObjectiveReadiness, SatisfyDependencyCommand,
+    SchedulerDependencyRecord,
 };
 use chrono::{DateTime, Utc};
 
@@ -42,6 +43,34 @@ impl ObjectiveController {
                 status,
                 wait_condition,
                 reason,
+            }),
+        }
+    }
+
+    pub fn satisfy_dependency(
+        objective: &ObjectiveRecord,
+        dependency_id: &str,
+        dependency_generation: u64,
+        event_id: &str,
+        actor: &str,
+    ) -> KernelCommand {
+        let material = format!(
+            "objective-dependency\0{}\0{}\0{}\0{}",
+            objective.id, objective.generation, dependency_generation, event_id
+        );
+        KernelCommand {
+            header: KernelCommandHeader::new(
+                crate::scheduler::stable_command_id("objective-satisfy", &material),
+                event_id,
+                &objective.context_id,
+                actor,
+            )
+            .with_fence(objective.revision, Some(objective.generation)),
+            payload: KernelCommandPayload::SatisfyDependency(SatisfyDependencyCommand {
+                dependency_id: dependency_id.to_string(),
+                owner_generation: objective.generation,
+                dependency_generation,
+                satisfied_by_event_id: event_id.to_string(),
             }),
         }
     }

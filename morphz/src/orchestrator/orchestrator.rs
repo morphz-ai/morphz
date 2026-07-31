@@ -3307,16 +3307,34 @@ impl Orchestrator {
                     continue;
                 }
                 let reason = "Runtime 重启时检测到 active Thread 没有非终态 Thread Activation、待执行调度或已提交终态；已将遗留孤儿状态标记为 cancelled。";
-                match session_store
-                    .control_thread(
-                        &thread.id,
-                        thread.revision,
-                        ThreadControlAction::Close,
-                        Some(reason),
-                        Some("Runtime-Recovery"),
-                    )
-                    .await?
-                {
+                let mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
+                    match kernel
+                        .execute(crate::controllers::DialogueController::control_thread(
+                            &thread,
+                            &context.id,
+                            ThreadControlAction::Close,
+                            reason,
+                            "Runtime-Recovery",
+                        ))
+                        .await?
+                    {
+                        crate::scheduler::KernelResult::ThreadControlled(mutation) => mutation,
+                        _ => unreachable!("ControlThread command returned wrong result"),
+                    }
+                } else {
+                    // Narrow recovery fixtures may assemble an Orchestrator
+                    // without a Kernel. Production Runtime always injects it.
+                    session_store
+                        .control_thread(
+                            &thread.id,
+                            thread.revision,
+                            ThreadControlAction::Close,
+                            Some(reason),
+                            Some("Runtime-Recovery"),
+                        )
+                        .await?
+                };
+                match mutation {
                     ThreadMutation::Updated(_) => {
                         self.revoke_thread_capability_leases(
                             &thread.id,

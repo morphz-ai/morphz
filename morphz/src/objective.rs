@@ -1020,15 +1020,31 @@ impl ObjectiveSupervisor {
             // dependency or reinterpret the Event.
             return Ok(false);
         };
-        match store
-            .satisfy_scheduler_dependency(
-                &dependency.id,
-                objective.generation,
-                dependency.dependency_generation,
-                event_id,
-            )
-            .await?
-        {
+        let mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            match kernel
+                .execute(crate::controllers::ObjectiveController::satisfy_dependency(
+                    objective,
+                    &dependency.id,
+                    dependency.dependency_generation,
+                    event_id,
+                    "ObjectiveSupervisor",
+                ))
+                .await?
+            {
+                KernelResult::DependencySatisfied(mutation) => mutation,
+                _ => return Err("Scheduler Kernel 返回了错误的 dependency satisfy 结果".into()),
+            }
+        } else {
+            store
+                .satisfy_scheduler_dependency(
+                    &dependency.id,
+                    objective.generation,
+                    dependency.dependency_generation,
+                    event_id,
+                )
+                .await?
+        };
+        match mutation {
             SchedulerDependencyMutation::Updated(_) | SchedulerDependencyMutation::Existing(_) => {
                 Ok(true)
             }
@@ -1124,6 +1140,46 @@ impl ObjectiveSupervisor {
     pub fn with_scheduler_kernel(mut self, kernel: Arc<SchedulerKernel>) -> Self {
         self.scheduler_kernel = Some(kernel);
         self
+    }
+
+    /// Execute one Objective lifecycle transition through the Scheduler
+    /// Kernel. The direct Store branch exists only for narrow unit fixtures
+    /// which construct this policy component without the production Runtime
+    /// assembly; every assembled Runtime injects the Kernel.
+    async fn transition_objective(
+        &self,
+        objective: &ObjectiveRecord,
+        status: ObjectiveStatus,
+        wait_condition: Option<ObjectiveWaitCondition>,
+        reason: Option<&str>,
+        causation_id: &str,
+        actor: &str,
+    ) -> Result<ObjectiveMutation, DynError> {
+        if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            return match kernel
+                .execute(crate::controllers::ObjectiveController::control(
+                    objective,
+                    status,
+                    wait_condition,
+                    reason.map(str::to_string),
+                    causation_id,
+                    actor,
+                ))
+                .await?
+            {
+                KernelResult::ObjectiveControlled(mutation) => Ok(mutation),
+                _ => Err("Scheduler Kernel 返回了错误的 Objective control 结果".into()),
+            };
+        }
+        self.store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                status,
+                wait_condition,
+                reason,
+            )
+            .await
     }
 
     async fn resolve_tool_task_wait(
@@ -1375,13 +1431,13 @@ impl ObjectiveSupervisor {
                 // resource namespaces; external ResourceAvailable waits still
                 // require their real signal.
                 if let ObjectiveMutation::Updated(recovered) = self
-                    .store
-                    .update_objective_state(
-                        &objective.id,
-                        objective.revision,
+                    .transition_objective(
+                        &objective,
                         ObjectiveStatus::Active,
                         None,
                         Some("Runtime 重启后释放失效的内部恢复等待并重新求值"),
+                        "runtime-recovery",
+                        "ObjectiveSupervisor-Recovery",
                     )
                     .await?
                 {
@@ -1625,35 +1681,24 @@ impl ObjectiveSupervisor {
         wait_condition: Option<ObjectiveWaitCondition>,
         reason: Option<&str>,
     ) -> Result<ObjectiveMutation, DynError> {
-        let mut mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
-            let current = self
-                .store
-                .get_objective(id)
-                .await?
-                .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
-            if current.revision != expected_revision {
-                return Ok(ObjectiveMutation::Conflict { current });
-            }
-            match kernel
-                .execute(crate::controllers::ObjectiveController::control(
-                    &current,
-                    status,
-                    wait_condition,
-                    reason.map(str::to_string),
-                    id,
-                    "ObjectiveSupervisor",
-                ))
-                .await?
-            {
-                KernelResult::ObjectiveControlled(mutation) => mutation,
-                _ => return Err("Scheduler Kernel 返回了错误的 Objective control 结果".into()),
-            }
-        } else {
-            // Compatibility fixture path only. Runtime always injects Kernel.
-            self.store
-                .update_objective_state(id, expected_revision, status, wait_condition, reason)
-                .await?
-        };
+        let current = self
+            .store
+            .get_objective(id)
+            .await?
+            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+        if current.revision != expected_revision {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let mut mutation = self
+            .transition_objective(
+                &current,
+                status,
+                wait_condition,
+                reason,
+                id,
+                "ObjectiveSupervisor",
+            )
+            .await?;
         if let ObjectiveMutation::Updated(updated) = &mutation {
             if matches!(
                 updated.status,
@@ -1725,14 +1770,15 @@ impl ObjectiveSupervisor {
             }
             self.satisfy_wait_dependency(&objective, wait, &event.id)
                 .await?;
+            let reason = format!("等待条件已由事件 {} 满足", event.id);
             let mutation = self
-                .store
-                .update_objective_state(
-                    &objective.id,
-                    objective.revision,
+                .transition_objective(
+                    &objective,
                     ObjectiveStatus::Active,
                     None,
-                    Some(&format!("等待条件已由事件 {} 满足", event.id)),
+                    Some(&reason),
+                    &event.id,
+                    "ObjectiveSupervisor",
                 )
                 .await?;
             let ObjectiveMutation::Updated(woken) = mutation else {
@@ -1772,14 +1818,15 @@ impl ObjectiveSupervisor {
             }
             self.satisfy_wait_dependency(&objective, wait, &event.id)
                 .await?;
+            let reason = format!("等待条件已由事件 {} 满足", event.id);
             let mutation = self
-                .store
-                .update_objective_state(
-                    &objective.id,
-                    objective.revision,
+                .transition_objective(
+                    &objective,
                     ObjectiveStatus::Active,
                     None,
-                    Some(&format!("等待条件已由事件 {} 满足", event.id)),
+                    Some(&reason),
+                    &event.id,
+                    "ObjectiveSupervisor",
                 )
                 .await?;
             if let ObjectiveMutation::Updated(woken) = mutation {
@@ -1974,13 +2021,13 @@ impl ObjectiveSupervisor {
         };
 
         match self
-            .store
-            .update_objective_state(
-                &objective.id,
-                objective.revision,
+            .transition_objective(
+                &objective,
                 status,
                 wait_condition,
                 Some(&reason),
+                &event.id,
+                "ObjectiveSupervisor-ProviderRecovery",
             )
             .await?
         {
@@ -2077,15 +2124,15 @@ impl ObjectiveSupervisor {
                     ObjectiveReadiness::Runnable => {
                         if objective.wait_condition.is_some() {
                             let mutation = self
-                                .store
-                                .update_objective_state(
-                                    &objective.id,
-                                    objective.revision,
+                                .transition_objective(
+                                    &objective,
                                     ObjectiveStatus::Active,
                                     None,
                                     Some(
                                         "结构化 Scheduler dependency 已终结；清理旧 wait 展示投影",
                                     ),
+                                    "dependency-terminal",
+                                    "ObjectiveSupervisor",
                                 )
                                 .await?;
                             match mutation {
@@ -2247,13 +2294,13 @@ impl ObjectiveSupervisor {
             }
         }
         let mutation = self
-            .store
-            .update_objective_state(
-                &objective.id,
-                objective.revision,
+            .transition_objective(
+                &objective,
                 ObjectiveStatus::Active,
                 None,
                 Some(&reason),
+                caused_by.as_deref().unwrap_or(&group_id),
+                "ObjectiveSupervisor-ThreadGroup",
             )
             .await?;
         match mutation {
@@ -2353,13 +2400,13 @@ impl ObjectiveSupervisor {
             }
         }
         let mutation = self
-            .store
-            .update_objective_state(
-                &objective.id,
-                objective.revision,
+            .transition_objective(
+                &objective,
                 ObjectiveStatus::Active,
                 None,
                 Some(&reason),
+                caused_by.as_deref().unwrap_or(delegation_id),
+                "ObjectiveSupervisor-Delegation",
             )
             .await?;
         match mutation {
@@ -2465,13 +2512,13 @@ impl ObjectiveSupervisor {
             }
         }
         let mutation = self
-            .store
-            .update_objective_state(
-                &objective.id,
-                objective.revision,
+            .transition_objective(
+                &objective,
                 ObjectiveStatus::Active,
                 None,
                 Some(&reason),
+                caused_by.as_deref().unwrap_or(task_id),
+                "ObjectiveSupervisor-ExecutionJob",
             )
             .await?;
         match mutation {
@@ -2614,15 +2661,15 @@ impl ObjectiveSupervisor {
                     group.id
                 );
                 let mutation = self
-                    .store
-                    .update_objective_state(
-                        &objective.id,
-                        objective.revision,
+                    .transition_objective(
+                        &objective,
                         ObjectiveStatus::Active,
                         Some(ObjectiveWaitCondition::ThreadGroup {
                             group_id: group.id.clone(),
                         }),
                         Some(&reason),
+                        &group.id,
+                        "ObjectiveSupervisor-Recovery",
                     )
                     .await?;
                 // `reconcile_thread_group_wait` may immediately schedule the
@@ -2871,13 +2918,13 @@ impl ObjectiveSupervisor {
         )
         .await?;
         match self
-            .store
-            .update_objective_state(
-                &current.id,
-                current.revision,
+            .transition_objective(
+                &current,
                 ObjectiveStatus::Active,
                 None,
                 Some("计时等待已到期"),
+                &satisfaction_event.id,
+                "ObjectiveSupervisor-Timer",
             )
             .await?
         {
