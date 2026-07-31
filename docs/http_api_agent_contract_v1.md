@@ -543,6 +543,116 @@ Authorization: Bearer <dashboard-operator-token>
 - 该接口用于全局指挥台、运维控制台和管理 SDK，不属于 Principal-scoped Web App 接口。外部 Gateway 应继续使用自己的 Session 目录，不应调用该端点。
 - Rust SDK 对应方法为 `MorphzSdk::runtime_overview(RuntimeOverviewQuery)`；当前 TypeScript v1 Client 尚未封装该 Operator 端点。
 
+### 托管凭证（Operator）
+
+以下接口只接受 Dashboard/Operator 管理令牌。`trusted_gateway` 服务令牌即使携带合法 Principal 也无权读取或修改凭证目录。
+
+```http
+GET    /api/runtime/secrets
+POST   /api/runtime/secrets
+POST   /api/runtime/secrets/import
+GET    /api/runtime/secrets/scope-options
+DELETE /api/runtime/secrets/{name}
+```
+
+读取响应只包含凭证别名和非敏感元数据：
+
+```json
+{
+  "secrets": [
+    {
+      "name": "DEPLOY_TOKEN",
+      "secret_ref": "secret://runtime/DEPLOY_TOKEN",
+      "scope_kind": "runtime",
+      "value_backend": "macos_keychain",
+      "created_at": "2026-07-31T08:00:00Z",
+      "updated_at": "2026-07-31T08:00:00Z"
+    }
+  ],
+  "default_value_backend": "macos_keychain",
+  "backends": [
+    {
+      "id": "macos_keychain",
+      "storage_kind": "native_keyring",
+      "available": true,
+      "writable": true,
+      "supports_import": false,
+      "detail": "macOS Keychain"
+    },
+    {
+      "id": "morphz_env_file",
+      "storage_kind": "host_env_file",
+      "available": true,
+      "writable": true,
+      "supports_import": true,
+      "detail": "$MORPHZ_HOME/.env"
+    }
+  ],
+  "import_candidates": [
+    {
+      "name": "EXISTING_TOKEN",
+      "value_backend": "morphz_env_file"
+    }
+  ],
+  "recent_usage": []
+}
+```
+
+写入或轮换一项凭证：
+
+```http
+POST /api/runtime/secrets
+Content-Type: application/json
+
+{
+  "name": "DEPLOY_TOKEN",
+  "value": "write-only-value",
+  "scope_kind": "execution_target",
+  "scope_id": "target-production",
+  "value_backend": "morphz_env_file"
+}
+```
+
+`value_backend` 可省略，此时使用 Runtime 默认后端。系统凭证库不可用时接口会明确失败，不会静默写入明文文件；无交互服务器必须显式选择 `morphz_env_file`。
+
+已有 `$MORPHZ_HOME/.env`（或 `$MORPHZ_ENV_FILE`）变量必须显式导入后才能被 Agent 发现：
+
+```http
+POST /api/runtime/secrets/import
+Content-Type: application/json
+
+{
+  "name": "EXISTING_TOKEN",
+  "scope_kind": "context",
+  "scope_id": "context_123",
+  "value_backend": "morphz_env_file"
+}
+```
+
+导入只把别名、作用域和值后端写入 Catalog，不复制或返回值。未导入的进程环境和 `.env` 变量名不会出现在模型可见的 `list_secrets` 结果中。
+
+作用域可取 `runtime | context | session | objective | execution_target`。除 `runtime` 外必须提供 `scope_id`。Dashboard 使用 `GET /api/runtime/secrets/scope-options` 获取实体列表，避免要求 Operator 手抄内部 ID。
+
+撤销：
+
+```http
+DELETE /api/runtime/secrets/DEPLOY_TOKEN
+```
+
+成功返回 `204`。删除会移除 Catalog 条目和其指定值后端中的值。API 不提供读取凭证原值的端点。
+
+Rust SDK 对应方法：
+
+- `secret_backend_statuses`
+- `secret_import_candidates`
+- `recent_secret_usage`
+- `list_managed_secrets`
+- `put_managed_secret_with_backend`
+- `import_managed_secret`
+- `delete_managed_secret`
+
+完整安全模型见 `docs/morphz_secret_store_architecture_v2.md`。
+
 ## 5. 最小调用示例
 
 ```bash

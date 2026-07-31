@@ -25,6 +25,7 @@ import {
   FileText,
   GitBranch,
   Globe,
+  KeyRound,
   Layers3,
   ListTree,
   LoaderCircle,
@@ -100,6 +101,7 @@ import {
 } from './app/routes'
 import { LedgerPage } from './pages/LedgerPage'
 import type { LedgerFilters } from './pages/LedgerPage'
+import { CredentialsPage } from './pages/CredentialsPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { RuntimeOverviewPage, type RuntimeOverview } from './pages/RuntimeOverviewPage'
 import { RuntimePage } from './pages/RuntimePage'
@@ -2419,8 +2421,6 @@ export default function App() {
   const [executionNodes, setExecutionNodes] = useState<ExecutionNodeSummary[]>([])
   const [capabilityLeases, setCapabilityLeases] = useState<CapabilityLeaseSummary[]>([])
   const [executionJobs, setExecutionJobs] = useState<ExecutionJobSummary[]>([])
-  const [managedSecrets, setManagedSecrets] = useState<Array<{ name: string; secret_ref: string; scope_kind: string; scope_id?: string; value_backend: string; updated_at: string }>>([])
-  const [secretBackendId, setSecretBackendId] = useState('')
   const [schedulerSnapshot, setSchedulerSnapshot] = useState<SchedulerSnapshot | null>(null)
   const [attentionAcknowledgements, setAttentionAcknowledgements] = useState<AttentionAcknowledgement[]>([])
   const [acknowledgingAttentionKey, setAcknowledgingAttentionKey] = useState('')
@@ -2675,7 +2675,7 @@ export default function App() {
       const sessionsPath = observedPrincipalId
         ? `/api/operator/principals/${encodeURIComponent(observedPrincipalId)}/sessions?include_archived=true`
         : '/api/sessions?include_archived=true'
-      const [nextStatus, agentsResult, contextsResult, sessionsResult, delegationsResult, targetsResult, nodesResult, leasesResult, jobsResult, secretsResult] = await Promise.all([
+      const [nextStatus, agentsResult, contextsResult, sessionsResult, delegationsResult, targetsResult, nodesResult, leasesResult, jobsResult] = await Promise.all([
         DASHBOARD_API.get<RuntimeStatus>('/api/status'),
         DASHBOARD_API.tryGet<{ agents?: AgentRecord[] }>('/api/agents?include_archived=true'),
         DASHBOARD_API.tryGet<{ contexts?: ContextRecord[] }>('/api/contexts?include_archived=true'),
@@ -2685,7 +2685,6 @@ export default function App() {
         DASHBOARD_API.tryGet<{ nodes?: ExecutionNodeSummary[] }>('/api/edge/nodes'),
         DASHBOARD_API.tryGet<{ leases?: CapabilityLeaseSummary[] }>('/api/capability-leases?active_only=true'),
         DASHBOARD_API.tryGet<{ jobs?: ExecutionJobSummary[] }>('/api/execution-jobs?include_terminal=true&newest_first=true&limit=100'),
-        DASHBOARD_API.tryGet<{ secrets?: Array<{ name: string; secret_ref: string; scope_kind: string; scope_id?: string; value_backend: string; updated_at: string }>; value_backend?: string }>('/api/runtime/secrets'),
       ])
       const nextAgents = agentsResult?.agents ?? []
       const nextContexts = contextsResult?.contexts ?? []
@@ -2700,8 +2699,6 @@ export default function App() {
       setExecutionNodes(nodesResult?.nodes ?? [])
       setCapabilityLeases(leasesResult?.leases ?? [])
       setExecutionJobs(jobsResult?.jobs ?? [])
-      setManagedSecrets(secretsResult?.secrets ?? [])
-      setSecretBackendId(secretsResult?.value_backend ?? '')
       setSelectedAgentId(current => current || nextStatus.agent_id || nextAgents[0]?.id || '')
       setSelectedContextId(current => {
         if (current && nextContexts.some(item => item.id === current && item.status === 'active')) return current
@@ -6092,6 +6089,9 @@ export default function App() {
             <button className={view === 'runtime' ? 'is-active' : ''} type="button" onClick={() => setView('runtime')} aria-current={view === 'runtime' ? 'page' : undefined}>
               <Radio size={14} /><span>{t('navigation.runtime')}</span>
             </button>
+            <button className={view === 'credentials' ? 'is-active' : ''} type="button" onClick={() => setView('credentials')} aria-current={view === 'credentials' ? 'page' : undefined}>
+              <KeyRound size={14} /><span>{t('navigation.credentials')}</span>
+            </button>
           </nav>
           {view === 'dialogue' && selectedSessionId && (
             <div className="conversation-toolbar">
@@ -7226,24 +7226,17 @@ export default function App() {
               executionNodes={executionNodes}
               capabilityLeases={capabilityLeases}
               executionJobs={executionJobs}
-              managedSecrets={managedSecrets}
-              secretBackendId={secretBackendId}
               onRefresh={() => void loadCatalog()}
+              onOpenCredentials={() => setView('credentials')}
               onAuditProjection={() => void auditMindProjection()}
               onSetTargetStatus={(targetId, revision, nextStatus) => void setExecutionTargetStatus(targetId, revision, nextStatus)}
               onRevokeNode={(nodeId, revision) => void revokeExecutionNode(nodeId, revision)}
               onRevokeLease={(leaseId, revision) => void revokeCapabilityLease(leaseId, revision)}
               onCancelJob={(jobId, revision) => void cancelExecutionJob(jobId, revision)}
-              onPutSecret={async secret => {
-                await DASHBOARD_API.command('/api/runtime/secrets', 'POST', secret)
-                await loadCatalog()
-              }}
-              onDeleteSecret={async name => {
-                await DASHBOARD_API.command(`/api/runtime/secrets/${encodeURIComponent(name)}`, 'DELETE')
-                await loadCatalog()
-              }}
             />
           )}
+
+          {view === 'credentials' && <CredentialsPage api={DASHBOARD_API} />}
 
           {view === 'cognition' && (
             <section className="cognition-view">

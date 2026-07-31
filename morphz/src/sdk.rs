@@ -437,8 +437,29 @@ impl MorphzSdk {
         self.runtime.runtime_status()
     }
 
-    pub fn secret_backend_id(&self) -> &'static str {
+    pub fn secret_backend_id(&self) -> &str {
         self.runtime.secret_backend_id()
+    }
+
+    pub fn secret_backend_statuses(&self) -> Vec<crate::secret_store::SecretBackendStatus> {
+        self.runtime.secret_backend_statuses()
+    }
+
+    pub fn secret_import_candidates(
+        &self,
+    ) -> SdkResult<Vec<crate::secret_store::SecretImportCandidate>> {
+        self.runtime
+            .secret_import_candidates()
+            .map_err(SdkError::internal)
+    }
+
+    pub fn recent_secret_usage(
+        &self,
+        limit: usize,
+    ) -> SdkResult<Vec<crate::secret_store::SecretUseAuditRecord>> {
+        self.runtime
+            .recent_secret_usage(limit)
+            .map_err(SdkError::internal)
     }
 
     pub fn list_managed_secrets(&self) -> SdkResult<Vec<crate::secret_store::ManagedSecret>> {
@@ -456,6 +477,31 @@ impl MorphzSdk {
     ) -> SdkResult<crate::secret_store::ManagedSecret> {
         self.runtime
             .put_managed_secret(name, value, scope_kind, scope_id)
+            .map_err(SdkError::internal)
+    }
+
+    pub fn put_managed_secret_with_backend(
+        &self,
+        name: &str,
+        value: &str,
+        scope_kind: crate::secret_store::SecretScopeKind,
+        scope_id: Option<String>,
+        value_backend: &str,
+    ) -> SdkResult<crate::secret_store::ManagedSecret> {
+        self.runtime
+            .put_managed_secret_with_backend(name, value, scope_kind, scope_id, value_backend)
+            .map_err(SdkError::internal)
+    }
+
+    pub fn import_managed_secret(
+        &self,
+        name: &str,
+        scope_kind: crate::secret_store::SecretScopeKind,
+        scope_id: Option<String>,
+        value_backend: &str,
+    ) -> SdkResult<crate::secret_store::ManagedSecret> {
+        self.runtime
+            .import_managed_secret(name, scope_kind, scope_id, value_backend)
             .map_err(SdkError::internal)
     }
 

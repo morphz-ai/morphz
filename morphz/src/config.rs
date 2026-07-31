@@ -146,7 +146,7 @@ pub fn load_env(filepath: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn parse_env_value(raw: &str) -> io::Result<String> {
+pub(crate) fn parse_env_value(raw: &str) -> io::Result<String> {
     let value = raw.trim_start();
     let Some(quote) = value
         .chars()

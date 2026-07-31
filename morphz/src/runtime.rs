@@ -65,7 +65,10 @@ use crate::orchestrator::orchestrator::{DurableApprovalServices, Orchestrator};
 use crate::permission::{
     ApprovalRequirement, PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode,
 };
-use crate::secret_store::{ManagedSecret, SecretScopeKind, SecretStore};
+use crate::secret_store::{
+    ManagedSecret, SecretBackendStatus, SecretImportCandidate, SecretScopeKind, SecretStore,
+    SecretUseAuditRecord,
+};
 use crate::timer::TimerEngine;
 use crate::tool::{
     BackgroundTaskScheduler, CheckTaskAfterTool, DelegateTool, EditFileTool, ExecuteCommandTool,
@@ -1718,8 +1721,29 @@ impl MorphzRuntime {
         &self.inner.identity
     }
 
-    pub fn secret_backend_id(&self) -> &'static str {
+    pub fn secret_backend_id(&self) -> &str {
         self.inner.secret_store.backend_id()
+    }
+
+    pub fn secret_backend_statuses(&self) -> Vec<SecretBackendStatus> {
+        self.inner.secret_store.backend_statuses()
+    }
+
+    pub fn secret_import_candidates(&self) -> Result<Vec<SecretImportCandidate>, RuntimeError> {
+        self.inner
+            .secret_store
+            .import_candidates()
+            .map_err(Into::into)
+    }
+
+    pub fn recent_secret_usage(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SecretUseAuditRecord>, RuntimeError> {
+        self.inner
+            .secret_store
+            .recent_usage(limit)
+            .map_err(Into::into)
     }
 
     pub fn list_managed_secrets(&self) -> Result<Vec<ManagedSecret>, RuntimeError> {
@@ -1736,6 +1760,33 @@ impl MorphzRuntime {
         self.inner
             .secret_store
             .put(name, value, scope_kind, scope_id)
+            .map_err(Into::into)
+    }
+
+    pub fn put_managed_secret_with_backend(
+        &self,
+        name: &str,
+        value: &str,
+        scope_kind: SecretScopeKind,
+        scope_id: Option<String>,
+        value_backend: &str,
+    ) -> Result<ManagedSecret, RuntimeError> {
+        self.inner
+            .secret_store
+            .put_with_backend(name, value, scope_kind, scope_id, value_backend)
+            .map_err(Into::into)
+    }
+
+    pub fn import_managed_secret(
+        &self,
+        name: &str,
+        scope_kind: SecretScopeKind,
+        scope_id: Option<String>,
+        value_backend: &str,
+    ) -> Result<ManagedSecret, RuntimeError> {
+        self.inner
+            .secret_store
+            .import(name, scope_kind, scope_id, value_backend)
             .map_err(Into::into)
     }
 

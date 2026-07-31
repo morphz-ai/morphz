@@ -1,19 +1,21 @@
 //! Runtime-managed secret references.
 //!
 //! Metadata is safe to inspect and is stored separately from secret values.
-//! Values live behind a pluggable [`SecretValueBackend`]. The default backend
-//! uses the operating-system credential store through `keyring`; it never
-//! falls back to a plaintext file.
+//! Values live behind pluggable [`SecretValueBackend`] implementations. Each
+//! credential explicitly records its value backend; Morphz never silently
+//! changes storage when a backend is unavailable.
 
-use crate::config::morphz_home_dir;
+use crate::config::{host_env_path, morphz_home_dir};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 const NATIVE_KEYRING_SERVICE: &str = "ai.morphz.runtime.secrets.v1";
+const MAX_USAGE_AUDIT_BYTES: u64 = 4 * 1024 * 1024;
+const RETAINED_USAGE_AUDIT_RECORDS: usize = 2_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +43,38 @@ pub struct ManagedSecret {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SecretBackendStatus {
+    pub id: String,
+    pub storage_kind: String,
+    pub available: bool,
+    pub writable: bool,
+    pub supports_import: bool,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SecretImportCandidate {
+    pub name: String,
+    pub value_backend: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SecretUseAuditRecord {
+    pub name: String,
+    pub secret_ref: String,
+    pub value_backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+    pub used_at: chrono::DateTime<chrono::Utc>,
+}
+
 fn default_value_backend() -> String {
     "native_keyring".to_string()
 }
@@ -57,9 +91,19 @@ pub struct SecretUseContext<'a> {
 /// Vault/KMS/target-local implementation without changing SDK, HTTP or tools.
 pub trait SecretValueBackend: Send + Sync {
     fn backend_id(&self) -> &'static str;
+    fn storage_kind(&self) -> &'static str;
     fn put(&self, locator: &str, value: &str) -> Result<(), String>;
     fn get(&self, locator: &str) -> Result<Option<String>, String>;
     fn delete(&self, locator: &str) -> Result<bool, String>;
+    fn list_aliases(&self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+    fn supports_import(&self) -> bool {
+        false
+    }
+    fn status_detail(&self) -> String {
+        self.backend_id().to_string()
+    }
 }
 
 /// Native cross-platform backend:
@@ -109,6 +153,10 @@ impl SecretValueBackend for NativeKeyringSecretBackend {
         }
     }
 
+    fn storage_kind(&self) -> &'static str {
+        "native_keyring"
+    }
+
     fn put(&self, locator: &str, value: &str) -> Result<(), String> {
         Self::entry(locator)?
             .set_password(value)
@@ -130,6 +178,10 @@ impl SecretValueBackend for NativeKeyringSecretBackend {
             Err(error) => Err(native_backend_error("删除", error)),
         }
     }
+
+    fn status_detail(&self) -> String {
+        "操作系统用户凭证库；后台、SSH 或无图形会话中可能不可用".to_string()
+    }
 }
 
 fn native_backend_error(operation: &str, error: keyring::Error) -> String {
@@ -138,11 +190,147 @@ fn native_backend_error(operation: &str, error: keyring::Error) -> String {
     )
 }
 
-/// Metadata catalog plus one value backend. One Runtime owns one store.
+/// Explicit plaintext backend for the Morphz-owned host environment file.
+///
+/// This backend exists for headless deployments where a desktop credential
+/// service is unavailable. It is never selected as an implicit fallback.
+#[derive(Debug)]
+pub struct HostEnvFileSecretBackend {
+    path: PathBuf,
+    lock: Mutex<()>,
+}
+
+impl HostEnvFileSecretBackend {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            lock: Mutex::new(()),
+        }
+    }
+
+    fn read_lines(&self) -> Result<Vec<String>, String> {
+        match fs::read_to_string(&self.path) {
+            Ok(contents) => Ok(contents.lines().map(ToString::to_string).collect()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(format!(
+                "无法读取 Morphz 环境文件 '{}': {error}",
+                self.path.display()
+            )),
+        }
+    }
+
+    fn persist_lines(&self, lines: &[String]) -> Result<(), String> {
+        let mut contents = lines.join("\n");
+        if !contents.is_empty() {
+            contents.push('\n');
+        }
+        atomic_private_write(&self.path, contents.as_bytes())
+    }
+}
+
+impl SecretValueBackend for HostEnvFileSecretBackend {
+    fn backend_id(&self) -> &'static str {
+        "morphz_env_file"
+    }
+
+    fn storage_kind(&self) -> &'static str {
+        "host_env_file"
+    }
+
+    fn put(&self, locator: &str, value: &str) -> Result<(), String> {
+        validate_env_file_value(value)?;
+        let name = locator_name(locator)?;
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| "Morphz 环境文件锁已损坏".to_string())?;
+        let mut lines = self.read_lines()?;
+        let replacement = format!("{name}={}", quote_env_value(value));
+        let mut replaced = false;
+        for line in &mut lines {
+            if env_assignment_name(line) == Some(name) {
+                *line = replacement.clone();
+                replaced = true;
+            }
+        }
+        if !replaced {
+            lines.push(replacement);
+        }
+        self.persist_lines(&lines)
+    }
+
+    fn get(&self, locator: &str) -> Result<Option<String>, String> {
+        let name = locator_name(locator)?;
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| "Morphz 环境文件锁已损坏".to_string())?;
+        for line in self.read_lines()?.iter().rev() {
+            if env_assignment_name(line) == Some(name) {
+                let (_, value) = line
+                    .trim()
+                    .split_once('=')
+                    .ok_or_else(|| format!("环境变量 '{name}' 格式无效"))?;
+                return crate::config::parse_env_value(value)
+                    .map(Some)
+                    .map_err(|error| format!("环境变量 '{name}' 无法解析：{error}"));
+            }
+        }
+        Ok(None)
+    }
+
+    fn delete(&self, locator: &str) -> Result<bool, String> {
+        let name = locator_name(locator)?;
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| "Morphz 环境文件锁已损坏".to_string())?;
+        let mut lines = self.read_lines()?;
+        let previous_len = lines.len();
+        lines.retain(|line| env_assignment_name(line) != Some(name));
+        if lines.len() == previous_len {
+            return Ok(false);
+        }
+        self.persist_lines(&lines)?;
+        Ok(true)
+    }
+
+    fn list_aliases(&self) -> Result<Vec<String>, String> {
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| "Morphz 环境文件锁已损坏".to_string())?;
+        let mut aliases = self
+            .read_lines()?
+            .iter()
+            .filter_map(|line| env_assignment_name(line).map(ToString::to_string))
+            .collect::<Vec<_>>();
+        aliases.sort();
+        aliases.dedup();
+        Ok(aliases)
+    }
+
+    fn supports_import(&self) -> bool {
+        true
+    }
+
+    fn status_detail(&self) -> String {
+        format!(
+            "Morphz 主机环境文件 '{}'（明文，文件权限 0600）",
+            self.path.display()
+        )
+    }
+}
+
+/// Metadata catalog plus explicitly selected value backends. One Runtime owns
+/// one store.
 pub struct SecretStore {
     catalog_path: PathBuf,
-    backend: Arc<dyn SecretValueBackend>,
+    audit_path: PathBuf,
+    default_backend_id: String,
+    backends: BTreeMap<String, Arc<dyn SecretValueBackend>>,
     catalog: RwLock<BTreeMap<String, ManagedSecret>>,
+    audit_lock: Mutex<()>,
 }
 
 impl std::fmt::Debug for SecretStore {
@@ -150,7 +338,8 @@ impl std::fmt::Debug for SecretStore {
         formatter
             .debug_struct("SecretStore")
             .field("catalog_path", &self.catalog_path)
-            .field("backend", &self.backend.backend_id())
+            .field("default_backend", &self.default_backend_id)
+            .field("backends", &self.backends.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
     }
 }
@@ -160,14 +349,31 @@ impl SecretStore {
         let catalog_path = morphz_home_dir()
             .map(|path| path.join("managed-secrets.json"))
             .ok_or_else(|| "无法确定 Morphz 用户配置目录".to_string())?;
-        Self::new(catalog_path, Arc::new(NativeKeyringSecretBackend))
+        let env_path = host_env_path().ok_or_else(|| "无法确定 Morphz 用户环境文件".to_string())?;
+        let native: Arc<dyn SecretValueBackend> = Arc::new(NativeKeyringSecretBackend);
+        let default_backend_id = native.backend_id().to_string();
+        Self::with_backends(
+            catalog_path,
+            default_backend_id,
+            vec![native, Arc::new(HostEnvFileSecretBackend::new(env_path))],
+        )
     }
 
     pub fn new(
         catalog_path: impl Into<PathBuf>,
         backend: Arc<dyn SecretValueBackend>,
     ) -> Result<Self, String> {
+        let default_backend_id = backend.backend_id().to_string();
+        Self::with_backends(catalog_path, default_backend_id, vec![backend])
+    }
+
+    pub fn with_backends(
+        catalog_path: impl Into<PathBuf>,
+        default_backend_id: impl Into<String>,
+        backends: Vec<Arc<dyn SecretValueBackend>>,
+    ) -> Result<Self, String> {
         let catalog_path = catalog_path.into();
+        let audit_path = catalog_path.with_file_name("managed-secret-usage.jsonl");
         let entries = match fs::read(&catalog_path) {
             Ok(bytes) => serde_json::from_slice::<Vec<ManagedSecret>>(&bytes)
                 .map_err(|error| format!("Secret metadata catalog 无法解析：{error}"))?,
@@ -178,15 +384,69 @@ impl SecretStore {
             .into_iter()
             .map(|entry| (entry.name.clone(), entry))
             .collect();
+        let backends = backends
+            .into_iter()
+            .map(|backend| (backend.backend_id().to_string(), backend))
+            .collect::<BTreeMap<_, _>>();
+        let default_backend_id = default_backend_id.into();
+        if !backends.contains_key(&default_backend_id) {
+            return Err(format!(
+                "默认 Secret Value Backend '{default_backend_id}' 未注册"
+            ));
+        }
         Ok(Self {
             catalog_path,
-            backend,
+            audit_path,
+            default_backend_id,
+            backends,
             catalog: RwLock::new(catalog),
+            audit_lock: Mutex::new(()),
         })
     }
 
-    pub fn backend_id(&self) -> &'static str {
-        self.backend.backend_id()
+    pub fn backend_id(&self) -> &str {
+        &self.default_backend_id
+    }
+
+    pub fn backend_statuses(&self) -> Vec<SecretBackendStatus> {
+        self.backends
+            .values()
+            .map(|backend| {
+                let health = backend.get(&secret_locator("__MORPHZ_BACKEND_HEALTH_CHECK__"));
+                SecretBackendStatus {
+                    id: backend.backend_id().to_string(),
+                    storage_kind: backend.storage_kind().to_string(),
+                    available: health.is_ok(),
+                    writable: health.is_ok(),
+                    supports_import: backend.supports_import(),
+                    detail: health.err().unwrap_or_else(|| backend.status_detail()),
+                }
+            })
+            .collect()
+    }
+
+    pub fn import_candidates(&self) -> Result<Vec<SecretImportCandidate>, String> {
+        let managed = self
+            .catalog
+            .read()
+            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?;
+        let mut candidates = Vec::new();
+        for backend in self
+            .backends
+            .values()
+            .filter(|backend| backend.supports_import())
+        {
+            for name in backend.list_aliases()? {
+                if validate_name(&name).is_ok() && !managed.contains_key(&name) {
+                    candidates.push(SecretImportCandidate {
+                        name,
+                        value_backend: backend.backend_id().to_string(),
+                    });
+                }
+            }
+        }
+        candidates.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(candidates)
     }
 
     pub fn list(&self) -> Result<Vec<ManagedSecret>, String> {
@@ -220,15 +480,91 @@ impl SecretStore {
         scope_kind: SecretScopeKind,
         scope_id: Option<String>,
     ) -> Result<ManagedSecret, String> {
+        self.put_with_backend(name, value, scope_kind, scope_id, &self.default_backend_id)
+    }
+
+    pub fn put_with_backend(
+        &self,
+        name: &str,
+        value: &str,
+        scope_kind: SecretScopeKind,
+        scope_id: Option<String>,
+        value_backend: &str,
+    ) -> Result<ManagedSecret, String> {
         validate_name(name)?;
         validate_value(value)?;
         validate_scope(&scope_kind, scope_id.as_deref())?;
 
+        let backend = self.backend(value_backend)?;
         let locator = secret_locator(name);
         // Persist the value first. The catalog never contains the value and a
-        // catalog failure can at worst leave an unreachable native credential.
-        self.backend.put(&locator, value)?;
+        // catalog failure can at worst leave an unreachable credential.
+        backend.put(&locator, value)?;
 
+        let now = chrono::Utc::now();
+        let mut guard = self
+            .catalog
+            .write()
+            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?;
+        let previous = guard.get(name).cloned();
+        let created_at = previous
+            .as_ref()
+            .map(|entry| entry.created_at)
+            .unwrap_or(now);
+        let entry = ManagedSecret {
+            name: name.to_string(),
+            secret_ref: format!("secret://runtime/{name}"),
+            scope_kind,
+            scope_id,
+            value_backend: backend.backend_id().to_string(),
+            created_at,
+            updated_at: now,
+        };
+        let mut next = guard.clone();
+        next.insert(name.to_string(), entry.clone());
+        self.persist_catalog(next.values())?;
+        *guard = next;
+        drop(guard);
+        if let Some(previous) = previous.filter(|entry| entry.value_backend != backend.backend_id())
+        {
+            if let Err(error) = self
+                .backend(&previous.value_backend)
+                .and_then(|backend| backend.delete(&locator))
+            {
+                tracing::warn!(
+                    alias = name,
+                    previous_backend = previous.value_backend,
+                    error,
+                    "受管凭证已切换值后端，但旧后端中的值无法自动清理"
+                );
+            }
+        }
+        Ok(entry)
+    }
+
+    pub fn import(
+        &self,
+        name: &str,
+        scope_kind: SecretScopeKind,
+        scope_id: Option<String>,
+        value_backend: &str,
+    ) -> Result<ManagedSecret, String> {
+        validate_name(name)?;
+        validate_scope(&scope_kind, scope_id.as_deref())?;
+        let backend = self.backend(value_backend)?;
+        if !backend.supports_import() {
+            return Err(format!(
+                "Secret Value Backend '{}' 不支持导入已有别名",
+                backend.backend_id()
+            ));
+        }
+        let locator = secret_locator(name);
+        let value = zeroize::Zeroizing::new(
+            backend
+                .get(&locator)?
+                .ok_or_else(|| format!("后端 '{}' 中不存在别名 '{name}'", backend.backend_id()))?,
+        );
+        validate_value(value.as_str())?;
         let now = chrono::Utc::now();
         let mut guard = self
             .catalog
@@ -240,7 +576,7 @@ impl SecretStore {
             secret_ref: format!("secret://runtime/{name}"),
             scope_kind,
             scope_id,
-            value_backend: self.backend.backend_id().to_string(),
+            value_backend: backend.backend_id().to_string(),
             created_at,
             updated_at: now,
         };
@@ -256,10 +592,11 @@ impl SecretStore {
             .catalog
             .write()
             .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?;
-        if !guard.contains_key(name) {
+        let Some(entry) = guard.get(name).cloned() else {
             return Ok(false);
-        }
-        self.backend.delete(&secret_locator(name))?;
+        };
+        self.backend(&entry.value_backend)?
+            .delete(&secret_locator(name))?;
         let mut next = guard.clone();
         next.remove(name);
         self.persist_catalog(next.values())?;
@@ -267,9 +604,9 @@ impl SecretStore {
         Ok(true)
     }
 
-    /// Resolve one approved alias. Managed aliases use the configured secure
-    /// backend; unregistered process environment variables remain supported
-    /// for bootstrap and backwards compatibility.
+    /// Resolve one approved alias. Managed aliases use the backend explicitly
+    /// recorded in metadata. Unregistered process environment variables remain
+    /// a bootstrap-only compatibility path and are intentionally undiscoverable.
     pub fn resolve(
         &self,
         name: &str,
@@ -290,16 +627,20 @@ impl SecretStore {
                 }
             });
         };
-        authorize_entry(&entry, usage)?;
-        let value = self.backend.get(&secret_locator(name))?.ok_or_else(|| {
-            format!(
-                "受管凭证 '{}' 的元数据存在，但系统凭证库中没有对应值",
-                entry.secret_ref
-            )
-        })?;
+        authorize_entry(&entry, usage.clone())?;
+        let value = self
+            .backend(&entry.value_backend)?
+            .get(&secret_locator(name))?
+            .ok_or_else(|| {
+                format!(
+                    "受管凭证 '{}' 的元数据存在，但值后端 '{}' 中没有对应值",
+                    entry.secret_ref, entry.value_backend
+                )
+            })?;
         if value.is_empty() {
             return Err(format!("受管凭证 '{}' 的值为空", entry.secret_ref));
         }
+        let _ = self.append_usage_audit(&entry, usage);
         Ok(Some(value))
     }
 
@@ -314,6 +655,95 @@ impl SecretStore {
             return Ok(true);
         }
         Ok(std::env::var_os(name).is_some())
+    }
+
+    pub fn recent_usage(&self, limit: usize) -> Result<Vec<SecretUseAuditRecord>, String> {
+        let _guard = self
+            .audit_lock
+            .lock()
+            .map_err(|_| "Secret 使用审计锁已损坏".to_string())?;
+        let contents = match fs::read_to_string(&self.audit_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(format!("Secret 使用审计无法读取：{error}")),
+        };
+        Ok(contents
+            .lines()
+            .rev()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .take(limit.clamp(1, 500))
+            .collect())
+    }
+
+    fn backend(&self, value_backend: &str) -> Result<&Arc<dyn SecretValueBackend>, String> {
+        self.backends
+            .get(value_backend)
+            .or_else(|| {
+                (value_backend == "native_keyring")
+                    .then(|| self.backends.get(&self.default_backend_id))
+                    .flatten()
+            })
+            .ok_or_else(|| format!("Secret Value Backend '{value_backend}' 未注册"))
+    }
+
+    fn append_usage_audit(
+        &self,
+        entry: &ManagedSecret,
+        usage: SecretUseContext<'_>,
+    ) -> Result<(), String> {
+        let record = SecretUseAuditRecord {
+            name: entry.name.clone(),
+            secret_ref: entry.secret_ref.clone(),
+            value_backend: entry.value_backend.clone(),
+            context_id: usage.context_id.map(ToString::to_string),
+            session_id: usage.session_id.map(ToString::to_string),
+            objective_id: usage.objective_id.map(ToString::to_string),
+            target_id: usage.target_id.map(ToString::to_string),
+            used_at: chrono::Utc::now(),
+        };
+        let _guard = self
+            .audit_lock
+            .lock()
+            .map_err(|_| "Secret 使用审计锁已损坏".to_string())?;
+        let parent = self
+            .audit_path
+            .parent()
+            .ok_or("Secret 使用审计路径没有父目录")?;
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.audit_path)
+            .map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.audit_path, fs::Permissions::from_mode(0o600))
+                .map_err(|error| error.to_string())?;
+        }
+        serde_json::to_writer(&mut file, &record).map_err(|error| error.to_string())?;
+        file.write_all(b"\n").map_err(|error| error.to_string())?;
+        file.flush().map_err(|error| error.to_string())?;
+        if file.metadata().map_err(|error| error.to_string())?.len() > MAX_USAGE_AUDIT_BYTES {
+            drop(file);
+            self.compact_usage_audit()?;
+        }
+        Ok(())
+    }
+
+    fn compact_usage_audit(&self) -> Result<(), String> {
+        let contents = fs::read_to_string(&self.audit_path).map_err(|error| error.to_string())?;
+        let mut lines = contents
+            .lines()
+            .rev()
+            .take(RETAINED_USAGE_AUDIT_RECORDS)
+            .collect::<Vec<_>>();
+        lines.reverse();
+        let mut compacted = lines.join("\n");
+        if !compacted.is_empty() {
+            compacted.push('\n');
+        }
+        atomic_private_write(&self.audit_path, compacted.as_bytes())
     }
 
     fn persist_catalog<'a>(
@@ -348,6 +778,34 @@ fn authorize_entry(entry: &ManagedSecret, usage: SecretUseContext<'_>) -> Result
 
 fn secret_locator(name: &str) -> String {
     format!("env:{name}")
+}
+
+fn locator_name(locator: &str) -> Result<&str, String> {
+    locator
+        .strip_prefix("env:")
+        .ok_or_else(|| format!("Secret locator '{locator}' 格式无效"))
+}
+
+fn env_assignment_name(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let (name, _) = trimmed.split_once('=')?;
+    let name = name.trim();
+    validate_name(name).is_ok().then_some(name)
+}
+
+fn quote_env_value(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn validate_env_file_value(value: &str) -> Result<(), String> {
+    validate_value(value)?;
+    if value.contains(['\r', '\n']) {
+        return Err("Morphz .env 后端暂不接受多行凭证".to_string());
+    }
+    Ok(())
 }
 
 fn validate_name(name: &str) -> Result<(), String> {
@@ -417,6 +875,10 @@ mod tests {
     impl SecretValueBackend for MemorySecretBackend {
         fn backend_id(&self) -> &'static str {
             "memory_test"
+        }
+
+        fn storage_kind(&self) -> &'static str {
+            "memory"
         }
 
         fn put(&self, locator: &str, value: &str) -> Result<(), String> {
@@ -543,6 +1005,226 @@ mod tests {
                 .resolve("SHORT_LIVED", SecretUseContext::default())
                 .unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn env_file_aliases_are_not_exposed_until_explicitly_imported() {
+        let directory = tempfile::tempdir().unwrap();
+        let env_path = directory.path().join(".env");
+        fs::write(
+            &env_path,
+            "UNMANAGED_TOKEN=\"must-stay-private\"\n# ignored\nINVALID-NAME=nope\n",
+        )
+        .unwrap();
+        let store = SecretStore::with_backends(
+            directory.path().join("managed-secrets.json"),
+            "memory_test",
+            vec![
+                Arc::new(MemorySecretBackend::default()),
+                Arc::new(HostEnvFileSecretBackend::new(&env_path)),
+            ],
+        )
+        .unwrap();
+
+        assert!(store.list().unwrap().is_empty());
+        assert!(store
+            .list_authorized(SecretUseContext::default())
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store.import_candidates().unwrap(),
+            vec![SecretImportCandidate {
+                name: "UNMANAGED_TOKEN".to_string(),
+                value_backend: "morphz_env_file".to_string(),
+            }]
+        );
+
+        let imported = store
+            .import(
+                "UNMANAGED_TOKEN",
+                SecretScopeKind::Context,
+                Some("context-a".to_string()),
+                "morphz_env_file",
+            )
+            .unwrap();
+        assert_eq!(imported.value_backend, "morphz_env_file");
+        assert!(store.import_candidates().unwrap().is_empty());
+        assert!(store
+            .resolve(
+                "UNMANAGED_TOKEN",
+                SecretUseContext {
+                    context_id: Some("context-b"),
+                    ..Default::default()
+                },
+            )
+            .is_err());
+        assert_eq!(
+            store
+                .resolve(
+                    "UNMANAGED_TOKEN",
+                    SecretUseContext {
+                        context_id: Some("context-a"),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .as_deref(),
+            Some("must-stay-private")
+        );
+
+        let catalog = fs::read_to_string(directory.path().join("managed-secrets.json")).unwrap();
+        assert!(!catalog.contains("must-stay-private"));
+    }
+
+    #[test]
+    fn explicitly_selected_env_backend_writes_private_file_without_value_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let env_path = directory.path().join(".env");
+        let store = SecretStore::with_backends(
+            directory.path().join("managed-secrets.json"),
+            "memory_test",
+            vec![
+                Arc::new(MemorySecretBackend::default()),
+                Arc::new(HostEnvFileSecretBackend::new(&env_path)),
+            ],
+        )
+        .unwrap();
+
+        store
+            .put_with_backend(
+                "HEADLESS_TOKEN",
+                "quote-\"-and-backslash-\\",
+                SecretScopeKind::Runtime,
+                None,
+                "morphz_env_file",
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .resolve("HEADLESS_TOKEN", SecretUseContext::default())
+                .unwrap()
+                .as_deref(),
+            Some("quote-\"-and-backslash-\\")
+        );
+        let env_contents = fs::read_to_string(&env_path).unwrap();
+        assert!(env_contents.contains("HEADLESS_TOKEN="));
+        assert!(env_contents.contains("quote-"));
+        let catalog = fs::read_to_string(directory.path().join("managed-secrets.json")).unwrap();
+        assert!(!catalog.contains("quote-"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&env_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn usage_audit_records_alias_and_scope_but_never_value() {
+        let (directory, store) = test_store();
+        store
+            .put(
+                "AUDITED_TOKEN",
+                "audit-value-must-not-leak",
+                SecretScopeKind::Session,
+                Some("session-a".to_string()),
+            )
+            .unwrap();
+        store
+            .resolve(
+                "AUDITED_TOKEN",
+                SecretUseContext {
+                    context_id: Some("context-a"),
+                    session_id: Some("session-a"),
+                    objective_id: Some("objective-a"),
+                    target_id: Some("target-a"),
+                },
+            )
+            .unwrap();
+
+        let audit =
+            fs::read_to_string(directory.path().join("managed-secret-usage.jsonl")).unwrap();
+        assert!(audit.contains("AUDITED_TOKEN"));
+        assert!(audit.contains("session-a"));
+        assert!(!audit.contains("audit-value-must-not-leak"));
+        assert_eq!(store.recent_usage(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rotating_to_another_backend_removes_the_previous_backend_value() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = Arc::new(MemorySecretBackend::default());
+        let replacement = Arc::new(MemorySecretBackend::default());
+        struct NamedMemoryBackend {
+            id: &'static str,
+            inner: Arc<MemorySecretBackend>,
+        }
+        impl SecretValueBackend for NamedMemoryBackend {
+            fn backend_id(&self) -> &'static str {
+                self.id
+            }
+            fn storage_kind(&self) -> &'static str {
+                "memory"
+            }
+            fn put(&self, locator: &str, value: &str) -> Result<(), String> {
+                self.inner.put(locator, value)
+            }
+            fn get(&self, locator: &str) -> Result<Option<String>, String> {
+                self.inner.get(locator)
+            }
+            fn delete(&self, locator: &str) -> Result<bool, String> {
+                self.inner.delete(locator)
+            }
+        }
+        let store = SecretStore::with_backends(
+            directory.path().join("managed-secrets.json"),
+            "one",
+            vec![
+                Arc::new(NamedMemoryBackend {
+                    id: "one",
+                    inner: original.clone(),
+                }),
+                Arc::new(NamedMemoryBackend {
+                    id: "two",
+                    inner: replacement.clone(),
+                }),
+            ],
+        )
+        .unwrap();
+        store
+            .put_with_backend(
+                "ROTATING_TOKEN",
+                "first",
+                SecretScopeKind::Runtime,
+                None,
+                "one",
+            )
+            .unwrap();
+        store
+            .put_with_backend(
+                "ROTATING_TOKEN",
+                "second",
+                SecretScopeKind::Runtime,
+                None,
+                "two",
+            )
+            .unwrap();
+
+        assert_eq!(original.get("env:ROTATING_TOKEN").unwrap(), None);
+        assert_eq!(
+            replacement.get("env:ROTATING_TOKEN").unwrap().as_deref(),
+            Some("second")
+        );
+        assert_eq!(
+            store
+                .resolve("ROTATING_TOKEN", SecretUseContext::default())
+                .unwrap()
+                .as_deref(),
+            Some("second")
         );
     }
 }

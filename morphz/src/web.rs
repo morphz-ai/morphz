@@ -221,6 +221,15 @@ struct PutManagedSecretRequest {
     value: String,
     scope_kind: crate::secret_store::SecretScopeKind,
     scope_id: Option<String>,
+    value_backend: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ImportManagedSecretRequest {
+    name: String,
+    scope_kind: crate::secret_store::SecretScopeKind,
+    scope_id: Option<String>,
+    value_backend: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -642,6 +651,14 @@ impl Server {
                 get(handle_list_managed_secrets).post(handle_put_managed_secret),
             )
             .route(
+                "/api/runtime/secrets/import",
+                post(handle_import_managed_secret),
+            )
+            .route(
+                "/api/runtime/secrets/scope-options",
+                get(handle_secret_scope_options),
+            )
+            .route(
                 "/api/runtime/secrets/:name",
                 delete(handle_delete_managed_secret),
             )
@@ -972,16 +989,36 @@ async fn handle_list_managed_secrets(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.sdk.list_managed_secrets() {
-        Ok(secrets) => Json(json!({
+    let sdk = state.sdk.clone();
+    match tokio::task::spawn_blocking(move || {
+        let secrets = sdk
+            .list_managed_secrets()
+            .map_err(|error| error.to_string())?;
+        let import_candidates = sdk
+            .secret_import_candidates()
+            .map_err(|error| error.to_string())?;
+        let recent_usage = sdk
+            .recent_secret_usage(100)
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(json!({
             "secrets": secrets,
-            "value_backend": state.sdk.secret_backend_id()
+            "default_value_backend": sdk.secret_backend_id(),
+            "backends": sdk.secret_backend_statuses(),
+            "import_candidates": import_candidates,
+            "recent_usage": recent_usage,
         }))
-        .into_response(),
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    })
+    .await
+    {
+        Ok(Ok(response)) => Json(response).into_response(),
+        Ok(Err(error)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Secret Store worker 失败：{error}"),
+        ),
     }
 }
 
@@ -991,7 +1028,7 @@ async fn handle_put_managed_secret(
     Query(query): Query<AuthQuery>,
     Json(request): Json<PutManagedSecretRequest>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let PutManagedSecretRequest {
@@ -999,13 +1036,21 @@ async fn handle_put_managed_secret(
         value,
         scope_kind,
         scope_id,
+        value_backend,
     } = request;
     let sdk = state.sdk.clone();
     let name = name.trim().to_string();
     let value = zeroize::Zeroizing::new(value);
     let scope_id = scope_id.map(|id| id.trim().to_string());
-    match tokio::task::spawn_blocking(move || {
-        sdk.put_managed_secret(&name, value.as_str(), scope_kind, scope_id)
+    match tokio::task::spawn_blocking(move || match value_backend.as_deref() {
+        Some(value_backend) => sdk.put_managed_secret_with_backend(
+            &name,
+            value.as_str(),
+            scope_kind,
+            scope_id,
+            value_backend,
+        ),
+        None => sdk.put_managed_secret(&name, value.as_str(), scope_kind, scope_id),
     })
     .await
     {
@@ -1018,13 +1063,92 @@ async fn handle_put_managed_secret(
     }
 }
 
+async fn handle_import_managed_secret(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ImportManagedSecretRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let sdk = state.sdk.clone();
+    let name = request.name.trim().to_string();
+    let scope_id = request.scope_id.map(|id| id.trim().to_string());
+    let value_backend = request.value_backend;
+    match tokio::task::spawn_blocking(move || {
+        sdk.import_managed_secret(&name, request.scope_kind, scope_id, &value_backend)
+    })
+    .await
+    {
+        Ok(Ok(secret)) => (StatusCode::CREATED, Json(secret)).into_response(),
+        Ok(Err(error)) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Secret Store worker 失败：{error}"),
+        ),
+    }
+}
+
+async fn handle_secret_scope_options(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let contexts = match state.runtime.list_contexts(true).await {
+        Ok(contexts) => contexts,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    let sessions = match state.runtime.list_sessions(true).await {
+        Ok(sessions) => sessions,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    let targets = match state
+        .runtime
+        .list_execution_targets(crate::memory::ExecutionTargetFilter {
+            limit: Some(1_000),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(targets) => targets,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    let mut objectives = Vec::new();
+    for context in contexts
+        .iter()
+        .filter(|context| context.status == crate::memory::SessionStatus::Active)
+    {
+        match state
+            .runtime
+            .list_context_objectives(&context.id, false)
+            .await
+        {
+            Ok(mut records) => objectives.append(&mut records),
+            Err(error) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        }
+    }
+    Json(json!({
+        "contexts": contexts,
+        "sessions": sessions,
+        "objectives": objectives,
+        "execution_targets": targets,
+    }))
+    .into_response()
+}
+
 async fn handle_delete_managed_secret(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let sdk = state.sdk.clone();
@@ -5431,6 +5555,15 @@ mod tests {
         .await
         .into_response();
         assert_eq!(operator_overview.status(), StatusCode::OK);
+
+        let gateway_secrets = handle_list_managed_secrets(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-1")),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(gateway_secrets.status(), StatusCode::UNAUTHORIZED);
 
         let missing_principal = handle_create_session(
             State(Arc::clone(&state)),
