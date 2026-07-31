@@ -1,13 +1,14 @@
 //! SQLite authority for durable Runtime-owned Yao plan executions.
 
 use super::{
-    append_event_in_transaction, append_signal_outbox_in_transaction,
-    ensure_execution_job_in_transaction, parse_time, SqliteStore,
+    append_direct_thread_signal_in_transaction, append_event_in_transaction,
+    ensure_execution_job_in_transaction, ensure_thread_in_transaction, parse_time, thread_from_row,
+    SqliteStore,
 };
 use crate::memory::{
-    NewExecutionJob, NewPlanExecution, PlanEvaluationCommit, PlanExecutionFilter,
-    PlanExecutionJobCommit, PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus,
-    PlanExecutionStore, PlanExecutionWaitKind,
+    stable_thread_id, NewExecutionJob, NewPlanExecution, NewThread, PlanEvaluationCommit,
+    PlanExecutionFilter, PlanExecutionJobCommit, PlanExecutionMutation, PlanExecutionRecord,
+    PlanExecutionStatus, PlanExecutionStore, PlanExecutionWaitKind, ThreadKind, ThreadSupervision,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -645,8 +646,43 @@ impl PlanExecutionStore for SqliteStore {
         }
         validate_infer_event_route(&current_plan, request_event)?;
 
+        let parent_row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+            .bind(&current_plan.thread_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let parent_thread = thread_from_row(&parent_row)?;
+        let supervision = match (
+            current_plan.objective_id.as_ref(),
+            current_plan.objective_evaluation_id.as_ref(),
+        ) {
+            (Some(objective_id), Some(evaluation_id)) => ThreadSupervision::objective(
+                objective_id.clone(),
+                evaluation_id.clone(),
+                parent_thread.supervision.generation,
+                Some(parent_thread.id.clone()),
+            ),
+            _ => ThreadSupervision::runtime("event-router"),
+        };
+        let child_thread = ensure_thread_in_transaction(
+            &mut tx,
+            &NewThread {
+                id: stable_thread_id(&request_event.id),
+                agent_id: current_plan.agent_id.clone(),
+                context_id: current_plan.context_id.clone(),
+                session_id: current_plan.session_id.clone(),
+                initiating_principal_id: current_plan.initiating_principal_id.clone(),
+                root_turn_id: request_event.id.clone(),
+                kind: ThreadKind::Execution,
+                executor_kind: "plan_infer".to_string(),
+                executor_id: Some(current_plan.id.clone()),
+                target_id: None,
+                supervision,
+            },
+        )
+        .await?;
         append_event_in_transaction(&mut tx, request_event).await?;
-        append_signal_outbox_in_transaction(&mut tx, request_event).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, request_event, &child_thread.id)
+            .await?;
         let updated = sqlx::query(
             r#"UPDATE plan_executions
                SET revision = revision + 1, status = 'waiting', state_json = ?,

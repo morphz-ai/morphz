@@ -323,7 +323,6 @@ impl DurableEventWriter {
     }
 }
 const SIGNAL_OUTBOX_DISPATCH_BATCH: usize = 128;
-const SIGNAL_OUTBOX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const PLAN_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const PLAN_RECONCILE_BATCH: usize = 128;
 const SUPERVISION_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -2541,13 +2540,7 @@ impl Orchestrator {
                     if !persist_full_context_inspect {
                         compact_context_inspect_for_persistence(&mut event);
                     }
-                    let signal_outbox = event_needs_signal_outbox(&event);
-                    event_writer
-                        .append(EventAppend {
-                            event,
-                            signal_outbox,
-                        })
-                        .await
+                    event_writer.append(EventAppend { event }).await
                 })
             }),
         );
@@ -2590,14 +2583,13 @@ impl Orchestrator {
         self.reconcile_orphaned_threads().await?;
         self.reconcile_orphaned_execution_jobs().await?;
         self.recover_pending_delivery_flushes().await?;
-        self.dispatch_pending_signal_outbox().await?;
+        self.migrate_legacy_signal_outbox_once().await?;
         self.recover_pending_thread_signals().await?;
         // Activation redispatch is deliberately last: after this point model
         // and tool continuations may write concurrently with the caller.
         self.recover_thread_activations().await?;
         self.refill_activation_admission_queue().await?;
         self.start_activation_admission_refill();
-        self.start_signal_outbox_dispatcher();
         self.start_plan_reconciler();
         self.start_supervision_invariant_auditor();
         Ok(())
@@ -2632,21 +2624,6 @@ impl Orchestrator {
                 };
                 if let Err(error) = current.refill_activation_admission_queue().await {
                     tracing::error!(%error, "Activation admission 持久队列重扫失败；保留 queued 等待下一次唤醒");
-                }
-            }
-        });
-    }
-
-    fn start_signal_outbox_dispatcher(self: &Arc<Self>) {
-        let orchestrator = Arc::downgrade(self);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(SIGNAL_OUTBOX_POLL_INTERVAL).await;
-                let Some(orchestrator) = orchestrator.upgrade() else {
-                    break;
-                };
-                if let Err(error) = orchestrator.dispatch_pending_signal_outbox().await {
-                    tracing::error!(%error, "Signal Outbox 后台派发失败；保留 pending 等待重试");
                 }
             }
         });
@@ -2894,7 +2871,10 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn dispatch_pending_signal_outbox(&self) -> Result<usize, DynError> {
+    /// One-shot compatibility migration for rows produced by Runtime builds
+    /// predating direct ThreadSignal commits.  No steady-state producer or
+    /// poller is allowed to depend on this table.
+    async fn migrate_legacy_signal_outbox_once(&self) -> Result<usize, DynError> {
         let session_store = self
             .context_engine
             .session_store()
@@ -2920,9 +2900,17 @@ impl Orchestrator {
                 )
                 .into());
             };
-            if !event_needs_signal_outbox(&event)
-                || self.is_legacy_internal_plan_output(&event).await?
-            {
+            let routable = event
+                .payload
+                .get("context_id")
+                .and_then(|value| value.as_str())
+                .is_some()
+                && event
+                    .payload
+                    .get("session_id")
+                    .and_then(|value| value.as_str())
+                    .is_some();
+            if !routable || self.is_legacy_internal_plan_output(&event).await? {
                 // Older Runtime builds could enqueue Plan-internal tool
                 // outputs as ordinary chat wakeups. They remain observable
                 // Ledger facts, but routing them back through the parent
@@ -2933,7 +2921,7 @@ impl Orchestrator {
                     event_id = %event.id,
                     event_type = %event.event_type,
                     topic = %event.topic,
-                    "丢弃不可路由的历史 Signal Outbox 条目；Ledger Event 保持不变"
+                "一次性迁移时丢弃不可路由的历史 Signal Outbox 条目；Ledger Event 保持不变"
                 );
                 session_store.discard_signal_outbox(&event.id).await?;
                 continue;
@@ -8170,8 +8158,21 @@ impl Orchestrator {
         // content. The latest pending timestamp is immutable for that
         // generation and survives process restart.
         event.timestamp = delivery_flush_timestamp(&timer);
+        let delivery_thread = NewThread {
+            id: stable_thread_id(&delivery_event_id),
+            agent_id: session.agent_id.clone(),
+            context_id: session.context_id.clone(),
+            session_id: session_id.clone(),
+            initiating_principal_id: None,
+            root_turn_id: delivery_event_id.clone(),
+            kind: ThreadKind::Delivery,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::runtime("delivery-router"),
+        };
         match store
-            .commit_delivery_flush(&timer.id, timer.generation, &event)
+            .commit_delivery_flush(&timer.id, timer.generation, &event, &delivery_thread)
             .await?
         {
             DeliveryFlushCommit::Committed => {
@@ -13526,46 +13527,6 @@ fn required_payload_str<'a>(event: &'a Event, key: &str) -> Result<&'a str, DynE
         .ok_or_else(|| format!("事件 '{}' 缺少字符串字段 '{}'", event.id, key).into())
 }
 
-fn event_needs_signal_outbox(event: &Event) -> bool {
-    // User ingress owns the authoritative Event + Dialogue Thread Signal
-    // transaction.  EventBus only dispatches that already-persisted fact.
-    if event.event_type == TYPE_USER_MESSAGE && event.topic == "chat/user_message" {
-        return false;
-    }
-    !matches!(
-        event
-            .payload
-            .get("wake_policy")
-            .and_then(|value| value.as_str()),
-        Some("none" | "direct_signal")
-    ) && !(event.event_type == TYPE_TOOL_OUTPUT
-        && event
-            .payload
-            .get("plan_execution_id")
-            .and_then(|value| value.as_str())
-            .is_some())
-        && ((event.topic.starts_with("chat/")
-            && matches!(
-                event.event_type.as_str(),
-                TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT | TYPE_INFER_REQUEST
-            ))
-            || (event.event_type == "runtime_control"
-                && matches!(
-                    event.topic.as_str(),
-                    "runtime/action_group_settled" | "runtime/thread_group_terminal"
-                )))
-        && event
-            .payload
-            .get("context_id")
-            .and_then(|value| value.as_str())
-            .is_some()
-        && event
-            .payload
-            .get("session_id")
-            .and_then(|value| value.as_str())
-            .is_some()
-}
-
 fn merge_artifact_transfer_requirements(
     local: Option<crate::permission::ApprovalRequirement>,
     remote: Option<crate::permission::ApprovalRequirement>,
@@ -13727,8 +13688,8 @@ mod tests {
         activation_admission_class, apply_prompt_estimate_delta, baseline_system_prompt,
         classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         compact_context_inspect_for_persistence, compose_context_encoding,
-        critical_maintenance_transaction_available, derived_thread_kind, event_needs_signal_outbox,
-        extend_exec_output_facts, harness_entry_callable_tools, legacy_plan_effect_sequence,
+        critical_maintenance_transaction_available, derived_thread_kind, extend_exec_output_facts,
+        harness_entry_callable_tools, legacy_plan_effect_sequence,
         objective_supervision_matches_evaluation, persist_model_reasoning_summary,
         persist_model_usage, plan_infer_tool_scope, recovery_owns_activation,
         render_harness_context, render_system_contract, restrict_tools_to_scope,
@@ -13869,27 +13830,11 @@ mod tests {
     #[async_trait::async_trait]
     impl EventStore for ContendedEventStore {
         async fn append(&self, event: Event) -> Result<(), DynError> {
-            self.append_batch(vec![EventAppend {
-                event,
-                signal_outbox: false,
-            }])
-            .await
-        }
-
-        async fn append_with_signal_outbox(&self, event: Event) -> Result<(), DynError> {
-            self.append_batch(vec![EventAppend {
-                event,
-                signal_outbox: true,
-            }])
-            .await
+            self.append_batch(vec![EventAppend { event }]).await
         }
 
         async fn append_to_thread(&self, event: Event, _thread_id: &str) -> Result<(), DynError> {
-            self.append_batch(vec![EventAppend {
-                event,
-                signal_outbox: false,
-            }])
-            .await
+            self.append_batch(vec![EventAppend { event }]).await
         }
 
         async fn append_batch(&self, entries: Vec<EventAppend>) -> Result<(), DynError> {
@@ -14042,7 +13987,6 @@ mod tests {
                             "runtime/writer_fixture".to_string(),
                             serde_json::Map::new(),
                         ),
-                        signal_outbox: false,
                     })
                     .await
                     .unwrap();
@@ -14095,7 +14039,6 @@ mod tests {
                     "runtime/writer_fixture".to_string(),
                     serde_json::Map::new(),
                 ),
-                signal_outbox: false,
             })
             .await
             .unwrap();
@@ -14281,103 +14224,6 @@ mod tests {
             AdmissionClass::Maintenance,
             "explicit Runtime maintenance must not be reclassified by an incidental schedule field"
         );
-    }
-
-    #[test]
-    fn signal_outbox_is_reserved_for_routable_scheduler_inputs() {
-        let routed_payload = serde_json::Map::from_iter([
-            ("context_id".to_string(), json!("context-1")),
-            ("session_id".to_string(), json!("session-1")),
-        ]);
-        assert!(
-            !event_needs_signal_outbox(&Event::new(
-                "user-ingress-direct-signal".to_string(),
-                "fixture".to_string(),
-                TYPE_USER_MESSAGE.to_string(),
-                "chat/user_message".to_string(),
-                routed_payload.clone(),
-            )),
-            "用户入口已经原子提交 Dialogue Thread Signal，不能重新生成 Outbox"
-        );
-        for (event_type, topic) in [
-            (TYPE_TOOL_OUTPUT, "chat/tool_output"),
-            (crate::event::TYPE_INFER_REQUEST, "chat/infer_request"),
-            ("runtime_control", "runtime/action_group_settled"),
-            ("runtime_control", "runtime/thread_group_terminal"),
-        ] {
-            assert!(event_needs_signal_outbox(&Event::new(
-                format!("{event_type}-routed"),
-                "fixture".to_string(),
-                event_type.to_string(),
-                topic.to_string(),
-                routed_payload.clone(),
-            )));
-        }
-
-        let muted_plan_output = Event::new(
-            "plan-internal-output".to_string(),
-            "fixture".to_string(),
-            TYPE_TOOL_OUTPUT.to_string(),
-            "chat/tool_output".to_string(),
-            serde_json::Map::from_iter([
-                ("context_id".to_string(), json!("context-1")),
-                ("session_id".to_string(), json!("session-1")),
-                ("wake_policy".to_string(), json!("none")),
-            ]),
-        );
-        assert!(
-            !event_needs_signal_outbox(&muted_plan_output),
-            "Plan 内部输出必须留在 Ledger，不能进入 Scheduler Signal Outbox"
-        );
-        let self_describing_plan_output = Event::new(
-            "plan-internal-output-with-owner".to_string(),
-            "fixture".to_string(),
-            TYPE_TOOL_OUTPUT.to_string(),
-            "chat/tool_output".to_string(),
-            serde_json::Map::from_iter([
-                ("context_id".to_string(), json!("context-1")),
-                ("session_id".to_string(), json!("session-1")),
-                ("wake_policy".to_string(), json!("immediate")),
-                ("plan_execution_id".to_string(), json!("plan-1")),
-            ]),
-        );
-        assert!(
-            !event_needs_signal_outbox(&self_describing_plan_output),
-            "Plan 所有权本身就是不可路由边界，不能依赖单一 wake_policy 字段"
-        );
-        let plan_infer_request = Event::new(
-            "plan-infer-request".to_string(),
-            "fixture".to_string(),
-            crate::event::TYPE_INFER_REQUEST.to_string(),
-            "chat/infer_request".to_string(),
-            serde_json::Map::from_iter([
-                ("context_id".to_string(), json!("context-1")),
-                ("session_id".to_string(), json!("session-1")),
-                ("plan_execution_id".to_string(), json!("plan-1")),
-            ]),
-        );
-        assert!(
-            event_needs_signal_outbox(&plan_infer_request),
-            "Plan infer request 是待执行的子求值，必须进入 Scheduler Signal Outbox"
-        );
-
-        let missing_session = Event::new(
-            "missing-session".to_string(),
-            "fixture".to_string(),
-            TYPE_USER_MESSAGE.to_string(),
-            "chat/user_message".to_string(),
-            serde_json::Map::from_iter([("context_id".to_string(), json!("context-1"))]),
-        );
-        assert!(!event_needs_signal_outbox(&missing_session));
-
-        let audit_event = Event::new(
-            "audit-only".to_string(),
-            "fixture".to_string(),
-            "proposal".to_string(),
-            "chat/context_inspect".to_string(),
-            routed_payload,
-        );
-        assert!(!event_needs_signal_outbox(&audit_event));
     }
 
     #[test]

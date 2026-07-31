@@ -3940,18 +3940,11 @@ pub(crate) fn causal_payload_string<'a>(
 #[derive(Debug, Clone)]
 pub struct EventAppend {
     pub event: crate::event::Event,
-    pub signal_outbox: bool,
 }
 
 #[async_trait::async_trait]
 pub trait EventStore: Send + Sync {
     async fn append(
-        &self,
-        ev: crate::event::Event,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    /// Atomically append an immutable Event and its scheduler-delivery intent.
-    /// Repeating the same Event is idempotent; conflicting content is rejected.
-    async fn append_with_signal_outbox(
         &self,
         ev: crate::event::Event,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -3963,9 +3956,9 @@ pub trait EventStore: Send + Sync {
         ev: crate::event::Event,
         thread_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    /// Atomically commits an ordered group of immutable Events. Entries which
-    /// need scheduler delivery create their signal outbox row in the same
-    /// database transaction. A failure rolls back the complete group.
+    /// Atomically commits an ordered group of immutable Ledger Events. A
+    /// failure rolls back the complete group. Scheduler delivery is an
+    /// explicit Kernel operation and is never inferred by this generic API.
     async fn append_batch(
         &self,
         entries: Vec<EventAppend>,
@@ -4906,6 +4899,7 @@ pub trait ThreadStore: Send + Sync {
         timer_id: &str,
         generation: u64,
         event: &crate::event::Event,
+        thread: &NewThread,
     ) -> Result<DeliveryFlushCommit, Box<dyn std::error::Error + Send + Sync>>;
     /// Generation-fenced fast path for a Delivery Timer whose immutable
     /// snapshot can be rendered without another model request. The reply Event
@@ -5195,6 +5189,7 @@ pub trait ObjectiveStore: Send + Sync {
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
         event: &crate::event::Event,
+        thread: &NewThread,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Extend the lease owned by one exact Evaluation fencing token.
     ///

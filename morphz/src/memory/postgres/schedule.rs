@@ -1,7 +1,7 @@
 use super::{
-    append_direct_thread_signal_in_tx, append_event_in_tx, append_signal_outbox_in_tx,
-    insert_new_objective_in_tx, now_text, objective_from_row, parse_time, thread::thread_from_row,
-    thread_group::group_from_row, validate_new_objective, PostgresStore, StoreError,
+    append_direct_thread_signal_in_tx, append_event_in_tx, insert_new_objective_in_tx, now_text,
+    objective_from_row, parse_time, thread::thread_from_row, thread_group::group_from_row,
+    validate_new_objective, PostgresStore, StoreError,
 };
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
@@ -1205,9 +1205,9 @@ impl ScheduleStore for PostgresStore {
             tx.rollback().await?;
             return Ok(None);
         };
-        append_event_in_tx(&mut tx, event).await?;
-        append_signal_outbox_in_tx(&mut tx, event).await?;
         let record = schedule_from_row(&row)?;
+        append_event_in_tx(&mut tx, event).await?;
+        append_direct_thread_signal_in_tx(&mut tx, event, &record.thread_id).await?;
         tx.commit().await?;
         Ok(Some(record))
     }

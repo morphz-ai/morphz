@@ -2737,6 +2737,65 @@ fn thread_from_row(
     })
 }
 
+async fn ensure_thread_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    thread: &NewThread,
+) -> Result<ThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
+    thread.supervision.validate(thread.kind)?;
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let completion_contract_json = serde_json::to_string(&thread.supervision.completion_contract)?;
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO threads
+           (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+            kind, status, executor_kind, executor_id, target_id,
+            lifetime, supervisor_kind, supervisor_id, supervision_generation,
+            origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
+            delivery_status, created_at, updated_at)
+           VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
+    )
+    .bind(&thread.id)
+    .bind(&thread.agent_id)
+    .bind(&thread.context_id)
+    .bind(&thread.session_id)
+    .bind(&thread.initiating_principal_id)
+    .bind(&thread.root_turn_id)
+    .bind(thread.kind.as_str())
+    .bind(&thread.executor_kind)
+    .bind(&thread.executor_id)
+    .bind(&thread.target_id)
+    .bind(thread.supervision.lifetime.as_str())
+    .bind(thread.supervision.supervisor_kind.as_str())
+    .bind(&thread.supervision.supervisor_id)
+    .bind(i64::try_from(thread.supervision.generation)?)
+    .bind(&thread.supervision.origin_evaluation_id)
+    .bind(&thread.supervision.parent_thread_id)
+    .bind(&thread.supervision.thread_group_id)
+    .bind(&completion_contract_json)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    let row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = ?")
+        .bind(&thread.root_turn_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let existing = thread_from_row(&row)?;
+    if existing.context_id != thread.context_id
+        || existing.session_id != thread.session_id
+        || existing.agent_id != thread.agent_id
+        || existing.initiating_principal_id != thread.initiating_principal_id
+        || existing.kind != thread.kind
+        || existing.supervision != thread.supervision
+    {
+        return Err(format!(
+            "Root Turn '{}' 已被不同 Thread 路由占用",
+            thread.root_turn_id
+        )
+        .into());
+    }
+    Ok(existing)
+}
+
 fn schedule_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<ScheduleRecord, Box<dyn std::error::Error + Send + Sync>> {
@@ -4181,40 +4240,6 @@ async fn mutate_session_projection_in_transaction(
             enqueue_event_recall_in_transaction(tx, &event, context_id, false).await?;
         }
     }
-    Ok(())
-}
-
-async fn append_signal_outbox_in_transaction(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    event: &Event,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if event
-        .payload
-        .get("session_id")
-        .and_then(JsonValue::as_str)
-        .is_none()
-        || event
-            .payload
-            .get("context_id")
-            .and_then(JsonValue::as_str)
-            .is_none()
-    {
-        return Err(format!(
-            "Signal Outbox Event '{}' 缺少 context_id/session_id 路由",
-            event.id
-        )
-        .into());
-    }
-    let created_at = event
-        .timestamp
-        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-    sqlx::query(
-        "INSERT OR IGNORE INTO signal_outbox (event_id, status, created_at) VALUES (?, 'pending', ?)",
-    )
-    .bind(&event.id)
-    .bind(created_at)
-    .execute(&mut **tx)
-    .await?;
     Ok(())
 }
 
@@ -8467,6 +8492,7 @@ impl ThreadStore for SqliteStore {
         timer_id: &str,
         generation: u64,
         event: &Event,
+        thread: &NewThread,
     ) -> Result<DeliveryFlushCommit, Box<dyn std::error::Error + Send + Sync>> {
         if event.topic != "chat/thread_completion_ready" {
             return Err("Delivery Flush 只能提交 chat/thread_completion_ready Event".into());
@@ -8509,8 +8535,9 @@ impl ThreadStore for SqliteStore {
             return Ok(DeliveryFlushCommit::Empty);
         }
 
+        let thread = ensure_thread_in_transaction(&mut tx, thread).await?;
         let inserted = append_event_idempotent_in_transaction(&mut tx, event).await?;
-        append_signal_outbox_in_transaction(&mut tx, event).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, event, &thread.id).await?;
         tx.commit().await?;
         Ok(if inserted {
             DeliveryFlushCommit::Committed
@@ -10540,10 +10567,15 @@ impl ScheduleStore for SqliteStore {
             tx.rollback().await?;
             return Ok(None);
         }
+        let row = sqlx::query("SELECT * FROM schedules WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let record = schedule_from_row(&row)?;
         append_event_in_transaction(&mut tx, event).await?;
-        append_signal_outbox_in_transaction(&mut tx, event).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, event, &record.thread_id).await?;
         tx.commit().await?;
-        self.get_schedule(id).await
+        Ok(Some(record))
     }
 }
 
@@ -10876,8 +10908,25 @@ impl DelegationStore for SqliteStore {
                 format!("Delegation '{id}' 结果 Event 路由到错误的父 Context/Session").into(),
             );
         }
+        let thread = ensure_thread_in_transaction(
+            &mut tx,
+            &NewThread {
+                id: stable_thread_id(&event.id),
+                agent_id: delegation.agent_id.clone(),
+                context_id: delegation.parent_context_id.clone(),
+                session_id: delegation.parent_session_id.clone(),
+                initiating_principal_id: delegation.initiating_principal_id.clone(),
+                root_turn_id: event.id.clone(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::runtime("delegation-router"),
+            },
+        )
+        .await?;
         append_event_idempotent_in_transaction(&mut tx, event).await?;
-        append_signal_outbox_in_transaction(&mut tx, event).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, event, &thread.id).await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -11285,6 +11334,7 @@ impl ObjectiveStore for SqliteStore {
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
         event: &Event,
+        thread: &NewThread,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
         if evaluation_id.trim().is_empty() {
             return Err("Objective Evaluation ID 不能为空".into());
@@ -11352,8 +11402,9 @@ impl ObjectiveStore for SqliteStore {
                 None => ObjectiveMutation::NotFound,
             });
         }
+        let thread = ensure_thread_in_transaction(&mut tx, thread).await?;
         append_event_idempotent_in_transaction(&mut tx, event).await?;
-        append_signal_outbox_in_transaction(&mut tx, event).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, event, &thread.id).await?;
         tx.commit().await?;
         Ok(ObjectiveMutation::Updated(
             self.get_objective(id)
@@ -15393,22 +15444,7 @@ async fn approval_mutation_failure(
 #[async_trait::async_trait]
 impl EventStore for SqliteStore {
     async fn append(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.append_batch(vec![EventAppend {
-            event: ev,
-            signal_outbox: false,
-        }])
-        .await
-    }
-
-    async fn append_with_signal_outbox(
-        &self,
-        ev: Event,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.append_batch(vec![EventAppend {
-            event: ev,
-            signal_outbox: true,
-        }])
-        .await
+        self.append_batch(vec![EventAppend { event: ev }]).await
     }
 
     async fn append_to_thread(
@@ -15433,9 +15469,6 @@ impl EventStore for SqliteStore {
         let mut tx = self.pool.begin().await?;
         for entry in &entries {
             append_event_idempotent_in_transaction(&mut tx, &entry.event).await?;
-            if entry.signal_outbox {
-                append_signal_outbox_in_transaction(&mut tx, &entry.event).await?;
-            }
         }
         tx.commit().await?;
         Ok(())
@@ -19464,16 +19497,11 @@ mod tests {
                 .unwrap(),
             ExecutionJobMutation::Existing(_)
         ));
-        store
-            .append_with_signal_outbox(result_event.clone())
-            .await
-            .unwrap();
-        let pending = store
+        assert!(store
             .list_signal_outbox(SignalOutboxStatus::Pending, 10)
             .await
-            .unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].event_id, result_event.id);
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -19769,23 +19797,51 @@ mod tests {
             ]),
         );
         event.timestamp = pending_at;
+        let delivery_thread = NewThread {
+            id: stable_thread_id(&event.id),
+            agent_id: threads[0].agent_id.clone(),
+            context_id: context_id.clone(),
+            session_id: session_id.clone(),
+            initiating_principal_id: None,
+            root_turn_id: event.id.clone(),
+            kind: ThreadKind::Delivery,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::runtime("delivery-router"),
+        };
         assert_eq!(
             store
-                .commit_delivery_flush("delivery-fence", stale.generation, &event)
+                .commit_delivery_flush(
+                    "delivery-fence",
+                    stale.generation,
+                    &event,
+                    &delivery_thread,
+                )
                 .await
                 .unwrap(),
             DeliveryFlushCommit::Stale
         );
         assert_eq!(
             store
-                .commit_delivery_flush("delivery-fence", current.generation, &event)
+                .commit_delivery_flush(
+                    "delivery-fence",
+                    current.generation,
+                    &event,
+                    &delivery_thread,
+                )
                 .await
                 .unwrap(),
             DeliveryFlushCommit::Committed
         );
         assert_eq!(
             store
-                .commit_delivery_flush("delivery-fence", current.generation, &event)
+                .commit_delivery_flush(
+                    "delivery-fence",
+                    current.generation,
+                    &event,
+                    &delivery_thread,
+                )
                 .await
                 .unwrap(),
             DeliveryFlushCommit::Existing {
@@ -19803,12 +19859,13 @@ mod tests {
                 .len(),
             1
         );
-        let outbox = store
-            .list_signal_outbox(SignalOutboxStatus::Pending, 8)
+        let signals = store
+            .list_context_thread_signals(&context_id, Some(ThreadSignalStatus::Pending))
             .await
             .unwrap();
-        assert_eq!(outbox.len(), 1);
-        assert_eq!(outbox[0].event_id, event.id);
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].event_id, event.id);
+        assert_eq!(signals[0].thread_id, delivery_thread.id);
     }
 
     #[tokio::test]
@@ -20901,10 +20958,7 @@ mod tests {
         assert!(fenced_activation.claimed_by.is_none());
         assert!(fenced_activation.lease_expires_at.is_none());
         let retry_signal = store
-            .list_context_thread_signals(
-                "retry-context",
-                Some(ThreadSignalStatus::Pending),
-            )
+            .list_context_thread_signals("retry-context", Some(ThreadSignalStatus::Pending))
             .await
             .unwrap()
             .into_iter()
@@ -21059,7 +21113,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_batch_is_ordered_atomic_and_commits_signal_outbox_together() {
+    async fn event_batch_is_ordered_and_atomic() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
@@ -21083,15 +21137,12 @@ mod tests {
             .append_batch(vec![
                 EventAppend {
                     event: event("batch-1", "one"),
-                    signal_outbox: false,
                 },
                 EventAppend {
                     event: event("batch-2", "two"),
-                    signal_outbox: true,
                 },
                 EventAppend {
                     event: event("batch-3", "three"),
-                    signal_outbox: false,
                 },
             ])
             .await
@@ -21110,26 +21161,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["batch-1", "batch-2", "batch-3"]
         );
-        let outbox_ids = sqlx::query("SELECT event_id FROM signal_outbox ORDER BY event_id")
-            .fetch_all(&store.pool)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|row| row.get::<String, _>("event_id"))
-            .collect::<Vec<_>>();
-        assert_eq!(outbox_ids, vec!["batch-2"]);
-
         let conflicting = event("batch-2", "different");
         let error = store
             .append_batch(vec![
                 EventAppend {
                     event: event("batch-rollback", "must not survive"),
-                    signal_outbox: false,
                 },
-                EventAppend {
-                    event: conflicting,
-                    signal_outbox: false,
-                },
+                EventAppend { event: conflicting },
             ])
             .await
             .unwrap_err();
@@ -21272,60 +21310,6 @@ mod tests {
             .await
             .unwrap()
             .is_none());
-    }
-
-    #[tokio::test]
-    async fn signal_outbox_rejects_unroutable_events_atomically() {
-        let tmp_file = NamedTempFile::new().unwrap();
-        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
-            .await
-            .unwrap();
-        let event = Event::new(
-            "unroutable-outbox-event".to_string(),
-            "fixture".to_string(),
-            crate::event::TYPE_TOOL_OUTPUT.to_string(),
-            "chat/tool_output".to_string(),
-            serde_json::Map::new(),
-        );
-        assert!(store
-            .append_with_signal_outbox(event.clone())
-            .await
-            .is_err());
-        assert!(store
-            .query(QueryFilter {
-                event_id: Some(event.id),
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .is_empty());
-
-        let discarded = Event::new(
-            "discarded-outbox-event".to_string(),
-            "fixture".to_string(),
-            crate::event::TYPE_TOOL_OUTPUT.to_string(),
-            "chat/tool_output".to_string(),
-            [
-                ("context_id".to_string(), serde_json::json!("context")),
-                ("session_id".to_string(), serde_json::json!("session")),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        store
-            .append_with_signal_outbox(discarded.clone())
-            .await
-            .unwrap();
-        assert!(store.discard_signal_outbox(&discarded.id).await.unwrap());
-        assert!(!store.discard_signal_outbox(&discarded.id).await.unwrap());
-        assert_eq!(
-            store
-                .list_signal_outbox(SignalOutboxStatus::Discarded, 16)
-                .await
-                .unwrap()[0]
-                .event_id,
-            discarded.id
-        );
     }
 
     #[tokio::test]
@@ -21897,25 +21881,28 @@ mod tests {
 
         for event_id in ["signal-event-4", "signal-event-5"] {
             store
-                .append_with_signal_outbox(Event::new(
-                    event_id.to_string(),
-                    "fixture".to_string(),
-                    crate::event::TYPE_TOOL_OUTPUT.to_string(),
-                    "chat/tool_output".to_string(),
-                    [
-                        (
-                            "context_id".to_string(),
-                            serde_json::json!("signal-context"),
-                        ),
-                        (
-                            "session_id".to_string(),
-                            serde_json::json!("signal-session"),
-                        ),
-                        ("root_turn_id".to_string(), serde_json::json!("signal-root")),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ))
+                .append_to_thread(
+                    Event::new(
+                        event_id.to_string(),
+                        "fixture".to_string(),
+                        crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                        "chat/tool_output".to_string(),
+                        [
+                            (
+                                "context_id".to_string(),
+                                serde_json::json!("signal-context"),
+                            ),
+                            (
+                                "session_id".to_string(),
+                                serde_json::json!("signal-session"),
+                            ),
+                            ("root_turn_id".to_string(), serde_json::json!("signal-root")),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    ),
+                    "signal-thread",
+                )
                 .await
                 .unwrap();
         }
@@ -22017,14 +22004,11 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
-        assert_eq!(
-            store
-                .list_signal_outbox(SignalOutboxStatus::Materialized, 16)
-                .await
-                .unwrap()
-                .len(),
-            2
-        );
+        assert!(store
+            .list_signal_outbox(SignalOutboxStatus::Materialized, 16)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -23501,6 +23485,24 @@ mod tests {
             )
         };
         let continuation = event("objective-continuation-event", "objective-evaluation");
+        let continuation_thread = NewThread {
+            id: stable_thread_id(&continuation.id),
+            agent_id: "objective-outbox-agent".to_string(),
+            context_id: "objective-outbox-context".to_string(),
+            session_id: "objective-outbox-session".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: continuation.id.clone(),
+            kind: ThreadKind::Objective,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::objective(
+                "objective-outbox",
+                "objective-evaluation",
+                2,
+                None,
+            ),
+        };
         let claimed = store
             .claim_objective_evaluation_with_signal(
                 "objective-outbox",
@@ -23508,6 +23510,7 @@ mod tests {
                 "objective-evaluation",
                 Utc::now() + chrono::Duration::minutes(1),
                 &continuation,
+                &continuation_thread,
             )
             .await
             .unwrap();
@@ -23515,16 +23518,29 @@ mod tests {
             claimed,
             ObjectiveMutation::Updated(ObjectiveRecord { revision: 2, .. })
         ));
-        assert_eq!(
-            store
-                .list_signal_outbox(SignalOutboxStatus::Pending, 16)
-                .await
-                .unwrap()[0]
-                .event_id,
-            continuation.id
-        );
+        let signals = store
+            .list_context_thread_signals(
+                "objective-outbox-context",
+                Some(ThreadSignalStatus::Pending),
+            )
+            .await
+            .unwrap();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].event_id, continuation.id);
+        assert_eq!(signals[0].thread_id, continuation_thread.id);
 
         let stale = event("stale-objective-continuation", "stale-evaluation");
+        let stale_thread = NewThread {
+            id: stable_thread_id(&stale.id),
+            root_turn_id: stale.id.clone(),
+            supervision: ThreadSupervision::objective(
+                "objective-outbox",
+                "stale-evaluation",
+                2,
+                None,
+            ),
+            ..continuation_thread.clone()
+        };
         assert!(matches!(
             store
                 .claim_objective_evaluation_with_signal(
@@ -23533,6 +23549,7 @@ mod tests {
                     "stale-evaluation",
                     Utc::now() + chrono::Duration::minutes(1),
                     &stale,
+                    &stale_thread,
                 )
                 .await
                 .unwrap(),

@@ -2365,10 +2365,7 @@ impl ContextEngine {
                 projection
                     .target_events
                     .into_iter()
-                    .map(|event| EventAppend {
-                        event,
-                        signal_outbox: false,
-                    })
+                    .map(|event| EventAppend { event })
                     .collect(),
             )
             .await?;
@@ -12661,7 +12658,6 @@ mod tests {
                     .into_iter()
                     .collect(),
                 ),
-                signal_outbox: false,
             })
             .collect::<Vec<_>>();
         store.append_batch(observations).await.unwrap();

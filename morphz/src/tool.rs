@@ -958,13 +958,9 @@ impl BackgroundTaskScheduler {
     }
 
     /// Repairs the crash window between a detached background Job/result Event
-    /// terminal commit and arming its scheduler delivery intent. Generic
-    /// physical Action batches arm one barrier only after every sibling result
-    /// is durable, so the generic ExecutionJob reconciler deliberately commits
-    /// Event without Outbox. A detached background process is its own Action
-    /// boundary and therefore owns exactly one deterministic Event + Outbox.
-    /// Replaying this scan is safe because both inserts are idempotent and a
-    /// materialized Outbox row is never reset to pending.
+    /// terminal commit and its directed Thread Signal. Replaying this scan is
+    /// safe because Event and Signal identities are deterministic and the
+    /// transaction-local append is idempotent.
     pub async fn recover_terminal_background_outboxes(
         &self,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
@@ -1004,7 +1000,7 @@ impl BackgroundTaskScheduler {
                 .into());
             }
             self.events
-                .append_with_signal_outbox(events.remove(0))
+                .append_to_thread(events.remove(0), &job.thread_id)
                 .await?;
             armed += 1;
         }
@@ -1372,7 +1368,7 @@ impl BackgroundTaskScheduler {
             task.next_wakeup_at = None;
             background_check_due_payload(&task, check_after_secs, wake_source)
         };
-        if let Some(job) = authoritative_job {
+        if let Some(job) = authoritative_job.as_ref() {
             payload.insert(
                 "task_status".to_string(),
                 serde_json::json!(if job.cancel_requested_at.is_some() {
@@ -1394,7 +1390,19 @@ impl BackgroundTaskScheduler {
             "chat/tool_output".to_string(),
             payload,
         );
-        self.events.append_with_signal_outbox(event.clone()).await?;
+        let thread_id = if let Some(job) = authoritative_job.as_ref() {
+            Some(job.thread_id.clone())
+        } else {
+            get_tasks_map().get(&timer.owner_id).and_then(|task| {
+                task.causal_route
+                    .as_ref()
+                    .map(|route| route.thread_id.clone())
+            })
+        }
+        .ok_or_else(|| format!("后台任务 '{}' 检查点缺少权威 Thread 路由", timer.owner_id))?;
+        self.events
+            .append_to_thread(event.clone(), &thread_id)
+            .await?;
         self.bus.dispatch_persisted(event).await?;
         Ok(TimerDisposition::Complete)
     }
@@ -1541,7 +1549,16 @@ impl ThreadScheduler {
                 None => true,
             };
             if !terminal {
-                self.events.append_with_signal_outbox(event.clone()).await?;
+                let root = root_turn_id
+                    .ok_or_else(|| format!("Schedule Event '{}' 缺少 root_turn_id", event.id))?;
+                let thread = self
+                    .sessions
+                    .get_thread_by_root(root)
+                    .await?
+                    .ok_or_else(|| format!("Schedule Event '{}' 缺少权威 Thread", event.id))?;
+                self.events
+                    .append_to_thread(event.clone(), &thread.id)
+                    .await?;
                 self.bus.dispatch_persisted(event).await?;
             }
         }

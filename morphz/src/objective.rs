@@ -3,11 +3,12 @@ use crate::harness::{ExactHarnessRef, HarnessRegistry};
 use crate::harness_package::{load_objective_harness_binding, objective_harness_binding_event};
 use crate::llm::ToolDefinition;
 use crate::memory::{
-    ActivationStore, DelegationStatus, DelegationStore, EventStore, ExecutionJobRecord,
-    ExecutionJobStore, NewObjective, NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, ThreadActivationMutation, ThreadActivationStatus, ThreadGroupFilter,
-    ThreadGroupStore, ThreadSupervisorKind,
+    stable_thread_id, ActivationStore, DelegationStatus, DelegationStore, EventStore,
+    ExecutionJobRecord, ExecutionJobStore, NewObjective, NewRuntimeTimer, NewThread,
+    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ThreadActivationMutation,
+    ThreadActivationStatus, ThreadGroupFilter, ThreadGroupStore, ThreadKind, ThreadSupervision,
+    ThreadSupervisorKind,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::scheduler::{
@@ -2722,6 +2723,24 @@ impl ObjectiveSupervisor {
             "chat/tool_output".to_string(),
             continuation_payload.into_iter().collect(),
         );
+        let continuation_thread = NewThread {
+            id: stable_thread_id(&continuation_event.id),
+            agent_id: objective.agent_id.clone(),
+            context_id: objective.context_id.clone(),
+            session_id: objective.coordinator_session_id.clone(),
+            initiating_principal_id: objective.initiating_principal_id.clone(),
+            root_turn_id: continuation_event.id.clone(),
+            kind: ThreadKind::Objective,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::objective(
+                objective.id.clone(),
+                evaluation_id.clone(),
+                claimed_revision,
+                None,
+            ),
+        };
         let claimed = self
             .store
             .claim_objective_evaluation_with_signal(
@@ -2730,6 +2749,7 @@ impl ObjectiveSupervisor {
                 &evaluation_id,
                 lease_expires_at,
                 &continuation_event,
+                &continuation_thread,
             )
             .await?;
         let ObjectiveMutation::Updated(claimed) = claimed else {

@@ -1,9 +1,11 @@
 use super::{
-    append_event_in_tx, append_signal_outbox_in_tx, now_text, parse_time, PostgresStore, StoreError,
+    append_direct_thread_signal_in_tx, append_event_in_tx, now_text, parse_time,
+    thread::ensure_thread_in_tx, PostgresStore, StoreError,
 };
 use crate::event::Event;
 use crate::memory::{
-    DelegationRecord, DelegationStatus, DelegationStore, NewDelegation, SessionDirectoryStore,
+    stable_thread_id, DelegationRecord, DelegationStatus, DelegationStore, NewDelegation,
+    NewThread, SessionDirectoryStore, ThreadKind, ThreadSupervision,
 };
 use serde_json::Value as JsonValue;
 use sqlx::postgres::PgRow;
@@ -233,8 +235,25 @@ impl DelegationStore for PostgresStore {
                 format!("Delegation '{id}' 结果 Event 路由到错误的父 Context/Session").into(),
             );
         }
+        let thread = ensure_thread_in_tx(
+            &mut tx,
+            &NewThread {
+                id: stable_thread_id(&event.id),
+                agent_id: delegation.agent_id.clone(),
+                context_id: delegation.parent_context_id.clone(),
+                session_id: delegation.parent_session_id.clone(),
+                initiating_principal_id: delegation.initiating_principal_id.clone(),
+                root_turn_id: event.id.clone(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::runtime("delegation-router"),
+            },
+        )
+        .await?;
         append_event_in_tx(&mut tx, event).await?;
-        append_signal_outbox_in_tx(&mut tx, event).await?;
+        append_direct_thread_signal_in_tx(&mut tx, event, &thread.id).await?;
         tx.commit().await?;
         Ok(true)
     }

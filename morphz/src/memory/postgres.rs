@@ -12,11 +12,11 @@ use crate::memory::{
     causal_payload_string, AttentionAcknowledgementRecord, CognitiveClockStore,
     ContextCognitiveClock, EventAppend, EventStore, MindProjectionCommit, MindProjectionHead,
     MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective,
-    NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
-    SessionProjectionMutation, SessionProjectionStore, TimerStore,
+    NewRuntimeTimer, NewThread, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RecallDocument, RecallDocumentKind,
+    RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore,
+    RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus,
+    SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore, TimerStore,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -1347,42 +1347,6 @@ async fn mutate_session_projection_in_tx(
     Ok(())
 }
 
-async fn append_signal_outbox_in_tx(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
-    event: &Event,
-) -> Result<(), StoreError> {
-    if event
-        .payload
-        .get("session_id")
-        .and_then(JsonValue::as_str)
-        .is_none()
-        || event
-            .payload
-            .get("context_id")
-            .and_then(JsonValue::as_str)
-            .is_none()
-    {
-        return Err(format!(
-            "Signal Outbox Event '{}' 缺少 context_id/session_id 路由",
-            event.id
-        )
-        .into());
-    }
-    sqlx::query(
-        r#"INSERT INTO signal_outbox (event_id, status, created_at)
-           VALUES ($1, 'pending', $2) ON CONFLICT(event_id) DO NOTHING"#,
-    )
-    .bind(&event.id)
-    .bind(
-        event
-            .timestamp
-            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-    )
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
-
 /// PostgreSQL counterpart of SQLite's direct internal scheduler delivery.
 /// The caller owns the transaction which appended `event`, so no durable
 /// internal state is ever represented by an eventually interpreted Outbox
@@ -1515,19 +1479,7 @@ fn requires_snapshot(event: &Event, revision: u64) -> bool {
 #[async_trait::async_trait]
 impl EventStore for PostgresStore {
     async fn append(&self, event: Event) -> Result<(), StoreError> {
-        self.append_batch(vec![EventAppend {
-            event,
-            signal_outbox: false,
-        }])
-        .await
-    }
-
-    async fn append_with_signal_outbox(&self, event: Event) -> Result<(), StoreError> {
-        self.append_batch(vec![EventAppend {
-            event,
-            signal_outbox: true,
-        }])
-        .await
+        self.append_batch(vec![EventAppend { event }]).await
     }
 
     async fn append_to_thread(&self, event: Event, thread_id: &str) -> Result<(), StoreError> {
@@ -1545,9 +1497,6 @@ impl EventStore for PostgresStore {
         let mut tx = self.pool.begin().await?;
         for entry in &entries {
             append_event_in_tx(&mut tx, &entry.event).await?;
-            if entry.signal_outbox {
-                append_signal_outbox_in_tx(&mut tx, &entry.event).await?;
-            }
         }
         tx.commit().await?;
         Ok(())
@@ -2735,6 +2684,7 @@ impl ObjectiveStore for PostgresStore {
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
         event: &Event,
+        thread: &NewThread,
     ) -> Result<ObjectiveMutation, StoreError> {
         if evaluation_id.trim().is_empty() {
             return Err("Objective Evaluation ID 不能为空".into());
@@ -2798,8 +2748,9 @@ impl ObjectiveStore for PostgresStore {
                 None => ObjectiveMutation::NotFound,
             });
         }
+        let thread = thread::ensure_thread_in_tx(&mut tx, thread).await?;
         append_event_in_tx(&mut tx, event).await?;
-        append_signal_outbox_in_tx(&mut tx, event).await?;
+        append_direct_thread_signal_in_tx(&mut tx, event, &thread.id).await?;
         tx.commit().await?;
         Ok(ObjectiveMutation::Updated(
             self.get_objective(id)

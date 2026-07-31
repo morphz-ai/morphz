@@ -1,19 +1,19 @@
 use super::{
-    append_direct_thread_signal_in_tx, append_event_in_tx, append_signal_outbox_in_tx, now_text,
-    parse_time, thread_group::group_from_row, timer_from_row, PostgresStore, StoreError,
+    append_direct_thread_signal_in_tx, append_event_in_tx, now_text, parse_time,
+    thread_group::group_from_row, timer_from_row, PostgresStore, StoreError,
 };
 use crate::event::Event;
 use crate::memory::{
     evaluate_thread_group_contract, thread_cancellation_event, thread_group_barrier_event,
-    thread_terminal_barrier_event, DeliveryFlushCommit, DeliveryStatus, ObjectiveWaitCondition,
-    RuntimeTimerRecord, ThreadControlAction, ThreadControlState, ThreadKind, ThreadLifecycle,
-    ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadRecord, ThreadStore,
-    ThreadSupervision, ThreadSupervisorKind,
+    thread_terminal_barrier_event, DeliveryFlushCommit, DeliveryStatus, NewThread,
+    ObjectiveWaitCondition, RuntimeTimerRecord, ThreadControlAction, ThreadControlState,
+    ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadRecord,
+    ThreadStore, ThreadSupervision, ThreadSupervisorKind,
 };
 use chrono::Duration;
 use serde_json::{json, Value as JsonValue};
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
@@ -138,6 +138,65 @@ pub(super) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         created_at: parse_time(&row.get::<String, _>("created_at"))?,
         updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
     })
+}
+
+pub(super) async fn ensure_thread_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    thread: &NewThread,
+) -> Result<ThreadRecord, StoreError> {
+    thread.supervision.validate(thread.kind)?;
+    let now = now_text();
+    sqlx::query(
+        r#"INSERT INTO threads
+           (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+            kind, status, executor_kind, executor_id, target_id,
+            lifetime, supervisor_kind, supervisor_id, supervision_generation,
+            origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
+            delivery_status, created_at, updated_at)
+           VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'open', $8, $9, $10,
+                   $11, $12, $13, $14, $15, $16, $17, $18, 'none', $19, $19)
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(&thread.id)
+    .bind(&thread.agent_id)
+    .bind(&thread.context_id)
+    .bind(&thread.session_id)
+    .bind(&thread.initiating_principal_id)
+    .bind(&thread.root_turn_id)
+    .bind(thread.kind.as_str())
+    .bind(&thread.executor_kind)
+    .bind(&thread.executor_id)
+    .bind(&thread.target_id)
+    .bind(thread.supervision.lifetime.as_str())
+    .bind(thread.supervision.supervisor_kind.as_str())
+    .bind(&thread.supervision.supervisor_id)
+    .bind(i64::try_from(thread.supervision.generation)?)
+    .bind(&thread.supervision.origin_evaluation_id)
+    .bind(&thread.supervision.parent_thread_id)
+    .bind(&thread.supervision.thread_group_id)
+    .bind(&thread.supervision.completion_contract)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    let row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = $1")
+        .bind(&thread.root_turn_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let existing = thread_from_row(&row)?;
+    if existing.context_id != thread.context_id
+        || existing.session_id != thread.session_id
+        || existing.agent_id != thread.agent_id
+        || existing.initiating_principal_id != thread.initiating_principal_id
+        || existing.kind != thread.kind
+        || existing.supervision != thread.supervision
+    {
+        return Err(format!(
+            "Root Turn '{}' 已被不同 Thread 路由占用",
+            thread.root_turn_id
+        )
+        .into());
+    }
+    Ok(existing)
 }
 
 #[async_trait::async_trait]
@@ -441,6 +500,7 @@ impl ThreadStore for PostgresStore {
         timer_id: &str,
         generation: u64,
         event: &Event,
+        thread: &NewThread,
     ) -> Result<DeliveryFlushCommit, StoreError> {
         if event.topic != "chat/thread_completion_ready" {
             return Err("Delivery Flush 只能提交 chat/thread_completion_ready Event".into());
@@ -482,8 +542,9 @@ impl ThreadStore for PostgresStore {
             tx.commit().await?;
             return Ok(DeliveryFlushCommit::Empty);
         }
+        let thread = ensure_thread_in_tx(&mut tx, thread).await?;
         let inserted = append_event_in_tx(&mut tx, event).await?;
-        append_signal_outbox_in_tx(&mut tx, event).await?;
+        append_direct_thread_signal_in_tx(&mut tx, event, &thread.id).await?;
         tx.commit().await?;
         Ok(if inserted {
             DeliveryFlushCommit::Committed
