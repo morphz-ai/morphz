@@ -3505,6 +3505,19 @@ pub struct NewScheduledObjective {
     pub created_event: crate::event::Event,
 }
 
+/// Revision-fenced installation of the durable wait owned by an already
+/// existing Objective.  This is committed in the same transaction as the
+/// Objective-supervised Group and its Threads, so an Evaluation can never
+/// hand work off and then expose `active + no wait` to the supervisor.
+#[derive(Debug, Clone)]
+pub struct ScheduledObjectiveWaitBinding {
+    pub objective_id: String,
+    pub expected_revision: u64,
+    pub wait_condition: ObjectiveWaitCondition,
+    pub status_reason: String,
+    pub bound_event: crate::event::Event,
+}
+
 /// Atomic transfer of one open attached Thread from its owning Evaluation to
 /// an Objective.  The source Group member is released in the same transaction
 /// which installs the new Objective-owned Group, so neither supervisor can
@@ -4864,6 +4877,7 @@ pub trait ScheduleStore: Send + Sync {
     async fn commit_schedule_transaction(
         &self,
         objectives: &[NewScheduledObjective],
+        objective_waits: &[ScheduledObjectiveWaitBinding],
         threads: &[NewThread],
         intents: &[NewSchedule],
         groups: &[NewThreadGroupPlan],

@@ -6,9 +6,10 @@ use super::{
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
     evaluate_thread_group_contract, NewSchedule, NewScheduledObjective, NewThread,
-    NewThreadGroupPlan, ObjectiveStore, ObjectiveWaitCondition, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, ScheduleStore, ThreadGroupStatus, ThreadPromotionMutation,
-    ThreadPromotionRecord, ThreadPromotionRequest, ThreadStore, ThreadSupervisorKind,
+    NewThreadGroupPlan, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, ScheduleMutation,
+    ScheduleRecord, ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding,
+    ThreadGroupStatus, ThreadPromotionMutation, ThreadPromotionRecord, ThreadPromotionRequest,
+    ThreadStore, ThreadSupervisorKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -327,6 +328,7 @@ impl ScheduleStore for PostgresStore {
     async fn commit_schedule_transaction(
         &self,
         objectives: &[NewScheduledObjective],
+        objective_waits: &[ScheduledObjectiveWaitBinding],
         threads: &[NewThread],
         intents: &[NewSchedule],
         groups: &[NewThreadGroupPlan],
@@ -518,6 +520,72 @@ impl ScheduleStore for PostgresStore {
             .await?;
             append_event_in_tx(&mut tx, &scheduled.created_event).await?;
         }
+        for binding in objective_waits {
+            let ObjectiveWaitCondition::ThreadGroup { group_id } = &binding.wait_condition else {
+                return Err(format!(
+                    "现有 Objective '{}' 的 schedule_tx 等待只能绑定 Thread Group",
+                    binding.objective_id
+                )
+                .into());
+            };
+            let group = sqlx::query(
+                "SELECT supervisor_kind, supervisor_id FROM thread_groups WHERE id = $1",
+            )
+            .bind(group_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Objective '{}' 的等待 Thread Group '{}' 不存在",
+                    binding.objective_id, group_id
+                )
+            })?;
+            if group.get::<String, _>("supervisor_kind") != "objective"
+                || group.get::<String, _>("supervisor_id") != binding.objective_id
+            {
+                return Err(format!(
+                    "Thread Group '{}' 未由 Objective '{}' 监督",
+                    group_id, binding.objective_id
+                )
+                .into());
+            }
+            let updated = sqlx::query(
+                r#"UPDATE objectives
+                   SET wait_condition_json = $1, status_reason = $2,
+                       revision = revision + 1, updated_at = $3
+                   WHERE id = $4 AND revision = $5 AND status = 'active'
+                     AND wait_condition_json IS NULL"#,
+            )
+            .bind(serde_json::to_value(&binding.wait_condition)?)
+            .bind(binding.status_reason.trim())
+            .bind(&now)
+            .bind(&binding.objective_id)
+            .bind(i64::try_from(binding.expected_revision)?)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() != 1 {
+                let current = sqlx::query("SELECT * FROM objectives WHERE id = $1")
+                    .bind(&binding.objective_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                let idempotent = current
+                    .as_ref()
+                    .map(objective_from_row)
+                    .transpose()?
+                    .is_some_and(|objective| {
+                        objective.status == ObjectiveStatus::Active
+                            && objective.wait_condition.as_ref() == Some(&binding.wait_condition)
+                    });
+                if !idempotent {
+                    return Err(format!(
+                        "Objective '{}' revision 或等待状态已变化，拒绝提交未受监督的 durable Thread",
+                        binding.objective_id
+                    )
+                    .into());
+                }
+            }
+            append_event_in_tx(&mut tx, &binding.bound_event).await?;
+        }
         for intent in intents {
             let target = sqlx::query("SELECT status FROM threads WHERE id = $1")
                 .bind(&intent.thread_id)
@@ -691,7 +759,7 @@ impl ScheduleStore for PostgresStore {
                 .await?
         } else {
             sqlx::query(
-                "SELECT * FROM objectives WHERE id = $1 AND revision = $2 AND status = 'active' FOR UPDATE",
+                "SELECT * FROM objectives WHERE id = $1 AND revision = $2 AND status = 'active' AND wait_condition_json IS NULL FOR UPDATE",
             )
             .bind(&request.objective_id)
             .bind(i64::try_from(
@@ -708,7 +776,7 @@ impl ScheduleStore for PostgresStore {
                 )
             })?
         };
-        let objective = objective_from_row(&objective_row)?;
+        let mut objective = objective_from_row(&objective_row)?;
         let promoted_thread_row = sqlx::query("SELECT * FROM threads WHERE id = $1")
             .bind(&request.thread_id)
             .fetch_one(&mut *tx)
@@ -745,6 +813,41 @@ impl ScheduleStore for PostgresStore {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
+        if request.new_objective.is_none() {
+            let wait = ObjectiveWaitCondition::ThreadGroup {
+                group_id: request.target_group.group.id.clone(),
+            };
+            let updated = sqlx::query(
+                r#"UPDATE objectives
+                   SET wait_condition_json = $1, status_reason = $2,
+                       revision = revision + 1, updated_at = $3
+                   WHERE id = $4 AND revision = $5 AND status = 'active'
+                     AND wait_condition_json IS NULL"#,
+            )
+            .bind(serde_json::to_value(&wait)?)
+            .bind("等待升格后的受监督执行线程完成")
+            .bind(&now)
+            .bind(&request.objective_id)
+            .bind(i64::try_from(
+                request
+                    .expected_objective_revision
+                    .expect("validated existing Objective revision"),
+            )?)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() != 1 {
+                return Err(format!(
+                    "Objective '{}' 在 Thread 升格期间 revision 或等待状态发生变化",
+                    request.objective_id
+                )
+                .into());
+            }
+            let objective_row = sqlx::query("SELECT * FROM objectives WHERE id = $1")
+                .bind(&request.objective_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            objective = objective_from_row(&objective_row)?;
+        }
         let released = sqlx::query(
             r#"UPDATE thread_group_members
                SET required = FALSE, status = 'cancelled', updated_at = $1

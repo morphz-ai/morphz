@@ -11,9 +11,10 @@ use crate::memory::{
     ExecutionJobStore, ExecutionRetrySafety, NewObjective, NewRuntimeTimer, NewSchedule,
     NewScheduledObjective, NewThread, NewThreadGroup, NewThreadGroupMember, NewThreadGroupPlan,
     ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionStatus,
-    SessionStore, ThreadGroupPolicy, ThreadKind, ThreadLifecycle, ThreadLifetime,
-    ThreadPromotionMutation, ThreadPromotionRequest, ThreadSupervision, ThreadSupervisorKind,
+    RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus,
+    ScheduledObjectiveWaitBinding, SessionStatus, SessionStore, ThreadGroupPolicy, ThreadKind,
+    ThreadLifecycle, ThreadLifetime, ThreadPromotionMutation, ThreadPromotionRequest,
+    ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::TYPE_OBJECTIVE_CONTROL;
 use crate::permission::{
@@ -2158,6 +2159,13 @@ fn validate_promotion_objective(
         )
         .into());
     }
+    if objective.wait_condition.is_some() {
+        return Err(format!(
+            "Objective '{}' 已有等待条件，不能再接管另一个独立 Thread Group",
+            objective.id
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -2685,6 +2693,7 @@ impl Tool for ScheduleTxTool {
         let mut prepared_supervisions = Vec::<Option<ThreadSupervision>>::new();
         let mut prepared_required = Vec::<bool>::new();
         let mut local_refs = HashMap::<String, String>::new();
+        let mut existing_objective_revisions = HashMap::<String, u64>::new();
         for (index, operation) in args.operations.iter().enumerate() {
             if let ScheduleOperation::Spawn {
                 client_id,
@@ -2747,6 +2756,10 @@ impl Tool for ScheduleTxTool {
                             == Some(objective_id.as_str())
                         {
                             1
+                        } else if let Some(revision) =
+                            existing_objective_revisions.get(&objective_id)
+                        {
+                            *revision
                         } else {
                             let objectives = self.objectives.as_ref().ok_or(
                                 "当前 Runtime 未配置 Objective Store，不能创建 durable Thread",
@@ -2766,6 +2779,15 @@ impl Tool for ScheduleTxTool {
                                 )
                                 .into());
                             }
+                            if objective.wait_condition.is_some() {
+                                return Err(format!(
+                                    "Objective '{}' 已有等待条件，不能同时绑定新的 required Thread Group",
+                                    objective_id
+                                )
+                                .into());
+                            }
+                            existing_objective_revisions
+                                .insert(objective_id.clone(), objective.revision);
                             objective.revision
                         };
                         ThreadSupervision::objective(
@@ -2830,8 +2852,19 @@ impl Tool for ScheduleTxTool {
                 .as_ref()
                 .is_some_and(|supervision| supervision.lifetime == ThreadLifetime::Attached)
         });
+        let required_durable_spawned = spawn_indices.iter().any(|index| {
+            prepared_required[*index]
+                && prepared_supervisions[*index]
+                    .as_ref()
+                    .is_some_and(|supervision| supervision.lifetime == ThreadLifetime::Durable)
+        });
         let create_group = args.group.is_some()
             || attached_spawned
+            // Required durable work is not fire-and-forget. Existing and
+            // current Objectives need the same barrier authority as a newly
+            // created Objective, otherwise the Evaluation can finish and the
+            // supervisor immediately starts a duplicate continuation.
+            || required_durable_spawned
             // A newly-created Objective must start with one durable wait
             // authority. A singleton Group may look redundant, but it keeps
             // creation, terminal wake, restart recovery and later fan-out on
@@ -2907,6 +2940,64 @@ impl Tool for ScheduleTxTool {
                         required: prepared_required[*index],
                     })
                     .collect(),
+            });
+        }
+
+        let mut objective_waits = Vec::new();
+        for plan in &group_plans {
+            if plan.group.supervisor_kind != ThreadSupervisorKind::Objective
+                || created_objective_id.as_deref() == Some(plan.group.supervisor_id.as_str())
+            {
+                continue;
+            }
+            let expected_revision = existing_objective_revisions
+                .get(&plan.group.supervisor_id)
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "Objective Group '{}' 缺少现有 Objective '{}' 的 revision fence",
+                        plan.group.id, plan.group.supervisor_id
+                    )
+                })?;
+            let wait_condition = ObjectiveWaitCondition::ThreadGroup {
+                group_id: plan.group.id.clone(),
+            };
+            let event_digest = sha256_hex(
+                format!(
+                    "{attempt_id}\0objective-thread-group-bound\0{}\0{}\0{expected_revision}",
+                    plan.group.supervisor_id, plan.group.id
+                )
+                .as_bytes(),
+            );
+            let bound_event = Event::new(
+                format!("objective_thread_group_bound_{}", &event_digest[..24]),
+                "Agent-Morphz".to_string(),
+                TYPE_OBJECTIVE_CONTROL.to_string(),
+                "objective/thread_group_bound".to_string(),
+                serde_json::json!({
+                    "objective_id": plan.group.supervisor_id,
+                    "agent_id": session.agent_id,
+                    "context_id": context_id,
+                    "session_id": session_id,
+                    "source_evaluation_id": attempt_id,
+                    "source_thread_id": route.thread_id,
+                    "thread_group_id": plan.group.id,
+                    "expected_objective_revision": expected_revision,
+                    "wait_condition": wait_condition,
+                    "member_thread_ids": plan.members.iter()
+                        .map(|member| &member.thread_id)
+                        .collect::<Vec<_>>(),
+                })
+                .as_object()
+                .expect("objective group binding event payload")
+                .clone(),
+            );
+            objective_waits.push(ScheduledObjectiveWaitBinding {
+                objective_id: plan.group.supervisor_id.clone(),
+                expected_revision,
+                wait_condition,
+                status_reason: "等待受监督执行线程组完成".to_string(),
+                bound_event,
             });
         }
 
@@ -3067,7 +3158,13 @@ impl Tool for ScheduleTxTool {
         }
         let mut records = self
             .sessions
-            .commit_schedule_transaction(&scheduled_objectives, &threads, &intents, &group_plans)
+            .commit_schedule_transaction(
+                &scheduled_objectives,
+                &objective_waits,
+                &threads,
+                &intents,
+                &group_plans,
+            )
             .await?;
         for record in &mut records {
             let continues_current_thread = record.thread_id == route.thread_id
@@ -7902,6 +7999,150 @@ Body
                 .len()
                 == 1
         );
+    }
+
+    #[tokio::test]
+    async fn schedule_tx_atomically_binds_existing_objective_to_required_durable_group() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-existing-objective".to_string(),
+                title: "Existing Objective Agent".to_string(),
+                root_context_id: "context-existing-objective".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-existing-objective".to_string(),
+                agent_id: "agent-existing-objective".to_string(),
+                title: "Existing Objective Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_session(NewSession {
+                id: "session-existing-objective".to_string(),
+                agent_id: "agent-existing-objective".to_string(),
+                context_id: "context-existing-objective".to_string(),
+                parent_session_id: None,
+                title: "Existing Objective Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: "thread-existing-objective-current".to_string(),
+                agent_id: "agent-existing-objective".to_string(),
+                context_id: "context-existing-objective".to_string(),
+                session_id: "session-existing-objective".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-existing-objective-current".to_string(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let objective = store
+            .create_objective(NewObjective {
+                id: "objective-existing".to_string(),
+                agent_id: "agent-existing-objective".to_string(),
+                context_id: "context-existing-objective".to_string(),
+                coordinator_session_id: "session-existing-objective".to_string(),
+                delivery_session_id: "session-existing-objective".to_string(),
+                parent_objective_id: None,
+                source_event_id: "source-objective-existing".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "持续完成已有目标".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let tool = ScheduleTxTool::new(
+            Arc::clone(&scheduler),
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+        )
+        .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>);
+        let arguments = serde_json::json!({
+            "operations": [{
+                "op": "spawn",
+                "lifetime": "durable",
+                "objective": {
+                    "mode": "existing",
+                    "objective_id": objective.id
+                },
+                "client_id": "required-work",
+                "intent": "执行必须完成的长期工作",
+                "delay_seconds": 3600
+            }]
+        })
+        .to_string();
+        let route = Some(ToolCausalRoute {
+            thread_id: "thread-existing-objective-current".to_string(),
+            activation_id: "evaluation-existing-objective".to_string(),
+            root_turn_id: "root-existing-objective-current".to_string(),
+            trigger_event_id: "user-existing-objective".to_string(),
+            trigger_sequence: 11,
+        });
+        let output = CURRENT_SESSION_ID
+            .scope(
+                "session-existing-objective".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-existing-objective".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-existing-objective".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(route, tool.execute(&arguments)),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let group_id = receipt["thread_groups"][0]["group_id"]
+            .as_str()
+            .expect("required durable work must create a group");
+        let updated = store
+            .get_objective("objective-existing")
+            .await
+            .unwrap()
+            .expect("existing objective");
+        assert_eq!(updated.revision, objective.revision + 1);
+        assert_eq!(
+            updated.wait_condition,
+            Some(ObjectiveWaitCondition::ThreadGroup {
+                group_id: group_id.to_string(),
+            })
+        );
+        let group = store
+            .get_thread_group(group_id)
+            .await
+            .unwrap()
+            .expect("required durable group");
+        assert_eq!(group.supervisor_kind, ThreadSupervisorKind::Objective);
+        assert_eq!(group.supervisor_id, objective.id);
+        assert_eq!(group.required_count, 1);
+        let bound_events = store
+            .query(QueryFilter {
+                context_id: Some("context-existing-objective".to_string()),
+                topic: Some("objective/thread_group_bound".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(bound_events.len(), 1);
+        assert_eq!(bound_events[0].payload["thread_group_id"], group_id);
     }
 
     #[tokio::test]

@@ -36,16 +36,16 @@ use crate::memory::{
     PrincipalDirectoryPage, PrincipalRecord, QueryFilter, RecallDocument, RecallDocumentKind,
     RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore,
     RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
-    ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
-    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadControlAction, ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord,
-    ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus,
-    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation,
-    ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord, ThreadPromotionRequest,
-    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, ThreadSupervision,
-    ThreadSupervisorKind, TimerStore,
+    ScheduleRecord, ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding,
+    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
+    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
+    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
+    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy,
+    ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle,
+    ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
+    ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
 };
 use chrono::{DateTime, Utc};
 // SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
@@ -7616,6 +7616,22 @@ impl ThreadGroupStore for SqliteStore {
                     .await?;
                     repaired |= reset.rows_affected() == 1;
                 }
+                Some(row) if row.get::<String, _>("status") == "discarded" => {
+                    // Older dispatchers did not recognize
+                    // runtime/thread_group_terminal as a routable control
+                    // event and incorrectly discarded this valid Objective
+                    // wake. The Group projection proves the barrier is
+                    // authoritative, so restore it for ordinary delivery.
+                    let reset = sqlx::query(
+                        r#"UPDATE signal_outbox
+                           SET status = 'pending', signal_id = NULL, resolved_at = NULL
+                           WHERE event_id = ? AND status = 'discarded'"#,
+                    )
+                    .bind(&barrier.id)
+                    .execute(&mut *tx)
+                    .await?;
+                    repaired |= reset.rows_affected() == 1;
+                }
                 Some(_) => {}
             }
         }
@@ -8709,6 +8725,7 @@ impl ScheduleStore for SqliteStore {
     async fn commit_schedule_transaction(
         &self,
         objectives: &[NewScheduledObjective],
+        objective_waits: &[ScheduledObjectiveWaitBinding],
         threads: &[NewThread],
         intents: &[NewSchedule],
         groups: &[NewThreadGroupPlan],
@@ -8902,6 +8919,75 @@ impl ScheduleStore for SqliteStore {
             .execute(&mut *tx)
             .await?;
             append_event_in_transaction(&mut tx, &scheduled.created_event).await?;
+        }
+        for binding in objective_waits {
+            let ObjectiveWaitCondition::ThreadGroup { group_id } = &binding.wait_condition else {
+                return Err(format!(
+                    "现有 Objective '{}' 的 schedule_tx 等待只能绑定 Thread Group",
+                    binding.objective_id
+                )
+                .into());
+            };
+            let group = sqlx::query(
+                "SELECT supervisor_kind, supervisor_id FROM thread_groups WHERE id = ?",
+            )
+            .bind(group_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Objective '{}' 的等待 Thread Group '{}' 不存在",
+                    binding.objective_id, group_id
+                )
+            })?;
+            if group.get::<String, _>("supervisor_kind") != "objective"
+                || group.get::<String, _>("supervisor_id") != binding.objective_id
+            {
+                return Err(format!(
+                    "Thread Group '{}' 未由 Objective '{}' 监督",
+                    group_id, binding.objective_id
+                )
+                .into());
+            }
+            let expected_revision = i64::try_from(binding.expected_revision)
+                .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+            let wait_json = serde_json::to_string(&binding.wait_condition)?;
+            let updated = sqlx::query(
+                r#"UPDATE objectives
+                   SET wait_condition_json = ?, status_reason = ?,
+                       revision = revision + 1, updated_at = ?
+                   WHERE id = ? AND revision = ? AND status = 'active'
+                     AND wait_condition_json IS NULL"#,
+            )
+            .bind(&wait_json)
+            .bind(binding.status_reason.trim())
+            .bind(&now)
+            .bind(&binding.objective_id)
+            .bind(expected_revision)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() != 1 {
+                let current = sqlx::query("SELECT * FROM objectives WHERE id = ?")
+                    .bind(&binding.objective_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                let idempotent = current
+                    .as_ref()
+                    .map(objective_from_row)
+                    .transpose()?
+                    .is_some_and(|objective| {
+                        objective.status == ObjectiveStatus::Active
+                            && objective.wait_condition.as_ref() == Some(&binding.wait_condition)
+                    });
+                if !idempotent {
+                    return Err(format!(
+                        "Objective '{}' revision 或等待状态已变化，拒绝提交未受监督的 durable Thread",
+                        binding.objective_id
+                    )
+                    .into());
+                }
+            }
+            append_event_in_transaction(&mut tx, &binding.bound_event).await?;
         }
         for intent in intents {
             let target = sqlx::query("SELECT status FROM threads WHERE id = ?")
@@ -9118,7 +9204,7 @@ impl ScheduleStore for SqliteStore {
             )
             .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
             sqlx::query(
-                "SELECT * FROM objectives WHERE id = ? AND revision = ? AND status = 'active'",
+                "SELECT * FROM objectives WHERE id = ? AND revision = ? AND status = 'active' AND wait_condition_json IS NULL",
             )
             .bind(&request.objective_id)
             .bind(expected_revision)
@@ -9131,7 +9217,7 @@ impl ScheduleStore for SqliteStore {
                 )
             })?
         };
-        let objective = objective_from_row(&objective_row)?;
+        let mut objective = objective_from_row(&objective_row)?;
         let promoted_thread_row = sqlx::query("SELECT * FROM threads WHERE id = ?")
             .bind(&request.thread_id)
             .fetch_one(&mut *tx)
@@ -9170,6 +9256,43 @@ impl ScheduleStore for SqliteStore {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
+        if request.new_objective.is_none() {
+            let expected_revision = i64::try_from(
+                request
+                    .expected_objective_revision
+                    .expect("validated existing Objective revision"),
+            )
+            .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+            let wait = ObjectiveWaitCondition::ThreadGroup {
+                group_id: request.target_group.group.id.clone(),
+            };
+            let updated = sqlx::query(
+                r#"UPDATE objectives
+                   SET wait_condition_json = ?, status_reason = ?,
+                       revision = revision + 1, updated_at = ?
+                   WHERE id = ? AND revision = ? AND status = 'active'
+                     AND wait_condition_json IS NULL"#,
+            )
+            .bind(serde_json::to_string(&wait)?)
+            .bind("等待升格后的受监督执行线程完成")
+            .bind(&now)
+            .bind(&request.objective_id)
+            .bind(expected_revision)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() != 1 {
+                return Err(format!(
+                    "Objective '{}' 在 Thread 升格期间 revision 或等待状态发生变化",
+                    request.objective_id
+                )
+                .into());
+            }
+            let objective_row = sqlx::query("SELECT * FROM objectives WHERE id = ?")
+                .bind(&request.objective_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            objective = objective_from_row(&objective_row)?;
+        }
         let released = sqlx::query(
             r#"UPDATE thread_group_members
                SET required = 0, status = 'cancelled', updated_at = ?
@@ -21395,6 +21518,34 @@ mod tests {
                 .unwrap();
         assert_eq!(repaired_event_count, 1);
         assert_eq!(repaired_outbox_count, 1);
+
+        // Builds before the thread-group route was added to the Outbox
+        // predicate could persist the authoritative barrier and then discard
+        // it as "not routable". Periodic reconciliation must turn that exact
+        // row back into pending work instead of considering the barrier done.
+        sqlx::query(
+            "UPDATE signal_outbox SET status = 'discarded', resolved_at = ? WHERE event_id = ?",
+        )
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(repair_barrier_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store
+            .repair_thread_group_barrier("group-repair")
+            .await
+            .unwrap());
+        let repaired_status: String =
+            sqlx::query_scalar("SELECT status FROM signal_outbox WHERE event_id = ?")
+                .bind(repair_barrier_id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(repaired_status, "pending");
+        assert!(!store
+            .repair_thread_group_barrier("group-repair")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

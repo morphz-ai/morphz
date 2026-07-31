@@ -6,8 +6,8 @@ use crate::memory::{
     ActivationStore, DelegationStatus, DelegationStore, EventStore, ExecutionJobRecord,
     ExecutionJobStore, NewObjective, NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord,
     ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, ThreadActivationMutation, ThreadActivationStatus, ThreadGroupStore,
-    ThreadSupervisorKind,
+    RuntimeTimerRecord, ThreadActivationMutation, ThreadActivationStatus, ThreadGroupFilter,
+    ThreadGroupStore, ThreadSupervisorKind,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::timer::{TimerDisposition, TimerEngine};
@@ -2356,6 +2356,60 @@ impl ObjectiveSupervisor {
         {
             return Ok(());
         }
+        // Defensive recovery for schedules created by older builds, or for a
+        // crash between handing durable work to an Objective and installing
+        // its wait route. An Objective-supervised open Group is authoritative:
+        // never start a duplicate Evaluation while that work is still live.
+        if let Some(store) = self.thread_groups.as_ref() {
+            let open_group = store
+                .list_thread_groups(ThreadGroupFilter {
+                    context_id: Some(objective.context_id.clone()),
+                    session_id: Some(objective.coordinator_session_id.clone()),
+                    supervisor_kind: Some(ThreadSupervisorKind::Objective),
+                    supervisor_id: Some(objective.id.clone()),
+                    include_terminal: false,
+                    newest_first: false,
+                    limit: Some(1),
+                    ..ThreadGroupFilter::default()
+                })
+                .await?
+                .into_iter()
+                .next();
+            if let Some(group) = open_group {
+                let reason = format!(
+                    "检测到未终结的受监督 Thread Group '{}'；Runtime 已恢复 Objective 等待，避免重复求值",
+                    group.id
+                );
+                let mutation = self
+                    .store
+                    .update_objective_state(
+                        &objective.id,
+                        objective.revision,
+                        ObjectiveStatus::Active,
+                        Some(ObjectiveWaitCondition::ThreadGroup {
+                            group_id: group.id.clone(),
+                        }),
+                        Some(&reason),
+                    )
+                    .await?;
+                // `reconcile_thread_group_wait` may immediately schedule the
+                // next Evaluation if the Group won a terminal-state race, so
+                // release this Objective's scheduler lock first.
+                drop(_guard);
+                match mutation {
+                    ObjectiveMutation::Updated(waiting) => {
+                        self.publish_state_event("wait_recovered", &waiting, Some(&reason))
+                            .await?;
+                        self.reconcile_thread_group_wait(waiting, &group.id).await?;
+                    }
+                    ObjectiveMutation::Conflict { current } => {
+                        Box::pin(self.reconcile(current)).await?;
+                    }
+                    ObjectiveMutation::NotFound => {}
+                }
+                return Ok(());
+            }
+        }
         let evaluation_id = format!(
             "objective_eval_{}_{}_{}",
             objective.id,
@@ -2937,8 +2991,9 @@ mod tests {
     use crate::memory::{
         ExecutionJobStatus, ExecutionJobTerminal, ExecutionRetrySafety, NewAgent,
         NewCognitiveContext, NewDelegation, NewExecutionJob, NewSession, NewThread,
-        NewThreadActivation, SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus,
-        ThreadKind, ThreadStore as _, TimerStore,
+        NewThreadActivation, NewThreadGroup, NewThreadGroupMember, NewThreadGroupPlan,
+        ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus,
+        ThreadGroupPolicy, ThreadKind, ThreadStore as _, TimerStore,
     };
     use tempfile::NamedTempFile;
 
@@ -2991,6 +3046,102 @@ mod tests {
             })
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn active_objective_recovers_wait_for_legacy_open_supervised_group() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "legacy-open-group").await;
+        let group_id = "group-legacy-open-objective";
+        let mut supervision = crate::memory::ThreadSupervision::objective(
+            objective.id.clone(),
+            "legacy-source-evaluation".to_string(),
+            objective.revision,
+            None,
+        );
+        supervision.thread_group_id = Some(group_id.to_string());
+        store
+            .commit_schedule_transaction(
+                &[],
+                &[],
+                &[NewThread {
+                    id: "thread-legacy-open-objective".to_string(),
+                    agent_id: objective.agent_id.clone(),
+                    context_id: objective.context_id.clone(),
+                    session_id: objective.coordinator_session_id.clone(),
+                    initiating_principal_id: objective.initiating_principal_id.clone(),
+                    root_turn_id: "root-legacy-open-objective".to_string(),
+                    kind: ThreadKind::Execution,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision,
+                }],
+                &[],
+                &[NewThreadGroupPlan {
+                    group: NewThreadGroup {
+                        id: group_id.to_string(),
+                        context_id: objective.context_id.clone(),
+                        session_id: objective.coordinator_session_id.clone(),
+                        supervisor_kind: ThreadSupervisorKind::Objective,
+                        supervisor_id: objective.id.clone(),
+                        generation: objective.revision,
+                        policy: ThreadGroupPolicy::All,
+                        completion_contract: Default::default(),
+                    },
+                    members: vec![NewThreadGroupMember {
+                        thread_id: "thread-legacy-open-objective".to_string(),
+                        ordinal: 0,
+                        required: true,
+                    }],
+                }],
+            )
+            .await
+            .unwrap();
+
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::new(ObjectiveEvaluationRegistry::default()),
+                Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_thread_group_store(Arc::clone(&store) as Arc<dyn ThreadGroupStore>),
+        );
+        supervisor.started.store(true, Ordering::Release);
+        supervisor.reconcile(objective.clone()).await.unwrap();
+
+        let recovered = store
+            .get_objective(&objective.id)
+            .await
+            .unwrap()
+            .expect("objective");
+        assert_eq!(
+            recovered.wait_condition,
+            Some(ObjectiveWaitCondition::ThreadGroup {
+                group_id: group_id.to_string(),
+            })
+        );
+        assert!(
+            recovered.active_evaluation_id.is_none(),
+            "an open supervised Group must block a duplicate Evaluation"
+        );
+        let recovered_events = store
+            .query(QueryFilter {
+                context_id: Some(objective.context_id),
+                topic: Some("objective/wait_recovered".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(recovered_events.len(), 1);
     }
 
     #[tokio::test]

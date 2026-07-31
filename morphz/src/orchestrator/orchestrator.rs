@@ -13425,7 +13425,10 @@ fn event_needs_signal_outbox(event: &Event) -> bool {
                 TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT | TYPE_INFER_REQUEST
             ))
             || (event.event_type == "runtime_control"
-                && event.topic == "runtime/action_group_settled"))
+                && matches!(
+                    event.topic.as_str(),
+                    "runtime/action_group_settled" | "runtime/thread_group_terminal"
+                )))
         && event
             .payload
             .get("context_id")
@@ -14157,6 +14160,8 @@ mod tests {
             (TYPE_USER_MESSAGE, "chat/user_message"),
             (TYPE_TOOL_OUTPUT, "chat/tool_output"),
             (crate::event::TYPE_INFER_REQUEST, "chat/infer_request"),
+            ("runtime_control", "runtime/action_group_settled"),
+            ("runtime_control", "runtime/thread_group_terminal"),
         ] {
             assert!(event_needs_signal_outbox(&Event::new(
                 format!("{event_type}-routed"),

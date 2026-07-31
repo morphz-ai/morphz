@@ -364,6 +364,20 @@ impl ThreadGroupStore for PostgresStore {
                     .await?;
                     repaired |= reset.rows_affected() == 1;
                 }
+                Some(row) if row.get::<String, _>("status") == "discarded" => {
+                    // Compatibility repair for builds whose Outbox filter
+                    // incorrectly treated the durable Objective barrier as an
+                    // unroutable historical control event.
+                    let reset = sqlx::query(
+                        r#"UPDATE signal_outbox
+                           SET status = 'pending', signal_id = NULL, resolved_at = NULL
+                           WHERE event_id = $1 AND status = 'discarded'"#,
+                    )
+                    .bind(&barrier.id)
+                    .execute(&mut *tx)
+                    .await?;
+                    repaired |= reset.rows_affected() == 1;
+                }
                 Some(_) => {}
             }
         }

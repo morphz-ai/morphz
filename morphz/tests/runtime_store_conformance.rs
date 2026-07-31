@@ -1117,6 +1117,7 @@ where
     let failed = store
         .commit_schedule_transaction(
             &[],
+            &[],
             &[NewThread {
                 id: "conformance-schedule-rolled-back-thread".to_string(),
                 agent_id: "conformance-agent".to_string(),
