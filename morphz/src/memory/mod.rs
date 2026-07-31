@@ -2678,6 +2678,63 @@ pub fn thread_group_barrier_event(
     Ok(event)
 }
 
+/// Verifies that an already-persisted immutable Event is the terminal barrier
+/// represented by the current Thread Group projection.
+///
+/// Older Runtime builds created the barrier a few milliseconds after storing
+/// `satisfied_at`, and some paths used a more specific human-readable `text`.
+/// Those fields are immutable historical facts, not reasons to replace the
+/// Event. Recovery therefore validates the stable routing/fencing contract and
+/// reuses the persisted Event instead of requiring byte-for-byte regeneration.
+pub fn validate_thread_group_barrier_event(
+    group: &ThreadGroupRecord,
+    parent: Option<&ThreadRecord>,
+    event: &crate::event::Event,
+) -> Result<(), String> {
+    let expected = thread_group_barrier_event(group, parent)?;
+    if event.id != expected.id
+        || event.actor != expected.actor
+        || event.event_type != expected.event_type
+        || event.topic != expected.topic
+    {
+        return Err(format!(
+            "Thread Group '{}' 的既有 barrier Event '{}' 类型或路由不匹配",
+            group.id, event.id
+        ));
+    }
+
+    let mut stable_keys = vec![
+        "context_id",
+        "session_id",
+        "thread_group_id",
+        "thread_group_status",
+        "wake_policy",
+    ];
+    match group.supervisor_kind {
+        ThreadSupervisorKind::Evaluation => {
+            stable_keys.extend(["thread_id", "root_turn_id", "tool_name", "tool_status"]);
+        }
+        ThreadSupervisorKind::Objective => {
+            stable_keys.extend(["objective_id", "correlation_id"]);
+        }
+        ThreadSupervisorKind::Runtime => {
+            stable_keys.push("runtime_supervisor_id");
+        }
+        ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
+            unreachable!("thread_group_barrier_event 已拒绝无有效 supervisor 的终态 Group")
+        }
+    }
+    for key in stable_keys {
+        if event.payload.get(key) != expected.payload.get(key) {
+            return Err(format!(
+                "Thread Group '{}' 的既有 barrier Event '{}' 字段 '{}' 与权威投影不匹配",
+                group.id, event.id, key
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Builds the immutable result fact for an operator/runtime cancellation.
 ///
 /// The result fact itself never wakes a supervisor. The same transaction

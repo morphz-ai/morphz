@@ -1,11 +1,12 @@
 use super::{
-    append_event_in_tx, append_signal_outbox_in_tx, parse_time, thread::thread_from_row,
-    PostgresStore, StoreError,
+    append_event_in_tx, append_signal_outbox_in_tx, parse_time, stored_event_in_tx,
+    thread::thread_from_row, PostgresStore, StoreError,
 };
 use crate::memory::{
-    thread_group_barrier_event, ThreadGroupFilter, ThreadGroupMemberRecord,
-    ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus,
-    ThreadGroupStore, ThreadLifecycle, ThreadOutcomeRecord, ThreadSupervisorKind,
+    thread_group_barrier_event, validate_thread_group_barrier_event, ThreadGroupFilter,
+    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
+    ThreadGroupStatus, ThreadGroupStore, ThreadLifecycle, ThreadOutcomeRecord,
+    ThreadSupervisorKind,
 };
 use chrono::Utc;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
@@ -314,7 +315,7 @@ impl ThreadGroupStore for PostgresStore {
         } else {
             None
         };
-        let barrier = thread_group_barrier_event(&group, parent.as_ref())?;
+        let expected_barrier = thread_group_barrier_event(&group, parent.as_ref())?;
         let mut repaired = false;
         if group.barrier_event_id.is_none() {
             let update = sqlx::query(
@@ -329,7 +330,17 @@ impl ThreadGroupStore for PostgresStore {
             .await?;
             repaired |= update.rows_affected() == 1;
         }
-        repaired |= append_event_in_tx(&mut tx, &barrier).await?;
+        let barrier =
+            match stored_event_in_tx(&mut tx, &deterministic_id, &group.context_id).await? {
+                Some(existing) => {
+                    validate_thread_group_barrier_event(&group, parent.as_ref(), &existing)?;
+                    existing
+                }
+                None => {
+                    repaired |= append_event_in_tx(&mut tx, &expected_barrier).await?;
+                    expected_barrier
+                }
+            };
 
         let signal_exists: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM thread_signals WHERE event_id = $1")

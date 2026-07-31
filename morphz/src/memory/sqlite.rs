@@ -6,21 +6,22 @@ use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
     causal_payload_string, evaluate_thread_completion_contract, evaluate_thread_group_contract,
     thread_cancellation_event, thread_group_barrier_event, thread_terminal_barrier_event,
-    ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus,
-    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
-    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
-    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
-    CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextSessionCount,
-    ContextTokenBudgetMutation, ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore,
-    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
-    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
-    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
-    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    validate_thread_group_barrier_event, ActionGroupFilter, ActionGroupMemberCommit,
+    ActionGroupMemberRecord, ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus,
+    ActionGroupStore, ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
+    ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
+    ApprovalStatus, ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
+    CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
+    ContextSessionCount, ContextTokenBudgetMutation, ContextUpdate, DelegationRecord,
+    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
+    DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
+    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeExecutionStore,
+    EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore, ExecutionApprovalMutation,
+    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation,
+    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
@@ -7566,7 +7567,7 @@ impl ThreadGroupStore for SqliteStore {
         } else {
             None
         };
-        let barrier = thread_group_barrier_event(&group, parent.as_ref())?;
+        let expected_barrier = thread_group_barrier_event(&group, parent.as_ref())?;
         let mut repaired = false;
         if group.barrier_event_id.is_none() {
             let update = sqlx::query(
@@ -7581,7 +7582,19 @@ impl ThreadGroupStore for SqliteStore {
             .await?;
             repaired |= update.rows_affected() == 1;
         }
-        repaired |= append_event_idempotent_in_transaction(&mut tx, &barrier).await?;
+        let barrier =
+            match stored_event_in_transaction(&mut tx, &deterministic_id, &group.context_id).await?
+            {
+                Some(existing) => {
+                    validate_thread_group_barrier_event(&group, parent.as_ref(), &existing)?;
+                    existing
+                }
+                None => {
+                    repaired |=
+                        append_event_idempotent_in_transaction(&mut tx, &expected_barrier).await?;
+                    expected_barrier
+                }
+            };
 
         let signal_exists: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM thread_signals WHERE event_id = ?")
@@ -21531,6 +21544,17 @@ mod tests {
         .execute(&store.pool)
         .await
         .unwrap();
+        // Builds before barrier construction was centralized used Event::new
+        // after committing the Group terminal timestamp. Preserve that
+        // immutable historical timestamp while repairing its Outbox route.
+        let legacy_barrier_timestamp = (Utc::now() + chrono::Duration::milliseconds(50))
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query("UPDATE events SET timestamp = ? WHERE id = ?")
+            .bind(&legacy_barrier_timestamp)
+            .bind(repair_barrier_id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
         assert!(store
             .repair_thread_group_barrier("group-repair")
             .await
@@ -21542,6 +21566,13 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(repaired_status, "pending");
+        let preserved_timestamp: String =
+            sqlx::query_scalar("SELECT timestamp FROM events WHERE id = ?")
+                .bind(repair_barrier_id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(preserved_timestamp, legacy_barrier_timestamp);
         assert!(!store
             .repair_thread_group_barrier("group-repair")
             .await
