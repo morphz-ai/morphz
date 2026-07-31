@@ -1,6 +1,7 @@
 use crate::memory::{
-    ObjectiveRecord, ObjectiveStatus, ThreadActivationRecord, ThreadGroupMemberRecord,
-    ThreadGroupRecord, ThreadGroupStatus, ThreadLifecycle, ThreadOutcomeRecord, ThreadRecord,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveWaitCondition, ThreadActivationRecord,
+    ThreadGroupMemberRecord, ThreadGroupRecord, ThreadGroupStatus, ThreadLifecycle,
+    ThreadOutcomeRecord, ThreadRecord,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -164,6 +165,46 @@ pub fn stable_scheduler_dependency_id(
     );
     let digest = format!("{:x}", Sha256::digest(material.as_bytes()));
     format!("scheduler_dependency_{}", &digest[..32])
+}
+
+/// Lossless lowering from the legacy Objective display wait into the
+/// authoritative scheduler dependency identity. The returned key contains no
+/// natural-language interpretation: it is derived exclusively from the typed
+/// wait variant and is therefore safe to use during migration and replay.
+pub fn objective_wait_dependency_key(
+    wait: &ObjectiveWaitCondition,
+) -> (SchedulerDependencyKind, String) {
+    match wait {
+        ObjectiveWaitCondition::ToolTask { task_id } => {
+            (SchedulerDependencyKind::ToolTask, task_id.clone())
+        }
+        ObjectiveWaitCondition::Delegation { delegation_id } => {
+            (SchedulerDependencyKind::Delegation, delegation_id.clone())
+        }
+        ObjectiveWaitCondition::ThreadGroup { group_id } => {
+            (SchedulerDependencyKind::ThreadGroup, group_id.clone())
+        }
+        ObjectiveWaitCondition::Timer { deadline } => (
+            SchedulerDependencyKind::Timer,
+            deadline.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        ),
+        ObjectiveWaitCondition::Permission { request_id } => {
+            (SchedulerDependencyKind::Permission, request_id.clone())
+        }
+        ObjectiveWaitCondition::UserInput { session_id } => {
+            (SchedulerDependencyKind::UserInput, session_id.clone())
+        }
+        ObjectiveWaitCondition::ExternalEvent {
+            topic,
+            correlation_id,
+        } => (
+            SchedulerDependencyKind::ExternalEvent,
+            serde_json::json!({"topic": topic, "correlation_id": correlation_id}).to_string(),
+        ),
+        ObjectiveWaitCondition::ResourceAvailable { resource } => {
+            (SchedulerDependencyKind::Resource, resource.clone())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -447,7 +488,7 @@ pub fn audit_scheduler_invariants(
         .collect::<HashSet<_>>();
     for objective in input.objectives {
         let dependencies_wait =
-            pending_objective_owners.contains(&(objective.id.as_str(), objective.revision));
+            pending_objective_owners.contains(&(objective.id.as_str(), objective.generation));
         let legacy_wait = objective.wait_condition.is_some();
         if dependencies_wait != legacy_wait {
             violations.push(violation(

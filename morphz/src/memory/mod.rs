@@ -3725,9 +3725,9 @@ impl ObjectiveStatus {
     }
 }
 
-/// An active Objective may sleep on one deterministic wake source. Keeping the
-/// wait condition separate from lifecycle status prevents both busy polling and
-/// treating ordinary asynchronous waits as permanent blockers.
+/// Human-readable compatibility projection of an Objective's current wait.
+/// Scheduler v2 derives readiness exclusively from `scheduler_dependencies`;
+/// this typed value remains for API/UI display and lossless migration only.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObjectiveWaitCondition {

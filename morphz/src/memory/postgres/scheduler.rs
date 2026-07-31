@@ -1,8 +1,10 @@
 use super::{now_text, parse_time, PostgresStore, StoreError};
+use crate::memory::ObjectiveWaitCondition;
 use crate::scheduler::{
-    NewSchedulerDependency, SchedulerDependencyFilter, SchedulerDependencyKind,
-    SchedulerDependencyMutation, SchedulerDependencyOwnerKind, SchedulerDependencyRecord,
-    SchedulerDependencyStatus, SchedulerDependencyStore,
+    objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
+    SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyMutation,
+    SchedulerDependencyOwnerKind, SchedulerDependencyRecord, SchedulerDependencyStatus,
+    SchedulerDependencyStore,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
@@ -33,6 +35,70 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
+    Ok(())
+}
+
+pub(super) async fn backfill_objective_wait_dependencies(pool: &PgPool) -> Result<(), StoreError> {
+    let rows = sqlx::query(
+        r#"SELECT id, revision, generation, wait_condition_json
+           FROM objectives
+           WHERE status = 'active' AND wait_condition_json IS NOT NULL"#,
+    )
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let now = now_text();
+    let mut tx = pool.begin().await?;
+    for row in rows {
+        let objective_id: String = row.get("id");
+        let objective_revision = u64::try_from(row.get::<i64, _>("revision"))?;
+        let objective_generation = u64::try_from(row.get::<i64, _>("generation"))?;
+        let wait = serde_json::from_value::<ObjectiveWaitCondition>(
+            row.get::<serde_json::Value, _>("wait_condition_json"),
+        )?;
+        let (kind, dependency_id) = objective_wait_dependency_key(&wait);
+        let dependency_generation = if kind == SchedulerDependencyKind::ThreadGroup {
+            u64::try_from(
+                sqlx::query_scalar::<_, i64>("SELECT generation FROM thread_groups WHERE id = $1")
+                    .bind(&dependency_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .unwrap_or(1),
+            )?
+        } else {
+            objective_revision.max(1)
+        };
+        let id = stable_scheduler_dependency_id(
+            SchedulerDependencyOwnerKind::Objective,
+            &objective_id,
+            objective_generation,
+            kind,
+            &dependency_id,
+            dependency_generation,
+        );
+        sqlx::query(
+            r#"INSERT INTO scheduler_dependencies
+               (id, owner_kind, owner_id, owner_generation,
+                dependency_kind, dependency_id, dependency_generation,
+                required, status, metadata_json, created_at, updated_at)
+               VALUES ($1, 'objective', $2, $3, $4, $5, $6,
+                       TRUE, 'pending', $7, $8, $8)
+               ON CONFLICT(id) DO NOTHING"#,
+        )
+        .bind(id)
+        .bind(objective_id)
+        .bind(i64::try_from(objective_generation)?)
+        .bind(kind.as_str())
+        .bind(dependency_id)
+        .bind(i64::try_from(dependency_generation)?)
+        .bind(serde_json::json!({"source": "legacy_wait_backfill", "wait": wait}))
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

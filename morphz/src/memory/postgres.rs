@@ -18,6 +18,10 @@ use crate::memory::{
     RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
     SessionProjectionMutation, SessionProjectionStore, TimerStore,
 };
+use crate::scheduler::{
+    objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
+    SchedulerDependencyOwnerKind,
+};
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::{PgConnection, PgPoolOptions, PgRow};
@@ -158,6 +162,12 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260731_01_scheduler_dependencies",
                     scheduler::migrate(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260731_02_objective_wait_dependencies",
+                    scheduler::backfill_objective_wait_dependencies(&store.pool),
                 )
                 .await?;
             store
@@ -2275,6 +2285,91 @@ pub(super) async fn insert_new_objective_in_tx(
     Ok(())
 }
 
+async fn objective_wait_dependency_generation_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    kind: SchedulerDependencyKind,
+    dependency_id: &str,
+    fallback_generation: u64,
+) -> Result<u64, StoreError> {
+    if kind != SchedulerDependencyKind::ThreadGroup {
+        return Ok(fallback_generation.max(1));
+    }
+    let generation =
+        sqlx::query_scalar::<_, i64>("SELECT generation FROM thread_groups WHERE id = $1")
+            .bind(dependency_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .unwrap_or(1);
+    Ok(u64::try_from(generation)?)
+}
+
+async fn insert_objective_wait_dependency_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    objective_id: &str,
+    objective_generation: u64,
+    wait: &ObjectiveWaitCondition,
+    fallback_dependency_generation: u64,
+    now: &str,
+    source: &str,
+) -> Result<(), StoreError> {
+    let (kind, dependency_id) = objective_wait_dependency_key(wait);
+    let dependency_generation = objective_wait_dependency_generation_in_tx(
+        tx,
+        kind,
+        &dependency_id,
+        fallback_dependency_generation,
+    )
+    .await?;
+    let id = stable_scheduler_dependency_id(
+        SchedulerDependencyOwnerKind::Objective,
+        objective_id,
+        objective_generation,
+        kind,
+        &dependency_id,
+        dependency_generation,
+    );
+    sqlx::query(
+        r#"INSERT INTO scheduler_dependencies
+           (id, owner_kind, owner_id, owner_generation,
+            dependency_kind, dependency_id, dependency_generation,
+            required, status, metadata_json, created_at, updated_at)
+           VALUES ($1, 'objective', $2, $3, $4, $5, $6,
+                   TRUE, 'pending', $7, $8, $8)
+           ON CONFLICT(id) DO NOTHING"#,
+    )
+    .bind(id)
+    .bind(objective_id)
+    .bind(i64::try_from(objective_generation)?)
+    .bind(kind.as_str())
+    .bind(dependency_id)
+    .bind(i64::try_from(dependency_generation)?)
+    .bind(serde_json::json!({"source": source, "wait": wait}))
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn cancel_objective_wait_dependencies_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    objective_id: &str,
+    objective_generation: u64,
+    now: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        r#"UPDATE scheduler_dependencies
+           SET status = 'cancelled', updated_at = $1
+           WHERE owner_kind = 'objective' AND owner_id = $2
+             AND owner_generation = $3 AND status = 'pending'"#,
+    )
+    .bind(now)
+    .bind(objective_id)
+    .bind(i64::try_from(objective_generation)?)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl ObjectiveStore for PostgresStore {
     async fn create_objective(
@@ -2426,9 +2521,18 @@ impl ObjectiveStore for PostgresStore {
         if status != ObjectiveStatus::Active && wait_condition.is_some() {
             return Err("只有 active Objective 可以携带等待条件".into());
         }
-        let wait_condition = wait_condition.map(serde_json::to_value).transpose()?;
+        let wait_condition_json = wait_condition
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()?;
         let resume_new_generation =
             current.status != ObjectiveStatus::Active && status == ObjectiveStatus::Active;
+        let next_generation = current.generation + u64::from(resume_new_generation);
+        let wait_changed = resume_new_generation
+            || current.status != status
+            || current.wait_condition != wait_condition;
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             r#"UPDATE objectives
                SET status = $1, status_reason = $2, wait_condition_json = $3,
@@ -2438,20 +2542,40 @@ impl ObjectiveStore for PostgresStore {
         )
         .bind(status.as_str())
         .bind(reason)
-        .bind(wait_condition)
+        .bind(wait_condition_json)
         .bind(if resume_new_generation { 1_i64 } else { 0_i64 })
-        .bind(now_text())
+        .bind(&now)
         .bind(id)
         .bind(i64::try_from(expected_revision)?)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
+            if wait_changed {
+                cancel_objective_wait_dependencies_in_tx(&mut tx, id, current.generation, &now)
+                    .await?;
+            }
+            if wait_changed && status == ObjectiveStatus::Active {
+                if let Some(wait) = wait_condition.as_ref() {
+                    insert_objective_wait_dependency_in_tx(
+                        &mut tx,
+                        id,
+                        next_generation,
+                        wait,
+                        expected_revision + 1,
+                        &now,
+                        "objective_state_transition",
+                    )
+                    .await?;
+                }
+            }
+            tx.commit().await?;
             return Ok(ObjectiveMutation::Updated(
                 self.get_objective(id)
                     .await?
                     .ok_or("Objective 状态更新后无法读取")?,
             ));
         }
+        tx.rollback().await?;
         Ok(match self.get_objective(id).await? {
             Some(current) => ObjectiveMutation::Conflict { current },
             None => ObjectiveMutation::NotFound,
@@ -2473,7 +2597,6 @@ impl ObjectiveStore for PostgresStore {
         };
         if current.revision != expected_revision
             || current.status != ObjectiveStatus::Active
-            || current.wait_condition.is_some()
             || current
                 .evaluation_lease_expires_at
                 .is_some_and(|expires_at| expires_at > Utc::now())
@@ -2487,7 +2610,13 @@ impl ObjectiveStore for PostgresStore {
                    continuation_sequence = continuation_sequence + 1,
                    revision = revision + 1, updated_at = $3
                WHERE id = $4 AND revision = $5 AND status = 'active'
-                 AND wait_condition_json IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies dependency
+                   WHERE dependency.owner_kind = 'objective'
+                     AND dependency.owner_id = objectives.id
+                     AND dependency.owner_generation = objectives.generation
+                     AND dependency.required = TRUE AND dependency.status = 'pending'
+                 )
                  AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= $3)"#,
         )
         .bind(evaluation_id)
@@ -2526,7 +2655,6 @@ impl ObjectiveStore for PostgresStore {
         };
         if current.revision != expected_revision
             || current.status != ObjectiveStatus::Active
-            || current.wait_condition.is_some()
             || current
                 .evaluation_lease_expires_at
                 .is_some_and(|expires_at| expires_at > Utc::now())
@@ -2558,7 +2686,13 @@ impl ObjectiveStore for PostgresStore {
                    continuation_sequence = continuation_sequence + 1,
                    revision = revision + 1, updated_at = $3
                WHERE id = $4 AND revision = $5 AND status = 'active'
-                 AND wait_condition_json IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies dependency
+                   WHERE dependency.owner_kind = 'objective'
+                     AND dependency.owner_id = objectives.id
+                     AND dependency.owner_generation = objectives.generation
+                     AND dependency.required = TRUE AND dependency.status = 'pending'
+                 )
                  AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= $3)"#,
         )
         .bind(evaluation_id)

@@ -16,11 +16,11 @@ pub use command::{
     RegisterDependencyCommand, SatisfyDependencyCommand, SpawnSupervisedGroupCommand,
 };
 pub use domain::{
-    audit_scheduler_invariants, derive_objective_readiness, stable_scheduler_dependency_id,
-    ObjectiveReadiness, SchedulerDependencyFilter, SchedulerDependencyKind,
-    SchedulerDependencyOwnerKind, SchedulerDependencyRecord, SchedulerDependencyStatus,
-    SchedulerInvariantCode, SchedulerInvariantInput, SchedulerInvariantSeverity,
-    SchedulerInvariantViolation,
+    audit_scheduler_invariants, derive_objective_readiness, objective_wait_dependency_key,
+    stable_scheduler_dependency_id, ObjectiveReadiness, SchedulerDependencyFilter,
+    SchedulerDependencyKind, SchedulerDependencyOwnerKind, SchedulerDependencyRecord,
+    SchedulerDependencyStatus, SchedulerInvariantCode, SchedulerInvariantInput,
+    SchedulerInvariantSeverity, SchedulerInvariantViolation,
 };
 pub use kernel::{KernelError, SchedulerKernel};
 pub use store::{NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyStore};

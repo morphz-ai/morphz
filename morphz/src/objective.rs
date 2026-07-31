@@ -11,10 +11,10 @@ use crate::memory::{
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::scheduler::{
-    derive_objective_readiness, ControlObjectiveCommand, KernelCommand, KernelCommandHeader,
-    KernelCommandPayload, KernelResult, ObjectiveReadiness, SchedulerDependencyFilter,
-    SchedulerDependencyKind, SchedulerDependencyOwnerKind, SchedulerDependencyStatus,
-    SchedulerDependencyStore, SchedulerKernel,
+    derive_objective_readiness, objective_wait_dependency_key, ControlObjectiveCommand,
+    KernelCommand, KernelCommandHeader, KernelCommandPayload, KernelResult, ObjectiveReadiness,
+    SchedulerDependencyFilter, SchedulerDependencyMutation, SchedulerDependencyOwnerKind,
+    SchedulerDependencyStatus, SchedulerDependencyStore, SchedulerKernel,
 };
 use crate::timer::{TimerDisposition, TimerEngine};
 use crate::tool::{
@@ -991,6 +991,60 @@ impl ObjectiveSupervisor {
         ))
     }
 
+    /// Mark the exact current-generation dependency represented by the legacy
+    /// wait projection as satisfied. The Event is the immutable physical fact;
+    /// `wait_condition` is cleared only after this fenced transition succeeds.
+    async fn satisfy_wait_dependency(
+        &self,
+        objective: &ObjectiveRecord,
+        wait: &ObjectiveWaitCondition,
+        event_id: &str,
+    ) -> Result<bool, DynError> {
+        let Some(store) = self.scheduler_dependencies.as_ref() else {
+            return Ok(true);
+        };
+        let (kind, dependency_id) = objective_wait_dependency_key(wait);
+        let dependencies = self
+            .current_scheduler_dependencies(objective)
+            .await?
+            .unwrap_or_default();
+        let Some(dependency) = dependencies.into_iter().find(|dependency| {
+            dependency.required
+                && dependency.status == SchedulerDependencyStatus::Pending
+                && dependency.dependency_kind == kind
+                && dependency.dependency_id == dependency_id
+        }) else {
+            // A terminal dependency means replay of the same wake fact. No
+            // pending edge means the display projection is stale and may be
+            // cleaned by reconciliation; neither case should create a second
+            // dependency or reinterpret the Event.
+            return Ok(false);
+        };
+        match store
+            .satisfy_scheduler_dependency(
+                &dependency.id,
+                objective.generation,
+                dependency.dependency_generation,
+                event_id,
+            )
+            .await?
+        {
+            SchedulerDependencyMutation::Updated(_) | SchedulerDependencyMutation::Existing(_) => {
+                Ok(true)
+            }
+            SchedulerDependencyMutation::Conflict { current, reason } => Err(format!(
+                "Objective '{}' dependency '{}' 满足失败（current={:?}）：{}",
+                objective.id, dependency.id, current.status, reason
+            )
+            .into()),
+            SchedulerDependencyMutation::NotFound => Err(format!(
+                "Objective '{}' dependency '{}' 在满足时消失",
+                objective.id, dependency.id
+            )
+            .into()),
+        }
+    }
+
     pub fn new(
         store: Arc<dyn ObjectiveStore>,
         audit_store: Arc<dyn EventStore>,
@@ -1435,19 +1489,26 @@ impl ObjectiveSupervisor {
         if self.evaluations.evaluation_is_cancelled(&binding) {
             return Ok(false);
         }
-        Ok(self
-            .store
-            .get_objective(&binding.objective_id)
-            .await?
-            .is_some_and(|objective| {
-                objective.status == ObjectiveStatus::Active
-                    && objective.wait_condition.is_none()
-                    && objective.active_evaluation_id.as_deref()
-                        == Some(binding.evaluation_id.as_str())
-                    && objective
-                        .evaluation_lease_expires_at
-                        .is_some_and(|expires_at| expires_at > Utc::now())
-            }))
+        let Some(objective) = self.store.get_objective(&binding.objective_id).await? else {
+            return Ok(false);
+        };
+        if objective.status != ObjectiveStatus::Active
+            || objective.active_evaluation_id.as_deref() != Some(binding.evaluation_id.as_str())
+            || !objective
+                .evaluation_lease_expires_at
+                .is_some_and(|expires_at| expires_at > Utc::now())
+        {
+            return Ok(false);
+        }
+        if let Some(dependencies) = self.current_scheduler_dependencies(&objective).await? {
+            return Ok(!matches!(
+                derive_objective_readiness(&objective, &dependencies, Utc::now()),
+                ObjectiveReadiness::Waiting { .. }
+            ));
+        }
+        // Isolated compatibility fixtures without Scheduler v2 still use the
+        // legacy display field as their readiness authority.
+        Ok(objective.wait_condition.is_none())
     }
 
     /// Keep one exact Evaluation lease alive while its Activation is running.
@@ -1671,6 +1732,8 @@ impl ObjectiveSupervisor {
             if objective.status != ObjectiveStatus::Active || !wait_matches_event(wait, event) {
                 continue;
             }
+            self.satisfy_wait_dependency(&objective, wait, &event.id)
+                .await?;
             let mutation = self
                 .store
                 .update_objective_state(
@@ -1716,6 +1779,8 @@ impl ObjectiveSupervisor {
             if objective.status != ObjectiveStatus::Active || !wait_matches_event(wait, event) {
                 continue;
             }
+            self.satisfy_wait_dependency(&objective, wait, &event.id)
+                .await?;
             let mutation = self
                 .store
                 .update_objective_state(
@@ -1999,6 +2064,7 @@ impl ObjectiveSupervisor {
             self.remove_external_wait_subscription(&objective.id);
             return Ok(());
         }
+        let mut dependencies_waiting = false;
         if let Some(current_dependencies) = self.current_scheduler_dependencies(&objective).await? {
             if !current_dependencies.is_empty() {
                 match derive_objective_readiness(&objective, &current_dependencies, Utc::now()) {
@@ -2012,43 +2078,35 @@ impl ObjectiveSupervisor {
                             dependencies = ?dependency_ids,
                             "Objective 由结构化 Scheduler dependencies 保持等待"
                         );
-                        return Ok(());
+                        dependencies_waiting = true;
                     }
                     ObjectiveReadiness::Leased { .. } => {
                         // Lease handling below owns timer renewal/recovery.
                     }
                     ObjectiveReadiness::Runnable => {
-                        if let Some(ObjectiveWaitCondition::ThreadGroup { group_id }) =
-                            objective.wait_condition.as_ref()
-                        {
-                            let matching = current_dependencies.iter().find(|dependency| {
-                                dependency.dependency_kind == SchedulerDependencyKind::ThreadGroup
-                                    && dependency.dependency_id == *group_id
-                            });
-                            if matching.is_some_and(|dependency| {
-                                dependency.status != SchedulerDependencyStatus::Pending
-                            }) {
-                                let mutation = self
-                                    .store
-                                    .update_objective_state(
-                                        &objective.id,
-                                        objective.revision,
-                                        ObjectiveStatus::Active,
-                                        None,
-                                        Some("结构化 Thread Group 依赖已终结；清理旧 wait 投影"),
-                                    )
-                                    .await?;
-                                match mutation {
-                                    ObjectiveMutation::Updated(updated) => {
-                                        Box::pin(self.reconcile(updated)).await?;
-                                    }
-                                    ObjectiveMutation::Conflict { current } => {
-                                        Box::pin(self.reconcile(current)).await?;
-                                    }
-                                    ObjectiveMutation::NotFound => {}
+                        if objective.wait_condition.is_some() {
+                            let mutation = self
+                                .store
+                                .update_objective_state(
+                                    &objective.id,
+                                    objective.revision,
+                                    ObjectiveStatus::Active,
+                                    None,
+                                    Some(
+                                        "结构化 Scheduler dependency 已终结；清理旧 wait 展示投影",
+                                    ),
+                                )
+                                .await?;
+                            match mutation {
+                                ObjectiveMutation::Updated(updated) => {
+                                    Box::pin(self.reconcile(updated)).await?;
                                 }
-                                return Ok(());
+                                ObjectiveMutation::Conflict { current } => {
+                                    Box::pin(self.reconcile(current)).await?;
+                                }
+                                ObjectiveMutation::NotFound => {}
                             }
+                            return Ok(());
                         }
                     }
                     ObjectiveReadiness::Paused
@@ -2110,6 +2168,12 @@ impl ObjectiveSupervisor {
                     self.remove_external_wait_subscription(&objective.id);
                 }
             }
+            return Ok(());
+        }
+        if dependencies_waiting {
+            // A dependency without a legacy display projection is still
+            // authoritative. Its producer (Thread/Group/Signal) owns the
+            // wake path, so no Evaluation may be admitted here.
             return Ok(());
         }
         self.cancel_wait_timer(&objective.id).await?;
@@ -2183,6 +2247,14 @@ impl ObjectiveSupervisor {
                 ),
             ),
         };
+        if event_kind == "wait_satisfied" {
+            if let (Some(wait), Some(event_id)) =
+                (objective.wait_condition.as_ref(), caused_by.as_deref())
+            {
+                self.satisfy_wait_dependency(&objective, wait, event_id)
+                    .await?;
+            }
+        }
         let mutation = self
             .store
             .update_objective_state(
@@ -2281,6 +2353,14 @@ impl ObjectiveSupervisor {
                 ),
             ),
         };
+        if event_kind == "wait_satisfied" {
+            if let (Some(wait), Some(event_id)) =
+                (objective.wait_condition.as_ref(), caused_by.as_deref())
+            {
+                self.satisfy_wait_dependency(&objective, wait, event_id)
+                    .await?;
+            }
+        }
         let mutation = self
             .store
             .update_objective_state(
@@ -2385,6 +2465,14 @@ impl ObjectiveSupervisor {
                 ),
             ),
         };
+        if event_kind == "wait_satisfied" {
+            if let (Some(wait), Some(event_id)) =
+                (objective.wait_condition.as_ref(), caused_by.as_deref())
+            {
+                self.satisfy_wait_dependency(&objective, wait, event_id)
+                    .await?;
+            }
+        }
         let mutation = self
             .store
             .update_objective_state(
@@ -2491,7 +2579,9 @@ impl ObjectiveSupervisor {
         let Some(objective) = self.store.get_objective(&objective_id).await? else {
             return Ok(());
         };
-        if objective.status != ObjectiveStatus::Active || objective.wait_condition.is_some() {
+        if objective.status != ObjectiveStatus::Active
+            || (self.scheduler_dependencies.is_none() && objective.wait_condition.is_some())
+        {
             return Ok(());
         }
         if objective
@@ -2740,6 +2830,36 @@ impl ObjectiveSupervisor {
                 reason: Some("Objective timer deadline 尚未到达".to_string()),
             });
         }
+        let satisfaction_event = Event {
+            id: format!(
+                "objective_wait_timer_satisfied_{}_r{}",
+                current.id, timer.generation
+            ),
+            sequence: None,
+            timestamp: timer.due_at,
+            actor: "Runtime-ObjectiveSupervisor".to_string(),
+            event_type: TYPE_OBJECTIVE_CONTROL.to_string(),
+            topic: "runtime/objective_wait_timer_satisfied".to_string(),
+            payload: [
+                ("context_id".to_string(), json!(&current.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(&current.coordinator_session_id),
+                ),
+                ("objective_id".to_string(), json!(&current.id)),
+                ("deadline".to_string(), json!(deadline)),
+                ("timer_id".to_string(), json!(timer.id)),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        self.audit_store.append(satisfaction_event.clone()).await?;
+        self.satisfy_wait_dependency(
+            &current,
+            current.wait_condition.as_ref().expect("timer wait checked"),
+            &satisfaction_event.id,
+        )
+        .await?;
         match self
             .store
             .update_objective_state(
@@ -2752,7 +2872,7 @@ impl ObjectiveSupervisor {
             .await?
         {
             ObjectiveMutation::Updated(woken) => {
-                self.publish_state_event("wait_satisfied", &woken, Some("timer-deadline-reached"))
+                self.publish_state_event("wait_satisfied", &woken, Some(&satisfaction_event.id))
                     .await?;
                 self.schedule(woken.id).await?;
             }
@@ -3147,7 +3267,9 @@ mod tests {
         ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus,
         ThreadGroupPolicy, ThreadKind, ThreadStore as _, TimerStore,
     };
-    use crate::scheduler::{stable_scheduler_dependency_id, NewSchedulerDependency};
+    use crate::scheduler::{
+        stable_scheduler_dependency_id, NewSchedulerDependency, SchedulerDependencyKind,
+    };
     use tempfile::NamedTempFile;
 
     #[test]
