@@ -6,6 +6,11 @@ use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
+    stable_thread_signal_id, ActivationStore, EdgeCommandMutation, EdgeCommandStatus,
+    EdgeExecutionStore, EdgeOutputStream, ExecutionNodeMutation, ExecutionNodeStatus,
+    SessionDirectoryStore,
+};
+use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
     ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStatus, CapabilityLeaseStore,
@@ -29,12 +34,13 @@ use morphz::memory::{
     ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
     ThreadSignalStatus, ThreadStore, TimerStore,
 };
-use morphz::memory::{
-    ActivationStore, EdgeCommandMutation, EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream,
-    ExecutionNodeMutation, ExecutionNodeStatus, SessionDirectoryStore,
-};
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
+use morphz::scheduler::{
+    NewSchedulerDependency, SchedulerDependencyFilter, SchedulerDependencyKind,
+    SchedulerDependencyMutation, SchedulerDependencyOwnerKind, SchedulerDependencyStatus,
+    SchedulerDependencyStore,
+};
 use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
@@ -513,16 +519,39 @@ where
         .unwrap()
         .clone(),
     );
+    let delivery_thread = NewThread {
+        id: "conformance-delivery-thread".to_string(),
+        agent_id: "conformance-agent".to_string(),
+        context_id: "conformance-context".to_string(),
+        session_id: "conformance-session".to_string(),
+        initiating_principal_id: None,
+        root_turn_id: "root-conformance-delivery".to_string(),
+        kind: ThreadKind::Delivery,
+        executor_kind: "model".to_string(),
+        executor_id: None,
+        target_id: None,
+        supervision: morphz::memory::ThreadSupervision::legacy(),
+    };
     assert_eq!(
         store
-            .commit_delivery_flush(&timer.id, timer.generation, &delivery_event)
+            .commit_delivery_flush(
+                &timer.id,
+                timer.generation,
+                &delivery_event,
+                &delivery_thread,
+            )
             .await
             .unwrap(),
         DeliveryFlushCommit::Committed
     );
     assert_eq!(
         store
-            .commit_delivery_flush(&timer.id, timer.generation, &delivery_event)
+            .commit_delivery_flush(
+                &timer.id,
+                timer.generation,
+                &delivery_event,
+                &delivery_thread,
+            )
             .await
             .unwrap(),
         DeliveryFlushCommit::Existing {
@@ -576,7 +605,7 @@ where
         .clone(),
     );
     store
-        .append_with_signal_outbox(event.clone())
+        .append_to_thread(event.clone(), &thread.id)
         .await
         .unwrap();
     let sequence = store
@@ -589,7 +618,7 @@ where
         .sequence
         .unwrap();
     let signal = NewThreadSignal {
-        id: "conformance-signal-a".to_string(),
+        id: stable_thread_signal_id(&event.id),
         thread_id: thread.id.clone(),
         thread_generation: thread.generation,
         event_id: event.id.clone(),
@@ -637,16 +666,12 @@ where
         clock.last_signal_batch_id.as_deref(),
         Some(first.id.as_str())
     );
-    assert_eq!(
-        store
-            .list_signal_outbox(SignalOutboxStatus::Materialized, 16)
-            .await
-            .unwrap()
-            .iter()
-            .filter(|outbox| outbox.event_id == event.id)
-            .count(),
-        1
-    );
+    assert!(store
+        .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+        .await
+        .unwrap()
+        .iter()
+        .all(|outbox| outbox.event_id != event.id));
     assert_eq!(
         store
             .list_activation_signals(&first.id)
@@ -746,7 +771,7 @@ where
         .clone(),
     );
     store
-        .append_with_signal_outbox(successor_event.clone())
+        .append_to_thread(successor_event.clone(), &successor_thread.id)
         .await
         .unwrap();
     let successor_sequence = store
@@ -761,7 +786,7 @@ where
     let successor = store
         .claim_thread_signal_batch(
             NewThreadSignal {
-                id: "conformance-dialogue-successor-signal".to_string(),
+                id: stable_thread_signal_id(&successor_event.id),
                 thread_id: successor_thread.id.clone(),
                 thread_generation: successor_thread.generation,
                 event_id: successor_event.id.clone(),
@@ -926,6 +951,137 @@ where
     );
     assert!(terminal_activation.claimed_by.is_none());
     assert!(terminal_activation.lease_expires_at.is_none());
+}
+
+async fn assert_scheduler_dependency_conformance<S>(store: Arc<S>)
+where
+    S: EventStore + SchedulerDependencyStore + Send + Sync + 'static,
+{
+    let dependency = NewSchedulerDependency {
+        id: "conformance-scheduler-dependency".to_string(),
+        owner_kind: SchedulerDependencyOwnerKind::Objective,
+        owner_id: "conformance-objective".to_string(),
+        owner_generation: 3,
+        dependency_kind: SchedulerDependencyKind::ThreadGroup,
+        dependency_id: "conformance-thread-group".to_string(),
+        dependency_generation: 7,
+        required: true,
+        metadata: json!({"route": "conformance"}),
+    };
+    assert!(matches!(
+        store
+            .register_scheduler_dependency(dependency.clone())
+            .await
+            .unwrap(),
+        SchedulerDependencyMutation::Updated(_)
+    ));
+    assert!(matches!(
+        store
+            .register_scheduler_dependency(dependency.clone())
+            .await
+            .unwrap(),
+        SchedulerDependencyMutation::Existing(_)
+    ));
+
+    let mut conflicting = dependency.clone();
+    conflicting.metadata = json!({"route": "different"});
+    assert!(matches!(
+        store
+            .register_scheduler_dependency(conflicting)
+            .await
+            .unwrap(),
+        SchedulerDependencyMutation::Conflict { .. }
+    ));
+    assert!(matches!(
+        store
+            .satisfy_scheduler_dependency(&dependency.id, 2, 7, "wrong-owner-generation")
+            .await
+            .unwrap(),
+        SchedulerDependencyMutation::Conflict { .. }
+    ));
+    assert!(matches!(
+        store
+            .satisfy_scheduler_dependency(&dependency.id, 3, 6, "wrong-fact-generation")
+            .await
+            .unwrap(),
+        SchedulerDependencyMutation::Conflict { .. }
+    ));
+    store
+        .append(Event::new(
+            "dependency-satisfied".to_string(),
+            "Store-Conformance".to_string(),
+            "scheduler_fact".to_string(),
+            "runtime/dependency_satisfied".to_string(),
+            json!({
+                "context_id": "conformance-context",
+                "session_id": "conformance-session"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .satisfy_scheduler_dependency(&dependency.id, 3, 7, "dependency-satisfied")
+            .await
+            .unwrap(),
+        SchedulerDependencyMutation::Updated(_)
+    ));
+    assert!(matches!(
+        store
+            .satisfy_scheduler_dependency(&dependency.id, 3, 7, "dependency-satisfied")
+            .await
+            .unwrap(),
+        SchedulerDependencyMutation::Existing(_)
+    ));
+    let satisfied = store
+        .list_scheduler_dependencies(SchedulerDependencyFilter {
+            owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+            owner_id: Some(dependency.owner_id.clone()),
+            status: Some(SchedulerDependencyStatus::Satisfied),
+            required_only: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(satisfied.len(), 1);
+    assert_eq!(
+        satisfied[0].satisfied_by_event_id.as_deref(),
+        Some("dependency-satisfied")
+    );
+
+    let cancellable = NewSchedulerDependency {
+        id: "conformance-scheduler-dependency-cancel".to_string(),
+        dependency_id: "conformance-resource".to_string(),
+        dependency_kind: SchedulerDependencyKind::Resource,
+        ..dependency
+    };
+    store
+        .register_scheduler_dependency(cancellable.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .cancel_scheduler_dependencies(
+                SchedulerDependencyOwnerKind::Objective,
+                &cancellable.owner_id,
+                cancellable.owner_generation,
+            )
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .get_scheduler_dependency(&cancellable.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        SchedulerDependencyStatus::Cancelled
+    );
 }
 
 async fn assert_schedule_store_conformance<S>(store: Arc<S>)
@@ -1646,12 +1802,8 @@ where
         .append_batch(vec![
             EventAppend {
                 event: duplicate_a.clone(),
-                signal_outbox: false,
             },
-            EventAppend {
-                event: duplicate_b,
-                signal_outbox: false,
-            },
+            EventAppend { event: duplicate_b },
         ])
         .await
         .is_err());
@@ -2151,6 +2303,20 @@ where
     assert_eq!(finished.tokens_used, 12);
     assert_eq!(finished.time_used_seconds, 3);
 
+    let continuation_thread = NewThread {
+        id: "conformance-objective-continuation-thread".to_string(),
+        agent_id: "conformance-agent".to_string(),
+        context_id: "conformance-context".to_string(),
+        session_id: "conformance-session".to_string(),
+        initiating_principal_id: None,
+        root_turn_id: "root-conformance-objective-continuation".to_string(),
+        kind: ThreadKind::Objective,
+        executor_kind: "model".to_string(),
+        executor_id: Some(finished.id.clone()),
+        target_id: None,
+        supervision: morphz::memory::ThreadSupervision::legacy(),
+    };
+
     let occupied_event = Event::new(
         "conformance-objective-conflict".to_string(),
         "Store-Conformance".to_string(),
@@ -2181,6 +2347,7 @@ where
             "rolled-back-evaluation",
             expires,
             &conflicting_signal,
+            &continuation_thread,
         )
         .await
         .is_err());
@@ -2213,6 +2380,7 @@ where
                 "evaluation-with-signal",
                 expires,
                 &event,
+                &continuation_thread,
             )
             .await
             .unwrap(),
@@ -3950,6 +4118,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_recall_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
+    assert_scheduler_dependency_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_delivery_ingress_conformance(Arc::clone(&store)).await;
     assert_delegation_store_conformance(Arc::clone(&store)).await;
@@ -4034,6 +4203,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260718_06_schedules",
         "20260718_07_delivery",
         "20260718_08_delegations",
+        "20260731_01_scheduler_dependencies",
     ] {
         assert!(
             applied_migrations.contains(version),
@@ -4080,6 +4250,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_recall_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
+    assert_scheduler_dependency_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_delivery_ingress_conformance(Arc::clone(&store)).await;
     assert_delegation_store_conformance(Arc::clone(&store)).await;
