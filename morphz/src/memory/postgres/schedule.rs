@@ -11,6 +11,9 @@ use crate::memory::{
     ThreadGroupStatus, ThreadPromotionMutation, ThreadPromotionRecord, ThreadPromotionRequest,
     ThreadStore, ThreadSupervisorKind,
 };
+use crate::scheduler::{
+    stable_scheduler_dependency_id, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
+};
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::PgRow;
@@ -161,6 +164,47 @@ async fn insert_dependencies(
         .execute(&mut **tx)
         .await?;
     }
+    Ok(())
+}
+
+async fn insert_objective_group_dependency_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    objective_id: &str,
+    objective_generation: u64,
+    group_id: &str,
+    group_generation: u64,
+    event_id: &str,
+    now: &str,
+) -> Result<(), StoreError> {
+    let id = stable_scheduler_dependency_id(
+        SchedulerDependencyOwnerKind::Objective,
+        objective_id,
+        objective_generation,
+        SchedulerDependencyKind::ThreadGroup,
+        group_id,
+        group_generation,
+    );
+    sqlx::query(
+        r#"INSERT INTO scheduler_dependencies
+           (id, owner_kind, owner_id, owner_generation,
+            dependency_kind, dependency_id, dependency_generation,
+            required, status, metadata_json, created_at, updated_at)
+           VALUES ($1, 'objective', $2, $3, 'thread_group', $4, $5,
+                   TRUE, 'pending', $6, $7, $7)
+           ON CONFLICT(id) DO NOTHING"#,
+    )
+    .bind(id)
+    .bind(objective_id)
+    .bind(i64::try_from(objective_generation)?)
+    .bind(group_id)
+    .bind(i64::try_from(group_generation)?)
+    .bind(serde_json::json!({
+        "source": "schedule_transaction",
+        "causation_event_id": event_id,
+    }))
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -479,7 +523,7 @@ impl ScheduleStore for PostgresStore {
             match &scheduled.initial_wait_condition {
                 ObjectiveWaitCondition::ThreadGroup { group_id } => {
                     let row = sqlx::query(
-                        "SELECT supervisor_kind, supervisor_id FROM thread_groups WHERE id = $1",
+                        "SELECT supervisor_kind, supervisor_id, generation FROM thread_groups WHERE id = $1",
                     )
                     .bind(group_id)
                     .fetch_optional(&mut *tx)
@@ -499,6 +543,16 @@ impl ScheduleStore for PostgresStore {
                         )
                         .into());
                     }
+                    insert_objective_group_dependency_in_tx(
+                        &mut tx,
+                        &scheduled.objective.id,
+                        1,
+                        group_id,
+                        u64::try_from(row.get::<i64, _>("generation"))?,
+                        &scheduled.created_event.id,
+                        &now,
+                    )
+                    .await?;
                 }
                 other => {
                     return Err(format!(
@@ -529,7 +583,7 @@ impl ScheduleStore for PostgresStore {
                 .into());
             };
             let group = sqlx::query(
-                "SELECT supervisor_kind, supervisor_id FROM thread_groups WHERE id = $1",
+                "SELECT supervisor_kind, supervisor_id, generation FROM thread_groups WHERE id = $1",
             )
             .bind(group_id)
             .fetch_optional(&mut *tx)
@@ -549,6 +603,19 @@ impl ScheduleStore for PostgresStore {
                 )
                 .into());
             }
+            let objective_generation = sqlx::query_scalar::<_, i64>(
+                "SELECT generation FROM objectives WHERE id = $1 AND revision = $2 AND status = 'active' FOR UPDATE",
+            )
+            .bind(&binding.objective_id)
+            .bind(i64::try_from(binding.expected_revision)?)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Objective '{}' revision 或生命周期已变化",
+                    binding.objective_id
+                )
+            })?;
             let updated = sqlx::query(
                 r#"UPDATE objectives
                    SET wait_condition_json = $1, status_reason = $2,
@@ -584,6 +651,16 @@ impl ScheduleStore for PostgresStore {
                     .into());
                 }
             }
+            insert_objective_group_dependency_in_tx(
+                &mut tx,
+                &binding.objective_id,
+                u64::try_from(objective_generation)?,
+                group_id,
+                u64::try_from(group.get::<i64, _>("generation"))?,
+                &binding.bound_event.id,
+                &now,
+            )
+            .await?;
             append_event_in_tx(&mut tx, &binding.bound_event).await?;
         }
         for intent in intents {
@@ -812,6 +889,16 @@ impl ScheduleStore for PostgresStore {
         .bind(&request.target_group.group.completion_contract)
         .bind(&now)
         .execute(&mut *tx)
+        .await?;
+        insert_objective_group_dependency_in_tx(
+            &mut tx,
+            &objective.id,
+            objective.generation,
+            &request.target_group.group.id,
+            request.target_group.group.generation,
+            &request.thread_id,
+            &now,
+        )
         .await?;
         if request.new_objective.is_none() {
             let wait = ObjectiveWaitCondition::ThreadGroup {

@@ -5973,6 +5973,7 @@ mod tests {
             initiating_principal_id: None,
             stated_objective: "Win TankWar and keep improving strategy".to_string(),
             revision: 3,
+            generation: 1,
             status: ObjectiveStatus::Active,
             status_reason: Some("等待后台比赛结束后继续分析".to_string()),
             wait_condition: Some(ObjectiveWaitCondition::ToolTask {

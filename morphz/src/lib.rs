@@ -26,6 +26,7 @@ pub mod plan_execution;
 pub mod provider;
 pub mod runtime;
 pub mod sandbox;
+pub mod scheduler;
 pub mod sdk;
 pub mod secret_store;
 pub mod setup;

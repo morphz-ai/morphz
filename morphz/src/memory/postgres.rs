@@ -40,6 +40,7 @@ mod edge;
 mod execution;
 mod plan_execution;
 mod schedule;
+mod scheduler;
 mod session;
 mod target;
 mod thread;
@@ -152,6 +153,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration("20260718_06_schedules", schedule::migrate(&store.pool))
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260731_01_scheduler_dependencies",
+                    scheduler::migrate(&store.pool),
+                )
                 .await?;
             store
                 .run_versioned_migration("20260718_07_delivery", delivery::migrate(&store.pool))
@@ -417,6 +424,7 @@ impl PostgresStore {
                 initiating_principal_id TEXT,
                 stated_objective TEXT NOT NULL,
                 revision BIGINT NOT NULL,
+                generation BIGINT NOT NULL DEFAULT 1 CHECK(generation >= 1),
                 status TEXT NOT NULL,
                 status_reason TEXT,
                 wait_condition_json JSONB,
@@ -439,6 +447,8 @@ impl PostgresStore {
                ON objectives(status, evaluation_lease_expires_at, updated_at)"#,
             r#"ALTER TABLE objectives
                ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+            r#"ALTER TABLE objectives
+               ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -887,6 +897,7 @@ fn objective_from_row(row: &PgRow) -> Result<ObjectiveRecord, StoreError> {
         initiating_principal_id: row.get("initiating_principal_id"),
         stated_objective: row.get("stated_objective"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        generation: u64::try_from(row.get::<i64, _>("generation"))?,
         status: parse_objective_status(&row.get::<String, _>("status"))?,
         status_reason: row.get("status_reason"),
         wait_condition,
@@ -2166,7 +2177,7 @@ impl RecallProjectionStore for PostgresStore {
 
 const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
     coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
-    initiating_principal_id, stated_objective, revision, status, status_reason, wait_condition_json, active_evaluation_id,
+    initiating_principal_id, stated_objective, revision, generation, status, status_reason, wait_condition_json, active_evaluation_id,
     evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
     time_used_seconds, created_at, updated_at
     FROM objectives"#;
@@ -2416,15 +2427,19 @@ impl ObjectiveStore for PostgresStore {
             return Err("只有 active Objective 可以携带等待条件".into());
         }
         let wait_condition = wait_condition.map(serde_json::to_value).transpose()?;
+        let resume_new_generation =
+            current.status != ObjectiveStatus::Active && status == ObjectiveStatus::Active;
         let result = sqlx::query(
             r#"UPDATE objectives
                SET status = $1, status_reason = $2, wait_condition_json = $3,
-                   revision = revision + 1, updated_at = $4
-               WHERE id = $5 AND revision = $6"#,
+                   generation = generation + $4,
+                   revision = revision + 1, updated_at = $5
+               WHERE id = $6 AND revision = $7"#,
         )
         .bind(status.as_str())
         .bind(reason)
         .bind(wait_condition)
+        .bind(if resume_new_generation { 1_i64 } else { 0_i64 })
         .bind(now_text())
         .bind(id)
         .bind(i64::try_from(expected_revision)?)

@@ -7,10 +7,10 @@ use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
     evaluate_thread_completion_contract, evaluate_thread_group_contract, ActivationOutcomeCommit,
     ActivationStore, DialogueTurnRetryMutation, DialogueTurnRetryRequest, NewThreadActivation,
-    NewThreadSignal, SessionAttentionUpdate, SignalOutboxRecord, SignalOutboxStatus,
-    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadGroupPolicy,
-    ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus,
-    ThreadSupervisorKind,
+    NewThreadSignal, ObjectiveWaitCondition, SessionAttentionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadGroupPolicy, ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadSupervisorKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -1726,7 +1726,7 @@ impl ActivationStore for PostgresStore {
                             );
                             payload.insert(
                                 "objective_id".to_string(),
-                                JsonValue::String(supervisor_id),
+                                JsonValue::String(supervisor_id.clone()),
                             );
                             payload.insert(
                                 "correlation_id".to_string(),
@@ -1744,7 +1744,7 @@ impl ActivationStore for PostgresStore {
                             );
                             payload.insert(
                                 "runtime_supervisor_id".to_string(),
-                                JsonValue::String(supervisor_id),
+                                JsonValue::String(supervisor_id.clone()),
                             );
                             (
                                 "runtime/thread_group_terminal",
@@ -1767,6 +1767,37 @@ impl ActivationStore for PostgresStore {
                         payload,
                     );
                     append_event_in_tx(&mut tx, &barrier).await?;
+                    let group_generation = group.get::<i64, _>("generation");
+                    sqlx::query(
+                        r#"UPDATE scheduler_dependencies
+                           SET status = 'satisfied', satisfied_by_event_id = $1,
+                               satisfied_at = $2, updated_at = $2
+                           WHERE dependency_kind = 'thread_group'
+                             AND dependency_id = $3
+                             AND dependency_generation = $4
+                             AND status = 'pending'"#,
+                    )
+                    .bind(&barrier.id)
+                    .bind(&now)
+                    .bind(group_id)
+                    .bind(group_generation)
+                    .execute(&mut *tx)
+                    .await?;
+                    if supervisor_kind == ThreadSupervisorKind::Objective {
+                        sqlx::query(
+                            r#"UPDATE objectives
+                               SET wait_condition_json = NULL, status_reason = NULL,
+                                   revision = revision + 1, updated_at = $1
+                               WHERE id = $2 AND wait_condition_json = $3"#,
+                        )
+                        .bind(&now)
+                        .bind(&supervisor_id)
+                        .bind(serde_json::to_value(ObjectiveWaitCondition::ThreadGroup {
+                            group_id: group_id.to_string(),
+                        })?)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
                     append_signal_outbox_in_tx(&mut tx, &barrier).await?;
                 }
             }

@@ -3775,6 +3775,11 @@ pub struct ObjectiveRecord {
     pub initiating_principal_id: Option<String>,
     pub stated_objective: String,
     pub revision: u64,
+    /// Lifecycle fencing generation. Unlike `revision`, this does not change
+    /// for ordinary edits, leases, accounting or dependency updates. It
+    /// advances only when an Objective is explicitly resumed into a new
+    /// executable lifetime.
+    pub generation: u64,
     pub status: ObjectiveStatus,
     /// Latest rationale for the current lifecycle state. The immutable audit
     /// event remains authoritative; this projection makes UI/API reads direct.
@@ -5199,6 +5204,7 @@ pub trait RuntimeStore:
     + SessionProjectionStore
     + RecallProjectionStore
     + CognitiveClockStore
+    + crate::scheduler::SchedulerDependencyStore
     + Send
     + Sync
 {

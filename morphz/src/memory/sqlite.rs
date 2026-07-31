@@ -48,6 +48,11 @@ use crate::memory::{
     ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
     ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
 };
+use crate::scheduler::{
+    stable_scheduler_dependency_id, NewSchedulerDependency, SchedulerDependencyFilter,
+    SchedulerDependencyKind, SchedulerDependencyMutation, SchedulerDependencyOwnerKind,
+    SchedulerDependencyRecord, SchedulerDependencyStatus, SchedulerDependencyStore,
+};
 use chrono::{DateTime, Utc};
 // SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
 // amalgamation to the release binary instead of relying on the host library.
@@ -514,6 +519,7 @@ impl SqliteStore {
             initiating_principal_id TEXT,
             stated_objective TEXT NOT NULL,
             revision INTEGER NOT NULL CHECK(revision >= 1),
+            generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
             status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'blocked', 'completed', 'cancelled', 'failed')),
             status_reason TEXT,
             wait_condition_json TEXT,
@@ -1075,6 +1081,29 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_schedule_dependencies_thread
             ON schedule_dependencies(dependency_thread_id, schedule_id);
 
+        CREATE TABLE IF NOT EXISTS scheduler_dependencies (
+            id TEXT PRIMARY KEY,
+            owner_kind TEXT NOT NULL CHECK(owner_kind IN ('objective', 'thread', 'plan', 'schedule', 'delivery')),
+            owner_id TEXT NOT NULL,
+            owner_generation INTEGER NOT NULL CHECK(owner_generation > 0),
+            dependency_kind TEXT NOT NULL CHECK(dependency_kind IN ('thread', 'thread_group', 'tool_task', 'delegation', 'timer', 'permission', 'user_input', 'external_event', 'resource')),
+            dependency_id TEXT NOT NULL,
+            dependency_generation INTEGER NOT NULL CHECK(dependency_generation > 0),
+            required INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'satisfied', 'cancelled')),
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            satisfied_by_event_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            satisfied_at TEXT,
+            UNIQUE(owner_kind, owner_id, owner_generation, dependency_kind, dependency_id, dependency_generation),
+            FOREIGN KEY(satisfied_by_event_id) REFERENCES events(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduler_dependencies_owner
+            ON scheduler_dependencies(owner_kind, owner_id, owner_generation, status, required);
+        CREATE INDEX IF NOT EXISTS idx_scheduler_dependencies_fact
+            ON scheduler_dependencies(dependency_kind, dependency_id, dependency_generation, status);
+
         CREATE TABLE IF NOT EXISTS thread_groups (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL,
@@ -1378,6 +1407,16 @@ impl SqliteStore {
                 .execute(&pool)
                 .await?;
             backfill_objective_status_reasons(&pool).await?;
+        }
+        if !objective_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "generation")
+        {
+            sqlx::query(
+                "ALTER TABLE objectives ADD COLUMN generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1)",
+            )
+            .execute(&pool)
+            .await?;
         }
 
         let delegation_columns = sqlx::query("PRAGMA table_info(delegations)")
@@ -2861,6 +2900,7 @@ fn objective_from_row(
         initiating_principal_id: row.get("initiating_principal_id"),
         stated_objective: row.get("stated_objective"),
         revision: sqlite_u64(row, "revision")?,
+        generation: sqlite_u64(row, "generation")?,
         status: parse_objective_status(&row.get::<String, _>("status"))?,
         status_reason: row.get("status_reason"),
         wait_condition,
@@ -2875,6 +2915,36 @@ fn objective_from_row(
         time_used_seconds: sqlite_u64(row, "time_used_seconds")?,
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
+fn scheduler_dependency_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<SchedulerDependencyRecord, Box<dyn std::error::Error + Send + Sync>> {
+    let owner_kind = row.get::<String, _>("owner_kind");
+    let dependency_kind = row.get::<String, _>("dependency_kind");
+    let status = row.get::<String, _>("status");
+    Ok(SchedulerDependencyRecord {
+        id: row.get("id"),
+        owner_kind: SchedulerDependencyOwnerKind::parse(&owner_kind)
+            .ok_or_else(|| format!("未知 Scheduler dependency owner kind: {owner_kind}"))?,
+        owner_id: row.get("owner_id"),
+        owner_generation: sqlite_u64(row, "owner_generation")?,
+        dependency_kind: SchedulerDependencyKind::parse(&dependency_kind)
+            .ok_or_else(|| format!("未知 Scheduler dependency kind: {dependency_kind}"))?,
+        dependency_id: row.get("dependency_id"),
+        dependency_generation: sqlite_u64(row, "dependency_generation")?,
+        required: row.get::<i64, _>("required") != 0,
+        status: SchedulerDependencyStatus::parse(&status)
+            .ok_or_else(|| format!("未知 Scheduler dependency status: {status}"))?,
+        metadata: serde_json::from_str(&row.get::<String, _>("metadata_json"))?,
+        satisfied_by_event_id: row.get("satisfied_by_event_id"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        satisfied_at: row
+            .get::<Option<String>, _>("satisfied_at")
+            .as_deref()
+            .map(parse_time),
     })
 }
 
@@ -7025,7 +7095,7 @@ impl ActivationStore for SqliteStore {
                             );
                             payload.insert(
                                 "objective_id".to_string(),
-                                JsonValue::String(supervisor_id),
+                                JsonValue::String(supervisor_id.clone()),
                             );
                             payload.insert(
                                 "correlation_id".to_string(),
@@ -7043,7 +7113,7 @@ impl ActivationStore for SqliteStore {
                             );
                             payload.insert(
                                 "runtime_supervisor_id".to_string(),
-                                JsonValue::String(supervisor_id),
+                                JsonValue::String(supervisor_id.clone()),
                             );
                             (
                                 "runtime/thread_group_terminal",
@@ -7066,6 +7136,40 @@ impl ActivationStore for SqliteStore {
                         payload,
                     );
                     append_event_in_transaction(&mut tx, &barrier).await?;
+                    let group_generation = group.get::<i64, _>("generation");
+                    sqlx::query(
+                        r#"UPDATE scheduler_dependencies
+                           SET status = 'satisfied', satisfied_by_event_id = ?,
+                               satisfied_at = ?, updated_at = ?
+                           WHERE dependency_kind = 'thread_group'
+                             AND dependency_id = ?
+                             AND dependency_generation = ?
+                             AND status = 'pending'"#,
+                    )
+                    .bind(&barrier.id)
+                    .bind(&now)
+                    .bind(&now)
+                    .bind(group_id)
+                    .bind(group_generation)
+                    .execute(&mut *tx)
+                    .await?;
+                    if supervisor_kind == ThreadSupervisorKind::Objective {
+                        let legacy_wait =
+                            serde_json::to_string(&ObjectiveWaitCondition::ThreadGroup {
+                                group_id: group_id.to_string(),
+                            })?;
+                        sqlx::query(
+                            r#"UPDATE objectives
+                               SET wait_condition_json = NULL, status_reason = NULL,
+                                   revision = revision + 1, updated_at = ?
+                               WHERE id = ? AND wait_condition_json = ?"#,
+                        )
+                        .bind(&now)
+                        .bind(&supervisor_id)
+                        .bind(legacy_wait)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
                     append_signal_outbox_in_transaction(&mut tx, &barrier).await?;
                 }
             }
@@ -8520,6 +8624,247 @@ impl ThreadStore for SqliteStore {
 }
 
 #[async_trait::async_trait]
+impl SchedulerDependencyStore for SqliteStore {
+    async fn register_scheduler_dependency(
+        &self,
+        dependency: NewSchedulerDependency,
+    ) -> Result<SchedulerDependencyMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if dependency.owner_generation == 0 || dependency.dependency_generation == 0 {
+            return Err("Scheduler dependency generation 必须大于 0".into());
+        }
+        if dependency.id.trim().is_empty()
+            || dependency.owner_id.trim().is_empty()
+            || dependency.dependency_id.trim().is_empty()
+        {
+            return Err("Scheduler dependency identity 不能为空".into());
+        }
+        let owner_generation = i64::try_from(dependency.owner_generation)
+            .map_err(|_| "Scheduler dependency owner generation 超出 SQLite INTEGER 范围")?;
+        let dependency_generation = i64::try_from(dependency.dependency_generation)
+            .map_err(|_| "Scheduler dependency generation 超出 SQLite INTEGER 范围")?;
+        let metadata_json = serde_json::to_string(&dependency.metadata)?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let inserted = sqlx::query(
+            r#"INSERT OR IGNORE INTO scheduler_dependencies
+               (id, owner_kind, owner_id, owner_generation,
+                dependency_kind, dependency_id, dependency_generation,
+                required, status, metadata_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)"#,
+        )
+        .bind(&dependency.id)
+        .bind(dependency.owner_kind.as_str())
+        .bind(&dependency.owner_id)
+        .bind(owner_generation)
+        .bind(dependency.dependency_kind.as_str())
+        .bind(&dependency.dependency_id)
+        .bind(dependency_generation)
+        .bind(i64::from(dependency.required))
+        .bind(metadata_json)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        let row = sqlx::query("SELECT * FROM scheduler_dependencies WHERE id = ?")
+            .bind(&dependency.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        let Some(row) = row else {
+            return Err("Scheduler dependency 写入后无法读取".into());
+        };
+        let current = scheduler_dependency_from_row(&row)?;
+        if inserted {
+            return Ok(SchedulerDependencyMutation::Updated(current));
+        }
+        let exact = current.owner_kind == dependency.owner_kind
+            && current.owner_id == dependency.owner_id
+            && current.owner_generation == dependency.owner_generation
+            && current.dependency_kind == dependency.dependency_kind
+            && current.dependency_id == dependency.dependency_id
+            && current.dependency_generation == dependency.dependency_generation
+            && current.required == dependency.required
+            && current.metadata == dependency.metadata;
+        if exact {
+            Ok(SchedulerDependencyMutation::Existing(current))
+        } else {
+            Ok(SchedulerDependencyMutation::Conflict {
+                current,
+                reason: "同一 Scheduler dependency ID 已被不同内容占用".to_string(),
+            })
+        }
+    }
+
+    async fn get_scheduler_dependency(
+        &self,
+        id: &str,
+    ) -> Result<Option<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query("SELECT * FROM scheduler_dependencies WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(scheduler_dependency_from_row).transpose()
+    }
+
+    async fn list_scheduler_dependencies(
+        &self,
+        filter: SchedulerDependencyFilter,
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut builder =
+            QueryBuilder::<sqlx::Sqlite>::new("SELECT * FROM scheduler_dependencies WHERE 1=1");
+        if let Some(owner_kind) = filter.owner_kind {
+            builder
+                .push(" AND owner_kind = ")
+                .push_bind(owner_kind.as_str());
+        }
+        if let Some(owner_id) = filter.owner_id {
+            builder.push(" AND owner_id = ").push_bind(owner_id);
+        }
+        if let Some(dependency_kind) = filter.dependency_kind {
+            builder
+                .push(" AND dependency_kind = ")
+                .push_bind(dependency_kind.as_str());
+        }
+        if let Some(dependency_id) = filter.dependency_id {
+            builder
+                .push(" AND dependency_id = ")
+                .push_bind(dependency_id);
+        }
+        if let Some(status) = filter.status {
+            builder.push(" AND status = ").push_bind(status.as_str());
+        }
+        if filter.required_only {
+            builder.push(" AND required = 1");
+        }
+        builder.push(" ORDER BY created_at, id");
+        builder
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(scheduler_dependency_from_row)
+            .collect()
+    }
+
+    async fn satisfy_scheduler_dependency(
+        &self,
+        id: &str,
+        owner_generation: u64,
+        dependency_generation: u64,
+        satisfied_by_event_id: &str,
+    ) -> Result<SchedulerDependencyMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if satisfied_by_event_id.trim().is_empty() {
+            return Err("Scheduler dependency satisfaction Event ID 不能为空".into());
+        }
+        let owner_generation = i64::try_from(owner_generation)
+            .map_err(|_| "Scheduler dependency owner generation 超出 SQLite INTEGER 范围")?;
+        let dependency_generation = i64::try_from(dependency_generation)
+            .map_err(|_| "Scheduler dependency generation 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE scheduler_dependencies
+               SET status = 'satisfied', satisfied_by_event_id = ?,
+                   satisfied_at = ?, updated_at = ?
+               WHERE id = ? AND owner_generation = ? AND dependency_generation = ?
+                 AND status = 'pending'"#,
+        )
+        .bind(satisfied_by_event_id)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .bind(owner_generation)
+        .bind(dependency_generation)
+        .execute(&self.pool)
+        .await?;
+        let Some(current) = self.get_scheduler_dependency(id).await? else {
+            return Ok(SchedulerDependencyMutation::NotFound);
+        };
+        if result.rows_affected() == 1 {
+            return Ok(SchedulerDependencyMutation::Updated(current));
+        }
+        if current.owner_generation == u64::try_from(owner_generation).unwrap_or_default()
+            && current.dependency_generation
+                == u64::try_from(dependency_generation).unwrap_or_default()
+            && current.status == SchedulerDependencyStatus::Satisfied
+            && current.satisfied_by_event_id.as_deref() == Some(satisfied_by_event_id)
+        {
+            return Ok(SchedulerDependencyMutation::Existing(current));
+        }
+        Ok(SchedulerDependencyMutation::Conflict {
+            current,
+            reason: "Scheduler dependency fence、状态或 satisfaction Event 不匹配".to_string(),
+        })
+    }
+
+    async fn cancel_scheduler_dependencies(
+        &self,
+        owner_kind: SchedulerDependencyOwnerKind,
+        owner_id: &str,
+        owner_generation: u64,
+    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        let owner_generation = i64::try_from(owner_generation)
+            .map_err(|_| "Scheduler dependency owner generation 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        Ok(sqlx::query(
+            r#"UPDATE scheduler_dependencies
+               SET status = 'cancelled', updated_at = ?
+               WHERE owner_kind = ? AND owner_id = ? AND owner_generation = ?
+                 AND status = 'pending'"#,
+        )
+        .bind(now)
+        .bind(owner_kind.as_str())
+        .bind(owner_id)
+        .bind(owner_generation)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+}
+
+async fn insert_objective_group_dependency_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    objective_id: &str,
+    objective_generation: u64,
+    group_id: &str,
+    group_generation: u64,
+    event_id: &str,
+    now: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let id = stable_scheduler_dependency_id(
+        SchedulerDependencyOwnerKind::Objective,
+        objective_id,
+        objective_generation,
+        SchedulerDependencyKind::ThreadGroup,
+        group_id,
+        group_generation,
+    );
+    sqlx::query(
+        r#"INSERT INTO scheduler_dependencies
+           (id, owner_kind, owner_id, owner_generation,
+            dependency_kind, dependency_id, dependency_generation,
+            required, status, metadata_json, created_at, updated_at)
+           VALUES (?, 'objective', ?, ?, 'thread_group', ?, ?, 1, 'pending', ?, ?, ?)
+           ON CONFLICT(id) DO NOTHING"#,
+    )
+    .bind(id)
+    .bind(objective_id)
+    .bind(i64::try_from(objective_generation)?)
+    .bind(group_id)
+    .bind(i64::try_from(group_generation)?)
+    .bind(
+        serde_json::json!({"source": "schedule_transaction", "causation_event_id": event_id})
+            .to_string(),
+    )
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+#[async_trait::async_trait]
 impl ScheduleStore for SqliteStore {
     async fn ensure_schedule(
         &self,
@@ -8892,7 +9237,7 @@ impl ScheduleStore for SqliteStore {
             match &scheduled.initial_wait_condition {
                 ObjectiveWaitCondition::ThreadGroup { group_id } => {
                     let row = sqlx::query(
-                        "SELECT supervisor_kind, supervisor_id FROM thread_groups WHERE id = ?",
+                        "SELECT supervisor_kind, supervisor_id, generation FROM thread_groups WHERE id = ?",
                     )
                     .bind(group_id)
                     .fetch_optional(&mut *tx)
@@ -8912,6 +9257,16 @@ impl ScheduleStore for SqliteStore {
                         )
                         .into());
                     }
+                    insert_objective_group_dependency_in_transaction(
+                        &mut tx,
+                        &scheduled.objective.id,
+                        1,
+                        group_id,
+                        u64::try_from(row.get::<i64, _>("generation"))?,
+                        &scheduled.created_event.id,
+                        &now,
+                    )
+                    .await?;
                 }
                 other => {
                     return Err(format!(
@@ -8942,7 +9297,7 @@ impl ScheduleStore for SqliteStore {
                 .into());
             };
             let group = sqlx::query(
-                "SELECT supervisor_kind, supervisor_id FROM thread_groups WHERE id = ?",
+                "SELECT supervisor_kind, supervisor_id, generation FROM thread_groups WHERE id = ?",
             )
             .bind(group_id)
             .fetch_optional(&mut *tx)
@@ -8962,6 +9317,19 @@ impl ScheduleStore for SqliteStore {
                 )
                 .into());
             }
+            let objective_generation = sqlx::query_scalar::<_, i64>(
+                "SELECT generation FROM objectives WHERE id = ? AND revision = ? AND status = 'active'",
+            )
+            .bind(&binding.objective_id)
+            .bind(i64::try_from(binding.expected_revision)?)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Objective '{}' revision 或生命周期已变化",
+                    binding.objective_id
+                )
+            })?;
             let expected_revision = i64::try_from(binding.expected_revision)
                 .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
             let wait_json = serde_json::to_string(&binding.wait_condition)?;
@@ -9000,6 +9368,16 @@ impl ScheduleStore for SqliteStore {
                     .into());
                 }
             }
+            insert_objective_group_dependency_in_transaction(
+                &mut tx,
+                &binding.objective_id,
+                u64::try_from(objective_generation)?,
+                group_id,
+                u64::try_from(group.get::<i64, _>("generation"))?,
+                &binding.bound_event.id,
+                &now,
+            )
+            .await?;
             append_event_in_transaction(&mut tx, &binding.bound_event).await?;
         }
         for intent in intents {
@@ -9268,6 +9646,16 @@ impl ScheduleStore for SqliteStore {
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
+        .await?;
+        insert_objective_group_dependency_in_transaction(
+            &mut tx,
+            &objective.id,
+            objective.generation,
+            &request.target_group.group.id,
+            request.target_group.group.generation,
+            &request.thread_id,
+            &now,
+        )
         .await?;
         if request.new_objective.is_none() {
             let expected_revision = i64::try_from(
@@ -9952,7 +10340,7 @@ impl DelegationStore for SqliteStore {
 
 const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
     coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
-    initiating_principal_id, stated_objective, revision, status, status_reason, wait_condition_json, active_evaluation_id,
+    initiating_principal_id, stated_objective, revision, generation, status, status_reason, wait_condition_json, active_evaluation_id,
     evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
     time_used_seconds, created_at, updated_at
     FROM objectives"#;
@@ -10223,15 +10611,19 @@ impl ObjectiveStore for SqliteStore {
             .map(serde_json::to_string)
             .transpose()?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let resume_new_generation =
+            current.status != ObjectiveStatus::Active && status == ObjectiveStatus::Active;
         let result = sqlx::query(
             r#"UPDATE objectives
                SET status = ?, status_reason = ?, wait_condition_json = ?,
+                   generation = generation + ?,
                    revision = revision + 1, updated_at = ?
                WHERE id = ? AND revision = ?"#,
         )
         .bind(status.as_str())
         .bind(reason)
         .bind(wait_condition_json)
+        .bind(if resume_new_generation { 1_i64 } else { 0_i64 })
         .bind(now)
         .bind(id)
         .bind(expected_revision)
@@ -15408,6 +15800,92 @@ mod tests {
             sqlite_has_wal_reset_fix(&version),
             "linked SQLite {version} is vulnerable to the WAL-reset race"
         );
+    }
+
+    #[tokio::test]
+    async fn scheduler_dependency_store_is_idempotent_and_generation_fenced() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let dependency = NewSchedulerDependency {
+            id: stable_scheduler_dependency_id(
+                SchedulerDependencyOwnerKind::Objective,
+                "objective-1",
+                2,
+                SchedulerDependencyKind::ThreadGroup,
+                "group-1",
+                4,
+            ),
+            owner_kind: SchedulerDependencyOwnerKind::Objective,
+            owner_id: "objective-1".to_string(),
+            owner_generation: 2,
+            dependency_kind: SchedulerDependencyKind::ThreadGroup,
+            dependency_id: "group-1".to_string(),
+            dependency_generation: 4,
+            required: true,
+            metadata: serde_json::json!({"source": "test"}),
+        };
+
+        assert!(matches!(
+            store
+                .register_scheduler_dependency(dependency.clone())
+                .await
+                .unwrap(),
+            SchedulerDependencyMutation::Updated(_)
+        ));
+        assert!(matches!(
+            store
+                .register_scheduler_dependency(dependency.clone())
+                .await
+                .unwrap(),
+            SchedulerDependencyMutation::Existing(_)
+        ));
+        let mut conflicting = dependency.clone();
+        conflicting.required = false;
+        assert!(matches!(
+            store
+                .register_scheduler_dependency(conflicting)
+                .await
+                .unwrap(),
+            SchedulerDependencyMutation::Conflict { .. }
+        ));
+
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "context_id".to_string(),
+            JsonValue::String("context-1".to_string()),
+        );
+        let satisfaction = Event::new(
+            "dependency-satisfied-1".to_string(),
+            "Runtime".to_string(),
+            "runtime_control".to_string(),
+            "runtime/thread_group_terminal".to_string(),
+            payload,
+        );
+        store.append(satisfaction).await.unwrap();
+
+        assert!(matches!(
+            store
+                .satisfy_scheduler_dependency(&dependency.id, 1, 4, "dependency-satisfied-1")
+                .await
+                .unwrap(),
+            SchedulerDependencyMutation::Conflict { .. }
+        ));
+        assert!(matches!(
+            store
+                .satisfy_scheduler_dependency(&dependency.id, 2, 4, "dependency-satisfied-1")
+                .await
+                .unwrap(),
+            SchedulerDependencyMutation::Updated(_)
+        ));
+        assert!(matches!(
+            store
+                .satisfy_scheduler_dependency(&dependency.id, 2, 4, "dependency-satisfied-1")
+                .await
+                .unwrap(),
+            SchedulerDependencyMutation::Existing(_)
+        ));
     }
 
     async fn seed_identity_directory(store: &SqliteStore) {

@@ -10626,6 +10626,7 @@ mod tests {
             initiating_principal_id: None,
             stated_objective: "继续后台编码任务".to_string(),
             revision: 3,
+            generation: 1,
             status: ObjectiveStatus::Active,
             status_reason: Some("等待后台工具".to_string()),
             wait_condition: None,
