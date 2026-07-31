@@ -128,6 +128,106 @@ impl SchedulerKernel {
                     .map_err(store_error)?;
                 Ok(KernelResult::ObjectiveControlled(mutation))
             }
+            KernelCommandPayload::ClaimObjectiveEvaluation(payload) => {
+                let expected_revision = required_revision(&command.header)?;
+                validate_objective_generation(
+                    self.store.as_ref(),
+                    &payload.objective_id,
+                    command.header.generation,
+                )
+                .await?;
+                let mutation = if let Some((event, thread)) = payload.continuation {
+                    self.store
+                        .claim_objective_evaluation_with_signal(
+                            &payload.objective_id,
+                            expected_revision,
+                            &payload.evaluation_id,
+                            payload.lease_expires_at,
+                            &event,
+                            &thread,
+                        )
+                        .await
+                } else {
+                    self.store
+                        .claim_objective_evaluation(
+                            &payload.objective_id,
+                            expected_revision,
+                            &payload.evaluation_id,
+                            payload.lease_expires_at,
+                        )
+                        .await
+                }
+                .map_err(store_error)?;
+                Ok(KernelResult::ObjectiveEvaluationMutated(mutation))
+            }
+            KernelCommandPayload::RenewObjectiveEvaluation(payload) => {
+                validate_objective_generation(
+                    self.store.as_ref(),
+                    &payload.objective_id,
+                    command.header.generation,
+                )
+                .await?;
+                let mutation = self
+                    .store
+                    .renew_objective_evaluation(
+                        &payload.objective_id,
+                        &payload.evaluation_id,
+                        payload.lease_expires_at,
+                    )
+                    .await
+                    .map_err(store_error)?;
+                Ok(KernelResult::ObjectiveEvaluationMutated(mutation))
+            }
+            KernelCommandPayload::FinishObjectiveEvaluation(payload) => {
+                validate_objective_generation(
+                    self.store.as_ref(),
+                    &payload.objective_id,
+                    command.header.generation,
+                )
+                .await?;
+                let mutation = self
+                    .store
+                    .finish_objective_evaluation(
+                        &payload.objective_id,
+                        &payload.evaluation_id,
+                        payload.tokens_used,
+                        payload.time_used_seconds,
+                    )
+                    .await
+                    .map_err(store_error)?;
+                Ok(KernelResult::ObjectiveEvaluationMutated(mutation))
+            }
+            KernelCommandPayload::TransitionActivation(payload) => {
+                let expected_revision = required_revision(&command.header)?;
+                if let Some(expected_generation) = command.header.generation {
+                    if let Some(current) = self
+                        .store
+                        .get_thread_activation(&payload.activation_id)
+                        .await
+                        .map_err(store_error)?
+                    {
+                        if current.generation != expected_generation {
+                            return Err(KernelError::StaleFence(format!(
+                                "Activation '{}' generation {} != {}",
+                                payload.activation_id, current.generation, expected_generation
+                            )));
+                        }
+                    }
+                }
+                let mutation = self
+                    .store
+                    .update_thread_activation(
+                        &payload.activation_id,
+                        expected_revision,
+                        payload.status,
+                        payload.claimed_by.as_deref(),
+                        payload.lease_expires_at,
+                        payload.context_snapshot_version,
+                    )
+                    .await
+                    .map_err(store_error)?;
+                Ok(KernelResult::ActivationTransitioned(mutation))
+            }
             KernelCommandPayload::CommitThreadOutcome(payload) => {
                 let outcome = self
                     .store
@@ -193,6 +293,29 @@ fn required_revision(header: &KernelCommandHeader) -> Result<u64, KernelError> {
     header.expected_revision.ok_or_else(|| {
         KernelError::InvalidCommand("expected_revision is required for control commands".into())
     })
+}
+
+async fn validate_objective_generation(
+    store: &dyn RuntimeStore,
+    objective_id: &str,
+    expected_generation: Option<u64>,
+) -> Result<(), KernelError> {
+    let Some(expected_generation) = expected_generation else {
+        return Ok(());
+    };
+    if let Some(current) = store
+        .get_objective(objective_id)
+        .await
+        .map_err(store_error)?
+    {
+        if current.generation != expected_generation {
+            return Err(KernelError::StaleFence(format!(
+                "Objective '{}' generation {} != {}",
+                objective_id, current.generation, expected_generation
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn store_error(error: Box<dyn std::error::Error + Send + Sync>) -> KernelError {

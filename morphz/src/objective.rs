@@ -1182,6 +1182,123 @@ impl ObjectiveSupervisor {
             .await
     }
 
+    async fn claim_objective_evaluation(
+        &self,
+        objective: &ObjectiveRecord,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        continuation: Option<(Event, NewThread)>,
+        causation_id: &str,
+    ) -> Result<ObjectiveMutation, DynError> {
+        if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            return match kernel
+                .execute(crate::controllers::ObjectiveController::claim_evaluation(
+                    objective,
+                    evaluation_id,
+                    lease_expires_at,
+                    continuation,
+                    causation_id,
+                    "ObjectiveSupervisor",
+                ))
+                .await?
+            {
+                KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
+                _ => Err("Scheduler Kernel 返回了错误的 Objective evaluation claim 结果".into()),
+            };
+        }
+        match continuation {
+            Some((event, thread)) => {
+                self.store
+                    .claim_objective_evaluation_with_signal(
+                        &objective.id,
+                        objective.revision,
+                        evaluation_id,
+                        lease_expires_at,
+                        &event,
+                        &thread,
+                    )
+                    .await
+            }
+            None => {
+                self.store
+                    .claim_objective_evaluation(
+                        &objective.id,
+                        objective.revision,
+                        evaluation_id,
+                        lease_expires_at,
+                    )
+                    .await
+            }
+        }
+    }
+
+    async fn renew_objective_evaluation(
+        &self,
+        objective_id: &str,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        causation_id: &str,
+    ) -> Result<ObjectiveMutation, DynError> {
+        let Some(objective) = self.store.get_objective(objective_id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            return match kernel
+                .execute(crate::controllers::ObjectiveController::renew_evaluation(
+                    &objective,
+                    evaluation_id,
+                    lease_expires_at,
+                    causation_id,
+                    "ObjectiveSupervisor",
+                ))
+                .await?
+            {
+                KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
+                _ => Err("Scheduler Kernel 返回了错误的 Objective evaluation renew 结果".into()),
+            };
+        }
+        self.store
+            .renew_objective_evaluation(objective_id, evaluation_id, lease_expires_at)
+            .await
+    }
+
+    async fn finish_objective_evaluation(
+        &self,
+        objective_id: &str,
+        evaluation_id: &str,
+        tokens_used: u64,
+        time_used_seconds: u64,
+        causation_id: &str,
+    ) -> Result<ObjectiveMutation, DynError> {
+        let Some(objective) = self.store.get_objective(objective_id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            return match kernel
+                .execute(crate::controllers::ObjectiveController::finish_evaluation(
+                    &objective,
+                    evaluation_id,
+                    tokens_used,
+                    time_used_seconds,
+                    causation_id,
+                    "ObjectiveSupervisor",
+                ))
+                .await?
+            {
+                KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
+                _ => Err("Scheduler Kernel 返回了错误的 Objective evaluation finish 结果".into()),
+            };
+        }
+        self.store
+            .finish_objective_evaluation(
+                objective_id,
+                evaluation_id,
+                tokens_used,
+                time_used_seconds,
+            )
+            .await
+    }
+
     async fn resolve_tool_task_wait(
         &self,
         objective: &ObjectiveRecord,
@@ -1403,8 +1520,13 @@ impl ObjectiveSupervisor {
             if objective.status != ObjectiveStatus::Active {
                 if let Some(evaluation_id) = objective.active_evaluation_id.as_deref() {
                     if let ObjectiveMutation::Updated(recovered) = self
-                        .store
-                        .finish_objective_evaluation(&objective.id, evaluation_id, 0, 0)
+                        .finish_objective_evaluation(
+                            &objective.id,
+                            evaluation_id,
+                            0,
+                            0,
+                            "runtime-recovery",
+                        )
                         .await?
                     {
                         objective = recovered;
@@ -1593,11 +1715,11 @@ impl ObjectiveSupervisor {
             }
             let lease_expires_at = Utc::now() + self.lease_duration;
             match self
-                .store
                 .renew_objective_evaluation(
                     &binding.objective_id,
                     &binding.evaluation_id,
                     lease_expires_at,
+                    activation_id,
                 )
                 .await?
             {
@@ -1706,8 +1828,7 @@ impl ObjectiveSupervisor {
             ) {
                 if let Some(evaluation_id) = updated.active_evaluation_id.as_deref() {
                     mutation = self
-                        .store
-                        .finish_objective_evaluation(&updated.id, evaluation_id, 0, 0)
+                        .finish_objective_evaluation(&updated.id, evaluation_id, 0, 0, &updated.id)
                         .await?;
                 }
             }
@@ -1921,12 +2042,12 @@ impl ObjectiveSupervisor {
 
         let elapsed_seconds = (Utc::now() - binding.started_at).num_seconds().max(0) as u64;
         let mutation = self
-            .store
             .finish_objective_evaluation(
                 &binding.objective_id,
                 &binding.evaluation_id,
                 0,
                 elapsed_seconds,
+                &event.id,
             )
             .await?;
         self.cancel_lease_timer(&binding.objective_id).await?;
@@ -2570,12 +2691,12 @@ impl ObjectiveSupervisor {
         }
         let lease_expires_at = Utc::now() + self.lease_duration;
         let claimed = self
-            .store
             .claim_objective_evaluation(
-                &objective.id,
-                objective.revision,
+                objective,
                 &evaluation_id,
                 lease_expires_at,
+                None,
+                source_event_id,
             )
             .await?;
         let ObjectiveMutation::Updated(claimed) = claimed else {
@@ -2789,14 +2910,12 @@ impl ObjectiveSupervisor {
             ),
         };
         let claimed = self
-            .store
-            .claim_objective_evaluation_with_signal(
-                &objective.id,
-                objective.revision,
+            .claim_objective_evaluation(
+                &objective,
                 &evaluation_id,
                 lease_expires_at,
-                &continuation_event,
-                &continuation_thread,
+                Some((continuation_event.clone(), continuation_thread)),
+                &continuation_event.id,
             )
             .await?;
         let ObjectiveMutation::Updated(claimed) = claimed else {

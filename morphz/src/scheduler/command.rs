@@ -1,8 +1,8 @@
 use crate::memory::{
     ActivationOutcomeCommit, NewSchedule, NewScheduledObjective, NewThread, NewThreadGroupPlan,
     ObjectiveMutation, ObjectiveStatus, ObjectiveWaitCondition, ScheduleRecord,
-    ScheduledObjectiveWaitBinding, ThreadControlAction, ThreadMutation, ThreadPromotionMutation,
-    ThreadPromotionRequest,
+    ScheduledObjectiveWaitBinding, ThreadActivationMutation, ThreadActivationStatus,
+    ThreadControlAction, ThreadMutation, ThreadPromotionMutation, ThreadPromotionRequest,
 };
 use crate::scheduler::{
     NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyOwnerKind,
@@ -92,9 +92,48 @@ pub struct ControlObjectiveCommand {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClaimObjectiveEvaluationCommand {
+    pub objective_id: String,
+    pub evaluation_id: String,
+    pub lease_expires_at: DateTime<Utc>,
+    /// When present, the Evaluation lease, continuation Event and Objective
+    /// Thread are committed as one scheduler transition.
+    pub continuation: Option<(crate::event::Event, NewThread)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenewObjectiveEvaluationCommand {
+    pub objective_id: String,
+    pub evaluation_id: String,
+    pub lease_expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinishObjectiveEvaluationCommand {
+    pub objective_id: String,
+    pub evaluation_id: String,
+    pub tokens_used: u64,
+    pub time_used_seconds: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct CommitThreadOutcomeCommand {
     pub activation_id: String,
     pub event: crate::event::Event,
+}
+
+/// Fenced lifecycle/lease transition for one physical Evaluation Activation.
+///
+/// Activation rows are scheduler authority, not incidental worker metadata:
+/// claim, heartbeat, recovery and terminalization must therefore pass through
+/// the same Kernel boundary as logical Thread control.
+#[derive(Debug, Clone)]
+pub struct TransitionActivationCommand {
+    pub activation_id: String,
+    pub status: ThreadActivationStatus,
+    pub claimed_by: Option<String>,
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    pub context_snapshot_version: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +155,10 @@ pub enum KernelCommandPayload {
     PromoteThread(PromoteThreadCommand),
     ControlThread(ControlThreadCommand),
     ControlObjective(ControlObjectiveCommand),
+    ClaimObjectiveEvaluation(ClaimObjectiveEvaluationCommand),
+    RenewObjectiveEvaluation(RenewObjectiveEvaluationCommand),
+    FinishObjectiveEvaluation(FinishObjectiveEvaluationCommand),
+    TransitionActivation(TransitionActivationCommand),
     CommitThreadOutcome(CommitThreadOutcomeCommand),
     RegisterDependency(RegisterDependencyCommand),
     SatisfyDependency(SatisfyDependencyCommand),
@@ -138,6 +181,8 @@ pub enum KernelResult {
     ThreadPromoted(ThreadPromotionMutation),
     ThreadControlled(ThreadMutation),
     ObjectiveControlled(ObjectiveMutation),
+    ObjectiveEvaluationMutated(ObjectiveMutation),
+    ActivationTransitioned(ThreadActivationMutation),
     ThreadOutcomeCommitted(ActivationOutcomeCommit),
     DependencyRegistered(SchedulerDependencyMutation),
     DependencySatisfied(SchedulerDependencyMutation),

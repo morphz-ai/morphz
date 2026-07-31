@@ -2798,6 +2798,37 @@ impl MorphzRuntime {
         });
     }
 
+    async fn transition_thread_activation(
+        &self,
+        activation: &crate::memory::ThreadActivationRecord,
+        status: ThreadActivationStatus,
+        claimed_by: Option<String>,
+        lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        context_snapshot_version: Option<u64>,
+        causation_id: &str,
+        actor: &str,
+    ) -> Result<crate::memory::ThreadActivationMutation, RuntimeError> {
+        match self
+            .inner
+            .scheduler_kernel
+            .execute(
+                crate::controllers::DialogueController::transition_activation(
+                    activation,
+                    status,
+                    claimed_by,
+                    lease_expires_at,
+                    context_snapshot_version,
+                    causation_id,
+                    actor,
+                ),
+            )
+            .await?
+        {
+            crate::scheduler::KernelResult::ActivationTransitioned(mutation) => Ok(mutation),
+            _ => Err("Scheduler Kernel 返回了错误的 Activation transition 结果".into()),
+        }
+    }
+
     async fn run_artifact_transfer_job(&self, job_id: &str) -> Result<(), RuntimeError> {
         let Some(initial_job) = self.inner.store.get_execution_job(job_id).await? else {
             return Ok(());
@@ -2815,18 +2846,17 @@ impl MorphzRuntime {
         };
         if initial_activation.status == ThreadActivationStatus::Queued {
             match self
-                .inner
-                .store
-                .update_thread_activation(
-                    &initial_activation.id,
-                    initial_activation.revision,
+                .transition_thread_activation(
+                    &initial_activation,
                     ThreadActivationStatus::Running,
-                    Some("morphz-artifact-transfer"),
+                    Some("morphz-artifact-transfer".to_string()),
                     Some(
                         chrono::Utc::now()
                             + chrono::Duration::seconds(ARTIFACT_TRANSFER_WORKER_LEASE_SECS),
                     ),
                     None,
+                    job_id,
+                    "ArtifactTransfer",
                 )
                 .await?
             {
@@ -3249,15 +3279,14 @@ impl MorphzRuntime {
             .await
         {
             if let Err(error) = self
-                .inner
-                .store
-                .update_thread_activation(
-                    &activation.id,
-                    activation.revision,
+                .transition_thread_activation(
+                    &activation,
                     activation_status,
                     None,
                     None,
                     activation.context_snapshot_version,
+                    result_event_id,
+                    "ArtifactTransfer",
                 )
                 .await
             {

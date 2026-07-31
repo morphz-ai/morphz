@@ -2338,6 +2338,55 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Route every physical Activation lifecycle mutation through the
+    /// Scheduler Kernel. The Store fallback is intentionally limited to
+    /// narrow unit fixtures which assemble an Orchestrator without a Kernel;
+    /// production Runtime construction always injects one.
+    async fn transition_thread_activation(
+        &self,
+        activation: &ThreadActivationRecord,
+        status: ThreadActivationStatus,
+        claimed_by: Option<String>,
+        lease_expires_at: Option<chrono::DateTime<Utc>>,
+        context_snapshot_version: Option<u64>,
+        causation_id: &str,
+        actor: &str,
+    ) -> Result<ThreadActivationMutation, DynError> {
+        if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            return match kernel
+                .execute(
+                    crate::controllers::DialogueController::transition_activation(
+                        activation,
+                        status,
+                        claimed_by,
+                        lease_expires_at,
+                        context_snapshot_version,
+                        causation_id,
+                        actor,
+                    ),
+                )
+                .await?
+            {
+                crate::scheduler::KernelResult::ActivationTransitioned(mutation) => Ok(mutation),
+                _ => Err("Scheduler Kernel 返回了错误的 Activation transition 结果".into()),
+            };
+        }
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Thread Activation 需要持久化 SessionStore")?;
+        session_store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                status,
+                claimed_by.as_deref(),
+                lease_expires_at,
+                context_snapshot_version,
+            )
+            .await
+    }
+
     async fn dispatch_activation_lease(
         self: Arc<Self>,
         timer: RuntimeTimerRecord,
@@ -2362,14 +2411,15 @@ impl Orchestrator {
             // concepts separate lets another Runtime recover a crashed
             // request promptly without stealing healthy long-running work.
             let renewed_expires_at = Utc::now() + self.activation_lease_duration();
-            match session_store
-                .update_thread_activation(
-                    &current.id,
-                    current.revision,
+            match self
+                .transition_thread_activation(
+                    &current,
                     ThreadActivationStatus::Running,
-                    current.claimed_by.as_deref(),
+                    current.claimed_by.clone(),
                     Some(renewed_expires_at),
                     current.context_snapshot_version,
+                    &timer.id,
+                    "ActivationLeaseTimer",
                 )
                 .await?
             {
@@ -2416,14 +2466,15 @@ impl Orchestrator {
             // A restarted/cancelled logical Thread fences every physical
             // Evaluation from an older generation.  Never resurrect it merely
             // because its process-local lease expired.
-            match session_store
-                .update_thread_activation(
-                    &current.id,
-                    current.revision,
+            match self
+                .transition_thread_activation(
+                    &current,
                     ThreadActivationStatus::Cancelled,
                     None,
                     None,
                     current.context_snapshot_version,
+                    &timer.id,
+                    "ActivationLeaseTimer",
                 )
                 .await?
             {
@@ -2471,14 +2522,15 @@ impl Orchestrator {
         // reuses the existing running row, so no evaluator can acquire it.
         // First CAS it back to queued, then restore the same durable row into
         // admission and redispatch the immutable Trigger Event.
-        match session_store
-            .update_thread_activation(
-                &current.id,
-                current.revision,
+        match self
+            .transition_thread_activation(
+                &current,
                 ThreadActivationStatus::Queued,
                 None,
                 None,
                 None,
+                &timer.id,
+                "ActivationLeaseRecovery",
             )
             .await?
         {
@@ -3206,14 +3258,15 @@ impl Orchestrator {
                                 claimed_by = ?activation.claimed_by,
                                 "恢复由已退出 Runtime 持有的 Thread Activation"
                             );
-                            match session_store
-                                .update_thread_activation(
-                                    &activation.id,
-                                    activation.revision,
+                            match self
+                                .transition_thread_activation(
+                                    &activation,
                                     ThreadActivationStatus::Queued,
                                     None,
                                     None,
                                     None,
+                                    &activation.trigger_event_id,
+                                    "Runtime-Recovery",
                                 )
                                 .await?
                             {
@@ -4663,14 +4716,15 @@ impl Orchestrator {
             Err(error) => return Err(error.into()),
         };
         let lease_expires_at = now + self.activation_lease_duration();
-        match session_store
-            .update_thread_activation(
-                &activation.id,
-                activation.revision,
+        match self
+            .transition_thread_activation(
+                &activation,
                 ThreadActivationStatus::Running,
-                Some(runtime_claimant_id()),
+                Some(runtime_claimant_id().to_string()),
                 Some(lease_expires_at),
                 None,
+                &activation.trigger_event_id,
+                "ActivationAdmission",
             )
             .await?
         {
@@ -4721,14 +4775,15 @@ impl Orchestrator {
                 }
                 return Ok(current);
             }
-            match session_store
-                .update_thread_activation(
-                    &current.id,
-                    current.revision,
+            match self
+                .transition_thread_activation(
+                    &current,
                     status,
                     None,
                     None,
                     current.context_snapshot_version,
+                    &current.trigger_event_id,
+                    "ActivationCompletion",
                 )
                 .await
             {
@@ -4794,14 +4849,15 @@ impl Orchestrator {
         {
             return Ok(());
         }
-        match session_store
-            .update_thread_activation(
-                &current.id,
-                current.revision,
+        match self
+            .transition_thread_activation(
+                &current,
                 current.status,
-                current.claimed_by.as_deref(),
+                current.claimed_by.clone(),
                 current.lease_expires_at,
                 Some(context_version),
+                &current.trigger_event_id,
+                "ContextSnapshot",
             )
             .await?
         {
@@ -12010,14 +12066,15 @@ impl Orchestrator {
                 if current.status.is_terminal() {
                     break;
                 }
-                match store
-                    .update_thread_activation(
-                        &current.id,
-                        current.revision,
+                match self
+                    .transition_thread_activation(
+                        &current,
                         ThreadActivationStatus::Cancelled,
                         None,
                         None,
                         current.context_snapshot_version,
+                        &thread.id,
+                        "ThreadControl",
                     )
                     .await?
                 {
