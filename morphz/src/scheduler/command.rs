@@ -8,6 +8,14 @@ use crate::scheduler::{
     NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyOwnerKind,
 };
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
+
+/// Stable logical command identity derived from immutable policy material.
+/// Controller retries therefore hit the same Kernel idempotency fence.
+pub fn stable_command_id(namespace: &str, material: &str) -> String {
+    let digest = format!("{:x}", Sha256::digest(material.as_bytes()));
+    format!("kernel_{namespace}_{}", &digest[..32])
+}
 
 /// Stable audit and fencing envelope shared by every Scheduler Kernel command.
 ///

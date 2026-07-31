@@ -5,14 +5,16 @@
 //! backends implement the transactional commands in [`kernel`]; controllers
 //! must not rebuild these rules from Ledger events.
 
-pub mod command;
+#[path = "command.rs"]
+pub mod commands;
 pub mod domain;
 pub mod kernel;
+pub mod snapshot;
 pub mod store;
 
-pub use command::{
-    CommitThreadOutcomeCommand, ControlObjectiveCommand, ControlThreadCommand, KernelCommand,
-    KernelCommandHeader, KernelCommandPayload, KernelResult, PromoteThreadCommand,
+pub use commands::{
+    stable_command_id, CommitThreadOutcomeCommand, ControlObjectiveCommand, ControlThreadCommand,
+    KernelCommand, KernelCommandHeader, KernelCommandPayload, KernelResult, PromoteThreadCommand,
     RegisterDependencyCommand, SatisfyDependencyCommand, SpawnSupervisedGroupCommand,
 };
 pub use domain::{
@@ -23,4 +25,10 @@ pub use domain::{
     SchedulerInvariantSeverity, SchedulerInvariantViolation,
 };
 pub use kernel::{KernelError, SchedulerKernel};
+pub use snapshot::{
+    job_snapshot, thread_phase, SchedulerActivationSnapshot, SchedulerAdmissionSnapshot,
+    SchedulerDeliverySnapshot, SchedulerExternalOutboxSnapshot, SchedulerJobSnapshot,
+    SchedulerObjectiveSnapshot, SchedulerQuery, SchedulerResultSnapshot, SchedulerSnapshot,
+    SchedulerSummary, SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
+};
 pub use store::{NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyStore};

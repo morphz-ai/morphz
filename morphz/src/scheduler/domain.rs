@@ -298,6 +298,8 @@ pub enum SchedulerInvariantCode {
     GroupCountMismatch,
     TerminalGroupHasPendingMember,
     SatisfiedGroupMissingBarrier,
+    TerminalGroupBarrierEventMissing,
+    GroupSupervisorMissing,
     PendingDependencyTargetsTerminalGroup,
     ObjectiveWaitDisagreesWithDependencies,
 }

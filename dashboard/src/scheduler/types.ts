@@ -247,6 +247,90 @@ export interface SchedulerSummary {
   pending_approvals: number
   active_schedules: number
   deferred_activations: number
+  runnable_objectives: number
+  waiting_objectives: number
+  invariant_violations: number
+}
+
+export interface SchedulerContextRecord {
+  id: string
+  agent_id: string
+  title: string
+  status: 'active' | 'archived'
+  created_at: string
+  updated_at: string
+  requested_hard_token_limit?: number
+  token_budget_revision: number
+}
+
+export interface SchedulerSessionRecord {
+  id: string
+  agent_id: string
+  context_id: string
+  parent_session_id?: string
+  title: string
+  status: 'active' | 'archived'
+  created_at: string
+  updated_at: string
+  last_activity_at: string
+  attention_state: string
+  attention_revision: number
+}
+
+export interface SchedulerDependencyRecord {
+  id: string
+  owner_kind: 'objective' | 'thread' | 'plan' | 'schedule' | 'delivery'
+  owner_id: string
+  owner_generation: number
+  dependency_kind: 'thread' | 'thread_group' | 'tool_task' | 'delegation' | 'timer' | 'permission' | 'user_input' | 'external_event' | 'resource'
+  dependency_id: string
+  dependency_generation: number
+  required: boolean
+  status: 'pending' | 'satisfied' | 'cancelled'
+  metadata: unknown
+  satisfied_by_event_id?: string
+  created_at: string
+  updated_at: string
+  satisfied_at?: string
+}
+
+export type SchedulerObjectiveReadiness =
+  | { state: 'runnable' }
+  | { state: 'waiting'; dependency_ids: string[] }
+  | { state: 'leased'; evaluation_id: string }
+  | { state: 'paused' | 'blocked' | 'terminal' }
+
+export interface SchedulerObjectiveSnapshot {
+  objective: Record<string, unknown> & { id: string; status: string; generation: number }
+  readiness: SchedulerObjectiveReadiness
+  dependencies: SchedulerDependencyRecord[]
+  active_evaluation?: ThreadActivationRecord
+}
+
+export interface SchedulerDeliverySnapshot {
+  thread_id: string
+  session_id: string
+  generation: number
+  status: 'none' | 'pending' | 'deferred' | 'delivered'
+  event_id?: string
+  updated_at: string
+}
+
+export interface SchedulerExternalOutboxSnapshot {
+  id: string
+  kind: string
+  state: string
+  destination?: string
+  detail: unknown
+  updated_at: string
+}
+
+export interface SchedulerInvariantViolation {
+  severity: 'warning' | 'error' | 'quarantine'
+  code: string
+  entity_kind: string
+  entity_id: string
+  detail: string
 }
 
 export interface SchedulerAdmissionSnapshot {
@@ -275,8 +359,14 @@ export interface SchedulerSnapshot {
   event_writer: Record<string, unknown>
   model_provider: Record<string, unknown>
   context_capacity: Record<string, unknown>
+  contexts: SchedulerContextRecord[]
+  sessions: SchedulerSessionRecord[]
+  objectives: SchedulerObjectiveSnapshot[]
   threads: SchedulerThreadSnapshot[]
   thread_groups: SchedulerThreadGroupSnapshot[]
+  deliveries: SchedulerDeliverySnapshot[]
+  external_outboxes: SchedulerExternalOutboxSnapshot[]
+  invariant_violations: SchedulerInvariantViolation[]
   orphan_activations: SchedulerActivationSnapshot[]
   orphan_signals: ThreadSignalRecord[]
   orphan_jobs: SchedulerJobSnapshot[]

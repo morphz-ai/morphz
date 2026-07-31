@@ -11,8 +11,7 @@ use crate::memory::{
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::scheduler::{
-    derive_objective_readiness, objective_wait_dependency_key, ControlObjectiveCommand,
-    KernelCommand, KernelCommandHeader, KernelCommandPayload, KernelResult, ObjectiveReadiness,
+    derive_objective_readiness, objective_wait_dependency_key, KernelResult, ObjectiveReadiness,
     SchedulerDependencyFilter, SchedulerDependencyMutation, SchedulerDependencyOwnerKind,
     SchedulerDependencyStatus, SchedulerDependencyStore, SchedulerKernel,
 };
@@ -1631,27 +1630,18 @@ impl ObjectiveSupervisor {
                 .get_objective(id)
                 .await?
                 .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
-            let command_id = format!(
-                "objective_control_{id}_r{expected_revision}_{}_g{}",
-                status.as_str(),
-                current.generation
-            );
+            if current.revision != expected_revision {
+                return Ok(ObjectiveMutation::Conflict { current });
+            }
             match kernel
-                .execute(KernelCommand {
-                    header: KernelCommandHeader::new(
-                        command_id,
-                        id,
-                        &current.context_id,
-                        "ObjectiveSupervisor",
-                    )
-                    .with_fence(expected_revision, Some(current.generation)),
-                    payload: KernelCommandPayload::ControlObjective(ControlObjectiveCommand {
-                        objective_id: id.to_string(),
-                        status,
-                        wait_condition,
-                        reason: reason.map(str::to_string),
-                    }),
-                })
+                .execute(crate::controllers::ObjectiveController::control(
+                    &current,
+                    status,
+                    wait_condition,
+                    reason.map(str::to_string),
+                    id,
+                    "ObjectiveSupervisor",
+                ))
                 .await?
             {
                 KernelResult::ObjectiveControlled(mutation) => mutation,

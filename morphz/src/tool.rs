@@ -3189,43 +3189,19 @@ impl Tool for ScheduleTxTool {
             }
         }
         let mut records = if let Some(kernel) = &self.kernel {
-            let command_material = format!(
-                "{attempt_id}\0{}\0{}\0{}",
-                threads
-                    .iter()
-                    .map(|thread| thread.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\0"),
-                intents
-                    .iter()
-                    .map(|intent| intent.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\0"),
-                group_plans
-                    .iter()
-                    .map(|group| group.group.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\0")
-            );
-            let command_digest = sha256_hex(command_material.as_bytes());
             match kernel
-                .execute(KernelCommand {
-                    header: KernelCommandHeader::new(
-                        format!("kernel_schedule_{}", &command_digest[..32]),
-                        route.trigger_event_id.clone(),
-                        route.root_turn_id.clone(),
-                        "Agent-Morphz",
-                    ),
-                    payload: KernelCommandPayload::SpawnSupervisedGroup(
-                        SpawnSupervisedGroupCommand {
-                            objectives: scheduled_objectives.clone(),
-                            objective_waits: objective_waits.clone(),
-                            threads: threads.clone(),
-                            schedules: intents.clone(),
-                            groups: group_plans.clone(),
-                        },
-                    ),
-                })
+                .execute(crate::controllers::PlanController::spawn_supervised_group(
+                    SpawnSupervisedGroupCommand {
+                        objectives: scheduled_objectives.clone(),
+                        objective_waits: objective_waits.clone(),
+                        threads: threads.clone(),
+                        schedules: intents.clone(),
+                        groups: group_plans.clone(),
+                    },
+                    &route.trigger_event_id,
+                    &route.root_turn_id,
+                    "Agent-Morphz",
+                ))
                 .await?
             {
                 KernelResult::SupervisedGroupSpawned { schedules } => schedules,

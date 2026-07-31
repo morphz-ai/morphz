@@ -1834,23 +1834,13 @@ mod tests {
             .commit_activation_outcome(&activation_id, &result_event)
             .await
             .unwrap();
-        match store
-            .update_thread_activation(
-                &child_activation.id,
-                child_activation.revision,
-                ThreadActivationStatus::Succeeded,
-                None,
-                None,
-                None,
-            )
+        let terminal_child = store
+            .get_thread_activation(&child_activation.id)
             .await
             .unwrap()
-        {
-            ThreadActivationMutation::Updated(record) => {
-                assert_eq!(record.status, ThreadActivationStatus::Succeeded)
-            }
-            other => panic!("expected terminal child activation, got {other:?}"),
-        }
+            .expect("atomic outcome commit must retain the child Activation");
+        assert_eq!(terminal_child.status, ThreadActivationStatus::Succeeded);
+        assert!(terminal_child.revision > child_activation.revision);
 
         let resumed = match coordinator
             .reconcile_evaluation(&waiting.id, &activation_id)
@@ -2010,23 +2000,13 @@ mod tests {
             .commit_activation_outcome(&activation_id, &malformed_result)
             .await
             .unwrap();
-        match store
-            .update_thread_activation(
-                &child_activation.id,
-                child_activation.revision,
-                ThreadActivationStatus::Succeeded,
-                None,
-                None,
-                None,
-            )
+        let terminal_child = store
+            .get_thread_activation(&child_activation.id)
             .await
             .unwrap()
-        {
-            ThreadActivationMutation::Updated(record) => {
-                assert_eq!(record.status, ThreadActivationStatus::Succeeded)
-            }
-            other => panic!("expected terminal child activation, got {other:?}"),
-        }
+            .expect("atomic malformed outcome commit must retain the child Activation");
+        assert_eq!(terminal_child.status, ThreadActivationStatus::Succeeded);
+        assert!(terminal_child.revision > child_activation.revision);
 
         // Recreate the coordinator to prove recovery only depends on durable
         // Plan, Thread and Event facts rather than an in-process response.

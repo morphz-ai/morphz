@@ -38,10 +38,6 @@ impl SchedulerKernel {
         Self { store }
     }
 
-    pub fn store(&self) -> &Arc<dyn RuntimeStore> {
-        &self.store
-    }
-
     pub async fn execute(&self, command: KernelCommand) -> Result<KernelResult, KernelError> {
         validate_header(&command.header)?;
         match command.payload {

@@ -50,6 +50,7 @@ use crate::plan_execution::{
     PlanArtifactBinding, PlanCallPlanner, PlanDriveReceipt, PlanExecutionCoordinator,
     PlanExecutionResult, PlanExecutionRoute, PlanResumeReceipt,
 };
+use crate::scheduler::{SchedulerDependencyFilter, SchedulerDependencyOwnerKind};
 use crate::sexpr::SExpr;
 use crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
 use crate::timer::{TimerDisposition, TimerEngine};
@@ -2697,178 +2698,169 @@ impl Orchestrator {
     /// invariant or quarantine live work, but must never manufacture the
     /// missing terminal Event after the fact.
     async fn audit_supervision_invariants(&self) -> Result<usize, DynError> {
-        let Some(session_store) = self.context_engine.session_store() else {
+        let Some(store) = self.plan_store.as_ref() else {
             return Ok(0);
         };
-        let mut violations = 0usize;
-        for context in session_store.list_contexts(false).await? {
-            let groups = session_store
+        let Some(kernel) = self.scheduler_kernel.as_ref() else {
+            tracing::warn!("Scheduler Kernel 不可用；本轮只跳过不变量隔离，不直接写 Store");
+            return Ok(0);
+        };
+        let mut violation_count = 0usize;
+        for context in store.list_contexts(false).await? {
+            let objectives = store.list_context_objectives(&context.id, true).await?;
+            let threads = store.list_context_threads(&context.id, true).await?;
+            let activations = store
+                .list_context_thread_activations(&context.id, true)
+                .await?;
+            let groups = store
                 .list_thread_groups(ThreadGroupFilter {
-                    context_id: Some(context.id),
+                    context_id: Some(context.id.clone()),
                     include_terminal: true,
                     newest_first: false,
                     limit: None,
                     ..Default::default()
                 })
                 .await?;
-            for group in groups {
-                if group.status.is_terminal() {
-                    let barrier_exists = match group.barrier_event_id.as_deref() {
-                        Some(event_id) => self
-                            .store
-                            .query(QueryFilter {
-                                event_id: Some(event_id.to_string()),
-                                ..Default::default()
-                            })
-                            .await?
-                            .into_iter()
-                            .any(|event| event.id == event_id),
-                        None => false,
-                    };
-                    if !barrier_exists {
-                        violations = violations.saturating_add(1);
-                        tracing::error!(
-                            thread_group_id = %group.id,
-                            generation = group.generation,
-                            barrier_event_id = ?group.barrier_event_id,
-                            "terminal Thread Group 缺少同事务 barrier Event；周期审计不会补写业务事实"
-                        );
-                    }
-                    continue;
+            let mut members = Vec::new();
+            let mut thread_ids_by_entity = HashMap::new();
+            for group in &groups {
+                let group_members = store.list_thread_group_members(&group.id).await?;
+                thread_ids_by_entity.insert(
+                    ("thread_group".to_string(), group.id.clone()),
+                    group_members
+                        .iter()
+                        .map(|member| member.thread_id.clone())
+                        .collect(),
+                );
+                members.extend(group_members);
+            }
+            let thread_by_root = threads
+                .iter()
+                .map(|thread| (thread.root_turn_id.as_str(), thread.id.clone()))
+                .collect::<HashMap<_, _>>();
+            for activation in &activations {
+                if let Some(thread_id) = thread_by_root.get(activation.root_turn_id.as_str()) {
+                    thread_ids_by_entity.insert(
+                        ("activation".to_string(), activation.id.clone()),
+                        vec![thread_id.clone()],
+                    );
                 }
+            }
+            let mut outcomes = Vec::new();
+            for thread in &threads {
+                if let Some(outcome) = store.get_thread_outcome(&thread.id).await? {
+                    outcomes.push(outcome);
+                }
+            }
+            let mut dependencies = Vec::new();
+            for objective in &objectives {
+                dependencies.extend(
+                    store
+                        .list_scheduler_dependencies(SchedulerDependencyFilter {
+                            owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+                            owner_id: Some(objective.id.clone()),
+                            ..Default::default()
+                        })
+                        .await?,
+                );
+            }
+            for thread in &threads {
+                dependencies.extend(
+                    store
+                        .list_scheduler_dependencies(SchedulerDependencyFilter {
+                            owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                            owner_id: Some(thread.id.clone()),
+                            ..Default::default()
+                        })
+                        .await?,
+                );
+            }
+            dependencies.sort_by(|left, right| left.id.cmp(&right.id));
+            dependencies.dedup_by(|left, right| left.id == right.id);
 
-                let orphan_reason = match group.supervisor_kind {
-                    ThreadSupervisorKind::Evaluation => {
-                        match session_store
-                            .get_thread_activation(&group.supervisor_id)
-                            .await?
-                        {
-                            Some(owner) if !owner.status.is_terminal() => None,
-                            Some(owner) => Some(format!(
-                                "attached Thread Group '{}' 的 owner Evaluation '{}' 已进入终态 '{}'，但成员仍未收口",
-                                group.id,
-                                owner.id,
-                                owner.status.as_str()
-                            )),
-                            None => Some(format!(
-                                "attached Thread Group '{}' 的 owner Evaluation '{}' 不存在",
-                                group.id, group.supervisor_id
-                            )),
-                        }
-                    }
-                    ThreadSupervisorKind::Objective => {
-                        let Some(supervisor) = self.objective_supervisor.as_ref() else {
-                            tracing::error!(
-                                thread_group_id = %group.id,
-                                objective_id = %group.supervisor_id,
-                                "durable Thread Group 缺少可用的 Objective Supervisor；保留 open 状态并记录不变量"
-                            );
-                            violations = violations.saturating_add(1);
-                            continue;
-                        };
-                        match supervisor.get(&group.supervisor_id).await? {
-                            Some(objective) if !objective.status.is_terminal() => None,
-                            Some(objective) => Some(format!(
-                                "durable Thread Group '{}' 的 Objective '{}' 已进入终态 '{}'，但成员仍未收口",
-                                group.id,
-                                objective.id,
-                                objective.status.as_str()
-                            )),
-                            None => {
-                                for member in
-                                    session_store.list_thread_group_members(&group.id).await?
-                                {
-                                    let Some(thread) =
-                                        session_store.get_thread(&member.thread_id).await?
-                                    else {
-                                        continue;
-                                    };
-                                    if thread.lifecycle == ThreadLifecycle::Open
-                                        && thread.control_state
-                                            == crate::memory::ThreadControlState::Active
-                                    {
-                                        if matches!(
-                                            session_store
-                                            .control_thread(
-                                                &thread.id,
-                                                thread.revision,
-                                                ThreadControlAction::Pause,
-                                                Some(
-                                                    "durable Thread 的 Objective 不存在；已暂停并等待 Runtime 修复",
-                                                ),
-                                                Some("Runtime-Recovery"),
-                                            )
-                                            .await?,
-                                            ThreadMutation::Updated(_)
-                                        ) {
-                                            violations = violations.saturating_add(1);
-                                        }
-                                    }
-                                }
-                                tracing::error!(
-                                    thread_group_id = %group.id,
-                                    objective_id = %group.supervisor_id,
-                                    "durable Thread Group 引用了不存在的 Objective；成员已隔离暂停，未猜测业务终态"
-                                );
-                                None
-                            }
-                        }
-                    }
-                    ThreadSupervisorKind::Runtime => None,
-                    ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
-                        tracing::error!(
-                            thread_group_id = %group.id,
-                            supervisor_kind = %group.supervisor_kind.as_str(),
-                            "open Thread Group 缺少受支持的监督者；保留持久状态等待 Runtime 修复"
-                        );
-                        None
-                    }
-                };
+            let mut barrier_event_ids = HashSet::new();
+            for event_id in groups
+                .iter()
+                .filter_map(|group| group.barrier_event_id.as_ref())
+            {
+                if self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(event_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .any(|event| event.id == *event_id)
+                {
+                    barrier_event_ids.insert(event_id.clone());
+                }
+            }
 
-                let Some(orphan_reason) = orphan_reason else {
+            let mut violations = crate::scheduler::audit_scheduler_invariants(
+                crate::scheduler::SchedulerInvariantInput {
+                    objectives: &objectives,
+                    threads: &threads,
+                    activations: &activations,
+                    outcomes: &outcomes,
+                    groups: &groups,
+                    group_members: &members,
+                    dependencies: &dependencies,
+                },
+            );
+            violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
+                &objectives,
+                &activations,
+                &groups,
+                &barrier_event_ids,
+            ));
+            violation_count = violation_count.saturating_add(violations.len());
+
+            let plan = crate::recovery::SchedulerReconciler::plan(
+                &violations,
+                &threads,
+                &thread_ids_by_entity,
+            );
+            for action in plan.actions {
+                let crate::recovery::ReconcilerAction::QuarantineThread { thread_id, reason } =
+                    action;
+                let Some(thread) = threads.iter().find(|thread| thread.id == thread_id) else {
                     continue;
                 };
-                for member in session_store.list_thread_group_members(&group.id).await? {
-                    if member.status.is_terminal() {
-                        continue;
-                    }
-                    let Some(thread) = session_store.get_thread(&member.thread_id).await? else {
-                        continue;
-                    };
-                    if thread.lifecycle != ThreadLifecycle::Open {
-                        continue;
-                    }
-                    match session_store
-                        .control_thread(
-                            &thread.id,
-                            thread.revision,
-                            ThreadControlAction::Pause,
-                            Some(&orphan_reason),
-                            Some("Runtime-Recovery"),
-                        )
-                        .await?
-                    {
-                        ThreadMutation::Updated(_) => {
-                            violations = violations.saturating_add(1);
-                            tracing::warn!(
-                                thread_id = %thread.id,
-                                thread_group_id = %group.id,
-                                reason = %orphan_reason,
-                                "Supervision Auditor 已暂停失去监督者的 Thread；等待显式处置"
-                            );
-                        }
-                        ThreadMutation::Conflict { .. } | ThreadMutation::NotFound => {}
-                    }
+                let command = crate::controllers::DialogueController::control_thread(
+                    thread,
+                    &context.id,
+                    ThreadControlAction::Pause,
+                    reason.clone(),
+                    "Runtime-Reconciler",
+                );
+                match kernel.execute(command).await {
+                    Ok(crate::scheduler::KernelResult::ThreadControlled(
+                        ThreadMutation::Updated(_),
+                    )) => tracing::warn!(
+                        thread_id = %thread.id,
+                        reason = %reason,
+                        "Scheduler Reconciler 已隔离违反不变量的 Thread；未猜测业务终态"
+                    ),
+                    Ok(crate::scheduler::KernelResult::ThreadControlled(
+                        ThreadMutation::Conflict { .. } | ThreadMutation::NotFound,
+                    )) => {}
+                    Ok(_) => unreachable!("ControlThread must return ThreadControlled"),
+                    Err(error) => tracing::warn!(
+                        thread_id = %thread.id,
+                        %error,
+                        "Scheduler Reconciler 隔离命令失败；保留权威状态等待下一轮"
+                    ),
                 }
             }
         }
-        if violations > 0 {
+        if violation_count > 0 {
             tracing::info!(
-                invariant_violations = violations,
+                invariant_violations = violation_count,
                 "Thread Supervision 不变量审计完成"
             );
         }
-        Ok(violations)
+        Ok(violation_count)
     }
 
     async fn reconcile_durable_plans(&self) -> Result<(), DynError> {
@@ -6086,6 +6078,50 @@ impl Orchestrator {
                     .await?;
             }
         }
+        // A durable continuation does not always retain the originating
+        // Activation as its direct parent. Action Group settlement is the
+        // canonical example: the barrier Event owns the next Signal, while
+        // the Group remains the authority that links it to the assistant plan
+        // which selected the physical tools. Resolve that exact durable link
+        // before falling back to routing hints carried by the trigger Event.
+        if persisted_assistant_call.is_none() {
+            if let Some(trigger) = self
+                .context_engine
+                .find_event(&activation.context_id, &activation.trigger_event_id)
+                .await?
+            {
+                if let Some(group_id) = trigger
+                    .payload
+                    .get("action_group_id")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if let Some(group_store) = self.action_groups.as_ref() {
+                        if let Some(group) = group_store.get_action_group(group_id).await? {
+                            persisted_assistant_call = self
+                                .context_engine
+                                .find_event(&activation.context_id, &group.assistant_call_event_id)
+                                .await?;
+                        }
+                    }
+                }
+                if persisted_assistant_call.is_none() {
+                    if let Some(origin_activation_id) = trigger
+                        .payload
+                        .get("activation_id")
+                        .or_else(|| trigger.payload.get("attempt_id"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        persisted_assistant_call = self
+                            .context_engine
+                            .find_event(
+                                &activation.context_id,
+                                &format!("call_{origin_activation_id}"),
+                            )
+                            .await?;
+                    }
+                }
+            }
+        }
         let persisted_physical_plan = persisted_assistant_call
             .as_ref()
             .is_some_and(event_contains_physical_tool_plan);
@@ -8238,24 +8274,18 @@ impl Orchestrator {
         for retry in 0..5u64 {
             let result = if let Some(kernel) = self.scheduler_kernel.as_ref() {
                 kernel
-                    .execute(crate::scheduler::KernelCommand {
-                        header: crate::scheduler::KernelCommandHeader::new(
-                            format!("commit_thread_outcome_{}", event.id),
+                    .execute(
+                        crate::controllers::DeliveryController::commit_thread_outcome(
                             &route.activation_id,
+                            event.clone(),
                             event
                                 .payload
-                                .get("root_turn_id")
+                                .get("context_id")
                                 .and_then(serde_json::Value::as_str)
-                                .unwrap_or(&route.activation_id),
+                                .unwrap_or("context-unknown"),
                             "Orchestrator",
                         ),
-                        payload: crate::scheduler::KernelCommandPayload::CommitThreadOutcome(
-                            crate::scheduler::CommitThreadOutcomeCommand {
-                                activation_id: route.activation_id.clone(),
-                                event: event.clone(),
-                            },
-                        ),
-                    })
+                    )
                     .await
                     .map(|result| match result {
                         crate::scheduler::KernelResult::ThreadOutcomeCommitted(outcome) => outcome,

@@ -30,14 +30,14 @@ use crate::llm::{Client, ModelUsage, ReasoningEffort};
 use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
-    AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalRecord,
-    ApprovalResolution, ApprovalStore, ArtifactTransferExecutionRecord,
-    AttentionAcknowledgementRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseRecord, CognitiveContextRecord, ContextTokenBudgetMutation, ContextUpdate,
-    DelegationRecord, DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
+    AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalResolution,
+    ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
+    ContextTokenBudgetMutation, ContextUpdate, DelegationRecord, DelegationStatus,
+    DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
+    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore,
+    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
     ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
@@ -49,9 +49,8 @@ use crate::memory::{
     RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
     ScheduleStatus, SessionPrincipalBinding, SessionRecord, SessionStore, SessionUpdate,
     ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
-    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupRecord, ThreadKind, ThreadLifecycle,
-    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadPhase, ThreadRecord,
+    ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -66,8 +65,15 @@ use crate::permission::{
     ApprovalRequirement, PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode,
 };
 use crate::scheduler::{
-    ControlThreadCommand, KernelCommand, KernelCommandHeader, KernelCommandPayload, KernelResult,
+    audit_scheduler_invariants, derive_objective_readiness, KernelResult,
+    SchedulerDependencyFilter, SchedulerDependencyOwnerKind, SchedulerInvariantInput,
     SchedulerKernel,
+};
+pub use crate::scheduler::{
+    SchedulerActivationSnapshot, SchedulerAdmissionSnapshot, SchedulerDeliverySnapshot,
+    SchedulerExternalOutboxSnapshot, SchedulerJobSnapshot, SchedulerObjectiveSnapshot,
+    SchedulerQuery, SchedulerResultSnapshot, SchedulerSnapshot, SchedulerSummary,
+    SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
 };
 use crate::secret_store::{
     ManagedSecret, SecretBackendStatus, SecretImportCandidate, SecretScopeKind, SecretStore,
@@ -292,95 +298,6 @@ pub struct RuntimeIdentity {
 
 fn default_runtime_principal_id() -> String {
     "principal-default".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchedulerResultSnapshot {
-    pub event_id: Option<String>,
-    pub status: ExecutionJobStatus,
-    pub refs: Vec<String>,
-    pub error: Option<String>,
-    pub exit_code: Option<i32>,
-    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchedulerJobSnapshot {
-    pub job: ExecutionJobRecord,
-    pub approval: Option<ApprovalRecord>,
-    pub result: Option<SchedulerResultSnapshot>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchedulerActivationSnapshot {
-    pub activation: ThreadActivationRecord,
-    pub signals: Vec<ThreadSignalRecord>,
-    pub jobs: Vec<SchedulerJobSnapshot>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchedulerThreadSnapshot {
-    pub thread: ThreadRecord,
-    pub phase: ThreadPhase,
-    pub outcome: Option<ThreadOutcomeRecord>,
-    pub pending_signals: Vec<ThreadSignalRecord>,
-    pub activations: Vec<SchedulerActivationSnapshot>,
-    pub schedules: Vec<ScheduleRecord>,
-}
-
-/// One authoritative supervision barrier and all of its persisted evidence.
-///
-/// SDK, HTTP, CLI and Dashboard consume this same projection instead of
-/// reconstructing Group state from Events or counting terminal Threads.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchedulerThreadGroupSnapshot {
-    pub group: ThreadGroupRecord,
-    pub members: Vec<ThreadGroupMemberRecord>,
-    pub outcomes: Vec<ThreadOutcomeRecord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchedulerAdmissionSnapshot {
-    #[serde(flatten)]
-    pub process: crate::activation_admission::ActivationAdmissionSnapshot,
-    pub context_durable_queued: usize,
-    pub context_durable_running: usize,
-    pub context_loaded_queued: usize,
-    pub context_in_flight: usize,
-    pub context_deferred: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchedulerSummary {
-    pub open_threads: usize,
-    pub pending_signals: usize,
-    pub queued_activations: usize,
-    pub running_activations: usize,
-    pub active_jobs: usize,
-    pub waiting_approval_jobs: usize,
-    pub pending_approvals: usize,
-    pub active_schedules: usize,
-    pub deferred_activations: usize,
-}
-
-/// One read model for every Dashboard scheduler surface. SQLite authorities
-/// are joined by their causal IDs here so the UI never infers Runtime truth
-/// from unrelated event counts or process-local task maps.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchedulerSnapshot {
-    pub context_id: String,
-    pub generated_at: chrono::DateTime<chrono::Utc>,
-    pub summary: SchedulerSummary,
-    pub admission: SchedulerAdmissionSnapshot,
-    pub event_writer: crate::orchestrator::orchestrator::DurableEventWriterMetricsSnapshot,
-    pub model_provider: crate::orchestrator::orchestrator::ModelProviderMetricsSnapshot,
-    pub context_capacity: crate::orchestrator::context::ContextCapacityMetricsSnapshot,
-    pub threads: Vec<SchedulerThreadSnapshot>,
-    pub thread_groups: Vec<SchedulerThreadGroupSnapshot>,
-    pub orphan_activations: Vec<SchedulerActivationSnapshot>,
-    pub orphan_signals: Vec<ThreadSignalRecord>,
-    pub orphan_jobs: Vec<SchedulerJobSnapshot>,
-    pub orphan_approvals: Vec<ApprovalRecord>,
 }
 
 /// Durable operator disposition for one exact revision of a derived attention
@@ -764,30 +681,6 @@ pub struct RuntimeRecoveryStatus {
     pub lost_execution_jobs: usize,
     pub recovered_background_outboxes: usize,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-/// Shared query contract for the Rust SDK, CLI and HTTP scheduler read model.
-/// All presentation layers consume the same [`SchedulerSnapshot`]; none may
-/// reconstruct scheduler truth from events or process-local task maps.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SchedulerQuery {
-    #[serde(default)]
-    pub include_terminal: bool,
-    #[serde(default = "default_scheduler_limit")]
-    pub limit: usize,
-}
-
-const fn default_scheduler_limit() -> usize {
-    200
-}
-
-impl Default for SchedulerQuery {
-    fn default() -> Self {
-        Self {
-            include_terminal: false,
-            limit: default_scheduler_limit(),
-        }
-    }
 }
 
 impl Default for RuntimeIdentity {
@@ -4176,11 +4069,29 @@ impl MorphzRuntime {
         context_id: &str,
         query: SchedulerQuery,
     ) -> Result<SchedulerSnapshot, RuntimeError> {
-        if self.inner.store.get_context(context_id).await?.is_none() {
-            return Err(format!("Context '{context_id}' 不存在").into());
-        }
+        let context = self
+            .inner
+            .store
+            .get_context(context_id)
+            .await?
+            .ok_or_else(|| format!("Context '{context_id}' 不存在"))?;
         let include_terminal = query.include_terminal;
         let limit = query.limit.clamp(1, 2_000);
+        let sessions = self
+            .inner
+            .store
+            .list_context_sessions(context_id, true)
+            .await?;
+        let mut authority_objectives = self
+            .inner
+            .store
+            .list_context_objectives(context_id, true)
+            .await?;
+        authority_objectives.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
         let mut context_threads = self
             .inner
             .store
@@ -4192,6 +4103,7 @@ impl MorphzRuntime {
                 .cmp(&left.updated_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
+        let authority_threads = context_threads.clone();
         let all_context_thread_ids = context_threads
             .iter()
             .map(|thread| thread.id.clone())
@@ -4347,7 +4259,7 @@ impl MorphzRuntime {
             .map(|activation| activation.id.clone())
             .collect::<HashSet<_>>();
         for job in jobs {
-            let snapshot = scheduler_job_snapshot(job, &mut approval_by_job);
+            let snapshot = crate::scheduler::job_snapshot(job, &mut approval_by_job);
             if activation_ids.contains(&snapshot.job.activation_id) {
                 jobs_by_activation
                     .entry(snapshot.job.activation_id.clone())
@@ -4417,34 +4329,38 @@ impl MorphzRuntime {
             }
         }
 
-        let mut thread_groups = Vec::new();
-        for group in self
+        let authority_groups = self
             .inner
             .store
             .list_thread_groups(ThreadGroupFilter {
                 context_id: Some(context_id.to_string()),
-                include_terminal,
+                include_terminal: true,
                 newest_first: false,
-                limit: Some(limit),
+                limit: None,
                 ..ThreadGroupFilter::default()
             })
-            .await?
-        {
+            .await?;
+        let mut authority_group_members = Vec::new();
+        let mut thread_groups = Vec::new();
+        for group in &authority_groups {
             let members = self
                 .inner
                 .store
                 .list_thread_group_members(&group.id)
                 .await?;
+            authority_group_members.extend(members.iter().cloned());
             let outcomes = self
                 .inner
                 .store
                 .list_thread_group_outcomes(&group.id)
                 .await?;
-            thread_groups.push(SchedulerThreadGroupSnapshot {
-                group,
-                members,
-                outcomes,
-            });
+            if thread_groups.len() < limit && (!group.status.is_terminal() || include_terminal) {
+                thread_groups.push(SchedulerThreadGroupSnapshot {
+                    group: group.clone(),
+                    members,
+                    outcomes,
+                });
+            }
         }
 
         let mut threads = Vec::with_capacity(all_threads.len());
@@ -4455,8 +4371,12 @@ impl MorphzRuntime {
                 .unwrap_or_default();
             let thread_activations = activations_by_thread.remove(&thread.id).unwrap_or_default();
             let schedules = schedules_by_thread.remove(&thread.id).unwrap_or_default();
-            let phase =
-                scheduler_thread_phase(&thread, &pending_signals, &thread_activations, &schedules);
+            let phase = crate::scheduler::thread_phase(
+                &thread,
+                &pending_signals,
+                &thread_activations,
+                &schedules,
+            );
             threads.push(SchedulerThreadSnapshot {
                 thread,
                 phase,
@@ -4531,6 +4451,135 @@ impl MorphzRuntime {
                 )
             })
             .count();
+        let mut dependencies = Vec::new();
+        for objective in &authority_objectives {
+            dependencies.extend(
+                self.inner
+                    .store
+                    .list_scheduler_dependencies(SchedulerDependencyFilter {
+                        owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+                        owner_id: Some(objective.id.clone()),
+                        ..SchedulerDependencyFilter::default()
+                    })
+                    .await?,
+            );
+        }
+        for thread in &authority_threads {
+            dependencies.extend(
+                self.inner
+                    .store
+                    .list_scheduler_dependencies(SchedulerDependencyFilter {
+                        owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                        owner_id: Some(thread.id.clone()),
+                        ..SchedulerDependencyFilter::default()
+                    })
+                    .await?,
+            );
+        }
+        dependencies.sort_by(|left, right| left.id.cmp(&right.id));
+        dependencies.dedup_by(|left, right| left.id == right.id);
+
+        let now = chrono::Utc::now();
+        let objective_snapshots = authority_objectives
+            .iter()
+            .filter(|objective| include_terminal || !objective.status.is_terminal())
+            .take(limit)
+            .map(|objective| {
+                let objective_dependencies = dependencies
+                    .iter()
+                    .filter(|dependency| {
+                        dependency.owner_kind == SchedulerDependencyOwnerKind::Objective
+                            && dependency.owner_id == objective.id
+                            && dependency.owner_generation == objective.generation
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let active_evaluation = objective.active_evaluation_id.as_ref().and_then(|id| {
+                    all_context_activations
+                        .iter()
+                        .find(|activation| activation.id == *id || activation.root_turn_id == *id)
+                        .cloned()
+                });
+                SchedulerObjectiveSnapshot {
+                    objective: objective.clone(),
+                    readiness: derive_objective_readiness(objective, &objective_dependencies, now),
+                    dependencies: objective_dependencies,
+                    active_evaluation,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut authority_outcomes = Vec::new();
+        for thread in &authority_threads {
+            if let Some(outcome) = self.inner.store.get_thread_outcome(&thread.id).await? {
+                authority_outcomes.push(outcome);
+            }
+        }
+        let mut invariant_violations = audit_scheduler_invariants(SchedulerInvariantInput {
+            objectives: &authority_objectives,
+            threads: &authority_threads,
+            activations: &all_context_activations,
+            outcomes: &authority_outcomes,
+            groups: &authority_groups,
+            group_members: &authority_group_members,
+            dependencies: &dependencies,
+        });
+        let mut barrier_event_ids = HashSet::new();
+        for event_id in authority_groups
+            .iter()
+            .filter_map(|group| group.barrier_event_id.as_ref())
+        {
+            if self
+                .inner
+                .store
+                .query(QueryFilter {
+                    event_id: Some(event_id.clone()),
+                    ..QueryFilter::default()
+                })
+                .await?
+                .into_iter()
+                .any(|event| event.id == *event_id)
+            {
+                barrier_event_ids.insert(event_id.clone());
+            }
+        }
+        invariant_violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
+            &authority_objectives,
+            &all_context_activations,
+            &authority_groups,
+            &barrier_event_ids,
+        ));
+        let deliveries = authority_threads
+            .iter()
+            .filter(|thread| thread.delivery_status != crate::memory::DeliveryStatus::None)
+            .map(|thread| SchedulerDeliverySnapshot {
+                thread_id: thread.id.clone(),
+                session_id: thread.session_id.clone(),
+                generation: thread.generation,
+                status: thread.delivery_status,
+                event_id: thread.delivery_event_id.clone(),
+                updated_at: thread.updated_at,
+            })
+            .collect::<Vec<_>>();
+        let runnable_objectives = objective_snapshots
+            .iter()
+            .filter(|objective| {
+                matches!(
+                    objective.readiness,
+                    crate::scheduler::ObjectiveReadiness::Runnable
+                )
+            })
+            .count();
+        let waiting_objectives = objective_snapshots
+            .iter()
+            .filter(|objective| {
+                matches!(
+                    objective.readiness,
+                    crate::scheduler::ObjectiveReadiness::Waiting { .. }
+                        | crate::scheduler::ObjectiveReadiness::Leased { .. }
+                )
+            })
+            .count();
         let summary = SchedulerSummary {
             open_threads: threads
                 .iter()
@@ -4544,6 +4593,9 @@ impl MorphzRuntime {
             pending_approvals,
             active_schedules,
             deferred_activations: context_deferred,
+            runnable_objectives,
+            waiting_objectives,
+            invariant_violations: invariant_violations.len(),
         };
         Ok(SchedulerSnapshot {
             context_id: context_id.to_string(),
@@ -4560,8 +4612,18 @@ impl MorphzRuntime {
             event_writer: self.inner.orchestrator.durable_event_writer_metrics(),
             model_provider: self.inner.orchestrator.model_provider_metrics(),
             context_capacity: self.inner.orchestrator.context_capacity_metrics(),
+            contexts: vec![context],
+            sessions,
+            objectives: objective_snapshots,
             threads,
             thread_groups,
+            deliveries,
+            // Internal scheduler Signals are not outboxes. The remaining
+            // external transports expose their own authoritative stores; the
+            // unified adapter is intentionally empty until those records are
+            // lowered to the common cross-boundary envelope.
+            external_outboxes: Vec::new(),
+            invariant_violations,
             orphan_activations,
             orphan_signals,
             orphan_jobs,
@@ -5260,7 +5322,7 @@ impl MorphzRuntime {
             jobs_by_activation
                 .entry(job.activation_id.clone())
                 .or_default()
-                .push(scheduler_job_snapshot(job, &mut approval_by_job));
+                .push(crate::scheduler::job_snapshot(job, &mut approval_by_job));
         }
 
         let mut activation_snapshots = Vec::with_capacity(activations.len());
@@ -5310,8 +5372,12 @@ impl MorphzRuntime {
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
-        let phase =
-            scheduler_thread_phase(&thread, &pending_signals, &activation_snapshots, &schedules);
+        let phase = crate::scheduler::thread_phase(
+            &thread,
+            &pending_signals,
+            &activation_snapshots,
+            &schedules,
+        );
         let mut model_attempt_events = Vec::new();
         for topic in [
             "runtime/model_attempt_state",
@@ -5379,27 +5445,19 @@ impl MorphzRuntime {
             return Ok(ThreadMutation::NotFound);
         }
 
-        let command_material = format!(
-            "runtime-control-thread\0{thread_id}\0{expected_revision}\0{action:?}\0{reason}"
-        );
-        let command_digest = format!("{:x}", Sha256::digest(command_material.as_bytes()));
+        if current.revision != expected_revision {
+            return Ok(ThreadMutation::Conflict { current });
+        }
         let mutation = match self
             .inner
             .scheduler_kernel
-            .execute(KernelCommand {
-                header: KernelCommandHeader::new(
-                    format!("kernel_control_thread_{}", &command_digest[..32]),
-                    thread_id,
-                    context_id,
-                    "Runtime-Operator",
-                )
-                .with_fence(expected_revision, Some(current.generation)),
-                payload: KernelCommandPayload::ControlThread(ControlThreadCommand {
-                    thread_id: thread_id.to_string(),
-                    action,
-                    reason: Some(reason.to_string()),
-                }),
-            })
+            .execute(crate::controllers::DialogueController::control_thread(
+                &current,
+                context_id,
+                action,
+                reason,
+                "Runtime-Operator",
+            ))
             .await?
         {
             KernelResult::ThreadControlled(mutation) => mutation,
@@ -5676,26 +5734,6 @@ impl MorphzRuntime {
     }
 }
 
-fn scheduler_job_snapshot(
-    job: ExecutionJobRecord,
-    approvals: &mut HashMap<String, ApprovalRecord>,
-) -> SchedulerJobSnapshot {
-    let approval = approvals.remove(&job.id);
-    let result = job.status.is_terminal().then(|| SchedulerResultSnapshot {
-        event_id: job.result_event_id.clone(),
-        status: job.status,
-        refs: job.result_refs.clone(),
-        error: job.error.clone(),
-        exit_code: job.exit_code,
-        finished_at: job.finished_at,
-    });
-    SchedulerJobSnapshot {
-        job,
-        approval,
-        result,
-    }
-}
-
 fn runtime_overview_principals_by_session(
     bindings: Vec<SessionPrincipalBinding>,
 ) -> HashMap<String, Vec<String>> {
@@ -5862,52 +5900,6 @@ fn ledger_event_matches_causal_scope(event: &Event, query: &LedgerQuery) -> bool
             .activation_id
             .as_deref()
             .is_none_or(|expected| payload_string(event, "activation_id") == Some(expected))
-}
-
-fn scheduler_thread_phase(
-    thread: &ThreadRecord,
-    pending_signals: &[ThreadSignalRecord],
-    activations: &[SchedulerActivationSnapshot],
-    schedules: &[ScheduleRecord],
-) -> ThreadPhase {
-    if thread.lifecycle.is_terminal() {
-        return ThreadPhase::Idle;
-    }
-    if activations.iter().any(|activation| {
-        activation.activation.status == ThreadActivationStatus::Running
-            || activation
-                .jobs
-                .iter()
-                .any(|job| job.job.status == ExecutionJobStatus::Running)
-    }) {
-        return ThreadPhase::Running;
-    }
-    if activations.iter().any(|activation| {
-        activation.activation.status == ThreadActivationStatus::Queued
-            || activation
-                .jobs
-                .iter()
-                .any(|job| job.job.status == ExecutionJobStatus::Queued)
-    }) || pending_signals
-        .iter()
-        .any(|signal| signal.status == ThreadSignalStatus::Pending)
-    {
-        return ThreadPhase::Runnable;
-    }
-    if activations.iter().any(|activation| {
-        activation
-            .jobs
-            .iter()
-            .any(|job| job.job.status == ExecutionJobStatus::WaitingApproval)
-    }) || schedules.iter().any(|schedule| {
-        matches!(
-            schedule.status,
-            ScheduleStatus::Queued | ScheduleStatus::Paused
-        )
-    }) {
-        return ThreadPhase::Waiting;
-    }
-    ThreadPhase::Idle
 }
 
 pub struct RuntimeEventStream {
@@ -8190,6 +8182,48 @@ mod tests {
             .await
             .unwrap();
 
+        let objective = runtime
+            .inner
+            .store
+            .create_objective(NewObjective {
+                id: "objective-scheduler-snapshot".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                coordinator_session_id: "session-scheduler-snapshot".to_string(),
+                delivery_session_id: "session-scheduler-snapshot".to_string(),
+                parent_objective_id: None,
+                source_event_id: "source-scheduler-snapshot".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "验证统一 SchedulerSnapshot".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let dependency_id = crate::scheduler::stable_scheduler_dependency_id(
+            crate::scheduler::SchedulerDependencyOwnerKind::Objective,
+            &objective.id,
+            objective.generation,
+            crate::scheduler::SchedulerDependencyKind::Resource,
+            "snapshot-fixture",
+            1,
+        );
+        runtime
+            .inner
+            .store
+            .register_scheduler_dependency(crate::scheduler::NewSchedulerDependency {
+                id: dependency_id.clone(),
+                owner_kind: crate::scheduler::SchedulerDependencyOwnerKind::Objective,
+                owner_id: objective.id.clone(),
+                owner_generation: objective.generation,
+                dependency_kind: crate::scheduler::SchedulerDependencyKind::Resource,
+                dependency_id: "snapshot-fixture".to_string(),
+                dependency_generation: 1,
+                required: true,
+                metadata: json!({"fixture": true}),
+            })
+            .await
+            .unwrap();
+
         let root_turn_id = "root-scheduler-snapshot";
         let thread = runtime
             .inner
@@ -8390,6 +8424,22 @@ mod tests {
         assert_eq!(snapshot.summary.waiting_approval_jobs, 1);
         assert_eq!(snapshot.summary.pending_approvals, 1);
         assert_eq!(snapshot.summary.active_schedules, 1);
+        assert_eq!(snapshot.contexts.len(), 1);
+        assert!(snapshot
+            .sessions
+            .iter()
+            .any(|session| session.id == "session-scheduler-snapshot"));
+        let objective_snapshot = snapshot
+            .objectives
+            .iter()
+            .find(|item| item.objective.id == objective.id)
+            .unwrap();
+        assert_eq!(objective_snapshot.dependencies[0].id, dependency_id);
+        assert!(matches!(
+            objective_snapshot.readiness,
+            crate::scheduler::ObjectiveReadiness::Waiting { .. }
+        ));
+        assert_eq!(snapshot.summary.waiting_objectives, 1);
         let contract = serde_json::to_value(&snapshot).unwrap();
         let contract_thread = contract["threads"]
             .as_array()
@@ -13089,18 +13139,23 @@ mod tests {
                 .status,
             crate::memory::RuntimeTimerStatus::Fired
         );
-        assert!(runtime
-            .query_events(QueryFilter {
-                topic: Some("objective/wait_satisfied".to_string()),
+        let timer_dependencies = runtime
+            .inner
+            .store
+            .list_scheduler_dependencies(crate::scheduler::SchedulerDependencyFilter {
+                owner_kind: Some(crate::scheduler::SchedulerDependencyOwnerKind::Objective),
+                owner_id: Some("objective-recover".to_string()),
+                dependency_kind: Some(crate::scheduler::SchedulerDependencyKind::Timer),
                 ..Default::default()
             })
             .await
-            .unwrap()
-            .iter()
-            .any(
-                |event| event.payload.get("reason").and_then(|value| value.as_str())
-                    == Some("timer-deadline-reached")
-            ));
+            .unwrap();
+        assert_eq!(timer_dependencies.len(), 1);
+        assert_eq!(
+            timer_dependencies[0].status,
+            crate::scheduler::SchedulerDependencyStatus::Satisfied
+        );
+        assert!(timer_dependencies[0].satisfied_by_event_id.is_some());
     }
 
     #[tokio::test]
