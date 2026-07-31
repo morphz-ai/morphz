@@ -26,6 +26,64 @@ use tokio::sync::{watch, Mutex};
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 pub const TYPE_OBJECTIVE_CONTROL: &str = "objective_control";
+const OBJECTIVE_CONTINUATION_INSTRUCTION: &str = "Continue the stated objective autonomously. Audit remaining requirements against current evidence. If complete, call objective_update before the final reply; if waiting, record a precise wait condition; otherwise make new progress.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObjectiveClosureReview {
+    child_states: Vec<(String, ObjectiveStatus)>,
+}
+
+impl ObjectiveClosureReview {
+    fn render(&self, parent: &ObjectiveRecord) -> String {
+        let children = self
+            .child_states
+            .iter()
+            .map(|(id, status)| {
+                format!(
+                    "(child (id {}) (status {}))",
+                    serde_json::to_string(id).expect("Objective ID must serialize"),
+                    status.as_str()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "(objective-state (phase closure-review) \
+             (reason all-direct-children-terminal) \
+             (terminal-children {children}) \
+             (completion-contract {}) \
+             (decision-authority agent) \
+             (required-commit state-or-action))",
+            serde_json::to_string(&parent.stated_objective)
+                .expect("Objective completion contract must serialize")
+        )
+    }
+}
+
+/// A parent whose known child Objectives are all terminal is at a deterministic
+/// closure boundary. This does not prove that the parent is complete, but it
+/// does mean the next Evaluation must explicitly commit either an Objective
+/// state transition or a concrete action. Runtime owns the boundary facts; the
+/// Agent retains sole authority over whether the completion contract is met.
+fn objective_closure_review(
+    parent: &ObjectiveRecord,
+    context_objectives: &[ObjectiveRecord],
+) -> Option<ObjectiveClosureReview> {
+    let mut children = context_objectives
+        .iter()
+        .filter(|objective| objective.parent_objective_id.as_deref() == Some(parent.id.as_str()))
+        .collect::<Vec<_>>();
+    if children.is_empty() || children.iter().any(|child| !child.status.is_terminal()) {
+        return None;
+    }
+    children.sort_by(|left, right| left.id.cmp(&right.id));
+    Some(ObjectiveClosureReview {
+        child_states: children
+            .into_iter()
+            .map(|child| (child.id.clone(), child.status))
+            .collect(),
+    })
+}
 
 #[derive(Debug, Deserialize)]
 struct ObjectiveCreateArgs {
@@ -2319,10 +2377,39 @@ impl ObjectiveSupervisor {
         }
         let lease_expires_at = Utc::now() + self.lease_duration;
         let claimed_revision = objective.revision.saturating_add(1);
-        let continuation = format!(
-            "(objective-continuation (id {}) (revision {}) (evaluation {}) (reason active-no-wait) (instruction \"Continue the stated objective autonomously. Audit remaining requirements against current evidence. If complete, call objective_update before the final reply; if waiting, record a precise wait condition; otherwise make new progress.\"))",
-            objective.id, claimed_revision, evaluation_id
-        );
+        let context_objectives = self
+            .store
+            .list_context_objectives(&objective.context_id, true)
+            .await?;
+        let closure_review = objective_closure_review(&objective, &context_objectives);
+        let (wake_source, objective_phase, continuation) =
+            if let Some(review) = closure_review.as_ref() {
+                (
+                    "closure-review",
+                    "closure-review",
+                    format!(
+                        "(objective-continuation (id {}) (revision {}) (evaluation {}) \
+                         (reason closure-review) {})",
+                        serde_json::to_string(&objective.id)?,
+                        claimed_revision,
+                        serde_json::to_string(&evaluation_id)?,
+                        review.render(&objective)
+                    ),
+                )
+            } else {
+                (
+                    "active-no-wait",
+                    "executing",
+                    format!(
+                        "(objective-continuation (id {}) (revision {}) (evaluation {}) \
+                         (reason active-no-wait) (instruction {}))",
+                        serde_json::to_string(&objective.id)?,
+                        claimed_revision,
+                        serde_json::to_string(&evaluation_id)?,
+                        serde_json::to_string(OBJECTIVE_CONTINUATION_INSTRUCTION)?
+                    ),
+                )
+            };
         let mut continuation_payload = vec![
             ("context_id".to_string(), json!(objective.context_id)),
             (
@@ -2335,7 +2422,8 @@ impl ObjectiveSupervisor {
             ("runtime_force_evaluation".to_string(), json!(true)),
             ("tool_name".to_string(), json!("objective_supervisor")),
             ("tool_status".to_string(), json!("success")),
-            ("wake_source".to_string(), json!("active-no-wait")),
+            ("wake_source".to_string(), json!(wake_source)),
+            ("objective_phase".to_string(), json!(objective_phase)),
             ("text".to_string(), json!(continuation)),
         ];
         if let Some(principal_id) = &objective.initiating_principal_id {
@@ -2903,6 +2991,123 @@ mod tests {
             })
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn closure_review_requires_at_least_one_child_and_all_children_terminal() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let parent = seed_objective_bundle(&store, "closure-review").await;
+        let child = store
+            .create_objective(NewObjective {
+                id: "objective-closure-review-child".to_string(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                coordinator_session_id: parent.coordinator_session_id.clone(),
+                delivery_session_id: parent.delivery_session_id.clone(),
+                parent_objective_id: Some(parent.id.clone()),
+                source_event_id: "source-closure-review-child".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "完成一个可验证切片".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+
+        let with_active_child = store
+            .list_context_objectives(&parent.context_id, true)
+            .await
+            .unwrap();
+        assert!(objective_closure_review(&parent, &with_active_child).is_none());
+
+        let updated = store
+            .update_objective_state(
+                &child.id,
+                child.revision,
+                ObjectiveStatus::Completed,
+                None,
+                Some("切片验证完成"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(updated, ObjectiveMutation::Updated(_)));
+
+        let with_terminal_child = store
+            .list_context_objectives(&parent.context_id, true)
+            .await
+            .unwrap();
+        let review = objective_closure_review(&parent, &with_terminal_child)
+            .expect("all terminal children must produce a closure-review boundary");
+        assert_eq!(
+            review.child_states,
+            vec![(child.id, ObjectiveStatus::Completed)]
+        );
+        let rendered = review.render(&parent);
+        assert!(rendered.contains("(phase closure-review)"));
+        assert!(rendered.contains("(status completed)"));
+        assert!(rendered.contains("(decision-authority agent)"));
+        assert!(rendered.contains("(required-commit state-or-action)"));
+        assert!(rendered.contains("(completion-contract"));
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            bus,
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            timers,
+            std::time::Duration::from_secs(600),
+        ));
+        supervisor.schedule(parent.id.clone()).await.unwrap();
+
+        let continuations = store
+            .query(QueryFilter {
+                context_id: Some(parent.context_id),
+                topic: Some("chat/tool_output".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        let continuation = continuations
+            .iter()
+            .find(|event| {
+                event
+                    .payload
+                    .get("objective_id")
+                    .and_then(|value| value.as_str())
+                    == Some(parent.id.as_str())
+            })
+            .expect("Objective scheduling must persist one continuation");
+        assert_eq!(
+            continuation
+                .payload
+                .get("wake_source")
+                .and_then(serde_json::Value::as_str),
+            Some("closure-review")
+        );
+        assert_eq!(
+            continuation
+                .payload
+                .get("objective_phase")
+                .and_then(serde_json::Value::as_str),
+            Some("closure-review")
+        );
+        let text = continuation
+            .payload
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        assert!(text.contains("(objective-state (phase closure-review)"));
+        assert!(text.contains("(decision-authority agent)"));
+        assert!(text.contains("(required-commit state-or-action)"));
+        assert!(text.contains("(terminal-children"));
+        assert!(!text.contains("Do not broadly reread"));
+        assert!(!text.contains("Choose exactly one"));
     }
 
     async fn seed_background_execution_job(

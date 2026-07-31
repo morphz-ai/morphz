@@ -782,6 +782,61 @@ fn restrict_tools_to_scope(tools: &mut Vec<ToolDefinition>, scope: Option<&HashS
     }
 }
 
+/// Critical pressure may suspend physical work, but it must never remove the
+/// control operation that can terminally settle the Objective currently being
+/// evaluated. Otherwise an Agent which has already proved completion can only
+/// keep maintaining/reading Context until a later request happens to fall
+/// below the pressure boundary.
+fn retain_context_maintenance_tools(
+    tools: &mut Vec<ToolDefinition>,
+    objective_control_available: bool,
+) {
+    tools.retain(|tool| {
+        matches!(tool.name.as_str(), "context_tx" | "recall")
+            || (objective_control_available && tool.name == "objective_update")
+    });
+}
+
+/// A final-reply turn is reply-only for ordinary work. A bound Objective still
+/// needs its one deterministic lifecycle operation; completing the public
+/// reply without updating the Objective would leave the Supervisor running.
+fn retain_final_reply_control_tools(
+    tools: &mut Vec<ToolDefinition>,
+    objective_control_available: bool,
+) {
+    tools.retain(|tool| objective_control_available && tool.name == "objective_update");
+}
+
+fn derived_thread_kind(event: &Event, has_objective_route: bool) -> ThreadKind {
+    let is_objective_supervisor_entry = has_objective_route
+        && event
+            .payload
+            .get("tool_name")
+            .and_then(serde_json::Value::as_str)
+            == Some("objective_supervisor");
+    if is_objective_supervisor_entry {
+        ThreadKind::Objective
+    } else if event.topic == "chat/thread_completion_ready" {
+        ThreadKind::Delivery
+    } else if is_dialogue_trigger(event) {
+        ThreadKind::DialogueTurn
+    } else {
+        // Work spawned under Objective supervision is still an Execution
+        // Thread. Objective is the supervisor/lifetime authority, not the
+        // physical work kind shown to operators.
+        ThreadKind::Execution
+    }
+}
+
+fn objective_supervision_matches_evaluation(
+    supervision: &ThreadSupervision,
+    active_evaluation_id: Option<&str>,
+) -> bool {
+    supervision.supervisor_kind == ThreadSupervisorKind::Objective
+        && active_evaluation_id.is_some()
+        && supervision.origin_evaluation_id.as_deref() == active_evaluation_id
+}
+
 #[cfg(test)]
 fn baseline_system_prompt() -> &'static str {
     render_stable_system_prompt(SystemPromptMode::AgentOwnedContext)
@@ -808,9 +863,10 @@ const CRITICAL_MAINTENANCE_PROMPT: &str = r#"Runtime 当前进入 critical-maint
 - 本次只能调用当前实际提供的工具。外部物理工具已被暂时撤下；不要重复刚才的物理工具调用，也不要假定它已执行。
 - 优先用一次 context_tx 准确压缩 Mind/Inbox：保留当前目标、用户约束、最新可靠事实、未完成工作和继续执行所需证据；摘要或 retire 陈旧、重复、已被新事实取代的内容。
 - recall 仅用于维护前确实缺失的原始证据；不要借此展开新的外部工作。完成维护后 Runtime 会重新计算压力并恢复适用的物理工具。
+- 若当前 Evaluation 绑定了 active Objective，objective_update 仍会保留。已经具备完成证据时应直接提交 Objective 终态，不能为了维护 Context 而把已完成目标留在 active。
 - 若调用本轮未提供的工具，Runtime 会拒绝执行，并以对应 tool_call_id 返回明确的 rejected 工具结果。"#;
 
-const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本轮普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次 Evaluation 强制进入 final-reply 阶段。请返回无工具的普通文本，如实交付已完成状态、最近一次可靠验证和剩余工作；若确认无需发送消息，可独占调用 no_reply。若存在 active Objective，这不会把 Objective 标记为完成；Supervisor 将按其持久状态决定后续。"#;
+const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本轮普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次 Evaluation 强制进入 final-reply 阶段。请返回普通文本，如实交付已完成状态、最近一次可靠验证和剩余工作；若确认无需发送消息，可独占调用 no_reply。若当前 Evaluation 绑定了 active Objective，objective_update 是唯一额外保留的控制工具：已有充分完成证据时必须先提交 Objective 终态；证据不足时保持真实状态，Supervisor 将继续推进。"#;
 
 const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请返回普通文本结束当前 Evaluation、独占调用 no_reply，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
@@ -823,6 +879,7 @@ const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
 const RESPONSE_PROTOCOL_ERROR: &str = "Response protocol error：当前 Evaluation 尚未产生合法终态。需要向当前 active Session 回复时，返回非空普通 assistant 文本且不调用工具；有意静默时独占调用 no_reply(mode=silent)；仅在 Runtime 仍有可验证的非终态事件时调用 no_reply(mode=wait)。空响应、缺少/错误 mode、no_reply 与其他工具混用、或 no_reply 同时携带正文都是协议错误。";
+const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error：Runtime 只声明全部直接子目标已经终结，不替 Agent 判断父目标是否完成。本次求值不能以普通文本或 no_reply 悬空结束；请自主选择并提交一个可持久化结果：调用 objective_update 更新 completed、blocked 或精确 wait，或者执行实际动作、创建新的子目标。";
 const REASONING_ONLY_RESPONSE_REASON: &str =
     "模型只返回了推理摘要，未产生普通文本、工具调用或 no_reply";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1427,6 +1484,39 @@ fn classify_terminal_response(
         _ => return Err("no_reply.mode 只支持 silent 或 wait".to_string()),
     };
     Ok(Some(TerminalDecision::NoReply(mode)))
+}
+
+fn validate_objective_closure_review_response(
+    initial_closure_review: bool,
+    decision: Option<TerminalDecision>,
+) -> Result<Option<TerminalDecision>, String> {
+    if initial_closure_review && decision.is_some() {
+        Err(OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR.to_string())
+    } else {
+        Ok(decision)
+    }
+}
+
+fn validate_final_reply_response(
+    effective_phase: &str,
+    objective_control_available: bool,
+    response: &crate::llm::Response,
+    decision: Option<TerminalDecision>,
+) -> Result<Option<TerminalDecision>, String> {
+    if effective_phase != "final-reply" || decision.is_some() {
+        return Ok(decision);
+    }
+    let is_objective_control = objective_control_available
+        && response.tool_calls.len() == 1
+        && response.tool_calls[0].func_name == "objective_update";
+    if is_objective_control {
+        Ok(None)
+    } else {
+        Err(
+            "final-reply 阶段必须返回普通文本、独占调用 no_reply，或为当前绑定的 active Objective 独占调用 objective_update"
+                .to_string(),
+        )
+    }
 }
 
 fn validate_schedule_tx_response(response: &crate::llm::Response) -> Result<(), String> {
@@ -3148,8 +3238,10 @@ impl Orchestrator {
     /// restart. Waiting Threads are excluded because a background result,
     /// dependency, timer, delegation or Objective supervisor may still own
     /// their next wake. An active Dialogue/Work/Delivery Thread without a
-    /// non-terminal Thread Activation or queued schedule is an inconsistent orphan,
-    /// usually produced by an older Runtime crossing a persistence boundary.
+    /// non-terminal Thread Activation or queued schedule is an inconsistent
+    /// orphan. Objective Threads are reconciled against the Objective's one
+    /// authoritative active Evaluation so old evaluations do not remain
+    /// visible as parallel Objective supervisors after restart.
     async fn reconcile_orphaned_threads(&self) -> Result<(), DynError> {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
@@ -3174,13 +3266,36 @@ impl Orchestrator {
                 .await?;
             for thread in threads {
                 if thread.lifecycle != ThreadLifecycle::Open
-                    || !matches!(
-                        thread.kind,
-                        ThreadKind::DialogueTurn | ThreadKind::Execution | ThreadKind::Delivery
-                    )
                     || active_roots.contains(&thread.root_turn_id)
                     || scheduled_threads.contains(&thread.id)
                 {
+                    continue;
+                }
+                if thread.kind == ThreadKind::Objective {
+                    let active_evaluation_id = if let (Some(supervisor), Some(objective_id)) = (
+                        self.objective_supervisor.as_ref(),
+                        thread.supervision.supervisor_id.as_deref(),
+                    ) {
+                        supervisor
+                            .get(objective_id)
+                            .await?
+                            .filter(|objective| {
+                                objective.status == crate::memory::ObjectiveStatus::Active
+                            })
+                            .and_then(|objective| objective.active_evaluation_id)
+                    } else {
+                        None
+                    };
+                    if objective_supervision_matches_evaluation(
+                        &thread.supervision,
+                        active_evaluation_id.as_deref(),
+                    ) {
+                        continue;
+                    }
+                } else if !matches!(
+                    thread.kind,
+                    ThreadKind::DialogueTurn | ThreadKind::Execution | ThreadKind::Delivery
+                ) {
                     continue;
                 }
                 let reason = "Runtime 重启时检测到 active Thread 没有非终态 Thread Activation、待执行调度或已提交终态；已将遗留孤儿状态标记为 cancelled。";
@@ -4374,15 +4489,7 @@ impl Orchestrator {
                     .get("objective_evaluation_id")
                     .and_then(|value| value.as_str()),
             );
-        let derived_thread_kind = if objective_route.is_some() {
-            ThreadKind::Objective
-        } else if event.topic == "chat/thread_completion_ready" {
-            ThreadKind::Delivery
-        } else if is_dialogue_trigger(event) {
-            ThreadKind::DialogueTurn
-        } else {
-            ThreadKind::Execution
-        };
+        let derived_thread_kind = derived_thread_kind(event, objective_route.is_some());
         let plan_execution_id = event
             .payload
             .get("plan_execution_id")
@@ -5983,6 +6090,19 @@ impl Orchestrator {
             .get_thread_by_root(&activation.root_turn_id)
             .await?
             .ok_or_else(|| format!("Root Turn '{}' 缺少 Thread", activation.root_turn_id))?;
+        let initial_objective_closure_review = activation.trigger_event_id
+            == activation.root_turn_id
+            && self
+                .context_engine
+                .find_event(&activation.context_id, &activation.root_turn_id)
+                .await?
+                .is_some_and(|event| {
+                    event
+                        .payload
+                        .get("objective_phase")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("closure-review")
+                });
         // A physical assistant plan is the durable boundary at which the
         // current DialogueTurn becomes an Execution Thread. Gate ownership is
         // intentionally irrelevant: Context-maintenance continuations remain
@@ -6330,7 +6450,7 @@ impl Orchestrator {
                 maintenance_budget_exhausted,
                 "Context critical 且维护预算耗尽：进入 reply-only 最终答复"
             );
-            tools.clear();
+            retain_final_reply_control_tools(&mut tools, objective_control_available);
         } else {
             if effective_phase == "soft-checkpoint" {
                 tracing::info!(
@@ -6354,7 +6474,7 @@ impl Orchestrator {
                     session_id,
                     "Context pressure critical：暂停外部高成本动作，要求 Agent 先维护 Context"
                 );
-                tools.retain(|tool| tool.name == "context_tx" || tool.name == "recall");
+                retain_context_maintenance_tools(&mut tools, objective_control_available);
             }
             if !context.turn_budget.context_tx_available {
                 tracing::warn!(
@@ -6724,7 +6844,11 @@ impl Orchestrator {
                     ];
                     protocol_messages = base_protocol_messages.clone();
                     tools = self.tool_definitions.clone();
-                    tools.retain(|tool| tool.name == "context_tx" || tool.name == "recall");
+                    if !objective_control_available {
+                        tools.retain(|tool| tool.name != "objective_update");
+                    }
+                    retain_context_maintenance_tools(&mut tools, objective_control_available);
+                    restrict_tools_to_scope(&mut tools, plan_infer_tools.as_ref());
                     tools.push(no_reply_tool_definition());
                     allowed_tool_names = tools.iter().map(|tool| tool.name.clone()).collect();
                     request_prompt_measurement = self
@@ -6927,11 +7051,18 @@ impl Orchestrator {
             let classification = validate_schedule_tx_response(&response)
                 .and_then(|_| classify_terminal_response(&response))
                 .and_then(|decision| {
-                    if decision.is_none() && effective_phase == "final-reply" {
-                        Err("final-reply 阶段必须返回普通文本或独占调用 no_reply".to_string())
-                    } else {
-                        Ok(decision)
-                    }
+                    validate_objective_closure_review_response(
+                        initial_objective_closure_review,
+                        decision,
+                    )
+                })
+                .and_then(|decision| {
+                    validate_final_reply_response(
+                        &effective_phase,
+                        objective_control_available,
+                        &response,
+                        decision,
+                    )
                 });
             match classification {
                 Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait))) => {
@@ -13468,17 +13599,19 @@ mod tests {
         activation_admission_class, apply_prompt_estimate_delta, baseline_system_prompt,
         classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         compact_context_inspect_for_persistence, compose_context_encoding,
-        critical_maintenance_transaction_available, event_needs_signal_outbox,
+        critical_maintenance_transaction_available, derived_thread_kind, event_needs_signal_outbox,
         extend_exec_output_facts, harness_entry_callable_tools, legacy_plan_effect_sequence,
-        persist_model_reasoning_summary, persist_model_usage, plan_infer_tool_scope,
-        recovery_owns_activation, render_harness_context, render_system_contract,
-        restrict_tools_to_scope, retain_pending_continuation_calls, runtime_claimant_id,
-        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
-        should_force_final_for_maintenance, tool_call_activity_preview, DialogueThreadGate,
-        DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics, DynError,
-        EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
-        ModelReasoningSummaryAccumulator, NoReplyMode, TerminalDecision,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        objective_supervision_matches_evaluation, persist_model_reasoning_summary,
+        persist_model_usage, plan_infer_tool_scope, recovery_owns_activation,
+        render_harness_context, render_system_contract, restrict_tools_to_scope,
+        retain_context_maintenance_tools, retain_final_reply_control_tools,
+        retain_pending_continuation_calls, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
+        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
+        tool_call_activity_preview, validate_final_reply_response,
+        validate_objective_closure_review_response, DialogueThreadGate, DialogueThreadLease,
+        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
+        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        NoReplyMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -14327,6 +14460,96 @@ mod tests {
         );
     }
 
+    fn named_tools(names: &[&str]) -> Vec<ToolDefinition> {
+        names
+            .iter()
+            .map(|name| ToolDefinition {
+                name: (*name).to_string(),
+                description: String::new(),
+                parameters: json!({"type": "object"}),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn critical_and_final_phases_preserve_bound_objective_control() {
+        let mut critical = named_tools(&["context_tx", "recall", "exec", "objective_update"]);
+        retain_context_maintenance_tools(&mut critical, true);
+        assert_eq!(
+            critical
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["context_tx", "recall", "objective_update"]
+        );
+
+        let mut unbound_critical =
+            named_tools(&["context_tx", "recall", "exec", "objective_update"]);
+        retain_context_maintenance_tools(&mut unbound_critical, false);
+        assert_eq!(
+            unbound_critical
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["context_tx", "recall"]
+        );
+
+        let mut final_reply = named_tools(&["exec", "objective_update"]);
+        retain_final_reply_control_tools(&mut final_reply, true);
+        assert_eq!(final_reply[0].name, "objective_update");
+
+        let mut unbound_final_reply = named_tools(&["exec", "objective_update"]);
+        retain_final_reply_control_tools(&mut unbound_final_reply, false);
+        assert!(unbound_final_reply.is_empty());
+    }
+
+    #[test]
+    fn objective_supervision_does_not_relabel_spawned_work_as_objective_thread() {
+        let supervisor_entry = Event::new(
+            "objective-supervisor-entry".to_string(),
+            "Runtime".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [("tool_name".to_string(), json!("objective_supervisor"))]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            derived_thread_kind(&supervisor_entry, true),
+            crate::memory::ThreadKind::Objective
+        );
+
+        let work_entry = Event::new(
+            "objective-work-entry".to_string(),
+            "Runtime".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [("tool_name".to_string(), json!("read"))]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            derived_thread_kind(&work_entry, true),
+            crate::memory::ThreadKind::Execution
+        );
+
+        let current = crate::memory::ThreadSupervision::objective(
+            "objective-1",
+            "evaluation-current",
+            3,
+            None,
+        );
+        assert!(objective_supervision_matches_evaluation(
+            &current,
+            Some("evaluation-current")
+        ));
+        assert!(!objective_supervision_matches_evaluation(
+            &current,
+            Some("evaluation-replacement")
+        ));
+        assert!(!objective_supervision_matches_evaluation(&current, None));
+    }
+
     #[test]
     fn cognitive_vm_prompt_changes_identity_without_task_specific_hints() {
         let baseline = baseline_system_prompt();
@@ -14435,6 +14658,71 @@ mod tests {
             tool_calls: no_reply.tool_calls,
         };
         assert!(classify_terminal_response(&mixed).is_err());
+    }
+
+    #[test]
+    fn closure_review_requires_a_durable_state_or_action_commit() {
+        let plain = Some(TerminalDecision::Deliver("看起来已经完成".to_string()));
+        let error = validate_objective_closure_review_response(true, plain)
+            .expect_err("closure-review cannot terminate with an uncommitted narrative");
+        assert!(error.contains("Runtime 只声明"));
+        assert!(error.contains("不替 Agent 判断"));
+
+        let silent = Some(TerminalDecision::NoReply(NoReplyMode::Silent));
+        assert!(validate_objective_closure_review_response(true, silent).is_err());
+
+        assert_eq!(
+            validate_objective_closure_review_response(true, None),
+            Ok(None),
+            "a real tool or Objective control action satisfies the review boundary"
+        );
+        assert_eq!(
+            validate_objective_closure_review_response(
+                false,
+                Some(TerminalDecision::Deliver("普通回复".to_string()))
+            ),
+            Ok(Some(TerminalDecision::Deliver("普通回复".to_string()))),
+            "ordinary evaluations keep their existing terminal protocol"
+        );
+    }
+
+    #[test]
+    fn final_reply_allows_only_the_bound_objective_control_action() {
+        let objective_update = crate::llm::Response {
+            content: String::new(),
+            tool_calls: vec![crate::llm::ToolCallRepr {
+                id: "objective-update-1".to_string(),
+                r#type: "function".to_string(),
+                func_name: "objective_update".to_string(),
+                arguments: json!({
+                    "status": "completed",
+                    "reason": "验收证据满足"
+                })
+                .to_string(),
+            }],
+        };
+        assert_eq!(
+            validate_final_reply_response("final-reply", true, &objective_update, None),
+            Ok(None)
+        );
+        assert!(
+            validate_final_reply_response("final-reply", false, &objective_update, None).is_err()
+        );
+
+        let physical_tool = crate::llm::Response {
+            content: String::new(),
+            tool_calls: vec![crate::llm::ToolCallRepr {
+                id: "exec-1".to_string(),
+                r#type: "function".to_string(),
+                func_name: "exec".to_string(),
+                arguments: json!({"command":"true"}).to_string(),
+            }],
+        };
+        assert!(validate_final_reply_response("final-reply", true, &physical_tool, None).is_err());
+        assert_eq!(
+            validate_final_reply_response("work", true, &physical_tool, None),
+            Ok(None)
+        );
     }
 
     #[test]
