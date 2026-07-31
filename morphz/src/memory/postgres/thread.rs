@@ -734,7 +734,7 @@ impl ThreadStore for PostgresStore {
                     parent_activation_id, root_turn_id, status, claimed_by,
                     created_at, updated_at)
                    VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9,
-                           NULL, $10, 'cancelled', $11, $12, $12)"#,
+                           NULL, $10, 'cancelled', NULL, $11, $11)"#,
             )
             .bind(&activation_id)
             .bind(i64::try_from(current.generation)?)
@@ -746,8 +746,35 @@ impl ThreadStore for PostgresStore {
             .bind(terminal_event_sequence)
             .bind(&result_event.event_type)
             .bind(&current.root_turn_id)
-            .bind(actor)
             .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            // Keep the terminal Thread, its physical Activations and its
+            // remaining input Signals consistent under the same row lock and
+            // transaction. A late physical result must observe the generation
+            // fence instead of leaving a recoverable zombie Activation.
+            sqlx::query(
+                r#"UPDATE thread_activations
+                   SET revision = revision + 1, status = 'cancelled',
+                       claimed_by = NULL, lease_expires_at = NULL, updated_at = $1
+                   WHERE root_turn_id = $2 AND generation = $3 AND id <> $4
+                     AND status IN ('queued', 'running')"#,
+            )
+            .bind(&now)
+            .bind(&current.root_turn_id)
+            .bind(i64::try_from(current.generation)?)
+            .bind(&activation_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE thread_signals
+                   SET status = 'acknowledged', acknowledged_at = $1
+                   WHERE thread_id = $2 AND thread_generation = $3
+                     AND status IN ('pending', 'claimed')"#,
+            )
+            .bind(&now)
+            .bind(&current.id)
+            .bind(i64::try_from(current.generation)?)
             .execute(&mut *tx)
             .await?;
             let evidence_refs = serde_json::json!([result_event.id]);

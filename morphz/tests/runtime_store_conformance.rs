@@ -31,8 +31,8 @@ use morphz::memory::{
     RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore,
     SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation,
     SessionProjectionStore, SessionStatus, SessionUpdate, SignalOutboxStatus,
-    ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadSignalStatus, ThreadStore, TimerStore,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction, ThreadGroupStore,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
@@ -573,7 +573,14 @@ where
 
 async fn assert_activation_store_conformance<S>(store: Arc<S>)
 where
-    S: ActivationStore + CognitiveClockStore + EventStore + ThreadStore + Send + Sync + 'static,
+    S: ActivationStore
+        + CognitiveClockStore
+        + EventStore
+        + ThreadGroupStore
+        + ThreadStore
+        + Send
+        + Sync
+        + 'static,
 {
     let thread = store
         .ensure_thread(NewThread {
@@ -951,6 +958,133 @@ where
     );
     assert!(terminal_activation.claimed_by.is_none());
     assert!(terminal_activation.lease_expires_at.is_none());
+
+    // Operator control and a late physical result are allowed to race, but
+    // they must still converge on exactly one authoritative terminal fact.
+    // This fixture runs unchanged against SQLite and PostgreSQL so the two
+    // backends cannot silently acquire different cancellation semantics.
+    let race_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-control-outcome-race-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: "root-conformance-control-outcome-race".to_string(),
+            kind: ThreadKind::Execution,
+            executor_kind: "runtime".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
+        })
+        .await
+        .unwrap();
+    let race_activation = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "conformance-control-outcome-race-activation".to_string(),
+            agent_id: race_thread.agent_id.clone(),
+            context_id: race_thread.context_id.clone(),
+            session_id: race_thread.session_id.clone(),
+            initiating_principal_id: None,
+            trigger_event_id: "conformance-control-outcome-race-trigger".to_string(),
+            trigger_sequence: 100,
+            trigger_kind: "conformance".to_string(),
+            parent_activation_id: None,
+            root_turn_id: race_thread.root_turn_id.clone(),
+        })
+        .await
+        .unwrap();
+    let race_activation = match store
+        .update_thread_activation(
+            &race_activation.id,
+            race_activation.revision,
+            ThreadActivationStatus::Running,
+            Some("conformance-race-worker"),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            Some(1),
+        )
+        .await
+        .unwrap()
+    {
+        ThreadActivationMutation::Updated(activation) => activation,
+        mutation => panic!("race Activation must enter running: {mutation:?}"),
+    };
+    let race_outcome = Event::new(
+        "conformance-control-outcome-race-result".to_string(),
+        "Store-Conformance".to_string(),
+        "agent_reply".to_string(),
+        "runtime/thread_result".to_string(),
+        json!({
+            "context_id": race_thread.context_id,
+            "session_id": race_thread.session_id,
+            "thread_id": race_thread.id,
+            "root_turn_id": race_thread.root_turn_id,
+            "disposition": "deliver",
+            "text": "late outcome"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let control = {
+        let store = Arc::clone(&store);
+        let thread_id = race_thread.id.clone();
+        tokio::spawn(async move {
+            store
+                .control_thread(
+                    &thread_id,
+                    race_thread.revision,
+                    ThreadControlAction::Close,
+                    Some("operator closes while result arrives"),
+                    Some("Store-Conformance"),
+                )
+                .await
+        })
+    };
+    let outcome = {
+        let store = Arc::clone(&store);
+        let activation_id = race_activation.id.clone();
+        tokio::spawn(async move {
+            store
+                .commit_activation_outcome(&activation_id, &race_outcome)
+                .await
+        })
+    };
+    let control = control.await.unwrap().unwrap();
+    let outcome = outcome.await.unwrap().unwrap();
+    assert!(matches!(
+        control,
+        ThreadMutation::Updated(_) | ThreadMutation::Conflict { .. }
+    ));
+    assert!(matches!(
+        outcome,
+        ActivationOutcomeCommit::Committed { .. }
+            | ActivationOutcomeCommit::Existing { .. }
+            | ActivationOutcomeCommit::StaleGeneration
+            | ActivationOutcomeCommit::StaleActivation
+    ));
+    let race_thread = store
+        .get_thread("conformance-control-outcome-race-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(race_thread.lifecycle.is_terminal());
+    assert!(
+        store
+            .get_thread_outcome(&race_thread.id)
+            .await
+            .unwrap()
+            .is_some(),
+        "the winning transaction must leave one authoritative ThreadOutcome"
+    );
+    let race_activation = store
+        .get_thread_activation("conformance-control-outcome-race-activation")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(race_activation.status.is_terminal());
+    assert!(race_activation.claimed_by.is_none());
+    assert!(race_activation.lease_expires_at.is_none());
 }
 
 async fn assert_scheduler_dependency_conformance<S>(store: Arc<S>)

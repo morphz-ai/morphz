@@ -4,6 +4,7 @@ use crate::memory::{
     ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadLifecycle, ThreadOutcomeRecord,
     ThreadSupervisorKind,
 };
+use serde_json::Value as JsonValue;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
@@ -159,10 +160,12 @@ fn outcome_from_row(row: &sqlx::postgres::PgRow) -> Result<ThreadOutcomeRecord, 
         disposition: row.get("disposition"),
         summary: row.get("summary"),
         result_event_id: row.get("event_id"),
-        artifact_refs: row.get("artifact_refs_json"),
-        evidence_refs: row.get("evidence_refs_json"),
-        check_results: row.get("check_results_json"),
-        unresolved_failures: row.get("unresolved_failures_json"),
+        artifact_refs: serde_json::from_value(row.get::<JsonValue, _>("artifact_refs_json"))?,
+        evidence_refs: serde_json::from_value(row.get::<JsonValue, _>("evidence_refs_json"))?,
+        check_results: row.get::<JsonValue, _>("check_results_json"),
+        unresolved_failures: serde_json::from_value(
+            row.get::<JsonValue, _>("unresolved_failures_json"),
+        )?,
         terminal_event_sequence: row
             .get::<Option<i64>, _>("terminal_event_sequence")
             .map(u64::try_from)

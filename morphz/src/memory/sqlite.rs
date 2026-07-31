@@ -8582,6 +8582,17 @@ impl ThreadStore for SqliteStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         if action == ThreadControlAction::Close {
             let mut tx = self.pool.begin().await?;
+            // SQLite begins a deferred transaction. If we read the Thread
+            // first and a concurrent outcome transaction acquires the writer
+            // slot, upgrading this read snapshot later fails immediately with
+            // SQLITE_BUSY; busy_timeout cannot serialize that upgrade. Take
+            // the writer slot before reading so operator close and a late
+            // physical outcome race on revision/generation fences instead of
+            // leaking a storage error to the Scheduler Kernel.
+            sqlx::query("UPDATE threads SET revision = revision WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
             let row = sqlx::query("SELECT * FROM threads WHERE id = ?")
                 .bind(id)
                 .fetch_optional(&mut *tx)
@@ -8616,7 +8627,7 @@ impl ThreadStore for SqliteStore {
                     initiating_principal_id, trigger_event_id, trigger_sequence, trigger_kind,
                     parent_activation_id, root_turn_id, status, claimed_by,
                     created_at, updated_at)
-                   VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'cancelled', ?, ?, ?)"#,
+                   VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'cancelled', NULL, ?, ?)"#,
             )
             .bind(&activation_id)
             .bind(i64::try_from(current.generation)?)
@@ -8628,9 +8639,37 @@ impl ThreadStore for SqliteStore {
             .bind(terminal_event_sequence)
             .bind(&result_event.event_type)
             .bind(&current.root_turn_id)
-            .bind(actor)
             .bind(&now)
             .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            // Closing a Thread is one terminal state transition, not merely a
+            // synthetic cancellation outcome. Fence every physical
+            // Activation and pending input from the generation being closed
+            // in the same transaction; otherwise restart recovery can revive
+            // a running Activation underneath an already-terminal Thread.
+            sqlx::query(
+                r#"UPDATE thread_activations
+                   SET revision = revision + 1, status = 'cancelled',
+                       claimed_by = NULL, lease_expires_at = NULL, updated_at = ?
+                   WHERE root_turn_id = ? AND generation = ? AND id <> ?
+                     AND status IN ('queued', 'running')"#,
+            )
+            .bind(&now)
+            .bind(&current.root_turn_id)
+            .bind(i64::try_from(current.generation)?)
+            .bind(&activation_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE thread_signals
+                   SET status = 'acknowledged', acknowledged_at = ?
+                   WHERE thread_id = ? AND thread_generation = ?
+                     AND status IN ('pending', 'claimed')"#,
+            )
+            .bind(&now)
+            .bind(&current.id)
+            .bind(i64::try_from(current.generation)?)
             .execute(&mut *tx)
             .await?;
             let evidence_refs = vec![result_event.id.clone()];
