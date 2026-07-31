@@ -2584,7 +2584,7 @@ impl Orchestrator {
         // the same SQLite writer and can make an otherwise healthy restart
         // fail with SQLITE_BUSY.
         self.rebuild_activation_admission_queue().await?;
-        self.reconcile_supervision_barriers().await?;
+        self.audit_supervision_invariants().await?;
         self.reconcile_durable_plans().await?;
         self.recover_delegations().await?;
         self.reconcile_orphaned_threads().await?;
@@ -2599,7 +2599,7 @@ impl Orchestrator {
         self.start_activation_admission_refill();
         self.start_signal_outbox_dispatcher();
         self.start_plan_reconciler();
-        self.start_supervision_reconciler();
+        self.start_supervision_invariant_auditor();
         Ok(())
     }
 
@@ -2673,7 +2673,7 @@ impl Orchestrator {
         });
     }
 
-    fn start_supervision_reconciler(self: &Arc<Self>) {
+    fn start_supervision_invariant_auditor(self: &Arc<Self>) {
         let orchestrator = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
@@ -2681,28 +2681,26 @@ impl Orchestrator {
                 let Some(orchestrator) = orchestrator.upgrade() else {
                     break;
                 };
-                if let Err(error) = orchestrator.reconcile_supervision_barriers().await {
+                if let Err(error) = orchestrator.audit_supervision_invariants().await {
                     tracing::error!(
                         %error,
-                        "Thread Supervision 周期恢复失败；权威终态保留，等待下一轮重试"
+                        "Thread Supervision 不变量审计失败；未改写业务事实，等待下一轮审计"
                     );
                 }
             }
         });
     }
 
-    /// Reconciles durable supervision ownership and the crash window between
-    /// a terminal Thread Group projection and its supervisor wake.
-    ///
-    /// The Group row is authoritative. Recovery reconstructs the same
-    /// generation-fenced Event id and payload used by the normal terminal
-    /// path, then restores only the missing Ledger/Outbox projection. The
-    /// ordinary Outbox dispatcher performs Signal materialization afterwards.
-    async fn reconcile_supervision_barriers(&self) -> Result<usize, DynError> {
+    /// Audits durable supervision invariants without inventing missing
+    /// business facts. Terminal barriers and dependency satisfaction belong
+    /// to the Kernel outcome transaction; a periodic task may report a broken
+    /// invariant or quarantine live work, but must never manufacture the
+    /// missing terminal Event after the fact.
+    async fn audit_supervision_invariants(&self) -> Result<usize, DynError> {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(0);
         };
-        let mut repaired = 0usize;
+        let mut violations = 0usize;
         for context in session_store.list_contexts(false).await? {
             let groups = session_store
                 .list_thread_groups(ThreadGroupFilter {
@@ -2715,8 +2713,26 @@ impl Orchestrator {
                 .await?;
             for group in groups {
                 if group.status.is_terminal() {
-                    if session_store.repair_thread_group_barrier(&group.id).await? {
-                        repaired = repaired.saturating_add(1);
+                    let barrier_exists = match group.barrier_event_id.as_deref() {
+                        Some(event_id) => self
+                            .store
+                            .query(QueryFilter {
+                                event_id: Some(event_id.to_string()),
+                                ..Default::default()
+                            })
+                            .await?
+                            .into_iter()
+                            .any(|event| event.id == event_id),
+                        None => false,
+                    };
+                    if !barrier_exists {
+                        violations = violations.saturating_add(1);
+                        tracing::error!(
+                            thread_group_id = %group.id,
+                            generation = group.generation,
+                            barrier_event_id = ?group.barrier_event_id,
+                            "terminal Thread Group 缺少同事务 barrier Event；周期审计不会补写业务事实"
+                        );
                     }
                     continue;
                 }
@@ -2745,8 +2761,9 @@ impl Orchestrator {
                             tracing::error!(
                                 thread_group_id = %group.id,
                                 objective_id = %group.supervisor_id,
-                                "durable Thread Group 缺少可用的 Objective Supervisor；保留 open 状态等待 Runtime 修复"
+                                "durable Thread Group 缺少可用的 Objective Supervisor；保留 open 状态并记录不变量"
                             );
+                            violations = violations.saturating_add(1);
                             continue;
                         };
                         match supervisor.get(&group.supervisor_id).await? {
@@ -2770,7 +2787,8 @@ impl Orchestrator {
                                         && thread.control_state
                                             == crate::memory::ThreadControlState::Active
                                     {
-                                        let _ = session_store
+                                        if matches!(
+                                            session_store
                                             .control_thread(
                                                 &thread.id,
                                                 thread.revision,
@@ -2780,13 +2798,17 @@ impl Orchestrator {
                                                 ),
                                                 Some("Runtime-Recovery"),
                                             )
-                                            .await?;
+                                            .await?,
+                                            ThreadMutation::Updated(_)
+                                        ) {
+                                            violations = violations.saturating_add(1);
+                                        }
                                     }
                                 }
                                 tracing::error!(
                                     thread_group_id = %group.id,
                                     objective_id = %group.supervisor_id,
-                                    "durable Thread Group 引用了不存在的 Objective；成员已暂停，禁止继续派发"
+                                    "durable Thread Group 引用了不存在的 Objective；成员已隔离暂停，未猜测业务终态"
                                 );
                                 None
                             }
@@ -2820,19 +2842,19 @@ impl Orchestrator {
                         .control_thread(
                             &thread.id,
                             thread.revision,
-                            ThreadControlAction::Close,
+                            ThreadControlAction::Pause,
                             Some(&orphan_reason),
                             Some("Runtime-Recovery"),
                         )
                         .await?
                     {
                         ThreadMutation::Updated(_) => {
-                            repaired = repaired.saturating_add(1);
+                            violations = violations.saturating_add(1);
                             tracing::warn!(
                                 thread_id = %thread.id,
                                 thread_group_id = %group.id,
                                 reason = %orphan_reason,
-                                "Supervision Reconciler 已取消失去监督者的 Thread"
+                                "Supervision Auditor 已暂停失去监督者的 Thread；等待显式处置"
                             );
                         }
                         ThreadMutation::Conflict { .. } | ThreadMutation::NotFound => {}
@@ -2840,13 +2862,13 @@ impl Orchestrator {
                 }
             }
         }
-        if repaired > 0 {
+        if violations > 0 {
             tracing::info!(
-                repaired_thread_group_barriers = repaired,
-                "Thread Supervision barrier 恢复完成"
+                invariant_violations = violations,
+                "Thread Supervision 不变量审计完成"
             );
         }
-        Ok(repaired)
+        Ok(violations)
     }
 
     async fn reconcile_durable_plans(&self) -> Result<(), DynError> {

@@ -4642,8 +4642,13 @@ pub trait ActivationStore: Send + Sync {
         lease_expires_at: Option<DateTime<Utc>>,
         context_snapshot_version: Option<u64>,
     ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>;
-    /// Claim the one terminal outcome for a Thread Activation and append
-    /// it in the same Store transaction.
+    /// Commit the one authoritative terminal outcome for a Thread Activation.
+    ///
+    /// The Store transaction fences the running Activation generation, marks
+    /// the Activation and Thread terminal, appends the immutable outcome Event,
+    /// acknowledges every claimed input Signal, and advances the supervised
+    /// Group/dependency/delivery projections before it commits.  Callers must
+    /// not reproduce these state transitions in a second transaction.
     async fn commit_activation_outcome(
         &self,
         activation_id: &str,

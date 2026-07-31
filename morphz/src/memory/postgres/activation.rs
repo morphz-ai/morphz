@@ -2060,6 +2060,42 @@ impl ActivationStore for PostgresStore {
                 .await?;
             }
         }
+        let activation_terminal_status = match terminal_lifecycle {
+            ThreadLifecycle::Completed => ThreadActivationStatus::Succeeded,
+            ThreadLifecycle::Failed => ThreadActivationStatus::Failed,
+            ThreadLifecycle::Cancelled => ThreadActivationStatus::Cancelled,
+            ThreadLifecycle::Open => {
+                return Err("Thread outcome 不能以 open lifecycle 收口 Activation".into());
+            }
+        };
+        let activation_terminal = sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = $1, claimed_by = NULL,
+                   lease_expires_at = NULL, updated_at = $2
+               WHERE id = $3 AND generation = $4 AND status = 'running'"#,
+        )
+        .bind(activation_status_storage(activation_terminal_status))
+        .bind(&now)
+        .bind(activation_id)
+        .bind(activation_generation)
+        .execute(&mut *tx)
+        .await?;
+        if activation_terminal.rows_affected() != 1 {
+            return Err(format!(
+                "Evaluation outcome 无法原子提交 Activation '{activation_id}' 终态"
+            )
+            .into());
+        }
+        sqlx::query(
+            r#"UPDATE thread_signals SET status = 'acknowledged', acknowledged_at = $1
+               WHERE id IN (
+                 SELECT signal_id FROM activation_signals WHERE activation_id = $2
+               ) AND status = 'claimed'"#,
+        )
+        .bind(&now)
+        .bind(activation_id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             r#"INSERT INTO evaluation_outcomes
                (activation_id, session_id, disposition, event_id, created_at)

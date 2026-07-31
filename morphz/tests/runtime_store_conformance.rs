@@ -915,6 +915,17 @@ where
         .unwrap();
     assert_eq!(completed.lifecycle, ThreadLifecycle::Completed);
     assert_eq!(completed.delivery_status, DeliveryStatus::Pending);
+    let terminal_activation = store
+        .get_thread_activation(&outcome_activation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        terminal_activation.status,
+        ThreadActivationStatus::Succeeded
+    );
+    assert!(terminal_activation.claimed_by.is_none());
+    assert!(terminal_activation.lease_expires_at.is_none());
 }
 
 async fn assert_schedule_store_conformance<S>(store: Arc<S>)

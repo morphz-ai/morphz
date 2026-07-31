@@ -7536,6 +7536,44 @@ impl ActivationStore for SqliteStore {
                 .await?;
             }
         }
+        let activation_terminal_status = match terminal_lifecycle {
+            ThreadLifecycle::Completed => ThreadActivationStatus::Succeeded,
+            ThreadLifecycle::Failed => ThreadActivationStatus::Failed,
+            ThreadLifecycle::Cancelled => ThreadActivationStatus::Cancelled,
+            ThreadLifecycle::Open => {
+                return Err("Thread outcome 不能以 open lifecycle 收口 Activation".into());
+            }
+        };
+        let activation_terminal = sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = ?, claimed_by = NULL,
+                   lease_expires_at = NULL, updated_at = ?
+               WHERE id = ? AND generation = ? AND status = 'running'"#,
+        )
+        .bind(thread_activation_status_storage(activation_terminal_status))
+        .bind(&now)
+        .bind(activation_id)
+        .bind(activation_generation)
+        .execute(&mut *tx)
+        .await?;
+        if activation_terminal.rows_affected() != 1 {
+            return Err(format!(
+                "Evaluation outcome 无法原子提交 Activation '{}' 终态",
+                activation_id
+            )
+            .into());
+        }
+        sqlx::query(
+            r#"UPDATE thread_signals
+               SET status = 'acknowledged', acknowledged_at = ?
+               WHERE id IN (
+                 SELECT signal_id FROM activation_signals WHERE activation_id = ?
+               ) AND status = 'claimed'"#,
+        )
+        .bind(&now)
+        .bind(activation_id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "INSERT OR IGNORE INTO evaluation_outcomes (activation_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?)",
         )
@@ -7660,11 +7698,9 @@ impl ActivationStore for SqliteStore {
             });
         }
         // A runtime-failure reply is already the authoritative terminal
-        // outcome for this generation.  If the process crashed between that
-        // atomic outcome commit and Activation cleanup, the old row may still
-        // say queued/running.  Fence and close it in the same transaction as
-        // the generation bump instead of making the user restart the Runtime
-        // merely to recover the stale lease.
+        // outcome for this generation.  Current writers terminalize the
+        // Activation in that same commit.  Keep this bounded update only as a
+        // migration fence for rows produced by pre-kernel binaries.
         sqlx::query(
             r#"UPDATE thread_activations
                SET revision = revision + 1, status = 'cancelled',
@@ -20612,9 +20648,9 @@ mod tests {
                 ready_signal_event_ids: Vec::new()
             }
         );
-        // Reproduce a crash after the atomic failure outcome has committed but
-        // before the Activation projection is closed.  The retry primitive
-        // must recover this row itself rather than requiring a Runtime restart.
+        // Thread, Activation and the failure outcome are one authoritative
+        // transaction.  A crash after commit must not leave a live physical
+        // Activation behind a terminal DialogueTurn.
         assert_eq!(
             store
                 .get_thread_activation(&running.id)
@@ -20622,8 +20658,11 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .status,
-            ThreadActivationStatus::Running
+            ThreadActivationStatus::Failed
         );
+        let consumed_signals = store.list_activation_signals(&running.id).await.unwrap();
+        assert_eq!(consumed_signals.len(), 1);
+        assert_eq!(consumed_signals[0].status, ThreadSignalStatus::Acknowledged);
         let failed_thread = store.get_thread("retry-thread").await.unwrap().unwrap();
         assert_eq!(failed_thread.lifecycle, ThreadLifecycle::Failed);
         assert_eq!(
@@ -20675,7 +20714,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(fenced_activation.status, ThreadActivationStatus::Cancelled);
+        assert_eq!(fenced_activation.status, ThreadActivationStatus::Failed);
         assert!(fenced_activation.claimed_by.is_none());
         assert!(fenced_activation.lease_expires_at.is_none());
         assert_eq!(
@@ -20734,7 +20773,7 @@ mod tests {
                 NewThreadSignal {
                     id: "retry-generation-2-signal".to_string(),
                     thread_id: thread.id.clone(),
-                    thread_generation: thread.generation,
+                    thread_generation: reopened.generation,
                     event_id: retry_event.id.clone(),
                     principal_id: None,
                     sequence: retry_sequence,
