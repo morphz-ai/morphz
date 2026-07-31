@@ -7915,7 +7915,7 @@ impl ActivationStore for SqliteStore {
             .execute(&mut *tx)
             .await?;
         append_event_idempotent_in_transaction(&mut tx, &request.event).await?;
-        append_signal_outbox_in_transaction(&mut tx, &request.event).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, &request.event, &current.id).await?;
         tx.commit().await?;
         Ok(DialogueTurnRetryMutation::Accepted {
             thread_id: current.id,
@@ -15411,6 +15411,18 @@ impl EventStore for SqliteStore {
         .await
     }
 
+    async fn append_to_thread(
+        &self,
+        ev: Event,
+        thread_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut tx = self.pool.begin().await?;
+        append_event_idempotent_in_transaction(&mut tx, &ev).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, &ev, thread_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn append_batch(
         &self,
         entries: Vec<EventAppend>,
@@ -20888,14 +20900,18 @@ mod tests {
         assert_eq!(fenced_activation.status, ThreadActivationStatus::Failed);
         assert!(fenced_activation.claimed_by.is_none());
         assert!(fenced_activation.lease_expires_at.is_none());
-        assert_eq!(
-            store
-                .list_signal_outbox(SignalOutboxStatus::Pending, 16)
-                .await
-                .unwrap()[0]
-                .event_id,
-            retry_event.id
-        );
+        let retry_signal = store
+            .list_context_thread_signals(
+                "retry-context",
+                Some(ThreadSignalStatus::Pending),
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|signal| signal.event_id == retry_event.id)
+            .expect("retry must atomically append its Thread Signal");
+        assert_eq!(retry_signal.thread_id, "retry-thread");
+        assert_eq!(retry_signal.thread_generation, 2);
 
         let stale_outcome = Event::new(
             "retry-stale-outcome".to_string(),
@@ -20942,7 +20958,7 @@ mod tests {
         let retry_activation = store
             .claim_thread_signal_batch(
                 NewThreadSignal {
-                    id: "retry-generation-2-signal".to_string(),
+                    id: stable_thread_signal_id(&retry_event.id),
                     thread_id: thread.id.clone(),
                     thread_generation: reopened.generation,
                     event_id: retry_event.id.clone(),

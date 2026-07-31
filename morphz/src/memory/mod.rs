@@ -3955,6 +3955,14 @@ pub trait EventStore: Send + Sync {
         &self,
         ev: crate::event::Event,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically append an immutable Event and deliver it to an existing
+    /// scheduler Thread. Internal producers which already know the owning
+    /// Thread must use this instead of the legacy Signal Outbox bridge.
+    async fn append_to_thread(
+        &self,
+        ev: crate::event::Event,
+        thread_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically commits an ordered group of immutable Events. Entries which
     /// need scheduler delivery create their signal outbox row in the same
     /// database transaction. A failure rolls back the complete group.

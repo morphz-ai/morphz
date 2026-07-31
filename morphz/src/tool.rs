@@ -923,9 +923,9 @@ impl BackgroundTaskScheduler {
                 .await?
             {
                 JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {
-                    self.events.append_with_signal_outbox(event.clone()).await?;
                     // The in-memory task must remain non-terminal until its
-                    // completion Event is durable. Otherwise an Evaluation
+                    // completion Event and exact Thread Signal are durable.
+                    // Otherwise an Evaluation
                     // finishing concurrently can observe "0 active tasks",
                     // commit no_reply, and terminalize the Thread before this
                     // causal result reaches its mailbox.

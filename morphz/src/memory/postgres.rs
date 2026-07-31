@@ -1530,6 +1530,14 @@ impl EventStore for PostgresStore {
         .await
     }
 
+    async fn append_to_thread(&self, event: Event, thread_id: &str) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        append_event_in_tx(&mut tx, &event).await?;
+        append_direct_thread_signal_in_tx(&mut tx, &event, thread_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn append_batch(&self, entries: Vec<EventAppend>) -> Result<(), StoreError> {
         if entries.is_empty() {
             return Ok(());

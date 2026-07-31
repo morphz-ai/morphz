@@ -10580,7 +10580,13 @@ impl Orchestrator {
                 && ordinary_action_count == 0
                 && index + 1 == objective_create_calls.len();
             if wake {
-                self.store.append_with_signal_outbox(output.clone()).await?;
+                let thread_id = activation_route
+                    .as_ref()
+                    .map(|route| route.thread_id.as_str())
+                    .ok_or("objective_create 结果缺少所属 Thread")?;
+                self.store
+                    .append_to_thread(output.clone(), thread_id)
+                    .await?;
             } else if !already_persisted {
                 self.store.append(output.clone()).await?;
             }
@@ -11414,8 +11420,14 @@ impl Orchestrator {
                     .get("wake_policy")
                     .and_then(|value| value.as_str())
                     == Some("delegation_result");
-                if options.wake_on_output && !is_delegation_receipt {
-                    self.store.append_with_signal_outbox(output.clone()).await?;
+                if options.wake_on_output && !is_delegation_receipt && !already_persisted {
+                    let thread_id = activation_route
+                        .as_ref()
+                        .map(|route| route.thread_id.as_str())
+                        .ok_or("工具结果缺少所属 Thread")?;
+                    self.store
+                        .append_to_thread(output.clone(), thread_id)
+                        .await?;
                 } else if !already_persisted {
                     self.store.append(output.clone()).await?;
                 }
@@ -13868,6 +13880,14 @@ mod tests {
             self.append_batch(vec![EventAppend {
                 event,
                 signal_outbox: true,
+            }])
+            .await
+        }
+
+        async fn append_to_thread(&self, event: Event, _thread_id: &str) -> Result<(), DynError> {
+            self.append_batch(vec![EventAppend {
+                event,
+                signal_outbox: false,
             }])
             .await
         }

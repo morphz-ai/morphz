@@ -1,6 +1,6 @@
 use super::{
-    append_direct_thread_signal_in_tx, append_event_in_tx, append_signal_outbox_in_tx, now_text,
-    parse_time, stored_event_in_tx, thread::thread_from_row, PostgresStore, StoreError,
+    append_direct_thread_signal_in_tx, append_event_in_tx, now_text, parse_time,
+    stored_event_in_tx, thread::thread_from_row, PostgresStore, StoreError,
 };
 use crate::admission::AdmissionClass;
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
@@ -2249,7 +2249,7 @@ impl ActivationStore for PostgresStore {
             .execute(&mut *tx)
             .await?;
         append_event_in_tx(&mut tx, &request.event).await?;
-        append_signal_outbox_in_tx(&mut tx, &request.event).await?;
+        append_direct_thread_signal_in_tx(&mut tx, &request.event, &current.id).await?;
         tx.commit().await?;
         Ok(DialogueTurnRetryMutation::Accepted {
             thread_id: current.id,
