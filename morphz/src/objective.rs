@@ -10,6 +10,11 @@ use crate::memory::{
     ThreadGroupStore, ThreadSupervisorKind,
 };
 use crate::orchestrator::context::ContextEngine;
+use crate::scheduler::{
+    derive_objective_readiness, ObjectiveReadiness, SchedulerDependencyFilter,
+    SchedulerDependencyKind, SchedulerDependencyOwnerKind, SchedulerDependencyStatus,
+    SchedulerDependencyStore,
+};
 use crate::timer::{TimerDisposition, TimerEngine};
 use crate::tool::{
     Tool, ToolExecutionClass, CURRENT_ATTEMPT_ID, CURRENT_CONTEXT_ID, CURRENT_PRINCIPAL_ID,
@@ -950,6 +955,7 @@ pub struct ObjectiveSupervisor {
     delegations: Option<Arc<dyn DelegationStore>>,
     thread_groups: Option<Arc<dyn ThreadGroupStore>>,
     activation_store: Option<Arc<dyn ActivationStore>>,
+    scheduler_dependencies: Option<Arc<dyn SchedulerDependencyStore>>,
     bus: Arc<InMemoryEventBus>,
     evaluations: Arc<ObjectiveEvaluationRegistry>,
     timers: Arc<TimerEngine>,
@@ -960,6 +966,29 @@ pub struct ObjectiveSupervisor {
 }
 
 impl ObjectiveSupervisor {
+    async fn current_scheduler_dependencies(
+        &self,
+        objective: &ObjectiveRecord,
+    ) -> Result<Option<Vec<crate::scheduler::SchedulerDependencyRecord>>, DynError> {
+        let Some(dependency_store) = self.scheduler_dependencies.as_ref() else {
+            return Ok(None);
+        };
+        let dependencies = dependency_store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+                owner_id: Some(objective.id.clone()),
+                required_only: true,
+                ..SchedulerDependencyFilter::default()
+            })
+            .await?;
+        Ok(Some(
+            dependencies
+                .into_iter()
+                .filter(|dependency| dependency.owner_generation == objective.generation)
+                .collect(),
+        ))
+    }
+
     pub fn new(
         store: Arc<dyn ObjectiveStore>,
         audit_store: Arc<dyn EventStore>,
@@ -977,6 +1006,7 @@ impl ObjectiveSupervisor {
             delegations: None,
             thread_groups: None,
             activation_store: None,
+            scheduler_dependencies: None,
             bus,
             evaluations,
             timers,
@@ -1017,6 +1047,17 @@ impl ObjectiveSupervisor {
     /// bound to its fencing token before a replacement Evaluation is claimed.
     pub fn with_activation_store(mut self, store: Arc<dyn ActivationStore>) -> Self {
         self.activation_store = Some(store);
+        self
+    }
+
+    /// Attach the authoritative Scheduler v2 dependency projection. During
+    /// migration, legacy wait_condition remains a display/compatibility
+    /// bridge only when no matching structured dependency exists.
+    pub fn with_scheduler_dependency_store(
+        mut self,
+        store: Arc<dyn SchedulerDependencyStore>,
+    ) -> Self {
+        self.scheduler_dependencies = Some(store);
         self
     }
 
@@ -1913,6 +1954,64 @@ impl ObjectiveSupervisor {
             self.remove_external_wait_subscription(&objective.id);
             return Ok(());
         }
+        if let Some(current_dependencies) = self.current_scheduler_dependencies(&objective).await? {
+            if !current_dependencies.is_empty() {
+                match derive_objective_readiness(&objective, &current_dependencies, Utc::now()) {
+                    ObjectiveReadiness::Waiting { dependency_ids } => {
+                        self.cancel_lease_timer(&objective.id).await?;
+                        self.cancel_wait_timer(&objective.id).await?;
+                        self.remove_external_wait_subscription(&objective.id);
+                        tracing::debug!(
+                            objective_id = %objective.id,
+                            objective_generation = objective.generation,
+                            dependencies = ?dependency_ids,
+                            "Objective 由结构化 Scheduler dependencies 保持等待"
+                        );
+                        return Ok(());
+                    }
+                    ObjectiveReadiness::Leased { .. } => {
+                        // Lease handling below owns timer renewal/recovery.
+                    }
+                    ObjectiveReadiness::Runnable => {
+                        if let Some(ObjectiveWaitCondition::ThreadGroup { group_id }) =
+                            objective.wait_condition.as_ref()
+                        {
+                            let matching = current_dependencies.iter().find(|dependency| {
+                                dependency.dependency_kind == SchedulerDependencyKind::ThreadGroup
+                                    && dependency.dependency_id == *group_id
+                            });
+                            if matching.is_some_and(|dependency| {
+                                dependency.status != SchedulerDependencyStatus::Pending
+                            }) {
+                                let mutation = self
+                                    .store
+                                    .update_objective_state(
+                                        &objective.id,
+                                        objective.revision,
+                                        ObjectiveStatus::Active,
+                                        None,
+                                        Some("结构化 Thread Group 依赖已终结；清理旧 wait 投影"),
+                                    )
+                                    .await?;
+                                match mutation {
+                                    ObjectiveMutation::Updated(updated) => {
+                                        Box::pin(self.reconcile(updated)).await?;
+                                    }
+                                    ObjectiveMutation::Conflict { current } => {
+                                        Box::pin(self.reconcile(current)).await?;
+                                    }
+                                    ObjectiveMutation::NotFound => {}
+                                }
+                                return Ok(());
+                            }
+                        }
+                    }
+                    ObjectiveReadiness::Paused
+                    | ObjectiveReadiness::Blocked
+                    | ObjectiveReadiness::Terminal => return Ok(()),
+                }
+            }
+        }
         if let Some(wait) = &objective.wait_condition {
             self.cancel_lease_timer(&objective.id).await?;
             match wait {
@@ -2355,6 +2454,14 @@ impl ObjectiveSupervisor {
             .is_some_and(|expires_at| expires_at > Utc::now())
         {
             return Ok(());
+        }
+        if let Some(dependencies) = self.current_scheduler_dependencies(&objective).await? {
+            if matches!(
+                derive_objective_readiness(&objective, &dependencies, Utc::now()),
+                ObjectiveReadiness::Waiting { .. }
+            ) {
+                return Ok(());
+            }
         }
         // Defensive recovery for schedules created by older builds, or for a
         // crash between handing durable work to an Objective and installing
@@ -2995,6 +3102,7 @@ mod tests {
         ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus,
         ThreadGroupPolicy, ThreadKind, ThreadStore as _, TimerStore,
     };
+    use crate::scheduler::{stable_scheduler_dependency_id, NewSchedulerDependency};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -3142,6 +3250,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(recovered_events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn structured_dependency_blocks_every_objective_schedule_entrypoint() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "scheduler-dependency").await;
+        let dependency_id = stable_scheduler_dependency_id(
+            SchedulerDependencyOwnerKind::Objective,
+            &objective.id,
+            objective.generation,
+            SchedulerDependencyKind::Resource,
+            "provider:test",
+            1,
+        );
+        store
+            .register_scheduler_dependency(NewSchedulerDependency {
+                id: dependency_id.clone(),
+                owner_kind: SchedulerDependencyOwnerKind::Objective,
+                owner_id: objective.id.clone(),
+                owner_generation: objective.generation,
+                dependency_kind: SchedulerDependencyKind::Resource,
+                dependency_id: "provider:test".to_string(),
+                dependency_generation: 1,
+                required: true,
+                metadata: serde_json::json!({"test": true}),
+            })
+            .await
+            .unwrap();
+
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::new(ObjectiveEvaluationRegistry::default()),
+                Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_scheduler_dependency_store(
+                Arc::clone(&store) as Arc<dyn SchedulerDependencyStore>
+            ),
+        );
+        supervisor.started.store(true, Ordering::Release);
+
+        // Direct scheduling is also a Kernel entrypoint. It must not bypass
+        // the same dependency authority used by reconcile/recovery.
+        supervisor.schedule(objective.id.clone()).await.unwrap();
+        let waiting = store
+            .get_objective(&objective.id)
+            .await
+            .unwrap()
+            .expect("objective");
+        assert!(waiting.active_evaluation_id.is_none());
+
+        store
+            .append(Event::new(
+                "resource-available-test".to_string(),
+                "Runtime-Test".to_string(),
+                "runtime/resource_available".to_string(),
+                "runtime/resource_available".to_string(),
+                serde_json::json!({
+                    "context_id": objective.context_id,
+                    "session_id": objective.coordinator_session_id,
+                    "resource": "provider:test",
+                })
+                .as_object()
+                .expect("object")
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        let satisfied = store
+            .satisfy_scheduler_dependency(
+                &dependency_id,
+                objective.generation,
+                1,
+                "resource-available-test",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            satisfied,
+            crate::scheduler::SchedulerDependencyMutation::Updated(_)
+        ));
+        supervisor.schedule(objective.id.clone()).await.unwrap();
+        let runnable = store
+            .get_objective(&objective.id)
+            .await
+            .unwrap()
+            .expect("objective");
+        assert!(runnable.active_evaluation_id.is_some());
     }
 
     #[tokio::test]
