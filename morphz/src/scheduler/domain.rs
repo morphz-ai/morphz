@@ -280,7 +280,7 @@ pub fn derive_objective_readiness(
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SchedulerInvariantSeverity {
     Warning,
@@ -288,7 +288,7 @@ pub enum SchedulerInvariantSeverity {
     Quarantine,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SchedulerInvariantCode {
     TerminalThreadMissingOutcome,
@@ -304,7 +304,7 @@ pub enum SchedulerInvariantCode {
     ObjectiveWaitDisagreesWithDependencies,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SchedulerInvariantViolation {
     pub severity: SchedulerInvariantSeverity,
     pub code: SchedulerInvariantCode,

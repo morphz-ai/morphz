@@ -1,6 +1,6 @@
 use crate::approval::ApprovalDecision;
 use crate::artifact::ArtifactTransferStageKind;
-use crate::config::{ServerIdentityConfig, ServerIdentityMode};
+use crate::config::{save_managed_inference_at, ServerIdentityConfig, ServerIdentityMode};
 use crate::event::Event;
 use crate::execution_target::EdgeArtifactDataDirection;
 use crate::identity::PrincipalAssertion;
@@ -41,6 +41,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -81,6 +82,9 @@ struct AppState {
     default_agent_id: String,
     default_context_id: String,
     identity: ServerIdentityConfig,
+    /// The embedded operator surface persists model-level inference choices
+    /// here. Tests inject an isolated path rather than touching user config.
+    managed_config_path: Option<PathBuf>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -244,6 +248,7 @@ struct MutateScheduleRequest {
 struct UpdateInferenceRequest {
     model: Option<String>,
     reasoning_effort: Option<String>,
+    prompt_token_limit: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -616,6 +621,7 @@ impl Server {
             default_agent_id: self.default_agent_id.clone(),
             default_context_id: self.default_context_id.clone(),
             identity: self.identity.clone(),
+            managed_config_path: crate::config::managed_config_path().ok(),
         });
 
         // 跨域支持 (CORS)
@@ -1461,6 +1467,7 @@ async fn handle_get_inference(
         "model": state.runtime.model(),
         "models": state.runtime.configured_models(),
         "reasoning_effort": state.runtime.reasoning_effort().map(ReasoningEffort::as_str),
+        "prompt_token_limit": state.runtime.model_context_capacity().prompt_token_limit,
     }))
     .into_response()
 }
@@ -1474,17 +1481,22 @@ async fn handle_update_inference(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if let Some(model) = request.model.as_deref() {
-        if let Err(error) = state.runtime.set_model(model) {
-            return error_response(StatusCode::BAD_REQUEST, error.to_string());
-        }
-    }
-    let effort = match request
-        .reasoning_effort
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("default"))
+    let current_model = state.runtime.model();
+    let model = request.model.as_deref().unwrap_or(&current_model).trim();
+    if !state
+        .runtime
+        .configured_models()
+        .iter()
+        .any(|configured| configured == model)
     {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("模型 '{model}' 未在 llm.models 中配置，拒绝运行期切换"),
+        );
+    }
+    let effort = match request.reasoning_effort.as_deref().map(str::trim) {
+        None => state.runtime.reasoning_effort(),
+        Some(value) if value.is_empty() || value.eq_ignore_ascii_case("default") => None,
         Some(value) => match ReasoningEffort::parse(value) {
             Some(effort) => Some(effort),
             None => {
@@ -1494,19 +1506,57 @@ async fn handle_update_inference(
                 )
             }
         },
+    };
+    let prompt_token_limit = match request.prompt_token_limit {
+        Some(0) => return error_response(StatusCode::BAD_REQUEST, "prompt_token_limit 必须大于 0"),
+        Some(value) => match usize::try_from(value) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "prompt_token_limit 超出当前平台整数范围",
+                )
+            }
+        },
         None => None,
     };
-    match state.runtime.set_reasoning_effort(effort) {
-        Ok(()) => Json(json!({
-            "model": state.runtime.model(),
-            "models": state.runtime.configured_models(),
-            "reasoning_effort": effort.map(ReasoningEffort::as_str),
-            "scope": "subsequent_requests",
-            "persistent": false,
-        }))
-        .into_response(),
-        Err(error) => error_response(StatusCode::NOT_IMPLEMENTED, error.to_string()),
+    let Some(managed_config_path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "无法确定 Morphz 受管配置路径，推理设置未修改",
+        );
+    };
+    if let Err(error) = save_managed_inference_at(
+        managed_config_path,
+        state.runtime.config().llm.provider.as_deref(),
+        model,
+        effort,
+        prompt_token_limit,
+    ) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
     }
+    if model != current_model {
+        if let Err(error) = state.runtime.set_model(model) {
+            return error_response(StatusCode::BAD_REQUEST, error.to_string());
+        }
+    }
+    if let Some(limit) = prompt_token_limit {
+        if let Err(error) = state.runtime.set_model_prompt_token_limit(model, limit) {
+            return error_response(StatusCode::BAD_REQUEST, error.to_string());
+        }
+    }
+    if let Err(error) = state.runtime.set_reasoning_effort(effort) {
+        return error_response(StatusCode::NOT_IMPLEMENTED, error.to_string());
+    }
+    Json(json!({
+        "model": state.runtime.model(),
+        "models": state.runtime.configured_models(),
+        "reasoning_effort": effort.map(ReasoningEffort::as_str),
+        "prompt_token_limit": state.runtime.model_context_capacity().prompt_token_limit,
+        "scope": "subsequent_requests",
+        "persistent": true,
+    }))
+    .into_response()
 }
 
 async fn handle_list_approvals(
@@ -5004,7 +5054,12 @@ mod tests {
 
     async fn test_state_at(path: &std::path::Path) -> (Arc<AppState>, MorphzRuntime) {
         let mut config = AppConfig::default();
+        config.llm.provider = Some("fixture-provider".to_string());
         config.llm.models.push("fixture-model".to_string());
+        config.providers.insert(
+            "fixture-provider".to_string(),
+            crate::config::ProviderConfig::default(),
+        );
         let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient::default()))
             .database_path(path.to_str().unwrap())
             .identity(RuntimeIdentity {
@@ -5032,6 +5087,7 @@ mod tests {
                 default_agent_id: "agent-test".to_string(),
                 default_context_id: "context-test".to_string(),
                 identity: ServerIdentityConfig::default(),
+                managed_config_path: Some(path.with_extension("managed").join("managed.toml")),
             }),
             runtime,
         )
@@ -5526,6 +5582,7 @@ mod tests {
                 provider_id: "morphz-site".to_string(),
                 service_token_env: "MORPHZ_API_TOKEN".to_string(),
             },
+            managed_config_path: default_state.managed_config_path.clone(),
         });
 
         let gateway_overview = handle_get_runtime_overview(
@@ -5771,6 +5828,7 @@ mod tests {
                 provider_id: "morphz-site".to_string(),
                 service_token_env: "MORPHZ_API_TOKEN".to_string(),
             },
+            managed_config_path: default_state.managed_config_path.clone(),
         });
 
         let claim = handle_bind_session_principal(
@@ -5795,8 +5853,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_reasoning_control_changes_only_subsequent_runtime_requests() {
+    async fn dashboard_reasoning_control_persists_for_restart_and_changes_subsequent_requests() {
         let (state, runtime) = test_state().await;
+        let managed_config_path = state.managed_config_path.clone().unwrap();
         let response = handle_update_inference(
             State(state),
             HeaderMap::new(),
@@ -5804,14 +5863,63 @@ mod tests {
             Json(UpdateInferenceRequest {
                 model: None,
                 reasoning_effort: Some("none".to_string()),
+                prompt_token_limit: None,
             }),
         )
         .await
         .into_response();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            panic!(
+                "unexpected inference response {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
         assert_eq!(runtime.reasoning_effort(), Some(ReasoningEffort::Off));
         assert_eq!(runtime.config().llm.reasoning_effort, None);
+        let managed = std::fs::read_to_string(managed_config_path).unwrap();
+        assert!(managed.contains("reasoning_effort = \"none\""));
+    }
+
+    #[tokio::test]
+    async fn dashboard_model_capacity_is_persistent_and_immediately_updates_context_budget() {
+        let (state, runtime) = test_state().await;
+        let managed_config_path = state.managed_config_path.clone().unwrap();
+        let response = handle_update_inference(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateInferenceRequest {
+                model: None,
+                reasoning_effort: None,
+                prompt_token_limit: Some(1_000_000),
+            }),
+        )
+        .await
+        .into_response();
+
+        if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            panic!(
+                "unexpected capacity response {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        assert_eq!(
+            runtime.model_context_capacity().prompt_token_limit,
+            1_000_000
+        );
+        let budget = runtime.context_token_budget("context-test").await.unwrap();
+        assert_eq!(budget.physical_prompt_token_limit, 1_000_000);
+        let managed = std::fs::read_to_string(managed_config_path).unwrap();
+        assert!(managed.contains("max_input_tokens = 1000000"));
     }
 
     #[tokio::test]
@@ -5824,6 +5932,7 @@ mod tests {
             Json(UpdateInferenceRequest {
                 model: Some("fixture-model".to_string()),
                 reasoning_effort: None,
+                prompt_token_limit: None,
             }),
         )
         .await
@@ -5839,6 +5948,7 @@ mod tests {
             Json(UpdateInferenceRequest {
                 model: Some("unlisted-model".to_string()),
                 reasoning_effort: None,
+                prompt_token_limit: None,
             }),
         )
         .await

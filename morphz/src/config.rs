@@ -526,6 +526,28 @@ where
     }
 }
 
+fn deserialize_optional_reasoning_effort<'de, D>(
+    deserializer: D,
+) -> Result<Option<ReasoningEffort>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty()
+        || value.eq_ignore_ascii_case("default")
+        || value.eq_ignore_ascii_case("auto")
+    {
+        return Ok(None);
+    }
+    ReasoningEffort::parse(value).map(Some).ok_or_else(|| {
+        serde::de::Error::custom("reasoning_effort 只支持 default、none、low、medium、high、max")
+    })
+}
+
 impl Default for SessionWorkingSetConfig {
     fn default() -> Self {
         Self {
@@ -667,6 +689,7 @@ pub struct LlmConfig {
     /// 单次 completion 最大输出 Token；None 表示由模型服务决定默认值
     pub max_output_tokens: Option<u32>,
     /// 模型原生推理深度；None 表示不发送控制字段，保留模型默认行为。
+    #[serde(default, deserialize_with = "deserialize_optional_reasoning_effort")]
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -1260,6 +1283,69 @@ pub fn save_managed_model(provider_id: &str, model: &str) -> Result<PathBuf, Str
     )?;
     write_managed_value(&path, &root)?;
     Ok(path)
+}
+
+/// Persist the operator-selected inference profile in Morphz's managed
+/// configuration layer. `reasoning_effort = "default"` is written
+/// deliberately instead of removing the key: the managed layer must be able
+/// to override a lower-precedence user default and restore provider-native
+/// reasoning semantics.
+pub fn save_managed_inference_at(
+    path: &Path,
+    provider_id: Option<&str>,
+    model: &str,
+    reasoning_effort: Option<ReasoningEffort>,
+    prompt_token_limit: Option<usize>,
+) -> Result<(), String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err("Model 不能为空".to_string());
+    }
+    let mut root = read_managed_value(path)?;
+    if let Some(provider_id) = provider_id.map(str::trim).filter(|value| !value.is_empty()) {
+        validate_profile_name(provider_id)?;
+        insert_managed_value(
+            &mut root,
+            &["llm", "provider"],
+            toml::Value::String(provider_id.to_string()),
+        )?;
+        if let Some(limit) = prompt_token_limit {
+            if limit == 0 {
+                return Err("模型物理输入容量必须大于 0".to_string());
+            }
+            insert_managed_value(
+                &mut root,
+                &[
+                    "providers",
+                    provider_id,
+                    "models",
+                    model,
+                    "max_input_tokens",
+                ],
+                toml::Value::Integer(
+                    i64::try_from(limit).map_err(|_| "模型物理输入容量超出 TOML 整数范围")?,
+                ),
+            )?;
+        }
+    } else if prompt_token_limit.is_some() {
+        return Err("当前未配置 Provider，不能保存模型物理输入容量".to_string());
+    }
+    insert_managed_value(
+        &mut root,
+        &["llm", "model"],
+        toml::Value::String(model.to_string()),
+    )?;
+    insert_managed_value(
+        &mut root,
+        &["llm", "reasoning_effort"],
+        toml::Value::String(
+            reasoning_effort
+                .map(ReasoningEffort::as_str)
+                .unwrap_or("default")
+                .to_string(),
+        ),
+    )?;
+    write_managed_value(path, &root)
 }
 
 fn read_managed_value(path: &Path) -> Result<toml::Value, String> {
@@ -2365,7 +2451,67 @@ mod tests {
         assert_eq!(off.llm.reasoning_effort, Some(ReasoningEffort::Off));
         let max = toml::from_str::<AppConfig>("[llm]\nreasoning_effort='max'\n").unwrap();
         assert_eq!(max.llm.reasoning_effort, Some(ReasoningEffort::Max));
+        let default = toml::from_str::<AppConfig>("[llm]\nreasoning_effort='default'\n").unwrap();
+        assert_eq!(default.llm.reasoning_effort, None);
         assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='xhigh'\n").is_err());
+    }
+
+    #[test]
+    fn managed_inference_selection_survives_full_config_resolution() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("repo");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            r#"
+[llm]
+provider = "proxy"
+model = "model-small"
+reasoning_effort = "low"
+
+[providers.proxy]
+protocol = "openai-responses"
+base_url = "http://localhost:8317/v1"
+
+[providers.proxy.models.model-small]
+max_input_tokens = 128000
+
+[providers.proxy.models.model-large]
+max_input_tokens = 256000
+"#,
+        )
+        .unwrap();
+        let managed_path = home.join("managed.toml");
+
+        save_managed_inference_at(
+            &managed_path,
+            Some("proxy"),
+            "model-large",
+            Some(ReasoningEffort::High),
+            Some(1_000_000),
+        )
+        .unwrap();
+
+        let resolved = resolve_config_with_home(&root, None, None, Some(home.clone())).unwrap();
+        assert_eq!(resolved.config.llm.model, "model-large");
+        assert_eq!(
+            resolved.config.llm.reasoning_effort,
+            Some(ReasoningEffort::High)
+        );
+        assert_eq!(
+            resolved.config.providers["proxy"].models["model-large"].max_input_tokens,
+            Some(1_000_000)
+        );
+
+        save_managed_inference_at(&managed_path, Some("proxy"), "model-large", None, None).unwrap();
+        let reset = resolve_config_with_home(&root, None, None, Some(home)).unwrap();
+        assert_eq!(reset.config.llm.reasoning_effort, None);
+        assert_eq!(
+            reset.config.providers["proxy"].models["model-large"].max_input_tokens,
+            Some(1_000_000)
+        );
     }
 
     #[test]

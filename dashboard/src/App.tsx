@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   Archive,
   Bell,
+  Bot,
   BookOpen,
   Brain,
   Check,
@@ -24,6 +25,7 @@ import {
   Filter,
   FileText,
   GitBranch,
+  Gauge,
   Globe,
   KeyRound,
   Layers3,
@@ -2489,8 +2491,10 @@ export default function App() {
   const [changingModel, setChangingModel] = useState(false)
   const [contextTokenBudget, setContextTokenBudget] = useState<ContextTokenBudget | null>(null)
   const [contextTokenBudgetDraft, setContextTokenBudgetDraft] = useState('')
+  const [modelPromptTokenLimitDraft, setModelPromptTokenLimitDraft] = useState('')
   const [contextTokenBudgetOpen, setContextTokenBudgetOpen] = useState(false)
   const [changingContextTokenBudget, setChangingContextTokenBudget] = useState(false)
+  const [changingModelPromptTokenLimit, setChangingModelPromptTokenLimit] = useState(false)
   const [pausingObjectiveId, setPausingObjectiveId] = useState('')
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
   const [editingObjectiveId, setEditingObjectiveId] = useState('')
@@ -3071,6 +3075,7 @@ export default function App() {
     if (!contextId) {
       setContextTokenBudget(null)
       setContextTokenBudgetDraft('')
+      setModelPromptTokenLimitDraft('')
       return
     }
     try {
@@ -3084,6 +3089,7 @@ export default function App() {
           ? ''
           : String(budget.requested_hard_token_limit),
       )
+      setModelPromptTokenLimitDraft(String(budget.physical_prompt_token_limit))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
@@ -3867,9 +3873,16 @@ export default function App() {
     || (Number.isSafeInteger(parsedContextTokenBudgetDraft) && parsedContextTokenBudgetDraft > 0)
   const contextTokenBudgetChanged = contextTokenBudgetDraftValid
     && parsedContextTokenBudgetDraft !== (contextTokenBudget?.requested_hard_token_limit ?? null)
+  const parsedModelPromptTokenLimitDraft = Number(modelPromptTokenLimitDraft)
+  const modelPromptTokenLimitDraftValid = Number.isSafeInteger(parsedModelPromptTokenLimitDraft)
+    && parsedModelPromptTokenLimitDraft > 0
+  const modelPromptTokenLimitChanged = modelPromptTokenLimitDraftValid
+    && parsedModelPromptTokenLimitDraft !== contextTokenBudget?.physical_prompt_token_limit
   const contextTokenBudgetSliderMax = Math.max(
     1_024,
     contextTokenBudget?.physical_prompt_token_limit ?? 1_024,
+    contextTokenBudget?.requested_hard_token_limit ?? 0,
+    parsedContextTokenBudgetDraft ?? 0,
   )
   const contextTokenBudgetSliderValue = Math.min(
     contextTokenBudgetSliderMax,
@@ -5144,7 +5157,7 @@ export default function App() {
         '/api/runtime/inference',
         'PUT',
         {
-          reasoning_effort: value === 'default' ? null : value,
+          reasoning_effort: value,
         },
       )
       setStatus(current => current ? { ...current, reasoning_effort: inference.reasoning_effort } : current)
@@ -5171,7 +5184,7 @@ export default function App() {
           model,
           // Preserve the current inference profile while changing only the
           // model. The backend deliberately applies both fields atomically.
-          reasoning_effort: status?.reasoning_effort ?? null,
+          reasoning_effort: status?.reasoning_effort ?? 'default',
         },
       )
       setStatus(current => current
@@ -5182,11 +5195,31 @@ export default function App() {
             reasoning_effort: inference.reasoning_effort,
           }
         : current)
+      if (selectedContextId) await loadContextTokenBudget(selectedContextId)
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setChangingModel(false)
+    }
+  }
+
+  const changeModelPromptTokenLimit = async () => {
+    if (!selectedContextId
+      || changingModelPromptTokenLimit
+      || !modelPromptTokenLimitDraftValid
+      || !modelPromptTokenLimitChanged) return
+    setChangingModelPromptTokenLimit(true)
+    try {
+      await DASHBOARD_API.command('/api/runtime/inference', 'PUT', {
+        prompt_token_limit: parsedModelPromptTokenLimitDraft,
+      })
+      await loadContextTokenBudget(selectedContextId)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setChangingModelPromptTokenLimit(false)
     }
   }
 
@@ -5916,6 +5949,7 @@ export default function App() {
               )}
             </div>
             <label className="model-control" title={t('model.selectorTitle')}>
+              <Bot size={15} />
               <span>{t('model.selector').toUpperCase()}</span>
               <select
                 aria-label={t('model.selector')}
@@ -5950,6 +5984,35 @@ export default function App() {
                     <em>{shortId(contextTokenBudget.context_id, 22)}</em>
                   </header>
                   <p>{t('contextBudget.description')}</p>
+                  <div className="context-budget-capacity">
+                    <label>
+                      <span>
+                        <strong>{t('contextBudget.modelCapacity')}</strong>
+                        <small>{t('contextBudget.modelCapacityHint', { model: contextTokenBudget.model })}</small>
+                      </span>
+                      <input
+                        aria-label={t('contextBudget.modelCapacity')}
+                        inputMode="numeric"
+                        min="1"
+                        type="number"
+                        value={modelPromptTokenLimitDraft}
+                        onChange={event => setModelPromptTokenLimitDraft(event.target.value)}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      disabled={!modelPromptTokenLimitChanged || changingModelPromptTokenLimit}
+                      onClick={() => void changeModelPromptTokenLimit()}
+                    >
+                      {changingModelPromptTokenLimit
+                        ? t('contextBudget.savingModelCapacity')
+                        : t('contextBudget.saveModelCapacity')}
+                    </button>
+                  </div>
+                  {!modelPromptTokenLimitDraftValid && (
+                    <p className="context-budget-validation">{t('contextBudget.modelCapacityInvalid')}</p>
+                  )}
+                  <div className="context-budget-divider"><span>{t('contextBudget.contextPolicy')}</span></div>
                   <div className="context-budget-mode">
                     <button
                       className={contextTokenBudgetDraft.trim() === '' ? 'is-selected' : ''}
@@ -6022,6 +6085,7 @@ export default function App() {
               )}
             </div>
             <label className="reasoning-control" title={t('reasoning.title')}>
+              <Gauge size={15} />
               <span>{t('reasoning.label').toUpperCase()}</span>
               <select
                 aria-label={t('reasoning.label')}

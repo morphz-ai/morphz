@@ -50,7 +50,9 @@ use crate::plan_execution::{
     PlanArtifactBinding, PlanCallPlanner, PlanDriveReceipt, PlanExecutionCoordinator,
     PlanExecutionResult, PlanExecutionRoute, PlanResumeReceipt,
 };
-use crate::scheduler::{SchedulerDependencyFilter, SchedulerDependencyOwnerKind};
+use crate::scheduler::{
+    SchedulerDependencyFilter, SchedulerDependencyOwnerKind, SchedulerInvariantViolation,
+};
 use crate::sexpr::SExpr;
 use crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
 use crate::timer::{TimerDisposition, TimerEngine};
@@ -2705,16 +2707,46 @@ impl Orchestrator {
     fn start_supervision_invariant_auditor(self: &Arc<Self>) {
         let orchestrator = Arc::downgrade(self);
         tokio::spawn(async move {
+            let mut previous_violations = Vec::new();
+            let mut previous_error: Option<String> = None;
             loop {
                 tokio::time::sleep(SUPERVISION_RECONCILE_INTERVAL).await;
                 let Some(orchestrator) = orchestrator.upgrade() else {
                     break;
                 };
-                if let Err(error) = orchestrator.audit_supervision_invariants().await {
-                    tracing::error!(
-                        %error,
-                        "Thread Supervision 不变量审计失败；未改写业务事实，等待下一轮审计"
-                    );
+                match orchestrator.audit_supervision_invariants().await {
+                    Ok(violations) => {
+                        if previous_error.take().is_some() {
+                            tracing::info!("Thread Supervision 不变量审计已恢复");
+                        }
+                        if violations != previous_violations {
+                            if violations.is_empty() {
+                                if !previous_violations.is_empty() {
+                                    tracing::info!(
+                                        previous_invariant_violations = previous_violations.len(),
+                                        "Thread Supervision 不变量已恢复"
+                                    );
+                                }
+                            } else {
+                                tracing::warn!(
+                                    invariant_violations = violations.len(),
+                                    previous_invariant_violations = previous_violations.len(),
+                                    "Thread Supervision 检测到不变量异常"
+                                );
+                            }
+                            previous_violations = violations;
+                        }
+                    }
+                    Err(error) => {
+                        let error = error.to_string();
+                        if previous_error.as_deref() != Some(error.as_str()) {
+                            tracing::error!(
+                                %error,
+                                "Thread Supervision 不变量审计失败；未改写业务事实，等待下一轮审计"
+                            );
+                            previous_error = Some(error);
+                        }
+                    }
                 }
             }
         });
@@ -2725,15 +2757,17 @@ impl Orchestrator {
     /// to the Kernel outcome transaction; a periodic task may report a broken
     /// invariant or quarantine live work, but must never manufacture the
     /// missing terminal Event after the fact.
-    async fn audit_supervision_invariants(&self) -> Result<usize, DynError> {
+    async fn audit_supervision_invariants(
+        &self,
+    ) -> Result<Vec<SchedulerInvariantViolation>, DynError> {
         let Some(store) = self.plan_store.as_ref() else {
-            return Ok(0);
+            return Ok(Vec::new());
         };
         let Some(kernel) = self.scheduler_kernel.as_ref() else {
             tracing::warn!("Scheduler Kernel 不可用；本轮只跳过不变量隔离，不直接写 Store");
-            return Ok(0);
+            return Ok(Vec::new());
         };
-        let mut violation_count = 0usize;
+        let mut all_violations = Vec::new();
         for context in store.list_contexts(false).await? {
             let objectives = store.list_context_objectives(&context.id, true).await?;
             let threads = store.list_context_threads(&context.id, true).await?;
@@ -2842,8 +2876,6 @@ impl Orchestrator {
                 &groups,
                 &barrier_event_ids,
             ));
-            violation_count = violation_count.saturating_add(violations.len());
-
             let plan = crate::recovery::SchedulerReconciler::plan(
                 &violations,
                 &threads,
@@ -2881,14 +2913,10 @@ impl Orchestrator {
                     ),
                 }
             }
+            all_violations.extend(violations);
         }
-        if violation_count > 0 {
-            tracing::info!(
-                invariant_violations = violation_count,
-                "Thread Supervision 不变量审计完成"
-            );
-        }
-        Ok(violation_count)
+        all_violations.sort();
+        Ok(all_violations)
     }
 
     async fn reconcile_durable_plans(&self) -> Result<(), DynError> {

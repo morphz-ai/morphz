@@ -887,6 +887,7 @@ impl MorphzRuntimeBuilder {
             &self.config,
             &self.config.llm.model,
         )));
+        let model_prompt_token_limit_overrides = RwLock::new(HashMap::new());
         let context_engine = Arc::new(
             ContextEngine::new(
                 Arc::clone(&store) as Arc<dyn EventStore>,
@@ -1222,6 +1223,7 @@ impl MorphzRuntimeBuilder {
                 registry,
                 harness_registry,
                 model_context_capacity,
+                model_prompt_token_limit_overrides,
                 context_engine,
                 orchestrator,
                 objective_supervisor,
@@ -1390,6 +1392,10 @@ struct RuntimeInner {
     registry: Arc<Registry>,
     harness_registry: Arc<DomainHarnessRegistry>,
     model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
+    /// Operator changes are applied immediately and also persisted by the
+    /// embedding surface. Keeping the in-process overlay means switching away
+    /// from a model and back does not temporarily restore stale startup data.
+    model_prompt_token_limit_overrides: RwLock<HashMap<String, usize>>,
     context_engine: Arc<ContextEngine>,
     orchestrator: Arc<Orchestrator>,
     objective_supervisor: Arc<ObjectiveSupervisor>,
@@ -1870,8 +1876,9 @@ impl MorphzRuntime {
         &self.inner.storage_label
     }
 
-    /// Process-local model reasoning override used by subsequent evaluations.
-    /// This is deliberately not persisted when changed through Dashboard.
+    /// Active model reasoning profile used by subsequent evaluations. The
+    /// Runtime itself is storage-agnostic; embedding surfaces may persist a
+    /// change before applying it here.
     pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
         self.inner.client.reasoning_effort()
     }
@@ -1913,12 +1920,65 @@ impl MorphzRuntime {
             return Err(format!("模型 '{model}' 未在 llm.models 中配置，拒绝运行期切换").into());
         }
         self.inner.client.set_model(model)?;
-        let capacity = resolve_model_context_capacity(&self.inner.config, model);
+        let mut capacity = resolve_model_context_capacity(&self.inner.config, model);
+        if let Some(limit) = self
+            .inner
+            .model_prompt_token_limit_overrides
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(model)
+            .copied()
+        {
+            capacity.prompt_token_limit = limit;
+            capacity.source = "managed-provider-model-override".to_string();
+        }
         *self
             .inner
             .model_context_capacity
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
+        Ok(())
+    }
+
+    pub fn model_context_capacity(&self) -> ModelContextCapacity {
+        self.inner
+            .model_context_capacity
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn set_model_prompt_token_limit(
+        &self,
+        model: &str,
+        prompt_token_limit: usize,
+    ) -> Result<(), RuntimeError> {
+        let model = model.trim();
+        if prompt_token_limit == 0 {
+            return Err("模型物理输入容量必须大于 0".into());
+        }
+        if !self
+            .configured_models()
+            .iter()
+            .any(|allowed| allowed == model)
+        {
+            return Err(format!("模型 '{model}' 未在 llm.models 中配置，拒绝修改容量").into());
+        }
+        self.inner
+            .model_prompt_token_limit_overrides
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(model.to_string(), prompt_token_limit);
+        if self.model() == model {
+            let mut capacity = resolve_model_context_capacity(&self.inner.config, model);
+            capacity.prompt_token_limit = prompt_token_limit;
+            capacity.source = "managed-provider-model-override".to_string();
+            *self
+                .inner
+                .model_context_capacity
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
+        }
         Ok(())
     }
 
