@@ -1,9 +1,9 @@
 # Morphz 共享 Context、多会话与并行认知架构
 
-> 状态：北极星设计；单进程 `Context → shared Mind + Sessions` 核心层级已实现，COW、多 Worker 协作和分布式一致性仍属后续演进
-> 更新时间：2026-07-12  
+> 状态：北极星设计；`Context → shared Mind + Sessions`、继承 Mind 的独立 Context、Frame MVCC 与 SharedLeases 多 Runtime 协调已实现，完整 COW merge、跨主机故障切换和分布式一致性仍属后续演进
+> 更新时间：2026-08-01
 > 适用范围：Agent 身份、Session、多 Sub Agent、Context 拓扑、并发事务、分布式算力与长期演化  
-> 与现有设计的关系：本文扩展并修正 [`morphz_agent_owned_context_design.md`](morphz_agent_owned_context_design.md) 和 [`morphz_memory_scope_design.md`](morphz_memory_scope_design.md) 中把 Session/Scope 主要视为隔离边界、把 Sub Agent 固定为独立 Mind 的早期假设。当前单进程实现见 [`morphz_session_service_v1.md`](morphz_session_service_v1.md)；涉及长期 Context 拓扑与共享语义时，以本文为方向依据。
+> 与现有设计的关系：本文扩展并修正 [`morphz_agent_owned_context_design.md`](morphz_agent_owned_context_design.md) 和 [`morphz_memory_scope_design.md`](morphz_memory_scope_design.md) 中把 Session/Scope 主要视为隔离边界、把 Sub Agent 固定为独立 Mind 的早期假设。当前实现状态见 [`morphz_runtime_core_implementation_status_v1.md`](morphz_runtime_core_implementation_status_v1.md)；涉及长期 Context 拓扑与共享语义时，以本文为方向依据。
 
 > 认识论前置约束：共享会同时放大正确经验和错误认识。Runtime 应如何用顺序、直接因果、来源、版本和控制反馈约束 Agent 的自由认知，见 [`morphz_reality_constrained_epistemic_context.md`](morphz_reality_constrained_epistemic_context.md)。
 

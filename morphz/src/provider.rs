@@ -17,7 +17,11 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-type ProviderError = Box<dyn std::error::Error + Send + Sync>;
+pub mod auth;
+pub mod control;
+pub mod routing;
+
+pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
 pub type ConfiguredClient = (Arc<dyn Client>, SelectedProvider);
 
 #[derive(Debug, Clone)]
@@ -46,6 +50,30 @@ pub fn build_configured_client(
     provider_override: Option<&str>,
     model_override: Option<&str>,
 ) -> Result<ConfiguredClient, ProviderError> {
+    if provider_override.is_none()
+        && (!app.provider_instances.is_empty() || !app.model_routes.is_empty())
+    {
+        let alias = model_override.unwrap_or(&app.llm.model).trim().to_string();
+        if alias.is_empty() {
+            return Err("模型别名不能为空".into());
+        }
+        let client = routing::RoutedClient::new(app, alias)?;
+        let binding = client.primary_binding()?;
+        let protocol = match binding.protocol.as_str() {
+            "openai-responses" => ModelProtocol::OpenaiResponses,
+            "openai-chat" => ModelProtocol::OpenaiChat,
+            "anthropic-messages" => ModelProtocol::AnthropicMessages,
+            "gemini-content" => ModelProtocol::GeminiContent,
+            value => return Err(format!("Model Route 返回未知协议 '{value}'").into()),
+        };
+        let selected = SelectedProvider {
+            id: binding.provider_instance_id.clone(),
+            protocol,
+            base_url: binding.endpoint.clone(),
+            model: binding.requested_alias.clone(),
+        };
+        return Ok((Arc::new(client), selected));
+    }
     let provider_id = provider_override
         .map(str::to_string)
         .or_else(|| app.llm.provider.clone())
@@ -86,7 +114,7 @@ fn resolve_provider_credential(
     resolve_credential(reference, credential)
 }
 
-fn resolve_credential(
+pub(crate) fn resolve_credential(
     id: &str,
     credential: &CredentialConfig,
 ) -> Result<Option<String>, ProviderError> {
@@ -174,7 +202,7 @@ pub fn delete_keychain_credential(service: &str, account: &str) -> Result<(), Pr
     Ok(())
 }
 
-pub struct ProtocolClient {
+pub(crate) struct ProtocolClient {
     http: reqwest::Client,
     protocol: ModelProtocol,
     base_url: String,
@@ -284,7 +312,7 @@ struct PromptUsageAnchor {
 }
 
 impl ProtocolClient {
-    fn new(
+    pub(crate) fn new(
         provider: &ProviderConfig,
         model: String,
         credential: Option<String>,

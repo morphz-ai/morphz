@@ -5142,6 +5142,171 @@ pub trait ObjectiveStore: Send + Sync {
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Runtime availability state of one configured model-provider account.
+///
+/// This is operational state rather than configuration or model-visible
+/// memory.  It is persisted so restarts and multiple Runtime workers make the
+/// same routing decision instead of reviving an invalid or cooling account.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountStatus {
+    Ready,
+    Refreshing,
+    RateLimited,
+    QuotaExhausted,
+    Cooldown,
+    Invalid,
+    Revoked,
+    Disabled,
+}
+
+impl ProviderAccountStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Refreshing => "refreshing",
+            Self::RateLimited => "rate_limited",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::Cooldown => "cooldown",
+            Self::Invalid => "invalid",
+            Self::Revoked => "revoked",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "ready" => Ok(Self::Ready),
+            "refreshing" => Ok(Self::Refreshing),
+            "rate_limited" => Ok(Self::RateLimited),
+            "quota_exhausted" => Ok(Self::QuotaExhausted),
+            "cooldown" => Ok(Self::Cooldown),
+            "invalid" => Ok(Self::Invalid),
+            "revoked" => Ok(Self::Revoked),
+            "disabled" => Ok(Self::Disabled),
+            other => Err(format!("未知 Provider Account 状态 '{other}'")),
+        }
+    }
+
+    pub fn is_selectable(self, cooldown_until: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        match self {
+            Self::Ready => true,
+            Self::Cooldown | Self::RateLimited => cooldown_until.is_some_and(|until| until <= now),
+            Self::Refreshing
+            | Self::QuotaExhausted
+            | Self::Invalid
+            | Self::Revoked
+            | Self::Disabled => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderAccountStateRecord {
+    pub account_id: String,
+    pub revision: u64,
+    pub status: ProviderAccountStatus,
+    pub cooldown_until: Option<DateTime<Utc>>,
+    pub last_error_kind: Option<String>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderAccountAffinityRecord {
+    pub route_id: String,
+    pub scope_key: String,
+    pub account_id: String,
+    pub revision: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderRefreshLeaseRecord {
+    pub account_id: String,
+    pub generation: u64,
+    pub owner_id: String,
+    pub lease_expires_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One physical model observed from a Provider's remote catalog.
+///
+/// This projection is deliberately separate from the operator-authored
+/// `ModelRouteConfig`: a remote catalog may change at any time, while aliases
+/// and routing policy must remain stable and reviewable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderModelCatalogRecord {
+    pub provider_instance_id: String,
+    pub auth_account_id: String,
+    pub physical_model: String,
+    pub adapter_id: String,
+    pub adapter_version: String,
+    pub protocol: String,
+    pub source: String,
+    pub observed_at: DateTime<Utc>,
+}
+
+#[async_trait::async_trait]
+pub trait ProviderModelCatalogStore: Send + Sync {
+    async fn replace_provider_model_catalog(
+        &self,
+        provider_instance_id: &str,
+        auth_account_id: &str,
+        adapter_id: &str,
+        adapter_version: &str,
+        protocol: &str,
+        source: &str,
+        physical_models: &[String],
+        observed_at: DateTime<Utc>,
+    ) -> Result<Vec<ProviderModelCatalogRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn list_provider_model_catalog(
+        &self,
+    ) -> Result<Vec<ProviderModelCatalogRecord>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Durable authority for multi-account routing and OAuth refresh fencing.
+#[async_trait::async_trait]
+pub trait ProviderAccountStateStore: Send + Sync {
+    async fn get_provider_account_state(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<ProviderAccountStateRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn put_provider_account_state(
+        &self,
+        account_id: &str,
+        expected_revision: Option<u64>,
+        status: ProviderAccountStatus,
+        cooldown_until: Option<DateTime<Utc>>,
+        last_error_kind: Option<&str>,
+        mark_used: bool,
+    ) -> Result<ProviderAccountStateRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_provider_account_affinity(
+        &self,
+        route_id: &str,
+        scope_key: &str,
+    ) -> Result<Option<ProviderAccountAffinityRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn put_provider_account_affinity(
+        &self,
+        route_id: &str,
+        scope_key: &str,
+        account_id: &str,
+    ) -> Result<ProviderAccountAffinityRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn claim_provider_refresh_lease(
+        &self,
+        account_id: &str,
+        owner_id: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<Option<ProviderRefreshLeaseRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn release_provider_refresh_lease(
+        &self,
+        account_id: &str,
+        generation: u64,
+        owner_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Whether one Store is owned by exactly one Runtime process or coordinates
 /// multiple independent Runtime workers. Startup recovery depends on this
 /// physical fact: a shared worker must never treat another worker's live lease
@@ -5182,6 +5347,8 @@ pub trait RuntimeStore:
     + SessionProjectionStore
     + RecallProjectionStore
     + CognitiveClockStore
+    + ProviderAccountStateStore
+    + ProviderModelCatalogStore
     + crate::scheduler::SchedulerDependencyStore
     + Send
     + Sync

@@ -1,7 +1,7 @@
 # Morphz：统一人格、多路会话与分布式认知架构
 
-> 状态：北极星产品与架构共识；本文冻结方向，不代表当前实现已经完整满足
-> 日期：2026-07-15
+> 状态：北极星产品与架构共识；已按 2026-08-01 实现状态校正边界，但不代表远期目标已经完整满足
+> 日期：2026-08-01
 > 适用范围：Agent 产品本体、共享认知、多用户会话、并发求值、异步工具任务、Context 事务、后天学习、Frame Exchange 与分布式演进
 > 相关细化设计：[`morphz_shared_context_multisession_architecture.md`](morphz_shared_context_multisession_architecture.md)、[`morphz_concurrent_session_working_set_v1.md`](morphz_concurrent_session_working_set_v1.md)、[`morphz_agent_context_session_lifecycle_v1.md`](morphz_agent_context_session_lifecycle_v1.md)、[`morphz_agent_owned_context_design.md`](morphz_agent_owned_context_design.md)、[`morphz_frame_vm_model_cognition_decoupling.md`](morphz_frame_vm_model_cognition_decoupling.md)
 
@@ -678,16 +678,16 @@ Morphz 已经拥有一部分重要基础：
 
 但不能因此声称本文已经完全实现。当前至少仍需要逐项审计和建设：
 
-1. 单进程普通求值已移除跨 LLM/工具的 Session 锁，并以持久 Work Item claim/lease/CAS 调度；多进程调度仍未实现；
+1. 普通求值已移除跨 LLM/工具的 Session 锁，并以持久 Thread/Activation claim、lease 与 revision fence 调度；SQLite 同主机多进程和 PostgreSQL 双 Runtime/双 OS 进程已经验证，生产级跨主机与故障切换仍未验证；
 2. 同一 Session 在长工具期间可以安全启动新消息求值，且旧根回合使用因果前沿避免新消息倒灌；
 3. 有界 Session Working Set、Agent attention、自动恢复和 10,000 Session 投影测试已经落地；百万级 Registry 的存储与吞吐尚未验证；
-4. Context 写入目前以较粗粒度串行化为主，Frame 级 MVCC 尚未实现；
-5. 异步任务的终态、唤醒、超时提示和取消仍需系统化；
-6. 跨 Session 隐私、披露授权和多租户边界尚未完整实现；
-7. 多节点 Worker、状态复制、故障转移和分布式调度仍属后续；
-8. 当前非 retired Frame 会全部进入 Mind Encoding，尚未区分语义生命周期、长期 Residency 和单次 Activation；
-9. Frame Discovery、分层认知索引和 Frame Working Set 尚未实现；
-10. Frame Export/Import、依赖 Bundle、授权 Grant 和远程 revision 传播尚未实现；
+4. Context 的物理写入仍需要数据库事务串行化，但 Frame 级 MVCC 已允许不相干 Frame 修改自动 rebase；同 Frame、来源变化和全局生命周期操作仍保持 fence；
+5. 异步任务的终态、内部唤醒、依赖、取消与重启恢复已经由 Scheduler Kernel v2 系统化；当前重点转为长期 soak、故障注入和模型行为验证；
+6. Principal、Session 参与关系、Frame 来源身份和 Trusted Gateway 已实现 v1；跨 Session 披露判断仍由 Agent 决策，公网多租户策略和审计仍需产品化；
+7. Execution Target、Managed SSH、Edge/Artifact 核心平面与 PostgreSQL 多 Runtime 已实现 v1；跨主机故障切换、生产编排和多节点长期运行仍属后续；
+8. Frame 已具备 active/retired/protected、来源、revision 与 Recall Projection，但长期 Residency 和单次 Activation 的自动语义工作集仍未完成；
+9. Recall/检索能力已经实现；自动 Frame Discovery、分层认知索引和基于任务语义的 Frame Working Set 仍未完成；
+10. Artifact Transfer 已实现；认知层的 Frame Export/Import、依赖 Bundle、授权 Grant 和远程 revision 传播仍未实现；
 11. 一百万 Session 和百万级 Frame 都是架构可扩展目标，不是当前性能结论。
 
 这篇文档冻结的是本体和方向。以后实现可以渐进演进，但不应重新退回“一 Session 一 Mind”“一个工具阻塞整个 Agent”或“把所有 Session 放进一个 Prompt”的模型。

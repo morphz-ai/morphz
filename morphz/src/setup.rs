@@ -1,6 +1,7 @@
 use crate::config::{
-    morphz_home_dir, save_managed_provider, AppConfig, CredentialConfig, CredentialSource,
-    ModelProtocol, ProviderConfig,
+    morphz_home_dir, save_managed_provider_catalog, AppConfig, AuthAccountConfig, CredentialConfig,
+    CredentialSource, ModelProtocol, ModelRouteAffinity, ModelRouteCandidateConfig,
+    ModelRouteConfig, ModelRouteSelection, ProviderConfig, ProviderInstanceConfig,
 };
 use crate::i18n::Locale;
 use crate::provider::{
@@ -42,9 +43,13 @@ const ERROR: Color = Color::Red;
 #[derive(Debug, Clone)]
 struct ProviderPreset {
     id: &'static str,
+    adapter: &'static str,
     protocol: ModelProtocol,
     base_url: String,
     env_name: &'static str,
+    oauth_adapter: Option<&'static str>,
+    default_model: Option<&'static str>,
+    default_alias: Option<&'static str>,
 }
 
 fn presets() -> Vec<ProviderPreset> {
@@ -52,21 +57,53 @@ fn presets() -> Vec<ProviderPreset> {
     vec![
         ProviderPreset {
             id: "openai",
+            adapter: "protocol-compatible",
             protocol: ModelProtocol::OpenaiResponses,
             base_url: catalog["openai"].base_url.clone(),
             env_name: "OPENAI_API_KEY",
+            oauth_adapter: None,
+            default_model: None,
+            default_alias: None,
+        },
+        ProviderPreset {
+            id: "codex-subscription",
+            adapter: "openai-codex",
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            env_name: "",
+            oauth_adapter: Some("codex-oauth"),
+            default_model: Some("gpt-5.6"),
+            default_alias: Some("gpt-5.6"),
         },
         ProviderPreset {
             id: "anthropic",
+            adapter: "protocol-compatible",
             protocol: ModelProtocol::AnthropicMessages,
             base_url: catalog["anthropic"].base_url.clone(),
             env_name: "ANTHROPIC_API_KEY",
+            oauth_adapter: None,
+            default_model: None,
+            default_alias: None,
         },
         ProviderPreset {
             id: "gemini",
+            adapter: "protocol-compatible",
             protocol: ModelProtocol::GeminiContent,
             base_url: catalog["gemini"].base_url.clone(),
             env_name: "GEMINI_API_KEY",
+            oauth_adapter: None,
+            default_model: None,
+            default_alias: None,
+        },
+        ProviderPreset {
+            id: "kimi-code",
+            adapter: "kimi-code",
+            protocol: ModelProtocol::OpenaiChat,
+            base_url: "https://api.kimi.com/coding/v1".to_string(),
+            env_name: "",
+            oauth_adapter: Some("kimi-oauth"),
+            default_model: Some("k3"),
+            default_alias: Some("kimi-k3"),
         },
     ]
 }
@@ -78,6 +115,11 @@ pub struct SetupResult {
     pub model: String,
     pub config_path: PathBuf,
     pub connection_verified: bool,
+    /// OAuth account that must be logged in before the first model request.
+    /// Setup persists the graph first so login can use the same Runtime
+    /// control path as CLI, HTTP and Dashboard instead of owning a second
+    /// token lifecycle implementation.
+    pub oauth_account: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -741,12 +783,26 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
                     locale.text("Official Responses API", "官方响应接口"),
                 ),
                 Choice::new(
+                    locale.text("Codex subscription", "Codex 订阅"),
+                    locale.text(
+                        "OAuth login with an OpenAI subscription; compatibility adapter",
+                        "使用 OpenAI 订阅进行 OAuth 登录；兼容性适配器",
+                    ),
+                ),
+                Choice::new(
                     "Anthropic",
                     locale.text("Official Messages API", "官方消息接口"),
                 ),
                 Choice::new(
                     "Google Gemini",
                     locale.text("Official generateContent API", "官方内容生成接口"),
+                ),
+                Choice::new(
+                    locale.text("Kimi Code subscription", "Kimi Code 订阅"),
+                    locale.text(
+                        "Kimi device authorization and the official coding endpoint",
+                        "Kimi 设备授权与官方 Coding 接口",
+                    ),
                 ),
                 Choice::new(
                     locale.text("Custom provider", "自定义服务商"),
@@ -761,14 +817,25 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
         .await?;
 
     ui.step = 2;
-    let (provider_id, protocol, base_url, default_env) = if let Some(preset) =
-        catalog.get(provider_choice)
-    {
+    let (
+        provider_id,
+        provider_adapter,
+        protocol,
+        base_url,
+        default_env,
+        oauth_adapter,
+        default_model,
+        default_alias,
+    ) = if let Some(preset) = catalog.get(provider_choice) {
         (
             preset.id.to_string(),
+            preset.adapter.to_string(),
             preset.protocol,
             preset.base_url.clone(),
             preset.env_name.to_string(),
+            preset.oauth_adapter.map(str::to_string),
+            preset.default_model.map(str::to_string),
+            preset.default_alias.map(str::to_string),
         )
     } else {
         let provider_id = ui
@@ -817,119 +884,236 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
                 .await?;
         (
             provider_id,
+            "protocol-compatible".to_string(),
             protocol,
             base_url,
             "MORPHZ_PROVIDER_API_KEY".to_string(),
+            None,
+            None,
+            None,
         )
     };
 
     ui.step = 3;
     let credential_id = provider_id.clone();
-    let credential = configure_credential(&mut ui, &provider_id, &default_env).await?;
-    let provider = ProviderConfig {
-        protocol,
-        base_url,
-        credential: credential.as_ref().map(|_| credential_id.clone()),
-        ..ProviderConfig::default()
-    };
-    let mut probe_config = AppConfig::default();
-    probe_config
-        .providers
-        .insert(provider_id.clone(), provider.clone());
-    if let Some(credential) = credential.clone() {
-        probe_config
-            .credentials
-            .insert(credential_id.clone(), credential);
-    }
-    probe_config.llm.provider = Some(provider_id.clone());
-
-    ui.step = 4;
-    ui.status(
-        locale.text("Discovering models", "发现模型"),
-        &format!("{} · {}", provider_id, protocol.as_str()),
-        locale.text(
-            "Connecting to the provider and reading its model catalog",
-            "正在连接模型服务商并读取模型目录",
-        ),
-    )?;
-    let (models, catalog_error) = match list_provider_models(&probe_config, &provider_id).await {
-        Ok(models) => (models, None),
-        Err(error) => (Vec::new(), Some(error.to_string())),
-    };
-    if let Some(error) = catalog_error {
-        ui.acknowledge(
-            locale.text("Model catalog unavailable", "模型目录不可用"),
-            locale.text(
-                "You can still enter a model ID manually.",
-                "仍然可以手工填写模型标识。",
-            ),
-            &if locale.is_chinese() {
-                format!("读取模型目录失败：\n\n{error}\n\n请确认凭证、通信协议和服务地址。")
-            } else {
-                format!("Could not read the model catalog:\n\n{error}\n\nCheck the credential, protocol, and base URL.")
-            },
-            WARNING,
+    let (credential, oauth_secret_backend) = if oauth_adapter.is_some() {
+        (
+            None,
+            configure_oauth_secret_backend(&mut ui, &provider_id).await?,
         )
-        .await?;
-    }
-    let model = select_model(&mut ui, &models).await?;
-    probe_config.llm.model = model.clone();
+    } else {
+        (
+            configure_credential(&mut ui, &provider_id, &default_env).await?,
+            None,
+        )
+    };
 
-    ui.step = 5;
-    ui.status(
-        locale.text("Verifying capabilities", "验证能力"),
-        &format!("{} · {}", provider_id, model),
-        locale.text(
-            "Verifying streamed text and standard tool calls",
-            "正在验证流式文本与标准工具调用",
-        ),
-    )?;
-    let (connection_verified, verification_message) = match probe_provider(
-        &probe_config,
-        &provider_id,
-        Some(&model),
-    )
-    .await
-    {
-        Ok(probe) if probe.completion_stream_verified && probe.tool_call_verified => (
-            true,
-            locale
-                .text(
-                    "Provider connected. Streamed text and tool-call handshakes both passed.",
-                    "模型服务商连接成功，流式文本与工具调用握手均已通过。",
-                )
-                .to_string(),
-        ),
-        Ok(probe) => (
-            false,
-            if locale.is_chinese() {
-                format!(
+    let (model, route_id, connection_verified, verification_message) = if oauth_adapter.is_some() {
+        ui.step = 4;
+        let model = ui
+            .input(
+                locale.text("Provider model ID", "服务商模型标识"),
+                locale.text(
+                    "Use the exact physical model ID accepted by the subscription endpoint.",
+                    "填写订阅接口实际接受的物理模型标识。",
+                ),
+                default_model.as_deref(),
+                false,
+            )
+            .await?;
+        let route_id = ui
+            .input(
+                locale.text("Model alias", "模型别名"),
+                locale.text(
+                    "Runtime evaluations use this stable alias; it may differ from the Provider model ID.",
+                    "Runtime 求值使用这个稳定别名，它可以与服务商模型标识不同。",
+                ),
+                default_alias.as_deref().or(Some(model.as_str())),
+                false,
+            )
+            .await?;
+        let account_id = format!("{provider_id}-default");
+        let verification_message = if locale.is_chinese() {
+            format!(
+                "OAuth Provider 图已保存。接下来 Morphz 将通过 Runtime 的统一账号生命周期启动登录。授权完成后可运行：\n\n  morphz model route test {route_id} --account {account_id}\n\n以后如需重新登录，可运行：\n\n  morphz provider account login {account_id}"
+            )
+        } else {
+            format!(
+                "The OAuth provider graph is saved. Morphz will now start login through the Runtime's unified account lifecycle. After authorization, you can run:\n\n  morphz model route test {route_id} --account {account_id}\n\nTo sign in again later, run:\n\n  morphz provider account login {account_id}"
+            )
+        };
+        (model, route_id, false, verification_message)
+    } else {
+        let provider = ProviderConfig {
+            protocol,
+            base_url: base_url.clone(),
+            credential: credential.as_ref().map(|_| credential_id.clone()),
+            ..ProviderConfig::default()
+        };
+        let mut probe_config = AppConfig::default();
+        probe_config.providers.insert(provider_id.clone(), provider);
+        if let Some(credential) = credential.clone() {
+            probe_config
+                .credentials
+                .insert(credential_id.clone(), credential);
+        }
+        probe_config.llm.provider = Some(provider_id.clone());
+
+        ui.step = 4;
+        ui.status(
+            locale.text("Discovering models", "发现模型"),
+            &format!("{} · {}", provider_id, protocol.as_str()),
+            locale.text(
+                "Connecting to the provider and reading its model catalog",
+                "正在连接模型服务商并读取模型目录",
+            ),
+        )?;
+        let (models, catalog_error) = match list_provider_models(&probe_config, &provider_id).await
+        {
+            Ok(models) => (models, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
+        if let Some(error) = catalog_error {
+            ui.acknowledge(
+                locale.text("Model catalog unavailable", "模型目录不可用"),
+                locale.text(
+                    "You can still enter a model ID manually.",
+                    "仍然可以手工填写模型标识。",
+                ),
+                &if locale.is_chinese() {
+                    format!("读取模型目录失败：\n\n{error}\n\n请确认凭证、通信协议和服务地址。")
+                } else {
+                    format!("Could not read the model catalog:\n\n{error}\n\nCheck the credential, protocol, and base URL.")
+                },
+                WARNING,
+            )
+            .await?;
+        }
+        let model = select_model(&mut ui, &models).await?;
+        probe_config.llm.model = model.clone();
+
+        ui.step = 5;
+        ui.status(
+            locale.text("Verifying capabilities", "验证能力"),
+            &format!("{} · {}", provider_id, model),
+            locale.text(
+                "Verifying streamed text and standard tool calls",
+                "正在验证流式文本与标准工具调用",
+            ),
+        )?;
+        let (verified, message) = match probe_provider(&probe_config, &provider_id, Some(&model))
+            .await
+        {
+            Ok(probe) if probe.completion_stream_verified && probe.tool_call_verified => (
+                true,
+                locale
+                    .text(
+                        "Provider connected. Streamed text and tool-call handshakes both passed.",
+                        "模型服务商连接成功，流式文本与工具调用握手均已通过。",
+                    )
+                    .to_string(),
+            ),
+            Ok(probe) => (
+                false,
+                if locale.is_chinese() {
+                    format!(
                         "模型服务商可以访问，但能力握手不完整。\n\n流式文本={}\n工具调用={}\n\n配置仍会保存，可使用 `morphz provider test {provider_id}` 复查。",
                         probe.completion_stream_verified, probe.tool_call_verified
                     )
-            } else {
-                format!(
+                } else {
+                    format!(
                         "The provider is reachable, but capability verification is incomplete.\n\nstream={}\ntool_call={}\n\nThe configuration will still be saved. Run `morphz provider test {provider_id}` to retry.",
                         probe.completion_stream_verified, probe.tool_call_verified
                     )
-            },
-        ),
-        Err(error) => (
-            false,
-            if locale.is_chinese() {
-                format!("能力握手失败：\n\n{error}\n\n配置仍会保存，可使用 `morphz provider test {provider_id}` 复查。")
-            } else {
-                format!("Capability verification failed:\n\n{error}\n\nThe configuration will still be saved. Run `morphz provider test {provider_id}` to retry.")
-            },
-        ),
+                },
+            ),
+            Err(error) => (
+                false,
+                if locale.is_chinese() {
+                    format!("能力握手失败：\n\n{error}\n\n配置仍会保存，可使用 `morphz provider test {provider_id}` 复查。")
+                } else {
+                    format!("Capability verification failed:\n\n{error}\n\nThe configuration will still be saved. Run `morphz provider test {provider_id}` to retry.")
+                },
+            ),
+        };
+        (model.clone(), model, verified, message)
     };
-    let config_path = save_managed_provider(
+    let account_id = if oauth_adapter.is_some() {
+        format!("{provider_id}-default")
+    } else if credential
+        .as_ref()
+        .is_some_and(|credential| credential.source == CredentialSource::None)
+    {
+        format!("{provider_id}-anonymous")
+    } else {
+        format!("{provider_id}-default")
+    };
+    let account = AuthAccountConfig {
+        auth_adapter: oauth_adapter.clone().unwrap_or_else(|| {
+            if credential
+                .as_ref()
+                .is_some_and(|credential| credential.source == CredentialSource::None)
+            {
+                "none".to_string()
+            } else {
+                "credential".to_string()
+            }
+        }),
+        credential_ref: if oauth_adapter.is_some() {
+            format!(
+                "MORPHZ_OAUTH_{}",
+                account_id
+                    .chars()
+                    .map(|character| if character.is_ascii_alphanumeric() {
+                        character.to_ascii_uppercase()
+                    } else {
+                        '_'
+                    })
+                    .collect::<String>()
+            )
+        } else {
+            credential
+                .as_ref()
+                .filter(|credential| credential.source != CredentialSource::None)
+                .map(|_| credential_id.clone())
+                .unwrap_or_default()
+        },
+        secret_backend: oauth_secret_backend,
+        provider: Some(provider_id.clone()),
+        label: Some(locale.text("Default account", "默认账号").to_string()),
+        ..AuthAccountConfig::default()
+    };
+    let instance = ProviderInstanceConfig {
+        adapter: provider_adapter,
+        protocol,
+        base_url,
+        accounts: vec![account_id.clone()],
+        ..ProviderInstanceConfig::default()
+    };
+    let route = ModelRouteConfig {
+        aliases: Vec::new(),
+        candidates: vec![ModelRouteCandidateConfig {
+            provider: provider_id.clone(),
+            model: model.clone(),
+            priority: 0,
+            account: None,
+            capabilities: Vec::new(),
+        }],
+        affinity: ModelRouteAffinity::Context,
+        selection: ModelRouteSelection::AvailableLeastRecentlyUsed,
+        fallback: false,
+    };
+    let config_path = save_managed_provider_catalog(
         &provider_id,
-        &provider,
+        &instance,
+        &account_id,
+        &account,
         credential
             .as_ref()
+            .filter(|credential| credential.source != CredentialSource::None)
             .map(|credential| (credential_id.as_str(), credential)),
-        &model,
+        &route_id,
+        &route,
     )?;
     ui.acknowledge(
         if connection_verified {
@@ -937,7 +1121,7 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
         } else {
             locale.text("Configuration saved", "配置已保存")
         },
-        &format!("{} · {} · {}", provider_id, protocol.as_str(), model),
+        &format!("{} · {} · {}", provider_id, protocol.as_str(), route_id),
         &format!(
             "{verification_message}\n\n{}：{}",
             locale.text("Configuration", "配置文件"),
@@ -953,10 +1137,59 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
     Ok(SetupResult {
         provider: provider_id,
         protocol,
-        model,
+        model: route_id,
         config_path,
         connection_verified,
+        oauth_account: oauth_adapter.map(|_| account_id),
     })
+}
+
+async fn configure_oauth_secret_backend(
+    ui: &mut SetupTerminal,
+    provider_id: &str,
+) -> Result<Option<String>, SetupError> {
+    let locale = ui.locale;
+    let choice = ui
+        .choose(
+            locale.text("Store OAuth tokens", "保存 OAuth 令牌"),
+            locale.text(
+                "OAuth access and refresh tokens never enter configuration, prompts, Ledger, or logs.",
+                "OAuth 访问令牌和刷新令牌不会进入配置、提示词、事件账本或日志。",
+            ),
+            &[
+                Choice::new(
+                    locale.text("System credential store", "系统凭证库"),
+                    locale.text(
+                        "Recommended for an interactive desktop login; uses Keychain, Credential Manager, or Secret Service",
+                        "推荐用于交互式桌面登录；使用钥匙串、凭据管理器或 Secret Service",
+                    ),
+                ),
+                Choice::new(
+                    locale.text("Morphz secrets file", "Morphz 密钥文件"),
+                    locale.text(
+                        "Headless-friendly user file with mode 0600; selected explicitly and never used as an implicit fallback",
+                        "适合无界面服务的 0600 用户级文件；必须显式选择，绝不会隐式降级",
+                    ),
+                ),
+            ],
+            0,
+        )
+        .await?;
+    if choice == 0 {
+        Ok(None)
+    } else {
+        ui.acknowledge(
+            locale.text("Headless token storage selected", "已选择无界面令牌存储"),
+            provider_id,
+            locale.text(
+                "Token values will be stored in Morphz's user-level secrets file, while configuration contains only a secret alias.",
+                "令牌原文将保存到 Morphz 用户级密钥文件，配置中只保存密钥别名。",
+            ),
+            WARNING,
+        )
+        .await?;
+        Ok(Some("morphz_env_file".to_string()))
+    }
 }
 
 async fn configure_credential(
@@ -1352,10 +1585,18 @@ mod tests {
     #[test]
     fn provider_presets_are_catalog_backed_and_protocol_explicit() {
         let presets = presets();
-        assert_eq!(presets.len(), 3);
+        assert_eq!(presets.len(), 5);
         assert_eq!(presets[0].protocol, ModelProtocol::OpenaiResponses);
-        assert_eq!(presets[1].protocol, ModelProtocol::AnthropicMessages);
-        assert_eq!(presets[2].protocol, ModelProtocol::GeminiContent);
+        assert_eq!(presets[1].adapter, "openai-codex");
+        assert_eq!(presets[1].oauth_adapter, Some("codex-oauth"));
+        assert_eq!(presets[1].default_model, Some("gpt-5.6"));
+        assert_eq!(presets[2].protocol, ModelProtocol::AnthropicMessages);
+        assert_eq!(presets[3].protocol, ModelProtocol::GeminiContent);
+        assert_eq!(presets[4].adapter, "kimi-code");
+        assert_eq!(presets[4].protocol, ModelProtocol::OpenaiChat);
+        assert_eq!(presets[4].oauth_adapter, Some("kimi-oauth"));
+        assert_eq!(presets[4].default_model, Some("k3"));
+        assert_eq!(presets[4].default_alias, Some("kimi-k3"));
         assert!(presets
             .iter()
             .all(|preset| preset.base_url.starts_with("https://")));

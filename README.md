@@ -2,6 +2,8 @@
 
 Morphz 是一个由 Rust 实现、能够通过 SExpr DSL 自主管理自身 Context 的 AI Agent。它的核心不只是运行工具，而是把工作注意力的语义控制权交给 LLM：Agent 自己决定保留、派生、修订、保护、退役和恢复哪些信息，Runtime 只负责事务、版本、权限、资源压力、持久化与恢复。
 
+当前核心能力、验证边界和仍未成熟的方向，统一以 [Morphz Runtime 核心实现状态总览 v1](docs/morphz_runtime_core_implementation_status_v1.md) 为索引。历史设计文档保留演进过程；若其中的旧实施状态与当前源码不一致，以该状态总览和最新专项文档为准。
+
 当前 Agent-Owned Context v1 将状态分成：
 
 - `kernel`：Runtime 拥有的只读 Context、当前求值的 active Session、version 和 Context pressure；
@@ -16,7 +18,7 @@ Agent 拥有 Mind 的认识论与语义控制权；Runtime 则负责不可伪造
 
 Reality Contract v1 已将上述现实约束与认识纪律统一生成到 System Prompt、Context Protocol 和 `context_tx` 工具说明，并完成 Gemini 跨领域五次回归。实现细节、Prefix Cache 编排和真实结果见 [Reality Contract v1 验证报告](docs/morphz_reality_contract_v1_validation.md)。
 
-当前各项真实测试的最终结果、模型身份、结论边界和未完成项见 [Morphz 当前评测状态总览](docs/morphz_eval_status.md)。日常主测 Agent 为 `gemini-3-flash-agent`，其他模型用于能力对照与 Provider 协议覆盖验证。
+早期真实测试的模型身份、结果与结论边界见 [Morphz 评测历史快照](docs/morphz_eval_status.md)。该文档保留 Protocol v8–v16 的可比基线，不代表当前默认模型或生产协议版本。
 
 Experience Transfer v1 以相关经验、无关经验和全新 Agent 三 arm 同条件比较已有 Mind 对后续任务的影响。初版结果后来发现 Inbox 可以替 Mind 通过的评分缺陷；当前已改为严格检查活动 Mind Frame/Relation。场景设计、无效夹具与历史结果更正见 [Experience Transfer Benchmark v1](docs/morphz_experience_transfer_benchmark_v1.md)。
 
@@ -24,7 +26,7 @@ Cognitive SExpr VM Prompt 将 LLM 定义为持续运行的 S 表达式认知机�
 
 Runtime 现在提供三个可运行的 System Prompt Profile，并默认使用 `semantic_sexpr_vm`：整个稳定 Prompt 是一棵 SExpr，`seq/call/fallback/bind/if/reply` 的自然语言语义位于各自节点内部。`cognitive_sexpr_vm` 与 `agent_owned_context` 仍可通过 `MORPHZ_SYSTEM_PROMPT_MODE` 选择。三者共享 Context Protocol、DSL、工具和持久化状态；普通无工具文本直接回复当前 active Session，`no_reply` 表示显式静默，`send_message` 用于主动联系另一 Session。完整响应协议见 [单 Session 求值与响应路由协议 v1](docs/morphz_response_routing_protocol_v1.md)。
 
-Context-Owned Session Service v1 提供持久化 Context/Session Registry、消息幂等、按 Session 的消息与回复路由、共享 Context Encoding、过滤 WebSocket 和取消语义。一个 Context 拥有一个共享 Mind 和多个可并发活跃的 Session；同一 Session 的独立 Work Item 也可以并发求值，回复和工具 continuation 通过 `root_turn_id` 保持因果隔离，`context_tx` 仍按 Context 加锁串行提交。接口与边界见 [Session Service v1](docs/morphz_session_service_v1.md)。
+Context-Owned Session Service v1 提供持久化 Context/Session Registry、消息幂等、按 Session 的消息与回复路由、共享 Context Encoding、过滤 WebSocket 和取消语义。一个 Context 拥有一个共享 Mind 和多个可并发活跃的 Session；同一 Session 可以同时拥有 Dialogue、Execution、Objective 与 Delivery Thread，回复和工具 continuation 通过稳定因果身份保持隔离。`context_tx` 的物理提交仍短暂串行化，但 Frame 级 MVCC 已允许修改不同 Frame 的并发事务安全 rebase；同一 Frame 或全局生命周期冲突仍会被拒绝。接口与边界见 [Session Service v1](docs/morphz_session_service_v1.md) 与 [Context 事务、Mind Projection 与分布式扩展](docs/morphz_context_transaction_scalability_and_mind_projection_v1.md)。
 
 Agent / Context / Session Lifecycle v1 在统一 Mount/Seed/Projection 底层上提供四个高层语义：`create_session` 在当前 Context 创建共享会话，`create_independent_session` 继承 Mind 但隔离原 Session/Inbox，`create_agent` 创建全新 Agent/Root Context/初始 Session，`delegate` 把共享 Mind 与可选的当前 Session 证据交给隔离 Sub Agent，并将结果返回父 Session 验证和整合。设计、不变量、API 与验证结果见 [Lifecycle 与 Delegation v1](docs/morphz_agent_context_session_lifecycle_v1.md)。
 
@@ -32,7 +34,7 @@ Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭�
 
 真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Ledger 评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
 
-Attempt Runtime 将物理工作与 Context transaction 分开控制。当前 Protocol v16 以 Evaluation Work Item、Session Working Set、Session attention 和因果可见边界承载并发；每个模型请求只有一个 active Session，不再保留多 Session 合并求值。无工具非空文本是当前 Work Item 的可投递终态，独占 `no_reply` 是静默终态；空响应或非法混用会有限纠错后安全熔断。物理工具结果只恢复所属因果链，更晚到达的并发消息不会倒灌进旧 Work Item；终态唯一性也按 Work Item 提交，因此同一 Root Turn 的后台唤醒可以产生新的、不会被早先响应抑制的结果。
+Scheduler Kernel v2 将物理工作与 Context transaction 分开控制。当前 Context Protocol v26 以 Thread、Activation、结构化 Dependency、Session Working Set、Session attention 和因果可见边界承载并发；每个模型请求只有一个 active Session，不再保留多 Session 合并求值。无工具非空文本是当前 Dialogue/Delivery Activation 的可投递终态，独占 `no_reply` 是静默终态；空响应或非法混用会有限纠错后安全收口。物理工具结果只恢复所属因果链，更晚到达的并发消息不会倒灌进旧 Thread。内部调度 Signal、终态与依赖推进由 Kernel 原子提交，不再依赖 Event → Signal Outbox 的二次翻译。完整现状见 [Scheduler Kernel v2 稳定化重构](docs/morphz_scheduler_kernel_stabilization_v2.md)。
 
 Session Working Set 默认选择当前 Session 与最近 24 小时内最多 50 个活跃 Session；共享 Mind 始终保留，超出窗口、数量或 Token Budget 的 Session 只退出完整 Observation 投影。Agent 可用 `retire-session/restore-session` 持久维护注意力，新定向消息或工具结果会自动恢复目标 Session。可用 `MORPHZ_SESSION_ACTIVE_WINDOW` 和 `MORPHZ_SESSION_WORKING_SET_MAX` 调整策略；`morphz context status`、TUI 顶栏以及 `/api/contexts/:context_id/working-set`、`/api/contexts/:context_id/work-items` 可查看实际编译状态。完整实现与真实 Gemini 并发结果见 [并发 Session 与认知工作集 v1](docs/morphz_concurrent_session_working_set_v1.md)。
 
@@ -154,11 +156,21 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 
    ```bash
    morphz provider list
-   morphz provider test <provider-id>
-   morphz model list --provider=<provider-id>
+   morphz provider show <provider-instance-id>
+   morphz provider account list
+   morphz provider account login <account-id>
+   morphz provider account test <account-id> --route=<model-alias>
+   morphz model route list
+   morphz model route test <model-alias> --account=<account-id>
+   morphz model refresh <model-alias> --account=<account-id>
    morphz config explain --format=json
    morphz doctor
    ```
+
+   Runtime 使用稳定的 Model Route alias 求值；一个 alias 可以按顺序路由到不同
+   Provider Instance、Auth Account 与物理模型名。同一种 OAuth Adapter 也可以配置多个
+   相互隔离的账号。完整领域模型、OAuth 边界和运维契约见
+   [Provider、Model 与 OAuth 架构 v1](docs/morphz_provider_model_oauth_architecture_v1.md)。
 
 2. 如需 HTTP/WebSocket 与 Inspector，先启动 Server：
 

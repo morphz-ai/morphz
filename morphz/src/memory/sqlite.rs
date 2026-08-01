@@ -34,20 +34,22 @@ use crate::memory::{
     NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
     NewThreadGroupPlan, NewThreadSignal, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
-    PrincipalDirectoryPage, PrincipalRecord, QueryFilter, RecallDocument, RecallDocumentKind,
-    RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore,
-    RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
-    ScheduleRecord, ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding,
-    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
-    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
-    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
-    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy,
-    ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle,
-    ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
-    ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
-    DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
+    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
+    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
+    RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
+    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus,
+    ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
+    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
+    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadControlAction, ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord,
+    ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus,
+    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation,
+    ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord, ThreadPromotionRequest,
+    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, ThreadSupervision,
+    ThreadSupervisorKind, TimerStore, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
@@ -326,6 +328,51 @@ impl SqliteStore {
             version TEXT PRIMARY KEY,
             applied_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS provider_account_states (
+            account_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL CHECK(revision >= 0),
+            status TEXT NOT NULL,
+            cooldown_until TEXT,
+            last_error_kind TEXT,
+            last_used_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_account_states_status
+            ON provider_account_states(status, cooldown_until, last_used_at);
+
+        CREATE TABLE IF NOT EXISTS provider_account_affinities (
+            route_id TEXT NOT NULL,
+            scope_key TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK(revision >= 0),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(route_id, scope_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_account_affinities_account
+            ON provider_account_affinities(account_id, updated_at);
+
+        CREATE TABLE IF NOT EXISTS provider_refresh_leases (
+            account_id TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL CHECK(generation > 0),
+            owner_id TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS provider_model_catalog (
+            provider_instance_id TEXT NOT NULL,
+            auth_account_id TEXT NOT NULL,
+            physical_model TEXT NOT NULL,
+            adapter_id TEXT NOT NULL,
+            adapter_version TEXT NOT NULL,
+            protocol TEXT NOT NULL,
+            source TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY(provider_instance_id, auth_account_id, physical_model)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_model_catalog_observed
+            ON provider_model_catalog(provider_instance_id, observed_at DESC, physical_model);
 
         CREATE TABLE IF NOT EXISTS signal_outbox (
             event_id TEXT PRIMARY KEY,
@@ -1980,6 +2027,345 @@ async fn migrate_session_projections(
     }
     tx.commit().await?;
     Ok(())
+}
+
+fn provider_account_state_from_sqlite_row(
+    row: &SqliteRow,
+) -> Result<ProviderAccountStateRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ProviderAccountStateRecord {
+        account_id: row.get("account_id"),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        status: ProviderAccountStatus::parse(&row.get::<String, _>("status"))?,
+        cooldown_until: row
+            .get::<Option<String>, _>("cooldown_until")
+            .map(|value| parse_time(&value)),
+        last_error_kind: row.get("last_error_kind"),
+        last_used_at: row
+            .get::<Option<String>, _>("last_used_at")
+            .map(|value| parse_time(&value)),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
+fn provider_account_affinity_from_sqlite_row(
+    row: &SqliteRow,
+) -> Result<ProviderAccountAffinityRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ProviderAccountAffinityRecord {
+        route_id: row.get("route_id"),
+        scope_key: row.get("scope_key"),
+        account_id: row.get("account_id"),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
+fn provider_refresh_lease_from_sqlite_row(
+    row: &SqliteRow,
+) -> Result<ProviderRefreshLeaseRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ProviderRefreshLeaseRecord {
+        account_id: row.get("account_id"),
+        generation: u64::try_from(row.get::<i64, _>("generation"))?,
+        owner_id: row.get("owner_id"),
+        lease_expires_at: parse_time(&row.get::<String, _>("lease_expires_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
+fn provider_model_catalog_from_sqlite_row(row: &SqliteRow) -> ProviderModelCatalogRecord {
+    ProviderModelCatalogRecord {
+        provider_instance_id: row.get("provider_instance_id"),
+        auth_account_id: row.get("auth_account_id"),
+        physical_model: row.get("physical_model"),
+        adapter_id: row.get("adapter_id"),
+        adapter_version: row.get("adapter_version"),
+        protocol: row.get("protocol"),
+        source: row.get("source"),
+        observed_at: parse_time(&row.get::<String, _>("observed_at")),
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderModelCatalogStore for SqliteStore {
+    async fn replace_provider_model_catalog(
+        &self,
+        provider_instance_id: &str,
+        auth_account_id: &str,
+        adapter_id: &str,
+        adapter_version: &str,
+        protocol: &str,
+        source: &str,
+        physical_models: &[String],
+        observed_at: DateTime<Utc>,
+    ) -> Result<Vec<ProviderModelCatalogRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if provider_instance_id.trim().is_empty() || auth_account_id.trim().is_empty() {
+            return Err("Provider Instance 与 Auth Account ID 不能为空".into());
+        }
+        let mut models = physical_models
+            .iter()
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        let observed_at = observed_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM provider_model_catalog WHERE provider_instance_id = ? AND auth_account_id = ?",
+        )
+        .bind(provider_instance_id)
+        .bind(auth_account_id)
+        .execute(&mut *tx)
+        .await?;
+        for model in &models {
+            sqlx::query(
+                r#"INSERT INTO provider_model_catalog
+                   (provider_instance_id, auth_account_id, physical_model, adapter_id,
+                    adapter_version, protocol, source, observed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+            )
+            .bind(provider_instance_id)
+            .bind(auth_account_id)
+            .bind(model)
+            .bind(adapter_id)
+            .bind(adapter_version)
+            .bind(protocol)
+            .bind(source)
+            .bind(&observed_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let rows = sqlx::query(
+            r#"SELECT * FROM provider_model_catalog
+               WHERE provider_instance_id = ? AND auth_account_id = ?
+               ORDER BY physical_model"#,
+        )
+        .bind(provider_instance_id)
+        .bind(auth_account_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows
+            .iter()
+            .map(provider_model_catalog_from_sqlite_row)
+            .collect())
+    }
+
+    async fn list_provider_model_catalog(
+        &self,
+    ) -> Result<Vec<ProviderModelCatalogRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT * FROM provider_model_catalog
+               ORDER BY provider_instance_id, auth_account_id, physical_model"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(provider_model_catalog_from_sqlite_row)
+            .collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderAccountStateStore for SqliteStore {
+    async fn get_provider_account_state(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<ProviderAccountStateRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query("SELECT * FROM provider_account_states WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref()
+            .map(provider_account_state_from_sqlite_row)
+            .transpose()
+    }
+
+    async fn put_provider_account_state(
+        &self,
+        account_id: &str,
+        expected_revision: Option<u64>,
+        status: ProviderAccountStatus,
+        cooldown_until: Option<DateTime<Utc>>,
+        last_error_kind: Option<&str>,
+        mark_used: bool,
+    ) -> Result<ProviderAccountStateRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if account_id.trim().is_empty() {
+            return Err("Provider Account ID 不能为空".into());
+        }
+        let now = Utc::now();
+        let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let cooldown =
+            cooldown_until.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let mut tx = self.pool.begin().await?;
+        let current =
+            sqlx::query("SELECT revision FROM provider_account_states WHERE account_id = ?")
+                .bind(account_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let current_revision = current
+            .as_ref()
+            .map(|row| u64::try_from(row.get::<i64, _>("revision")))
+            .transpose()?;
+        if expected_revision.is_some() && expected_revision != current_revision {
+            return Err(format!(
+                "Provider Account '{account_id}' revision 冲突：期望 {:?}，当前 {:?}",
+                expected_revision, current_revision
+            )
+            .into());
+        }
+        let next_revision = current_revision.unwrap_or_default().saturating_add(1);
+        let next_revision_i64 = i64::try_from(next_revision)?;
+        sqlx::query(
+            r#"INSERT INTO provider_account_states
+               (account_id, revision, status, cooldown_until, last_error_kind, last_used_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(account_id) DO UPDATE SET
+                 revision = excluded.revision,
+                 status = excluded.status,
+                 cooldown_until = excluded.cooldown_until,
+                 last_error_kind = excluded.last_error_kind,
+                 last_used_at = CASE WHEN ? THEN excluded.last_used_at ELSE provider_account_states.last_used_at END,
+                 updated_at = excluded.updated_at"#,
+        )
+        .bind(account_id)
+        .bind(next_revision_i64)
+        .bind(status.as_str())
+        .bind(cooldown)
+        .bind(last_error_kind)
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(mark_used)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query("SELECT * FROM provider_account_states WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        provider_account_state_from_sqlite_row(&row)
+    }
+
+    async fn get_provider_account_affinity(
+        &self,
+        route_id: &str,
+        scope_key: &str,
+    ) -> Result<Option<ProviderAccountAffinityRecord>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let row = sqlx::query(
+            "SELECT * FROM provider_account_affinities WHERE route_id = ? AND scope_key = ?",
+        )
+        .bind(route_id)
+        .bind(scope_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref()
+            .map(provider_account_affinity_from_sqlite_row)
+            .transpose()
+    }
+
+    async fn put_provider_account_affinity(
+        &self,
+        route_id: &str,
+        scope_key: &str,
+        account_id: &str,
+    ) -> Result<ProviderAccountAffinityRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO provider_account_affinities
+               (route_id, scope_key, account_id, revision, updated_at)
+               VALUES (?, ?, ?, 1, ?)
+               ON CONFLICT(route_id, scope_key) DO UPDATE SET
+                 account_id = excluded.account_id,
+                 revision = provider_account_affinities.revision + 1,
+                 updated_at = excluded.updated_at"#,
+        )
+        .bind(route_id)
+        .bind(scope_key)
+        .bind(account_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query(
+            "SELECT * FROM provider_account_affinities WHERE route_id = ? AND scope_key = ?",
+        )
+        .bind(route_id)
+        .bind(scope_key)
+        .fetch_one(&self.pool)
+        .await?;
+        provider_account_affinity_from_sqlite_row(&row)
+    }
+
+    async fn claim_provider_refresh_lease(
+        &self,
+        account_id: &str,
+        owner_id: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<Option<ProviderRefreshLeaseRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now();
+        if lease_expires_at <= now {
+            return Err("Provider Refresh lease 必须在未来".into());
+        }
+        let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let expires = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let current = sqlx::query("SELECT * FROM provider_refresh_leases WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let Some(row) = &current {
+            let existing = provider_refresh_lease_from_sqlite_row(row)?;
+            if existing.lease_expires_at > now && existing.owner_id != owner_id {
+                return Ok(None);
+            }
+        }
+        let generation = current
+            .as_ref()
+            .map(|row| u64::try_from(row.get::<i64, _>("generation")))
+            .transpose()?
+            .unwrap_or_default()
+            .saturating_add(1);
+        sqlx::query(
+            r#"INSERT INTO provider_refresh_leases
+               (account_id, generation, owner_id, lease_expires_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(account_id) DO UPDATE SET
+                 generation = excluded.generation,
+                 owner_id = excluded.owner_id,
+                 lease_expires_at = excluded.lease_expires_at,
+                 updated_at = excluded.updated_at"#,
+        )
+        .bind(account_id)
+        .bind(i64::try_from(generation)?)
+        .bind(owner_id)
+        .bind(expires)
+        .bind(now_text)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query("SELECT * FROM provider_refresh_leases WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(provider_refresh_lease_from_sqlite_row(&row)?))
+    }
+
+    async fn release_provider_refresh_lease(
+        &self,
+        account_id: &str,
+        generation: u64,
+        owner_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let result = sqlx::query(
+            "DELETE FROM provider_refresh_leases WHERE account_id = ? AND generation = ? AND owner_id = ?",
+        )
+        .bind(account_id)
+        .bind(i64::try_from(generation)?)
+        .bind(owner_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
 }
 
 impl crate::memory::RuntimeStore for SqliteStore {
@@ -24520,5 +24906,127 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn provider_account_state_affinity_and_refresh_fencing_are_durable() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let state = store
+            .put_provider_account_state(
+                "account-a",
+                None,
+                ProviderAccountStatus::Ready,
+                None,
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.revision, 1);
+        assert!(state.last_used_at.is_some());
+
+        let affinity = store
+            .put_provider_account_affinity("coding", "context-a", "account-a")
+            .await
+            .unwrap();
+        assert_eq!(affinity.account_id, "account-a");
+        assert_eq!(
+            store
+                .get_provider_account_affinity("coding", "context-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .account_id,
+            "account-a"
+        );
+
+        let first = store
+            .claim_provider_refresh_lease(
+                "account-a",
+                "worker-a",
+                Utc::now() + chrono::Duration::seconds(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .claim_provider_refresh_lease(
+                "account-a",
+                "worker-b",
+                Utc::now() + chrono::Duration::seconds(30),
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!store
+            .release_provider_refresh_lease("account-a", first.generation + 1, "worker-a")
+            .await
+            .unwrap());
+        assert!(store
+            .release_provider_refresh_lease("account-a", first.generation, "worker-a")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn remote_model_catalog_replaces_one_account_without_touching_another() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let observed_at = Utc::now();
+        store
+            .replace_provider_model_catalog(
+                "codex",
+                "account-a",
+                "openai-codex",
+                "1",
+                "openai-responses",
+                "remote_provider",
+                &["gpt-5.6".into(), "gpt-5.6-sol".into()],
+                observed_at,
+            )
+            .await
+            .unwrap();
+        store
+            .replace_provider_model_catalog(
+                "codex",
+                "account-b",
+                "openai-codex",
+                "1",
+                "openai-responses",
+                "remote_provider",
+                &["gpt-5.6".into()],
+                observed_at,
+            )
+            .await
+            .unwrap();
+        store
+            .replace_provider_model_catalog(
+                "codex",
+                "account-a",
+                "openai-codex",
+                "2",
+                "openai-responses",
+                "remote_provider",
+                &["gpt-5.7".into(), "gpt-5.7".into()],
+                observed_at + chrono::Duration::seconds(1),
+            )
+            .await
+            .unwrap();
+
+        let records = store.list_provider_model_catalog().await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().any(|record| {
+            record.auth_account_id == "account-a"
+                && record.physical_model == "gpt-5.7"
+                && record.adapter_version == "2"
+        }));
+        assert!(records.iter().any(|record| {
+            record.auth_account_id == "account-b" && record.physical_model == "gpt-5.6"
+        }));
     }
 }

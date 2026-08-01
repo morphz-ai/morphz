@@ -10,6 +10,8 @@
 > 适用范围：Runtime、Context Encoding、Objective / Evaluation、Skill、工具、领域认知 Frame 与未来 Harness 包
 > 配套设计：[Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1](morphz_yao_harness_file.md)
 
+> 实施边界更新（2026-08-01）：上述基础设施 v1 已实现，并已对齐 Scheduler Kernel v2 的 Direct Signal 与恢复边界；领域 `process`、模块组合、远端签名目录、内置 Coding/写作/视频包以及可重复的能力增益仍处于实验或未来阶段。“Harness 机制可运行”不等于某个领域 Harness 已经证明优于模型原生能力。
+
 ## 1. 核心结论
 
 Morphz 不应为 Coding、知识工作、研究、视频编辑等领域分别复制一套 Agent Runtime。它们共享同一个通用 Runtime，但可以在 Runtime 之上挂载不同的 **Domain Harness（领域运行套件）**。

@@ -16,7 +16,9 @@ use morphz::orchestrator::context::{
     FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
 };
 use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
+use morphz::provider::auth::{OAuthFlowKind, OAuthLoginCompletion, OAuthLoginProgress};
 use morphz::provider::build_configured_client;
+use morphz::provider::control::ProviderAccountControlAction;
 use morphz::provider::{list_provider_models, probe_provider};
 use morphz::runtime::{
     MorphzRuntime, RuntimeEventStream, RuntimeIdentity, SchedulerQuery, SessionHandle,
@@ -119,12 +121,27 @@ async fn main() -> Result<(), AppError> {
         selected_profile,
     )?;
 
+    let mut setup_oauth_account = None;
+
     // Setup is a host-side control-plane action. It must be available before
     // database/runtime initialization and, most importantly, before a model
     // credential exists.
     if invocation.command_path() == ["setup"] {
-        morphz::setup::run_interactive_setup_for(resolved.config.ui.language.resolve()).await?;
-        return Ok(());
+        let result =
+            morphz::setup::run_interactive_setup_for(resolved.config.ui.language.resolve()).await?;
+        setup_oauth_account = result.oauth_account;
+        if setup_oauth_account.is_none() {
+            return Ok(());
+        }
+        // OAuth login is deliberately not implemented inside Setup. Re-load
+        // the atomically persisted Provider graph, then enter the exact same
+        // Runtime/AuthAdapter path used by CLI, HTTP and Dashboard.
+        resolved = resolve_invocation_config(
+            &invocation,
+            &cwd,
+            explicit_config_path.as_deref(),
+            selected_profile,
+        )?;
     }
 
     let interactive_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -137,7 +154,9 @@ async fn main() -> Result<(), AppError> {
             "尚未配置模型 Provider，正在进入首次启动设置。\n\
              （Morphz 不会自动读取工作目录中的 .env；凭证将保存到用户级配置。）\n"
         );
-        morphz::setup::run_interactive_setup_for(resolved.config.ui.language.resolve()).await?;
+        let result =
+            morphz::setup::run_interactive_setup_for(resolved.config.ui.language.resolve()).await?;
+        setup_oauth_account = result.oauth_account;
         // The setup wizard writes the managed user layer. Re-resolve all
         // layers so this very invocation can continue into the TUI without a
         // restart, while preserving Profile/project/CLI precedence.
@@ -191,6 +210,11 @@ async fn main() -> Result<(), AppError> {
         let sdk = MorphzSdk::new(runtime.clone());
         sdk.adopt_sessions_for_default_principal(sdk.default_principal(), true)
             .await?;
+    }
+
+    if let Some(account_id) = setup_oauth_account.as_deref() {
+        start_provider_account_login_for(&runtime, account_id, false).await?;
+        return Ok(());
     }
 
     dispatch_runtime_command(
@@ -828,8 +852,31 @@ async fn dispatch_runtime_command(
         "execution cancel" => cancel_execution_job(&runtime, &invocation).await,
         "provider" | "provider list" => list_providers(&app_config, &invocation),
         "provider test" => test_provider(&app_config, &invocation).await,
+        "provider show" => show_provider_instance(&runtime, &invocation).await,
+        "provider set" => set_provider_instance(&runtime, &invocation).await,
+        "provider account" | "provider account list" => {
+            list_provider_accounts(&runtime, &invocation).await
+        }
+        "provider account login" => start_provider_account_login(&runtime, &invocation).await,
+        "provider account complete" => complete_provider_account_login(&runtime, &invocation).await,
+        "provider account logout" => logout_provider_account(&runtime, &invocation).await,
+        "provider account set" => set_provider_account(&runtime, &invocation).await,
+        "provider account enable" => {
+            mutate_provider_account(&runtime, &invocation, ProviderAccountControlAction::Enable)
+                .await
+        }
+        "provider account disable" => {
+            mutate_provider_account(&runtime, &invocation, ProviderAccountControlAction::Disable)
+                .await
+        }
+        "provider account test" => test_provider_account(&runtime, &invocation).await,
         "model" | "model list" => list_models(&app_config, &invocation).await,
+        "model refresh" => refresh_model_catalog(&runtime, &invocation).await,
         "model use" => use_model(&app_config, &invocation),
+        "model route" | "model route list" => list_model_routes(&runtime, &invocation).await,
+        "model route show" => show_model_route(&runtime, &invocation).await,
+        "model route set" => set_model_route(&runtime, &invocation).await,
+        "model route test" => test_model_route(&runtime, &invocation).await,
         "profile" | "profile list" => list_profiles(&invocation),
         "profile show" => show_profile(&invocation),
         "profile use" => use_profile(&invocation),
@@ -1636,6 +1683,475 @@ async fn test_provider(
         );
         if let Some(error) = &probe.catalog_error {
             println!("模型目录不可用（不影响已通过的请求握手）：{error}");
+        }
+    }
+    Ok(())
+}
+
+async fn list_provider_accounts(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let snapshot = MorphzSdk::new(runtime.clone())
+        .provider_control_snapshot()
+        .await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&snapshot.auth_accounts)?);
+        return Ok(());
+    }
+    if snapshot.auth_accounts.is_empty() {
+        println!("尚未配置 Auth Account。请在 morphz.toml 的 auth_accounts 中添加账号。");
+        return Ok(());
+    }
+    for (account_id, account) in snapshot.auth_accounts {
+        let status = account
+            .state
+            .as_ref()
+            .map(|state| format!("{:?}", state.status).to_ascii_lowercase())
+            .unwrap_or_else(|| {
+                if account.effective_enabled {
+                    "ready".to_string()
+                } else {
+                    "disabled".to_string()
+                }
+            });
+        let auth = if account.oauth {
+            if account.authenticated {
+                "oauth:authenticated"
+            } else {
+                "oauth:login-required"
+            }
+        } else {
+            account.config.auth_adapter.as_str()
+        };
+        let revision = account
+            .state
+            .as_ref()
+            .map(|state| state.revision.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "{account_id}\tprovider={}\tauth={}\tstatus={}\trevision={}",
+            account.config.provider.as_deref().unwrap_or("-"),
+            auth,
+            status,
+            revision
+        );
+    }
+    Ok(())
+}
+
+async fn show_provider_instance(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let provider_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz provider show PROVIDER")?;
+    let snapshot = MorphzSdk::new(runtime.clone())
+        .provider_control_snapshot()
+        .await?;
+    let provider = snapshot
+        .provider_instances
+        .get(provider_id)
+        .ok_or_else(|| format!("Provider Instance '{provider_id}' 不存在"))?;
+    println!("{}", toml::to_string_pretty(provider)?);
+    Ok(())
+}
+
+async fn set_provider_instance(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let args = invocation.prompt_args();
+    let provider_id = args
+        .first()
+        .ok_or("用法: morphz provider set PROVIDER FILE")?;
+    let file = args
+        .get(1)
+        .ok_or("用法: morphz provider set PROVIDER FILE")?;
+    let provider: config::ProviderInstanceConfig = read_toml_object(Path::new(file))?;
+    let path = config::managed_config_path()?;
+    let receipt = MorphzSdk::new(runtime.clone())
+        .put_provider_instance_config(&path, provider_id, provider)
+        .await?;
+    print_provider_catalog_receipt(invocation, &receipt)?;
+    Ok(())
+}
+
+async fn set_provider_account(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let args = invocation.prompt_args();
+    let account_id = args
+        .first()
+        .ok_or("用法: morphz provider account set ACCOUNT FILE")?;
+    let file = args
+        .get(1)
+        .ok_or("用法: morphz provider account set ACCOUNT FILE")?;
+    let account: config::AuthAccountConfig = read_toml_object(Path::new(file))?;
+    let path = config::managed_config_path()?;
+    let receipt = MorphzSdk::new(runtime.clone())
+        .put_auth_account_config(&path, account_id, account)
+        .await?;
+    print_provider_catalog_receipt(invocation, &receipt)?;
+    Ok(())
+}
+
+async fn list_model_routes(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let snapshot = MorphzSdk::new(runtime.clone())
+        .provider_control_snapshot()
+        .await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&snapshot.model_routes)?);
+    } else {
+        for (route_id, route) in snapshot.model_routes {
+            println!(
+                "{route_id}\taliases={}\tcandidates={}\taffinity={:?}\tselection={:?}\tfallback={}",
+                route.aliases.join(","),
+                route.candidates.len(),
+                route.affinity,
+                route.selection,
+                route.fallback
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn show_model_route(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let route_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz model route show ROUTE")?;
+    let snapshot = MorphzSdk::new(runtime.clone())
+        .provider_control_snapshot()
+        .await?;
+    let route = snapshot
+        .model_routes
+        .get(route_id)
+        .ok_or_else(|| format!("Model Route '{route_id}' 不存在"))?;
+    println!("{}", toml::to_string_pretty(route)?);
+    Ok(())
+}
+
+async fn set_model_route(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
+    let args = invocation.prompt_args();
+    let route_id = args
+        .first()
+        .ok_or("用法: morphz model route set ROUTE FILE")?;
+    let file = args
+        .get(1)
+        .ok_or("用法: morphz model route set ROUTE FILE")?;
+    let route: config::ModelRouteConfig = read_toml_object(Path::new(file))?;
+    let path = config::managed_config_path()?;
+    let receipt = MorphzSdk::new(runtime.clone())
+        .put_model_route_config(&path, route_id, route)
+        .await?;
+    print_provider_catalog_receipt(invocation, &receipt)?;
+    Ok(())
+}
+
+fn read_toml_object<T>(path: &Path) -> Result<T, AppError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let content = std::fs::read_to_string(path)?;
+    Ok(toml::from_str(&content)?)
+}
+
+fn print_provider_catalog_receipt(
+    invocation: &Invocation,
+    receipt: &morphz::provider::control::ProviderCatalogMutationReceipt,
+) -> Result<(), AppError> {
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(receipt)?);
+    } else {
+        println!(
+            "已保存 {:?} '{}' 到 {}。静态目录将在 Runtime 重启后生效。",
+            receipt.kind, receipt.id, receipt.managed_config_path
+        );
+    }
+    Ok(())
+}
+
+async fn start_provider_account_login(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let account_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz provider account login ACCOUNT")?;
+    start_provider_account_login_for(runtime, account_id, json_output(invocation)).await
+}
+
+async fn start_provider_account_login_for(
+    runtime: &MorphzRuntime,
+    account_id: &str,
+    json: bool,
+) -> Result<(), AppError> {
+    let challenge = MorphzSdk::new(runtime.clone())
+        .start_provider_oauth_login(account_id)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&challenge)?);
+        return Ok(());
+    }
+    println!("OAuth 登录已创建：{}", challenge.login_id);
+    match challenge.flow {
+        OAuthFlowKind::AuthorizationCodePkce => {
+            let url = challenge
+                .authorization_url
+                .as_deref()
+                .ok_or("OAuth Adapter 未返回授权地址")?;
+            println!("请在浏览器完成授权：\n{url}");
+            if let Err(error) = open_dashboard_browser(url) {
+                tracing::warn!(%error, "无法自动打开 OAuth 授权地址");
+            }
+            println!(
+                "授权后运行：morphz provider account complete {} --code CODE --state STATE",
+                challenge.login_id
+            );
+        }
+        OAuthFlowKind::DeviceCode => {
+            let url = challenge
+                .verification_uri_complete
+                .as_deref()
+                .or(challenge.verification_uri.as_deref())
+                .ok_or("OAuth Adapter 未返回设备授权地址")?;
+            println!("请打开：{url}");
+            if let Some(code) = challenge.user_code.as_deref() {
+                println!("设备码：{code}");
+            }
+            if let Err(error) = open_dashboard_browser(url) {
+                tracing::warn!(%error, "无法自动打开 OAuth 设备授权地址");
+            }
+            println!(
+                "完成授权后运行：morphz provider account complete {} --poll",
+                challenge.login_id
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn complete_provider_account_login(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let login_id = invocation.prompt_args().first().ok_or(
+        "用法: morphz provider account complete LOGIN_ID [--poll | --code CODE --state STATE]",
+    )?;
+    let completion = if switch_enabled(invocation, "poll")? {
+        OAuthLoginCompletion::Poll
+    } else {
+        OAuthLoginCompletion::AuthorizationCode {
+            code: option_value(invocation, "code")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or("授权码流程需要 --code")?
+                .to_string(),
+            state: option_value(invocation, "state")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or("授权码流程需要 --state")?
+                .to_string(),
+        }
+    };
+    let progress = MorphzSdk::new(runtime.clone())
+        .continue_provider_oauth_login(login_id, completion)
+        .await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&progress)?);
+        return Ok(());
+    }
+    match progress {
+        OAuthLoginProgress::Pending { retry_after_secs } => println!(
+            "授权尚未完成；约 {retry_after_secs} 秒后再次运行 `morphz provider account complete {login_id} --poll`。"
+        ),
+        OAuthLoginProgress::Complete { account } => println!(
+            "OAuth 登录成功：account={} adapter={} subject={}",
+            account.account_id,
+            account.adapter_id,
+            account.subject.as_deref().unwrap_or("-")
+        ),
+    }
+    Ok(())
+}
+
+async fn logout_provider_account(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let account_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz provider account logout ACCOUNT")?;
+    let deleted = MorphzSdk::new(runtime.clone())
+        .logout_provider_oauth_account(account_id)
+        .await?;
+    if json_output(invocation) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "account_id": account_id,
+                "logged_out": deleted,
+            }))?
+        );
+    } else if deleted {
+        println!("已注销 OAuth 账号 '{account_id}'，Token 已从 Secret Store 删除。");
+    } else {
+        println!("账号 '{account_id}' 当前没有已保存的 OAuth Token。");
+    }
+    Ok(())
+}
+
+async fn mutate_provider_account(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    action: ProviderAccountControlAction,
+) -> Result<(), AppError> {
+    let account_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("缺少 Auth Account ID")?;
+    let expected_revision = option_value(invocation, "revision")
+        .map(str::parse::<u64>)
+        .transpose()
+        .map_err(|_| "--revision 必须是非负整数")?;
+    let state = MorphzSdk::new(runtime.clone())
+        .control_provider_account(account_id, expected_revision, action)
+        .await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&state)?);
+    } else {
+        println!(
+            "账号 '{}' 已{}；status={:?} revision={}",
+            account_id,
+            match action {
+                ProviderAccountControlAction::Enable => "启用",
+                ProviderAccountControlAction::Disable => "禁用",
+            },
+            state.status,
+            state.revision
+        );
+    }
+    Ok(())
+}
+
+async fn test_provider_account(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let account_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("缺少 Auth Account ID")?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let snapshot = sdk.provider_control_snapshot().await?;
+    if !snapshot.auth_accounts.contains_key(account_id) {
+        return Err(format!("Auth Account '{account_id}' 不存在").into());
+    }
+    let route_id = if let Some(route) = option_value(invocation, "route") {
+        route.to_string()
+    } else {
+        snapshot
+            .model_routes
+            .iter()
+            .find(|(_, route)| {
+                route.candidates.iter().any(|candidate| {
+                    candidate.account.as_deref() == Some(account_id.as_str())
+                        || snapshot
+                            .provider_instances
+                            .get(&candidate.provider)
+                            .is_some_and(|provider| provider.accounts.contains(account_id))
+                })
+            })
+            .map(|(route_id, _)| route_id.clone())
+            .ok_or_else(|| format!("Auth Account '{account_id}' 没有可用于诊断的 Model Route"))?
+    };
+    let diagnostic = sdk
+        .diagnose_model_route(&route_id, Some(account_id))
+        .await?;
+    print_model_route_diagnostic(invocation, &diagnostic)?;
+    Ok(())
+}
+
+async fn test_model_route(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let route_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("缺少 Model Route ID 或别名")?;
+    let diagnostic = MorphzSdk::new(runtime.clone())
+        .diagnose_model_route(route_id, option_value(invocation, "account"))
+        .await?;
+    print_model_route_diagnostic(invocation, &diagnostic)?;
+    Ok(())
+}
+
+async fn refresh_model_catalog(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let route_id = invocation
+        .prompt_args()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| runtime.model());
+    let diagnostic = MorphzSdk::new(runtime.clone())
+        .refresh_model_catalog(&route_id, option_value(invocation, "account"))
+        .await?;
+    print_model_route_diagnostic(invocation, &diagnostic)?;
+    Ok(())
+}
+
+fn print_model_route_diagnostic(
+    invocation: &Invocation,
+    diagnostic: &morphz::llm::ModelRouteDiagnostic,
+) -> Result<(), AppError> {
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(diagnostic)?);
+        return Ok(());
+    }
+    let binding = &diagnostic.binding;
+    println!(
+        "Route '{}' → {}/{} · account={} · protocol={}",
+        binding.requested_alias,
+        binding.provider_instance_id,
+        binding.physical_model,
+        binding.auth_account_id,
+        binding.protocol
+    );
+    println!(
+        "健康请求: {} · {} ms",
+        if diagnostic.health_verified {
+            "通过"
+        } else {
+            "失败"
+        },
+        diagnostic.elapsed_ms
+    );
+    if let Some(error) = diagnostic.health_error.as_deref() {
+        println!("健康错误: {error}");
+    }
+    if let Some(error) = diagnostic.catalog_error.as_deref() {
+        println!("目录错误: {error}");
+    } else {
+        println!(
+            "远端模型目录: {} 个模型",
+            diagnostic.discovered_models.len()
+        );
+        for model in &diagnostic.discovered_models {
+            println!("  {model}");
         }
     }
     Ok(())

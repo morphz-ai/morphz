@@ -6,6 +6,8 @@
 >
 > 并发 Thread 与 Objective 的监督关系、结果检查和恢复协议见：[受监督并发模型与实现设计 v1](./morphz_supervised_concurrency_model_v1.md)。
 
+> 当前实现说明（2026-08-01）：Objective 的生命周期与 LLM/Runtime 分工保持不变；调度 readiness 已由 Scheduler Kernel v2 的结构化 `scheduler_dependencies` 派生。`wait_condition` 现在是展示/迁移投影，不能单独作为是否继续推进的权威事实。Objective、Thread、Activation 和 Dependency 的状态迁移统一经 Kernel Command 提交。
+
 ## 1. 设计结论
 
 Morphz 将 Objective（长期目标）定义为 **First-Class Runtime Object**，但把自动续跑、完成审计和阻塞处理实现为内置 `ObjectiveSupervisor` 模块。

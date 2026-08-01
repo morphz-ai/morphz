@@ -7,6 +7,8 @@
 > 适用范围：Thread、Activation、Objective、Thread Group、Signal、Execution Job、Delivery、Timer、Plan/Harness 与 Runtime 恢复
 >
 > 相关文档：[Scheduler Kernel 与领域命名模型 v1](./morphz_scheduler_kernel_and_domain_model_v1.md)、[受监督并发模型与实现设计 v1](./morphz_supervised_concurrency_model_v1.md)、[First-Class Objective Supervisor v1](./morphz_first_class_objective_supervisor_v1.md)、[Session Thread Model v1](./morphz_session_thread_model_v1.md)
+>
+> 全局实现状态索引：[Morphz Runtime 核心实现状态总览 v1](./morphz_runtime_core_implementation_status_v1.md)
 
 ## 1. 背景与问题定义
 

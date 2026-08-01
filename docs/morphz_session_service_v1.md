@@ -1,6 +1,8 @@
 # Morphz Context-Owned Session Service v1
 
-> 状态：已实现单进程版本；共享 Mind 的修改按 Context 加锁串行提交。COW、并发写合并和多节点一致性不属于本版本。
+> 状态：v1 已实现；本文记录最初的 Session Service 边界。后续 Runtime 已增加 Frame 级 MVCC、Scheduler Kernel v2，以及 SQLite/PostgreSQL SharedLeases 多 Runtime 协调；生产级多节点故障切换仍不属于已验证能力。
+
+> 当前实现索引：[Morphz Runtime 核心实现状态总览](./morphz_runtime_core_implementation_status_v1.md)
 
 ## 1. 已确定的对象层级
 

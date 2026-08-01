@@ -800,6 +800,110 @@ pub struct ProviderConfig {
     pub env_headers: BTreeMap<String, String>,
 }
 
+/// A deployable model endpoint. Authentication identities are deliberately
+/// referenced as an account pool instead of being embedded in this object.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProviderInstanceConfig {
+    /// Thin service-specific composition layer, for example
+    /// `openai-compatible` or `openai-codex`.
+    pub adapter: String,
+    pub protocol: ModelProtocol,
+    pub base_url: String,
+    /// Ordered account pool. Dynamic health/cooldown state is Runtime data and
+    /// therefore never written back into this static configuration.
+    pub accounts: Vec<String>,
+    pub models: BTreeMap<String, ProviderModelConfig>,
+    pub headers: BTreeMap<String, String>,
+    pub env_headers: BTreeMap<String, String>,
+}
+
+/// Non-secret catalog metadata for one independently schedulable login.
+/// `credential_ref` points at the existing credential/Secret Store boundary;
+/// token values are never placed in this structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthAccountConfig {
+    pub auth_adapter: String,
+    pub credential_ref: String,
+    /// Explicit Secret Store value backend for OAuth token sets. `None` uses
+    /// the Runtime default (normally the native OS credential store). A
+    /// headless deployment may deliberately select `morphz_env_file`; Morphz
+    /// never falls back to plaintext implicitly.
+    pub secret_backend: Option<String>,
+    pub provider: Option<String>,
+    pub label: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl AuthAccountConfig {
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+impl Default for AuthAccountConfig {
+    fn default() -> Self {
+        Self {
+            auth_adapter: String::new(),
+            credential_ref: String::new(),
+            secret_backend: None,
+            provider: None,
+            label: None,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelRouteAffinity {
+    None,
+    Session,
+    #[default]
+    Context,
+    Objective,
+    Explicit,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelRouteSelection {
+    #[default]
+    AvailableLeastRecentlyUsed,
+    Priority,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelRouteCandidateConfig {
+    pub provider: String,
+    /// Exact physical model name accepted by this Provider Instance.
+    pub model: String,
+    /// Lower values are preferred.
+    pub priority: u32,
+    /// Optional hard account pin used for operator-controlled routes.
+    pub account: Option<String>,
+    /// Capabilities required from this candidate before it is eligible.
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelRouteConfig {
+    /// Additional public aliases. The map key itself is always an alias too.
+    pub aliases: Vec<String>,
+    pub candidates: Vec<ModelRouteCandidateConfig>,
+    pub affinity: ModelRouteAffinity,
+    pub selection: ModelRouteSelection,
+    pub fallback: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderModelConfig {
@@ -996,6 +1100,12 @@ pub struct AppConfig {
     pub usage_pricing: UsagePricingConfig,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub credentials: BTreeMap<String, CredentialConfig>,
+    /// Authoritative Provider/Account/Route model. Legacy `providers` and
+    /// `credentials` are normalized into these structures once at startup
+    /// when this catalog is absent; evaluation never consults both models.
+    pub provider_instances: BTreeMap<String, ProviderInstanceConfig>,
+    pub auth_accounts: BTreeMap<String, AuthAccountConfig>,
+    pub model_routes: BTreeMap<String, ModelRouteConfig>,
     pub permissions: PermissionConfig,
     pub background_task: BackgroundTaskConfig,
     pub edge_execution: EdgeExecutionConfig,
@@ -1285,6 +1395,173 @@ pub fn save_managed_model(provider_id: &str, model: &str) -> Result<PathBuf, Str
     Ok(path)
 }
 
+/// Persist one Provider Instance in the operator-owned managed layer.
+///
+/// Provider catalog objects contain references to credentials and OAuth token
+/// sets, never the secret values themselves. Cross-object validation belongs
+/// to the application control service because the effective catalog may also
+/// contain objects supplied by a profile or the host configuration layer.
+pub fn save_managed_provider_instance_at(
+    path: &Path,
+    provider_id: &str,
+    provider: &ProviderInstanceConfig,
+) -> Result<(), String> {
+    validate_catalog_key("Provider Instance", provider_id)?;
+    let mut root = read_managed_value(path)?;
+    insert_managed_value(
+        &mut root,
+        &["provider_instances", provider_id],
+        toml::Value::try_from(provider)
+            .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
+    )?;
+    write_managed_value(path, &root)
+}
+
+pub fn save_managed_provider_instance(
+    provider_id: &str,
+    provider: &ProviderInstanceConfig,
+) -> Result<PathBuf, String> {
+    let path = managed_config_path()?;
+    save_managed_provider_instance_at(&path, provider_id, provider)?;
+    Ok(path)
+}
+
+/// Persist non-secret Auth Account metadata. OAuth refresh/access tokens stay
+/// behind `credential_ref` in the Secret Store and are never written here.
+pub fn save_managed_auth_account_at(
+    path: &Path,
+    account_id: &str,
+    account: &AuthAccountConfig,
+) -> Result<(), String> {
+    validate_catalog_key("Auth Account", account_id)?;
+    let mut root = read_managed_value(path)?;
+    insert_managed_value(
+        &mut root,
+        &["auth_accounts", account_id],
+        toml::Value::try_from(account)
+            .map_err(|error| format!("无法序列化 Auth Account: {error}"))?,
+    )?;
+    write_managed_value(path, &root)
+}
+
+pub fn save_managed_auth_account(
+    account_id: &str,
+    account: &AuthAccountConfig,
+) -> Result<PathBuf, String> {
+    let path = managed_config_path()?;
+    save_managed_auth_account_at(&path, account_id, account)?;
+    Ok(path)
+}
+
+/// Persist one logical Model Route, including aliases and its ordered
+/// Provider/model candidates.
+pub fn save_managed_model_route_at(
+    path: &Path,
+    route_id: &str,
+    route: &ModelRouteConfig,
+) -> Result<(), String> {
+    validate_catalog_key("Model Route", route_id)?;
+    let mut root = read_managed_value(path)?;
+    insert_managed_value(
+        &mut root,
+        &["model_routes", route_id],
+        toml::Value::try_from(route).map_err(|error| format!("无法序列化 Model Route: {error}"))?,
+    )?;
+    write_managed_value(path, &root)
+}
+
+pub fn save_managed_model_route(
+    route_id: &str,
+    route: &ModelRouteConfig,
+) -> Result<PathBuf, String> {
+    let path = managed_config_path()?;
+    save_managed_model_route_at(&path, route_id, route)?;
+    Ok(path)
+}
+
+/// Atomically persist the minimal routed Provider catalog produced by first
+/// setup. A partially written Provider/Account/Route graph is unusable and
+/// must never become visible merely because the process stopped between
+/// several independent managed-config mutations.
+pub fn save_managed_provider_catalog_at(
+    path: &Path,
+    provider_id: &str,
+    provider: &ProviderInstanceConfig,
+    account_id: &str,
+    account: &AuthAccountConfig,
+    credential: Option<(&str, &CredentialConfig)>,
+    route_id: &str,
+    route: &ModelRouteConfig,
+) -> Result<(), String> {
+    validate_catalog_key("Provider Instance", provider_id)?;
+    validate_catalog_key("Auth Account", account_id)?;
+    validate_catalog_key("Model Route", route_id)?;
+    let mut root = read_managed_value(path)?;
+    insert_managed_value(
+        &mut root,
+        &["provider_instances", provider_id],
+        toml::Value::try_from(provider)
+            .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
+    )?;
+    insert_managed_value(
+        &mut root,
+        &["auth_accounts", account_id],
+        toml::Value::try_from(account)
+            .map_err(|error| format!("无法序列化 Auth Account: {error}"))?,
+    )?;
+    if let Some((credential_id, credential)) = credential {
+        validate_profile_name(credential_id)?;
+        insert_managed_value(
+            &mut root,
+            &["credentials", credential_id],
+            toml::Value::try_from(credential)
+                .map_err(|error| format!("无法序列化 Credential: {error}"))?,
+        )?;
+    }
+    insert_managed_value(
+        &mut root,
+        &["model_routes", route_id],
+        toml::Value::try_from(route).map_err(|error| format!("无法序列化 Model Route: {error}"))?,
+    )?;
+    // `llm.provider` remains populated for transport diagnostics and for
+    // older profile layers, while all model evaluation resolves `llm.model`
+    // through the authoritative Model Route graph above.
+    insert_managed_value(
+        &mut root,
+        &["llm", "provider"],
+        toml::Value::String(provider_id.to_string()),
+    )?;
+    insert_managed_value(
+        &mut root,
+        &["llm", "model"],
+        toml::Value::String(route_id.to_string()),
+    )?;
+    write_managed_value(path, &root)
+}
+
+pub fn save_managed_provider_catalog(
+    provider_id: &str,
+    provider: &ProviderInstanceConfig,
+    account_id: &str,
+    account: &AuthAccountConfig,
+    credential: Option<(&str, &CredentialConfig)>,
+    route_id: &str,
+    route: &ModelRouteConfig,
+) -> Result<PathBuf, String> {
+    let path = managed_config_path()?;
+    save_managed_provider_catalog_at(
+        &path,
+        provider_id,
+        provider,
+        account_id,
+        account,
+        credential,
+        route_id,
+        route,
+    )?;
+    Ok(path)
+}
+
 /// Persist the operator-selected inference profile in Morphz's managed
 /// configuration layer. `reasoning_effort = "default"` is written
 /// deliberately instead of removing the key: the managed layer must be able
@@ -1552,6 +1829,19 @@ fn validate_profile_name(profile: &str) -> Result<(), String> {
     }
 }
 
+fn validate_catalog_key(kind: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.len() > 255
+        || value.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "{kind} ID '{value}' 非法；不能为空、不能包含首尾空白或控制字符，且最长为 255 字节"
+        ));
+    }
+    Ok(())
+}
+
 fn discover_project_root(cwd: &Path) -> PathBuf {
     cwd.ancestors()
         .find(|path| path.join(".git").exists())
@@ -1610,6 +1900,12 @@ fn forbidden_project_keys(value: &toml::Value) -> Vec<String> {
                 || key.starts_with("providers.")
                 || key == "credentials"
                 || key.starts_with("credentials.")
+                || key == "provider_instances"
+                || key.starts_with("provider_instances.")
+                || key == "auth_accounts"
+                || key.starts_with("auth_accounts.")
+                || key == "model_routes"
+                || key.starts_with("model_routes.")
                 || key == "managed_ssh"
                 || key.starts_with("managed_ssh.")
                 || key == "server.bind"
@@ -2564,5 +2860,72 @@ max_input_tokens = 0
             max_output_tokens: Some(32_000),
         };
         assert_eq!(profile.prompt_token_limit(), None);
+    }
+
+    #[test]
+    fn managed_provider_catalog_persists_references_without_secret_values() {
+        let temp = TempDir::new().unwrap();
+        let managed_path = temp.path().join("managed.toml");
+        let provider = ProviderInstanceConfig {
+            adapter: "openai-codex".to_string(),
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://api.openai.com/v1".to_string(),
+            accounts: vec!["codex-personal".to_string()],
+            ..ProviderInstanceConfig::default()
+        };
+        let account = AuthAccountConfig {
+            auth_adapter: "openai-codex".to_string(),
+            credential_ref: "provider-account/codex-personal/oauth-token-set".to_string(),
+            provider: Some("openai-subscription".to_string()),
+            label: Some("Personal Codex".to_string()),
+            ..AuthAccountConfig::default()
+        };
+        let route = ModelRouteConfig {
+            aliases: vec!["openai/gpt-5.6".to_string()],
+            candidates: vec![ModelRouteCandidateConfig {
+                provider: "openai-subscription".to_string(),
+                model: "gpt-5.6".to_string(),
+                ..ModelRouteCandidateConfig::default()
+            }],
+            ..ModelRouteConfig::default()
+        };
+
+        save_managed_provider_catalog_at(
+            &managed_path,
+            "openai-subscription",
+            &provider,
+            "codex-personal",
+            &account,
+            None,
+            "gpt-5.6",
+            &route,
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&managed_path).unwrap();
+        let persisted: AppConfig = toml::from_str(&contents).unwrap();
+        assert_eq!(
+            persisted.provider_instances["openai-subscription"].accounts,
+            ["codex-personal"]
+        );
+        assert_eq!(
+            persisted.auth_accounts["codex-personal"].credential_ref,
+            "provider-account/codex-personal/oauth-token-set"
+        );
+        assert_eq!(
+            persisted.model_routes["gpt-5.6"].aliases,
+            ["openai/gpt-5.6"]
+        );
+        assert_eq!(
+            persisted.model_routes["gpt-5.6"].candidates[0].model,
+            "gpt-5.6"
+        );
+        assert_eq!(
+            persisted.llm.provider.as_deref(),
+            Some("openai-subscription")
+        );
+        assert_eq!(persisted.llm.model, "gpt-5.6");
+        assert!(!contents.contains("super-secret-access-token"));
+        assert!(!contents.contains("refresh_token"));
     }
 }

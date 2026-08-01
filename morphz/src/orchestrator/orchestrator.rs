@@ -24,7 +24,7 @@ use crate::harness_package::{
 };
 use crate::llm::{
     attachment_message, Client, Message, ModelAttachment, ModelFailure, ModelFailureKind,
-    ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
+    ModelRequestContext, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
 };
 use crate::memory::{
     stable_thread_id, ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit,
@@ -5314,6 +5314,26 @@ impl Orchestrator {
         let stream_attempt_id = attempt_id.to_string();
         let mut stream_route = Vec::new();
         self.append_activation_route(attempt_id, &mut stream_route);
+        let objective_id = stream_route.iter().find_map(|(key, value)| {
+            (key == "objective_id")
+                .then(|| value.as_str().map(ToOwned::to_owned))
+                .flatten()
+        });
+        // Resolve and persist the complete physical request identity before
+        // opening the Provider stream. Retries and recovery can therefore
+        // explain exactly which route, endpoint and account were used instead
+        // of re-running mutable routing policy after the fact.
+        let model_binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: stream_context_id.clone(),
+                session_id: stream_session_id.clone(),
+                attempt_id: stream_attempt_id.clone(),
+                objective_id,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .map_err(|error| ModelCompletionError::internal(error.into()))?;
+        stream_route.push(("model_binding".to_string(), json!(&model_binding)));
         persist_model_attempt_state(
             &stream_bus,
             &stream_context_id,
@@ -5466,7 +5486,8 @@ impl Orchestrator {
             // Protocol-native clients are fully asynchronous. Keeping their
             // future in this task means timeout/cancellation drops the reqwest
             // future itself and therefore closes the underlying HTTP request.
-            let completion = client.create_completion_measured_stream(
+            let completion = client.create_completion_bound_stream(
+                &model_binding,
                 messages,
                 tools,
                 prompt_measurement,
@@ -5536,6 +5557,7 @@ impl Orchestrator {
             // may synchronously block inside an async method. A Tokio timeout
             // cannot pre-empt such code, so keep it off the Runtime workers.
             let (model_tx, model_rx) = tokio::sync::oneshot::channel();
+            let thread_model_binding = model_binding.clone();
             std::thread::Builder::new()
                 .name(format!("morphz-llm-{attempt_id}"))
                 .spawn(move || {
@@ -5544,7 +5566,8 @@ impl Orchestrator {
                         .build()
                         .map_err(|error| Box::new(error) as DynError)
                         .and_then(|runtime| {
-                            runtime.block_on(client.create_completion_measured_stream(
+                            runtime.block_on(client.create_completion_bound_stream(
+                                &thread_model_binding,
                                 messages,
                                 tools,
                                 prompt_measurement,

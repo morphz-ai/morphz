@@ -8,6 +8,8 @@
 >
 > 相关文档：[Scheduler Kernel 与领域命名模型 v1](./morphz_scheduler_kernel_and_domain_model_v1.md)、[First-Class Objective Supervisor v1](./morphz_first_class_objective_supervisor_v1.md)、[Domain Harness Architecture v1](./morphz_domain_harness_architecture_v1.md)
 
+> 当前实现说明（2026-08-01）：本文定义的监督语义仍然有效，但底层 lowering 已迁移到 Scheduler Kernel v2。Objective 依赖由 `scheduler_dependencies` 表达，内部唤醒使用 Kernel 事务中的持久 Direct Signal；下文的内部 Signal Outbox 和单字段 wait barrier 是 v1 的历史实现。最新写入与恢复边界见 [Scheduler Kernel v2 稳定化重构](./morphz_scheduler_kernel_stabilization_v2.md)。
+
 ## 1. 背景
 
 Morphz 已经同时提供两种并发能力：

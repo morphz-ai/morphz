@@ -13,10 +13,13 @@ use crate::memory::{
     ContextCognitiveClock, EventAppend, EventStore, MindProjectionCommit, MindProjectionHead,
     MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective,
     NewRuntimeTimer, NewThread, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RecallDocument, RecallDocumentKind,
-    RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore,
-    RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus,
-    SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore, TimerStore,
+    ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
+    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
+    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
+    RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
+    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
+    SessionProjectionStore, TimerStore,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -199,6 +202,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260801_01_provider_accounts",
+                    store.migrate_provider_accounts(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260725_01_recall_segmented_index",
                     store.resegment_recall_documents(),
                 )
@@ -232,6 +241,55 @@ impl PostgresStore {
         )
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    async fn migrate_provider_accounts(&self) -> Result<(), StoreError> {
+        for statement in [
+            r#"CREATE TABLE IF NOT EXISTS provider_account_states (
+                account_id TEXT PRIMARY KEY,
+                revision BIGINT NOT NULL CHECK(revision >= 0),
+                status TEXT NOT NULL,
+                cooldown_until TEXT,
+                last_error_kind TEXT,
+                last_used_at TEXT,
+                updated_at TEXT NOT NULL
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_provider_account_states_status
+                ON provider_account_states(status, cooldown_until, last_used_at)"#,
+            r#"CREATE TABLE IF NOT EXISTS provider_account_affinities (
+                route_id TEXT NOT NULL,
+                scope_key TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                revision BIGINT NOT NULL CHECK(revision >= 0),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(route_id, scope_key)
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_provider_account_affinities_account
+                ON provider_account_affinities(account_id, updated_at)"#,
+            r#"CREATE TABLE IF NOT EXISTS provider_refresh_leases (
+                account_id TEXT PRIMARY KEY,
+                generation BIGINT NOT NULL CHECK(generation > 0),
+                owner_id TEXT NOT NULL,
+                lease_expires_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS provider_model_catalog (
+                provider_instance_id TEXT NOT NULL,
+                auth_account_id TEXT NOT NULL,
+                physical_model TEXT NOT NULL,
+                adapter_id TEXT NOT NULL,
+                adapter_version TEXT NOT NULL,
+                protocol TEXT NOT NULL,
+                source TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY(provider_instance_id, auth_account_id, physical_model)
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_provider_model_catalog_observed
+                ON provider_model_catalog(provider_instance_id, observed_at DESC, physical_model)"#,
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
         Ok(())
     }
 
@@ -799,6 +857,330 @@ impl PostgresStore {
         }
         tx.commit().await?;
         Ok(())
+    }
+}
+
+fn provider_account_state_from_pg_row(
+    row: &PgRow,
+) -> Result<ProviderAccountStateRecord, StoreError> {
+    Ok(ProviderAccountStateRecord {
+        account_id: row.get("account_id"),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        status: ProviderAccountStatus::parse(&row.get::<String, _>("status"))?,
+        cooldown_until: row
+            .get::<Option<String>, _>("cooldown_until")
+            .map(|value| parse_time(&value))
+            .transpose()?,
+        last_error_kind: row.get("last_error_kind"),
+        last_used_at: row
+            .get::<Option<String>, _>("last_used_at")
+            .map(|value| parse_time(&value))
+            .transpose()?,
+        updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+    })
+}
+
+fn provider_account_affinity_from_pg_row(
+    row: &PgRow,
+) -> Result<ProviderAccountAffinityRecord, StoreError> {
+    Ok(ProviderAccountAffinityRecord {
+        route_id: row.get("route_id"),
+        scope_key: row.get("scope_key"),
+        account_id: row.get("account_id"),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+    })
+}
+
+fn provider_refresh_lease_from_pg_row(
+    row: &PgRow,
+) -> Result<ProviderRefreshLeaseRecord, StoreError> {
+    Ok(ProviderRefreshLeaseRecord {
+        account_id: row.get("account_id"),
+        generation: u64::try_from(row.get::<i64, _>("generation"))?,
+        owner_id: row.get("owner_id"),
+        lease_expires_at: parse_time(&row.get::<String, _>("lease_expires_at"))?,
+        updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+    })
+}
+
+fn provider_model_catalog_from_pg_row(
+    row: &PgRow,
+) -> Result<ProviderModelCatalogRecord, StoreError> {
+    Ok(ProviderModelCatalogRecord {
+        provider_instance_id: row.get("provider_instance_id"),
+        auth_account_id: row.get("auth_account_id"),
+        physical_model: row.get("physical_model"),
+        adapter_id: row.get("adapter_id"),
+        adapter_version: row.get("adapter_version"),
+        protocol: row.get("protocol"),
+        source: row.get("source"),
+        observed_at: parse_time(&row.get::<String, _>("observed_at"))?,
+    })
+}
+
+#[async_trait::async_trait]
+impl ProviderModelCatalogStore for PostgresStore {
+    async fn replace_provider_model_catalog(
+        &self,
+        provider_instance_id: &str,
+        auth_account_id: &str,
+        adapter_id: &str,
+        adapter_version: &str,
+        protocol: &str,
+        source: &str,
+        physical_models: &[String],
+        observed_at: DateTime<Utc>,
+    ) -> Result<Vec<ProviderModelCatalogRecord>, StoreError> {
+        if provider_instance_id.trim().is_empty() || auth_account_id.trim().is_empty() {
+            return Err("Provider Instance 与 Auth Account ID 不能为空".into());
+        }
+        let mut models = physical_models
+            .iter()
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        let observed_at = observed_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM provider_model_catalog WHERE provider_instance_id = $1 AND auth_account_id = $2",
+        )
+        .bind(provider_instance_id)
+        .bind(auth_account_id)
+        .execute(&mut *tx)
+        .await?;
+        for model in &models {
+            sqlx::query(
+                r#"INSERT INTO provider_model_catalog
+                   (provider_instance_id, auth_account_id, physical_model, adapter_id,
+                    adapter_version, protocol, source, observed_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,
+            )
+            .bind(provider_instance_id)
+            .bind(auth_account_id)
+            .bind(model)
+            .bind(adapter_id)
+            .bind(adapter_version)
+            .bind(protocol)
+            .bind(source)
+            .bind(&observed_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let rows = sqlx::query(
+            r#"SELECT * FROM provider_model_catalog
+               WHERE provider_instance_id = $1 AND auth_account_id = $2
+               ORDER BY physical_model"#,
+        )
+        .bind(provider_instance_id)
+        .bind(auth_account_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        rows.iter()
+            .map(provider_model_catalog_from_pg_row)
+            .collect()
+    }
+
+    async fn list_provider_model_catalog(
+        &self,
+    ) -> Result<Vec<ProviderModelCatalogRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT * FROM provider_model_catalog
+               ORDER BY provider_instance_id, auth_account_id, physical_model"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(provider_model_catalog_from_pg_row)
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderAccountStateStore for PostgresStore {
+    async fn get_provider_account_state(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<ProviderAccountStateRecord>, StoreError> {
+        let row = sqlx::query("SELECT * FROM provider_account_states WHERE account_id = $1")
+            .bind(account_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref()
+            .map(provider_account_state_from_pg_row)
+            .transpose()
+    }
+
+    async fn put_provider_account_state(
+        &self,
+        account_id: &str,
+        expected_revision: Option<u64>,
+        status: ProviderAccountStatus,
+        cooldown_until: Option<DateTime<Utc>>,
+        last_error_kind: Option<&str>,
+        mark_used: bool,
+    ) -> Result<ProviderAccountStateRecord, StoreError> {
+        if account_id.trim().is_empty() {
+            return Err("Provider Account ID 不能为空".into());
+        }
+        let mut tx = self.pool.begin().await?;
+        let current = sqlx::query(
+            "SELECT revision FROM provider_account_states WHERE account_id = $1 FOR UPDATE",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let current_revision = current
+            .as_ref()
+            .map(|row| u64::try_from(row.get::<i64, _>("revision")))
+            .transpose()?;
+        if expected_revision.is_some() && expected_revision != current_revision {
+            return Err(format!(
+                "Provider Account '{account_id}' revision 冲突：期望 {:?}，当前 {:?}",
+                expected_revision, current_revision
+            )
+            .into());
+        }
+        let next_revision = current_revision.unwrap_or_default().saturating_add(1);
+        let now = now_text();
+        let cooldown =
+            cooldown_until.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let row = sqlx::query(
+            r#"INSERT INTO provider_account_states
+               (account_id, revision, status, cooldown_until, last_error_kind, last_used_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $6)
+               ON CONFLICT(account_id) DO UPDATE SET
+                 revision = EXCLUDED.revision,
+                 status = EXCLUDED.status,
+                 cooldown_until = EXCLUDED.cooldown_until,
+                 last_error_kind = EXCLUDED.last_error_kind,
+                 last_used_at = CASE WHEN $7 THEN EXCLUDED.last_used_at ELSE provider_account_states.last_used_at END,
+                 updated_at = EXCLUDED.updated_at
+               RETURNING *"#,
+        )
+        .bind(account_id)
+        .bind(i64::try_from(next_revision)?)
+        .bind(status.as_str())
+        .bind(cooldown)
+        .bind(last_error_kind)
+        .bind(now)
+        .bind(mark_used)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        provider_account_state_from_pg_row(&row)
+    }
+
+    async fn get_provider_account_affinity(
+        &self,
+        route_id: &str,
+        scope_key: &str,
+    ) -> Result<Option<ProviderAccountAffinityRecord>, StoreError> {
+        let row = sqlx::query(
+            "SELECT * FROM provider_account_affinities WHERE route_id = $1 AND scope_key = $2",
+        )
+        .bind(route_id)
+        .bind(scope_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref()
+            .map(provider_account_affinity_from_pg_row)
+            .transpose()
+    }
+
+    async fn put_provider_account_affinity(
+        &self,
+        route_id: &str,
+        scope_key: &str,
+        account_id: &str,
+    ) -> Result<ProviderAccountAffinityRecord, StoreError> {
+        let row = sqlx::query(
+            r#"INSERT INTO provider_account_affinities
+               (route_id, scope_key, account_id, revision, updated_at)
+               VALUES ($1, $2, $3, 1, $4)
+               ON CONFLICT(route_id, scope_key) DO UPDATE SET
+                 account_id = EXCLUDED.account_id,
+                 revision = provider_account_affinities.revision + 1,
+                 updated_at = EXCLUDED.updated_at
+               RETURNING *"#,
+        )
+        .bind(route_id)
+        .bind(scope_key)
+        .bind(account_id)
+        .bind(now_text())
+        .fetch_one(&self.pool)
+        .await?;
+        provider_account_affinity_from_pg_row(&row)
+    }
+
+    async fn claim_provider_refresh_lease(
+        &self,
+        account_id: &str,
+        owner_id: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<Option<ProviderRefreshLeaseRecord>, StoreError> {
+        let now = Utc::now();
+        if lease_expires_at <= now {
+            return Err("Provider Refresh lease 必须在未来".into());
+        }
+        let mut tx = self.pool.begin().await?;
+        let current =
+            sqlx::query("SELECT * FROM provider_refresh_leases WHERE account_id = $1 FOR UPDATE")
+                .bind(account_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some(row) = &current {
+            let existing = provider_refresh_lease_from_pg_row(row)?;
+            if existing.lease_expires_at > now && existing.owner_id != owner_id {
+                return Ok(None);
+            }
+        }
+        let generation = current
+            .as_ref()
+            .map(|row| u64::try_from(row.get::<i64, _>("generation")))
+            .transpose()?
+            .unwrap_or_default()
+            .saturating_add(1);
+        let row = sqlx::query(
+            r#"INSERT INTO provider_refresh_leases
+               (account_id, generation, owner_id, lease_expires_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT(account_id) DO UPDATE SET
+                 generation = EXCLUDED.generation,
+                 owner_id = EXCLUDED.owner_id,
+                 lease_expires_at = EXCLUDED.lease_expires_at,
+                 updated_at = EXCLUDED.updated_at
+               RETURNING *"#,
+        )
+        .bind(account_id)
+        .bind(i64::try_from(generation)?)
+        .bind(owner_id)
+        .bind(lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(now_text())
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(provider_refresh_lease_from_pg_row(&row)?))
+    }
+
+    async fn release_provider_refresh_lease(
+        &self,
+        account_id: &str,
+        generation: u64,
+        owner_id: &str,
+    ) -> Result<bool, StoreError> {
+        let result = sqlx::query(
+            "DELETE FROM provider_refresh_leases WHERE account_id = $1 AND generation = $2 AND owner_id = $3",
+        )
+        .bind(account_id)
+        .bind(i64::try_from(generation)?)
+        .bind(owner_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 }
 

@@ -1,16 +1,18 @@
 # Morphz Context 事务、Mind Projection 与分布式扩展设计 v1
 
-> 状态：Phase 1–4 已完成当前阶段收口；SQLite 与 PostgreSQL 共享同一 Projection/CAS/Lease 契约，生产级跨主机容量验证仍待真实部署
+> 状态：Phase 1–5 核心实现完成；SQLite 与 PostgreSQL 共享同一 Projection/CAS/Lease 契约，Frame 级 MVCC 已落地，生产级跨主机容量验证仍待真实部署
 >
-> 日期：2026-07-19
+> 日期：2026-08-01
 >
 > 适用范围：共享 Mind、Context Transaction、Frame 生命周期、Session 海量并发、Event Ledger、在线状态恢复与多 Runtime Worker
 >
 > 上位架构：[统一人格、多路会话与分布式认知架构](./morphz_single_identity_distributed_cognition_architecture.md)
 >
-> 相关实现：[并发 Session 事件循环与认知工作集](./morphz_concurrent_session_working_set_v1.md)、[Scheduler Kernel 与领域命名模型](./morphz_scheduler_kernel_and_domain_model_v1.md)
+> 相关实现：[并发 Session 事件循环与认知工作集](./morphz_concurrent_session_working_set_v1.md)、[Scheduler Kernel v2 稳定化重构](./morphz_scheduler_kernel_stabilization_v2.md)、[当前核心实现状态总览](./morphz_runtime_core_implementation_status_v1.md)
 
-## 0. 实施进度（2026-07-19）
+## 0. 实施进度（更新于 2026-08-01）
+
+本节保留了 PostgreSQL 能力逐项落地的时间顺序。其中提到的内部 Signal Outbox 是当时的实现里程碑；Scheduler Kernel v2 已把 Runtime 内部调度迁移为 Kernel 事务中的持久 Direct Signal，并删除正常路径的内部 Outbox 与 barrier repair。外部系统交付所需的 Outbox 仍然保留。
 
 已经落地：
 
@@ -55,12 +57,14 @@
 - SharedLeases 启动恢复只接管已过期的 Running Activation，不再把另一进程的 queued Activation 或有效 lease 误判为本机遗留任务。
 - Scheduler Snapshot 新增 Context 容量计数：事务/提交/冲突、提交延迟、Mind Projection 加载延迟、Encoding 次数及每次物化 Observation 数；Rust SDK、CLI 与 HTTP API 使用同一读模型。
 - 已增加可复现的 `postgres_multi_process_probe`：父进程启动两个真实子 Runtime 进程竞争同一条消息，并额外强制终止一个持有短 Execution lease 的进程。实测 `ready_workers=2`、`model_calls=1`、`replies=1`，且到期 Job 被另一新进程安全重排。首份结果见 [PostgreSQL Multi-Process Probe — 2026-07-18](./benchmarks/postgres_multi_process_probe_2026-07-18.md)。
+- Frame 级 MVCC 已实现：Runtime 从 `context_tx` 的 SExpr 操作确定性提取受影响 Frame/Relation/Observation；不同 Frame 的并发修改可在验证来源与 revision 后安全自动 rebase，同一 Frame、相同创建 ID、已变化来源或大范围生命周期操作继续冲突。
+- Scheduler Kernel v2 已统一 Context 之外的调度写入边界；Objective readiness 来自结构化 Dependency，内部 Signal 与权威状态原子提交，Reconciler 不再通过历史 Event 或旧 wait 字段创造业务语义。
 
 仍待实施：
 
 - 面向真实公网负载的容量持续采样，以及按 Provider/Agent/Context 的进一步分层配额；
 - 跨主机和生产编排环境的故障注入与容量验证；
-- 只有真实冲突数据证明有必要时，才评估 Frame 级 MVCC。
+- Frame MVCC 在复杂 Relation、Checkpoint/Rollback 与长期高冲突负载下的进一步验证。
 
 ## 1. 本文结论
 
@@ -80,7 +84,7 @@ Morphz 已经具备一套成立的 Context 并发语义：
 1. SQLite WAL 仍然是单物理写者；
 2. Event Writer 已能 group commit 并有首份目标硬件吞吐基线，但尚缺真实公网负载的持续尾延迟数据；
 3. 多 Runtime Worker 已通过独立连接池、双完整 Runtime、双 OS 进程和进程崩溃恢复验证，尚缺跨主机与生产编排故障注入；
-4. 容量指标和基准数据尚不足以决定是否需要 Frame 级 MVCC。
+4. Frame 级 MVCC 已消除不相干 Frame 写入的保守冲突，但尚缺生产负载下的冲突率、自动 rebase 收益和复杂事务分布数据。
 
 目标架构不是取消 Event Ledger，也不是让 Runtime 接管 Frame 语义，而是增加一个可验证、可重建的在线 `Mind Projection`，把高频服务路径与完整历史审计路径分开。
 
@@ -143,7 +147,7 @@ Phase 0 Runtime 执行：
 | 单进程 Context 提交串行化 | 已支持 |
 | 数据库行级原子 `revision CAS` | SQLite 已支持 |
 | 多 Runtime Worker 共享同一 SQLite Context 提交 | 已防止 lost update；跨主机部署未验证 |
-| Frame 级独立冲突检测 | 未支持 |
+| Frame 级独立冲突检测 | 已支持：不相干 Frame 可自动 rebase；同一 Frame 与全局操作保持 fence |
 
 Phase 0 的 Context Mutex 只存在于一个 Runtime 进程，因而无法防止两个 Worker 同时基于版本 18 提交。Phase 1 已增加持久 `context_heads` 和 SQLite transaction 内的 revision CAS：第二个提交会在数据库边界被拒绝。跨主机部署仍需要把相同 Store 契约落到 PostgreSQL 等服务型数据库，并完成 lease、故障恢复和容量验证。
 
@@ -154,7 +158,9 @@ Phase 0 的 Context Mutex 只存在于一个 Runtime 进程，因而无法防止
 - `MindState.version`：一次成功 Context transaction 增加 1，保护整个事务读取的 Context Snapshot；
 - `ContextFrame.revision`：对某个 Frame 执行 `revise` 时增加 1，描述该 Frame 自身的修订历史。
 
-当前事务冲突依据是全局 `MindState.version`，不是 Frame revision。两个事务即使修改完全不同的 Frame，只要基于同一个旧 Context version，也不能依次无冲突提交。这是正确但保守的首版语义。
+当前实现同时使用两层版本：全局 `MindState.version` 保留 Ledger 物理提交顺序与事务审计，`ContextFrame.revision` 则是认知修改的 MVCC 边界。事务即使携带旧 Context version，只要 Runtime 能证明它涉及的 Frame、Relation 与来源在 base-version 后没有变化，就可以安全 rebase 到当前 head；修改不同 Frame 的事务不再无条件互相冲突。
+
+以下情况仍会拒绝并要求基于最新状态重新求值：同一 Frame 被并发 revise/retire、创建相同 Frame ID、derive/revise 所依赖的来源已变化，以及 checkpoint/rollback 等大范围状态操作。模型仍只提交高层 SExpr，不需要显式维护 read/write set 或数据库版本向量。
 
 ## 3. 当前 Mind 重放到底做什么
 
@@ -436,9 +442,9 @@ mind_snapshots
 
 `mind_projections.state_json` 保存完整、开放的 MindState；当前实现没有把 Frame body 拆成 Runtime 固定的 `mind_frames` 业务表。这样既提供 O(当前状态) 的在线读取，也保留 Agent 自主形成 SExpr 结构的自由。这些都是可由 Ledger 重建的物理投影，不是对 Agent Mind body 的固定业务 schema。
 
-## 7. 从 Context 级 CAS 演进到 Frame 级 MVCC
+## 7. Context revision 与 Frame 级 MVCC（已实现）
 
-### 7.1 Context 级 CAS 应当先实现
+### 7.1 Context 级 CAS 是基础而不是最终冲突粒度
 
 优点：
 
@@ -448,13 +454,11 @@ mind_snapshots
 - 直接支持多个 Runtime Worker；
 - 避免 lost update 和分叉的相同 result version。
 
-缺点：不同 Frame 的并发修改也会冲突。
+缺点是不同 Frame 的并发修改也会冲突。Morphz 的多 Objective/多 Thread 实际运行已经证明这种保守冲突会产生明显的模型重求值成本，因此在保留 Context revision 作为审计顺序的同时，引入了 Frame 级冲突判定。
 
-在真实冲突率不足以构成瓶颈前，不应提前引入复杂的自动合并。
+### 7.2 当前 Frame 级 MVCC 语义
 
-### 7.2 Frame 级 MVCC 的候选语义
-
-当真实数据证明 Context 全局版本导致高冲突时，再让 Runtime 从 SExpr 确定性提取 read/write set：
+Runtime 从 SExpr 确定性提取 read/write set：
 
 ```text
 create new-frame              写 new-frame
@@ -476,7 +480,7 @@ relate a supersedes b         读 a/b，写 relation(a, supersedes, b)
 | 添加不同 Relation | 通常可以 |
 | rollback / checkpoint 大范围恢复 | 需要 Context 级排他提交 |
 
-Frame revision 和 read/write set 应由 Runtime 自动维护。模型仍然提交高层 SExpr，不需要手工书写数据库锁、分区或复杂版本向量。
+Frame revision 和 read/write set 由 Runtime 自动维护。模型仍然提交高层 SExpr，不需要手工书写数据库锁、分区或复杂版本向量。
 
 全局 Context revision 仍可作为 Ledger 审计顺序存在，但不必让所有不相干 Frame 写入互相冲突。
 
@@ -723,14 +727,15 @@ max_connections = 16
 
 连接 URL 只从 `url_env` 指定的环境变量读取；不把含密码的 URL 写入普通配置、错误日志或 `storage_label`。项目级 `.morphz/config.toml` 不能改变 `storage.*`，避免工作区代码静默改变宿主持久层。
 
-### Phase 5：按数据决定是否引入 Frame 级 MVCC
+### Phase 5：Frame 级 MVCC（已完成）
 
-只有当以下数据证明 Context 全局版本成为真实瓶颈时才实施：
+- 从规范化 SExpr 提取受影响对象与来源依赖；
+- 对不相干 Frame 修改执行 revision-fenced 自动 rebase；
+- 对同一 Frame、来源变化和全局生命周期操作保持冲突拒绝；
+- 增加不同 Frame 自动 rebase、同 Frame 冲突与来源变化冲突的回归测试；
+- 保留 Context Head revision 作为不可变 Ledger 的全局提交顺序。
 
-- Context transaction 冲突率持续较高；
-- 大部分冲突涉及不相干 Frame；
-- 模型重试成本显著；
-- Context Head commit 延迟无法通过 Projection 解决。
+后续工作不再是“是否实现”，而是基于生产数据扩展复杂 Relation/Checkpoint 场景，并观测自动 rebase 的真实收益。
 
 ## 12. 必须观测的容量指标
 
@@ -801,4 +806,4 @@ snapshot_age_transactions
 
 本文的核心方向是：
 
-> 保留 Agent-Owned Context 与可审计多版本 Ledger，把完整重放从在线热路径移到恢复和审计路径；用可重建 Projection 支撑读取，用数据库级 CAS 支撑提交，再依据真实冲突数据决定是否演进到 Frame 级 MVCC。
+> 保留 Agent-Owned Context 与可审计多版本 Ledger，把完整重放从在线热路径移到恢复和审计路径；用可重建 Projection 支撑读取，用数据库级 CAS 保证全局提交顺序，并以 Frame revision/read-write set 降低不相干认知修改之间的冲突。

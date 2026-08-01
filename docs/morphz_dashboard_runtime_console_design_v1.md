@@ -10,6 +10,8 @@
 >
 > 最新实现审计与分阶段收口见[Dashboard / Runtime Console 全面审计（2026-07-26）](./morphz_dashboard_runtime_console_audit_2026_07_26.md)
 
+> 实施更新（2026-08-01）：Dashboard 已在本文领域模型上继续加入双轨/合流消息视图、Objective/Thread 过滤与控制、Operator Principal 搜索、Context/Session 管理、模型/推理强度/Context hard limit 持久控制、附件与 Artifact、Secret 管理、认知阅读器和移动端任务浮层。它仍是持续产品化的 Runtime Console；这些新增功能不改变 Web App/Desktop App 尚未进入主实现阶段的产品边界。
+
 ## 1. 产品定位
 
 Morphz Dashboard 应正式定位为 **Runtime Console（Runtime 控制台）**。产品名称仍然是 `Morphz Dashboard`，不再另造一个平行名称。

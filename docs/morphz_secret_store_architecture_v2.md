@@ -1,5 +1,9 @@
 # Morphz 托管凭证与 Secret Store 架构 v2
 
+> 状态：核心实现完成；Catalog/Scope、系统凭证库与 Morphz `.env` 值后端、CLI/Dashboard 管理工作流已落地，Headless 平台体验与企业后端仍待持续验证
+>
+> 日期：2026-08-01
+
 ## 1. 定位
 
 托管凭证是 Runtime 的核心安全能力。它把以下两件事严格分开：

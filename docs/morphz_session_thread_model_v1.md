@@ -5,7 +5,7 @@
 > 取代。当前实现使用 Dialogue Lane，以及有限的 DialogueTurn / Execution /
 > Objective / Delivery Thread；Delegation 是 Executor 关系。本文只保留为设计演进记录。
 
-> 状态：Protocol v19 已实现
+> 状态：Protocol v19 历史实现里程碑；当前生产 Context Protocol 为 v26，领域命名与写入边界以 Scheduler Kernel v2 为准
 >
 > 目标：让连续对话、工具工作和持久目标在同一个 Session 内并发而不混淆
 

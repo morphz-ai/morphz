@@ -1,6 +1,9 @@
 use crate::approval::ApprovalDecision;
 use crate::artifact::ArtifactTransferStageKind;
-use crate::config::{save_managed_inference_at, ServerIdentityConfig, ServerIdentityMode};
+use crate::config::{
+    save_managed_inference_at, AuthAccountConfig, ModelRouteConfig, ProviderInstanceConfig,
+    ServerIdentityConfig, ServerIdentityMode,
+};
 use crate::event::Event;
 use crate::execution_target::EdgeArtifactDataDirection;
 use crate::identity::PrincipalAssertion;
@@ -12,6 +15,8 @@ use crate::memory::{
     ThreadMutation,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
+use crate::provider::auth::OAuthLoginCompletion;
+use crate::provider::control::ProviderAccountControlAction;
 use crate::runtime::{
     AcknowledgeAttentionCommand, ContextOverviewQuery, LedgerQuery, ModelUsageQuery, MorphzRuntime,
     RuntimeOverviewQuery, SchedulerQuery,
@@ -92,6 +97,17 @@ struct AuthQuery {
     token: Option<String>,
     session_id: Option<String>,
     principal_id: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ProviderAttemptsQuery {
+    token: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ModelRouteDiagnosticRequest {
+    account_id: Option<String>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -234,6 +250,12 @@ struct ImportManagedSecretRequest {
     scope_kind: crate::secret_store::SecretScopeKind,
     scope_id: Option<String>,
     value_backend: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ControlProviderAccountRequest {
+    action: ProviderAccountControlAction,
+    expected_revision: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -667,6 +689,50 @@ impl Server {
             .route(
                 "/api/runtime/secrets/:name",
                 delete(handle_delete_managed_secret),
+            )
+            .route(
+                "/api/runtime/providers",
+                get(handle_provider_control_snapshot),
+            )
+            .route(
+                "/api/runtime/providers/attempts",
+                get(handle_recent_provider_attempts),
+            )
+            .route(
+                "/api/runtime/providers/accounts/:account_id",
+                patch(handle_control_provider_account),
+            )
+            .route(
+                "/api/runtime/providers/instances/:provider_id",
+                axum::routing::put(handle_put_provider_instance_config),
+            )
+            .route(
+                "/api/runtime/providers/accounts/:account_id/config",
+                axum::routing::put(handle_put_auth_account_config),
+            )
+            .route(
+                "/api/runtime/providers/routes/:route_id",
+                axum::routing::put(handle_put_model_route_config),
+            )
+            .route(
+                "/api/runtime/providers/routes/:route_id/test",
+                post(handle_diagnose_model_route),
+            )
+            .route(
+                "/api/runtime/providers/routes/:route_id/refresh-models",
+                post(handle_refresh_model_catalog),
+            )
+            .route(
+                "/api/runtime/providers/accounts/:account_id/oauth/start",
+                post(handle_start_provider_oauth_login),
+            )
+            .route(
+                "/api/runtime/providers/accounts/:account_id/oauth/logout",
+                post(handle_logout_provider_oauth_account),
+            )
+            .route(
+                "/api/runtime/providers/oauth/:login_id/continue",
+                post(handle_continue_provider_oauth_login),
             )
             .route(
                 "/api/runtime/inference",
@@ -1166,6 +1232,226 @@ async fn handle_delete_managed_secret(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Secret Store worker 失败：{error}"),
         ),
+    }
+}
+
+async fn handle_provider_control_snapshot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.sdk.provider_control_snapshot().await {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_recent_provider_attempts(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ProviderAttemptsQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .recent_provider_attempts(query.limit.unwrap_or(50))
+        .await
+    {
+        Ok(records) => Json(records).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_diagnose_model_route(
+    State(state): State<Arc<AppState>>,
+    Path(route_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ModelRouteDiagnosticRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .diagnose_model_route(&route_id, request.account_id.as_deref())
+        .await
+    {
+        Ok(diagnostic) => Json(diagnostic).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_refresh_model_catalog(
+    State(state): State<Arc<AppState>>,
+    Path(route_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ModelRouteDiagnosticRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .refresh_model_catalog(&route_id, request.account_id.as_deref())
+        .await
+    {
+        Ok(diagnostic) => Json(diagnostic).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_put_provider_instance_config(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(provider): Json<ProviderInstanceConfig>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "无法确定 Morphz 受管配置路径",
+        );
+    };
+    match state
+        .sdk
+        .put_provider_instance_config(path, &provider_id, provider)
+        .await
+    {
+        Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_put_auth_account_config(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(account): Json<AuthAccountConfig>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "无法确定 Morphz 受管配置路径",
+        );
+    };
+    match state
+        .sdk
+        .put_auth_account_config(path, &account_id, account)
+        .await
+    {
+        Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_put_model_route_config(
+    State(state): State<Arc<AppState>>,
+    Path(route_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(route): Json<ModelRouteConfig>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "无法确定 Morphz 受管配置路径",
+        );
+    };
+    match state
+        .sdk
+        .put_model_route_config(path, &route_id, route)
+        .await
+    {
+        Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_control_provider_account(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ControlProviderAccountRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .control_provider_account(&account_id, request.expected_revision, request.action)
+        .await
+    {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+    }
+}
+
+async fn handle_start_provider_oauth_login(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.sdk.start_provider_oauth_login(&account_id).await {
+        Ok(challenge) => (StatusCode::CREATED, Json(challenge)).into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    }
+}
+
+async fn handle_continue_provider_oauth_login(
+    State(state): State<Arc<AppState>>,
+    Path(login_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(completion): Json<OAuthLoginCompletion>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .continue_provider_oauth_login(&login_id, completion)
+        .await
+    {
+        Ok(progress) => Json(progress).into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    }
+}
+
+async fn handle_logout_provider_oauth_account(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.sdk.logout_provider_oauth_account(&account_id).await {
+        Ok(deleted) => Json(json!({ "deleted": deleted })).into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
     }
 }
 
@@ -5052,13 +5338,20 @@ mod tests {
         }
     }
 
-    async fn test_state_at(path: &std::path::Path) -> (Arc<AppState>, MorphzRuntime) {
+    async fn test_state_at_with_workers(
+        path: &std::path::Path,
+        start_workers: bool,
+    ) -> (Arc<AppState>, MorphzRuntime) {
         let mut config = AppConfig::default();
         config.llm.provider = Some("fixture-provider".to_string());
         config.llm.models.push("fixture-model".to_string());
         config.providers.insert(
             "fixture-provider".to_string(),
-            crate::config::ProviderConfig::default(),
+            crate::config::ProviderConfig {
+                protocol: crate::config::ModelProtocol::OpenaiResponses,
+                base_url: "http://localhost:8317/v1".to_string(),
+                ..crate::config::ProviderConfig::default()
+            },
         );
         let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient::default()))
             .database_path(path.to_str().unwrap())
@@ -5074,7 +5367,9 @@ mod tests {
             .build()
             .await
             .unwrap();
-        runtime.start().await.unwrap();
+        if start_workers {
+            runtime.start().await.unwrap();
+        }
         let (broadcast_tx, _) = broadcast::channel(32);
         let sdk = MorphzSdk::new(runtime.clone());
         (
@@ -5091,6 +5386,10 @@ mod tests {
             }),
             runtime,
         )
+    }
+
+    async fn test_state_at(path: &std::path::Path) -> (Arc<AppState>, MorphzRuntime) {
+        test_state_at_with_workers(path, true).await
     }
 
     async fn test_state() -> (Arc<AppState>, MorphzRuntime) {
@@ -5883,6 +6182,96 @@ mod tests {
         assert_eq!(runtime.config().llm.reasoning_effort, None);
         let managed = std::fs::read_to_string(managed_config_path).unwrap();
         assert!(managed.contains("reasoning_effort = \"none\""));
+    }
+
+    #[tokio::test]
+    async fn provider_catalog_http_mutations_compose_before_runtime_restart() {
+        let tmp = NamedTempFile::new().unwrap();
+        let database_path = tmp.path().to_path_buf();
+        drop(tmp);
+        let (state, _runtime) = test_state_at_with_workers(&database_path, false).await;
+        let managed_config_path = state.managed_config_path.clone().unwrap();
+        let provider = ProviderInstanceConfig {
+            adapter: "openai-compatible".to_string(),
+            protocol: crate::config::ModelProtocol::OpenaiResponses,
+            base_url: "http://localhost:9911/v1".to_string(),
+            ..ProviderInstanceConfig::default()
+        };
+        let response = handle_put_provider_instance_config(
+            State(Arc::clone(&state)),
+            Path("secondary".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(provider.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let account = AuthAccountConfig {
+            auth_adapter: "none".to_string(),
+            provider: Some("secondary".to_string()),
+            label: Some("Local anonymous".to_string()),
+            ..AuthAccountConfig::default()
+        };
+        let response = handle_put_auth_account_config(
+            State(Arc::clone(&state)),
+            Path("secondary-local".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(account),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = handle_put_provider_instance_config(
+            State(Arc::clone(&state)),
+            Path("secondary".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(ProviderInstanceConfig {
+                accounts: vec!["secondary-local".to_string()],
+                ..provider
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = handle_put_model_route_config(
+            State(state),
+            Path("coding-secondary".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(ModelRouteConfig {
+                aliases: vec!["secondary/coding".to_string()],
+                candidates: vec![crate::config::ModelRouteCandidateConfig {
+                    provider: "secondary".to_string(),
+                    model: "coding-model".to_string(),
+                    ..crate::config::ModelRouteCandidateConfig::default()
+                }],
+                ..ModelRouteConfig::default()
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let managed: AppConfig =
+            toml::from_str(&std::fs::read_to_string(managed_config_path).unwrap()).unwrap();
+        assert_eq!(
+            managed.provider_instances["secondary"].accounts,
+            ["secondary-local"]
+        );
+        assert_eq!(
+            managed.auth_accounts["secondary-local"].provider.as_deref(),
+            Some("secondary")
+        );
+        assert_eq!(
+            managed.model_routes["coding-secondary"].aliases,
+            ["secondary/coding"]
+        );
     }
 
     #[tokio::test]

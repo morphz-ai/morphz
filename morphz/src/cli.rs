@@ -1142,6 +1142,124 @@ fn provider_command(locale: Locale) -> Command {
                     ),
                 "Examples:\n  morphz provider test\n  morphz provider test anthropic",
             ),
+            Command::new("show")
+                .about(locale.text(
+                    "Show one effective Provider Instance",
+                    "查看一个有效 Provider Instance",
+                ))
+                .arg(
+                    prompt_arg("PROVIDER", 1, Some(1))
+                        .help(locale.text("Provider Instance ID", "Provider Instance 标识")),
+                ),
+            Command::new("set")
+                .about(locale.text(
+                    "Validate and persist a Provider Instance TOML file",
+                    "校验并保存 Provider Instance TOML 文件",
+                ))
+                .arg(prompt_arg("PROVIDER FILE", 2, Some(2)).help(locale.text(
+                    "Provider Instance ID followed by its TOML object file",
+                    "Provider Instance 标识及其 TOML 对象文件",
+                ))),
+            Command::new("account")
+                .about(locale.text(
+                    "Manage provider authentication accounts",
+                    "管理模型服务认证账号",
+                ))
+                .subcommands([
+                    output_examples(
+                        locale,
+                        Command::new("list").about(locale.text(
+                            "List account configuration and runtime state",
+                            "列出账号配置和运行时状态",
+                        )),
+                        "Example:\n  morphz provider account list --format=json",
+                    ),
+                    Command::new("login")
+                        .about(locale.text("Start an OAuth login", "开始 OAuth 登录"))
+                        .arg(
+                            prompt_arg("ACCOUNT", 1, Some(1))
+                                .help(locale.text("Auth Account ID", "认证账号标识")),
+                        ),
+                    Command::new("complete")
+                        .about(
+                            locale.text("Complete or poll an OAuth login", "完成或轮询 OAuth 登录"),
+                        )
+                        .arg(
+                            prompt_arg("LOGIN_ID", 1, Some(1))
+                                .help(locale.text("OAuth login attempt ID", "OAuth 登录尝试标识")),
+                        )
+                        .arg(local_value_arg(
+                            "code",
+                            "code",
+                            "CODE",
+                            locale.text("Authorization code", "授权码"),
+                        ))
+                        .arg(local_value_arg(
+                            "state",
+                            "state",
+                            "STATE",
+                            locale.text("Returned OAuth state", "回传的 OAuth state"),
+                        ))
+                        .arg(local_switch_arg(
+                            "poll",
+                            "poll",
+                            locale.text("Poll a device-code login", "轮询设备码登录"),
+                        )),
+                    Command::new("logout")
+                        .about(locale.text("Revoke a stored OAuth login", "注销 OAuth 登录"))
+                        .arg(
+                            prompt_arg("ACCOUNT", 1, Some(1))
+                                .help(locale.text("Auth Account ID", "认证账号标识")),
+                        ),
+                    Command::new("set")
+                        .about(locale.text(
+                            "Validate and persist non-secret Auth Account TOML",
+                            "校验并保存不含 Secret 的 Auth Account TOML",
+                        ))
+                        .arg(prompt_arg("ACCOUNT FILE", 2, Some(2)).help(locale.text(
+                            "Auth Account ID followed by its non-secret TOML metadata file",
+                            "认证账号标识及其不含 Secret 的 TOML 元数据文件",
+                        ))),
+                    Command::new("enable")
+                        .about(locale.text("Enable one account", "启用账号"))
+                        .arg(
+                            prompt_arg("ACCOUNT", 1, Some(1))
+                                .help(locale.text("Auth Account ID", "认证账号标识")),
+                        )
+                        .arg(local_value_arg(
+                            "revision",
+                            "revision",
+                            "N",
+                            locale.text("Expected runtime revision", "预期运行时版本"),
+                        )),
+                    Command::new("disable")
+                        .about(locale.text("Disable one account", "禁用账号"))
+                        .arg(
+                            prompt_arg("ACCOUNT", 1, Some(1))
+                                .help(locale.text("Auth Account ID", "认证账号标识")),
+                        )
+                        .arg(local_value_arg(
+                            "revision",
+                            "revision",
+                            "N",
+                            locale.text("Expected runtime revision", "预期运行时版本"),
+                        )),
+                    Command::new("test")
+                        .about(locale.text(
+                            "Diagnose one account through a compatible Model Route",
+                            "通过兼容的模型路由诊断一个认证账号",
+                        ))
+                        .arg(
+                            prompt_arg("ACCOUNT", 1, Some(1))
+                                .help(locale.text("Auth Account ID", "认证账号标识")),
+                        )
+                        .arg(local_value_arg(
+                            "route",
+                            "route",
+                            "ROUTE",
+                            locale.text("Optional logical Model Route", "可选的逻辑模型路由"),
+                        )),
+                ]),
         ])
         .after_help(locale.text(
             "Run `morphz provider <COMMAND> --help` for command-specific help.",
@@ -1174,6 +1292,57 @@ fn model_command(locale: Locale) -> Command {
                     ))),
                 "Examples:\n  morphz model use claude-sonnet\n  morphz model use anthropic/claude-sonnet",
             ),
+            Command::new("refresh")
+                .about(locale.text(
+                    "Refresh and verify the remote catalog for one Model Route",
+                    "刷新并验证一个模型路由的远端目录",
+                ))
+                .arg(
+                    prompt_arg("ROUTE", 0, Some(1))
+                        .help(locale.text("Optional Model Route alias", "可选的模型路由别名")),
+                )
+                .arg(local_value_arg(
+                    "account",
+                    "account",
+                    "ACCOUNT",
+                    locale.text("Pin one Auth Account", "固定一个认证账号"),
+                )),
+            Command::new("route")
+                .about(locale.text("Manage logical Model Routes", "管理逻辑模型路由"))
+                .subcommands([
+                    Command::new("list")
+                        .about(locale.text("List effective Model Routes", "列出有效模型路由")),
+                    Command::new("show")
+                        .about(locale.text("Show one Model Route", "查看模型路由"))
+                        .arg(
+                            prompt_arg("ROUTE", 1, Some(1))
+                                .help(locale.text("Logical Model Route ID", "逻辑模型路由标识")),
+                        ),
+                    Command::new("set")
+                        .about(locale.text(
+                            "Validate and persist a Model Route TOML file",
+                            "校验并保存模型路由 TOML 文件",
+                        ))
+                        .arg(prompt_arg("ROUTE FILE", 2, Some(2)).help(locale.text(
+                            "Logical Model Route ID followed by its TOML object file",
+                            "逻辑模型路由标识及其 TOML 对象文件",
+                        ))),
+                    Command::new("test")
+                        .about(locale.text(
+                            "Diagnose route resolution, account auth and provider health",
+                            "诊断路由解析、账号认证和模型服务健康状态",
+                        ))
+                        .arg(
+                            prompt_arg("ROUTE", 1, Some(1))
+                                .help(locale.text("Logical Model Route", "逻辑模型路由")),
+                        )
+                        .arg(local_value_arg(
+                            "account",
+                            "account",
+                            "ACCOUNT",
+                            locale.text("Pin one Auth Account", "固定一个认证账号"),
+                        )),
+                ]),
         ])
         .after_help(locale.text(
             "Run `morphz model <COMMAND> --help` for command-specific help.",
@@ -2105,6 +2274,31 @@ mod tests {
         assert_eq!(cancel.command_path(), ["execution", "cancel"]);
         assert_eq!(cancel.prompt_args(), ["job-a"]);
         assert_eq!(cancel.option("revision").unwrap().last_value(), Some("3"));
+    }
+
+    #[test]
+    fn provider_catalog_commands_preserve_object_ids_and_toml_paths() {
+        for (args, expected_path, expected_prompt) in [
+            (
+                vec!["provider", "set", "direct", "provider.toml"],
+                vec!["provider", "set"],
+                vec!["direct", "provider.toml"],
+            ),
+            (
+                vec!["provider", "account", "set", "account-a", "account.toml"],
+                vec!["provider", "account", "set"],
+                vec!["account-a", "account.toml"],
+            ),
+            (
+                vec!["model", "route", "set", "gpt-5.6", "route.toml"],
+                vec!["model", "route", "set"],
+                vec!["gpt-5.6", "route.toml"],
+            ),
+        ] {
+            let invocation = parse(&args);
+            assert_eq!(invocation.command_path(), expected_path);
+            assert_eq!(invocation.prompt_args(), expected_prompt);
+        }
     }
 
     #[test]

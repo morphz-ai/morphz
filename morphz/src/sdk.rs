@@ -6,6 +6,10 @@
 //! message text is never accepted as identity evidence.
 
 use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
+use crate::config::{
+    save_managed_auth_account_at, save_managed_model_route_at, save_managed_provider_instance_at,
+    AppConfig, AuthAccountConfig, ModelRouteConfig, ProviderInstanceConfig,
+};
 use crate::event::Event;
 use crate::execution::JobReceipt;
 use crate::execution_target::{
@@ -15,6 +19,7 @@ pub use crate::harness::ExactHarnessRef;
 use crate::harness::{HarnessBinding, HarnessDescriptor};
 use crate::harness_package::HarnessPackage;
 use crate::identity::PrincipalAssertion;
+use crate::llm::ModelRouteDiagnostic;
 use crate::memory::{
     ArtifactTransferExecutionRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
     CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate, EdgeCommandMutation,
@@ -30,6 +35,14 @@ use crate::memory::{
     ThreadMutation,
 };
 use crate::orchestrator::context::{ContextTokenBudget, MindProjectionAudit};
+use crate::provider::auth::{
+    OAuthAccountMetadata, OAuthLoginChallenge, OAuthLoginCompletion, OAuthLoginProgress,
+};
+use crate::provider::control::{
+    ProviderAccountControlAction, ProviderCatalogMutationReceipt, ProviderCatalogObjectKind,
+    ProviderControlSnapshot,
+};
+use crate::provider::routing::EffectiveProviderCatalog;
 use crate::runtime::{
     AcknowledgeAttentionCommand, AttentionAcknowledgement, ContextOverview, ContextOverviewQuery,
     ContextTokenBudgetUpdate, DialogueTurnRetryReceipt, LedgerQuery, LedgerQueryPage,
@@ -40,6 +53,7 @@ use crate::runtime::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +107,61 @@ impl fmt::Display for SdkError {
 impl std::error::Error for SdkError {}
 
 pub type SdkResult<T> = Result<T, SdkError>;
+
+fn validate_provider_catalog_snapshot(snapshot: &ProviderControlSnapshot) -> SdkResult<()> {
+    let mut app = AppConfig::default();
+    app.provider_instances = snapshot.provider_instances.clone();
+    app.auth_accounts = snapshot
+        .auth_accounts
+        .iter()
+        .map(|(id, record)| (id.clone(), record.config.clone()))
+        .collect();
+    app.model_routes = snapshot.model_routes.clone();
+    EffectiveProviderCatalog::from_config(&app)
+        .map(|_| ())
+        .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error))
+}
+
+/// Fold catalog edits already persisted in the managed layer over the live
+/// Runtime projection before validating the next edit. Static catalog changes
+/// intentionally require a restart, but operators must still be able to add a
+/// Provider, then its accounts, then its routes without restarting between
+/// each object.
+fn merge_managed_provider_catalog(
+    snapshot: &mut ProviderControlSnapshot,
+    managed_config_path: &Path,
+) -> SdkResult<()> {
+    if !managed_config_path.exists() {
+        return Ok(());
+    }
+    let contents = std::fs::read_to_string(managed_config_path).map_err(SdkError::internal)?;
+    if contents.trim().is_empty() {
+        return Ok(());
+    }
+    let managed: AppConfig = toml::from_str(&contents)
+        .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
+    snapshot
+        .provider_instances
+        .extend(managed.provider_instances);
+    for (account_id, account) in managed.auth_accounts {
+        snapshot.auth_accounts.insert(
+            account_id,
+            crate::provider::control::ProviderAccountControlRecord {
+                effective_enabled: account.enabled(),
+                oauth: !matches!(
+                    account.auth_adapter.as_str(),
+                    "credential" | "none" | "env" | "api-key"
+                ),
+                authenticated: false,
+                oauth_metadata: None,
+                state: None,
+                config: account,
+            },
+        );
+    }
+    snapshot.model_routes.extend(managed.model_routes);
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageAttachmentInput {
@@ -508,6 +577,168 @@ impl MorphzSdk {
     pub fn delete_managed_secret(&self, name: &str) -> SdkResult<bool> {
         self.runtime
             .delete_managed_secret(name)
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn provider_control_snapshot(&self) -> SdkResult<ProviderControlSnapshot> {
+        self.runtime
+            .provider_control_snapshot()
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn recent_provider_attempts(
+        &self,
+        limit: usize,
+    ) -> SdkResult<Vec<crate::runtime::ModelUsageRecord>> {
+        self.runtime
+            .recent_provider_attempts(limit)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn diagnose_model_route(
+        &self,
+        alias: &str,
+        account_id: Option<&str>,
+    ) -> SdkResult<ModelRouteDiagnostic> {
+        self.runtime
+            .diagnose_model_route(alias, account_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn refresh_model_catalog(
+        &self,
+        alias: &str,
+        account_id: Option<&str>,
+    ) -> SdkResult<ModelRouteDiagnostic> {
+        self.runtime
+            .refresh_model_catalog(alias, account_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn put_provider_instance_config(
+        &self,
+        managed_config_path: &Path,
+        provider_id: &str,
+        provider: ProviderInstanceConfig,
+    ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let mut snapshot = self.provider_control_snapshot().await?;
+        merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
+        snapshot
+            .provider_instances
+            .insert(provider_id.to_string(), provider.clone());
+        validate_provider_catalog_snapshot(&snapshot)?;
+        save_managed_provider_instance_at(managed_config_path, provider_id, &provider)
+            .map_err(SdkError::internal)?;
+        Ok(ProviderCatalogMutationReceipt::new(
+            ProviderCatalogObjectKind::ProviderInstance,
+            provider_id,
+            managed_config_path,
+        ))
+    }
+
+    pub async fn put_auth_account_config(
+        &self,
+        managed_config_path: &Path,
+        account_id: &str,
+        account: AuthAccountConfig,
+    ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let mut snapshot = self.provider_control_snapshot().await?;
+        merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
+        snapshot.auth_accounts.insert(
+            account_id.to_string(),
+            crate::provider::control::ProviderAccountControlRecord {
+                effective_enabled: account.enabled(),
+                oauth: !matches!(
+                    account.auth_adapter.as_str(),
+                    "credential" | "none" | "env" | "api-key"
+                ),
+                authenticated: false,
+                oauth_metadata: None,
+                state: None,
+                config: account.clone(),
+            },
+        );
+        validate_provider_catalog_snapshot(&snapshot)?;
+        save_managed_auth_account_at(managed_config_path, account_id, &account)
+            .map_err(SdkError::internal)?;
+        Ok(ProviderCatalogMutationReceipt::new(
+            ProviderCatalogObjectKind::AuthAccount,
+            account_id,
+            managed_config_path,
+        ))
+    }
+
+    pub async fn put_model_route_config(
+        &self,
+        managed_config_path: &Path,
+        route_id: &str,
+        route: ModelRouteConfig,
+    ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let mut snapshot = self.provider_control_snapshot().await?;
+        merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
+        snapshot
+            .model_routes
+            .insert(route_id.to_string(), route.clone());
+        validate_provider_catalog_snapshot(&snapshot)?;
+        save_managed_model_route_at(managed_config_path, route_id, &route)
+            .map_err(SdkError::internal)?;
+        Ok(ProviderCatalogMutationReceipt::new(
+            ProviderCatalogObjectKind::ModelRoute,
+            route_id,
+            managed_config_path,
+        ))
+    }
+
+    pub async fn control_provider_account(
+        &self,
+        account_id: &str,
+        expected_revision: Option<u64>,
+        action: ProviderAccountControlAction,
+    ) -> SdkResult<crate::memory::ProviderAccountStateRecord> {
+        self.runtime
+            .control_provider_account(account_id, expected_revision, action)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn start_provider_oauth_login(
+        &self,
+        account_id: &str,
+    ) -> SdkResult<OAuthLoginChallenge> {
+        self.runtime
+            .start_provider_oauth_login(account_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn continue_provider_oauth_login(
+        &self,
+        login_id: &str,
+        completion: OAuthLoginCompletion,
+    ) -> SdkResult<OAuthLoginProgress> {
+        self.runtime
+            .continue_provider_oauth_login(login_id, completion)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub fn provider_oauth_account_metadata(
+        &self,
+        account_id: &str,
+    ) -> SdkResult<OAuthAccountMetadata> {
+        self.runtime
+            .provider_oauth_account_metadata(account_id)
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn logout_provider_oauth_account(&self, account_id: &str) -> SdkResult<bool> {
+        self.runtime
+            .logout_provider_oauth_account(account_id)
+            .await
             .map_err(SdkError::internal)
     }
 

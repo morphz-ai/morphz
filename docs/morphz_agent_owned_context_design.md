@@ -1,6 +1,6 @@
 # Morphz Agent-Owned Context：由 LLM 自主管理的心智上下文
 
-> 状态：核心设计基线；Agent-Owned Context protocol v15 已实现并进入评测
+> 状态：核心设计基线；Agent-Owned Context 已实现，当前生产 Context Encoding 为 Protocol v26
 > 适用范围：Morphz Agent Runtime、SExpr DSL、Context 生命周期、记忆召回与产品调试界面
 > 设计优先级：本文件用于澄清 Morphz 的核心方向；当既有文档中的“自动评分、自动裁剪、自动摘要、自动注入”与本文冲突时，应以本文的职责划分为准。
 
@@ -9,6 +9,8 @@
 > 现实约束与认识论说明：Agent 拥有 Context 语义，不等于 Runtime 只提供存储。Runtime 还应提供不可伪造的顺序、直接因果、身份、来源、版本、事务和控制反馈，但不能替 Agent 认证业务真理。完整契约见 [`morphz_reality_constrained_epistemic_context.md`](morphz_reality_constrained_epistemic_context.md)。
 
 > Protocol v16 更新（2026-07-15）：当前每次模型请求只有一个 active Session；无工具非空普通文本是该 Session 的终态响应，独占 `no_reply` 表示静默，`send_message` 用于其他 Session。空响应不是终态，Runtime 最多纠错两次后熔断。完整定义见 [单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)。
+
+> Protocol v26 更新（2026-08-01）：Prefix Cache 正式布局、Thread/Activation 调度投影、Frame 级 MVCC 和 Scheduler Kernel v2 已进入生产实现。本文中的 v15/v16 术语保留为演进记录；当前全局边界见 [Runtime 核心实现状态总览](./morphz_runtime_core_implementation_status_v1.md)。
 
 > Context Encoding 的物理顺序、历史不可变边界、System/Harness 挂载方式及 Prefix Cache 成本验收，以 [Prefix Cache 友好的 Context Encoding 正式布局 v1](morphz_prefix_cache_context_encoding_layout_v1.md) 为准。该布局只优化同一语义状态的序列化与请求成本，不收回 Agent 对 Mind、retire、restore 和 recall 的语义控制权。
 

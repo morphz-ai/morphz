@@ -1,12 +1,14 @@
 # Morphz Scheduler Kernel 与领域命名模型 v1
 
-> 状态：设计与实现基线；Phase 0–4 的单机实现已经收口，Phase 5 分布式执行明确不在当前范围
+> 状态：历史 v1 设计与实现基线；领域命名继续有效，调度写入与恢复边界已由 Scheduler Kernel v2 取代
 >
 > 日期：2026-07-17
 >
 > 适用范围：Runtime 调度、Session 并发、工具执行、Objective、Delegation、定时任务与结果交付
 >
 > 相关文档：[Session Thread Model v1](./morphz_session_thread_model_v1.md)、[First-Class Objective Supervisor v1](./morphz_first_class_objective_supervisor_v1.md)、[受监督并发模型与实现设计 v1](./morphz_supervised_concurrency_model_v1.md)、[共享 Context 多 Session 架构](./morphz_shared_context_multisession_architecture.md)、[单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)
+
+> 当前实现说明（2026-08-01）：本文继续作为领域命名和 v1 演进记录，但调度写入边界已经由 [Scheduler Kernel v2 稳定化重构](./morphz_scheduler_kernel_stabilization_v2.md) 取代。下文关于内部 Signal Outbox、正常路径 barrier repair、Controller 直接修改多张调度表，以及单一 `wait_condition` 作为 Objective readiness 权威来源的描述均为历史实现，不应再用于解释当前代码。当前状态索引见 [Runtime 核心实现状态总览](./morphz_runtime_core_implementation_status_v1.md)。
 
 ## 1. 背景
 

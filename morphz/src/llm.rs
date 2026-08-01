@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::sync::Arc;
 
 /// Runtime-facing classification of a failed physical model request.
 ///
@@ -520,8 +521,75 @@ pub struct ToolCallRepr {
     pub arguments: String,
 }
 
+/// Runtime facts available while resolving one physical model request. These
+/// identifiers are routing inputs only; they never become model-visible prompt
+/// text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelRequestContext {
+    pub context_id: String,
+    pub session_id: String,
+    pub attempt_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_id: Option<String>,
+    #[serde(default)]
+    pub required_capabilities: Vec<String>,
+}
+
+/// Immutable physical identity of a Model Attempt. A retry may only change
+/// these fields by creating and persisting a new binding revision explicitly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelAttemptBinding {
+    pub requested_alias: String,
+    pub route_id: String,
+    pub route_revision: String,
+    pub provider_instance_id: String,
+    pub auth_account_id: String,
+    pub physical_model: String,
+    pub protocol: String,
+    pub provider_adapter: String,
+    pub provider_adapter_version: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// Secret-free result of an explicit operator probe against one immutable
+/// physical model binding. A failed catalog lookup or health request remains
+/// data in this receipt so CLI, HTTP and Dashboard present the same diagnosis.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelRouteDiagnostic {
+    pub checked_at: chrono::DateTime<chrono::Utc>,
+    pub binding: ModelAttemptBinding,
+    pub elapsed_ms: u64,
+    #[serde(default)]
+    pub discovered_models: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_error: Option<String>,
+    pub health_verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_error: Option<String>,
+}
+
 #[async_trait::async_trait]
 pub trait Client: Send + Sync {
+    /// Attach the Runtime's provider authentication authority after Secret
+    /// Store and durable storage have both been constructed. Routed clients
+    /// use it to materialize OAuth authorization for one immutable binding.
+    fn attach_provider_auth_manager(
+        &self,
+        _manager: Arc<crate::provider::auth::ProviderAuthManager>,
+    ) {
+    }
+
+    /// Attach the Runtime's durable provider-account authority after physical
+    /// storage has been constructed. Direct clients intentionally ignore it;
+    /// routed clients use it for affinity, cooldown and refresh fencing.
+    fn attach_provider_account_state_store(
+        &self,
+        _store: Arc<dyn crate::memory::ProviderAccountStateStore>,
+    ) {
+    }
+
     /// Stable Runtime resource identity used for shared backoff and durable
     /// Objective waits.  Custom clients may keep the conservative default;
     /// first-class protocol adapters include endpoint, protocol and model.
@@ -565,6 +633,40 @@ pub trait Client: Send + Sync {
     /// without a controllable native protocol should return a clear error.
     fn set_reasoning_effort(&self, _effort: Option<ReasoningEffort>) -> Result<(), String> {
         Err("当前模型客户端不支持动态调整推理深度".to_string())
+    }
+
+    /// Resolve one immutable physical binding before request-state persistence.
+    /// Basic clients return a single-resource binding; routed clients override
+    /// this to choose a Provider Instance and Auth Account.
+    async fn bind_model_attempt(
+        &self,
+        _request: &ModelRequestContext,
+    ) -> Result<ModelAttemptBinding, String> {
+        let model = self.model().unwrap_or_else(|| "unknown".to_string());
+        Ok(ModelAttemptBinding {
+            requested_alias: model.clone(),
+            route_id: "direct".to_string(),
+            route_revision: "direct-v1".to_string(),
+            provider_instance_id: self.provider_resource_key(),
+            auth_account_id: "direct".to_string(),
+            physical_model: model,
+            protocol: "custom".to_string(),
+            provider_adapter: "direct-client".to_string(),
+            provider_adapter_version: "1".to_string(),
+            endpoint: self.provider_resource_key(),
+            capabilities: Vec::new(),
+        })
+    }
+
+    /// Explicit control-plane diagnosis for one logical route and optional
+    /// account. Implementations must not silently change the process-wide
+    /// selected model while running the probe.
+    async fn diagnose_model_route(
+        &self,
+        _alias: &str,
+        _account_id: Option<&str>,
+    ) -> Result<ModelRouteDiagnostic, Box<dyn std::error::Error + Send + Sync>> {
+        Err("当前模型客户端不支持 Model Route 诊断".into())
     }
 
     /// 在 completion 之前本地计量完整 Prompt。实现不得为核心求值增加远程请求。
@@ -635,6 +737,20 @@ pub trait Client: Send + Sync {
                 Err(error)
             }
         }
+    }
+
+    /// Execute against a previously persisted immutable binding. Implementors
+    /// that expose only one physical client can safely use the default.
+    async fn create_completion_bound_stream(
+        &self,
+        _binding: &ModelAttemptBinding,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.create_completion_measured_stream(messages, tools, measurement, stream)
+            .await
     }
 
     /// Small request used exclusively to confirm shared Provider health.

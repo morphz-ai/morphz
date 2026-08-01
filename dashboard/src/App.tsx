@@ -46,6 +46,7 @@ import {
   Play,
   Plus,
   Radio,
+  Router,
   RefreshCw,
   Search,
   Send,
@@ -104,6 +105,7 @@ import {
 import { LedgerPage } from './pages/LedgerPage'
 import type { LedgerFilters } from './pages/LedgerPage'
 import { CredentialsPage } from './pages/CredentialsPage'
+import { ProvidersPage } from './pages/ProvidersPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { RuntimeOverviewPage, type RuntimeOverview } from './pages/RuntimeOverviewPage'
 import { RuntimePage } from './pages/RuntimePage'
@@ -6156,6 +6158,9 @@ export default function App() {
             <button className={view === 'credentials' ? 'is-active' : ''} type="button" onClick={() => setView('credentials')} aria-current={view === 'credentials' ? 'page' : undefined}>
               <KeyRound size={14} /><span>{t('navigation.credentials')}</span>
             </button>
+            <button className={view === 'providers' ? 'is-active' : ''} type="button" onClick={() => setView('providers')} aria-current={view === 'providers' ? 'page' : undefined}>
+              <Router size={14} /><span>{t('navigation.providers')}</span>
+            </button>
           </nav>
           {view === 'dialogue' && selectedSessionId && (
             <div className="conversation-toolbar">
@@ -7301,6 +7306,8 @@ export default function App() {
           )}
 
           {view === 'credentials' && <CredentialsPage api={DASHBOARD_API} />}
+
+          {view === 'providers' && <ProvidersPage api={DASHBOARD_API} />}
 
           {view === 'cognition' && (
             <section className="cognition-view">

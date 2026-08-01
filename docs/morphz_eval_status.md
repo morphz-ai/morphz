@@ -1,7 +1,10 @@
 # Morphz 当前评测状态总览
 
+> 状态：截至 2026-07-15 的历史评测快照，不再承担当前 Runtime 实现状态索引
+>
 > 更新时间：2026-07-15
-> 主测模型：`gemini-3-flash-agent`；`glm-5.2`、`deepseek-v4-pro`、`gpt-5.6-sol` 作为对照模型。当前 Runtime 协议已升级为 v16；下文标注 v8/v9/v10/v11 的结果仍作为历史可比基线。
+>
+> 当时主测模型：`gemini-3-flash-agent`；`glm-5.2`、`deepseek-v4-pro`、`gpt-5.6-sol` 作为对照模型。本文的 Protocol v8–v16 结果继续作为历史可比基线；当前生产协议与实现边界见 [Runtime 核心实现状态总览](./morphz_runtime_core_implementation_status_v1.md)。
 
 ## 1. 一页结论
 

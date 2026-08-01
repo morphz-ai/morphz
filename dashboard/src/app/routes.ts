@@ -1,4 +1,4 @@
-export type DashboardView = 'overview' | 'dialogue' | 'scheduler' | 'cognition' | 'ledger' | 'runtime' | 'credentials'
+export type DashboardView = 'overview' | 'dialogue' | 'scheduler' | 'cognition' | 'ledger' | 'runtime' | 'credentials' | 'providers'
 
 export type CognitionView = 'mind' | 'attention' | 'encoding' | 'recall'
 
@@ -26,6 +26,7 @@ export function parseDashboardRoute(pathname: string): DashboardRoute {
   if (segments.length === 0) return { view: 'overview' }
   if (segments[0] === 'runtime') return { view: 'runtime' }
   if (segments[0] === 'credentials') return { view: 'credentials' }
+  if (segments[0] === 'providers') return { view: 'providers' }
   if (segments[0] !== 'contexts' || !segments[1]) return { view: 'overview' }
 
   const contextId = decoded(segments[1])
@@ -64,6 +65,7 @@ export function dashboardPath(
 ): string {
   if (view === 'runtime') return '/runtime'
   if (view === 'credentials') return '/credentials'
+  if (view === 'providers') return '/providers'
   if (!contextId) return '/'
   const context = encodeURIComponent(contextId)
   switch (view) {

@@ -744,8 +744,10 @@ B 没有等待 A；A 的 continuation 保持 A 的 `root_turn_id`，其 Context 
 
 ## 19. v1 非目标
 
+> 实施更新（2026-08-01）：本节描述的是 Session Working Set v1 当时的范围，不是整个 Runtime 的当前能力清单。Frame 级 MVCC 已在后续实现中落地，当前状态见 [Context 事务、Mind Projection 与分布式扩展](./morphz_context_transaction_scalability_and_mind_projection_v1.md)。
+
 - 不实现 Raft/Paxos 或多副本 Ledger；
-- 不实现 Frame 级 MVCC；v1 继续允许 Context 全局 version 冲突后重求值；
+- 本阶段最初不包含 Frame 级 MVCC；后续 Runtime 已支持不相干 Frame 修改安全自动 rebase；
 - 不实现所有 Session 一次合并求值；该实验路径已从 Runtime 删除；
 - 不实现 Session 内部 Observation 分页换入；
 - 不让 Runtime 自动为旧 Session 生成业务摘要；

@@ -26,7 +26,7 @@ use crate::harness_tool::{HarnessListTool, HarnessSelectTool};
 use crate::identity::{
     IdentityEvidence, IdentityProvider, PrincipalAssertion, StaticIdentityProvider,
 };
-use crate::llm::{Client, ModelUsage, ReasoningEffort};
+use crate::llm::{Client, ModelAttemptBinding, ModelRouteDiagnostic, ModelUsage, ReasoningEffort};
 use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
@@ -64,6 +64,13 @@ use crate::orchestrator::orchestrator::{DurableApprovalServices, Orchestrator};
 use crate::permission::{
     ApprovalRequirement, PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode,
 };
+use crate::provider::auth::{
+    OAuthAccountMetadata, OAuthLoginChallenge, OAuthLoginCompletion, OAuthLoginProgress,
+};
+use crate::provider::control::{
+    ProviderAccountControlAction, ProviderAccountControlRecord, ProviderControlSnapshot,
+};
+use crate::provider::routing::EffectiveProviderCatalog;
 use crate::scheduler::{
     audit_scheduler_invariants, derive_objective_readiness, KernelResult,
     SchedulerDependencyFilter, SchedulerDependencyOwnerKind, SchedulerInvariantInput,
@@ -328,6 +335,9 @@ fn model_usage_record_from_event(event: Event) -> Option<ModelUsageRecord> {
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_string),
+        model_binding: payload
+            .get("model_binding")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
         usage: serde_json::from_value(payload.get("usage")?.clone()).ok()?,
         predicted_input_tokens: payload
             .get("predicted_input_tokens")
@@ -552,6 +562,10 @@ pub struct ModelUsageRecord {
     pub session_id: String,
     pub attempt_id: String,
     pub model: Option<String>,
+    /// Immutable physical routing identity captured before the Provider
+    /// request started. Legacy usage events may not contain this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_binding: Option<ModelAttemptBinding>,
     pub usage: ModelUsage,
     pub predicted_input_tokens: Option<u64>,
     pub local_base_estimate_tokens: Option<u64>,
@@ -875,6 +889,16 @@ impl MorphzRuntimeBuilder {
                 }
             },
         };
+        self.client.attach_provider_account_state_store(
+            Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>
+        );
+        let provider_auth_manager = Arc::new(crate::provider::auth::ProviderAuthManager::new(
+            self.config.auth_accounts.clone(),
+            Arc::clone(&secret_store),
+            Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>,
+        ));
+        self.client
+            .attach_provider_auth_manager(Arc::clone(&provider_auth_manager));
         let harness_registry = Arc::new(DomainHarnessRegistry::default());
         for package in load_persisted_harness_packages(store.as_ref()).await? {
             harness_registry.register_package(package)?;
@@ -1234,6 +1258,7 @@ impl MorphzRuntimeBuilder {
                 artifact_transfer_stages,
                 background_scheduler,
                 secret_store,
+                provider_auth_manager,
                 timer_engine,
                 human_approval_hub,
                 process_started_at: chrono::Utc::now(),
@@ -1406,6 +1431,7 @@ struct RuntimeInner {
     artifact_transfer_stages: crate::artifact::ArtifactTransferStageStore,
     background_scheduler: Arc<BackgroundTaskScheduler>,
     secret_store: Arc<SecretStore>,
+    provider_auth_manager: Arc<crate::provider::auth::ProviderAuthManager>,
     timer_engine: Arc<TimerEngine>,
     human_approval_hub: HumanApprovalHub,
     process_started_at: chrono::DateTime<chrono::Utc>,
@@ -1713,6 +1739,198 @@ impl MorphzRuntime {
 
     pub fn delete_managed_secret(&self, name: &str) -> Result<bool, RuntimeError> {
         self.inner.secret_store.delete(name).map_err(Into::into)
+    }
+
+    pub async fn start_provider_oauth_login(
+        &self,
+        account_id: &str,
+    ) -> Result<OAuthLoginChallenge, RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .start_login(account_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn continue_provider_oauth_login(
+        &self,
+        login_id: &str,
+        completion: OAuthLoginCompletion,
+    ) -> Result<OAuthLoginProgress, RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .continue_login(login_id, completion)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub fn provider_oauth_account_metadata(
+        &self,
+        account_id: &str,
+    ) -> Result<OAuthAccountMetadata, RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .account_metadata(account_id)
+            .map_err(Into::into)
+    }
+
+    pub async fn logout_provider_oauth_account(
+        &self,
+        account_id: &str,
+    ) -> Result<bool, RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .logout(account_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Authoritative, secret-free Provider control-plane projection shared by
+    /// SDK, CLI, HTTP and Dashboard.
+    pub async fn provider_control_snapshot(&self) -> Result<ProviderControlSnapshot, RuntimeError> {
+        let catalog = EffectiveProviderCatalog::from_config(&self.inner.config)?;
+        let mut auth_accounts = BTreeMap::new();
+        for (account_id, config) in &catalog.auth_accounts {
+            let state = self
+                .inner
+                .store
+                .get_provider_account_state(account_id)
+                .await?;
+            let effective_enabled = state
+                .as_ref()
+                .map(|state| state.status != crate::memory::ProviderAccountStatus::Disabled)
+                .unwrap_or(config.enabled);
+            let oauth = config.auth_adapter.ends_with("-oauth");
+            let oauth_metadata = if oauth {
+                self.inner
+                    .provider_auth_manager
+                    .account_metadata(account_id)
+                    .ok()
+            } else {
+                None
+            };
+            auth_accounts.insert(
+                account_id.clone(),
+                ProviderAccountControlRecord {
+                    config: config.clone(),
+                    state,
+                    effective_enabled,
+                    oauth,
+                    authenticated: oauth_metadata.is_some(),
+                    oauth_metadata,
+                },
+            );
+        }
+        Ok(ProviderControlSnapshot {
+            generated_at: chrono::Utc::now(),
+            selected_model_alias: self.model(),
+            auth_adapters: self.inner.provider_auth_manager.adapter_descriptors(),
+            provider_instances: catalog.provider_instances,
+            auth_accounts,
+            model_routes: catalog.model_routes,
+            discovered_models: self.inner.store.list_provider_model_catalog().await?,
+        })
+    }
+
+    /// Return recent physical Model Attempts across all Contexts for the
+    /// operator control plane. Principal-scoped APIs deliberately do not
+    /// expose this global projection.
+    pub async fn recent_provider_attempts(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ModelUsageRecord>, RuntimeError> {
+        let events = self
+            .inner
+            .store
+            .query(QueryFilter {
+                topic: Some("runtime/model_usage".to_string()),
+                latest_k: Some(limit.clamp(1, 500)),
+                ..Default::default()
+            })
+            .await?;
+        let mut records = events
+            .into_iter()
+            .filter_map(model_usage_record_from_event)
+            .collect::<Vec<_>>();
+        records.reverse();
+        for record in &mut records {
+            let physical_model = record
+                .model_binding
+                .as_ref()
+                .map(|binding| binding.physical_model.as_str())
+                .or(record.model.as_deref());
+            record.cost = calculate_model_usage_cost(
+                &self.inner.config.usage_pricing,
+                physical_model,
+                &record.usage,
+            );
+        }
+        Ok(records)
+    }
+
+    /// Run a small, explicit control-plane request against one logical route.
+    /// The optional account pins the physical Auth Account without changing
+    /// the process-wide selected model or normal routing affinity.
+    pub async fn diagnose_model_route(
+        &self,
+        alias: &str,
+        account_id: Option<&str>,
+    ) -> Result<ModelRouteDiagnostic, RuntimeError> {
+        self.inner
+            .client
+            .diagnose_model_route(alias, account_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Refresh and durably project a Provider's remote physical model
+    /// catalog. A failed catalog request never erases the last good snapshot.
+    pub async fn refresh_model_catalog(
+        &self,
+        alias: &str,
+        account_id: Option<&str>,
+    ) -> Result<ModelRouteDiagnostic, RuntimeError> {
+        let diagnostic = self.diagnose_model_route(alias, account_id).await?;
+        if diagnostic.catalog_error.is_none() {
+            let binding = &diagnostic.binding;
+            self.inner
+                .store
+                .replace_provider_model_catalog(
+                    &binding.provider_instance_id,
+                    &binding.auth_account_id,
+                    &binding.provider_adapter,
+                    &binding.provider_adapter_version,
+                    &binding.protocol,
+                    "remote_provider",
+                    &diagnostic.discovered_models,
+                    diagnostic.checked_at,
+                )
+                .await?;
+        }
+        Ok(diagnostic)
+    }
+
+    /// Dynamically enables or disables an account using durable Runtime
+    /// state. Static config remains its startup default; the durable override
+    /// is shared across workers and survives restart.
+    pub async fn control_provider_account(
+        &self,
+        account_id: &str,
+        expected_revision: Option<u64>,
+        action: ProviderAccountControlAction,
+    ) -> Result<crate::memory::ProviderAccountStateRecord, RuntimeError> {
+        let catalog = EffectiveProviderCatalog::from_config(&self.inner.config)?;
+        if !catalog.auth_accounts.contains_key(account_id) {
+            return Err(format!("Auth Account '{account_id}' 不存在").into());
+        }
+        let status = match action {
+            ProviderAccountControlAction::Enable => crate::memory::ProviderAccountStatus::Ready,
+            ProviderAccountControlAction::Disable => crate::memory::ProviderAccountStatus::Disabled,
+        };
+        self.inner
+            .store
+            .put_provider_account_state(account_id, expected_revision, status, None, None, false)
+            .await
     }
 
     pub async fn authenticate_identity(
@@ -5297,9 +5515,14 @@ impl MorphzRuntime {
         let mut totals = ModelUsageTotals::default();
         let mut cost_totals = BTreeMap::<(String, String), (f64, u64)>::new();
         for record in &mut records {
+            let physical_model = record
+                .model_binding
+                .as_ref()
+                .map(|binding| binding.physical_model.as_str())
+                .or(record.model.as_deref());
             record.cost = calculate_model_usage_cost(
                 &self.inner.config.usage_pricing,
-                record.model.as_deref(),
+                physical_model,
                 &record.usage,
             );
             totals.attempts = totals.attempts.saturating_add(1);
