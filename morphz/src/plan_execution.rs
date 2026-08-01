@@ -1743,21 +1743,15 @@ mod tests {
         assert_eq!(pre_materialization.still_waiting, vec![waiting.id.clone()]);
 
         let child_thread = store
-            .ensure_thread(NewThread {
-                id: "plan-infer-thread".to_string(),
-                agent_id: waiting.agent_id.clone(),
-                context_id: waiting.context_id.clone(),
-                session_id: waiting.session_id.clone(),
-                initiating_principal_id: waiting.initiating_principal_id.clone(),
-                root_turn_id: request_event.id.clone(),
-                kind: ThreadKind::Execution,
-                executor_kind: "plan_infer".to_string(),
-                executor_id: Some(waiting.id.clone()),
-                target_id: None,
-                supervision: crate::memory::ThreadSupervision::legacy(),
-            })
+            .get_thread_by_root(&request_event.id)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("atomic infer hand-off must materialize its supervised child Thread");
+        assert_eq!(child_thread.executor_kind, "plan_infer");
+        assert_eq!(
+            child_thread.executor_id.as_deref(),
+            Some(waiting.id.as_str())
+        );
         let child_activation = store
             .ensure_thread_activation(NewThreadActivation {
                 id: activation_id.clone(),
@@ -1925,21 +1919,15 @@ mod tests {
         };
 
         let child_thread = store
-            .ensure_thread(NewThread {
-                id: "plan-malformed-infer-thread".to_string(),
-                agent_id: waiting.agent_id.clone(),
-                context_id: waiting.context_id.clone(),
-                session_id: waiting.session_id.clone(),
-                initiating_principal_id: waiting.initiating_principal_id.clone(),
-                root_turn_id: request_event.id.clone(),
-                kind: ThreadKind::Execution,
-                executor_kind: "plan_infer".to_string(),
-                executor_id: Some(waiting.id.clone()),
-                target_id: None,
-                supervision: crate::memory::ThreadSupervision::legacy(),
-            })
+            .get_thread_by_root(&request_event.id)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("atomic infer hand-off must survive restart as its supervised child Thread");
+        assert_eq!(child_thread.executor_kind, "plan_infer");
+        assert_eq!(
+            child_thread.executor_id.as_deref(),
+            Some(waiting.id.as_str())
+        );
         let child_activation = store
             .ensure_thread_activation(NewThreadActivation {
                 id: activation_id.clone(),

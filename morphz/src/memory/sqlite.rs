@@ -4259,6 +4259,29 @@ async fn append_direct_thread_signal_in_transaction(
             .await?
             .ok_or_else(|| format!("Direct Thread Signal 目标 Thread '{thread_id}' 不存在"))?;
     let status: String = thread.get("status");
+    let signal_id = crate::memory::stable_thread_signal_id(&event.id);
+    if let Some(existing) =
+        sqlx::query("SELECT id, thread_id FROM thread_signals WHERE event_id = ?")
+            .bind(&event.id)
+            .fetch_optional(&mut **tx)
+            .await?
+    {
+        let existing_id: String = existing.get("id");
+        let existing_thread_id: String = existing.get("thread_id");
+        if existing_id != signal_id || existing_thread_id != thread_id {
+            return Err(format!(
+                "Direct Thread Signal Event '{}' 已路由到不同 Signal/Thread",
+                event.id
+            )
+            .into());
+        }
+        // A recovery replay may run long after the owning Thread completed.
+        // The immutable Event already caused its one Signal, so this is an
+        // idempotent no-op rather than a new delivery to a terminal Thread.
+        // Do not consume a pending Outbox row here: some atomic protocols use
+        // it as the still-unpublished transport envelope for this same Signal.
+        return Ok(false);
+    }
     if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
         return Err(format!(
             "Direct Thread Signal 不能投递到已终结 Thread '{thread_id}' ({status})"
@@ -4269,7 +4292,6 @@ async fn append_direct_thread_signal_in_transaction(
         .bind(&event.id)
         .fetch_one(&mut **tx)
         .await?;
-    let signal_id = crate::memory::stable_thread_signal_id(&event.id);
     let thread_generation: i64 = thread.get("generation");
     let principal_id: Option<String> = thread.get("initiating_principal_id");
     let inserted = sqlx::query(
@@ -21990,6 +22012,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exact_direct_signal_replay_is_idempotent_after_thread_termination() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "terminal-replay-context".to_string(),
+                agent_id: "terminal-replay-agent".to_string(),
+                title: "Terminal Replay Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "terminal-replay-session".to_string(),
+                agent_id: "terminal-replay-agent".to_string(),
+                context_id: "terminal-replay-context".to_string(),
+                parent_session_id: None,
+                title: "Terminal Replay Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "terminal-replay-thread".to_string(),
+                agent_id: "terminal-replay-agent".to_string(),
+                context_id: "terminal-replay-context".to_string(),
+                session_id: "terminal-replay-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "terminal-replay-root".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let event = Event::new(
+            "terminal-replay-event".to_string(),
+            "fixture".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    serde_json::json!("terminal-replay-context"),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!("terminal-replay-session"),
+                ),
+                (
+                    "root_turn_id".to_string(),
+                    serde_json::json!("terminal-replay-root"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        store
+            .append_to_thread(event.clone(), &thread.id)
+            .await
+            .unwrap();
+        let terminal = match store
+            .update_thread(
+                &thread.id,
+                thread.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected Thread mutation: {other:?}"),
+        };
+        assert_eq!(terminal.lifecycle, ThreadLifecycle::Completed);
+
+        store
+            .append_to_thread(event, &terminal.id)
+            .await
+            .expect("an exact immutable Event/Signal replay must remain idempotent");
+        assert_eq!(
+            store
+                .list_context_thread_signals("terminal-replay-context", None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let error = store
+            .append_to_thread(
+                Event::new(
+                    "terminal-replay-new-event".to_string(),
+                    "fixture".to_string(),
+                    crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                    "chat/tool_output".to_string(),
+                    [
+                        (
+                            "context_id".to_string(),
+                            serde_json::json!("terminal-replay-context"),
+                        ),
+                        (
+                            "session_id".to_string(),
+                            serde_json::json!("terminal-replay-session"),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                &terminal.id,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("不能投递到已终结 Thread"));
+    }
+
+    #[tokio::test]
     async fn consecutive_unread_user_messages_share_the_next_dialogue_turn() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
@@ -23166,7 +23314,18 @@ mod tests {
             .await
             .unwrap()
             .iter()
-            .any(|entry| entry.event_id == "result-event"));
+            .all(|entry| entry.event_id != "result-event"));
+        assert_eq!(
+            store
+                .list_context_thread_signals("context-root", None)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.event_id == "result-event")
+                .count(),
+            1,
+            "Delegation 结果属于同库内部调度边界，必须直接形成唯一持久 Signal"
+        );
 
         let mounts =
             sqlx::query("SELECT session_id, mount_kind FROM session_mounts ORDER BY session_id")

@@ -547,6 +547,7 @@ pub struct BackgroundTaskScheduler {
     events: Arc<dyn EventStore>,
     timers: Arc<TimerEngine>,
     execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
+    sessions: Option<Arc<dyn SessionStore>>,
 }
 
 impl BackgroundTaskScheduler {
@@ -560,6 +561,7 @@ impl BackgroundTaskScheduler {
             events,
             timers,
             execution_jobs: None,
+            sessions: None,
         }
     }
 
@@ -574,7 +576,13 @@ impl BackgroundTaskScheduler {
             events,
             timers,
             execution_jobs: Some(execution_jobs),
+            sessions: None,
         }
+    }
+
+    pub fn with_session_store(mut self, sessions: Arc<dyn SessionStore>) -> Self {
+        self.sessions = Some(sessions);
+        self
     }
 
     fn durable_task_identity(
@@ -978,6 +986,25 @@ impl BackgroundTaskScheduler {
         for job in jobs {
             if job.tool_name != "exec/background" || !job.status.is_terminal() {
                 continue;
+            }
+            if let Some(sessions) = self.sessions.as_ref() {
+                let Some(thread) = sessions.get_thread(&job.thread_id).await? else {
+                    tracing::warn!(
+                        execution_job_id = %job.id,
+                        thread_id = %job.thread_id,
+                        "跳过失去 Thread Owner 的终态后台结果恢复；Ledger 与 Execution Job 保持可审计"
+                    );
+                    continue;
+                };
+                if thread.lifecycle.is_terminal() {
+                    tracing::debug!(
+                        execution_job_id = %job.id,
+                        thread_id = %thread.id,
+                        thread_lifecycle = thread.lifecycle.as_str(),
+                        "终态后台结果所属 Thread 已终结，无需重新投递 Signal"
+                    );
+                    continue;
+                }
             }
             let event_id = job
                 .result_event_id
@@ -7331,7 +7358,8 @@ mod tests {
     use crate::memory::{
         ActivationStore as _, NewAgent, NewCognitiveContext, NewPrincipal, NewSchedule, NewSession,
         NewThreadActivation, ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind,
-        SessionStore, ThreadGroupStore as _, ThreadLifecycle, ThreadStore as _, TimerStore,
+        SessionStore, ThreadGroupStore as _, ThreadLifecycle, ThreadMutation, ThreadStore as _,
+        TimerStore,
     };
     use crate::permission::PermissionMode;
     #[cfg(target_os = "macos")]
@@ -7554,7 +7582,11 @@ Body
 
     async fn start_test_background_scheduler(
         bus: Arc<InMemoryEventBus>,
-    ) -> (Arc<BackgroundTaskScheduler>, NamedTempFile) {
+    ) -> (
+        Arc<BackgroundTaskScheduler>,
+        NamedTempFile,
+        Arc<SqliteStore>,
+    ) {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
@@ -7562,14 +7594,17 @@ Body
                 .unwrap(),
         );
         let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
-        let scheduler = Arc::new(BackgroundTaskScheduler::new(
-            bus,
-            store as Arc<dyn EventStore>,
-            Arc::clone(&timers),
-        ));
+        let scheduler = Arc::new(
+            BackgroundTaskScheduler::new(
+                bus,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::clone(&timers),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+        );
         scheduler.register_timer_handler().unwrap();
         timers.start();
-        (scheduler, database)
+        (scheduler, database, store)
     }
 
     fn start_test_durable_background_scheduler(
@@ -8870,6 +8905,16 @@ Body
                 .await
                 .unwrap()
                 .len(),
+            0
+        );
+        assert_eq!(
+            recovered_store
+                .list_context_thread_signals("context-scheduler-test", None)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.event_id == due_events[0].id)
+                .count(),
             1
         );
     }
@@ -10381,6 +10426,17 @@ Body
                 .into_iter()
                 .filter(|outbox| outbox.event_id == completion.id)
                 .count(),
+            0,
+            "an already-materialized direct Thread Signal must not retain a pending Outbox row"
+        );
+        assert_eq!(
+            store
+                .list_context_thread_signals(&parent.context_id, None)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|signal| signal.event_id == completion.id)
+                .count(),
             1
         );
         assert!(
@@ -10591,7 +10647,18 @@ Body
             .into_iter()
             .filter(|outbox| outbox.event_id == completion.id)
             .collect::<Vec<_>>();
-        assert_eq!(completion_outboxes.len(), 1);
+        assert!(completion_outboxes.is_empty());
+        assert_eq!(
+            store
+                .list_context_thread_signals(&parent.context_id, None)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.event_id == completion.id)
+                .count(),
+            1,
+            "durable background terminal outcome must wake its owner through one Direct Signal"
+        );
 
         get_tasks_map().remove(&task_id);
         let terminal_status = CURRENT_CONTEXT_ID
@@ -10655,12 +10722,15 @@ Body
         let manager = Arc::new(ExecutionJobManager::new(
             Arc::clone(&store) as Arc<dyn ExecutionJobStore>
         ));
-        let scheduler = Arc::new(BackgroundTaskScheduler::new_with_execution_jobs(
-            Arc::clone(&bus),
-            Arc::clone(&store) as Arc<dyn EventStore>,
-            Arc::clone(&timers),
-            Arc::clone(&manager),
-        ));
+        let scheduler = Arc::new(
+            BackgroundTaskScheduler::new_with_execution_jobs(
+                Arc::clone(&bus),
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::clone(&timers),
+                Arc::clone(&manager),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+        );
         scheduler.register_timer_handler().unwrap();
         let parent = ToolExecutionJobContext {
             parent_job_id: deterministic_job_id(
@@ -10801,6 +10871,33 @@ Body
             .recover_terminal_background_outboxes()
             .await
             .unwrap();
+        let owner = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        let owner = match store
+            .update_thread(
+                &owner.id,
+                owner.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected Thread mutation: {other:?}"),
+        };
+        assert_eq!(owner.lifecycle, ThreadLifecycle::Completed);
+        assert_eq!(
+            scheduler
+                .recover_terminal_background_outboxes()
+                .await
+                .unwrap(),
+            0,
+            "startup recovery must not redeliver historical background results to a terminal Thread"
+        );
         let lost = store.get_execution_job(&task_id).await.unwrap().unwrap();
         assert_eq!(lost.status, ExecutionJobStatus::Lost);
         let lost_event_id = lost.result_event_id.as_deref().unwrap();
@@ -10823,7 +10920,19 @@ Body
                 .into_iter()
                 .filter(|outbox| outbox.event_id == lost_event_id)
                 .count(),
-            1
+            0,
+            "direct terminal recovery must not leave a second pending transport envelope"
+        );
+        assert_eq!(
+            store
+                .list_context_thread_signals(&parent.context_id, None)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|signal| signal.event_id == lost_event_id)
+                .count(),
+            1,
+            "the immutable background outcome must materialize exactly one Thread Signal"
         );
 
         let status = CURRENT_CONTEXT_ID
@@ -11238,8 +11347,60 @@ Body
                 Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
             }),
         );
-        let (background_scheduler, _database) =
+        let (background_scheduler, _database, store) =
             start_test_background_scheduler(Arc::clone(&bus)).await;
+        store
+            .ensure_agent(NewAgent {
+                id: "wait-rearm-agent".to_string(),
+                title: "Wait rearm agent".to_string(),
+                root_context_id: "wait-rearm-context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "wait-rearm-context".to_string(),
+                agent_id: "wait-rearm-agent".to_string(),
+                title: "Wait rearm context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_session(NewSession {
+                id: "wait-rearm-session".to_string(),
+                agent_id: "wait-rearm-agent".to_string(),
+                context_id: "wait-rearm-context".to_string(),
+                parent_session_id: None,
+                title: "Wait rearm session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: "wait-rearm-thread".to_string(),
+                agent_id: "wait-rearm-agent".to_string(),
+                context_id: "wait-rearm-context".to_string(),
+                session_id: "wait-rearm-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "wait-rearm-root".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        if let Some(mut task) = get_tasks_map().get_mut(&task_id) {
+            task.causal_route = Some(ToolCausalRoute {
+                thread_id: "wait-rearm-thread".to_string(),
+                activation_id: "wait-rearm-activation".to_string(),
+                root_turn_id: "wait-rearm-root".to_string(),
+                trigger_event_id: "wait-rearm-trigger".to_string(),
+                trigger_sequence: 1,
+            });
+        }
         let check_tool = CheckTaskAfterTool::new(background_scheduler, 10);
 
         for _ in 0..2 {
@@ -11400,7 +11561,7 @@ Body
             .iter()
             .any(|task| task["task_id"] == task_id));
 
-        let (background_scheduler, _database) =
+        let (background_scheduler, _database, _store) =
             start_test_background_scheduler(Arc::clone(&bus)).await;
         let check_tool = CheckTaskAfterTool::new(background_scheduler, 300);
         let waiting: serde_json::Value = serde_json::from_str(

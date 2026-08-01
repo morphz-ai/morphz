@@ -983,12 +983,15 @@ impl MorphzRuntimeBuilder {
             Arc::clone(&timer_engine),
         ));
         thread_scheduler.register_timer_handler()?;
-        let background_scheduler = Arc::new(BackgroundTaskScheduler::new_with_execution_jobs(
-            Arc::clone(&bus),
-            Arc::clone(&store) as Arc<dyn EventStore>,
-            Arc::clone(&timer_engine),
-            Arc::clone(&execution_jobs),
-        ));
+        let background_scheduler = Arc::new(
+            BackgroundTaskScheduler::new_with_execution_jobs(
+                Arc::clone(&bus),
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::clone(&timer_engine),
+                Arc::clone(&execution_jobs),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+        );
         background_scheduler.register_timer_handler()?;
         register_default_tools(DefaultToolDependencies {
             registry: &registry,
@@ -11541,8 +11544,9 @@ mod tests {
             coding_eval: true,
         };
 
-        // Simulate process A: commit the physical user input and its Outbox record, then crash
-        // before EventBus publication. The Runtime is deliberately never started here.
+        // Simulate process A: atomically commit the physical user input and its direct Thread
+        // Signal, then crash before scheduler admission. The Runtime is deliberately never
+        // started here.
         let crashed_runtime = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(tool_policy)
@@ -11620,12 +11624,24 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
+            0
+        );
+        assert_eq!(
+            crashed_runtime
+                .inner
+                .store
+                .list_context_thread_signals(&crashed_runtime.identity().context_id, None)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.event_id == event.id)
+                .count(),
             1
         );
         drop(crashed_runtime);
 
-        // Simulate process B: startup recovery must materialize the pending Outbox record into
-        // one Signal/Activation and complete the ordinary reply path without another user input.
+        // Simulate process B: startup admission must consume the already-durable Signal into one
+        // Activation and complete the ordinary reply path without another user input.
         let recovered_runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(tool_policy)
@@ -11634,8 +11650,8 @@ mod tests {
             .unwrap();
         let mut replies = recovered_runtime.subscribe("chat/reply", 8);
         recovered_runtime.start().await.unwrap();
-        // Startup recovery performs durable Outbox materialization before the
-        // reply can be emitted.  Preserve a finite failure bound while leaving
+        // Startup recovery admits the durable Signal before the reply can be emitted. Preserve a
+        // finite failure bound while leaving
         // headroom for SQLite contention in the full parallel test suite.
         let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
             .await
@@ -11651,9 +11667,9 @@ mod tests {
             .list_signal_outbox(crate::memory::SignalOutboxStatus::Materialized, 10)
             .await
             .unwrap();
-        assert_eq!(outbox.len(), 1);
-        assert_eq!(outbox[0].event_id, "event-runtime-outbox-recovery");
-        assert!(outbox[0].signal_id.is_some());
+        assert!(outbox
+            .iter()
+            .all(|entry| entry.event_id != "event-runtime-outbox-recovery"));
     }
 
     #[tokio::test]

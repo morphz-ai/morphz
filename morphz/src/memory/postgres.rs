@@ -1364,6 +1364,24 @@ async fn append_direct_thread_signal_in_tx(
     .await?
     .ok_or_else(|| format!("Direct Thread Signal 目标 Thread '{thread_id}' 不存在"))?;
     let status: String = thread.get("status");
+    let signal_id = crate::memory::stable_thread_signal_id(&event.id);
+    if let Some(existing) =
+        sqlx::query("SELECT id, thread_id FROM thread_signals WHERE event_id = $1")
+            .bind(&event.id)
+            .fetch_optional(&mut **tx)
+            .await?
+    {
+        let existing_id: String = existing.get("id");
+        let existing_thread_id: String = existing.get("thread_id");
+        if existing_id != signal_id || existing_thread_id != thread_id {
+            return Err(format!(
+                "Direct Thread Signal Event '{}' 已路由到不同 Signal/Thread",
+                event.id
+            )
+            .into());
+        }
+        return Ok(false);
+    }
     if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
         return Err(format!(
             "Direct Thread Signal 不能投递到已终结 Thread '{thread_id}' ({status})"
@@ -1374,7 +1392,6 @@ async fn append_direct_thread_signal_in_tx(
         .bind(&event.id)
         .fetch_one(&mut **tx)
         .await?;
-    let signal_id = crate::memory::stable_thread_signal_id(&event.id);
     let thread_generation: i64 = thread.get("generation");
     let principal_id: Option<String> = thread.get("initiating_principal_id");
     let inserted = sqlx::query(

@@ -1257,7 +1257,19 @@ mod tests {
             .await
             .unwrap()
             .iter()
-            .any(|entry| entry.event_id == event.id));
+            .all(|entry| entry.event_id != event.id));
+        let signals = store
+            .list_context_thread_signals(&running.context_id, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            signals
+                .iter()
+                .filter(|signal| signal.event_id == event.id)
+                .count(),
+            1,
+            "infer request 必须与 Plan waiting 状态原子提交为一个 Direct Thread Signal"
+        );
 
         let replay = store
             .create_evaluation_and_suspend_plan(

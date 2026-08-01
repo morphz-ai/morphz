@@ -3298,11 +3298,13 @@ impl Orchestrator {
     /// Close active Thread rows that cannot possibly make progress after a
     /// restart. Waiting Threads are excluded because a background result,
     /// dependency, timer, delegation or Objective supervisor may still own
-    /// their next wake. An active Dialogue/Work/Delivery Thread without a
-    /// non-terminal Thread Activation or queued schedule is an inconsistent
-    /// orphan. Objective Threads are reconciled against the Objective's one
-    /// authoritative active Evaluation so old evaluations do not remain
-    /// visible as parallel Objective supervisors after restart.
+    /// their next wake. A pending direct Signal is itself authoritative
+    /// runnable state: the process may have crashed after committing the
+    /// mailbox fact but before creating its Activation, so such a Thread must
+    /// survive orphan reconciliation. Objective Threads are reconciled
+    /// against the Objective's one authoritative active Evaluation so old
+    /// evaluations do not remain visible as parallel Objective supervisors
+    /// after restart.
     async fn reconcile_orphaned_threads(&self) -> Result<(), DynError> {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
@@ -3314,6 +3316,15 @@ impl Orchestrator {
             .map(|intent| intent.thread_id)
             .collect::<HashSet<_>>();
         for context in session_store.list_contexts(false).await? {
+            let pending_signal_threads = session_store
+                .list_context_thread_signals(
+                    &context.id,
+                    Some(crate::memory::ThreadSignalStatus::Pending),
+                )
+                .await?
+                .into_iter()
+                .map(|signal| signal.thread_id)
+                .collect::<HashSet<_>>();
             let activations = session_store
                 .list_context_thread_activations(&context.id, true)
                 .await?;
@@ -3329,6 +3340,7 @@ impl Orchestrator {
                 if thread.lifecycle != ThreadLifecycle::Open
                     || active_roots.contains(&thread.root_turn_id)
                     || scheduled_threads.contains(&thread.id)
+                    || pending_signal_threads.contains(&thread.id)
                 {
                     continue;
                 }
