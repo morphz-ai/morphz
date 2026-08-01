@@ -6,9 +6,9 @@ use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    stable_thread_signal_id, ActivationStore, EdgeCommandMutation, EdgeCommandStatus,
-    EdgeExecutionStore, EdgeOutputStream, ExecutionNodeMutation, ExecutionNodeStatus,
-    SessionDirectoryStore,
+    objective_thread_root_id, stable_thread_id, stable_thread_signal_id, ActivationStore,
+    EdgeCommandMutation, EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream,
+    ExecutionNodeMutation, ExecutionNodeStatus, SessionDirectoryStore,
 };
 use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
@@ -2273,7 +2273,14 @@ where
 
 async fn assert_objective_lease_conformance<S>(store: Arc<S>)
 where
-    S: EventStore + ObjectiveStore + Send + Sync + 'static,
+    S: EventStore
+        + ObjectiveStore
+        + ThreadStore
+        + ThreadGroupStore
+        + ActivationStore
+        + Send
+        + Sync
+        + 'static,
 {
     let created = store
         .create_objective(NewObjective {
@@ -2436,18 +2443,22 @@ where
     assert_eq!(finished.tokens_used, 12);
     assert_eq!(finished.time_used_seconds, 3);
 
+    let coordinator_root = objective_thread_root_id(&finished.id, finished.generation);
     let continuation_thread = NewThread {
-        id: "conformance-objective-continuation-thread".to_string(),
+        id: stable_thread_id(&coordinator_root),
         agent_id: "conformance-agent".to_string(),
         context_id: "conformance-context".to_string(),
         session_id: "conformance-session".to_string(),
         initiating_principal_id: None,
-        root_turn_id: "root-conformance-objective-continuation".to_string(),
+        root_turn_id: coordinator_root,
         kind: ThreadKind::Objective,
         executor_kind: "model".to_string(),
         executor_id: Some(finished.id.clone()),
         target_id: None,
-        supervision: morphz::memory::ThreadSupervision::legacy(),
+        supervision: morphz::memory::ThreadSupervision::objective_coordinator(
+            &finished.id,
+            finished.generation,
+        ),
     };
 
     let occupied_event = Event::new(
@@ -2467,7 +2478,8 @@ where
             "context_id": "conformance-context",
             "session_id": "conformance-session",
             "objective_id": finished.id,
-            "objective_evaluation_id": "rolled-back-evaluation"
+            "objective_evaluation_id": "rolled-back-evaluation",
+            "root_turn_id": continuation_thread.root_turn_id
         })
         .as_object()
         .unwrap()
@@ -2499,7 +2511,172 @@ where
             "context_id": "conformance-context",
             "session_id": "conformance-session",
             "objective_id": finished.id,
-            "objective_evaluation_id": "evaluation-with-signal"
+            "objective_evaluation_id": "evaluation-with-signal",
+            "root_turn_id": continuation_thread.root_turn_id
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let claimed = match store
+        .claim_objective_evaluation_with_signal(
+            &finished.id,
+            finished.revision,
+            "evaluation-with-signal",
+            expires,
+            &event,
+            &continuation_thread,
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected continuation mutation: {mutation:?}"),
+    };
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(event.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "Objective lease and continuation Event must commit atomically"
+    );
+    let thread = store
+        .get_thread(&continuation_thread.id)
+        .await
+        .unwrap()
+        .expect("Objective coordinator Thread must exist");
+    assert_eq!(thread.lifecycle, ThreadLifecycle::Open);
+    let signal = store
+        .list_context_thread_signals(&thread.context_id, Some(ThreadSignalStatus::Pending))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|signal| signal.event_id == event.id)
+        .expect("Objective continuation must materialize one pending Signal");
+    let activation = store
+        .claim_thread_signal_batch(
+            NewThreadSignal {
+                id: signal.id,
+                thread_id: thread.id.clone(),
+                thread_generation: thread.generation,
+                event_id: event.id.clone(),
+                principal_id: None,
+                sequence: signal.sequence,
+                kind: event.topic.clone(),
+                parent_activation_id: None,
+            },
+            NewThreadActivation {
+                id: "conformance-objective-activation-a".to_string(),
+                agent_id: thread.agent_id.clone(),
+                context_id: thread.context_id.clone(),
+                session_id: thread.session_id.clone(),
+                initiating_principal_id: None,
+                trigger_event_id: event.id.clone(),
+                trigger_sequence: signal.sequence,
+                trigger_kind: event.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: thread.root_turn_id.clone(),
+            },
+            8,
+        )
+        .await
+        .unwrap()
+        .expect("Objective continuation must create one Activation");
+    let activation = match store
+        .update_thread_activation(
+            &activation.id,
+            activation.revision,
+            ThreadActivationStatus::Running,
+            Some("conformance-objective-worker"),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            Some(thread.generation),
+        )
+        .await
+        .unwrap()
+    {
+        ThreadActivationMutation::Updated(activation) => activation,
+        mutation => panic!("Objective Activation must enter running: {mutation:?}"),
+    };
+    let outcome = Event::new(
+        "conformance-objective-activation-outcome-a".to_string(),
+        "Store-Conformance".to_string(),
+        "agent_reply".to_string(),
+        "runtime/thread_result".to_string(),
+        json!({
+            "context_id": thread.context_id,
+            "session_id": thread.session_id,
+            "thread_id": thread.id,
+            "root_turn_id": thread.root_turn_id,
+            "disposition": "deliver",
+            "text": "finite evaluation outcome"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert_eq!(
+        store
+            .commit_activation_outcome(&activation.id, &outcome)
+            .await
+            .unwrap(),
+        ActivationOutcomeCommit::Committed {
+            ready_signal_event_ids: Vec::new()
+        }
+    );
+    assert_eq!(
+        store
+            .get_thread_activation(&activation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ThreadActivationStatus::Succeeded
+    );
+    assert_eq!(
+        store
+            .get_thread(&continuation_thread.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        ThreadLifecycle::Open,
+        "finite Evaluation outcome must not terminalize the Objective coordinator"
+    );
+    assert!(store
+        .get_thread_outcome(&continuation_thread.id)
+        .await
+        .unwrap()
+        .is_none());
+
+    let finished_again = match store
+        .finish_objective_evaluation(
+            &claimed.id,
+            claimed.active_evaluation_id.as_deref().unwrap(),
+            0,
+            0,
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected continuation finish mutation: {mutation:?}"),
+    };
+    let next_event = Event::new(
+        "conformance-objective-signal-b".to_string(),
+        "Store-Conformance".to_string(),
+        "runtime_control".to_string(),
+        "runtime/objective_continue".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "objective_id": finished_again.id,
+            "objective_evaluation_id": "evaluation-with-signal-b",
+            "root_turn_id": continuation_thread.root_turn_id
         })
         .as_object()
         .unwrap()
@@ -2508,11 +2685,11 @@ where
     assert!(matches!(
         store
             .claim_objective_evaluation_with_signal(
-                &finished.id,
-                finished.revision,
-                "evaluation-with-signal",
+                &finished_again.id,
+                finished_again.revision,
+                "evaluation-with-signal-b",
                 expires,
-                &event,
+                &next_event,
                 &continuation_thread,
             )
             .await
@@ -2521,15 +2698,14 @@ where
     ));
     assert_eq!(
         store
-            .query(QueryFilter {
-                event_id: Some(event.id),
-                ..Default::default()
-            })
+            .list_context_threads("conformance-context", false)
             .await
             .unwrap()
-            .len(),
+            .into_iter()
+            .filter(|thread| thread.kind == ThreadKind::Objective)
+            .count(),
         1,
-        "Objective lease and continuation Event must commit atomically"
+        "successive Objective Evaluations must reuse one logical Thread"
     );
 }
 

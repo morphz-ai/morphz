@@ -829,13 +829,30 @@ fn derived_thread_kind(event: &Event, has_objective_route: bool) -> ThreadKind {
     }
 }
 
-fn objective_supervision_matches_evaluation(
+fn objective_supervision_matches_state(
     supervision: &ThreadSupervision,
-    active_evaluation_id: Option<&str>,
+    objective: Option<&crate::memory::ObjectiveRecord>,
 ) -> bool {
-    supervision.supervisor_kind == ThreadSupervisorKind::Objective
-        && active_evaluation_id.is_some()
-        && supervision.origin_evaluation_id.as_deref() == active_evaluation_id
+    let Some(objective) = objective else {
+        return false;
+    };
+    if supervision.supervisor_kind != ThreadSupervisorKind::Objective
+        || supervision.supervisor_id.as_deref() != Some(objective.id.as_str())
+        || objective.status != crate::memory::ObjectiveStatus::Active
+    {
+        return false;
+    }
+    match supervision.origin_evaluation_id.as_deref() {
+        // The coordinator belongs to the whole Objective generation and must
+        // survive the gaps between finite Evaluations.
+        None => supervision.generation == objective.generation,
+        // Legacy Objective Threads were owned by one finite Evaluation. Keep
+        // only the currently fenced owner so startup can close historical
+        // duplicates created by older binaries.
+        Some(origin_evaluation_id) => {
+            objective.active_evaluation_id.as_deref() == Some(origin_evaluation_id)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3373,24 +3390,16 @@ impl Orchestrator {
                     continue;
                 }
                 if thread.kind == ThreadKind::Objective {
-                    let active_evaluation_id = if let (Some(supervisor), Some(objective_id)) = (
+                    let objective = if let (Some(supervisor), Some(objective_id)) = (
                         self.objective_supervisor.as_ref(),
                         thread.supervision.supervisor_id.as_deref(),
                     ) {
-                        supervisor
-                            .get(objective_id)
-                            .await?
-                            .filter(|objective| {
-                                objective.status == crate::memory::ObjectiveStatus::Active
-                            })
-                            .and_then(|objective| objective.active_evaluation_id)
+                        supervisor.get(objective_id).await?
                     } else {
                         None
                     };
-                    if objective_supervision_matches_evaluation(
-                        &thread.supervision,
-                        active_evaluation_id.as_deref(),
-                    ) {
+                    if objective_supervision_matches_state(&thread.supervision, objective.as_ref())
+                    {
                         continue;
                     }
                 } else if !matches!(
@@ -13866,17 +13875,17 @@ mod tests {
         compact_context_inspect_for_persistence, compose_context_encoding,
         critical_maintenance_transaction_available, derived_thread_kind, extend_exec_output_facts,
         harness_entry_callable_tools, legacy_plan_effect_sequence,
-        objective_supervision_matches_evaluation, persist_model_reasoning_summary,
-        persist_model_usage, plan_infer_tool_scope, recovery_owns_activation,
-        render_harness_context, render_system_contract, restrict_tools_to_scope,
-        retain_context_maintenance_tools, retain_final_reply_control_tools,
-        retain_pending_continuation_calls, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
-        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
-        tool_call_activity_preview, validate_final_reply_response,
-        validate_objective_closure_review_response, DialogueThreadGate, DialogueThreadLease,
-        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
-        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
-        NoReplyMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
+        plan_infer_tool_scope, recovery_owns_activation, render_harness_context,
+        render_system_contract, restrict_tools_to_scope, retain_context_maintenance_tools,
+        retain_final_reply_control_tools, retain_pending_continuation_calls, runtime_claimant_id,
+        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
+        should_force_final_for_maintenance, tool_call_activity_preview,
+        validate_final_reply_response, validate_objective_closure_review_response,
+        DialogueThreadGate, DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics,
+        DynError, EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
+        ModelReasoningSummaryAccumulator, NoReplyMode, TerminalDecision,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -14708,15 +14717,55 @@ mod tests {
             3,
             None,
         );
-        assert!(objective_supervision_matches_evaluation(
+        let now = chrono::Utc::now();
+        let mut objective = crate::memory::ObjectiveRecord {
+            id: "objective-1".into(),
+            agent_id: "agent-1".into(),
+            context_id: "context-1".into(),
+            coordinator_session_id: "session-1".into(),
+            delivery_session_id: "session-1".into(),
+            parent_objective_id: None,
+            source_event_id: "source-1".into(),
+            initiating_principal_id: None,
+            stated_objective: "test".into(),
+            revision: 3,
+            generation: 1,
+            status: crate::memory::ObjectiveStatus::Active,
+            status_reason: None,
+            wait_condition: None,
+            active_evaluation_id: Some("evaluation-current".into()),
+            evaluation_lease_expires_at: None,
+            continuation_sequence: 0,
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        assert!(objective_supervision_matches_state(
             &current,
-            Some("evaluation-current")
+            Some(&objective)
         ));
-        assert!(!objective_supervision_matches_evaluation(
+        objective.active_evaluation_id = Some("evaluation-replacement".into());
+        assert!(!objective_supervision_matches_state(
             &current,
-            Some("evaluation-replacement")
+            Some(&objective)
         ));
-        assert!(!objective_supervision_matches_evaluation(&current, None));
+
+        let coordinator = crate::memory::ThreadSupervision::objective_coordinator(
+            "objective-1",
+            objective.generation,
+        );
+        objective.active_evaluation_id = None;
+        assert!(objective_supervision_matches_state(
+            &coordinator,
+            Some(&objective)
+        ));
+        objective.generation += 1;
+        assert!(!objective_supervision_matches_state(
+            &coordinator,
+            Some(&objective)
+        ));
     }
 
     #[test]

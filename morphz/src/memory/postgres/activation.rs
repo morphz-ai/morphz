@@ -1333,8 +1333,10 @@ impl ActivationStore for PostgresStore {
                       thread.parent_thread_id AS parent_thread_id,
                       thread.thread_group_id AS thread_group_id,
                       thread.completion_contract_json AS completion_contract_json,
+                      thread.kind AS thread_kind,
                       thread.supervisor_kind AS supervisor_kind,
-                      thread.supervisor_id AS supervisor_id
+                      thread.supervisor_id AS supervisor_id,
+                      thread.origin_evaluation_id AS origin_evaluation_id
                FROM thread_activations activation
                JOIN threads thread ON thread.root_turn_id = activation.root_turn_id
                WHERE activation.id = $1 AND thread.id = $2
@@ -1366,9 +1368,21 @@ impl ActivationStore for PostgresStore {
             other => return Err(format!("未知 Thread supervisor kind: {other}").into()),
         };
         let supervisor_id: Option<String> = activation_route.get("supervisor_id");
+        let thread_kind: String = activation_route.get("thread_kind");
+        let origin_evaluation_id: Option<String> = activation_route.get("origin_evaluation_id");
         if activation_generation != thread_generation {
             tx.commit().await?;
             return Ok(ActivationOutcomeCommit::StaleGeneration);
+        }
+        if let Some(event_id) = sqlx::query_scalar::<_, String>(
+            "SELECT event_id FROM evaluation_outcomes WHERE activation_id = $1",
+        )
+        .bind(activation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            tx.commit().await?;
+            return Ok(ActivationOutcomeCommit::Existing { event_id });
         }
         if let Some(event_id) = sqlx::query_scalar::<_, String>(
             "SELECT event_id FROM thread_outcomes WHERE root_turn_id = $1",
@@ -1482,6 +1496,84 @@ impl ActivationStore for PostgresStore {
                     .unwrap_or("thread_failed")
                     .to_string(),
             );
+        }
+        let is_objective_coordinator = thread_kind == ThreadKind::Objective.as_str()
+            && supervisor_kind == ThreadSupervisorKind::Objective
+            && supervisor_id.is_some()
+            && origin_evaluation_id.is_none();
+        let objective_is_terminal = if is_objective_coordinator {
+            sqlx::query_scalar::<_, String>("SELECT status FROM objectives WHERE id = $1")
+                .bind(supervisor_id.as_deref().expect("checked above"))
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some_and(|status| {
+                    matches!(status.as_str(), "completed" | "cancelled" | "failed")
+                })
+        } else {
+            false
+        };
+        if is_objective_coordinator && !objective_is_terminal {
+            append_event_in_tx(&mut tx, event).await?;
+            let activation_terminal_status = match terminal_lifecycle {
+                ThreadLifecycle::Completed => ThreadActivationStatus::Succeeded,
+                ThreadLifecycle::Failed => ThreadActivationStatus::Failed,
+                ThreadLifecycle::Cancelled => ThreadActivationStatus::Cancelled,
+                ThreadLifecycle::Open => {
+                    return Err("Objective Activation outcome 不能以 open lifecycle 收口".into());
+                }
+            };
+            let activation_terminal = sqlx::query(
+                r#"UPDATE thread_activations
+                   SET revision = revision + 1, status = $1, claimed_by = NULL,
+                       lease_expires_at = NULL, updated_at = $2
+                   WHERE id = $3 AND generation = $4 AND status = 'running'"#,
+            )
+            .bind(activation_status_storage(activation_terminal_status))
+            .bind(&now)
+            .bind(activation_id)
+            .bind(activation_generation)
+            .execute(&mut *tx)
+            .await?;
+            if activation_terminal.rows_affected() != 1 {
+                return Err(format!(
+                    "Objective Activation outcome 无法原子提交 Activation '{activation_id}' 终态"
+                )
+                .into());
+            }
+            sqlx::query(
+                r#"UPDATE thread_signals SET status = 'acknowledged', acknowledged_at = $1
+                   WHERE id IN (
+                     SELECT signal_id FROM activation_signals WHERE activation_id = $2
+                   ) AND status = 'claimed'"#,
+            )
+            .bind(&now)
+            .bind(activation_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"INSERT INTO evaluation_outcomes
+                   (activation_id, session_id, disposition, event_id, created_at)
+                   VALUES ($1, $2, $3, $4, $5)"#,
+            )
+            .bind(activation_id)
+            .bind(session_id)
+            .bind(disposition)
+            .bind(&event.id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            let activity_at = event
+                .timestamp
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            sqlx::query("UPDATE sessions SET updated_at = $1, last_activity_at = $1 WHERE id = $2")
+                .bind(activity_at)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok(ActivationOutcomeCommit::Committed {
+                ready_signal_event_ids: Vec::new(),
+            });
         }
         let check_results = completion.check_results;
         let unresolved_failures = completion

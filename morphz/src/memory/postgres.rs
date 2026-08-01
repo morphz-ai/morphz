@@ -3109,10 +3109,15 @@ impl ObjectiveStore for PostgresStore {
             .payload
             .get("objective_evaluation_id")
             .and_then(JsonValue::as_str);
+        let event_root_turn_id = event
+            .payload
+            .get("root_turn_id")
+            .and_then(JsonValue::as_str);
         if event_context_id != Some(current.context_id.as_str())
             || event_session_id != Some(current.coordinator_session_id.as_str())
             || event_objective_id != Some(id)
             || event_evaluation_id != Some(evaluation_id)
+            || event_root_turn_id != Some(thread.root_turn_id.as_str())
         {
             return Err(format!("Objective '{id}' continuation Event 路由不一致").into());
         }

@@ -1,7 +1,8 @@
 use crate::memory::{
-    ObjectiveRecord, ObjectiveStatus, ObjectiveWaitCondition, ThreadActivationRecord,
-    ThreadGroupMemberRecord, ThreadGroupRecord, ThreadGroupStatus, ThreadLifecycle,
-    ThreadOutcomeRecord, ThreadRecord,
+    objective_thread_root_id, stable_thread_id, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveWaitCondition, ThreadActivationRecord, ThreadGroupMemberRecord, ThreadGroupRecord,
+    ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadOutcomeRecord, ThreadRecord,
+    ThreadSupervisorKind,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -302,6 +303,8 @@ pub enum SchedulerInvariantCode {
     GroupSupervisorMissing,
     PendingDependencyTargetsTerminalGroup,
     ObjectiveWaitDisagreesWithDependencies,
+    ObjectiveThreadOwnerMismatch,
+    DuplicateObjectiveCoordinatorThread,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -344,7 +347,13 @@ pub fn audit_scheduler_invariants(
         .iter()
         .map(|group| (group.id.as_str(), group))
         .collect::<HashMap<_, _>>();
+    let objectives_by_id = input
+        .objectives
+        .iter()
+        .map(|objective| (objective.id.as_str(), objective))
+        .collect::<HashMap<_, _>>();
     let mut violations = Vec::new();
+    let mut objective_coordinators = HashMap::<(&str, u64), Vec<&ThreadRecord>>::new();
 
     for thread in input.threads {
         let outcome = outcomes_by_thread.get(thread.id.as_str()).copied();
@@ -364,6 +373,78 @@ pub fn audit_scheduler_invariants(
                 "thread",
                 &thread.id,
                 "open Thread 已存在终态 ThreadOutcome",
+            ));
+        }
+
+        if thread.lifecycle != ThreadLifecycle::Open
+            || thread.kind != ThreadKind::Objective
+            || thread.supervision.supervisor_kind != ThreadSupervisorKind::Objective
+        {
+            continue;
+        }
+        let objective = thread
+            .supervision
+            .supervisor_id
+            .as_deref()
+            .and_then(|objective_id| objectives_by_id.get(objective_id).copied());
+        let owner_matches = objective.is_some_and(|objective| {
+            objective.status == ObjectiveStatus::Active
+                && match thread.supervision.origin_evaluation_id.as_deref() {
+                    // The long-lived coordinator is owned by the Objective
+                    // generation rather than by one finite Evaluation.
+                    None => thread.supervision.generation == objective.generation,
+                    // Compatibility boundary for older finite Objective
+                    // Threads. Only the currently fenced Evaluation may stay
+                    // live; every historical duplicate must be quarantined.
+                    Some(evaluation_id) => {
+                        objective.active_evaluation_id.as_deref() == Some(evaluation_id)
+                    }
+                }
+        });
+        if !owner_matches {
+            violations.push(violation(
+                SchedulerInvariantSeverity::Quarantine,
+                SchedulerInvariantCode::ObjectiveThreadOwnerMismatch,
+                "thread",
+                &thread.id,
+                "open Objective Thread 不属于当前 active Objective generation/Evaluation",
+            ));
+            continue;
+        }
+        if thread.supervision.origin_evaluation_id.is_none() {
+            let objective = objective.expect("owner_matches guarantees Objective presence");
+            objective_coordinators
+                .entry((objective.id.as_str(), objective.generation))
+                .or_default()
+                .push(thread);
+        }
+    }
+
+    for ((objective_id, generation), mut threads) in objective_coordinators {
+        if threads.len() <= 1 {
+            continue;
+        }
+        threads.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let expected_id = stable_thread_id(&objective_thread_root_id(objective_id, generation));
+        let preserved_id = threads
+            .iter()
+            .find(|thread| thread.id == expected_id)
+            .map(|thread| thread.id.clone())
+            .unwrap_or_else(|| threads[0].id.clone());
+        for thread in threads {
+            if thread.id == preserved_id {
+                continue;
+            }
+            violations.push(violation(
+                SchedulerInvariantSeverity::Quarantine,
+                SchedulerInvariantCode::DuplicateObjectiveCoordinatorThread,
+                "thread",
+                &thread.id,
+                "同一 Objective generation 存在多个 open 协调 Thread",
             ));
         }
     }
@@ -735,5 +816,67 @@ mod tests {
         assert!(violations.iter().any(|violation| {
             violation.code == SchedulerInvariantCode::TerminalThreadMissingOutcome
         }));
+    }
+
+    #[test]
+    fn only_one_current_objective_coordinator_thread_remains_admissible() {
+        let now = Utc::now();
+        let objective = objective(now);
+        let root = objective_thread_root_id(&objective.id, objective.generation);
+        let coordinator = ThreadRecord {
+            id: stable_thread_id(&root),
+            revision: 1,
+            generation: 1,
+            agent_id: objective.agent_id.clone(),
+            context_id: objective.context_id.clone(),
+            session_id: objective.coordinator_session_id.clone(),
+            initiating_principal_id: None,
+            root_turn_id: root,
+            kind: ThreadKind::Objective,
+            lifecycle: ThreadLifecycle::Open,
+            control_state: ThreadControlState::Active,
+            executor_kind: "self".into(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::objective_coordinator(
+                objective.id.clone(),
+                objective.generation,
+            ),
+            result_text: None,
+            result_event_id: None,
+            delivery_status: DeliveryStatus::None,
+            delivery_event_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut duplicate = coordinator.clone();
+        duplicate.id = "thread-duplicate".into();
+        duplicate.root_turn_id = "objective-thread-duplicate-root".into();
+        duplicate.created_at = now + Duration::seconds(1);
+        let mut stale = coordinator.clone();
+        stale.id = "thread-stale".into();
+        stale.root_turn_id = "objective-thread-stale-root".into();
+        stale.supervision.generation = objective.generation - 1;
+
+        let violations = audit_scheduler_invariants(SchedulerInvariantInput {
+            objectives: &[objective],
+            threads: &[coordinator.clone(), duplicate.clone(), stale.clone()],
+            activations: &[],
+            outcomes: &[],
+            groups: &[],
+            group_members: &[],
+            dependencies: &[],
+        });
+        assert!(violations.iter().any(|violation| {
+            violation.code == SchedulerInvariantCode::DuplicateObjectiveCoordinatorThread
+                && violation.entity_id == duplicate.id
+        }));
+        assert!(violations.iter().any(|violation| {
+            violation.code == SchedulerInvariantCode::ObjectiveThreadOwnerMismatch
+                && violation.entity_id == stale.id
+        }));
+        assert!(!violations
+            .iter()
+            .any(|violation| violation.entity_id == coordinator.id));
     }
 }

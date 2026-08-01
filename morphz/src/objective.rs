@@ -2865,6 +2865,8 @@ impl ObjectiveSupervisor {
                     ),
                 )
             };
+        let objective_thread_root_id =
+            crate::memory::objective_thread_root_id(&objective.id, objective.generation);
         let mut continuation_payload = vec![
             ("context_id".to_string(), json!(objective.context_id)),
             (
@@ -2879,6 +2881,7 @@ impl ObjectiveSupervisor {
             ("tool_status".to_string(), json!("success")),
             ("wake_source".to_string(), json!(wake_source)),
             ("objective_phase".to_string(), json!(objective_phase)),
+            ("root_turn_id".to_string(), json!(objective_thread_root_id)),
             ("text".to_string(), json!(continuation)),
         ];
         if let Some(principal_id) = &objective.initiating_principal_id {
@@ -2892,21 +2895,19 @@ impl ObjectiveSupervisor {
             continuation_payload.into_iter().collect(),
         );
         let continuation_thread = NewThread {
-            id: stable_thread_id(&continuation_event.id),
+            id: stable_thread_id(&objective_thread_root_id),
             agent_id: objective.agent_id.clone(),
             context_id: objective.context_id.clone(),
             session_id: objective.coordinator_session_id.clone(),
             initiating_principal_id: objective.initiating_principal_id.clone(),
-            root_turn_id: continuation_event.id.clone(),
+            root_turn_id: objective_thread_root_id,
             kind: ThreadKind::Objective,
             executor_kind: "self".to_string(),
             executor_id: None,
             target_id: None,
-            supervision: ThreadSupervision::objective(
+            supervision: ThreadSupervision::objective_coordinator(
                 objective.id.clone(),
-                evaluation_id.clone(),
-                claimed_revision,
-                None,
+                objective.generation,
             ),
         };
         let claimed = self
@@ -2931,6 +2932,14 @@ impl ObjectiveSupervisor {
             .await?;
         self.publish_state_event("evaluation_started", &claimed, None)
             .await?;
+        // The durable claim above is the scheduling commit point. Model
+        // evaluation may update or finish this Objective and therefore must
+        // not run while this Objective's scheduler mutex is still held.
+        // Keeping the guard across the synchronous EventBus dispatch would
+        // turn the stable coordinator Thread into a self-deadlock: the
+        // Activation waits for an Objective mutation whose reconciliation is
+        // waiting for this very guard.
+        drop(_guard);
         self.bus.dispatch_persisted(continuation_event).await?;
         Ok(())
     }

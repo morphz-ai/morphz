@@ -1087,6 +1087,17 @@ pub fn stable_thread_id(root_turn_id: &str) -> String {
     id[..31].to_string()
 }
 
+/// Stable causal root for the one long-lived coordinator Thread owned by an
+/// Objective generation. Individual Evaluations are represented by immutable
+/// Signals and finite Activations on this Thread; they must not invent a new
+/// logical Thread on every continuation.
+pub fn objective_thread_root_id(objective_id: &str, objective_generation: u64) -> String {
+    format!(
+        "objective_thread_{objective_id}_g{}",
+        objective_generation.max(1)
+    )
+}
+
 /// Maximum number of consecutive immutable Signals folded into one physical
 /// model Activation.  This is a scheduler contract shared by ingress and
 /// activation claiming, not an Orchestrator-local tuning knob.
@@ -3261,6 +3272,26 @@ impl ThreadSupervision {
         }
     }
 
+    /// Supervision route for the long-lived Objective coordinator Thread.
+    /// Unlike an Objective-supervised Execution Thread, this route is not
+    /// owned by one finite Evaluation and therefore deliberately has no
+    /// `origin_evaluation_id`.
+    pub fn objective_coordinator(
+        objective_id: impl Into<String>,
+        objective_generation: u64,
+    ) -> Self {
+        Self {
+            lifetime: ThreadLifetime::Durable,
+            supervisor_kind: ThreadSupervisorKind::Objective,
+            supervisor_id: Some(objective_id.into()),
+            generation: objective_generation.max(1),
+            origin_evaluation_id: None,
+            parent_thread_id: None,
+            thread_group_id: None,
+            completion_contract: JsonValue::Object(Default::default()),
+        }
+    }
+
     pub fn runtime(supervisor_id: impl Into<String>) -> Self {
         Self {
             lifetime: ThreadLifetime::Durable,
@@ -3301,7 +3332,7 @@ impl ThreadSupervision {
         }
     }
 
-    pub fn validate(&self, _kind: ThreadKind) -> Result<(), String> {
+    pub fn validate(&self, kind: ThreadKind) -> Result<(), String> {
         if self.generation == 0 {
             return Err("Thread supervision generation 必须大于 0".to_string());
         }
@@ -3312,6 +3343,10 @@ impl ThreadSupervision {
                     && self.parent_thread_id.is_some() => {}
             (ThreadLifetime::Durable, ThreadSupervisorKind::Objective)
                 if self.supervisor_id.is_some() && self.origin_evaluation_id.is_some() => {}
+            (ThreadLifetime::Durable, ThreadSupervisorKind::Objective)
+                if kind == ThreadKind::Objective
+                    && self.supervisor_id.is_some()
+                    && self.origin_evaluation_id.is_none() => {}
             (ThreadLifetime::Durable, ThreadSupervisorKind::Runtime)
                 if self.supervisor_id.is_some() => {}
             (ThreadLifetime::Disposable, ThreadSupervisorKind::None)

@@ -7434,8 +7434,10 @@ impl ActivationStore for SqliteStore {
                       thread.parent_thread_id AS parent_thread_id,
                       thread.thread_group_id AS thread_group_id,
                       thread.completion_contract_json AS completion_contract_json,
+                      thread.kind AS thread_kind,
                       thread.supervisor_kind AS supervisor_kind,
-                      thread.supervisor_id AS supervisor_id
+                      thread.supervisor_id AS supervisor_id,
+                      thread.origin_evaluation_id AS origin_evaluation_id
                FROM thread_activations activation
                JOIN threads thread ON thread.root_turn_id = activation.root_turn_id
                WHERE activation.id = ? AND thread.id = ?"#,
@@ -7457,9 +7459,21 @@ impl ActivationStore for SqliteStore {
         let supervisor_kind =
             parse_thread_supervisor_kind(&activation_route.get::<String, _>("supervisor_kind"))?;
         let supervisor_id: Option<String> = activation_route.get("supervisor_id");
+        let thread_kind: String = activation_route.get("thread_kind");
+        let origin_evaluation_id: Option<String> = activation_route.get("origin_evaluation_id");
         if activation_generation != thread_generation {
             tx.commit().await?;
             return Ok(ActivationOutcomeCommit::StaleGeneration);
+        }
+        if let Some(event_id) = sqlx::query_scalar::<_, String>(
+            "SELECT event_id FROM evaluation_outcomes WHERE activation_id = ?",
+        )
+        .bind(activation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            tx.commit().await?;
+            return Ok(ActivationOutcomeCommit::Existing { event_id });
         }
         if let Some(event_id) = sqlx::query_scalar::<_, String>(
             "SELECT event_id FROM thread_outcomes WHERE root_turn_id = ?",
@@ -7569,6 +7583,85 @@ impl ActivationStore for SqliteStore {
                     .unwrap_or("thread_failed")
                     .to_string(),
             );
+        }
+        let is_objective_coordinator = thread_kind == ThreadKind::Objective.as_str()
+            && supervisor_kind == ThreadSupervisorKind::Objective
+            && supervisor_id.is_some()
+            && origin_evaluation_id.is_none();
+        let objective_is_terminal = if is_objective_coordinator {
+            sqlx::query_scalar::<_, String>("SELECT status FROM objectives WHERE id = ?")
+                .bind(supervisor_id.as_deref().expect("checked above"))
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some_and(|status| {
+                    matches!(status.as_str(), "completed" | "cancelled" | "failed")
+                })
+        } else {
+            false
+        };
+        if is_objective_coordinator && !objective_is_terminal {
+            append_event_in_transaction(&mut tx, event).await?;
+            let activation_terminal_status = match terminal_lifecycle {
+                ThreadLifecycle::Completed => ThreadActivationStatus::Succeeded,
+                ThreadLifecycle::Failed => ThreadActivationStatus::Failed,
+                ThreadLifecycle::Cancelled => ThreadActivationStatus::Cancelled,
+                ThreadLifecycle::Open => {
+                    return Err("Objective Activation outcome 不能以 open lifecycle 收口".into());
+                }
+            };
+            let activation_terminal = sqlx::query(
+                r#"UPDATE thread_activations
+                   SET revision = revision + 1, status = ?, claimed_by = NULL,
+                       lease_expires_at = NULL, updated_at = ?
+                   WHERE id = ? AND generation = ? AND status = 'running'"#,
+            )
+            .bind(thread_activation_status_storage(activation_terminal_status))
+            .bind(&now)
+            .bind(activation_id)
+            .bind(activation_generation)
+            .execute(&mut *tx)
+            .await?;
+            if activation_terminal.rows_affected() != 1 {
+                return Err(format!(
+                    "Objective Activation outcome 无法原子提交 Activation '{}' 终态",
+                    activation_id
+                )
+                .into());
+            }
+            sqlx::query(
+                r#"UPDATE thread_signals
+                   SET status = 'acknowledged', acknowledged_at = ?
+                   WHERE id IN (
+                     SELECT signal_id FROM activation_signals WHERE activation_id = ?
+                   ) AND status = 'claimed'"#,
+            )
+            .bind(&now)
+            .bind(activation_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO evaluation_outcomes (activation_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(activation_id)
+            .bind(session_id)
+            .bind(disposition)
+            .bind(&event.id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            let activity_at = event
+                .timestamp
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
+                .bind(&activity_at)
+                .bind(&activity_at)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok(ActivationOutcomeCommit::Committed {
+                ready_signal_event_ids: Vec::new(),
+            });
         }
         let check_results = completion.check_results;
         let unresolved_failures = completion
@@ -11692,10 +11785,15 @@ impl ObjectiveStore for SqliteStore {
             .payload
             .get("objective_evaluation_id")
             .and_then(JsonValue::as_str);
+        let event_root_turn_id = event
+            .payload
+            .get("root_turn_id")
+            .and_then(JsonValue::as_str);
         if event_context_id != Some(current.context_id.as_str())
             || event_session_id != Some(current.coordinator_session_id.as_str())
             || event_objective_id != Some(id)
             || event_evaluation_id != Some(evaluation_id)
+            || event_root_turn_id != Some(thread.root_turn_id.as_str())
         {
             return Err(format!("Objective '{id}' continuation Event 路由不一致").into());
         }
@@ -23898,6 +23996,7 @@ mod tests {
             })
             .await
             .unwrap();
+        let continuation_root = crate::memory::objective_thread_root_id("objective-outbox", 1);
         let event = |event_id: &str, evaluation_id: &str| {
             Event::new(
                 event_id.to_string(),
@@ -23921,6 +24020,10 @@ mod tests {
                         "objective_evaluation_id".to_string(),
                         serde_json::json!(evaluation_id),
                     ),
+                    (
+                        "root_turn_id".to_string(),
+                        serde_json::json!(continuation_root),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -23928,22 +24031,17 @@ mod tests {
         };
         let continuation = event("objective-continuation-event", "objective-evaluation");
         let continuation_thread = NewThread {
-            id: stable_thread_id(&continuation.id),
+            id: stable_thread_id(&continuation_root),
             agent_id: "objective-outbox-agent".to_string(),
             context_id: "objective-outbox-context".to_string(),
             session_id: "objective-outbox-session".to_string(),
             initiating_principal_id: None,
-            root_turn_id: continuation.id.clone(),
+            root_turn_id: continuation_root.clone(),
             kind: ThreadKind::Objective,
             executor_kind: "self".to_string(),
             executor_id: None,
             target_id: None,
-            supervision: ThreadSupervision::objective(
-                "objective-outbox",
-                "objective-evaluation",
-                2,
-                None,
-            ),
+            supervision: ThreadSupervision::objective_coordinator("objective-outbox", 1),
         };
         let claimed = store
             .claim_objective_evaluation_with_signal(
@@ -23973,14 +24071,6 @@ mod tests {
 
         let stale = event("stale-objective-continuation", "stale-evaluation");
         let stale_thread = NewThread {
-            id: stable_thread_id(&stale.id),
-            root_turn_id: stale.id.clone(),
-            supervision: ThreadSupervision::objective(
-                "objective-outbox",
-                "stale-evaluation",
-                2,
-                None,
-            ),
             ..continuation_thread.clone()
         };
         assert!(matches!(

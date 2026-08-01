@@ -174,7 +174,7 @@ Thread
 
 - `DialogueTurn Thread`：处理 Dialogue Lane 中一次用户输入，终态是一次明确回复或 `no_reply`；
 - `Execution Thread`：承载需要物理工具、依赖或长时间运行的工作；
-- `Objective Thread`：承载一次 Objective 的实际推进求值，Objective 本身仍是独立的长期控制对象；
+- `Objective Thread`：承载一个 Objective generation 的长期协调身份；每轮有限 Evaluation 只是在同一 Thread 上消费一个 Signal、创建一个 Activation，普通 Evaluation 终结时不再关闭或替换该 Thread；
 - `Delivery Thread`：汇总已经完成但尚未交付的结果，决定回复或延迟交付。
 
 Delegation 不必成为独立 Thread 类型。它更适合表达“某条 Thread 由另一个 Executor 执行”的关系。
@@ -466,6 +466,20 @@ Objective 是 Runtime 承诺持续提供推进机会的长期控制对象。它�
 - `Objective`：Runtime 持久化并监督生命周期的执行承诺。
 
 Objective 不应拥有另一套独立 Scheduler。Objective Supervisor 是一种调度策略：它根据 Objective 状态和 Wait Condition，向对应 Thread 生成 Signal。
+
+Objective 与 Objective Thread 的关系已经固定为：**每个 Objective generation 恰好一个长期协调 Thread**。
+
+```text
+Objective generation N
+  └── Objective Thread（稳定身份，保持 open）
+        ├── continuation Signal A → Activation A → Evaluation Outcome A
+        ├── continuation Signal B → Activation B → Evaluation Outcome B
+        └── continuation Signal C → Activation C → Evaluation Outcome C
+```
+
+普通 Evaluation Outcome 只终结本轮 Activation，并确认本轮 Signal；只要 Objective 仍为非终态，Objective Thread 就保持 `open`。Objective 进入 `completed | failed | cancelled` 后，本轮 Outcome 才同时关闭该 Thread。Objective 可以监督多个 Execution Thread，但它们是实际工作的执行线程，不是新的 Objective 协调 Thread。
+
+这条约束避免了旧实现中的“每轮 continuation 先取消旧 Objective Thread、再创建新 Thread”：那种实现把 Evaluation 生命周期误当成 Thread 生命周期，会制造重复目标线程、恢复竞态和无意义的身份漂移。
 
 ### 3.14 Outcome 与 Delivery
 
@@ -1151,7 +1165,7 @@ Phase 4 的单机调度管理闭环至此完成。每 Agent/Context/Session/Thre
 2. Execution Thread 是否需要显式 `parent_thread_id`，还是通过 causal relation 表表达；
 3. Delivery merge window 与最大等待时间的默认配置如何针对交互延迟和批量效率调优；
 4. 模型能够在多大程度上可靠选择优先级、串行和并行；
-5. Objective 与 Objective Thread 是一对一，还是允许一次 Objective 同时拥有多个推进 Thread；
+5. Objective 已固定为每 generation 一个长期 Objective Thread；后续只需继续验证其监督多个 Execution Thread 时的策略与资源上限；
 6. 周期 Schedule 的每次 occurrence 应创建新 Thread，还是向长期 Thread 投递新 Signal；
 7. Context pressure 下，哪些 dormant Thread 和 Signal 摘要应进入 Context Encoding。
 
