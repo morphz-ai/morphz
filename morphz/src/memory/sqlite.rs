@@ -652,7 +652,7 @@ impl SqliteStore {
             session_id TEXT NOT NULL,
             initiating_principal_id TEXT,
             root_turn_id TEXT NOT NULL UNIQUE,
-            kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'objective', 'delivery')),
+            kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'delivery')),
             status TEXT NOT NULL CHECK(status IN ('open', 'completed', 'failed', 'cancelled')),
             control_state TEXT NOT NULL DEFAULT 'active' CHECK(control_state IN ('active', 'paused')),
             executor_kind TEXT NOT NULL,
@@ -1322,6 +1322,12 @@ impl SqliteStore {
                 .await?;
             }
         }
+        // Objective is a control-plane aggregate, not a Thread kind. Preserve
+        // the stable Thread/root identities while correcting previously
+        // persisted Objective coordinator rows into primary Execution Threads.
+        sqlx::query("UPDATE threads SET kind = 'execution' WHERE kind = 'objective'")
+            .execute(&pool)
+            .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_threads_supervisor
                ON threads(supervisor_kind, supervisor_id, status, updated_at DESC)"#,
@@ -2386,6 +2392,11 @@ async fn migrate_threads_to_canonical_domain(
     .fetch_optional(pool)
     .await?
     .unwrap_or_default();
+    // This migration predates the supervision columns added to `threads`.
+    // A table that already uses the canonical Thread vocabulary must not be
+    // rebuilt here: doing so would discard those newer columns and their
+    // data. Legacy `objective` rows are corrected after the additive column
+    // migrations below; fresh databases use the stricter CHECK constraint.
     if table_sql.is_empty()
         || (table_sql.contains("'dialogue_turn'")
             && table_sql.contains("'execution'")
@@ -2427,7 +2438,7 @@ async fn migrate_threads_to_canonical_domain(
                 context_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 root_turn_id TEXT NOT NULL UNIQUE,
-                kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'objective', 'delivery')),
+                kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'delivery')),
                 status TEXT NOT NULL CHECK(status IN ('open', 'completed', 'failed', 'cancelled')),
                 executor_kind TEXT NOT NULL,
                 executor_id TEXT,
@@ -2452,6 +2463,7 @@ async fn migrate_threads_to_canonical_domain(
                       CASE kind
                           WHEN 'dialogue' THEN 'dialogue_turn'
                           WHEN 'work' THEN 'execution'
+                          WHEN 'objective' THEN 'execution'
                           WHEN 'delegation' THEN 'execution'
                           ELSE kind
                       END,
@@ -2834,7 +2846,6 @@ fn parse_thread_kind(value: &str) -> Result<ThreadKind, Box<dyn std::error::Erro
     match value {
         "dialogue_turn" => Ok(ThreadKind::DialogueTurn),
         "execution" => Ok(ThreadKind::Execution),
-        "objective" => Ok(ThreadKind::Objective),
         "delivery" => Ok(ThreadKind::Delivery),
         other => Err(format!("未知 Thread kind：'{other}'").into()),
     }
@@ -7584,11 +7595,11 @@ impl ActivationStore for SqliteStore {
                     .to_string(),
             );
         }
-        let is_objective_coordinator = thread_kind == ThreadKind::Objective.as_str()
+        let is_objective_primary_execution = thread_kind == ThreadKind::Execution.as_str()
             && supervisor_kind == ThreadSupervisorKind::Objective
             && supervisor_id.is_some()
             && origin_evaluation_id.is_none();
-        let objective_is_terminal = if is_objective_coordinator {
+        let objective_is_terminal = if is_objective_primary_execution {
             sqlx::query_scalar::<_, String>("SELECT status FROM objectives WHERE id = ?")
                 .bind(supervisor_id.as_deref().expect("checked above"))
                 .fetch_optional(&mut *tx)
@@ -7599,7 +7610,7 @@ impl ActivationStore for SqliteStore {
         } else {
             false
         };
-        if is_objective_coordinator && !objective_is_terminal {
+        if is_objective_primary_execution && !objective_is_terminal {
             append_event_in_transaction(&mut tx, event).await?;
             let activation_terminal_status = match terminal_lifecycle {
                 ThreadLifecycle::Completed => ThreadActivationStatus::Succeeded,
@@ -23996,7 +24007,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let continuation_root = crate::memory::objective_thread_root_id("objective-outbox", 1);
+        let continuation_root =
+            crate::memory::objective_primary_execution_root_id("objective-outbox", 1);
         let event = |event_id: &str, evaluation_id: &str| {
             Event::new(
                 event_id.to_string(),
@@ -24037,11 +24049,11 @@ mod tests {
             session_id: "objective-outbox-session".to_string(),
             initiating_principal_id: None,
             root_turn_id: continuation_root.clone(),
-            kind: ThreadKind::Objective,
+            kind: ThreadKind::Execution,
             executor_kind: "self".to_string(),
             executor_id: None,
             target_id: None,
-            supervision: ThreadSupervision::objective_coordinator("objective-outbox", 1),
+            supervision: ThreadSupervision::objective_primary_execution("objective-outbox", 1),
         };
         let claimed = store
             .claim_objective_evaluation_with_signal(

@@ -1497,11 +1497,11 @@ impl ActivationStore for PostgresStore {
                     .to_string(),
             );
         }
-        let is_objective_coordinator = thread_kind == ThreadKind::Objective.as_str()
+        let is_objective_primary_execution = thread_kind == ThreadKind::Execution.as_str()
             && supervisor_kind == ThreadSupervisorKind::Objective
             && supervisor_id.is_some()
             && origin_evaluation_id.is_none();
-        let objective_is_terminal = if is_objective_coordinator {
+        let objective_is_terminal = if is_objective_primary_execution {
             sqlx::query_scalar::<_, String>("SELECT status FROM objectives WHERE id = $1")
                 .bind(supervisor_id.as_deref().expect("checked above"))
                 .fetch_optional(&mut *tx)
@@ -1512,7 +1512,7 @@ impl ActivationStore for PostgresStore {
         } else {
             false
         };
-        if is_objective_coordinator && !objective_is_terminal {
+        if is_objective_primary_execution && !objective_is_terminal {
             append_event_in_tx(&mut tx, event).await?;
             let activation_terminal_status = match terminal_lifecycle {
                 ThreadLifecycle::Completed => ThreadActivationStatus::Succeeded,

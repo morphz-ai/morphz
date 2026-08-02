@@ -6,8 +6,8 @@ use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    objective_thread_root_id, stable_thread_id, stable_thread_signal_id, ActivationStore,
-    EdgeCommandMutation, EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream,
+    objective_primary_execution_root_id, stable_thread_id, stable_thread_signal_id,
+    ActivationStore, EdgeCommandMutation, EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream,
     ExecutionNodeMutation, ExecutionNodeStatus, SessionDirectoryStore,
 };
 use morphz::memory::{
@@ -2443,19 +2443,19 @@ where
     assert_eq!(finished.tokens_used, 12);
     assert_eq!(finished.time_used_seconds, 3);
 
-    let coordinator_root = objective_thread_root_id(&finished.id, finished.generation);
+    let primary_root = objective_primary_execution_root_id(&finished.id, finished.generation);
     let continuation_thread = NewThread {
-        id: stable_thread_id(&coordinator_root),
+        id: stable_thread_id(&primary_root),
         agent_id: "conformance-agent".to_string(),
         context_id: "conformance-context".to_string(),
         session_id: "conformance-session".to_string(),
         initiating_principal_id: None,
-        root_turn_id: coordinator_root,
-        kind: ThreadKind::Objective,
+        root_turn_id: primary_root,
+        kind: ThreadKind::Execution,
         executor_kind: "model".to_string(),
         executor_id: Some(finished.id.clone()),
         target_id: None,
-        supervision: morphz::memory::ThreadSupervision::objective_coordinator(
+        supervision: morphz::memory::ThreadSupervision::objective_primary_execution(
             &finished.id,
             finished.generation,
         ),
@@ -2702,10 +2702,15 @@ where
             .await
             .unwrap()
             .into_iter()
-            .filter(|thread| thread.kind == ThreadKind::Objective)
+            .filter(|thread| {
+                thread.kind == ThreadKind::Execution
+                    && thread.supervision.supervisor_kind
+                        == morphz::memory::ThreadSupervisorKind::Objective
+                    && thread.supervision.origin_evaluation_id.is_none()
+            })
             .count(),
         1,
-        "successive Objective Evaluations must reuse one logical Thread"
+        "successive Objective Evaluations must reuse one primary Execution Thread"
     );
 }
 

@@ -3,7 +3,8 @@
 > 历史文档：其中长期 Dialogue Thread、Work Thread 与 Delegation Thread 的分类已经被
 > [Scheduler Kernel and Domain Model v1](./morphz_scheduler_kernel_and_domain_model_v1.md)
 > 取代。当前实现使用 Dialogue Lane，以及有限的 DialogueTurn / Execution /
-> Objective / Delivery Thread；Delegation 是 Executor 关系。本文只保留为设计演进记录。
+> Delivery Thread；Objective 是 Supervisor 控制对象，Delegation 是 Executor 关系。
+> 本文只保留为设计演进记录，以下术语已经按当前模型校正。
 
 > 状态：Protocol v19 历史实现里程碑；当前生产 Context Protocol 为 v26，领域命名与写入边界以 Scheduler Kernel v2 为准
 >
@@ -18,7 +19,7 @@ Session 能解决不同连接之间的路由和隔离，但不能完整描述同
 
 如果二者只有时间顺序而没有结构边界，模型会把较早工作的工具结果、当前用户消息和共享 Objective 混成一个“现在要做的事情”，表现为重复回答旧问题、催问触发旧工具、或为简单问候继续编码。
 
-## 2. 五种 Runtime Thread
+## 2. 三种 Runtime Thread 与两种控制关系
 
 ### 2.1 Dialogue Thread（对话线程）
 
@@ -26,23 +27,23 @@ Session 能解决不同连接之间的路由和隔离，但不能完整描述同
 
 同一 Session 的初始用户 Turn 按顺序求值，避免模型同时解释多条连续消息；不同 Session 的 Dialogue Thread 仍可并行。
 
-### 2.2 Work Thread（工作线程）
+### 2.2 Execution Thread（执行线程）
 
-当某个 Dialogue Turn 需要物理工具时，它派生一条 Work Thread。Work Thread 以该 Turn 的 `root_turn_id` 作为稳定因果根，后续 assistant tool call、tool output 和 continuation 都沿用这个根。
+当某个 Dialogue Turn 需要物理工具时，它派生一条 Execution Thread。Execution Thread 以该 Turn 的 `root_turn_id` 作为稳定因果根，后续 assistant tool call、tool output 和 continuation 都沿用这个根。
 
-Dialogue Thread 在普通文本终态产生前保持顺序。只有产生实际物理工具调用时，Runtime 才把该因果链分叉为 Work Thread 并释放 Dialogue Thread；因此物理工具运行期间，用户仍可继续对话。
+Dialogue Lane 在普通文本终态产生前保持顺序。只有产生实际物理工具调用时，Runtime 才把该因果链分叉为 Execution Thread 并释放 Dialogue Gate；因此物理工具运行期间，用户仍可继续对话。
 
 `context_tx` 是 Dialogue 的伴随认知维护，而不是物理工作。单独调用 `context_tx` 时，后续 Tool Result 求值仍属于原 Dialogue Turn，必须等它产生文本或 `no_reply` 终态后，下一条普通消息才能求值。
 
-### 2.3 Objective Thread（目标线程）
+### 2.3 Objective Supervision（目标监督关系）
 
-Objective 是跨多个 Evaluation、等待和 Work Thread 的持久控制结构。它只有在 Runtime 显式路由时才绑定当前求值。
+Objective 是跨多个 Evaluation、等待和 Execution Thread 的持久控制结构，而不是 Thread。每个 Objective generation 至多拥有一个稳定的主 Execution Thread；Supervisor 通过向它投递 Signal 来恢复和推进目标。模型显式要求并发时，可以派生额外 Execution Thread。
 
 普通 Dialogue Turn 可以看到 Objective 的状态，用于回答“还在执行吗”“为什么受阻”等问题，但这不等于它可以推进 Objective。`objective-binding=none` 时 Objective 是只读背景。
 
-### 2.4 Delegation Thread（委托线程）
+### 2.4 Delegation（委托执行关系）
 
-Delegation Thread 由 Sub Agent 执行。它拥有独立的执行路由和深度限制，完成结果返回父 Thread；是否把结果写入共享 Mind，仍由父级求值决定。
+Delegation 表示某条 Execution Thread 由 Sub Agent 执行。它拥有独立的执行路由和深度限制，完成结果返回父 Thread；是否把结果写入共享 Mind，仍由父级求值决定。
 
 ### 2.5 Delivery Thread（交付线程）
 
@@ -50,7 +51,7 @@ Delegation Thread 由 Sub Agent 执行。它拥有独立的执行路由和深度
 > Delivery Composer。下述“启动 Delivery Thread”只描述需要模型语义合成的路径；
 > singleton、受限小批量与交互式 attached Execution 已有确定性 fast path。
 
-Work、Objective 或 Delegation Thread 的终态文本不会直接伪装成当前对话回复。Runtime 先把它原子写入 Completion Inbox，标记为 `delivery=pending`，再启动只负责结果编排的 Delivery Thread。
+Execution Thread（包括 Objective 监督或 Delegation 执行的线程）的终态文本不会直接伪装成当前对话回复。Runtime 先把它原子写入 Completion Inbox，标记为 `delivery=pending`，再启动只负责结果编排的 Delivery Thread。
 
 Delivery Thread 能同时看到当前 Session 中全部 `pending/deferred` 结果和并发 Thread 的最新物理状态。它只能：
 
@@ -108,23 +109,23 @@ Dialogue Turn：
 |---|---|
 | Session 对话入口 | `SessionRecord` + 每 Session Dialogue Gate |
 | Dialogue Turn | User Message Event ID |
-| Runtime Thread | `WorkThreadRecord`，以 `root_turn_id` 保持稳定因果根 |
-| Work step | `EvaluationWorkItemRecord`，以 `trigger_event_id` 唤醒对应 Thread mailbox |
-| 调度意图 | `ScheduledIntentRecord` |
+| Runtime Thread | `ThreadRecord`，以 `root_turn_id` 保持稳定因果根 |
+| Evaluation | `ThreadActivationRecord`，以 Signal 唤醒对应 Thread mailbox |
+| 调度意图 | `ScheduleRecord` |
 | 唯一终态 | `work_thread_outcomes` 唯一约束 + 同一 SQLite 事务中的 Thread 状态更新 |
 | 完成结果交付 | `WorkThreadRecord.result_*` + `delivery_status` |
-| Objective Thread | `ObjectiveRecord.id` |
+| Objective 监督 | `ObjectiveRecord` + `ThreadSupervision(supervisor_kind=objective)` |
 
-Runtime 使用每 Session 的 Dialogue Gate 保证普通用户消息首次求值有序；物理工具调用释放 Gate 后，工具结果只回到匹配 `root_turn_id` 的 Work Thread mailbox。每个 Thread 同一时刻最多有一个模型求值在飞行，重复 wakeup 可以合并，但不能产生第二个终态。
+Runtime 使用每 Session 的 Dialogue Gate 保证普通用户消息首次求值有序；物理工具调用释放 Gate 后，工具结果只回到匹配 `root_turn_id` 的 Execution Thread mailbox。每个 Thread 同一时刻最多有一个模型求值在飞行，重复 wakeup 可以合并，但不能产生第二个终态。
 
 Thread 终态与 outcome Event 在一个 SQLite 事务中提交。对于普通 Dialogue Reply，交付立即完成；对于后台工作结果，先进入 Completion Inbox，再由 Delivery Thread 决定如何通知 Session。
 
 Runtime 重启时也按 Thread 语义恢复：
 
 - 尚未形成物理工具计划的 Dialogue Turn 标记为 `interrupted`，不会在数小时后突然重新请求模型；
-- 已经形成持久物理工具计划的 Work Thread 继续按 exactly-once 边界恢复；
+- 已经形成持久物理工具计划的 Execution Thread 继续按 exactly-once 边界恢复；
 - `queued` 的 Scheduled Intent 会重新装载；已原子提交但尚未进程内 dispatch 的 `chat/schedule_due` Event 会安全重投；
-- Objective Thread 继续按其持久目标状态恢复。
+- Objective 按持久控制状态恢复，Supervisor 复用或重建该 generation 唯一的主 Execution Thread。
 
 ## 5. 模型负责决策，Runtime 负责调度事实
 

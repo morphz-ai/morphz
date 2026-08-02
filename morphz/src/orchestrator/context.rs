@@ -5500,20 +5500,7 @@ fn render_evaluation_directive(
         })
         .collect::<Vec<_>>();
     let thread_kind = activation_thread_kind(evaluation);
-    let thread = if thread_kind == "objective" {
-        list(
-            "thread",
-            vec![
-                pair("kind", atom("objective")),
-                pair(
-                    "id",
-                    atom(evaluation.objective_id.as_deref().unwrap_or("unknown")),
-                ),
-                pair("session", atom(&evaluation.session_id)),
-                pair("causal-root", atom(&evaluation.root_turn_id)),
-            ],
-        )
-    } else if thread_kind == "dialogue_turn" {
+    let thread = if thread_kind == "dialogue_turn" {
         list(
             "thread",
             vec![
@@ -6844,7 +6831,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "thread-model",
-                        atom("Session 的 Dialogue Lane 只排序普通对话的首次求值；每条用户输入创建有限的 DialogueTurn Thread；从该 turn 发起并由工具结果延续的工作属于独立 Execution Thread；Objective 使用 Objective Thread"),
+                        atom("Session 的 Dialogue Lane 只排序普通对话的首次求值；每条用户输入创建有限的 DialogueTurn Thread；从该 turn 发起并由工具结果延续的工作属于 Execution Thread；Objective 是持久控制面，Supervisor 通过主 Execution Thread 推进它"),
                     ),
                     pair(
                         "root-turn",
@@ -6856,7 +6843,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "concurrent",
-                        atom("kernel.concurrent-activations 是同一 Context 中其他 Execution / Objective Thread 的只读运行状态，不是当前 DialogueTurn Thread 的待办列表"),
+                        atom("kernel.concurrent-activations 是同一 Context 中其他 Execution / Delivery Thread 的只读运行状态，不是当前 DialogueTurn Thread 的待办列表"),
                     ),
                     pair(
                         "pending-tool",
@@ -6868,7 +6855,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "objective-binding",
-                        atom("evaluate.objective-binding=none 时，Objective 状态只用于理解背景和回答进度，不得推进 Objective 或为它调用工具；只有显式 bound 的 Objective Thread 才能推进目标"),
+                        atom("evaluate.objective-binding=none 时，Objective 状态只用于理解背景和回答进度，不得推进 Objective 或为它调用工具；只有显式 bound 的 Objective Evaluation 才能通过其 Execution Thread 推进目标"),
                     ),
                 ],
             ),
@@ -8322,7 +8309,7 @@ fn activation_focus(
         .map(|event| event.topic.clone())
         .unwrap_or_else(|| activation.trigger_kind.clone());
     let thread_kind = if objective_id.is_some() {
-        "objective"
+        "execution"
     } else if root_kind == "chat/thread_completion_ready" {
         "delivery"
     } else if root_kind == "chat/user_message"
@@ -8366,7 +8353,6 @@ fn activation_focus(
 
 fn activation_thread_kind(evaluation: &ActivationFocus) -> &'static str {
     match evaluation.thread_kind.as_str() {
-        "objective" => "objective",
         "execution" => "execution",
         "delivery" => "delivery",
         _ => "dialogue_turn",
@@ -8460,10 +8446,6 @@ fn concurrent_activation_view(
     let thread_kind = activation_thread_kind(&focus).to_string();
     let thread_id = match thread_kind.as_str() {
         "dialogue_turn" => activation.session_id.clone(),
-        "objective" => focus
-            .objective_id
-            .clone()
-            .unwrap_or_else(|| activation.root_turn_id.clone()),
         _ => activation.root_turn_id.clone(),
     };
     ConcurrentActivationView {
@@ -10412,7 +10394,7 @@ mod tests {
         assert!(rendered.contains("(pending-tools exec)"));
         assert!(rendered.contains("(thread-kind execution)"));
         assert!(rendered.contains("(thread-id user:old)"));
-        assert!(rendered.contains("其他 Execution / Objective Thread 的只读运行状态"));
+        assert!(rendered.contains("其他 Execution / Delivery Thread 的只读运行状态"));
         assert!(rendered.contains("(evaluate"));
         assert!(rendered.contains("(thread (kind dialogue-turn) (id s1) (turn user:1))"));
         assert!(rendered.contains("(objective-binding none)"));

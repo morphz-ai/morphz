@@ -84,6 +84,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS parent_thread_id TEXT"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS thread_group_id TEXT"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS completion_contract_json JSONB NOT NULL DEFAULT '{}'::jsonb"#,
+        r#"UPDATE threads SET kind = 'execution' WHERE kind = 'objective'"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_supervisor
            ON threads(supervisor_kind, supervisor_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_group

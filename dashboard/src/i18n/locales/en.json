@@ -240,7 +240,6 @@
     "threadKinds": {
       "dialogue_turn": "Dialogue Turn",
       "execution": "Execution Thread",
-      "objective": "Objective Thread",
       "delivery": "Delivery Thread"
     }
   },
@@ -723,13 +722,11 @@
       "title": "Thread Activations",
       "empty": "No active Activations",
       "dialogueThread": "dialogue turn",
-      "objectiveThread": "objective thread",
       "executionThread": "execution thread"
     },
     "threadKind": {
       "dialogue_turn": "Dialogue Turn",
       "execution": "Execution Thread",
-      "objective": "Objective Thread",
       "delivery": "Delivery Thread"
     },
     "threadGroups": {

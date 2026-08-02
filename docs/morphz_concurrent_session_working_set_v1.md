@@ -49,7 +49,7 @@ v1 必须同时建立以下语义：
 
 #### 同一 Session 被整个 Attempt 锁住（已解除）
 
-旧实现的 `process_routed_event` 在持有 Session Mutex 时调用完整 `run_attempt`。Protocol v18 将其细化为 Dialogue/Work/Objective Thread：同一 Session 的用户消息首次模型决策按 Dialogue Thread 有序执行，一旦模型选择工具便在物理执行前释放锁；工具结果沿 Work Thread 独立推进。Context 写仍只在事务提交阶段短暂串行化。
+旧实现的 `process_routed_event` 在持有 Session Mutex 时调用完整 `run_attempt`。当前实现将其细化为 Dialogue Lane 与有限的 DialogueTurn / Execution / Delivery Thread：同一 Session 的用户消息首次模型决策按 Dialogue Lane 有序执行，一旦模型选择工具便在物理执行前释放 Gate；工具结果沿 Execution Thread 独立推进。Objective 是控制面，由 Supervisor 向主 Execution Thread 投递推进信号。Context 写仍只在事务提交阶段短暂串行化。
 
 #### 因果 Transcript 仍以 Session/Turn 聚合（已解除）
 

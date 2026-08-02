@@ -455,7 +455,7 @@ impl LiveAttempt {
 }
 
 fn is_conversation_thread_kind(thread_kind: &str) -> bool {
-    matches!(thread_kind, "dialogue_turn" | "objective" | "delivery")
+    matches!(thread_kind, "dialogue_turn" | "delivery")
 }
 
 #[derive(Debug)]
@@ -5574,7 +5574,7 @@ mod tests {
         let mut state = test_state(Composer::new());
         for (attempt_id, activation_id, thread_kind, text) in [
             ("attempt-a", "work-a", "dialogue_turn", "alpha draft"),
-            ("attempt-b", "work-b", "objective", "beta draft"),
+            ("attempt-b", "work-b", "delivery", "beta draft"),
         ] {
             state.on_runtime_event(stream_runtime_event(
                 attempt_id,

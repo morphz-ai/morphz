@@ -41,10 +41,10 @@
     "usageTokens": "{{count}} 词元",
     "noAttempts": "尚无可归因的模型求值记录",
     "instances": "Provider 实例",
-    "instancesHint": "端点与协议是配置态；修改后由新启动的 Runtime 加载。",
+    "instancesHint": "端点与协议是配置态；修改后由新启动的运行时加载。",
     "authAdapters": "OAuth 适配器",
     "authAdaptersHint": "内置兼容层的版本、授权流、稳定性和最近验证日期。",
-    "noAuthAdapters": "当前 Runtime 未注册 OAuth 适配器",
+    "noAuthAdapters": "当前运行时未注册 OAuth 适配器",
     "verifiedOn": "验证于 {{date}}",
     "notVerified": "尚未验证",
     "stability": {
@@ -99,12 +99,12 @@
     "lastError": "最近错误：{{value}}",
     "subject": "身份：{{value}}",
     "expires": "到期：{{time}}",
-    "staticConfigNotice": "端点、账号定义与路由编辑将写入 Morphz 托管配置，并在 Runtime 重启后的新求值中生效。",
+    "staticConfigNotice": "端点、账号定义与路由编辑将写入 Morphz 托管配置，并在运行时重启后的新求值中生效。",
     "add": "新建",
     "edit": "编辑",
     "catalogIdRequired": "请输入配置对象 ID。",
     "invalidJson": "JSON 配置无法解析：{{error}}",
-    "catalogSaved": "已写入 {{path}}；重启 Runtime 后生效。",
+    "catalogSaved": "已写入 {{path}}；重启运行时后生效。",
     "catalogEditor": "高级 Provider 配置",
     "catalogEditorHint": "这里编辑的是不含凭证值的静态配置。Token 与 Secret 只能通过托管凭证或 OAuth 流程保存。",
     "catalogId": "对象 ID",
@@ -121,7 +121,7 @@
     "available": "可访问",
     "unavailable": "当前不可访问",
     "editor": "登记凭证",
-    "writeOnly": "值只写；Dashboard、API、模型和事件账本均不能读回。",
+    "writeOnly": "值只写；控制台、接口、模型和事件账本均不能读回。",
     "mode": "登记方式",
     "storeNew": "写入或轮换",
     "importExisting": "导入已有别名",
@@ -240,7 +240,6 @@
     "threadKinds": {
       "dialogue_turn": "对话轮次",
       "execution": "执行线程",
-      "objective": "目标线程",
       "delivery": "交付线程"
     }
   },
@@ -722,13 +721,11 @@
       "title": "线程激活",
       "empty": "没有活跃激活",
       "dialogueThread": "对话线程",
-      "objectiveThread": "目标线程",
       "executionThread": "执行线程"
     },
     "threadKind": {
       "dialogue_turn": "对话轮次",
       "execution": "执行线程",
-      "objective": "目标线程",
       "delivery": "交付线程"
     },
     "threadGroups": {

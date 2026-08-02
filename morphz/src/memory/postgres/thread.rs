@@ -27,6 +27,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS parent_thread_id TEXT"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS thread_group_id TEXT"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS completion_contract_json JSONB NOT NULL DEFAULT '{}'::jsonb"#,
+        r#"UPDATE threads SET kind = 'execution' WHERE kind = 'objective'"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_context_status
            ON threads(context_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_session_delivery
@@ -51,7 +52,6 @@ fn parse_kind(value: &str) -> Result<ThreadKind, StoreError> {
     match value {
         "dialogue_turn" => Ok(ThreadKind::DialogueTurn),
         "execution" => Ok(ThreadKind::Execution),
-        "objective" => Ok(ThreadKind::Objective),
         "delivery" => Ok(ThreadKind::Delivery),
         other => Err(format!("未知 Thread kind: {other}").into()),
     }

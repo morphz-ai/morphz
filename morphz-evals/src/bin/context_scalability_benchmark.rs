@@ -95,7 +95,6 @@ async fn measure_event_appends(
         let entries = (batch_start..batch_end)
             .map(|index| EventAppend {
                 event: benchmark_event(index, payload_bytes),
-                signal_outbox: false,
             })
             .collect();
         store.append_batch(entries).await?;

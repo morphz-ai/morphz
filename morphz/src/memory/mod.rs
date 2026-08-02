@@ -1087,11 +1087,17 @@ pub fn stable_thread_id(root_turn_id: &str) -> String {
     id[..31].to_string()
 }
 
-/// Stable causal root for the one long-lived coordinator Thread owned by an
+/// Stable causal root for the primary Execution Thread supervised by one
 /// Objective generation. Individual Evaluations are represented by immutable
 /// Signals and finite Activations on this Thread; they must not invent a new
 /// logical Thread on every continuation.
-pub fn objective_thread_root_id(objective_id: &str, objective_generation: u64) -> String {
+pub fn objective_primary_execution_root_id(
+    objective_id: &str,
+    objective_generation: u64,
+) -> String {
+    // The persisted causal root is intentionally stable across the semantic
+    // correction from Objective Thread to primary Execution Thread. Changing
+    // it would fork every active Objective into a second physical lane.
     format!(
         "objective_thread_{objective_id}_g{}",
         objective_generation.max(1)
@@ -3157,7 +3163,6 @@ pub struct ActivationSignalRecord {
 pub enum ThreadKind {
     DialogueTurn,
     Execution,
-    Objective,
     Delivery,
 }
 
@@ -3166,7 +3171,6 @@ impl ThreadKind {
         match self {
             Self::DialogueTurn => "dialogue_turn",
             Self::Execution => "execution",
-            Self::Objective => "objective",
             Self::Delivery => "delivery",
         }
     }
@@ -3272,11 +3276,11 @@ impl ThreadSupervision {
         }
     }
 
-    /// Supervision route for the long-lived Objective coordinator Thread.
-    /// Unlike an Objective-supervised Execution Thread, this route is not
-    /// owned by one finite Evaluation and therefore deliberately has no
-    /// `origin_evaluation_id`.
-    pub fn objective_coordinator(
+    /// Supervision route for an Objective's long-lived primary Execution
+    /// Thread. Unlike explicitly spawned Objective work, this route is owned
+    /// by the Objective generation rather than one finite Evaluation and
+    /// therefore deliberately has no `origin_evaluation_id`.
+    pub fn objective_primary_execution(
         objective_id: impl Into<String>,
         objective_generation: u64,
     ) -> Self {
@@ -3342,9 +3346,11 @@ impl ThreadSupervision {
                     && self.origin_evaluation_id.is_some()
                     && self.parent_thread_id.is_some() => {}
             (ThreadLifetime::Durable, ThreadSupervisorKind::Objective)
-                if self.supervisor_id.is_some() && self.origin_evaluation_id.is_some() => {}
+                if kind == ThreadKind::Execution
+                    && self.supervisor_id.is_some()
+                    && self.origin_evaluation_id.is_some() => {}
             (ThreadLifetime::Durable, ThreadSupervisorKind::Objective)
-                if kind == ThreadKind::Objective
+                if kind == ThreadKind::Execution
                     && self.supervisor_id.is_some()
                     && self.origin_evaluation_id.is_none() => {}
             (ThreadLifetime::Durable, ThreadSupervisorKind::Runtime)

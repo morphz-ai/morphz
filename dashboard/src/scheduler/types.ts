@@ -40,7 +40,7 @@ export interface ThreadRecord {
   session_id: string
   initiating_principal_id?: string
   root_turn_id: string
-  kind: 'dialogue_turn' | 'execution' | 'objective' | 'delivery'
+  kind: 'dialogue_turn' | 'execution' | 'delivery'
   lifecycle: 'open' | 'completed' | 'failed' | 'cancelled'
   control_state: 'active' | 'paused'
   executor_kind: string

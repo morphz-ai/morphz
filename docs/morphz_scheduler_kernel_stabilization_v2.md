@@ -508,7 +508,7 @@ Runtime 的内部基础设施错误不得直接把 Objective 标记为业务 `bl
 
 - 整理现有状态机和所有写入点；
 - 建立 Scheduler Conformance Suite；
-- 为最近出现的恢复、barrier、旧 wait、重复 Objective Thread 等故障建立 fixture；
+- 为最近出现的恢复、barrier、旧 wait、重复 Objective 主 Execution Thread 等故障建立 fixture；
 - 增加 invariant diagnostics，不改变主路径；
 - 提交当前兼容性修复，确保已有数据库可启动。
 

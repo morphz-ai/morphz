@@ -1,5 +1,5 @@
 use crate::memory::{
-    objective_thread_root_id, stable_thread_id, ObjectiveRecord, ObjectiveStatus,
+    objective_primary_execution_root_id, stable_thread_id, ObjectiveRecord, ObjectiveStatus,
     ObjectiveWaitCondition, ThreadActivationRecord, ThreadGroupMemberRecord, ThreadGroupRecord,
     ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadOutcomeRecord, ThreadRecord,
     ThreadSupervisorKind,
@@ -303,8 +303,8 @@ pub enum SchedulerInvariantCode {
     GroupSupervisorMissing,
     PendingDependencyTargetsTerminalGroup,
     ObjectiveWaitDisagreesWithDependencies,
-    ObjectiveThreadOwnerMismatch,
-    DuplicateObjectiveCoordinatorThread,
+    ObjectivePrimaryExecutionOwnerMismatch,
+    DuplicateObjectivePrimaryExecutionThread,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -353,7 +353,7 @@ pub fn audit_scheduler_invariants(
         .map(|objective| (objective.id.as_str(), objective))
         .collect::<HashMap<_, _>>();
     let mut violations = Vec::new();
-    let mut objective_coordinators = HashMap::<(&str, u64), Vec<&ThreadRecord>>::new();
+    let mut objective_primary_executions = HashMap::<(&str, u64), Vec<&ThreadRecord>>::new();
 
     for thread in input.threads {
         let outcome = outcomes_by_thread.get(thread.id.as_str()).copied();
@@ -377,8 +377,9 @@ pub fn audit_scheduler_invariants(
         }
 
         if thread.lifecycle != ThreadLifecycle::Open
-            || thread.kind != ThreadKind::Objective
+            || thread.kind != ThreadKind::Execution
             || thread.supervision.supervisor_kind != ThreadSupervisorKind::Objective
+            || thread.supervision.origin_evaluation_id.is_some()
         {
             continue;
         }
@@ -389,38 +390,26 @@ pub fn audit_scheduler_invariants(
             .and_then(|objective_id| objectives_by_id.get(objective_id).copied());
         let owner_matches = objective.is_some_and(|objective| {
             objective.status == ObjectiveStatus::Active
-                && match thread.supervision.origin_evaluation_id.as_deref() {
-                    // The long-lived coordinator is owned by the Objective
-                    // generation rather than by one finite Evaluation.
-                    None => thread.supervision.generation == objective.generation,
-                    // Compatibility boundary for older finite Objective
-                    // Threads. Only the currently fenced Evaluation may stay
-                    // live; every historical duplicate must be quarantined.
-                    Some(evaluation_id) => {
-                        objective.active_evaluation_id.as_deref() == Some(evaluation_id)
-                    }
-                }
+                && thread.supervision.generation == objective.generation
         });
         if !owner_matches {
             violations.push(violation(
                 SchedulerInvariantSeverity::Quarantine,
-                SchedulerInvariantCode::ObjectiveThreadOwnerMismatch,
+                SchedulerInvariantCode::ObjectivePrimaryExecutionOwnerMismatch,
                 "thread",
                 &thread.id,
-                "open Objective Thread 不属于当前 active Objective generation/Evaluation",
+                "Objective 的 open 主执行线程不属于当前 active Objective generation",
             ));
             continue;
         }
-        if thread.supervision.origin_evaluation_id.is_none() {
-            let objective = objective.expect("owner_matches guarantees Objective presence");
-            objective_coordinators
-                .entry((objective.id.as_str(), objective.generation))
-                .or_default()
-                .push(thread);
-        }
+        let objective = objective.expect("owner_matches guarantees Objective presence");
+        objective_primary_executions
+            .entry((objective.id.as_str(), objective.generation))
+            .or_default()
+            .push(thread);
     }
 
-    for ((objective_id, generation), mut threads) in objective_coordinators {
+    for ((objective_id, generation), mut threads) in objective_primary_executions {
         if threads.len() <= 1 {
             continue;
         }
@@ -429,7 +418,10 @@ pub fn audit_scheduler_invariants(
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
-        let expected_id = stable_thread_id(&objective_thread_root_id(objective_id, generation));
+        let expected_id = stable_thread_id(&objective_primary_execution_root_id(
+            objective_id,
+            generation,
+        ));
         let preserved_id = threads
             .iter()
             .find(|thread| thread.id == expected_id)
@@ -441,10 +433,10 @@ pub fn audit_scheduler_invariants(
             }
             violations.push(violation(
                 SchedulerInvariantSeverity::Quarantine,
-                SchedulerInvariantCode::DuplicateObjectiveCoordinatorThread,
+                SchedulerInvariantCode::DuplicateObjectivePrimaryExecutionThread,
                 "thread",
                 &thread.id,
-                "同一 Objective generation 存在多个 open 协调 Thread",
+                "同一 Objective generation 存在多个 open 主执行线程",
             ));
         }
     }
@@ -819,11 +811,11 @@ mod tests {
     }
 
     #[test]
-    fn only_one_current_objective_coordinator_thread_remains_admissible() {
+    fn only_one_current_objective_primary_execution_thread_remains_admissible() {
         let now = Utc::now();
         let objective = objective(now);
-        let root = objective_thread_root_id(&objective.id, objective.generation);
-        let coordinator = ThreadRecord {
+        let root = objective_primary_execution_root_id(&objective.id, objective.generation);
+        let primary = ThreadRecord {
             id: stable_thread_id(&root),
             revision: 1,
             generation: 1,
@@ -832,13 +824,13 @@ mod tests {
             session_id: objective.coordinator_session_id.clone(),
             initiating_principal_id: None,
             root_turn_id: root,
-            kind: ThreadKind::Objective,
+            kind: ThreadKind::Execution,
             lifecycle: ThreadLifecycle::Open,
             control_state: ThreadControlState::Active,
             executor_kind: "self".into(),
             executor_id: None,
             target_id: None,
-            supervision: ThreadSupervision::objective_coordinator(
+            supervision: ThreadSupervision::objective_primary_execution(
                 objective.id.clone(),
                 objective.generation,
             ),
@@ -849,18 +841,18 @@ mod tests {
             created_at: now,
             updated_at: now,
         };
-        let mut duplicate = coordinator.clone();
+        let mut duplicate = primary.clone();
         duplicate.id = "thread-duplicate".into();
-        duplicate.root_turn_id = "objective-thread-duplicate-root".into();
+        duplicate.root_turn_id = "objective-primary-execution-duplicate-root".into();
         duplicate.created_at = now + Duration::seconds(1);
-        let mut stale = coordinator.clone();
+        let mut stale = primary.clone();
         stale.id = "thread-stale".into();
-        stale.root_turn_id = "objective-thread-stale-root".into();
+        stale.root_turn_id = "objective-primary-execution-stale-root".into();
         stale.supervision.generation = objective.generation - 1;
 
         let violations = audit_scheduler_invariants(SchedulerInvariantInput {
             objectives: &[objective],
-            threads: &[coordinator.clone(), duplicate.clone(), stale.clone()],
+            threads: &[primary.clone(), duplicate.clone(), stale.clone()],
             activations: &[],
             outcomes: &[],
             groups: &[],
@@ -868,15 +860,15 @@ mod tests {
             dependencies: &[],
         });
         assert!(violations.iter().any(|violation| {
-            violation.code == SchedulerInvariantCode::DuplicateObjectiveCoordinatorThread
+            violation.code == SchedulerInvariantCode::DuplicateObjectivePrimaryExecutionThread
                 && violation.entity_id == duplicate.id
         }));
         assert!(violations.iter().any(|violation| {
-            violation.code == SchedulerInvariantCode::ObjectiveThreadOwnerMismatch
+            violation.code == SchedulerInvariantCode::ObjectivePrimaryExecutionOwnerMismatch
                 && violation.entity_id == stale.id
         }));
         assert!(!violations
             .iter()
-            .any(|violation| violation.entity_id == coordinator.id));
+            .any(|violation| violation.entity_id == primary.id));
     }
 }

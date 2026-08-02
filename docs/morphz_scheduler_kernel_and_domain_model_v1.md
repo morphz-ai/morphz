@@ -158,7 +158,7 @@ Dialogue Lane 可以允许用户在旧 Execution Thread 工作期间继续创建
 
 Thread 是一条具有稳定身份和因果边界的逻辑执行流。它可以跨越多次模型请求、工具调用、等待、Runtime 重启和结果交付。
 
-不再建议把总称叫 `WorkThread`，原因是 Dialogue Turn、Delivery 和 Objective 推进同样属于 Thread；`Work Thread` 还容易与操作系统 Worker Thread 混淆。
+不再建议把总称叫 `WorkThread`，因为 `Work Thread` 容易与操作系统 Worker Thread 混淆，也无法准确覆盖 Dialogue Turn 与 Delivery。
 
 推荐的 Thread 类型：
 
@@ -166,16 +166,16 @@ Thread 是一条具有稳定身份和因果边界的逻辑执行流。它可以�
 Thread
 ├── DialogueTurn   一次有限的对话轮次
 ├── Execution      执行线程
-├── Objective      目标推进线程
 └── Delivery       交付线程
 ```
 
 其中：
 
 - `DialogueTurn Thread`：处理 Dialogue Lane 中一次用户输入，终态是一次明确回复或 `no_reply`；
-- `Execution Thread`：承载需要物理工具、依赖或长时间运行的工作；
-- `Objective Thread`：承载一个 Objective generation 的长期协调身份；每轮有限 Evaluation 只是在同一 Thread 上消费一个 Signal、创建一个 Activation，普通 Evaluation 终结时不再关闭或替换该 Thread；
+- `Execution Thread`：承载需要物理工具、依赖或长时间运行的工作；Objective Supervisor 推进的主执行流和显式并发分支也都是 Execution Thread；
 - `Delivery Thread`：汇总已经完成但尚未交付的结果，决定回复或延迟交付。
+
+Objective 不是 Thread kind。它是控制面的持久生命周期对象；Supervisor 也不是可见线程，而是创建、恢复和推进 Execution Thread 的 Runtime 策略。
 
 Delegation 不必成为独立 Thread 类型。它更适合表达“某条 Thread 由另一个 Executor 执行”的关系。
 
@@ -467,19 +467,20 @@ Objective 是 Runtime 承诺持续提供推进机会的长期控制对象。它�
 
 Objective 不应拥有另一套独立 Scheduler。Objective Supervisor 是一种调度策略：它根据 Objective 状态和 Wait Condition，向对应 Thread 生成 Signal。
 
-Objective 与 Objective Thread 的关系已经固定为：**每个 Objective generation 恰好一个长期协调 Thread**。
+Objective 与 Execution Thread 的关系已经固定为：**每个 Objective generation 至多一个稳定的主 Execution Thread**。
 
 ```text
 Objective generation N
-  └── Objective Thread（稳定身份，保持 open）
+  ├── Supervisor（控制面，不是 Thread）
+  └── primary Execution Thread（稳定执行身份，保持 open）
         ├── continuation Signal A → Activation A → Evaluation Outcome A
         ├── continuation Signal B → Activation B → Evaluation Outcome B
         └── continuation Signal C → Activation C → Evaluation Outcome C
 ```
 
-普通 Evaluation Outcome 只终结本轮 Activation，并确认本轮 Signal；只要 Objective 仍为非终态，Objective Thread 就保持 `open`。Objective 进入 `completed | failed | cancelled` 后，本轮 Outcome 才同时关闭该 Thread。Objective 可以监督多个 Execution Thread，但它们是实际工作的执行线程，不是新的 Objective 协调 Thread。
+普通 Evaluation Outcome 只终结本轮 Activation，并确认本轮 Signal；只要 Objective 仍为非终态，它的主 Execution Thread 就保持 `open`。Objective 进入 `completed | failed | cancelled` 后，本轮 Outcome 才同时关闭该 Thread。模型可以通过显式调度再派生多个并发 Execution Thread，但不得用第二个“主线程”替代同 generation 的稳定主执行流。
 
-这条约束避免了旧实现中的“每轮 continuation 先取消旧 Objective Thread、再创建新 Thread”：那种实现把 Evaluation 生命周期误当成 Thread 生命周期，会制造重复目标线程、恢复竞态和无意义的身份漂移。
+这条约束避免了“每轮 continuation 先取消旧主 Execution Thread、再创建新 Thread”：那会把 Evaluation 生命周期误当成 Thread 生命周期，制造重复执行、恢复竞态和身份漂移。
 
 ### 3.14 Outcome 与 Delivery
 
@@ -1165,7 +1166,7 @@ Phase 4 的单机调度管理闭环至此完成。每 Agent/Context/Session/Thre
 2. Execution Thread 是否需要显式 `parent_thread_id`，还是通过 causal relation 表表达；
 3. Delivery merge window 与最大等待时间的默认配置如何针对交互延迟和批量效率调优；
 4. 模型能够在多大程度上可靠选择优先级、串行和并行；
-5. Objective 已固定为每 generation 一个长期 Objective Thread；后续只需继续验证其监督多个 Execution Thread 时的策略与资源上限；
+5. Objective 已固定为每 generation 至多一个长期主 Execution Thread；后续只需继续验证其显式派生多个并发 Execution Thread 时的策略与资源上限；
 6. 周期 Schedule 的每次 occurrence 应创建新 Thread，还是向长期 Thread 投递新 Signal；
 7. Context pressure 下，哪些 dormant Thread 和 Signal 摘要应进入 Context Encoding。
 
@@ -1217,11 +1218,11 @@ Delivery 是结果路由
 已经实现：
 
 - Rust SDK、CLI、HTTP API 与 Dashboard 统一消费 `SchedulerQuery -> SchedulerSnapshot`；任何界面都不得从 Event 数量或进程内缓存猜测 Runtime 状态；
-- `WorkThread*` 完整迁移为 `Thread*`，Thread kind 固定为 `dialogue_turn | execution | objective | delivery`；Delegation 保留为 Executor 关系，不再伪装成独立 Thread kind；
+- `WorkThread*` 完整迁移为 `Thread*`，Thread kind 固定为 `dialogue_turn | execution | delivery`；Objective 保留为 Supervisor 控制关系，Delegation 保留为 Executor 关系，二者都不伪装成 Thread kind；
 - `work_item_id` 迁移为 `activation_id`，`ScheduledIntent*` 迁移为 `Schedule*`；Context Encoding 与模型事件使用相同领域词汇；
 - HTTP `GET /api/contexts/:context_id/scheduler` 与 CLI `morphz scheduler show` 返回同一 `SchedulerSnapshot`；`--format=json` 是 SDK/HTTP 契约的直接 JSON 表达；
-- Dashboard 的 Scheduler Causality 视图按 Thread kind 显示“对话轮次 / 执行线程 / 目标线程 / 交付线程”，不再拼接原始存储值；
-- SQLite 在启动时一次性迁移开发期的 `work_threads`、`work_thread_outcomes`、`scheduled_intents`、`scheduled_intent_dependencies` 与旧 activation 列名；Thread 的持久 discriminator/lifecycle 同时规范为 `dialogue_turn | execution | objective | delivery` 与 `open | completed | failed | cancelled`，保留历史事实但不保留双语存储或旧产品 API。
+- Dashboard 的 Scheduler Causality 视图按 Thread kind 显示“对话轮次 / 执行线程 / 交付线程”；Objective 卡片直接展示其所监督的执行线程；
+- SQLite 在启动时一次性迁移开发期的 `work_threads`、`work_thread_outcomes`、`scheduled_intents`、`scheduled_intent_dependencies` 与旧 activation 列名；Thread 的持久 discriminator/lifecycle 同时规范为 `dialogue_turn | execution | delivery` 与 `open | completed | failed | cancelled`，Objective 控制权由 supervision route 表达。
 
 ### 2026-07-22：Thread 活动语义与 Attention 处置闭环
 

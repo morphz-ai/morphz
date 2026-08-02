@@ -2865,8 +2865,8 @@ impl ObjectiveSupervisor {
                     ),
                 )
             };
-        let objective_thread_root_id =
-            crate::memory::objective_thread_root_id(&objective.id, objective.generation);
+        let objective_execution_root_id =
+            crate::memory::objective_primary_execution_root_id(&objective.id, objective.generation);
         let mut continuation_payload = vec![
             ("context_id".to_string(), json!(objective.context_id)),
             (
@@ -2881,7 +2881,10 @@ impl ObjectiveSupervisor {
             ("tool_status".to_string(), json!("success")),
             ("wake_source".to_string(), json!(wake_source)),
             ("objective_phase".to_string(), json!(objective_phase)),
-            ("root_turn_id".to_string(), json!(objective_thread_root_id)),
+            (
+                "root_turn_id".to_string(),
+                json!(objective_execution_root_id),
+            ),
             ("text".to_string(), json!(continuation)),
         ];
         if let Some(principal_id) = &objective.initiating_principal_id {
@@ -2895,17 +2898,17 @@ impl ObjectiveSupervisor {
             continuation_payload.into_iter().collect(),
         );
         let continuation_thread = NewThread {
-            id: stable_thread_id(&objective_thread_root_id),
+            id: stable_thread_id(&objective_execution_root_id),
             agent_id: objective.agent_id.clone(),
             context_id: objective.context_id.clone(),
             session_id: objective.coordinator_session_id.clone(),
             initiating_principal_id: objective.initiating_principal_id.clone(),
-            root_turn_id: objective_thread_root_id,
-            kind: ThreadKind::Objective,
+            root_turn_id: objective_execution_root_id,
+            kind: ThreadKind::Execution,
             executor_kind: "self".to_string(),
             executor_id: None,
             target_id: None,
-            supervision: ThreadSupervision::objective_coordinator(
+            supervision: ThreadSupervision::objective_primary_execution(
                 objective.id.clone(),
                 objective.generation,
             ),
@@ -2936,7 +2939,7 @@ impl ObjectiveSupervisor {
         // evaluation may update or finish this Objective and therefore must
         // not run while this Objective's scheduler mutex is still held.
         // Keeping the guard across the synchronous EventBus dispatch would
-        // turn the stable coordinator Thread into a self-deadlock: the
+        // turn the stable primary Execution Thread into a self-deadlock: the
         // Activation waits for an Objective mutation whose reconciliation is
         // waiting for this very guard.
         drop(_guard);
@@ -4101,7 +4104,7 @@ mod tests {
                 session_id: claimed.coordinator_session_id.clone(),
                 initiating_principal_id: claimed.initiating_principal_id.clone(),
                 root_turn_id: root_turn_id.to_string(),
-                kind: ThreadKind::Objective,
+                kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,

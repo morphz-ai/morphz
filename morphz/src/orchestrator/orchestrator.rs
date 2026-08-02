@@ -375,12 +375,12 @@ Context 的物理编码顺序与权限域不同。它固定为 `protocol → eva
 8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题准确；若物理工具结果改变了任务状态，在最终文本之前用一次 context_tx 完成收口。Runtime 会在事务回执后再次调用你，届时返回普通文本或独占调用 no_reply。
 9. assistant_call 与 context_tx 回执属于 Runtime 控制轨迹，只保存在 Ledger，不会进入 Inbox；不要为了清理 context_tx 自己产生的记录而连续提交 housekeeping transaction。
    recall/read 等过程 Observation 应在提炼证据的同一事务中按需 retire；事务成功且 Mind 已准确后，不要再为清理刚产生的过程记录继续 recall 或提交 housekeeping，直接 reply。
-10. Context 最后的 `evaluate` 是本次模型请求唯一的执行入口。只处理其中的 `root-input` 和显式绑定的 Thread；其他 DialogueTurn / Execution / Objective / Delivery Thread 仅是只读背景。每次调用物理工具前，必须确认它是完成当前 `root-input` 所必需的新信息。当 Mind/inbox 已足以回答，尤其是问候、催问、状态询问或普通对话时，立即返回普通文本；不要替未绑定的 Objective 或旧 Execution Thread 调用工具，不要重复验证、扫描工作区或自行发明后续目标。
+10. Context 最后的 `evaluate` 是本次模型请求唯一的执行入口。只处理其中的 `root-input` 和显式绑定的 Thread；其他 DialogueTurn / Execution / Delivery Thread 仅是只读背景。每次调用物理工具前，必须确认它是完成当前 `root-input` 所必需的新信息。当 Mind/inbox 已足以回答，尤其是问候、催问、状态询问或普通对话时，立即返回普通文本；不要替未绑定的 Objective 或旧 Execution Thread 调用工具，不要重复验证、扫描工作区或自行发明后续目标。
 11. kernel.turn-control 描述当前用户回合的模型求值进度。phase=soft-checkpoint 是周期性复盘点，不是 Attempt 上限：所有正常工具仍然可用，若任务仍有可靠进展就继续执行；只需检查目标、证据、Mind 和下一步是否一致，避免无进展的重复调用。一次模型响应里并行调用多个工具只计为一次 Attempt。
 12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须返回普通文本、调用 no_reply 或执行必要的物理动作。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不要在反复扫描与阅读中消耗无进展的模型求值。
 14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。若非零退出的 stderr/事实明确说明失败源于当前边界缺少网络、边界外读写目录或秘密环境变量，且该能力确为当前任务所必需，应使用同一条必要命令重试一次：sandbox_permissions=require_escalated，并在 requested_permissions 中只申请最小能力、用 justification 说明原因；不得仅因普通命令失败猜测权限问题。命中 protected_paths、审批明确拒绝或 permission_request_available=false 时不可通过重试覆盖。exec 转入后台且 Runtime 仍报告任务非终态时，普通等待独占调用 no_reply(mode=wait)；任务结束会主动唤醒。收到终态 success/failed/cancelled/timeout 后必须处理该结果，不得再次用 wait。只有存在明确截止时间或停滞监督需求时，才用 check_task_after 安排一次检查点；届时可调用 task_status、继续安排检查或 kill_task。不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；使用者应把凭证预先保存为 Secret Store 别名（兼容 Runtime 启动环境变量）。需要秘密能力且尚不清楚可用别名时，先调用 list_secrets；随后只在 requested_permissions.secret_env 中按名称申请对单个子进程注入，绝不请求、读取或回显凭证值。
-15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才属于它的 Objective Thread 并可推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
+15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才是它的 Objective Evaluation，并可通过当前 Execution Thread 推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑或恢复其主 Execution Thread；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
 16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，普通文本或 no_reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
 17. 调度决策由你负责，Runtime 只执行并发与时序机制。当前 Thread 内连续物理动作直接调用工具，结果仍回到同一 mailbox；需要让新工作与当前 Thread 并行时用 schedule_tx.spawn，需要等待当前或指定 Thread 完成后串行推进时用 schedule_tx.enqueue/after。已有调度的状态先用 schedule_tx.inspect 读取；只能用其返回的最新 revision 执行 pause/resume/reschedule/cancel，冲突表示事实已变化，必须重新观测和决策。不要用多次相互独立的物理工具调用暗示新 Thread，也不要把 schedule_tx 与 context_tx 或物理工具混在同一响应。定时调度到期只是一条新的 observation；必须根据届时的真实 Context 再决策，不得预先声称结果已完成。
 18. 物理动作必须尊重 Execution Target。Thread 的首个物理动作会形成权威 Target 绑定；后续省略 target 时继承该绑定，但工具回执仍会显示实际 Target。不得在同一 Thread 中偷偷换机；跨 Target 工作使用 schedule_tx.spawn 的 target 创建新的 Execution Thread，或在尚未绑定的 Thread 首次调用时显式指定。
@@ -411,7 +411,7 @@ Context 的物理编码是一棵有固定顺序的可执行 S 表达式：`proto
 
 一个 Cognitive Context 运行一个共享 Mind，并可同时承载多个 Session 求值。Session 是 IO 路由与局部进展边界，不是 Mind 的所有者。每次执行周期由 `kernel.active-session` 指定本次输入来源和输出目标；其他 Session 可以同时处于活跃执行状态。所有 observation 都属于共享 Context，并用 `session` 标记来源，因此你可以跨 Session 迁移信息，同时必须让当前回复严格对应 active-session。共享 Mind 的 context_tx 由 Runtime 串行提交并做版本检查。
 
-每个 Session 有一条 Dialogue Lane，用于排序普通对话的首次求值。每条用户消息都是独立的 Ledger 输入项；模型尚未读取的连续输入按顺序合并为下一条有限 DialogueTurn Thread 的 Signal batch，而不是各自并发求值。由该 turn 发起、并由工具结果延续的计算形成 Execution Thread。Objective 由 Objective Thread 持续推进。Context 最后的 `evaluate` 表达式选择本周期唯一活动 Thread；其他 Thread 即使可见也只是只读状态。
+每个 Session 有一条 Dialogue Lane，用于排序普通对话的首次求值。每条用户消息都是独立的 Ledger 输入项；模型尚未读取的连续输入按顺序合并为下一条有限 DialogueTurn Thread 的 Signal batch，而不是各自并发求值。由该 turn 发起、并由工具结果延续的计算形成 Execution Thread。Objective 是持久控制面，Supervisor 通过 Objective 的主 Execution Thread 持续推进，不产生另一种“目标线程”。Context 最后的 `evaluate` 表达式选择本周期唯一活动 Thread；其他 Thread 即使可见也只是只读状态。
 
 你的职责不只是记录信息，而是让 Mind 成为后续执行可以直接利用的认知程序。当多个已完成任务反复出现相似的判断或执行结构，并且该结构可能改变未来决策、减少重复工作或降低错误率时，你可以基于多个真实来源派生可复用的符号结构。应保留其适用范围、来源、反例和不确定性；不得从单个案例过度泛化，也不得为了形式完整而强制总结经验。
 
@@ -808,23 +808,15 @@ fn retain_final_reply_control_tools(
     tools.retain(|tool| objective_control_available && tool.name == "objective_update");
 }
 
-fn derived_thread_kind(event: &Event, has_objective_route: bool) -> ThreadKind {
-    let is_objective_supervisor_entry = has_objective_route
-        && event
-            .payload
-            .get("tool_name")
-            .and_then(serde_json::Value::as_str)
-            == Some("objective_supervisor");
-    if is_objective_supervisor_entry {
-        ThreadKind::Objective
-    } else if event.topic == "chat/thread_completion_ready" {
+fn derived_thread_kind(event: &Event, _has_objective_route: bool) -> ThreadKind {
+    if event.topic == "chat/thread_completion_ready" {
         ThreadKind::Delivery
     } else if is_dialogue_trigger(event) {
         ThreadKind::DialogueTurn
     } else {
-        // Work spawned under Objective supervision is still an Execution
-        // Thread. Objective is the supervisor/lifetime authority, not the
-        // physical work kind shown to operators.
+        // Objective supervision never creates a separate Thread kind.
+        // Objective is the control-plane authority; every physical work lane
+        // it starts or resumes is an Execution Thread.
         ThreadKind::Execution
     }
 }
@@ -843,10 +835,11 @@ fn objective_supervision_matches_state(
         return false;
     }
     match supervision.origin_evaluation_id.as_deref() {
-        // The coordinator belongs to the whole Objective generation and must
+        // The primary Execution Thread belongs to the whole Objective
+        // generation and must
         // survive the gaps between finite Evaluations.
         None => supervision.generation == objective.generation,
-        // Legacy Objective Threads were owned by one finite Evaluation. Keep
+        // Explicitly spawned Objective work is owned by one finite Evaluation. Keep
         // only the currently fenced owner so startup can close historical
         // duplicates created by older binaries.
         Some(origin_evaluation_id) => {
@@ -3346,7 +3339,8 @@ impl Orchestrator {
     /// their next wake. A pending direct Signal is itself authoritative
     /// runnable state: the process may have crashed after committing the
     /// mailbox fact but before creating its Activation, so such a Thread must
-    /// survive orphan reconciliation. Objective Threads are reconciled
+    /// survive orphan reconciliation. Objective-supervised primary Execution
+    /// Threads are reconciled
     /// against the Objective's one authoritative active Evaluation so old
     /// evaluations do not remain visible as parallel Objective supervisors
     /// after restart.
@@ -3389,7 +3383,11 @@ impl Orchestrator {
                 {
                     continue;
                 }
-                if thread.kind == ThreadKind::Objective {
+                if thread.kind == ThreadKind::Execution
+                    && thread.supervision.supervisor_kind
+                        == crate::memory::ThreadSupervisorKind::Objective
+                    && thread.supervision.origin_evaluation_id.is_none()
+                {
                     let objective = if let (Some(supervisor), Some(objective_id)) = (
                         self.objective_supervisor.as_ref(),
                         thread.supervision.supervisor_id.as_deref(),
@@ -3402,11 +3400,6 @@ impl Orchestrator {
                     {
                         continue;
                     }
-                } else if !matches!(
-                    thread.kind,
-                    ThreadKind::DialogueTurn | ThreadKind::Execution | ThreadKind::Delivery
-                ) {
-                    continue;
                 }
                 let reason = "Runtime 重启时检测到 active Thread 没有非终态 Thread Activation、待执行调度或已提交终态；已将遗留孤儿状态标记为 cancelled。";
                 let mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
@@ -4657,7 +4650,6 @@ impl Orchestrator {
             ThreadSupervision::runtime(match initial_thread_kind {
                 ThreadKind::DialogueTurn => "dialogue-router",
                 ThreadKind::Delivery => "delivery-router",
-                ThreadKind::Objective => unreachable!("Objective route handled above"),
                 ThreadKind::Execution => "event-router",
             })
         };
@@ -7437,10 +7429,24 @@ impl Orchestrator {
                 && self
                     .execution_result_is_interactive(&thread, activation)
                     .await?;
+            // The Objective Supervisor's stable primary lane is an Execution
+            // Thread, but its finite Evaluation outcome is still the
+            // Objective's direct delivery boundary.  Only explicitly spawned
+            // Objective work branches (`origin_evaluation_id = Some`) enter
+            // the asynchronous Thread-result/Delivery aggregator.  Treating
+            // every Objective-supervised Execution as a detached work result
+            // would lose the Evaluation route, leave its lease open, and make
+            // the eventual Delivery reply look unrelated to the Objective.
+            let objective_primary_execution = thread_kind == "execution"
+                && thread.supervision.supervisor_kind
+                    == crate::memory::ThreadSupervisorKind::Objective
+                && thread.supervision.origin_evaluation_id.is_none();
             let result = match decision {
                 TerminalDecision::Deliver(content) => {
                     if thread.executor_kind == "plan_infer"
-                        || (thread_kind == "execution" && !direct_interactive_execution)
+                        || (thread_kind == "execution"
+                            && !direct_interactive_execution
+                            && !objective_primary_execution)
                     {
                         self.publish_thread_result(
                             session_id,
@@ -14682,7 +14688,7 @@ mod tests {
     }
 
     #[test]
-    fn objective_supervision_does_not_relabel_spawned_work_as_objective_thread() {
+    fn objective_supervision_always_uses_execution_threads() {
         let supervisor_entry = Event::new(
             "objective-supervisor-entry".to_string(),
             "Runtime".to_string(),
@@ -14694,7 +14700,7 @@ mod tests {
         );
         assert_eq!(
             derived_thread_kind(&supervisor_entry, true),
-            crate::memory::ThreadKind::Objective
+            crate::memory::ThreadKind::Execution
         );
 
         let work_entry = Event::new(
@@ -14752,18 +14758,18 @@ mod tests {
             Some(&objective)
         ));
 
-        let coordinator = crate::memory::ThreadSupervision::objective_coordinator(
+        let primary = crate::memory::ThreadSupervision::objective_primary_execution(
             "objective-1",
             objective.generation,
         );
         objective.active_evaluation_id = None;
         assert!(objective_supervision_matches_state(
-            &coordinator,
+            &primary,
             Some(&objective)
         ));
         objective.generation += 1;
         assert!(!objective_supervision_matches_state(
-            &coordinator,
+            &primary,
             Some(&objective)
         ));
     }

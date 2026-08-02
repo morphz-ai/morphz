@@ -2006,8 +2006,8 @@ function summarizeActivation(
   if (objectiveId || item.trigger_kind === 'runtime/objective_continue' || item.trigger_kind.startsWith('objective/')) {
     return {
       title: t('activation.continueObjective'),
-      threadKind: 'objective',
-      threadId: objectiveId || item.root_turn_id,
+      threadKind: 'execution',
+      threadId: item.root_turn_id,
       threadDetail: `causal ${shortId(item.root_turn_id, 22)}`,
     }
   }
@@ -4168,11 +4168,10 @@ export default function App() {
     [objectiveLineage, selectedObjectiveFilterId, streamingAttempts],
   )
   const conversationStreamingAttempts = useMemo(
-    // Dialogue, Objective and Delivery evaluations can all terminate in a
-    // user-visible reply for the active Session. Work evaluations only
-    // produce internal Thread results; rendering those here would expose an
-    // intermediate draft as if it were the final answer.
-    () => visibleStreamingAttempts.filter(attempt => ['dialogue_turn', 'objective', 'delivery'].includes(attempt.threadKind)),
+    // Dialogue and Delivery evaluations terminate in a user-visible reply.
+    // Execution evaluations, including Objective-supervised work, render in
+    // the execution lane so control-plane ownership never invents a new kind.
+    () => visibleStreamingAttempts.filter(attempt => ['dialogue_turn', 'delivery'].includes(attempt.threadKind)),
     [visibleStreamingAttempts],
   )
   const dialogueStreamingAttempts = useMemo(
