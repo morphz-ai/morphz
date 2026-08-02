@@ -24,7 +24,7 @@ import { useTranslation } from 'react-i18next'
 
 import type { DashboardApiClient } from '../api/client'
 import {
-  groupPhysicalEvaluations,
+  groupModelUsageByAlias,
   type ModelAttemptBinding,
   type ModelUsageRecord,
 } from '../app/providerEvaluations'
@@ -153,6 +153,15 @@ interface OAuthLoginChallenge {
   poll_interval_secs: number
 }
 
+interface OAuthSetupServiceDescriptor {
+  id: string
+  auth_adapter: string
+}
+
+interface OAuthSetupServicesResponse {
+  services: OAuthSetupServiceDescriptor[]
+}
+
 type OAuthLoginProgress =
   | { status: 'pending'; retry_after_secs: number }
   | { status: 'complete'; account: OAuthAccountMetadata }
@@ -181,7 +190,7 @@ type ProviderSetupMode = 'oauth' | 'api_key'
 
 interface ProviderSetupState {
   mode: ProviderSetupMode
-  preset: 'codex' | 'kimi' | 'custom'
+  preset: string
   providerId: string
   accountId: string
   routeId: string
@@ -193,6 +202,70 @@ interface ProviderSetupState {
   baseUrl: string
   apiKey: string
 }
+
+interface OAuthSetupPreset {
+  id: string
+  authAdapter: string
+}
+
+type OAuthConnectionRetry =
+  | { kind: 'setup'; preset: OAuthSetupPreset }
+  | { kind: 'account'; accountId: string }
+
+interface OAuthConnectionState {
+  label: string
+  stage: 'connecting' | 'failed'
+  retry: OAuthConnectionRetry
+  error?: string
+}
+
+interface ApiSetupPreset {
+  id: string
+  authAdapter: 'credential'
+  providerId: string
+  accountId: string
+  routeId: string
+  alias: string
+  physicalModel: string
+  adapter: string
+  protocol: string
+  baseUrl: string
+}
+
+// The browser only identifies the requested service. Provider, account and
+// route identities are allocated atomically by the Runtime bootstrap endpoint.
+const OAUTH_SETUP_PRESETS: OAuthSetupPreset[] = [
+  { id: 'codex', authAdapter: 'codex-oauth' },
+  { id: 'kimi', authAdapter: 'kimi-oauth' },
+  { id: 'anthropic', authAdapter: 'claude-oauth' },
+  { id: 'antigravity', authAdapter: 'antigravity-oauth' },
+  { id: 'xai', authAdapter: 'xai-oauth' },
+]
+
+// OpenRouter and generic gateways use API credentials. They are intentionally
+// kept out of the OAuth catalog so the UI never advertises a login flow that
+// the Runtime does not implement.
+const API_SETUP_PRESETS: ApiSetupPreset[] = [
+  {
+    id: 'compatible', authAdapter: 'credential', providerId: 'custom',
+    accountId: 'custom-default', routeId: 'model', alias: 'model',
+    physicalModel: '', adapter: 'openai-compatible', protocol: 'openai-responses',
+    baseUrl: '',
+  },
+  {
+    id: 'openrouter', authAdapter: 'credential', providerId: 'openrouter',
+    accountId: 'openrouter-default', routeId: 'openrouter-model', alias: 'openrouter-model',
+    physicalModel: '', adapter: 'openai-compatible', protocol: 'openai-chat',
+    baseUrl: 'https://openrouter.ai/api/v1',
+  },
+]
+
+const API_PROTOCOLS = [
+  { id: 'openai-responses', adapter: 'openai-compatible' },
+  { id: 'openai-chat', adapter: 'openai-compatible' },
+  { id: 'anthropic-messages', adapter: 'protocol-compatible' },
+  { id: 'gemini-content', adapter: 'protocol-compatible' },
+] as const
 
 const EMPTY_SNAPSHOT: ProviderControlSnapshot = {
   generated_at: '',
@@ -211,23 +284,39 @@ function localDate(value?: string): string {
 }
 
 function defaultSetup(): ProviderSetupState {
+  return setupFromPreset(API_SETUP_PRESETS[0], 'oauth')
+}
+
+function setupFromPreset(preset: ApiSetupPreset, mode: ProviderSetupMode): ProviderSetupState {
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
   return {
-    mode: 'oauth', preset: 'codex', providerId: 'codex-subscription', accountId: 'codex-subscription-default',
-    routeId: 'gpt-5.6', alias: 'gpt-5.6', physicalModel: 'gpt-5.6', adapter: 'openai-codex',
-    authAdapter: 'codex-oauth', protocol: 'openai-responses', baseUrl: 'https://chatgpt.com/backend-api/codex', apiKey: '',
+    mode,
+    preset: preset.id,
+    ...preset,
+    accountId: `${preset.providerId}-${suffix}`,
+    apiKey: '',
   }
+}
+
+function presetForAccount(accountId: string, record: ProviderAccountRecord): OAuthSetupPreset | undefined {
+  void accountId
+  return OAUTH_SETUP_PRESETS.find(preset => preset.authAdapter === record.config.auth_adapter)
 }
 
 export function ProvidersPage({ api }: ProvidersPageProps) {
   const { t } = useTranslation()
   const [snapshot, setSnapshot] = useState<ProviderControlSnapshot>(EMPTY_SNAPSHOT)
+  const [oauthSetupServices, setOAuthSetupServices] = useState<OAuthSetupServiceDescriptor[]>([])
+  const [oauthServicesError, setOAuthServicesError] = useState('')
   const [attempts, setAttempts] = useState<ModelUsageRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [busyAccount, setBusyAccount] = useState('')
   const [error, setError] = useState('')
   const [challenge, setChallenge] = useState<OAuthLoginChallenge | null>(null)
-  const [authorizationCode, setAuthorizationCode] = useState('')
-  const [authorizationState, setAuthorizationState] = useState('')
+  const [challengeLabelOverride, setChallengeLabelOverride] = useState('')
+  const [challengeError, setChallengeError] = useState('')
+  const [authorizationResponse, setAuthorizationResponse] = useState('')
+  const [oauthConnection, setOAuthConnection] = useState<OAuthConnectionState | null>(null)
   const [catalogEditor, setCatalogEditor] = useState<CatalogEditorState | null>(null)
   const [catalogNotice, setCatalogNotice] = useState('')
   const [diagnostic, setDiagnostic] = useState<ModelRouteDiagnostic | null>(null)
@@ -238,12 +327,21 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const [nextSnapshot, nextAttempts] = await Promise.all([
+      const oauthServicesRequest = api.get<OAuthSetupServicesResponse>('/api/runtime/providers/oauth/services')
+        .then(data => ({ data, error: '' }))
+        .catch(reason => ({
+          data: undefined,
+          error: reason instanceof Error ? reason.message : String(reason),
+        }))
+      const [nextSnapshot, nextAttempts, nextOAuthServices] = await Promise.all([
         api.get<ProviderControlSnapshot>('/api/runtime/providers'),
         api.get<ModelUsageRecord[]>('/api/runtime/providers/attempts?limit=40'),
+        oauthServicesRequest,
       ])
       setSnapshot(nextSnapshot)
       setAttempts(nextAttempts)
+      setOAuthSetupServices(nextOAuthServices.data?.services ?? [])
+      setOAuthServicesError(nextOAuthServices.error)
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -253,39 +351,83 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   }, [api])
 
   useEffect(() => {
-    void refresh()
+    const timer = window.setTimeout(() => {
+      void refresh()
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [refresh])
+
+  useEffect(() => {
+    if (!challenge) return
+
+    let cancelled = false
+    const loginId = challenge.login_id
+    const retryAfter = Math.max(1, challenge.poll_interval_secs || 5)
+    const timer = window.setTimeout(async () => {
+      try {
+        const progress = await api.command<OAuthLoginProgress>(
+          `/api/runtime/providers/oauth/${encodeURIComponent(loginId)}/continue`,
+          'POST',
+          { kind: 'poll' },
+        )
+        if (cancelled) return
+        if (progress.status === 'complete') {
+          setChallenge(current => current?.login_id === loginId ? null : current)
+          setChallengeError('')
+          setError('')
+          await refresh()
+          return
+        }
+        setChallenge(current => current?.login_id === loginId
+          ? { ...current, poll_interval_secs: Math.max(1, progress.retry_after_secs) }
+          : current)
+      } catch (reason) {
+        if (cancelled) return
+        setChallengeError(reason instanceof Error ? reason.message : String(reason))
+        // Keep a transient Dashboard/network failure from abandoning a login
+        // that may still be progressing in the provider's authorization page.
+        setChallenge(current => current?.login_id === loginId
+          ? { ...current, poll_interval_secs: Math.min(30, retryAfter + 5) }
+          : current)
+      }
+    }, retryAfter * 1000)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [api, challenge, refresh])
 
   const instances = useMemo(() => Object.entries(snapshot.provider_instances), [snapshot.provider_instances])
   const accounts = useMemo(() => Object.entries(snapshot.auth_accounts), [snapshot.auth_accounts])
   const routes = useMemo(() => Object.entries(snapshot.model_routes), [snapshot.model_routes])
-  const physicalEvaluations = useMemo(() => groupPhysicalEvaluations(attempts), [attempts])
-
-  const applySetupPreset = (preset: ProviderSetupState['preset']) => {
-    setSetup(current => {
-      const mode = current?.mode ?? 'oauth'
-      if (preset === 'codex') return { ...defaultSetup(), mode, preset }
-      if (preset === 'kimi') return {
-        ...defaultSetup(), mode, preset, providerId: 'kimi-code', accountId: 'kimi-code-default',
-        routeId: 'kimi-k3', alias: 'kimi-k3', physicalModel: 'k3', adapter: 'kimi-code',
-        authAdapter: 'kimi-oauth', protocol: 'openai-chat', baseUrl: 'https://api.kimi.com/coding/v1',
-      }
-      return {
-        ...defaultSetup(), mode: 'api_key', preset, providerId: 'custom', accountId: 'custom-default',
-        routeId: 'custom-model', alias: 'custom-model', physicalModel: '', adapter: 'protocol-compatible',
-        authAdapter: 'credential', protocol: 'openai-responses', baseUrl: '',
-      }
+  const modelUsage = useMemo(() => groupModelUsageByAlias(attempts), [attempts])
+  const oauthSetupOptions = useMemo(() => {
+    const registered = new Map(snapshot.auth_adapters.map(adapter => [adapter.id, adapter]))
+    const services = new Map(oauthSetupServices.map(service => [service.id, service]))
+    return OAUTH_SETUP_PRESETS.flatMap(preset => {
+      const service = services.get(preset.id)
+      const descriptor = service ? registered.get(service.auth_adapter) : undefined
+      return service && descriptor ? [{ preset, descriptor }] : []
     })
+  }, [oauthSetupServices, snapshot.auth_adapters])
+
+  const applySetupPreset = (preset: ApiSetupPreset) => {
+    setSetup(current => setupFromPreset(preset, current?.mode ?? 'api_key'))
   }
 
-  const saveProviderSetup = async () => {
-    if (!setup) return
-    const providerId = setup.providerId.trim()
-    const accountId = setup.accountId.trim()
-    const routeId = setup.routeId.trim()
-    const alias = setup.alias.trim() || routeId
-    const physicalModel = setup.physicalModel.trim()
-    if (!providerId || !accountId || !routeId || !physicalModel || !setup.baseUrl.trim()) {
+  const switchSetupMode = (mode: ProviderSetupMode) => {
+    setSetup(setupFromPreset(API_SETUP_PRESETS[0], mode))
+  }
+
+  const saveProviderSetup = async (requestedSetup: ProviderSetupState | null = setup) => {
+    if (!requestedSetup) return
+    const providerId = requestedSetup.providerId.trim()
+    const accountId = requestedSetup.accountId.trim()
+    const routeId = requestedSetup.routeId.trim()
+    const alias = requestedSetup.alias.trim() || routeId
+    const physicalModel = requestedSetup.physicalModel.trim()
+    if (!providerId || !accountId || !routeId || !physicalModel || !requestedSetup.baseUrl.trim()) {
       setError(t('providers.setupRequired'))
       return
     }
@@ -296,11 +438,11 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       let credential: Record<string, unknown> | undefined
       let credentialRef = ''
       let secretBackend: string | undefined
-      if (setup.mode === 'api_key' && setup.apiKey) {
+      if (requestedSetup.mode === 'api_key' && requestedSetup.apiKey) {
         const envName = `MORPHZ_PROVIDER_${providerId.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}_API_KEY`
         await api.command('/api/runtime/secrets', 'POST', {
           name: envName,
-          value: setup.apiKey,
+          value: requestedSetup.apiKey,
           scope_kind: 'runtime',
           value_backend: 'morphz_env_file',
         })
@@ -308,23 +450,25 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
         credentialRef = credentialId
         secretBackend = 'morphz_env_file'
         credential = { source: 'env', name: envName, service: null, command: [] }
-      } else if (setup.mode === 'oauth') {
-        credentialRef = `MORPHZ_OAUTH_${accountId.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}`
-        secretBackend = 'morphz_env_file'
       }
+      const previousProvider = snapshot.provider_instances[providerId]
+      const previousRoute = snapshot.model_routes[routeId]
+      const candidates = previousRoute?.candidates.filter(candidate => candidate.account !== accountId) ?? []
       const receipt = await api.command<CatalogMutationReceipt>('/api/runtime/providers/setup', 'PUT', {
         provider_id: providerId,
         provider: {
-          adapter: setup.adapter.trim(), protocol: setup.protocol, base_url: setup.baseUrl.trim(), accounts: [accountId],
-          models: { [physicalModel]: {} }, headers: {}, env_headers: {},
+          adapter: requestedSetup.adapter.trim(), protocol: requestedSetup.protocol, base_url: requestedSetup.baseUrl.trim(),
+          accounts: Array.from(new Set([...(previousProvider?.accounts ?? []), accountId])),
+          models: { ...(previousProvider?.models ?? {}), [physicalModel]: {} },
+          headers: previousProvider?.headers ?? {}, env_headers: previousProvider?.env_headers ?? {},
         },
         account_id: accountId,
         account: {
-          auth_adapter: setup.mode === 'oauth' ? setup.authAdapter : (credentialRef ? 'credential' : 'none'),
+          auth_adapter: credentialRef ? 'credential' : 'none',
           credential_ref: credentialRef,
           secret_backend: secretBackend,
           provider: providerId,
-          label: t('providers.defaultAccount'),
+          label: requestedSetup.alias.trim() || t('providers.defaultAccount'),
           enabled: true,
         },
         credential_id: credentialId,
@@ -332,7 +476,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
         route_id: routeId,
         route: {
           aliases: alias === routeId ? [] : [alias],
-          candidates: [{ provider: providerId, model: physicalModel, priority: 0, account: accountId, capabilities: [] }],
+          candidates: [...candidates, { provider: providerId, model: physicalModel, priority: candidates.length, account: accountId, capabilities: [] }],
           affinity: 'context', selection: 'available-least-recently-used', fallback: false,
         },
       })
@@ -340,7 +484,48 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       setSetup(null)
       await refresh()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setError(message)
+    } finally {
+      setSavingSetup(false)
+    }
+  }
+
+  const startOAuthSetup = async (preset: OAuthSetupPreset) => {
+    const label = t(`providers.presets.${preset.id}`, { defaultValue: preset.id })
+    const popup = window.open('about:blank', `morphz-oauth-${preset.id}`, 'popup,width=720,height=820')
+    setSetup(null)
+    setOAuthConnection({ label, stage: 'connecting', retry: { kind: 'setup', preset } })
+    setSavingSetup(true)
+    setError('')
+    try {
+      const next = await api.command<OAuthLoginChallenge>(
+        '/api/runtime/providers/oauth/start',
+        'POST',
+        { service: preset.id },
+      )
+      const authorizationUrl = next.authorization_url
+        ?? next.verification_uri_complete
+        ?? next.verification_uri
+      if (authorizationUrl) {
+        if (popup && !popup.closed) popup.location.replace(authorizationUrl)
+        else window.open(authorizationUrl, '_blank', 'noopener,noreferrer')
+      } else if (popup && !popup.closed) {
+        popup.close()
+      }
+      setChallenge(next)
+      setChallengeLabelOverride(label)
+      setChallengeError('')
+      setAuthorizationResponse('')
+      setOAuthConnection(null)
+    } catch (reason) {
+      if (popup && !popup.closed) popup.close()
+      setOAuthConnection({
+        label,
+        stage: 'failed',
+        retry: { kind: 'setup', preset },
+        error: reason instanceof Error ? reason.message : String(reason),
+      })
     } finally {
       setSavingSetup(false)
     }
@@ -363,10 +548,12 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   }
 
   const startLogin = async (accountId: string) => {
-    // Create the window during the user gesture. Safari otherwise treats the
-    // post-fetch navigation as an unsolicited popup.
-    const authorizationWindow = window.open('about:blank', '_blank')
-    if (authorizationWindow) authorizationWindow.opener = null
+    const record = snapshot.auth_accounts[accountId]
+    const preset = record ? presetForAccount(accountId, record) : undefined
+    const label = record?.config.label
+      || (preset ? t(`providers.presets.${preset.id}`, { defaultValue: preset.id }) : t('providers.oauthAccount'))
+    const popup = window.open('about:blank', `morphz-oauth-${accountId}`, 'popup,width=720,height=820')
+    setOAuthConnection({ label, stage: 'connecting', retry: { kind: 'account', accountId } })
     setBusyAccount(accountId)
     setError('')
     try {
@@ -374,17 +561,28 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
         `/api/runtime/providers/accounts/${encodeURIComponent(accountId)}/oauth/start`,
         'POST',
       )
-      setChallenge(next)
-      setAuthorizationCode('')
-      setAuthorizationState('')
       const authorizationUrl = next.authorization_url
         ?? next.verification_uri_complete
         ?? next.verification_uri
-      if (authorizationUrl && authorizationWindow) authorizationWindow.location.href = authorizationUrl
-      else authorizationWindow?.close()
+      if (authorizationUrl) {
+        if (popup && !popup.closed) popup.location.replace(authorizationUrl)
+        else window.open(authorizationUrl, '_blank', 'noopener,noreferrer')
+      } else if (popup && !popup.closed) {
+        popup.close()
+      }
+      setChallenge(next)
+      setChallengeLabelOverride(label)
+      setChallengeError('')
+      setAuthorizationResponse('')
+      setOAuthConnection(null)
     } catch (reason) {
-      authorizationWindow?.close()
-      setError(reason instanceof Error ? reason.message : String(reason))
+      if (popup && !popup.closed) popup.close()
+      setOAuthConnection({
+        label,
+        stage: 'failed',
+        retry: { kind: 'account', accountId },
+        error: reason instanceof Error ? reason.message : String(reason),
+      })
     } finally {
       setBusyAccount('')
     }
@@ -393,24 +591,35 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const continueLogin = async () => {
     if (!challenge) return
     setBusyAccount(challenge.account_id)
-    setError('')
+    setChallengeError('')
     try {
-      const body = challenge.flow === 'device_code'
-        ? { kind: 'poll' }
-        : { kind: 'authorization_code', code: authorizationCode.trim(), state: authorizationState.trim() }
       const progress = await api.command<OAuthLoginProgress>(
         `/api/runtime/providers/oauth/${encodeURIComponent(challenge.login_id)}/continue`,
         'POST',
-        body,
+        challenge.flow === 'authorization_code_pkce' && authorizationResponse.trim()
+          ? { kind: 'authorization_response', response: authorizationResponse.trim() }
+          : { kind: 'poll' },
       )
       if (progress.status === 'complete') {
         setChallenge(null)
+        setChallengeError('')
+        setAuthorizationResponse('')
         await refresh()
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      setChallengeError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setBusyAccount('')
+    }
+  }
+
+  const retryOAuthConnection = () => {
+    if (!oauthConnection) return
+    const retry = oauthConnection.retry
+    if (retry.kind === 'setup') {
+      void startOAuthSetup(retry.preset)
+    } else {
+      void startLogin(retry.accountId)
     }
   }
 
@@ -506,13 +715,16 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       || snapshot.provider_instances[candidate.provider]?.accounts.includes(accountId))
   ))?.[0]
 
+  const challengeLabel = challenge
+    ? (challengeLabelOverride || snapshot.auth_accounts[challenge.account_id]?.config.label || t('providers.oauthAccount'))
+    : ''
+
   return (
     <section className="providers-view">
       <header className="workspace-heading">
         <div>
           <span>{t('providers.eyebrow').toUpperCase()}</span>
           <h1>{t('providers.heading')}</h1>
-          <p>{t('providers.description')}</p>
         </div>
         <nav className="provider-heading-actions">
           <button className="is-primary" type="button" onClick={() => setSetup(defaultSetup())}><Plus size={14} /> {t('providers.addService')}</button>
@@ -552,29 +764,43 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       )}
 
       <section className="provider-control-section">
-        <header><span><Activity size={15} /> {t('providers.recentAttempts')}</span><small>{t('providers.recentAttemptsHint')}</small></header>
+        <header><span><Activity size={15} /> {t('providers.recentAttempts')}</span></header>
         <div className="provider-attempt-list">
-          {physicalEvaluations.map(group => {
+          {modelUsage.map(group => {
             const attempt = group.latest
-            const binding = attempt.model_binding
             return (
-              <article key={group.key}>
+              <article key={group.alias}>
                 <header>
-                  <span><strong>{binding?.requested_alias ?? attempt.model ?? '—'}</strong><code>{binding ? `${binding.provider_instance_id} / ${binding.auth_account_id}` : t('providers.legacyAttempt')}</code></span>
+                  <span><strong>{group.alias}</strong></span>
                   <time dateTime={attempt.timestamp}>{localDate(attempt.timestamp)}</time>
                 </header>
                 <div>
-                  <span><small>{t('providers.physicalModel')}</small><strong>{binding?.physical_model ?? attempt.model ?? '—'}</strong></span>
                   <span><small>{t('providers.evaluationCount')}</small><strong>{t('providers.attemptCount', { count: group.attempts })}</strong></span>
                   <span><small>{t('providers.inputAndCache')}</small><strong>{group.inputTokens.toLocaleString()} / {group.cachedInputTokens.toLocaleString()}</strong></span>
                   <span><small>{t('providers.outputTokens')}</small><strong>{group.outputTokens.toLocaleString()}</strong></span>
-                  <span><small>{t('providers.routeRevision')}</small><strong>{binding ? `${binding.route_id} · ${binding.route_revision}` : '—'}</strong></span>
+                  <span><small>{t('providers.physicalPaths')}</small><strong>{group.paths.length}</strong></span>
                 </div>
                 <footer>
                   <code>{t('providers.scopeCount', { contexts: group.contextIds.size, sessions: group.sessionIds.size })}</code>
                   <span>{t('providers.usageTokens', { count: group.totalTokens })}</span>
                   {group.cost && <span>{group.cost.amount.toFixed(6)} {group.cost.currency}</span>}
                 </footer>
+                <details className="provider-usage-paths">
+                  <summary>{t('providers.viewPhysicalPaths', { count: group.paths.length })}</summary>
+                  <div>
+                    {group.paths.map(path => (
+                      <section key={path.key}>
+                        <span><strong>{path.physicalModel}</strong><small>{t('providers.attemptCount', { count: path.attempts })}</small></span>
+                        <code>{path.providerInstanceId && path.authAccountId
+                          ? `${path.providerInstanceId} / ${path.authAccountId}`
+                          : t('providers.legacyAttempt')}</code>
+                        <small>{path.routeIds.length > 0
+                          ? `${path.routeIds.join(', ')}${path.routeRevisions.length > 0 ? ` · ${path.routeRevisions.join(', ')}` : ''}`
+                          : '—'}</small>
+                      </section>
+                    ))}
+                  </div>
+                </details>
               </article>
             )
           })}
@@ -583,60 +809,32 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       </section>
 
       <section className="provider-control-section">
-        <header><span><Server size={15} /> {t('providers.instances')}</span><small>{t('providers.instancesHint')}</small><button type="button" onClick={() => openCatalogEditor('provider_instance', '', { adapter: 'protocol-compatible', protocol: 'openai-responses', base_url: '', accounts: [], models: {}, headers: {}, env_headers: {} })}><Plus size={13} /> {t('providers.add')}</button></header>
-        <div className="provider-instance-grid">
-          {instances.map(([providerId, provider]) => (
-            <article key={providerId}>
-              <header><Cloud size={16} /><span><strong>{providerId}</strong><code>{provider.adapter || provider.protocol}</code></span><button type="button" aria-label={t('providers.edit')} onClick={() => openCatalogEditor('provider_instance', providerId, provider)}><Pencil size={13} /></button></header>
-              <p title={provider.base_url}>{provider.base_url}</p>
-              <footer>
-                <span>{t('providers.accountPool', { count: provider.accounts.length })}</span>
-                <span>{t('providers.modelCount', { count: Object.keys(provider.models).length })}</span>
-                <code>{provider.protocol}</code>
-              </footer>
-            </article>
-          ))}
-          {!loading && instances.length === 0 && <p className="provider-empty">{t('providers.noInstances')}</p>}
-        </div>
-      </section>
-
-      <section className="provider-control-section">
-        <header><span><ShieldCheck size={15} /> {t('providers.authAdapters')}</span><small>{t('providers.authAdaptersHint')}</small></header>
-        <div className="provider-adapter-list">
-          {snapshot.auth_adapters.map(adapter => (
-            <article key={adapter.id}>
-              <span><strong>{adapter.id}</strong><code>{adapter.version}</code></span>
-              <div><em>{t(`providers.stability.${adapter.stability}`)}</em><em>{t(`providers.flow.${adapter.flow}`)}</em></div>
-              <small>{adapter.upstream_reference ?? '—'}</small>
-              <time>{adapter.last_verified_on ? t('providers.verifiedOn', { date: adapter.last_verified_on }) : t('providers.notVerified')}</time>
-            </article>
-          ))}
-          {!loading && snapshot.auth_adapters.length === 0 && <p className="provider-empty">{t('providers.noAuthAdapters')}</p>}
-        </div>
-      </section>
-
-      <section className="provider-control-section">
-        <header><span><KeyRound size={15} /> {t('providers.accounts')}</span><small>{t('providers.accountsHint')}</small><button type="button" onClick={() => openCatalogEditor('auth_account', '', { auth_adapter: 'credential', credential_ref: '', enabled: true })}><Plus size={13} /> {t('providers.add')}</button></header>
+        <header><span><KeyRound size={15} /> {t('providers.configuredAccounts')}</span></header>
         <div className="provider-account-list">
           {accounts.map(([accountId, record]) => {
             const isBusy = busyAccount === accountId
+            const preset = presetForAccount(accountId, record)
+            const serviceName = preset
+              ? t(`providers.presets.${preset.id}`, { defaultValue: preset.id })
+              : (record.config.provider || t('providers.apiCredential'))
             return (
               <article className={!record.effective_enabled ? 'is-disabled' : ''} key={accountId}>
                 <span className={`provider-account-presence ${record.effective_enabled ? 'is-enabled' : ''}`}>
                   {record.authenticated ? <CheckCircle2 size={15} /> : <CircleOff size={15} />}
                 </span>
                 <div className="provider-account-identity">
-                  <strong>{record.config.label || accountId}</strong>
-                  <code>{accountId} · {record.config.auth_adapter}</code>
-                  <small>{record.config.provider ?? '—'} · {record.config.secret_backend ?? 'runtime-default'}</small>
+                  <strong>{record.config.label || serviceName}</strong>
+                  <small>{serviceName}</small>
+                  {(record.oauth_metadata?.email || record.oauth_metadata?.subject) && (
+                    <span>{record.oauth_metadata.email || record.oauth_metadata.subject}</span>
+                  )}
                 </div>
                 <div className="provider-account-facts">
                   <span>{record.effective_enabled ? t('providers.enabled') : t('providers.disabled')}</span>
                   <span>{record.authenticated ? t('providers.authenticated') : t('providers.notAuthenticated')}</span>
-                  {record.state && <span>{t('providers.status', { value: record.state.status })} · r{record.state.revision}</span>}
+                  {record.state && <span>{t('providers.status', { value: record.state.status })}</span>}
                   {record.state?.cooldown_until && <span>{t('providers.cooldown', { time: localDate(record.state.cooldown_until) })}</span>}
                   {record.state?.last_error_kind && <span>{t('providers.lastError', { value: record.state.last_error_kind })}</span>}
-                  {record.oauth_metadata?.subject && <span>{t('providers.subject', { value: record.oauth_metadata.subject })}</span>}
                   {record.oauth_metadata?.expires_at && <span>{t('providers.expires', { time: localDate(record.oauth_metadata.expires_at) })}</span>}
                 </div>
                 <nav>
@@ -670,53 +868,70 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
         </div>
       </section>
 
-      <section className="provider-control-section">
-        <header><span><Network size={15} /> {t('providers.routes')}</span><small>{t('providers.routesHint')}</small><button type="button" onClick={() => openCatalogEditor('model_route', '', { aliases: [], candidates: [], affinity: 'context', selection: 'available-least-recently-used', fallback: false })}><Plus size={13} /> {t('providers.add')}</button></header>
-        <div className="provider-route-list">
-          {routes.map(([routeId, route]) => (
-            <article className={routeId === snapshot.selected_model_alias || route.aliases.includes(snapshot.selected_model_alias) ? 'is-selected' : ''} key={routeId}>
-              <header>
-                <Route size={15} />
-                <span><strong>{routeId}</strong><small>{route.aliases.length > 0 ? t('providers.aliases', { value: route.aliases.join(', ') }) : '—'}</small></span>
-                <div><em>{t('providers.affinity', { value: route.affinity })}</em><em>{t('providers.selection', { value: route.selection })}</em>{route.fallback && <em>{t('providers.fallback')}</em>}</div>
-                <nav>
-                  <button type="button" disabled={Boolean(diagnosing)} onClick={() => void diagnoseRoute(routeId)}><Activity size={13} /> {t('providers.test')}</button>
-                  <button type="button" disabled={Boolean(diagnosing)} onClick={() => void refreshRouteCatalog(routeId)}><RefreshCw size={13} /> {t('providers.refreshCatalog')}</button>
-                  <button type="button" aria-label={t('providers.edit')} onClick={() => openCatalogEditor('model_route', routeId, route)}><Pencil size={13} /></button>
-                </nav>
-              </header>
-              <div>
-                {route.candidates.map((candidate, index) => (
-                  <section key={`${candidate.provider}:${candidate.model}:${candidate.account ?? ''}:${index}`}>
-                    <span>{t('providers.candidate', { index: index + 1 })}<small>{t('providers.priority', { priority: candidate.priority })}</small></span>
-                    <strong>{candidate.provider}<i>/</i>{candidate.model}</strong>
-                    <code>{candidate.account ? t('providers.pinnedAccount', { account: candidate.account }) : t('providers.anyAccount')}</code>
-                    {candidate.capabilities.length > 0 && <small>{t('providers.capabilities', { value: candidate.capabilities.join(', ') })}</small>}
-                  </section>
-                ))}
-              </div>
-            </article>
-          ))}
-          {!loading && routes.length === 0 && <p className="provider-empty">{t('providers.noRoutes')}</p>}
-        </div>
-      </section>
+      <details className="provider-advanced-control">
+        <summary><Settings2 size={15} /><span>{t('providers.advancedControl')}</span></summary>
+        <div>
+          <section className="provider-control-section">
+            <header><span><Server size={15} /> {t('providers.instances')}</span></header>
+            <div className="provider-instance-grid">
+              {instances.map(([providerId, provider]) => (
+                <article key={providerId}>
+                  <header><Cloud size={16} /><span><strong>{providerId}</strong><code>{provider.adapter || provider.protocol}</code></span><button type="button" aria-label={t('providers.edit')} onClick={() => openCatalogEditor('provider_instance', providerId, provider)}><Pencil size={13} /></button></header>
+                  <p title={provider.base_url}>{provider.base_url}</p>
+                  <footer><span>{t('providers.accountPool', { count: provider.accounts.length })}</span><span>{t('providers.modelCount', { count: Object.keys(provider.models).length })}</span><code>{provider.protocol}</code></footer>
+                </article>
+              ))}
+              {!loading && instances.length === 0 && <p className="provider-empty">{t('providers.noInstances')}</p>}
+            </div>
+          </section>
 
-      <section className="provider-control-section">
-        <header><span><Cloud size={15} /> {t('providers.remoteCatalog')}</span><small>{t('providers.remoteCatalogHint')}</small></header>
-        <div className="provider-remote-catalog">
-          {Object.entries(snapshot.discovered_models.reduce<Record<string, ProviderModelCatalogRecord[]>>((groups, model) => {
-            const key = `${model.provider_instance_id} / ${model.auth_account_id}`
-            ;(groups[key] ??= []).push(model)
-            return groups
-          }, {})).map(([key, models]) => (
-            <article key={key}>
-              <header><strong>{key}</strong><small>{models[0].adapter_id}@{models[0].adapter_version} · {models[0].protocol}</small><time dateTime={models[0].observed_at}>{localDate(models[0].observed_at)}</time></header>
-              <div>{models.map(model => <code key={model.physical_model}>{model.physical_model}</code>)}</div>
-            </article>
-          ))}
-          {!loading && snapshot.discovered_models.length === 0 && <p className="provider-empty">{t('providers.noRemoteCatalog')}</p>}
+          <section className="provider-control-section">
+            <header><span><Network size={15} /> {t('providers.routes')}</span></header>
+            <div className="provider-route-list">
+              {routes.map(([routeId, route]) => (
+                <article className={routeId === snapshot.selected_model_alias || route.aliases.includes(snapshot.selected_model_alias) ? 'is-selected' : ''} key={routeId}>
+                  <header>
+                    <Route size={15} />
+                    <span><strong>{routeId}</strong><small>{route.aliases.length > 0 ? t('providers.aliases', { value: route.aliases.join(', ') }) : '—'}</small></span>
+                    <div><em>{t('providers.affinity', { value: route.affinity })}</em><em>{t('providers.selection', { value: route.selection })}</em>{route.fallback && <em>{t('providers.fallback')}</em>}</div>
+                    <nav>
+                      <button type="button" disabled={Boolean(diagnosing)} onClick={() => void diagnoseRoute(routeId)}><Activity size={13} /> {t('providers.test')}</button>
+                      <button type="button" disabled={Boolean(diagnosing)} onClick={() => void refreshRouteCatalog(routeId)}><RefreshCw size={13} /> {t('providers.refreshCatalog')}</button>
+                      <button type="button" aria-label={t('providers.edit')} onClick={() => openCatalogEditor('model_route', routeId, route)}><Pencil size={13} /></button>
+                    </nav>
+                  </header>
+                  <div>{route.candidates.map((candidate, index) => (
+                    <section key={`${candidate.provider}:${candidate.model}:${candidate.account ?? ''}:${index}`}>
+                      <span>{t('providers.candidate', { index: index + 1 })}<small>{t('providers.priority', { priority: candidate.priority })}</small></span>
+                      <strong>{candidate.provider}<i>/</i>{candidate.model}</strong>
+                      <code>{candidate.account ? t('providers.pinnedAccount', { account: candidate.account }) : t('providers.anyAccount')}</code>
+                      {candidate.capabilities.length > 0 && <small>{t('providers.capabilities', { value: candidate.capabilities.join(', ') })}</small>}
+                    </section>
+                  ))}</div>
+                </article>
+              ))}
+              {!loading && routes.length === 0 && <p className="provider-empty">{t('providers.noRoutes')}</p>}
+            </div>
+          </section>
+
+          <section className="provider-control-section">
+            <header><span><Cloud size={15} /> {t('providers.remoteCatalog')}</span></header>
+            <div className="provider-remote-catalog">
+              {Object.entries(snapshot.discovered_models.reduce<Record<string, ProviderModelCatalogRecord[]>>((groups, model) => {
+                const key = `${model.provider_instance_id} / ${model.auth_account_id}`
+                ;(groups[key] ??= []).push(model)
+                return groups
+              }, {})).map(([key, models]) => (
+                <article key={key}>
+                  <header><strong>{key}</strong><small>{models[0].adapter_id}@{models[0].adapter_version} · {models[0].protocol}</small><time dateTime={models[0].observed_at}>{localDate(models[0].observed_at)}</time></header>
+                  <div>{models.map(model => <code key={model.physical_model}>{model.physical_model}</code>)}</div>
+                </article>
+              ))}
+              {!loading && snapshot.discovered_models.length === 0 && <p className="provider-empty">{t('providers.noRemoteCatalog')}</p>}
+            </div>
+          </section>
         </div>
-      </section>
+      </details>
 
       {setup && (
         <div className="provider-oauth-backdrop" role="presentation" onMouseDown={event => {
@@ -727,35 +942,124 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
               <span><Settings2 size={16} /><strong id="provider-setup-title">{t('providers.setupTitle')}</strong></span>
               <button type="button" onClick={() => setSetup(null)} aria-label={t('providers.cancel')}><X size={15} /></button>
             </header>
-            <p>{t('providers.setupHint')}</p>
+            <p>{t(setup.mode === 'oauth' ? 'providers.setupOAuthHint' : 'providers.setupApiHint')}</p>
             <nav className="provider-setup-modes">
-              <button className={setup.mode === 'oauth' ? 'is-active' : ''} type="button" onClick={() => setSetup(current => current ? { ...current, mode: 'oauth', apiKey: '' } : current)}><LogIn size={14} /> {t('providers.oauthSetup')}</button>
-              <button className={setup.mode === 'api_key' ? 'is-active' : ''} type="button" onClick={() => setSetup(current => current ? { ...current, mode: 'api_key', preset: 'custom', authAdapter: 'credential' } : current)}><KeyRound size={14} /> {t('providers.apiSetup')}</button>
+              <button className={setup.mode === 'oauth' ? 'is-active' : ''} type="button" onClick={() => switchSetupMode('oauth')}><LogIn size={14} /> {t('providers.oauthSetup')}</button>
+              <button className={setup.mode === 'api_key' ? 'is-active' : ''} type="button" onClick={() => switchSetupMode('api_key')}><KeyRound size={14} /> {t('providers.apiSetup')}</button>
             </nav>
             {setup.mode === 'oauth' && (
-              <div className="provider-setup-presets">
-                {(['codex', 'kimi'] as const).map(preset => <button className={setup.preset === preset ? 'is-active' : ''} type="button" key={preset} onClick={() => applySetupPreset(preset)}>{t(`providers.presets.${preset}`)}</button>)}
-              </div>
+              <>
+                {oauthServicesError && (
+                  <div className="provider-oauth-services-error" role="alert">
+                    <strong>{t('providers.oauthServicesUnavailable')}</strong>
+                    <span>{t('providers.oauthServicesUnavailableHint')}</span>
+                    <code>{oauthServicesError}</code>
+                  </div>
+                )}
+                {!oauthServicesError && (
+                  <div className="provider-setup-presets">
+                    {oauthSetupOptions.map(({ preset }) => (
+                      <button
+                        type="button"
+                        key={preset.id}
+                        onClick={() => void startOAuthSetup(preset)}
+                      >
+                        <span>{t(`providers.presets.${preset.id}`, { defaultValue: preset.id })}</span>
+                        <small>{t('providers.oauthAvailable')}</small>
+                      </button>
+                    ))}
+                    {!loading && oauthSetupOptions.length === 0 && (
+                      <p className="provider-oauth-services-empty">{t('providers.noOAuthServices')}</p>
+                    )}
+                  </div>
+                )}
+              </>
             )}
-            <div className="provider-setup-grid">
-              <label><span>{t('providers.providerId')}</span><input value={setup.providerId} onChange={event => setSetup(current => current ? { ...current, providerId: event.target.value } : current)} /></label>
-              <label><span>{t('providers.accountId')}</span><input value={setup.accountId} onChange={event => setSetup(current => current ? { ...current, accountId: event.target.value } : current)} /></label>
-              <label><span>{t('providers.modelAlias')}</span><input value={setup.alias} onChange={event => setSetup(current => current ? { ...current, alias: event.target.value, routeId: event.target.value } : current)} /></label>
-              <label><span>{t('providers.physicalModel')}</span><input value={setup.physicalModel} onChange={event => setSetup(current => current ? { ...current, physicalModel: event.target.value } : current)} /></label>
-              <label className="is-wide"><span>{t('providers.baseUrl')}</span><input value={setup.baseUrl} onChange={event => setSetup(current => current ? { ...current, baseUrl: event.target.value } : current)} /></label>
-              {setup.mode === 'api_key' && <label className="is-wide"><span>{t('providers.apiKeyOptional')}</span><input autoComplete="new-password" type="password" value={setup.apiKey} onChange={event => setSetup(current => current ? { ...current, apiKey: event.target.value } : current)} /></label>}
-            </div>
-            <details className="provider-setup-advanced">
+            {setup.mode === 'api_key' && <>
+              <div className="provider-setup-presets provider-api-presets">
+                {API_SETUP_PRESETS.map(preset => (
+                  <button className={setup.preset === preset.id ? 'is-active' : ''} type="button" key={preset.id} onClick={() => applySetupPreset(preset)}>
+                    <span>{t(`providers.apiPresets.${preset.id}`, { defaultValue: preset.id })}</span>
+                    <small>{t(`providers.apiPresetHints.${preset.id}`, { defaultValue: '' })}</small>
+                  </button>
+                ))}
+              </div>
+              <div className="provider-protocol-picker" role="radiogroup" aria-label={t('providers.protocol')}>
+                <span>{t('providers.protocol')}</span>
+                <div>
+                  {API_PROTOCOLS.map(option => (
+                    <button
+                      className={setup.protocol === option.id ? 'is-active' : ''}
+                      type="button"
+                      role="radio"
+                      aria-checked={setup.protocol === option.id}
+                      key={option.id}
+                      onClick={() => setSetup(current => current ? {
+                        ...current,
+                        protocol: option.id,
+                        adapter: option.adapter,
+                      } : current)}
+                    >
+                      <strong>{t(`providers.protocols.${option.id}.name`)}</strong>
+                      <small>{t(`providers.protocols.${option.id}.hint`)}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="provider-setup-grid">
+                <label><span>{t('providers.modelAlias')}</span><input value={setup.alias} onChange={event => setSetup(current => current ? { ...current, alias: event.target.value, routeId: event.target.value } : current)} /></label>
+                <label><span>{t('providers.physicalModel')}</span><input value={setup.physicalModel} onChange={event => setSetup(current => current ? { ...current, physicalModel: event.target.value } : current)} /></label>
+                <label className="is-wide"><span>{t('providers.baseUrl')}</span><input value={setup.baseUrl} onChange={event => setSetup(current => current ? { ...current, baseUrl: event.target.value } : current)} /></label>
+                <label className="is-wide"><span>{t('providers.apiKeyOptional')}</span><input autoComplete="new-password" type="password" value={setup.apiKey} onChange={event => setSetup(current => current ? { ...current, apiKey: event.target.value } : current)} /></label>
+              </div>
+            </>}
+            {setup.mode === 'api_key' && <details className="provider-setup-advanced">
               <summary>{t('providers.advanced')}</summary>
               <div className="provider-setup-grid">
-                <label><span>{t('providers.protocol')}</span><select value={setup.protocol} onChange={event => setSetup(current => current ? { ...current, protocol: event.target.value } : current)}><option value="openai-responses">openai-responses</option><option value="openai-chat">openai-chat</option><option value="anthropic-messages">anthropic-messages</option><option value="gemini-content">gemini-content</option></select></label>
+                <label><span>{t('providers.providerId')}</span><input value={setup.providerId} onChange={event => setSetup(current => current ? { ...current, providerId: event.target.value } : current)} /></label>
+                <label><span>{t('providers.accountId')}</span><input value={setup.accountId} onChange={event => setSetup(current => current ? { ...current, accountId: event.target.value } : current)} /></label>
+                <label className="is-wide"><span>{t('providers.baseUrl')}</span><input value={setup.baseUrl} onChange={event => setSetup(current => current ? { ...current, baseUrl: event.target.value } : current)} /></label>
                 <label><span>{t('providers.adapter')}</span><input value={setup.adapter} onChange={event => setSetup(current => current ? { ...current, adapter: event.target.value } : current)} /></label>
               </div>
-            </details>
-            <p className="provider-setup-restart">{t('providers.setupRestart')}</p>
+            </details>}
+            {setup.mode === 'api_key' && <p className="provider-setup-restart">{t('providers.setupRestart')}</p>}
             <footer>
               <button type="button" onClick={() => setSetup(null)}>{t('providers.cancel')}</button>
-              <button className="is-primary" type="button" disabled={savingSetup} onClick={() => void saveProviderSetup()}><Save size={13} /> {savingSetup ? t('providers.busy') : t('providers.saveRestart')}</button>
+              {setup.mode === 'api_key' && <button className="is-primary" type="button" disabled={savingSetup} onClick={() => void saveProviderSetup()}>
+                <Save size={13} />
+                {savingSetup ? t('providers.busy') : t('providers.saveRestart')}
+              </button>}
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {oauthConnection && (
+        <div className="provider-oauth-backdrop" role="presentation">
+          <section className="provider-oauth-dialog provider-oauth-progress" role="dialog" aria-modal="true" aria-labelledby="provider-oauth-progress-title">
+            <header>
+              <span>
+                {oauthConnection.stage === 'connecting'
+                  ? <RefreshCw className="is-spinning" size={16} />
+                  : <CircleOff size={16} />}
+                <strong id="provider-oauth-progress-title">
+                  {oauthConnection.stage === 'connecting'
+                    ? t('providers.oauthConnecting', { service: oauthConnection.label })
+                    : t('providers.oauthStartFailed', { service: oauthConnection.label })}
+                </strong>
+              </span>
+              <button type="button" onClick={() => setOAuthConnection(null)} aria-label={t('providers.cancel')}><X size={15} /></button>
+            </header>
+            {oauthConnection.stage === 'connecting'
+              ? <p>{t('providers.oauthConnectingHint')}</p>
+              : <p className="provider-oauth-inline-error">{oauthConnection.error || t('providers.oauthUnknownError')}</p>}
+            <footer>
+              <button type="button" onClick={() => setOAuthConnection(null)}>{t('providers.cancel')}</button>
+              {oauthConnection.stage === 'failed' && (
+                <button className="is-primary" type="button" onClick={retryOAuthConnection}>
+                  <RefreshCw size={13} /> {t('providers.retryLogin')}
+                </button>
+              )}
             </footer>
           </section>
         </div>
@@ -763,12 +1067,15 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
 
       {challenge && (
         <div className="provider-oauth-backdrop" role="presentation" onMouseDown={event => {
-          if (event.currentTarget === event.target) setChallenge(null)
+          if (event.currentTarget === event.target) {
+            setChallenge(null)
+            setChallengeError('')
+          }
         }}>
           <section className="provider-oauth-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-oauth-title">
             <header>
-              <span><KeyRound size={16} /><strong id="provider-oauth-title">{t('providers.oauthTitle', { account: challenge.account_id })}</strong></span>
-              <button type="button" onClick={() => setChallenge(null)} aria-label={t('providers.cancel')}><X size={15} /></button>
+              <span><KeyRound size={16} /><strong id="provider-oauth-title">{t('providers.oauthTitle', { account: challengeLabel })}</strong></span>
+              <button type="button" onClick={() => { setChallenge(null); setChallengeError('') }} aria-label={t('providers.cancel')}><X size={15} /></button>
             </header>
             <p>{challenge.flow === 'device_code' ? t('providers.deviceHint') : t('providers.pkceHint')}</p>
             {challenge.user_code && <div className="provider-device-code"><small>{t('providers.userCode')}</small><strong>{challenge.user_code}</strong></div>}
@@ -778,15 +1085,23 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
               </a>
             )}
             {challenge.flow === 'authorization_code_pkce' && (
-              <div className="provider-oauth-fields">
-                <label><span>{t('providers.authorizationCode')}</span><input value={authorizationCode} onChange={event => setAuthorizationCode(event.target.value)} autoFocus /></label>
-                <label><span>{t('providers.authorizationState')}</span><input value={authorizationState} onChange={event => setAuthorizationState(event.target.value)} /></label>
-              </div>
+              <label className="provider-oauth-callback">
+                <span>{t('providers.authorizationResponse')}</span>
+                <textarea
+                  value={authorizationResponse}
+                  onChange={event => setAuthorizationResponse(event.target.value)}
+                  placeholder={t('providers.authorizationResponsePlaceholder')}
+                  spellCheck={false}
+                />
+              </label>
             )}
+            {challengeError && <p className="provider-oauth-inline-error">{challengeError}</p>}
             <footer>
-              <button type="button" onClick={() => setChallenge(null)}>{t('providers.cancel')}</button>
-              <button className="is-primary" type="button" disabled={busyAccount === challenge.account_id || (challenge.flow === 'authorization_code_pkce' && (!authorizationCode.trim() || !authorizationState.trim()))} onClick={() => void continueLogin()}>
-                <Link2 size={13} /> {challenge.flow === 'device_code' ? t('providers.pollLogin') : t('providers.completeLogin')}
+              <button type="button" onClick={() => { setChallenge(null); setChallengeError('') }}>{t('providers.cancel')}</button>
+              <button className="is-primary" type="button" disabled={busyAccount === challenge.account_id} onClick={() => void continueLogin()}>
+                <Link2 size={13} /> {challenge.flow === 'authorization_code_pkce' && authorizationResponse.trim()
+                  ? t('providers.completeLogin')
+                  : t('providers.pollLogin')}
               </button>
             </footer>
           </section>

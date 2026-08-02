@@ -123,7 +123,10 @@ export function CredentialsPage({ api }: CredentialsPageProps) {
   }, [api])
 
   useEffect(() => {
-    void refresh()
+    const timer = window.setTimeout(() => {
+      void refresh()
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [refresh])
 
   const availableImportCandidates = useMemo(
@@ -159,22 +162,28 @@ export function CredentialsPage({ api }: CredentialsPageProps) {
   }, [scopeKind, scopeOptions, t])
 
   useEffect(() => {
-    if (scopeKind === 'runtime') {
-      setScopeId('')
-      return
-    }
-    if (!selectedScopeOptions.some(item => item.id === scopeId)) {
-      setScopeId(selectedScopeOptions[0]?.id ?? '')
-    }
+    const timer = window.setTimeout(() => {
+      if (scopeKind === 'runtime') {
+        setScopeId('')
+        return
+      }
+      if (!selectedScopeOptions.some(item => item.id === scopeId)) {
+        setScopeId(selectedScopeOptions[0]?.id ?? '')
+      }
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [scopeId, scopeKind, selectedScopeOptions])
 
   useEffect(() => {
     if (mode !== 'import') return
-    const selected = availableImportCandidates.find(candidate => candidate.name === name)
-      ?? availableImportCandidates[0]
-    setName(selected?.name ?? '')
-    if (selected) setBackend(selected.value_backend)
-    setValue('')
+    const timer = window.setTimeout(() => {
+      const selected = availableImportCandidates.find(candidate => candidate.name === name)
+        ?? availableImportCandidates[0]
+      setName(selected?.name ?? '')
+      if (selected) setBackend(selected.value_backend)
+      setValue('')
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [availableImportCandidates, mode, name])
 
   const submit = async () => {

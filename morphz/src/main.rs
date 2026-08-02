@@ -720,9 +720,11 @@ fn build_client(
         {
             tracing::warn!(
                 error = %error,
-                "尚未配置模型服务；Runtime 以离线控制面启动，请在 Dashboard 完成模型设置后重启"
+                "尚未配置模型服务；Runtime 以可配置控制面启动，可在 Dashboard 直接添加模型服务"
             );
-            return Ok(Arc::new(OfflineClient));
+            return Ok(Arc::new(morphz::provider::routing::RoutedClient::empty(
+                app_config.llm.clone(),
+            )));
         }
         Err(error) => return Err(error),
     };

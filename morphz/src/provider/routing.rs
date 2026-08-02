@@ -34,16 +34,28 @@ pub struct EffectiveProviderCatalog {
 }
 
 impl EffectiveProviderCatalog {
+    pub fn empty() -> Self {
+        Self {
+            provider_instances: BTreeMap::new(),
+            auth_accounts: BTreeMap::new(),
+            credentials: BTreeMap::new(),
+            model_routes: BTreeMap::new(),
+            aliases: BTreeMap::new(),
+        }
+    }
+
     pub fn from_config(app: &AppConfig) -> Result<Self, String> {
         let mut provider_instances = app.provider_instances.clone();
         let mut auth_accounts = app.auth_accounts.clone();
         let mut model_routes = app.model_routes.clone();
 
-        // One-time input normalization for deployments created before the
-        // routed model existed. The generated objects are authoritative for
-        // the rest of this process; callers never fall back per request.
-        if provider_instances.is_empty() {
-            for (provider_id, provider) in &app.providers {
+        // Normalize deployments created before the routed model existed.
+        // Legacy and routed entries may coexist while the operator composes a
+        // new catalog through the control plane, so normalize every missing
+        // legacy provider instead of doing so only while the routed map is
+        // completely empty. Explicit routed entries remain authoritative.
+        for (provider_id, provider) in &app.providers {
+            if !provider_instances.contains_key(provider_id) {
                 let account_id = format!("{provider_id}-default");
                 let accounts = if let Some(credential_ref) = &provider.credential {
                     auth_accounts
@@ -210,6 +222,7 @@ fn validate_provider_adapter_protocol(
     let expected = match provider.adapter.as_str() {
         "openai-codex" => Some(ModelProtocol::OpenaiResponses),
         "kimi-code" => Some(ModelProtocol::OpenaiChat),
+        "xai-subscription" => Some(ModelProtocol::OpenaiResponses),
         _ => None,
     };
     if let Some(expected) = expected {
@@ -287,7 +300,7 @@ struct RoutingState {
 }
 
 pub struct RoutedClient {
-    catalog: EffectiveProviderCatalog,
+    catalog: RwLock<EffectiveProviderCatalog>,
     llm: RwLock<LlmConfig>,
     selected_alias: RwLock<String>,
     state: Arc<Mutex<RoutingState>>,
@@ -297,11 +310,27 @@ pub struct RoutedClient {
 }
 
 impl RoutedClient {
+    /// Creates an unconfigured routed client for first-run Dashboard setup.
+    /// It cannot evaluate until a catalog is installed, but it retains the
+    /// same hot-reload surface as a configured Runtime so the first OAuth/API
+    /// account can become usable without replacing the process-local client.
+    pub fn empty(llm: LlmConfig) -> Self {
+        Self {
+            catalog: RwLock::new(EffectiveProviderCatalog::empty()),
+            llm: RwLock::new(llm),
+            selected_alias: RwLock::new(String::new()),
+            state: Arc::new(Mutex::new(RoutingState::default())),
+            account_store: RwLock::new(None),
+            auth_manager: RwLock::new(None),
+            clients: Mutex::new(HashMap::new()),
+        }
+    }
+
     pub fn new(app: &AppConfig, selected_alias: String) -> Result<Self, ProviderError> {
         let catalog = EffectiveProviderCatalog::from_config(app)?;
         catalog.resolve_route(&selected_alias)?;
         Ok(Self {
-            catalog,
+            catalog: RwLock::new(catalog),
             llm: RwLock::new(app.llm.clone()),
             selected_alias: RwLock::new(selected_alias),
             state: Arc::new(Mutex::new(RoutingState::default())),
@@ -320,11 +349,11 @@ impl RoutedClient {
             required_capabilities: Vec::new(),
         };
         let alias = self.alias()?;
-        let (route_id, route) = self.catalog.resolve_route(&alias)?;
+        let catalog = self.catalog()?;
+        let (route_id, route) = catalog.resolve_route(&alias)?;
         let (candidate, account_id) =
-            self.select_candidate_and_account_local(route_id, route, &request)?;
-        let provider = self
-            .catalog
+            self.select_candidate_and_account_local(&catalog, route_id, route, &request)?;
+        let provider = catalog
             .provider_instances
             .get(&candidate.provider)
             .expect("validated route provider");
@@ -345,14 +374,14 @@ impl RoutedClient {
 
     fn binding_from_selection(
         &self,
+        catalog: &EffectiveProviderCatalog,
         alias: &str,
         route_id: &str,
         route: &ModelRouteConfig,
         candidate: ModelRouteCandidateConfig,
         account_id: String,
     ) -> ModelAttemptBinding {
-        let provider = self
-            .catalog
+        let provider = catalog
             .provider_instances
             .get(&candidate.provider)
             .expect("validated route provider");
@@ -376,10 +405,10 @@ impl RoutedClient {
         alias: &str,
         account_id: Option<&str>,
     ) -> Result<ModelAttemptBinding, String> {
-        let (route_id, route) = self.catalog.resolve_route(alias)?;
+        let catalog = self.catalog()?;
+        let (route_id, route) = catalog.resolve_route(alias)?;
         let candidate_and_account = if let Some(account_id) = account_id {
-            let account = self
-                .catalog
+            let account = catalog
                 .auth_accounts
                 .get(account_id)
                 .ok_or_else(|| format!("Auth Account '{account_id}' 不存在"))?;
@@ -388,7 +417,7 @@ impl RoutedClient {
             let candidate = candidates
                 .into_iter()
                 .find(|candidate| {
-                    self.candidate_accounts(candidate)
+                    Self::candidate_accounts(&catalog, candidate)
                         .is_ok_and(|accounts| accounts.contains(&account_id))
                 })
                 .ok_or_else(|| {
@@ -409,6 +438,7 @@ impl RoutedClient {
             (candidate, account_id.to_string())
         } else {
             self.select_candidate_and_account(
+                &catalog,
                 route_id,
                 route,
                 &ModelRequestContext {
@@ -422,6 +452,7 @@ impl RoutedClient {
             .await?
         };
         Ok(self.binding_from_selection(
+            &catalog,
             alias,
             route_id,
             route,
@@ -437,12 +468,18 @@ impl RoutedClient {
             .map_err(|_| "Model Route 选择锁已损坏".to_string())
     }
 
+    fn catalog(&self) -> Result<EffectiveProviderCatalog, String> {
+        self.catalog
+            .read()
+            .map(|catalog| catalog.clone())
+            .map_err(|_| "Provider 路由表锁已损坏".to_string())
+    }
+
     fn candidate_accounts<'a>(
-        &'a self,
+        catalog: &'a EffectiveProviderCatalog,
         candidate: &'a ModelRouteCandidateConfig,
     ) -> Result<Vec<&'a str>, String> {
-        let provider = self
-            .catalog
+        let provider = catalog
             .provider_instances
             .get(&candidate.provider)
             .ok_or_else(|| format!("Provider Instance '{}' 不存在", candidate.provider))?;
@@ -453,7 +490,7 @@ impl RoutedClient {
             .unwrap_or_else(|| provider.accounts.iter().map(String::as_str).collect());
         let mut accounts = Vec::new();
         for id in ids {
-            self.catalog
+            catalog
                 .auth_accounts
                 .get(id)
                 .ok_or_else(|| format!("Auth Account '{id}' 不存在"))?;
@@ -481,6 +518,7 @@ impl RoutedClient {
 
     fn select_candidate_and_account_local(
         &self,
+        catalog: &EffectiveProviderCatalog,
         route_id: &str,
         route: &ModelRouteConfig,
         request: &ModelRequestContext,
@@ -511,10 +549,7 @@ impl RoutedClient {
             .cloned()
         {
             for candidate in &candidates {
-                if self
-                    .candidate_accounts(candidate)?
-                    .contains(&account_id.as_str())
-                {
+                if Self::candidate_accounts(catalog, candidate)?.contains(&account_id.as_str()) {
                     return Ok((candidate.clone(), account_id));
                 }
             }
@@ -522,9 +557,8 @@ impl RoutedClient {
 
         let mut choices = Vec::new();
         for candidate in candidates {
-            for account_id in self.candidate_accounts(&candidate)? {
-                if !self
-                    .catalog
+            for account_id in Self::candidate_accounts(catalog, &candidate)? {
+                if !catalog
                     .auth_accounts
                     .get(account_id)
                     .is_some_and(AuthAccountConfig::enabled)
@@ -588,12 +622,13 @@ impl RoutedClient {
 
     async fn select_candidate_and_account(
         &self,
+        catalog: &EffectiveProviderCatalog,
         route_id: &str,
         route: &ModelRouteConfig,
         request: &ModelRequestContext,
     ) -> Result<(ModelRouteCandidateConfig, String), String> {
         let Some(store) = self.account_store() else {
-            return self.select_candidate_and_account_local(route_id, route, request);
+            return self.select_candidate_and_account_local(catalog, route_id, route, request);
         };
         let mut candidates = route.candidates.clone();
         candidates.sort_by_key(|candidate| candidate.priority);
@@ -622,13 +657,11 @@ impl RoutedClient {
                 .map_err(|error| format!("读取 Model Route 亲和失败: {error}"))?
             {
                 for candidate in &candidates {
-                    let default_enabled = self
-                        .catalog
+                    let default_enabled = catalog
                         .auth_accounts
                         .get(&affinity.account_id)
                         .is_some_and(AuthAccountConfig::enabled);
-                    if self
-                        .candidate_accounts(candidate)?
+                    if Self::candidate_accounts(catalog, candidate)?
                         .contains(&affinity.account_id.as_str())
                         && Self::account_is_selectable(
                             store.as_ref(),
@@ -662,9 +695,8 @@ impl RoutedClient {
             .clone();
         let mut choices = Vec::new();
         for candidate in candidates {
-            for account_id in self.candidate_accounts(&candidate)? {
-                let default_enabled = self
-                    .catalog
+            for account_id in Self::candidate_accounts(catalog, &candidate)? {
+                let default_enabled = catalog
                     .auth_accounts
                     .get(account_id)
                     .is_some_and(AuthAccountConfig::enabled);
@@ -766,8 +798,8 @@ impl RoutedClient {
         &self,
         binding: &ModelAttemptBinding,
     ) -> Result<Arc<ProtocolClient>, ProviderError> {
-        let account = self
-            .catalog
+        let catalog = self.catalog()?;
+        let account = catalog
             .auth_accounts
             .get(&binding.auth_account_id)
             .ok_or_else(|| {
@@ -792,8 +824,7 @@ impl RoutedClient {
                 return Ok(client);
             }
         }
-        let provider = self
-            .catalog
+        let provider = catalog
             .provider_instances
             .get(&binding.provider_instance_id)
             .ok_or_else(|| {
@@ -806,8 +837,7 @@ impl RoutedClient {
         let credential = match account.auth_adapter.as_str() {
             "none" => None,
             "credential" | "api-key" | "env" | "keychain" | "command" => {
-                let config = self
-                    .catalog
+                let config = catalog
                     .credentials
                     .get(&account.credential_ref)
                     .ok_or_else(|| {
@@ -828,8 +858,12 @@ impl RoutedClient {
                 let authorization = manager
                     .materialize_authorization(&binding.auth_account_id)
                     .await?;
+                let supplies_authorization_header = authorization
+                    .headers
+                    .keys()
+                    .any(|name| name.eq_ignore_ascii_case("authorization"));
                 headers.extend(authorization.headers);
-                Some(authorization.bearer_token)
+                (!supplies_authorization_header).then_some(authorization.bearer_token)
             }
             adapter => {
                 return Err(format!("Auth Adapter '{adapter}' 尚未注册").into());
@@ -844,8 +878,9 @@ impl RoutedClient {
             env_headers: provider.env_headers.clone(),
         };
         let llm = self.llm.read().map_err(|_| "LLM 配置锁已损坏")?.clone();
-        let client = Arc::new(ProtocolClient::new(
+        let client = Arc::new(ProtocolClient::new_with_adapter(
             &physical,
+            &provider.adapter,
             binding.physical_model.clone(),
             credential,
             &llm,
@@ -901,6 +936,42 @@ impl Drop for AccountLease {
 
 #[async_trait::async_trait]
 impl Client for RoutedClient {
+    fn replace_provider_catalog(&self, config: &AppConfig) -> Result<(), String> {
+        let catalog = EffectiveProviderCatalog::from_config(config)?;
+        let selected = self.alias()?;
+        if catalog.resolve_route(&selected).is_err() {
+            let fallback = if !config.llm.model.trim().is_empty()
+                && catalog.resolve_route(config.llm.model.trim()).is_ok()
+            {
+                config.llm.model.trim()
+            } else {
+                catalog
+                    .model_routes
+                    .keys()
+                    .next()
+                    .map(String::as_str)
+                    .ok_or("更新后的 Provider 路由表不包含任何模型别名")?
+            };
+            catalog.resolve_route(fallback)?;
+            *self
+                .selected_alias
+                .write()
+                .map_err(|_| "Model Route 选择锁已损坏".to_string())? = fallback.to_string();
+        }
+        *self
+            .catalog
+            .write()
+            .map_err(|_| "Provider 路由表锁已损坏".to_string())? = catalog;
+        self.clients
+            .lock()
+            .map_err(|_| "Provider Client 缓存锁已损坏".to_string())?
+            .clear();
+        if let Ok(mut state) = self.state.lock() {
+            state.affinity.clear();
+        }
+        Ok(())
+    }
+
     fn attach_provider_auth_manager(&self, manager: Arc<ProviderAuthManager>) {
         if let Ok(mut target) = self.auth_manager.write() {
             *target = Some(manager);
@@ -927,7 +998,7 @@ impl Client for RoutedClient {
 
     fn set_model(&self, model: &str) -> Result<(), String> {
         let model = model.trim();
-        self.catalog.resolve_route(model)?;
+        self.catalog()?.resolve_route(model)?;
         *self
             .selected_alias
             .write()
@@ -956,12 +1027,12 @@ impl Client for RoutedClient {
         request: &ModelRequestContext,
     ) -> Result<ModelAttemptBinding, String> {
         let alias = self.alias()?;
-        let (route_id, route) = self.catalog.resolve_route(&alias)?;
+        let catalog = self.catalog()?;
+        let (route_id, route) = catalog.resolve_route(&alias)?;
         let (candidate, account_id) = self
-            .select_candidate_and_account(route_id, route, request)
+            .select_candidate_and_account(&catalog, route_id, route, request)
             .await?;
-        let provider = self
-            .catalog
+        let provider = catalog
             .provider_instances
             .get(&candidate.provider)
             .expect("validated route provider");
@@ -1189,6 +1260,90 @@ mod tests {
         assert_eq!(first.route_id, "coding-primary");
         assert_eq!(first.physical_model, "gpt-5.6-sol");
         assert_eq!(first.auth_account_id, second.auth_account_id);
+    }
+
+    #[tokio::test]
+    async fn hot_catalog_replacement_routes_new_oauth_account_without_restart() {
+        let initial = routed_config();
+        let client = RoutedClient::new(&initial, "gpt-5.6".to_string()).unwrap();
+
+        let mut updated = initial;
+        updated.provider_instances.insert(
+            "oauth-provider".to_string(),
+            ProviderInstanceConfig {
+                adapter: "oauth-test".to_string(),
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: "https://api.example.test/v1".to_string(),
+                accounts: vec!["oauth-account".to_string()],
+                models: BTreeMap::new(),
+                ..ProviderInstanceConfig::default()
+            },
+        );
+        updated.auth_accounts.insert(
+            "oauth-account".to_string(),
+            AuthAccountConfig {
+                auth_adapter: "web-test-oauth".to_string(),
+                credential_ref: "MORPHZ_OAUTH_TEST_TOKEN".to_string(),
+                provider: Some("oauth-provider".to_string()),
+                ..AuthAccountConfig::default()
+            },
+        );
+        updated.model_routes.insert(
+            "oauth-model".to_string(),
+            ModelRouteConfig {
+                aliases: vec!["oauth/model".to_string()],
+                candidates: vec![ModelRouteCandidateConfig {
+                    provider: "oauth-provider".to_string(),
+                    account: Some("oauth-account".to_string()),
+                    model: "physical-oauth-model".to_string(),
+                    ..ModelRouteCandidateConfig::default()
+                }],
+                ..ModelRouteConfig::default()
+            },
+        );
+        updated.llm.model = "oauth/model".to_string();
+
+        client.replace_provider_catalog(&updated).unwrap();
+        client.set_model("oauth/model").unwrap();
+        let binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "context-hot-oauth".to_string(),
+                session_id: "session-hot-oauth".to_string(),
+                attempt_id: "attempt-hot-oauth".to_string(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(binding.provider_instance_id, "oauth-provider");
+        assert_eq!(binding.auth_account_id, "oauth-account");
+        assert_eq!(binding.physical_model, "physical-oauth-model");
+        assert_eq!(binding.endpoint, "https://api.example.test/v1");
+    }
+
+    #[tokio::test]
+    async fn empty_first_run_client_accepts_its_first_provider_without_restart() {
+        let client = RoutedClient::empty(LlmConfig::default());
+        let mut configured = routed_config();
+        configured.llm.model = "gpt-5.6".to_string();
+
+        client.replace_provider_catalog(&configured).unwrap();
+        let binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "context-first-run".to_string(),
+                session_id: "session-first-run".to_string(),
+                attempt_id: "attempt-first-run".to_string(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(client.model().as_deref(), Some("gpt-5.6"));
+        assert_eq!(binding.route_id, "coding-primary");
+        assert_eq!(binding.provider_instance_id, "direct");
+        assert_eq!(binding.physical_model, "gpt-5.6-sol");
     }
 
     #[tokio::test]

@@ -50,9 +50,14 @@ pub fn build_configured_client(
     provider_override: Option<&str>,
     model_override: Option<&str>,
 ) -> Result<ConfiguredClient, ProviderError> {
-    if provider_override.is_none()
-        && (!app.provider_instances.is_empty() || !app.model_routes.is_empty())
-    {
+    // Normal Runtime startup always uses the routed client, including legacy
+    // `providers + llm` configurations. `EffectiveProviderCatalog` already
+    // normalizes that compatibility input into Provider/Account/Route objects;
+    // keeping a direct `ProtocolClient` here made first-run OAuth setup unable
+    // to hot-apply the newly created route until the process restarted.
+    // Explicit provider overrides remain direct because they are used by
+    // one-shot operator probes and intentionally bypass the active route.
+    if provider_override.is_none() {
         let alias = model_override.unwrap_or(&app.llm.model).trim().to_string();
         if alias.is_empty() {
             return Err("模型别名不能为空".into());
@@ -205,6 +210,7 @@ pub fn delete_keychain_credential(service: &str, account: &str) -> Result<(), Pr
 pub(crate) struct ProtocolClient {
     http: reqwest::Client,
     protocol: ModelProtocol,
+    adapter: String,
     base_url: String,
     model: RwLock<String>,
     credential: Option<String>,
@@ -318,6 +324,16 @@ impl ProtocolClient {
         credential: Option<String>,
         llm: &LlmConfig,
     ) -> Result<Self, ProviderError> {
+        Self::new_with_adapter(provider, "", model, credential, llm)
+    }
+
+    pub(crate) fn new_with_adapter(
+        provider: &ProviderConfig,
+        adapter: &str,
+        model: String,
+        credential: Option<String>,
+        llm: &LlmConfig,
+    ) -> Result<Self, ProviderError> {
         let mut headers = HeaderMap::new();
         for (name, value) in &provider.headers {
             headers.insert(
@@ -333,13 +349,20 @@ impl ProtocolClient {
                 HeaderValue::from_str(&value)?,
             );
         }
-        let http = reqwest::Client::builder()
+        let mut http_builder = reqwest::Client::builder()
             .no_proxy()
-            .connect_timeout(Duration::from_secs(llm.connect_timeout_secs.max(1)))
-            .build()?;
+            .connect_timeout(Duration::from_secs(llm.connect_timeout_secs.max(1)));
+        // Antigravity rejects or intermittently stalls HTTP/2 requests. This
+        // is a physical-provider compatibility requirement, not a Gemini
+        // protocol rule, so it is scoped to the adapter.
+        if adapter == "google-antigravity" {
+            http_builder = http_builder.http1_only();
+        }
+        let http = http_builder.build()?;
         Ok(Self {
             http,
             protocol: provider.protocol,
+            adapter: adapter.to_string(),
             base_url: provider.base_url.trim_end_matches('/').to_string(),
             model: RwLock::new(model),
             credential,
@@ -362,6 +385,18 @@ impl ProtocolClient {
     }
 
     fn endpoint_for(&self, streaming: bool, model: &str) -> Result<String, ProviderError> {
+        if self.adapter == "google-antigravity" {
+            let root = self
+                .base_url
+                .trim_end_matches('/')
+                .trim_end_matches("/v1internal");
+            let method = if streaming {
+                "streamGenerateContent?alt=sse"
+            } else {
+                "generateContent"
+            };
+            return Ok(format!("{root}/v1internal:{method}"));
+        }
         let endpoint = match self.protocol {
             ModelProtocol::OpenaiResponses => format!("{}/responses", self.base_url),
             ModelProtocol::OpenaiChat => format!("{}/chat/completions", self.base_url),
@@ -392,7 +427,7 @@ impl ProtocolClient {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Value {
-        build_request(
+        let request = build_request(
             self.protocol,
             model,
             self.max_output_tokens,
@@ -402,7 +437,50 @@ impl ProtocolClient {
                 .unwrap_or(None),
             messages,
             tools,
-        )
+        );
+        self.adapt_request(model, request)
+    }
+
+    fn adapt_request(&self, model: &str, request: Value) -> Value {
+        if self.adapter != "google-antigravity" {
+            return request;
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        request.to_string().hash(&mut hasher);
+        let session_id = format!("-{}", hasher.finish() & i64::MAX as u64);
+        let request_nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let mut nested = request;
+        if let Some(object) = nested.as_object_mut() {
+            object.remove("safetySettings");
+            object.insert("sessionId".to_string(), json!(session_id));
+        }
+        let mut envelope = json!({
+            "model": model,
+            "userAgent": "antigravity",
+            "requestType": "agent",
+            "requestId": format!("agent-{request_nonce:x}"),
+            "request": nested,
+        });
+        if let Some(project) = self
+            .headers
+            .get("x-goog-user-project")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty())
+        {
+            envelope["project"] = json!(project);
+        }
+        envelope
+    }
+
+    fn normalize_response(&self, event: Value) -> Value {
+        if self.adapter == "google-antigravity" {
+            event.get("response").cloned().unwrap_or(event)
+        } else {
+            event
+        }
     }
 
     fn authorize(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -658,7 +736,7 @@ impl ProtocolClient {
                     let event: Value = serde_json::from_str(&data).map_err(|error| {
                         format!("{} SSE 事件不是合法 JSON: {error}", self.protocol.as_str())
                     })?;
-                    accumulator.apply(self.protocol, event, stream)?;
+                    accumulator.apply(self.protocol, self.normalize_response(event), stream)?;
                 }
             }
         }
@@ -666,7 +744,7 @@ impl ProtocolClient {
             if let Some(data) = sse_data(&pending)? {
                 if data != "[DONE]" {
                     let event: Value = serde_json::from_str(&data)?;
-                    accumulator.apply(self.protocol, event, stream)?;
+                    accumulator.apply(self.protocol, self.normalize_response(event), stream)?;
                 }
             }
         }
@@ -974,7 +1052,7 @@ impl Client for ProtocolClient {
         let model = self.model_snapshot();
         let request = self.request_for_model(&model, &messages, &tools);
         let response = self.send(&model, &request).await?;
-        parse_response(self.protocol, response)
+        parse_response(self.protocol, self.normalize_response(response))
     }
 
     async fn create_completion_measured_stream(
@@ -1017,7 +1095,10 @@ impl Client for ProtocolClient {
         // This request is intentionally independent from every Activation and
         // never carries Context, tools, configured long reasoning, or the
         // application's output budget.
-        let body = build_request(self.protocol, &model, Some(64), None, &messages, &[]);
+        let body = self.adapt_request(
+            &model,
+            build_request(self.protocol, &model, Some(64), None, &messages, &[]),
+        );
         let endpoint = self.endpoint_for(false, &model)?;
         let response = tokio::time::timeout(
             HEALTH_PROBE_TIMEOUT,
@@ -1054,7 +1135,7 @@ impl Client for ProtocolClient {
         // reasoning-only item. For circuit health, a schema-valid successful
         // response is sufficient; instruction following is not what this
         // probe measures.
-        let _ = parse_response(self.protocol, value)?;
+        let _ = parse_response(self.protocol, self.normalize_response(value))?;
         Ok(())
     }
 }
@@ -2446,6 +2527,86 @@ mod tests {
                 tool_calls: None,
             },
         ]
+    }
+
+    #[test]
+    fn antigravity_uses_internal_endpoints_and_request_envelope() {
+        let client = ProtocolClient::new_with_adapter(
+            &ProviderConfig {
+                protocol: ModelProtocol::GeminiContent,
+                base_url: "https://cloudcode-pa.googleapis.com".to_string(),
+                headers: BTreeMap::from([(
+                    "x-goog-user-project".to_string(),
+                    "project-123".to_string(),
+                )]),
+                ..ProviderConfig::default()
+            },
+            "google-antigravity",
+            "gemini-test".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            client.endpoint_for(false, "gemini-test").unwrap(),
+            "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
+        );
+        assert_eq!(
+            client.endpoint_for(true, "gemini-test").unwrap(),
+            "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+        );
+
+        let request = client.request_for_model("gemini-test", &messages(), &[]);
+        assert_eq!(request["model"], "gemini-test");
+        assert_eq!(request["userAgent"], "antigravity");
+        assert_eq!(request["requestType"], "agent");
+        assert_eq!(request["project"], "project-123");
+        assert!(request["request"]["contents"].is_array());
+        assert!(request["request"]["sessionId"]
+            .as_str()
+            .is_some_and(|value| value.starts_with('-')));
+        assert!(request["requestId"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("agent-")));
+    }
+
+    #[test]
+    fn antigravity_unwraps_internal_response_without_changing_generic_gemini() {
+        let provider = ProviderConfig {
+            protocol: ModelProtocol::GeminiContent,
+            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            ..ProviderConfig::default()
+        };
+        let antigravity = ProtocolClient::new_with_adapter(
+            &provider,
+            "google-antigravity",
+            "gemini-test".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+        let generic = ProtocolClient::new(
+            &provider,
+            "gemini-test".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+        let wrapped = json!({"response": {"candidates": [{"finishReason": "STOP"}]}});
+
+        assert_eq!(
+            antigravity.normalize_response(wrapped.clone()),
+            wrapped["response"]
+        );
+        assert_eq!(generic.normalize_response(wrapped.clone()), wrapped);
+        assert_eq!(
+            generic.endpoint_for(true, "gemini-test").unwrap(),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:streamGenerateContent?alt=sse"
+        );
+        let generic_request = generic.request_for_model("gemini-test", &messages(), &[]);
+        assert!(generic_request.get("request").is_none());
+        assert!(generic_request["contents"].is_array());
     }
 
     #[test]

@@ -63,9 +63,8 @@ pub struct ProviderCatalogMutationReceipt {
     pub kind: ProviderCatalogObjectKind,
     pub id: String,
     pub managed_config_path: String,
-    /// Static catalog edits deliberately do not mutate an in-flight Runtime.
-    /// New Runtime processes and subsequent configuration resolution observe
-    /// the persisted value.
+    /// Whether applying this edit still requires restarting the Runtime.
+    /// Provider catalog mutations are hot-applied, so this is normally false.
     pub restart_required: bool,
 }
 
@@ -75,7 +74,7 @@ impl ProviderCatalogMutationReceipt {
             kind,
             id: id.to_string(),
             managed_config_path: path.display().to_string(),
-            restart_required: true,
+            restart_required: false,
         }
     }
 }

@@ -193,26 +193,26 @@ function SessionCard({
           <time dateTime={item.session.last_activity_at}>{ago(item.session.last_activity_at, language)}</time>
         </header>
         <div className="runtime-overview-session-title">
-          <MessageSquare size={15} />
+          <MessageSquare size={12} />
           <strong>{item.session.title}</strong>
-          <ChevronRight size={14} />
+          <ChevronRight size={11} />
         </div>
         {principal && (
           <p className="runtime-overview-principal" title={item.principal_ids.join(', ')}>
-            <UserRound size={12} />
+            <UserRound size={10} />
             <span>{principal}</span>
             {item.principal_ids.length > 1 && <em>+{item.principal_ids.length - 1}</em>}
           </p>
         )}
         {item.current_objective && (
           <p className="runtime-overview-current objective" title={item.current_objective.stated_objective}>
-            <Layers3 size={12} />
+            <Layers3 size={10} />
             <span>{item.current_objective.stated_objective}</span>
           </p>
         )}
         {item.current_thread && (
           <p className="runtime-overview-current thread" title={item.current_thread.id}>
-            <GitBranch size={12} />
+            <GitBranch size={10} />
             <span>{t(`runtimeOverview.threadKinds.${item.current_thread.kind}`, { defaultValue: item.current_thread.kind })}</span>
             <code>{item.current_thread.id.slice(-12)}</code>
           </p>
@@ -238,6 +238,7 @@ function ContextGroup({
   onOpenContext,
   onOpenSession,
   onExpandSessions,
+  revealChildren = false,
 }: {
   item: RuntimeOverviewContext
   children: RuntimeOverviewContext[]
@@ -247,10 +248,13 @@ function ContextGroup({
   onOpenContext: (contextId: string) => void
   onOpenSession: (contextId: string, sessionId: string) => void
   onExpandSessions: (contextId: string) => Promise<void>
+  revealChildren?: boolean
 }) {
   const { t } = useTranslation()
   const expanded = !collapsed.has(item.context.id)
   const [expandingSessions, setExpandingSessions] = useState(false)
+  const [childrenExpanded, setChildrenExpanded] = useState(false)
+  const showChildren = revealChildren || childrenExpanded
   return (
     <section className={`runtime-overview-context ${item.delegation ? 'is-delegation' : ''}`}>
       <header className="runtime-overview-context-header">
@@ -308,20 +312,34 @@ function ContextGroup({
           )}
           {children.length > 0 && (
             <div className="runtime-overview-delegations">
-              <header><Network size={13} /><span>{t('runtimeOverview.delegations', { count: children.length })}</span></header>
-              {children.map(child => (
-                <ContextGroup
-                  key={child.context.id}
-                  item={child}
-                  children={[]}
-                  collapsed={collapsed}
-                  language={language}
-                  onToggleContext={onToggleContext}
-                  onOpenContext={onOpenContext}
-                  onOpenSession={onOpenSession}
-                  onExpandSessions={onExpandSessions}
-                />
-              ))}
+              <button
+                className="runtime-overview-delegations-toggle"
+                type="button"
+                aria-expanded={showChildren}
+                onClick={() => setChildrenExpanded(current => !current)}
+              >
+                <Network size={14} />
+                <span>{t('runtimeOverview.delegations', { count: children.length })}</span>
+                <small>{t(showChildren ? 'runtimeOverview.collapseDelegations' : 'runtimeOverview.expandDelegations')}</small>
+                {showChildren ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </button>
+              {showChildren && (
+                <div className="runtime-overview-delegation-groups">
+                  {children.map(child => (
+                    <ContextGroup
+                      key={child.context.id}
+                      item={child}
+                      children={[]}
+                      collapsed={collapsed}
+                      language={language}
+                      onToggleContext={onToggleContext}
+                      onOpenContext={onOpenContext}
+                      onOpenSession={onOpenSession}
+                      onExpandSessions={onExpandSessions}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -389,7 +407,11 @@ export function RuntimeOverviewPage({
     collapseInitialized.current = true
     const next = new Set<string>()
     for (const item of overview.contexts) {
-      if (item.delegation || (item.attention_count === 0 && item.running_activation_count === 0)) {
+      // The overview is a Session workspace, so regular Contexts must reveal
+      // their Session cards immediately. Only managed delegation Contexts are
+      // collapsed by default; otherwise an idle Runtime degenerates into a
+      // list of Context headings and no longer functions as an overview.
+      if (item.delegation) {
         next.add(item.context.id)
       }
     }
@@ -409,7 +431,7 @@ export function RuntimeOverviewPage({
     <section className="runtime-overview-view">
       <header className="workspace-heading runtime-overview-heading">
         <div>
-          <span>{t('runtimeOverview.eyebrow').toUpperCase()}</span>
+          <span>{t('runtimeOverview.eyebrow')}</span>
           <h1>{t('runtimeOverview.heading')}</h1>
           <p>{t('runtimeOverview.description')}</p>
         </div>
@@ -467,6 +489,7 @@ export function RuntimeOverviewPage({
               onOpenContext={onOpenContext}
               onOpenSession={onOpenSession}
               onExpandSessions={onExpandSessions}
+              revealChildren={Boolean(normalizedQuery)}
             />
           ))}
         </div>

@@ -572,6 +572,14 @@ pub struct ModelRouteDiagnostic {
 
 #[async_trait::async_trait]
 pub trait Client: Send + Sync {
+    /// Replace the effective Provider/Account/Route catalog for subsequent
+    /// requests. Direct clients keep the conservative default; routed clients
+    /// use this after control-plane mutations so a completed OAuth login is
+    /// usable without restarting the Runtime.
+    fn replace_provider_catalog(&self, _config: &crate::config::AppConfig) -> Result<(), String> {
+        Err("当前模型客户端不支持运行期更新 Provider 路由".to_string())
+    }
+
     /// Attach the Runtime's provider authentication authority after Secret
     /// Store and durable storage have both been constructed. Routed clients
     /// use it to materialize OAuth authorization for one immutable binding.

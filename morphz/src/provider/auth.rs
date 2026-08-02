@@ -13,14 +13,149 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, RwLock};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 const TOKEN_REFRESH_SKEW_SECS: i64 = 300;
 const REFRESH_LEASE_SECS: i64 = 45;
 const REFRESH_WAIT_POLL_MILLIS: u64 = 125;
 const CODEX_ADAPTER_ID: &str = "codex-oauth";
 const KIMI_ADAPTER_ID: &str = "kimi-oauth";
+const XAI_ADAPTER_ID: &str = "xai-oauth";
+const CLAUDE_ADAPTER_ID: &str = "claude-oauth";
+const ANTIGRAVITY_ADAPTER_ID: &str = "antigravity-oauth";
+
+fn oauth_http_client() -> reqwest::Client {
+    // Provider traffic already uses an explicit no-proxy client. Keep OAuth
+    // on the same deterministic transport path: reqwest's macOS system-proxy
+    // discovery can return a null SCDynamicStore in headless/service contexts
+    // and panic while the Runtime is starting.
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("OAuth HTTP client configuration must be valid")
+}
+
+#[derive(Debug, Clone)]
+struct LoopbackOAuthResult {
+    code: Option<String>,
+    error: Option<String>,
+}
+
+static LOOPBACK_OAUTH_RESULTS: OnceLock<RwLock<HashMap<String, LoopbackOAuthResult>>> =
+    OnceLock::new();
+static LOOPBACK_OAUTH_PORTS: OnceLock<RwLock<HashSet<u16>>> = OnceLock::new();
+
+fn loopback_oauth_results() -> &'static RwLock<HashMap<String, LoopbackOAuthResult>> {
+    LOOPBACK_OAUTH_RESULTS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn loopback_oauth_ports() -> &'static RwLock<HashSet<u16>> {
+    LOOPBACK_OAUTH_PORTS.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+async fn ensure_loopback_oauth_listener(
+    port: u16,
+    callback_path: &'static str,
+) -> Result<(), String> {
+    if loopback_oauth_ports()
+        .read()
+        .map_err(|_| "OAuth 回调监听器状态锁损坏".to_string())?
+        .contains(&port)
+    {
+        return Ok(());
+    }
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .await
+        .map_err(|error| {
+            format!("无法监听 OAuth 回调 http://127.0.0.1:{port}{callback_path}：{error}")
+        })?;
+    loopback_oauth_ports()
+        .write()
+        .map_err(|_| "OAuth 回调监听器状态锁损坏".to_string())?
+        .insert(port);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buffer = vec![0_u8; 16 * 1024];
+                let read = socket.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let target = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let parsed = reqwest::Url::parse(&format!("http://127.0.0.1:{port}{target}"));
+                let mut state = None;
+                let mut code = None;
+                let mut error = None;
+                if let Ok(url) = parsed {
+                    if url.path() == callback_path {
+                        for (key, value) in url.query_pairs() {
+                            match key.as_ref() {
+                                "state" => state = Some(value.into_owned()),
+                                "code" => code = Some(value.into_owned()),
+                                "error" => error = Some(value.into_owned()),
+                                "error_description" if error.is_none() => {
+                                    error = Some(value.into_owned())
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        error = Some("OAuth 回调路径不匹配".to_string());
+                    }
+                } else {
+                    error = Some("OAuth 回调 URL 无效".to_string());
+                }
+                let success = state.is_some() && code.is_some() && error.is_none();
+                if let Some(state) = state {
+                    if let Ok(mut results) = loopback_oauth_results().write() {
+                        results.insert(state, LoopbackOAuthResult { code, error });
+                    }
+                }
+                let (status, title, detail) = if success {
+                    (
+                        "200 OK",
+                        "Morphz 登录完成",
+                        "凭证已安全交给 Morphz，可以关闭此页面。",
+                    )
+                } else {
+                    (
+                        "400 Bad Request",
+                        "Morphz 登录失败",
+                        "授权结果无效，请返回 Dashboard 重试。",
+                    )
+                };
+                let body = format!(
+                    "<!doctype html><meta charset=\"utf-8\"><title>{title}</title><style>body{{font:16px system-ui;margin:10vh auto;max-width:34rem;padding:2rem;color:#20222a}}h1{{font-size:1.5rem}}</style><h1>{title}</h1><p>{detail}</p>"
+                );
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+        if let Ok(mut ports) = loopback_oauth_ports().write() {
+            ports.remove(&port);
+        }
+    });
+    Ok(())
+}
+
+fn take_loopback_oauth_result(state: &str) -> Result<Option<LoopbackOAuthResult>, String> {
+    Ok(loopback_oauth_results()
+        .write()
+        .map_err(|_| "OAuth 回调结果锁损坏".to_string())?
+        .remove(state))
+}
 
 /// Encrypted-at-rest OAuth payload. This type intentionally has no `Debug`
 /// implementation so accidental structured logging cannot reveal tokens.
@@ -127,8 +262,52 @@ pub struct OAuthLoginChallenge {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OAuthLoginCompletion {
-    AuthorizationCode { code: String, state: String },
+    AuthorizationCode {
+        code: String,
+        state: String,
+    },
+    /// Complete a browser authorization flow by pasting the callback URL (or
+    /// its query string) back into a remote Dashboard. Runtime still validates
+    /// the opaque state owned by the pending login.
+    AuthorizationResponse {
+        response: String,
+    },
     Poll,
+}
+
+fn parse_authorization_response(response: &str) -> Result<(String, String), String> {
+    let response = response.trim();
+    if response.is_empty() {
+        return Err("OAuth 授权回调不能为空".to_string());
+    }
+    let query = reqwest::Url::parse(response)
+        .ok()
+        .and_then(|url| url.query().map(str::to_string))
+        .or_else(|| response.strip_prefix('?').map(str::to_string))
+        .unwrap_or_else(|| response.to_string());
+    let pairs = reqwest::Url::parse(&format!("http://localhost/?{query}"))
+        .map_err(|error| format!("OAuth 授权回调格式无效：{error}"))?
+        .query_pairs()
+        .into_owned()
+        .collect::<BTreeMap<_, _>>();
+    if let Some(error) = pairs.get("error") {
+        let description = pairs
+            .get("error_description")
+            .map(String::as_str)
+            .unwrap_or(error);
+        return Err(format!("OAuth 授权失败：{description}"));
+    }
+    let code = pairs
+        .get("code")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or("OAuth 授权回调缺少 code")?;
+    let state = pairs
+        .get("state")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or("OAuth 授权回调缺少 state")?;
+    Ok((code.to_string(), state.to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -208,6 +387,9 @@ impl AuthAdapterRegistry {
         let mut registry = Self::default();
         registry.register(Arc::new(CodexOAuthAdapter::default()));
         registry.register(Arc::new(KimiOAuthAdapter::default()));
+        registry.register(Arc::new(XaiOAuthAdapter::default()));
+        registry.register(Arc::new(ClaudeOAuthAdapter::default()));
+        registry.register(Arc::new(AntigravityOAuthAdapter::default()));
         registry
     }
 
@@ -244,7 +426,7 @@ impl AuthAdapterRegistry {
 /// every request still carries an immutable account binding selected by the
 /// router before authorization is materialized.
 pub struct ProviderAuthManager {
-    accounts: BTreeMap<String, AuthAccountConfig>,
+    accounts: RwLock<BTreeMap<String, AuthAccountConfig>>,
     secret_store: Arc<SecretStore>,
     account_store: Arc<dyn ProviderAccountStateStore>,
     adapters: AuthAdapterRegistry,
@@ -256,21 +438,45 @@ impl ProviderAuthManager {
         secret_store: Arc<SecretStore>,
         account_store: Arc<dyn ProviderAccountStateStore>,
     ) -> Self {
-        Self {
+        Self::new_with_registry(
             accounts,
             secret_store,
             account_store,
-            adapters: AuthAdapterRegistry::builtins(),
+            AuthAdapterRegistry::builtins(),
+        )
+    }
+
+    pub fn new_with_registry(
+        accounts: BTreeMap<String, AuthAccountConfig>,
+        secret_store: Arc<SecretStore>,
+        account_store: Arc<dyn ProviderAccountStateStore>,
+        adapters: AuthAdapterRegistry,
+    ) -> Self {
+        Self {
+            accounts: RwLock::new(accounts),
+            secret_store,
+            account_store,
+            adapters,
         }
     }
 
-    pub fn with_registry(mut self, adapters: AuthAdapterRegistry) -> Self {
-        self.adapters = adapters;
-        self
+    pub fn account(&self, account_id: &str) -> Option<AuthAccountConfig> {
+        self.accounts.read().ok()?.get(account_id).cloned()
     }
 
-    pub fn account(&self, account_id: &str) -> Option<&AuthAccountConfig> {
-        self.accounts.get(account_id)
+    /// Make a newly persisted OAuth account available to the current process.
+    /// The Runtime publishes the matching Provider and Model Route through the
+    /// same control-plane mutation before the login flow is started.
+    pub fn register_account(
+        &self,
+        account_id: &str,
+        account: AuthAccountConfig,
+    ) -> Result<(), String> {
+        self.accounts
+            .write()
+            .map_err(|_| "OAuth Auth Account registry lock poisoned".to_string())?
+            .insert(account_id.to_string(), account);
+        Ok(())
     }
 
     pub fn adapter_descriptors(&self) -> Vec<AuthAdapterDescriptor> {
@@ -290,7 +496,7 @@ impl ProviderAuthManager {
             state: started.state,
         };
         self.put_secret(
-            account,
+            &account,
             &login_id,
             &serde_json::to_string(&pending)
                 .map_err(|error| format!("OAuth 登录状态无法序列化：{error}"))?,
@@ -340,7 +546,7 @@ impl ProviderAuthManager {
             } => {
                 pending.state = state;
                 self.put_secret(
-                    account,
+                    &account,
                     login_id,
                     &serde_json::to_string(&pending)
                         .map_err(|error| format!("OAuth 登录状态无法序列化：{error}"))?,
@@ -348,7 +554,7 @@ impl ProviderAuthManager {
                 Ok(OAuthLoginProgress::Pending { retry_after_secs })
             }
             AdapterLoginResult::Complete(token) => {
-                self.store_token(account, &token)?;
+                self.store_token(&account, &token)?;
                 let _ = self.secret_store.delete(login_id);
                 let _ = self
                     .account_store
@@ -374,7 +580,7 @@ impl ProviderAuthManager {
     ) -> Result<RequestAuthorization, String> {
         let account = self.oauth_account(account_id)?;
         let adapter = self.adapters.get(&account.auth_adapter)?;
-        let mut token = self.load_token(account)?;
+        let mut token = self.load_token(&account)?;
         if token.adapter_id != adapter.id() {
             return Err(format!(
                 "Auth Account '{account_id}' 的 Token Adapter '{}' 与配置 '{}' 不一致",
@@ -384,7 +590,7 @@ impl ProviderAuthManager {
         }
         if token.needs_refresh(Utc::now()) {
             token = self
-                .refresh_token(account_id, account, adapter.as_ref(), token)
+                .refresh_token(account_id, &account, adapter.as_ref(), token)
                 .await?;
         }
         adapter.materialize(&token)
@@ -392,7 +598,7 @@ impl ProviderAuthManager {
 
     pub fn account_metadata(&self, account_id: &str) -> Result<OAuthAccountMetadata, String> {
         let account = self.oauth_account(account_id)?;
-        Ok(self.load_token(account)?.public_metadata(account_id))
+        Ok(self.load_token(&account)?.public_metadata(account_id))
     }
 
     pub async fn logout(&self, account_id: &str) -> Result<bool, String> {
@@ -412,10 +618,13 @@ impl ProviderAuthManager {
         Ok(deleted)
     }
 
-    fn oauth_account(&self, account_id: &str) -> Result<&AuthAccountConfig, String> {
+    fn oauth_account(&self, account_id: &str) -> Result<AuthAccountConfig, String> {
         let account = self
             .accounts
+            .read()
+            .map_err(|_| "OAuth Auth Account registry lock poisoned".to_string())?
             .get(account_id)
+            .cloned()
             .ok_or_else(|| format!("Auth Account '{account_id}' 不存在"))?;
         if !account.auth_adapter.ends_with("-oauth") {
             return Err(format!(
@@ -658,7 +867,8 @@ impl Drop for RefreshLeaseGuard {
 #[derive(Clone)]
 pub struct CodexOAuthAdapter {
     http: reqwest::Client,
-    auth_url: String,
+    device_user_code_url: String,
+    device_token_url: String,
     token_url: String,
     client_id: String,
     redirect_uri: String,
@@ -667,40 +877,59 @@ pub struct CodexOAuthAdapter {
 impl Default for CodexOAuthAdapter {
     fn default() -> Self {
         Self {
-            http: reqwest::Client::new(),
-            auth_url: "https://auth.openai.com/oauth/authorize".to_string(),
+            http: oauth_http_client(),
+            device_user_code_url: "https://auth.openai.com/api/accounts/deviceauth/usercode"
+                .to_string(),
+            device_token_url: "https://auth.openai.com/api/accounts/deviceauth/token".to_string(),
             token_url: "https://auth.openai.com/oauth/token".to_string(),
             client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_string(),
-            redirect_uri: "http://localhost:1455/auth/callback".to_string(),
+            redirect_uri: "https://auth.openai.com/deviceauth/callback".to_string(),
         }
     }
 }
 
 impl CodexOAuthAdapter {
-    /// Construct a Codex-compatible adapter with explicit endpoints. This is
-    /// useful for private compatible deployments and deterministic contract
-    /// tests; the built-in defaults remain the official Codex endpoints.
-    pub fn with_endpoints(
-        auth_url: impl Into<String>,
+    /// Construct a Codex Device Flow adapter with explicit endpoints. This is
+    /// used by deterministic contract tests and compatible private gateways.
+    pub fn with_device_endpoints(
+        device_user_code_url: impl Into<String>,
+        device_token_url: impl Into<String>,
         token_url: impl Into<String>,
         client_id: impl Into<String>,
-        redirect_uri: impl Into<String>,
     ) -> Self {
         Self {
-            http: reqwest::Client::new(),
-            auth_url: auth_url.into(),
+            http: oauth_http_client(),
+            device_user_code_url: device_user_code_url.into(),
+            device_token_url: device_token_url.into(),
             token_url: token_url.into(),
             client_id: client_id.into(),
-            redirect_uri: redirect_uri.into(),
+            redirect_uri: "https://auth.openai.com/deviceauth/callback".to_string(),
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
 struct CodexPending {
-    state: String,
-    verifier: String,
-    redirect_uri: String,
+    device_auth_id: String,
+    user_code: String,
+    interval_secs: u64,
+}
+
+#[derive(Deserialize)]
+struct CodexDeviceUserCodeResponse {
+    device_auth_id: String,
+    #[serde(default)]
+    user_code: String,
+    #[serde(default)]
+    usercode: String,
+    #[serde(default)]
+    interval: Value,
+}
+
+#[derive(Deserialize)]
+struct CodexDeviceTokenResponse {
+    authorization_code: String,
+    code_verifier: String,
 }
 
 #[derive(Deserialize)]
@@ -734,7 +963,7 @@ impl AuthAdapter for CodexOAuthAdapter {
     }
 
     fn flow(&self) -> OAuthFlowKind {
-        OAuthFlowKind::AuthorizationCodePkce
+        OAuthFlowKind::DeviceCode
     }
 
     fn stability(&self) -> AuthAdapterStability {
@@ -746,39 +975,53 @@ impl AuthAdapter for CodexOAuthAdapter {
     }
 
     fn last_verified_on(&self) -> Option<&'static str> {
-        Some("2026-08-01")
+        None
     }
 
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
-        let verifier = random_base64_url(96)?;
-        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(Sha256::digest(verifier.as_bytes()));
-        let state = random_base64_url(32)?;
-        let mut url = reqwest::Url::parse(&self.auth_url)
-            .map_err(|error| format!("Codex OAuth authorize URL 无效：{error}"))?;
-        url.query_pairs_mut()
-            .append_pair("client_id", &self.client_id)
-            .append_pair("response_type", "code")
-            .append_pair("redirect_uri", &self.redirect_uri)
-            .append_pair("scope", "openid email profile offline_access")
-            .append_pair("state", &state)
-            .append_pair("code_challenge", &challenge)
-            .append_pair("code_challenge_method", "S256")
-            .append_pair("prompt", "login")
-            .append_pair("id_token_add_organizations", "true")
-            .append_pair("codex_cli_simplified_flow", "true");
+        let response = self
+            .http
+            .post(&self.device_user_code_url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(&serde_json::json!({ "client_id": self.client_id }))
+            .send()
+            .await
+            .map_err(|error| format!("Codex Device Authorization 请求失败：{error}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| format!("Codex Device Authorization 响应读取失败：{error}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "Codex Device Authorization 返回 HTTP {}: {}",
+                status,
+                safe_error_body(&body)
+            ));
+        }
+        let payload: CodexDeviceUserCodeResponse = serde_json::from_slice(&body)
+            .map_err(|error| format!("Codex Device Authorization 响应无效：{error}"))?;
+        let user_code = if payload.user_code.trim().is_empty() {
+            payload.usercode.trim().to_string()
+        } else {
+            payload.user_code.trim().to_string()
+        };
+        if payload.device_auth_id.trim().is_empty() || user_code.is_empty() {
+            return Err("Codex Device Authorization 缺少 device_auth_id 或 user_code".to_string());
+        }
+        let interval_secs = parse_oauth_interval(&payload.interval, 5).clamp(1, 30);
         Ok(AdapterLoginStart {
-            flow: OAuthFlowKind::AuthorizationCodePkce,
-            authorization_url: Some(url.to_string()),
-            verification_uri: None,
+            flow: OAuthFlowKind::DeviceCode,
+            authorization_url: None,
+            verification_uri: Some("https://auth.openai.com/codex/device".to_string()),
             verification_uri_complete: None,
-            user_code: None,
+            user_code: Some(user_code.clone()),
             expires_at: Utc::now() + ChronoDuration::minutes(15),
-            poll_interval_secs: 0,
+            poll_interval_secs: interval_secs,
             state: serde_json::to_value(CodexPending {
-                state,
-                verifier,
-                redirect_uri: self.redirect_uri.clone(),
+                device_auth_id: payload.device_auth_id,
+                user_code,
+                interval_secs,
             })
             .map_err(|error| error.to_string())?,
         })
@@ -789,17 +1032,53 @@ impl AuthAdapter for CodexOAuthAdapter {
         state: &Value,
         completion: OAuthLoginCompletion,
     ) -> Result<AdapterLoginResult, String> {
-        let pending: CodexPending =
+        let mut pending: CodexPending =
             serde_json::from_value(state.clone()).map_err(|error| error.to_string())?;
-        let OAuthLoginCompletion::AuthorizationCode {
-            code,
-            state: returned_state,
-        } = completion
-        else {
-            return Err("Codex OAuth 需要授权码与 state，不能轮询".to_string());
-        };
-        if returned_state != pending.state {
-            return Err("Codex OAuth state 不匹配；拒绝可能的跨站请求伪造".to_string());
+        if completion != OAuthLoginCompletion::Poll {
+            return Err("Codex Device Flow 只能轮询，不能提交授权码".to_string());
+        }
+        let response = self
+            .http
+            .post(&self.device_token_url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(&serde_json::json!({
+                "device_auth_id": pending.device_auth_id,
+                "user_code": pending.user_code,
+            }))
+            .send()
+            .await
+            .map_err(|error| format!("Codex Device Token 轮询失败：{error}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| format!("Codex Device Token 响应读取失败：{error}"))?;
+        if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(AdapterLoginResult::Pending {
+                retry_after_secs: pending.interval_secs,
+                state: serde_json::to_value(pending).map_err(|error| error.to_string())?,
+            });
+        }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            pending.interval_secs = pending.interval_secs.saturating_add(5).min(30);
+            return Ok(AdapterLoginResult::Pending {
+                retry_after_secs: pending.interval_secs,
+                state: serde_json::to_value(pending).map_err(|error| error.to_string())?,
+            });
+        }
+        if !status.is_success() {
+            return Err(format!(
+                "Codex Device Token 返回 HTTP {}: {}",
+                status,
+                safe_error_body(&body)
+            ));
+        }
+        let device_token: CodexDeviceTokenResponse = serde_json::from_slice(&body)
+            .map_err(|error| format!("Codex Device Token 响应无效：{error}"))?;
+        if device_token.authorization_code.trim().is_empty()
+            || device_token.code_verifier.trim().is_empty()
+        {
+            return Err("Codex Device Token 缺少授权码或 PKCE 数据".to_string());
         }
         let response = post_token_form(
             &self.http,
@@ -807,9 +1086,9 @@ impl AuthAdapter for CodexOAuthAdapter {
             &[
                 ("grant_type", "authorization_code"),
                 ("client_id", &self.client_id),
-                ("code", code.trim()),
-                ("redirect_uri", &pending.redirect_uri),
-                ("code_verifier", &pending.verifier),
+                ("code", device_token.authorization_code.trim()),
+                ("redirect_uri", &self.redirect_uri),
+                ("code_verifier", device_token.code_verifier.trim()),
             ],
             &BTreeMap::new(),
         )
@@ -930,7 +1209,7 @@ pub struct KimiOAuthAdapter {
 impl Default for KimiOAuthAdapter {
     fn default() -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: oauth_http_client(),
             device_code_url: "https://auth.kimi.com/api/oauth/device_authorization".to_string(),
             token_url: "https://auth.kimi.com/api/oauth/token".to_string(),
             client_id: "17e5f671-d194-4dfb-9706-5516cb48c098".to_string(),
@@ -947,7 +1226,7 @@ impl KimiOAuthAdapter {
         client_id: impl Into<String>,
     ) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: oauth_http_client(),
             device_code_url: device_code_url.into(),
             token_url: token_url.into(),
             client_id: client_id.into(),
@@ -997,7 +1276,7 @@ impl AuthAdapter for KimiOAuthAdapter {
     }
 
     fn last_verified_on(&self) -> Option<&'static str> {
-        Some("2026-08-01")
+        None
     }
 
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
@@ -1188,6 +1467,962 @@ fn kimi_headers(device_id: &str) -> BTreeMap<String, String> {
     ])
 }
 
+#[derive(Clone)]
+pub struct ClaudeOAuthAdapter {
+    http: reqwest::Client,
+    auth_url: String,
+    token_url: String,
+    client_id: String,
+    redirect_uri: String,
+    listen_loopback: bool,
+}
+
+impl Default for ClaudeOAuthAdapter {
+    fn default() -> Self {
+        Self {
+            http: oauth_http_client(),
+            auth_url: "https://claude.ai/oauth/authorize".to_string(),
+            token_url: "https://api.anthropic.com/v1/oauth/token".to_string(),
+            client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".to_string(),
+            redirect_uri: "http://localhost:54545/callback".to_string(),
+            listen_loopback: true,
+        }
+    }
+}
+
+impl ClaudeOAuthAdapter {
+    #[cfg(test)]
+    fn with_test_endpoints(
+        auth_url: impl Into<String>,
+        token_url: impl Into<String>,
+        client_id: impl Into<String>,
+        redirect_uri: impl Into<String>,
+    ) -> Self {
+        Self {
+            http: oauth_http_client(),
+            auth_url: auth_url.into(),
+            token_url: token_url.into(),
+            client_id: client_id.into(),
+            redirect_uri: redirect_uri.into(),
+            listen_loopback: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ClaudePending {
+    state: String,
+    verifier: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeTokenResponse {
+    #[serde(default)]
+    access_token: String,
+    #[serde(default)]
+    refresh_token: String,
+    #[serde(default)]
+    token_type: String,
+    #[serde(default)]
+    expires_in: i64,
+    #[serde(default)]
+    organization: ClaudeOrganization,
+    #[serde(default)]
+    account: ClaudeAccount,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ClaudeOrganization {
+    #[serde(default)]
+    uuid: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ClaudeAccount {
+    #[serde(default)]
+    uuid: String,
+    #[serde(default)]
+    email_address: String,
+}
+
+impl ClaudeOAuthAdapter {
+    async fn exchange(&self, body: Value) -> Result<ClaudeTokenResponse, String> {
+        let response = self
+            .http
+            .post(&self.token_url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| format!("Claude OAuth Token 请求失败：{error}"))?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| format!("Claude OAuth Token 响应读取失败：{error}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "Claude OAuth Token 返回 HTTP {}: {}",
+                status,
+                safe_error_body(&bytes)
+            ));
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Claude OAuth Token 响应无效：{error}"))
+    }
+
+    fn token_set(
+        &self,
+        response: ClaudeTokenResponse,
+        previous_refresh: Option<String>,
+    ) -> Result<OAuthTokenSet, String> {
+        if response.access_token.trim().is_empty() {
+            return Err("Claude OAuth Token Endpoint 返回空 Access Token".to_string());
+        }
+        let mut metadata = BTreeMap::new();
+        if !response.organization.name.trim().is_empty() {
+            metadata.insert("organization_name".to_string(), response.organization.name);
+        }
+        Ok(OAuthTokenSet {
+            adapter_id: CLAUDE_ADAPTER_ID.to_string(),
+            adapter_version: self.version().to_string(),
+            access_token: response.access_token,
+            refresh_token: (!response.refresh_token.trim().is_empty())
+                .then_some(response.refresh_token)
+                .or(previous_refresh),
+            id_token: None,
+            token_type: (!response.token_type.trim().is_empty()).then_some(response.token_type),
+            scopes: vec![
+                "user:profile".to_string(),
+                "user:inference".to_string(),
+                "user:sessions:claude_code".to_string(),
+                "user:mcp_servers".to_string(),
+                "user:file_upload".to_string(),
+            ],
+            expires_at: (response.expires_in > 0)
+                .then(|| Utc::now() + ChronoDuration::seconds(response.expires_in)),
+            subject: (!response.account.uuid.trim().is_empty())
+                .then_some(response.account.uuid.clone()),
+            account_id: (!response.organization.uuid.trim().is_empty())
+                .then_some(response.organization.uuid),
+            email: (!response.account.email_address.trim().is_empty())
+                .then_some(response.account.email_address),
+            device_id: None,
+            metadata,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl AuthAdapter for ClaudeOAuthAdapter {
+    fn id(&self) -> &'static str {
+        CLAUDE_ADAPTER_ID
+    }
+
+    fn version(&self) -> &'static str {
+        "cliproxyapi-compatible-2026-08-02"
+    }
+
+    fn flow(&self) -> OAuthFlowKind {
+        OAuthFlowKind::AuthorizationCodePkce
+    }
+
+    fn stability(&self) -> AuthAdapterStability {
+        AuthAdapterStability::Compatibility
+    }
+
+    fn upstream_reference(&self) -> Option<&'static str> {
+        Some("router-for-me/CLIProxyAPI")
+    }
+
+    fn last_verified_on(&self) -> Option<&'static str> {
+        None
+    }
+
+    async fn start_login(&self) -> Result<AdapterLoginStart, String> {
+        if self.listen_loopback {
+            ensure_loopback_oauth_listener(54545, "/callback").await?;
+        }
+        let state = random_hex(16)?;
+        let verifier = random_hex(32)?;
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        let mut url = reqwest::Url::parse(&self.auth_url)
+            .map_err(|error| format!("Claude OAuth Authorization URL 无效：{error}"))?;
+        url.query_pairs_mut()
+            .append_pair("code", "true")
+            .append_pair("client_id", &self.client_id)
+            .append_pair("response_type", "code")
+            .append_pair("redirect_uri", &self.redirect_uri)
+            .append_pair(
+                "scope",
+                "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
+            )
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", &state);
+        Ok(AdapterLoginStart {
+            flow: OAuthFlowKind::AuthorizationCodePkce,
+            authorization_url: Some(url.to_string()),
+            verification_uri: None,
+            verification_uri_complete: None,
+            user_code: None,
+            expires_at: Utc::now() + ChronoDuration::minutes(15),
+            poll_interval_secs: 2,
+            state: serde_json::to_value(ClaudePending { state, verifier })
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
+    async fn continue_login(
+        &self,
+        state: &Value,
+        completion: OAuthLoginCompletion,
+    ) -> Result<AdapterLoginResult, String> {
+        let pending: ClaudePending =
+            serde_json::from_value(state.clone()).map_err(|error| error.to_string())?;
+        let (raw_code, returned_state) = match completion {
+            OAuthLoginCompletion::Poll => {
+                let Some(result) = take_loopback_oauth_result(&pending.state)? else {
+                    return Ok(AdapterLoginResult::Pending {
+                        retry_after_secs: 2,
+                        state: state.clone(),
+                    });
+                };
+                if let Some(error) = result.error {
+                    return Err(format!("Claude OAuth 授权失败：{error}"));
+                }
+                (
+                    result.code.ok_or("Claude OAuth 回调缺少授权码")?,
+                    pending.state.clone(),
+                )
+            }
+            OAuthLoginCompletion::AuthorizationCode { code, state } => (code, state),
+            OAuthLoginCompletion::AuthorizationResponse { response } => {
+                parse_authorization_response(&response)?
+            }
+        };
+        let mut parts = raw_code.splitn(2, '#');
+        let code = parts.next().unwrap_or_default().trim();
+        let fragment_state = parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let verified_state = fragment_state.unwrap_or(returned_state.trim());
+        if verified_state != pending.state {
+            return Err("Claude OAuth state 校验失败".to_string());
+        }
+        let response = self
+            .exchange(serde_json::json!({
+                "code": code,
+                "state": verified_state,
+                "grant_type": "authorization_code",
+                "client_id": self.client_id,
+                "redirect_uri": self.redirect_uri,
+                "code_verifier": pending.verifier,
+            }))
+            .await?;
+        Ok(AdapterLoginResult::Complete(
+            self.token_set(response, None)?,
+        ))
+    }
+
+    async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
+        let refresh = current
+            .refresh_token
+            .as_deref()
+            .ok_or("Claude OAuth 缺少 Refresh Token")?;
+        let response = self
+            .exchange(serde_json::json!({
+                "client_id": self.client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh,
+            }))
+            .await?;
+        self.token_set(response, Some(refresh.to_string()))
+    }
+
+    fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
+        if token.access_token.trim().is_empty() {
+            return Err("Claude OAuth Access Token 为空".to_string());
+        }
+        Ok(RequestAuthorization {
+            bearer_token: token.access_token.clone(),
+            headers: BTreeMap::from([
+                (
+                    "authorization".to_string(),
+                    format!("Bearer {}", token.access_token),
+                ),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                (
+                    "anthropic-beta".to_string(),
+                    "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28".to_string(),
+                ),
+                ("user-agent".to_string(), "claude-cli/2.1.76 (morphz; oauth)".to_string()),
+            ]),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct AntigravityOAuthAdapter {
+    http: reqwest::Client,
+    auth_url: String,
+    token_url: String,
+    userinfo_url: String,
+    project_url: String,
+    client_id: String,
+    client_secret: String,
+    redirect_uri: String,
+    listen_loopback: bool,
+}
+
+impl Default for AntigravityOAuthAdapter {
+    fn default() -> Self {
+        Self {
+            http: oauth_http_client(),
+            auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+            token_url: "https://oauth2.googleapis.com/token".to_string(),
+            userinfo_url: "https://www.googleapis.com/oauth2/v2/userinfo?alt=json".to_string(),
+            project_url: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+                .to_string(),
+            client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+                .to_string(),
+            client_secret: "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".to_string(),
+            redirect_uri: "http://localhost:51121/oauth-callback".to_string(),
+            listen_loopback: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AntigravityPending {
+    state: String,
+}
+
+impl AntigravityOAuthAdapter {
+    #[cfg(test)]
+    fn with_test_endpoints(
+        auth_url: impl Into<String>,
+        token_url: impl Into<String>,
+        userinfo_url: impl Into<String>,
+        project_url: impl Into<String>,
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+        redirect_uri: impl Into<String>,
+    ) -> Self {
+        Self {
+            http: oauth_http_client(),
+            auth_url: auth_url.into(),
+            token_url: token_url.into(),
+            userinfo_url: userinfo_url.into(),
+            project_url: project_url.into(),
+            client_id: client_id.into(),
+            client_secret: client_secret.into(),
+            redirect_uri: redirect_uri.into(),
+            listen_loopback: false,
+        }
+    }
+
+    async fn user_info(&self, access_token: &str) -> Result<Option<String>, String> {
+        let response = self
+            .http
+            .get(&self.userinfo_url)
+            .bearer_auth(access_token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|error| format!("Antigravity 用户信息请求失败：{error}"))?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let value: Value = response
+            .json()
+            .await
+            .map_err(|error| format!("Antigravity 用户信息响应无效：{error}"))?;
+        Ok(value
+            .get("email")
+            .and_then(Value::as_str)
+            .map(str::to_string))
+    }
+
+    async fn project_id(&self, access_token: &str) -> Result<Option<String>, String> {
+        let response = self
+            .http
+            .post(&self.project_url)
+            .bearer_auth(access_token)
+            .header(reqwest::header::ACCEPT, "*/*")
+            .header(
+                reqwest::header::USER_AGENT,
+                "antigravity/1.19.5 linux/amd64",
+            )
+            .json(&serde_json::json!({ "metadata": { "ideType": "ANTIGRAVITY" } }))
+            .send()
+            .await
+            .map_err(|error| format!("Antigravity 项目发现请求失败：{error}"))?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let value: Value = response
+            .json()
+            .await
+            .map_err(|error| format!("Antigravity 项目发现响应无效：{error}"))?;
+        Ok(["cloudaicompanionProject", "projectId", "project"]
+            .into_iter()
+            .find_map(|key| {
+                value.get(key).and_then(|entry| {
+                    entry
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| entry.get("id").and_then(Value::as_str).map(str::to_string))
+                })
+            }))
+    }
+
+    async fn token_set(
+        &self,
+        response: OAuthTokenResponse,
+        previous_refresh: Option<String>,
+    ) -> Result<OAuthTokenSet, String> {
+        if response.access_token.trim().is_empty() {
+            return Err("Antigravity OAuth Token Endpoint 返回空 Access Token".to_string());
+        }
+        let email = self.user_info(&response.access_token).await?;
+        let project_id = self.project_id(&response.access_token).await?;
+        let mut metadata = BTreeMap::new();
+        if let Some(project_id) = project_id {
+            metadata.insert("project_id".to_string(), project_id);
+        }
+        Ok(OAuthTokenSet {
+            adapter_id: ANTIGRAVITY_ADAPTER_ID.to_string(),
+            adapter_version: self.version().to_string(),
+            access_token: response.access_token,
+            refresh_token: (!response.refresh_token.trim().is_empty())
+                .then_some(response.refresh_token)
+                .or(previous_refresh),
+            id_token: (!response.id_token.trim().is_empty()).then_some(response.id_token),
+            token_type: (!response.token_type.trim().is_empty()).then_some(response.token_type),
+            scopes: response
+                .scope
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+            expires_at: (response.expires_in > 0.0)
+                .then(|| Utc::now() + ChronoDuration::seconds(response.expires_in as i64)),
+            subject: None,
+            account_id: None,
+            email,
+            device_id: None,
+            metadata,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl AuthAdapter for AntigravityOAuthAdapter {
+    fn id(&self) -> &'static str {
+        ANTIGRAVITY_ADAPTER_ID
+    }
+
+    fn version(&self) -> &'static str {
+        "cliproxyapi-compatible-2026-08-02"
+    }
+
+    fn flow(&self) -> OAuthFlowKind {
+        OAuthFlowKind::AuthorizationCodePkce
+    }
+
+    fn stability(&self) -> AuthAdapterStability {
+        AuthAdapterStability::Compatibility
+    }
+
+    fn upstream_reference(&self) -> Option<&'static str> {
+        Some("router-for-me/CLIProxyAPI")
+    }
+
+    fn last_verified_on(&self) -> Option<&'static str> {
+        None
+    }
+
+    async fn start_login(&self) -> Result<AdapterLoginStart, String> {
+        if self.listen_loopback {
+            ensure_loopback_oauth_listener(51121, "/oauth-callback").await?;
+        }
+        let state = random_hex(16)?;
+        let mut url = reqwest::Url::parse(&self.auth_url)
+            .map_err(|error| format!("Antigravity Authorization URL 无效：{error}"))?;
+        url.query_pairs_mut()
+            .append_pair("access_type", "offline")
+            .append_pair("client_id", &self.client_id)
+            .append_pair("prompt", "consent")
+            .append_pair("redirect_uri", &self.redirect_uri)
+            .append_pair("response_type", "code")
+            .append_pair(
+                "scope",
+                "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs",
+            )
+            .append_pair("state", &state);
+        Ok(AdapterLoginStart {
+            flow: OAuthFlowKind::AuthorizationCodePkce,
+            authorization_url: Some(url.to_string()),
+            verification_uri: None,
+            verification_uri_complete: None,
+            user_code: None,
+            expires_at: Utc::now() + ChronoDuration::minutes(15),
+            poll_interval_secs: 2,
+            state: serde_json::to_value(AntigravityPending { state })
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
+    async fn continue_login(
+        &self,
+        state: &Value,
+        completion: OAuthLoginCompletion,
+    ) -> Result<AdapterLoginResult, String> {
+        let pending: AntigravityPending =
+            serde_json::from_value(state.clone()).map_err(|error| error.to_string())?;
+        let (code, returned_state) = match completion {
+            OAuthLoginCompletion::Poll => {
+                let Some(result) = take_loopback_oauth_result(&pending.state)? else {
+                    return Ok(AdapterLoginResult::Pending {
+                        retry_after_secs: 2,
+                        state: state.clone(),
+                    });
+                };
+                if let Some(error) = result.error {
+                    return Err(format!("Antigravity OAuth 授权失败：{error}"));
+                }
+                (
+                    result.code.ok_or("Antigravity OAuth 回调缺少授权码")?,
+                    pending.state.clone(),
+                )
+            }
+            OAuthLoginCompletion::AuthorizationCode { code, state } => (code, state),
+            OAuthLoginCompletion::AuthorizationResponse { response } => {
+                parse_authorization_response(&response)?
+            }
+        };
+        if returned_state != pending.state {
+            return Err("Antigravity OAuth state 校验失败".to_string());
+        }
+        let response = post_token_form(
+            &self.http,
+            &self.token_url,
+            &[
+                ("code", code.trim()),
+                ("client_id", &self.client_id),
+                ("client_secret", &self.client_secret),
+                ("redirect_uri", &self.redirect_uri),
+                ("grant_type", "authorization_code"),
+            ],
+            &BTreeMap::new(),
+        )
+        .await?;
+        Ok(AdapterLoginResult::Complete(
+            self.token_set(response, None).await?,
+        ))
+    }
+
+    async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
+        let refresh = current
+            .refresh_token
+            .as_deref()
+            .ok_or("Antigravity OAuth 缺少 Refresh Token")?;
+        let response = post_token_form(
+            &self.http,
+            &self.token_url,
+            &[
+                ("client_id", &self.client_id),
+                ("client_secret", &self.client_secret),
+                ("refresh_token", refresh),
+                ("grant_type", "refresh_token"),
+            ],
+            &BTreeMap::new(),
+        )
+        .await?;
+        self.token_set(response, Some(refresh.to_string())).await
+    }
+
+    fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
+        if token.access_token.trim().is_empty() {
+            return Err("Antigravity OAuth Access Token 为空".to_string());
+        }
+        let mut headers = BTreeMap::from([
+            (
+                "authorization".to_string(),
+                format!("Bearer {}", token.access_token),
+            ),
+            (
+                "user-agent".to_string(),
+                "antigravity/1.19.5 linux/amd64".to_string(),
+            ),
+        ]);
+        if let Some(project_id) = token.metadata.get("project_id") {
+            headers.insert("x-goog-user-project".to_string(), project_id.clone());
+        }
+        Ok(RequestAuthorization {
+            bearer_token: token.access_token.clone(),
+            headers,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct XaiOAuthAdapter {
+    http: reqwest::Client,
+    discovery_url: String,
+    client_id: String,
+    scope: String,
+    validate_discovered_endpoints: bool,
+}
+
+impl Default for XaiOAuthAdapter {
+    fn default() -> Self {
+        Self {
+            http: oauth_http_client(),
+            discovery_url: "https://auth.x.ai/.well-known/openid-configuration".to_string(),
+            client_id: "b1a00492-073a-47ea-816f-4c329264a828".to_string(),
+            scope: "openid profile email offline_access grok-cli:access api:access".to_string(),
+            validate_discovered_endpoints: true,
+        }
+    }
+}
+
+impl XaiOAuthAdapter {
+    /// Construct an xAI-compatible Device Flow adapter with explicit discovery
+    /// endpoint. Production uses xAI OIDC discovery by default.
+    pub fn with_discovery_endpoint(
+        discovery_url: impl Into<String>,
+        client_id: impl Into<String>,
+        scope: impl Into<String>,
+    ) -> Self {
+        Self {
+            http: oauth_http_client(),
+            discovery_url: discovery_url.into(),
+            client_id: client_id.into(),
+            scope: scope.into(),
+            validate_discovered_endpoints: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_test_discovery_endpoint(
+        discovery_url: impl Into<String>,
+        client_id: impl Into<String>,
+        scope: impl Into<String>,
+    ) -> Self {
+        Self {
+            http: oauth_http_client(),
+            discovery_url: discovery_url.into(),
+            client_id: client_id.into(),
+            scope: scope.into(),
+            validate_discovered_endpoints: false,
+        }
+    }
+
+    fn validate_endpoint(&self, raw: &str, field: &str) -> Result<(), String> {
+        if self.validate_discovered_endpoints {
+            validate_xai_oauth_endpoint(raw, field)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn discover(&self) -> Result<XaiDiscovery, String> {
+        let response = self
+            .http
+            .get(&self.discovery_url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|error| format!("xAI OIDC Discovery 请求失败：{error}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| format!("xAI OIDC Discovery 响应读取失败：{error}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "xAI OIDC Discovery 返回 HTTP {}: {}",
+                status,
+                safe_error_body(&body)
+            ));
+        }
+        let payload: XaiDiscovery = serde_json::from_slice(&body)
+            .map_err(|error| format!("xAI OIDC Discovery 响应无效：{error}"))?;
+        self.validate_endpoint(
+            &payload.device_authorization_endpoint,
+            "device_authorization_endpoint",
+        )?;
+        self.validate_endpoint(&payload.token_endpoint, "token_endpoint")?;
+        Ok(payload)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct XaiDiscovery {
+    device_authorization_endpoint: String,
+    token_endpoint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct XaiPending {
+    device_code: String,
+    token_endpoint: String,
+    interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct XaiDeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    #[serde(default)]
+    verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: String,
+    #[serde(default)]
+    expires_in: i64,
+    #[serde(default)]
+    interval: i64,
+}
+
+#[async_trait::async_trait]
+impl AuthAdapter for XaiOAuthAdapter {
+    fn id(&self) -> &'static str {
+        XAI_ADAPTER_ID
+    }
+
+    fn version(&self) -> &'static str {
+        "cliproxyapi-compatible-2026-08-02"
+    }
+
+    fn flow(&self) -> OAuthFlowKind {
+        OAuthFlowKind::DeviceCode
+    }
+
+    fn stability(&self) -> AuthAdapterStability {
+        AuthAdapterStability::Compatibility
+    }
+
+    fn upstream_reference(&self) -> Option<&'static str> {
+        Some("router-for-me/CLIProxyAPI")
+    }
+
+    fn last_verified_on(&self) -> Option<&'static str> {
+        None
+    }
+
+    async fn start_login(&self) -> Result<AdapterLoginStart, String> {
+        let discovery = self.discover().await?;
+        let response = self
+            .http
+            .post(&discovery.device_authorization_endpoint)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .form(&[
+                ("client_id", self.client_id.as_str()),
+                ("scope", self.scope.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|error| format!("xAI Device Authorization 请求失败：{error}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| format!("xAI Device Authorization 响应读取失败：{error}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "xAI Device Authorization 返回 HTTP {}: {}",
+                status,
+                safe_error_body(&body)
+            ));
+        }
+        let payload: XaiDeviceCodeResponse = serde_json::from_slice(&body)
+            .map_err(|error| format!("xAI Device Authorization 响应无效：{error}"))?;
+        if payload.device_code.trim().is_empty() || payload.user_code.trim().is_empty() {
+            return Err("xAI Device Authorization 缺少 device_code 或 user_code".to_string());
+        }
+        if payload.verification_uri.trim().is_empty()
+            && payload.verification_uri_complete.trim().is_empty()
+        {
+            return Err("xAI Device Authorization 缺少 verification URI".to_string());
+        }
+        let interval_secs = payload.interval.max(5) as u64;
+        let expires_in = payload.expires_in.clamp(1, 1_800);
+        Ok(AdapterLoginStart {
+            flow: OAuthFlowKind::DeviceCode,
+            authorization_url: None,
+            verification_uri: (!payload.verification_uri.trim().is_empty())
+                .then_some(payload.verification_uri),
+            verification_uri_complete: (!payload.verification_uri_complete.trim().is_empty())
+                .then_some(payload.verification_uri_complete),
+            user_code: Some(payload.user_code),
+            expires_at: Utc::now() + ChronoDuration::seconds(expires_in),
+            poll_interval_secs: interval_secs,
+            state: serde_json::to_value(XaiPending {
+                device_code: payload.device_code,
+                token_endpoint: discovery.token_endpoint,
+                interval_secs,
+            })
+            .map_err(|error| error.to_string())?,
+        })
+    }
+
+    async fn continue_login(
+        &self,
+        state: &Value,
+        completion: OAuthLoginCompletion,
+    ) -> Result<AdapterLoginResult, String> {
+        if completion != OAuthLoginCompletion::Poll {
+            return Err("xAI Device Flow 只能轮询，不能提交授权码".to_string());
+        }
+        let mut pending: XaiPending =
+            serde_json::from_value(state.clone()).map_err(|error| error.to_string())?;
+        self.validate_endpoint(&pending.token_endpoint, "token_endpoint")?;
+        let response = post_token_form(
+            &self.http,
+            &pending.token_endpoint,
+            &[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", &pending.device_code),
+                ("client_id", &self.client_id),
+            ],
+            &BTreeMap::new(),
+        )
+        .await?;
+        match response.error.as_str() {
+            "authorization_pending" => Ok(AdapterLoginResult::Pending {
+                retry_after_secs: pending.interval_secs,
+                state: serde_json::to_value(pending).map_err(|error| error.to_string())?,
+            }),
+            "slow_down" => {
+                pending.interval_secs = pending.interval_secs.saturating_add(5).min(30);
+                Ok(AdapterLoginResult::Pending {
+                    retry_after_secs: pending.interval_secs,
+                    state: serde_json::to_value(pending).map_err(|error| error.to_string())?,
+                })
+            }
+            "expired_token" => Err("xAI Device Authorization 已过期".to_string()),
+            "access_denied" => Err("xAI Device Authorization 被拒绝".to_string()),
+            error if !error.is_empty() => Err(format!(
+                "xAI OAuth 错误 '{}': {}",
+                error, response.error_description
+            )),
+            _ => Ok(AdapterLoginResult::Complete(xai_token_set(
+                self.version(),
+                response,
+                pending.token_endpoint,
+            )?)),
+        }
+    }
+
+    async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
+        let refresh = current
+            .refresh_token
+            .as_deref()
+            .ok_or("xAI OAuth 缺少 Refresh Token")?;
+        let token_endpoint = match current.metadata.get("token_endpoint") {
+            Some(endpoint) => {
+                self.validate_endpoint(endpoint, "token_endpoint")?;
+                endpoint.clone()
+            }
+            None => self.discover().await?.token_endpoint,
+        };
+        let response = post_token_form(
+            &self.http,
+            &token_endpoint,
+            &[
+                ("grant_type", "refresh_token"),
+                ("client_id", &self.client_id),
+                ("refresh_token", refresh),
+            ],
+            &BTreeMap::new(),
+        )
+        .await?;
+        xai_token_set(self.version(), response, token_endpoint)
+    }
+
+    fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
+        if token.access_token.trim().is_empty() {
+            return Err("xAI OAuth Access Token 为空".to_string());
+        }
+        Ok(RequestAuthorization {
+            bearer_token: token.access_token.clone(),
+            headers: BTreeMap::new(),
+        })
+    }
+}
+
+fn validate_xai_oauth_endpoint(raw: &str, field: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(raw.trim())
+        .map_err(|error| format!("xAI Discovery {field} 无效：{error}"))?;
+    if url.scheme() != "https" {
+        return Err(format!("xAI Discovery {field} 必须使用 HTTPS"));
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    if host != "x.ai" && !host.ends_with(".x.ai") {
+        return Err(format!("xAI Discovery {field} 主机 '{host}' 不属于 x.ai"));
+    }
+    Ok(())
+}
+
+fn xai_token_set(
+    version: &str,
+    response: OAuthTokenResponse,
+    token_endpoint: String,
+) -> Result<OAuthTokenSet, String> {
+    if response.access_token.trim().is_empty() {
+        return Err("xAI OAuth Token Endpoint 返回空 Access Token".to_string());
+    }
+    let (subject, email) = parse_standard_jwt_identity(&response.id_token);
+    Ok(OAuthTokenSet {
+        adapter_id: XAI_ADAPTER_ID.to_string(),
+        adapter_version: version.to_string(),
+        access_token: response.access_token,
+        refresh_token: (!response.refresh_token.is_empty()).then_some(response.refresh_token),
+        id_token: (!response.id_token.is_empty()).then_some(response.id_token),
+        token_type: (!response.token_type.is_empty()).then_some(response.token_type),
+        scopes: response
+            .scope
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect(),
+        expires_at: (response.expires_in > 0.0)
+            .then(|| Utc::now() + ChronoDuration::seconds(response.expires_in as i64)),
+        subject,
+        account_id: None,
+        email,
+        device_id: None,
+        metadata: BTreeMap::from([("token_endpoint".to_string(), token_endpoint)]),
+    })
+}
+
+fn parse_standard_jwt_identity(token: &str) -> (Option<String>, Option<String>) {
+    let value = token
+        .split('.')
+        .nth(1)
+        .and_then(|payload| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .ok()
+        })
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let subject = value
+        .as_ref()
+        .and_then(|value| value.get("sub"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let email = value
+        .as_ref()
+        .and_then(|value| value.get("email"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    (subject, email)
+}
+
 async fn post_token_form(
     http: &reqwest::Client,
     url: &str,
@@ -1265,16 +2500,17 @@ fn safe_error_body(body: &[u8]) -> String {
     }
 }
 
+fn parse_oauth_interval(value: &Value, fallback: u64) -> u64 {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.parse::<u64>().ok()))
+        .unwrap_or(fallback)
+}
+
 fn random_hex(bytes: usize) -> Result<String, String> {
     let mut value = vec![0_u8; bytes];
     getrandom::fill(&mut value).map_err(|error| format!("操作系统随机数生成失败：{error}"))?;
     Ok(value.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-fn random_base64_url(bytes: usize) -> Result<String, String> {
-    let mut value = vec![0_u8; bytes];
-    getrandom::fill(&mut value).map_err(|error| format!("操作系统随机数生成失败：{error}"))?;
-    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value))
 }
 
 fn random_uuid_like() -> Result<String, String> {
@@ -1309,8 +2545,9 @@ mod tests {
     use crate::memory::sqlite::SqliteStore;
     use crate::secret_store::SecretValueBackend;
     use axum::extract::{Form, State};
-    use axum::http::HeaderMap;
-    use axum::routing::post;
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::routing::{get, post};
     use axum::{Json, Router};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1376,15 +2613,31 @@ mod tests {
         let database = directory.path().join("oauth.db");
         let account_store = Arc::new(SqliteStore::new(database.to_str().unwrap()).await.unwrap());
         let account_id = "oauth-account".to_string();
-        let manager = Arc::new(
-            ProviderAuthManager::new(
-                BTreeMap::from([(account_id, account)]),
-                Arc::clone(&secret_store),
-                account_store,
-            )
-            .with_registry(registry),
-        );
+        let manager = Arc::new(ProviderAuthManager::new_with_registry(
+            BTreeMap::from([(account_id, account)]),
+            Arc::clone(&secret_store),
+            account_store,
+            registry,
+        ));
         (directory, manager, secret_store)
+    }
+
+    #[tokio::test]
+    async fn newly_registered_account_is_available_without_restart() {
+        let (_directory, manager, _secret_store) =
+            test_manager(oauth_account("test-oauth"), AuthAdapterRegistry::default()).await;
+        let account = oauth_account("late-oauth");
+
+        manager
+            .register_account("late-account", account.clone())
+            .unwrap();
+
+        let registered = manager.account("late-account").unwrap();
+        assert_eq!(registered.auth_adapter, account.auth_adapter);
+        assert_eq!(registered.credential_ref, account.credential_ref);
+        assert_eq!(registered.provider, account.provider);
+        assert_eq!(registered.label, account.label);
+        assert_eq!(registered.enabled, account.enabled);
     }
 
     fn oauth_account(adapter: &str) -> AuthAccountConfig {
@@ -1409,7 +2662,33 @@ mod tests {
     #[derive(Clone)]
     struct CodexServerState {
         refreshes: Arc<AtomicUsize>,
+        device_polls: Arc<AtomicUsize>,
         id_token: String,
+    }
+
+    async fn codex_device_user_code_endpoint() -> Json<Value> {
+        Json(json!({
+            "device_auth_id": "device-auth-1",
+            "user_code": "CODEX-1234",
+            "interval": "1"
+        }))
+    }
+
+    async fn codex_device_token_endpoint(
+        State(state): State<CodexServerState>,
+        Json(payload): Json<Value>,
+    ) -> impl IntoResponse {
+        assert_eq!(payload["device_auth_id"], "device-auth-1");
+        assert_eq!(payload["user_code"], "CODEX-1234");
+        if state.device_polls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return (StatusCode::FORBIDDEN, Json(json!({ "status": "pending" }))).into_response();
+        }
+        Json(json!({
+            "authorization_code": "authorization-code",
+            "code_verifier": "device-code-verifier",
+            "code_challenge": "device-code-challenge"
+        }))
+        .into_response()
     }
 
     async fn codex_token_endpoint(
@@ -1438,8 +2717,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_pkce_contract_and_refresh_fencing_are_durable() {
+    async fn codex_device_contract_and_refresh_fencing_are_durable() {
         let refreshes = Arc::new(AtomicUsize::new(0));
+        let device_polls = Arc::new(AtomicUsize::new(0));
         let id_token = unsigned_jwt(json!({
             "sub": "subject-1",
             "email": "codex@example.test",
@@ -1448,56 +2728,41 @@ mod tests {
             }
         }));
         let app = Router::new()
+            .route("/device/usercode", post(codex_device_user_code_endpoint))
+            .route("/device/token", post(codex_device_token_endpoint))
             .route("/token", post(codex_token_endpoint))
             .with_state(CodexServerState {
                 refreshes: Arc::clone(&refreshes),
+                device_polls: Arc::clone(&device_polls),
                 id_token,
             });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let adapter = Arc::new(CodexOAuthAdapter::with_endpoints(
-            format!("http://{address}/authorize"),
+        let adapter = Arc::new(CodexOAuthAdapter::with_device_endpoints(
+            format!("http://{address}/device/usercode"),
+            format!("http://{address}/device/token"),
             format!("http://{address}/token"),
             "test-client",
-            "http://localhost:1455/auth/callback",
         ));
         let started = adapter.start_login().await.unwrap();
-        let authorization_url =
-            reqwest::Url::parse(started.authorization_url.as_ref().unwrap()).unwrap();
-        let query = authorization_url
-            .query_pairs()
-            .into_owned()
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(
-            query.get("code_challenge_method").map(String::as_str),
-            Some("S256")
-        );
-        assert_eq!(query.get("prompt").map(String::as_str), Some("login"));
-        let state = query.get("state").unwrap().clone();
-        let rejected = adapter
-            .continue_login(
-                &started.state,
-                OAuthLoginCompletion::AuthorizationCode {
-                    code: "authorization-code".to_string(),
-                    state: "wrong-state".to_string(),
-                },
-            )
-            .await;
-        assert!(matches!(rejected, Err(error) if error.contains("state 不匹配")));
+        assert_eq!(started.flow, OAuthFlowKind::DeviceCode);
+        assert_eq!(started.user_code.as_deref(), Some("CODEX-1234"));
+        assert_eq!(started.poll_interval_secs, 1);
+        assert!(matches!(
+            adapter
+                .continue_login(&started.state, OAuthLoginCompletion::Poll)
+                .await
+                .unwrap(),
+            AdapterLoginResult::Pending { .. }
+        ));
         let AdapterLoginResult::Complete(token) = adapter
-            .continue_login(
-                &started.state,
-                OAuthLoginCompletion::AuthorizationCode {
-                    code: "authorization-code".to_string(),
-                    state,
-                },
-            )
+            .continue_login(&started.state, OAuthLoginCompletion::Poll)
             .await
             .unwrap()
         else {
-            panic!("codex authorization code unexpectedly remained pending");
+            panic!("codex device authorization unexpectedly remained pending");
         };
         assert_eq!(token.account_id.as_deref(), Some("chatgpt-account-1"));
         assert_eq!(token.email.as_deref(), Some("codex@example.test"));
@@ -1520,7 +2785,7 @@ mod tests {
             ..token
         };
         manager
-            .store_token(manager.account("oauth-account").unwrap(), &expired)
+            .store_token(&manager.account("oauth-account").unwrap(), &expired)
             .unwrap();
         let (left, right) = tokio::join!(
             manager.materialize_authorization("oauth-account"),
@@ -1624,5 +2889,303 @@ mod tests {
             authorization.headers.get("X-Msh-Device-Id"),
             state.observed_device.lock().unwrap().as_ref()
         );
+    }
+
+    fn authorization_state(started: &AdapterLoginStart) -> String {
+        reqwest::Url::parse(started.authorization_url.as_deref().unwrap())
+            .unwrap()
+            .query_pairs()
+            .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
+            .unwrap()
+    }
+
+    async fn claude_token_endpoint(Json(payload): Json<Value>) -> Json<Value> {
+        assert_eq!(payload["client_id"], "claude-test-client");
+        assert!(!payload["code_verifier"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty());
+        Json(json!({
+            "access_token": "claude-access",
+            "refresh_token": "claude-refresh",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "organization": { "uuid": "claude-org", "name": "Morphz" },
+            "account": { "uuid": "claude-user", "email_address": "claude@example.test" }
+        }))
+    }
+
+    #[tokio::test]
+    async fn claude_authorization_callback_is_exchanged_and_materialized() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route("/token", post(claude_token_endpoint));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let adapter = ClaudeOAuthAdapter::with_test_endpoints(
+            "https://claude.example/authorize",
+            format!("http://{address}/token"),
+            "claude-test-client",
+            "http://localhost/callback",
+        );
+        let started = adapter.start_login().await.unwrap();
+        assert_eq!(started.flow, OAuthFlowKind::AuthorizationCodePkce);
+        let state = authorization_state(&started);
+        let AdapterLoginResult::Complete(token) = adapter
+            .continue_login(
+                &started.state,
+                OAuthLoginCompletion::AuthorizationResponse {
+                    response: format!(
+                        "http://localhost/callback?code=claude-code%23{state}&state={state}"
+                    ),
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("claude authorization unexpectedly remained pending");
+        };
+        assert_eq!(token.account_id.as_deref(), Some("claude-org"));
+        assert_eq!(token.subject.as_deref(), Some("claude-user"));
+        assert_eq!(token.email.as_deref(), Some("claude@example.test"));
+        let authorization = adapter.materialize(&token).unwrap();
+        assert_eq!(authorization.bearer_token, "claude-access");
+        assert_eq!(
+            authorization
+                .headers
+                .get("anthropic-version")
+                .map(String::as_str),
+            Some("2023-06-01")
+        );
+    }
+
+    async fn antigravity_token_endpoint(Form(form): Form<HashMap<String, String>>) -> Json<Value> {
+        assert_eq!(
+            form.get("client_id").map(String::as_str),
+            Some("antigravity-test-client")
+        );
+        Json(json!({
+            "access_token": "antigravity-access",
+            "refresh_token": "antigravity-refresh",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "openid email cloud-platform"
+        }))
+    }
+
+    async fn antigravity_userinfo_endpoint(headers: HeaderMap) -> Json<Value> {
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer antigravity-access")
+        );
+        Json(json!({ "email": "antigravity@example.test" }))
+    }
+
+    async fn antigravity_project_endpoint(headers: HeaderMap) -> Json<Value> {
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer antigravity-access")
+        );
+        Json(json!({ "cloudaicompanionProject": "morphz-project" }))
+    }
+
+    #[tokio::test]
+    async fn antigravity_authorization_callback_discovers_account_and_project() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/token", post(antigravity_token_endpoint))
+            .route("/userinfo", get(antigravity_userinfo_endpoint))
+            .route("/project", post(antigravity_project_endpoint));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let adapter = AntigravityOAuthAdapter::with_test_endpoints(
+            "https://accounts.example/authorize",
+            format!("http://{address}/token"),
+            format!("http://{address}/userinfo"),
+            format!("http://{address}/project"),
+            "antigravity-test-client",
+            "antigravity-test-secret",
+            "http://localhost/oauth-callback",
+        );
+        let started = adapter.start_login().await.unwrap();
+        let state = authorization_state(&started);
+        let AdapterLoginResult::Complete(token) = adapter
+            .continue_login(
+                &started.state,
+                OAuthLoginCompletion::AuthorizationResponse {
+                    response: format!(
+                        "http://localhost/oauth-callback?code=google-code&state={state}"
+                    ),
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("antigravity authorization unexpectedly remained pending");
+        };
+        assert_eq!(token.email.as_deref(), Some("antigravity@example.test"));
+        assert_eq!(
+            token.metadata.get("project_id").map(String::as_str),
+            Some("morphz-project")
+        );
+        let authorization = adapter.materialize(&token).unwrap();
+        assert_eq!(authorization.bearer_token, "antigravity-access");
+        assert_eq!(
+            authorization
+                .headers
+                .get("x-goog-user-project")
+                .map(String::as_str),
+            Some("morphz-project")
+        );
+    }
+
+    #[derive(Clone)]
+    struct XaiServerState {
+        polls: Arc<AtomicUsize>,
+        base_url: String,
+        id_token: String,
+    }
+
+    async fn xai_discovery_endpoint(State(state): State<XaiServerState>) -> Json<Value> {
+        Json(json!({
+            "device_authorization_endpoint": format!("{}/device", state.base_url),
+            "token_endpoint": format!("{}/token", state.base_url)
+        }))
+    }
+
+    async fn xai_device_endpoint(Form(form): Form<HashMap<String, String>>) -> Json<Value> {
+        assert_eq!(
+            form.get("client_id").map(String::as_str),
+            Some("xai-test-client")
+        );
+        Json(json!({
+            "device_code": "xai-device",
+            "user_code": "XAI-1234",
+            "verification_uri": "https://accounts.x.ai/activate",
+            "verification_uri_complete": "https://accounts.x.ai/activate?code=XAI-1234",
+            "expires_in": 600,
+            "interval": 1
+        }))
+    }
+
+    async fn xai_token_endpoint(
+        State(state): State<XaiServerState>,
+        Form(_form): Form<HashMap<String, String>>,
+    ) -> Json<Value> {
+        if state.polls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Json(json!({
+                "error": "authorization_pending",
+                "error_description": "pending"
+            }))
+        } else {
+            Json(json!({
+                "access_token": "xai-access",
+                "refresh_token": "xai-refresh",
+                "id_token": state.id_token,
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": "openid profile email"
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn xai_discovery_device_flow_and_identity_are_preserved() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = XaiServerState {
+            polls: Arc::new(AtomicUsize::new(0)),
+            base_url: format!("http://{address}"),
+            id_token: unsigned_jwt(json!({
+                "sub": "xai-subject",
+                "email": "xai@example.test"
+            })),
+        };
+        let app = Router::new()
+            .route("/discovery", get(xai_discovery_endpoint))
+            .route("/device", post(xai_device_endpoint))
+            .route("/token", post(xai_token_endpoint))
+            .with_state(state);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let adapter = XaiOAuthAdapter::with_test_discovery_endpoint(
+            format!("http://{address}/discovery"),
+            "xai-test-client",
+            "openid profile email",
+        );
+        let started = adapter.start_login().await.unwrap();
+        assert_eq!(started.user_code.as_deref(), Some("XAI-1234"));
+        assert!(matches!(
+            adapter
+                .continue_login(&started.state, OAuthLoginCompletion::Poll)
+                .await
+                .unwrap(),
+            AdapterLoginResult::Pending { .. }
+        ));
+        let AdapterLoginResult::Complete(token) = adapter
+            .continue_login(&started.state, OAuthLoginCompletion::Poll)
+            .await
+            .unwrap()
+        else {
+            panic!("xAI device authorization unexpectedly remained pending");
+        };
+        assert_eq!(token.subject.as_deref(), Some("xai-subject"));
+        assert_eq!(token.email.as_deref(), Some("xai@example.test"));
+        assert_eq!(
+            adapter.materialize(&token).unwrap().bearer_token,
+            "xai-access"
+        );
+    }
+
+    #[test]
+    fn authorization_response_parser_requires_code_and_state() {
+        assert_eq!(
+            parse_authorization_response(
+                "http://localhost/callback?code=abc%20123&state=state-value"
+            )
+            .unwrap(),
+            ("abc 123".to_string(), "state-value".to_string())
+        );
+        assert!(parse_authorization_response("?code=abc").is_err());
+        assert!(parse_authorization_response("?error=access_denied&state=s").is_err());
+    }
+
+    /// Explicit network smoke test for the upstream Codex subscription login
+    /// contract. It stays ignored in the normal suite because it depends on an
+    /// external service, but release verification can run it without completing
+    /// or persisting a user login.
+    #[tokio::test]
+    #[ignore = "requires access to auth.openai.com"]
+    async fn live_codex_device_login_returns_a_real_challenge() {
+        let started = CodexOAuthAdapter::default().start_login().await.unwrap();
+        assert_eq!(started.flow, OAuthFlowKind::DeviceCode);
+        assert_eq!(
+            started.verification_uri.as_deref(),
+            Some("https://auth.openai.com/codex/device")
+        );
+        assert!(started
+            .user_code
+            .as_deref()
+            .is_some_and(|code| !code.is_empty()));
+    }
+
+    /// Explicit network smoke test for the upstream Kimi subscription login
+    /// contract. No token is persisted until a human completes the device flow.
+    #[tokio::test]
+    #[ignore = "requires access to auth.kimi.com"]
+    async fn live_kimi_device_login_returns_a_real_challenge() {
+        let started = KimiOAuthAdapter::default().start_login().await.unwrap();
+        assert_eq!(started.flow, OAuthFlowKind::DeviceCode);
+        assert!(started
+            .user_code
+            .as_deref()
+            .is_some_and(|code| !code.is_empty()));
+        assert!(started
+            .verification_uri_complete
+            .as_deref()
+            .or(started.verification_uri.as_deref())
+            .is_some_and(|url| url.starts_with("https://")));
     }
 }

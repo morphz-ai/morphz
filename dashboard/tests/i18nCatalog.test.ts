@@ -40,6 +40,18 @@ test('the Chinese catalog does not retain obsolete English product terminology',
   }
 })
 
+test('runtime overview uses Chinese product language consistently', () => {
+  const catalog = JSON.parse(readFileSync(
+    new URL('../src/i18n/locales/zh.json', import.meta.url),
+    'utf8',
+  )) as { runtimeOverview: unknown }
+  const text = strings(catalog.runtimeOverview).join('\n')
+
+  for (const untranslated of ['Context', 'Session', 'Thread']) {
+    assert.equal(text.includes(untranslated), false, `runtime overview contains ${untranslated}`)
+  }
+})
+
 test('the dashboard language toggle resolves both Chinese and English resources', async () => {
   const instance = i18next.createInstance()
   await instance.init({

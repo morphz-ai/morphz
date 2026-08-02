@@ -1,6 +1,6 @@
 # Morphz Provider、Model、OAuth 与多账号架构 v1
 
-> 状态：v1 主干已实现（阶段 A、B、首批 C 与 D）；真实订阅冒烟及后续 OAuth Adapter 按兼容周期增量推进
+> 状态：v1 主干已实现（阶段 A—D）；五种计划内 OAuth Adapter 已完成本地契约验证，真实订阅冒烟仍需由 Operator 使用实际账号验证
 > 日期：2026-08-01
 > 关联文档：[Provider Conformance Suite](./provider_conformance_suite.md)、[CLI 产品化 v1](./morphz_cli_productization_v1.md)、[Secret Store 架构 v2](./morphz_secret_store_architecture_v2.md)
 
@@ -112,14 +112,17 @@ model alias: gpt-5.6
 
 ### 2.5 v1 的实现边界
 
-本轮实现选择两个具有代表性的原生 OAuth 流程作为稳定内核基线：
+v1 已按同一 `AuthAdapter` 生命周期实现五种计划内 OAuth 流程：
 
-- Codex：Authorization Code + PKCE、本地回调、Responses 方言；
-- Kimi Code：Device Authorization、稳定设备身份、Chat Completions 方言。
+- Codex：Device Authorization、Responses 方言；
+- Kimi Code：Device Authorization、Chat Completions 方言；
+- Anthropic/Claude：Authorization Code + PKCE、本地回调、Anthropic Messages 方言；
+- Google/Antigravity：Authorization Code + PKCE、本地回调、Gemini Content 方言；
+- xAI：OIDC Discovery + Device Authorization、OpenAI 兼容方言。
 
-Anthropic、Antigravity、xAI 的原生 OAuth 以及更多服务特定方言不作为 v1 内核完成条件。它们必须复用已经稳定的 `AuthAdapter`、账号资源状态与 Attempt Binding，逐个增加录制夹具和真实端点验证，不能复制第二套 Token 生命周期。OpenRouter、CLIProxyAPI 和其他 Gateway 当前可直接通过兼容协议与 API Key/无认证方式接入。
+这些 Adapter 已完成不依赖真实订阅的确定性登录、刷新、敏感字段隔离和请求物化测试。真实登录和模型端点冒烟必须由 Operator 使用自己的账号完成，不能用假账号、静态展示数据或个人订阅作为 CI 依赖。OpenRouter、CLIProxyAPI 和其他 Gateway 继续通过四种兼容协议与 API Key/无认证方式接入，不需要 Morphz 感知网关产品本身。
 
-这不是缩减领域模型：Provider Instance、Auth Account、Model Route、Alias、多账号调度、Secret Store 与 Operator 控制面已经按最终结构实现；后续增加 Adapter 只是兼容层增量。
+Provider Instance、Auth Account、Model Route、Alias、多账号调度、Secret Store 与 Operator 控制面已经按统一结构实现。后续新增服务只属于兼容层增量，不能复制第二套 Token 生命周期或改变 Runtime 的领域模型。
 
 ## 3. 设计原则
 
@@ -675,14 +678,12 @@ Pi 当前凭证仓库以 Provider ID 为键，天然表达一个 Provider 一个
 - 将熔断拆分到 endpoint、instance、account、model 和 request class；
 - 完成确定性调度测试。
 
-### 阶段 C：首批 OAuth Adapter
+### 阶段 C：主流 OAuth Adapter
 
-建议先实现两个代表性流程：
-
-1. Codex OAuth：验证 Authorization Code/PKCE、Responses 方言和订阅账号；
-2. Kimi OAuth：验证 Device Flow 和另一种服务方言。
-
-通过同一接口后，再依次接入 Anthropic、Antigravity、xAI 和 OpenRouter。每次只增加一个 Adapter，并先补夹具和真实冒烟测试。
+- 通过统一接口实现 Codex、Kimi、Anthropic/Claude、Antigravity 和 xAI；
+- 每个 Adapter 都具备独立版本、登录/刷新状态机、Secret Store 隔离和请求物化契约；
+- OpenRouter 作为 API Key Provider 接入，不伪装成 OAuth 服务；
+- 每次兼容变更先补确定性夹具，再由 Operator 执行真实账号冒烟。
 
 ### 阶段 D：Operator 产品面
 
@@ -715,7 +716,7 @@ Pi 当前凭证仓库以 Provider ID 为键，天然表达一个 Provider 一个
 | Model Route | 已实现稳定 Alias、多 Candidate、不同物理模型名和能力过滤 | `ModelRouteConfig` |
 | Attempt Binding | 已持久化 Alias、Route revision、Provider、账号、物理模型、协议、Adapter 与 Endpoint | `model_attempt_bindings` |
 | 多账号调度 | 已实现 durable affinity、状态过滤、cooldown、LRU 选择、failover 与 refresh fencing | SQLite/PostgreSQL Projection |
-| OAuth | 已实现统一生命周期和首批 Codex PKCE、Kimi Device Adapter | `AuthAdapter` + Secret Store |
+| OAuth | 已实现统一生命周期，以及 Codex、Kimi、Claude、Antigravity、xAI 五种 Adapter | `AuthAdapter` + Secret Store |
 | Secret 隔离 | OAuth Token 只物化到物理 HTTP Authorization；控制面 DTO 不携带敏感值，错误正文会脱敏 | Secret Store + `RequestAuthorization` |
 | Catalog | 已实现显式手工模型与成功远端目录的持久 Projection；刷新失败不抹除最后成功快照 | `provider_model_catalog` |
 | SDK/HTTP/CLI | 已共用 Application API，支持查看、诊断、测试、配置、账号控制、OAuth、目录刷新 | `MorphzSdk` |
@@ -724,7 +725,7 @@ Pi 当前凭证仓库以 Provider ID 为键，天然表达一个 Provider 一个
 
 ### 13.2 有意保留的后续增量
 
-- Anthropic、Antigravity、xAI 等原生 OAuth Adapter：逐个适配与验证，不阻塞 v1 领域模型；
+- 五种 OAuth 的真实订阅兼容验证：本地实现和确定性契约已完成，上游变更仍需在发布前用实际账号冒烟；
 - 真实订阅端点冒烟：必须由 Operator 显式提供测试账号，CI 不依赖个人订阅或外网稳定性；
 - 更完整的动态 quota/cost：当前保存 Provider 返回的真实 usage 与账号归因，但不同订阅产品的货币成本需要 Operator 价格表；
 - endpoint/model/request-class 的主动健康探针和更细熔断：现有路由已避免把单账号失效扩散到账号池，完整多维健康策略继续由故障证据驱动；
@@ -736,8 +737,7 @@ SQLite 的账号状态、亲和、刷新 fencing、Attempt Binding 与远端目�
 
 本轮收口验证结果：
 
-- `cargo test -p morphz --lib provider::`：42 通过，0 失败；
-- `cargo test -p morphz --lib`：667 通过，0 失败，3 条人工 PTY/视觉快照测试按设计忽略；
+- `cargo test -p morphz`：库测试 682 通过、0 失败、5 条人工/外部环境测试按设计忽略；主程序 20 通过；Attempt Loop 53 通过；CLI Contract 4 通过；默认 Store Conformance 3 通过；
 - `MORPHZ_TEST_POSTGRES_URL=... cargo test -p morphz --test runtime_store_conformance postgres_supported_capabilities_satisfy_the_same_conformance_suite_when_configured -- --nocapture`：在真实 PostgreSQL 15.14 上 1 通过，0 失败；
 - `MORPHZ_TEST_POSTGRES_URL=... cargo test -p morphz --lib runtime::tests::runtime_builder_selects_postgres_only_when_explicitly_configured -- --nocapture`：真实 PostgreSQL Runtime Builder 初始化通过；
 - `cargo check -p morphz --lib --bin morphz`：通过；
@@ -759,7 +759,7 @@ SQLite 的账号状态、亲和、刷新 fencing、Attempt Binding 与远端目�
 | 7 | 新模型可手工配置、诊断并刷新远端目录 | 已实现 SDK/CLI/HTTP/Dashboard |
 | 8 | OAuth Token 不进入配置、Ledger、Prompt、Dashboard 或普通日志 | 已由类型边界、Secret Store 与错误脱敏实现；继续保留回归审计 |
 | 9 | 兼容 Gateway 仍作为普通 Provider 接入 | 已保留四协议配置入口 |
-| 10 | 内置 Adapter 确定性契约与真实端点冒烟 | Codex/Kimi 确定性契约已通过；真实端点冒烟需要外部测试账号，未伪造完成 |
+| 10 | 内置 Adapter 确定性契约与真实端点冒烟 | Codex、Kimi、Claude、Antigravity、xAI 的确定性契约已通过；真实端点冒烟需要外部测试账号，未伪造完成 |
 
 因此 v1 的代码完成标准是：前九项具备确定性证据，第十项的本地契约部分完成；真实订阅冒烟作为发布前外部验证门，而不是把个人账号变成自动测试依赖。
 

@@ -2314,46 +2314,33 @@ impl ProviderAccountStateStore for SqliteStore {
         }
         let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let expires = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        let mut tx = self.pool.begin().await?;
-        let current = sqlx::query("SELECT * FROM provider_refresh_leases WHERE account_id = ?")
-            .bind(account_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        if let Some(row) = &current {
-            let existing = provider_refresh_lease_from_sqlite_row(row)?;
-            if existing.lease_expires_at > now && existing.owner_id != owner_id {
-                return Ok(None);
-            }
-        }
-        let generation = current
-            .as_ref()
-            .map(|row| u64::try_from(row.get::<i64, _>("generation")))
-            .transpose()?
-            .unwrap_or_default()
-            .saturating_add(1);
-        sqlx::query(
+        // Claim in one write statement. A read followed by a write in two
+        // concurrent deferred transactions creates a SQLite snapshot-upgrade
+        // race, which returns SQLITE_BUSY immediately even with busy_timeout.
+        // RETURNING also tells the loser apart from a successful claimant
+        // without opening a second transaction window.
+        let row = sqlx::query(
             r#"INSERT INTO provider_refresh_leases
                (account_id, generation, owner_id, lease_expires_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)
+               VALUES (?, 1, ?, ?, ?)
                ON CONFLICT(account_id) DO UPDATE SET
-                 generation = excluded.generation,
+                 generation = provider_refresh_leases.generation + 1,
                  owner_id = excluded.owner_id,
                  lease_expires_at = excluded.lease_expires_at,
-                 updated_at = excluded.updated_at"#,
+                 updated_at = excluded.updated_at
+               WHERE provider_refresh_leases.lease_expires_at <= ?
+                  OR provider_refresh_leases.owner_id = excluded.owner_id
+               RETURNING *"#,
         )
         .bind(account_id)
-        .bind(i64::try_from(generation)?)
         .bind(owner_id)
         .bind(expires)
-        .bind(now_text)
-        .execute(&mut *tx)
+        .bind(&now_text)
+        .bind(&now_text)
+        .fetch_optional(&self.pool)
         .await?;
-        let row = sqlx::query("SELECT * FROM provider_refresh_leases WHERE account_id = ?")
-            .bind(account_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(Some(provider_refresh_lease_from_sqlite_row(&row)?))
+        row.map(|row| provider_refresh_lease_from_sqlite_row(&row))
+            .transpose()
     }
 
     async fn release_provider_refresh_lease(

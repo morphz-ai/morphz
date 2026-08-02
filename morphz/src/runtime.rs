@@ -8,7 +8,7 @@ use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
     ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
 };
-use crate::config::{AppConfig, StorageBackend};
+use crate::config::{AppConfig, AuthAccountConfig, StorageBackend};
 use crate::context_tools::{ContextTxTool, RecallTool};
 use crate::event::{
     Event, InMemoryEventBus, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
@@ -738,6 +738,7 @@ pub struct MorphzRuntimeBuilder {
     approval_provider: Option<Arc<dyn ApprovalProvider>>,
     identity_provider: Option<Arc<dyn IdentityProvider>>,
     secret_store: Option<Arc<SecretStore>>,
+    provider_auth_registry: Option<crate::provider::auth::AuthAdapterRegistry>,
     execution_target_backends: Vec<Arc<dyn crate::execution_target::ExecutionTargetBackend>>,
     harness_packages: Vec<HarnessPackage>,
 }
@@ -753,6 +754,7 @@ impl MorphzRuntimeBuilder {
             approval_provider: None,
             identity_provider: None,
             secret_store: None,
+            provider_auth_registry: None,
             execution_target_backends: Vec::new(),
             harness_packages: Vec::new(),
             config,
@@ -797,6 +799,17 @@ impl MorphzRuntimeBuilder {
     /// Vault/KMS/target-local backends without changing the tool or HTTP API.
     pub fn secret_store(mut self, secret_store: Arc<SecretStore>) -> Self {
         self.secret_store = Some(secret_store);
+        self
+    }
+
+    /// Replaces the built-in OAuth adapter catalog. This is primarily useful
+    /// for embedding hosts and deterministic integration tests; normal CLI and
+    /// Dashboard builds keep the Runtime's built-in adapters.
+    pub fn provider_auth_registry(
+        mut self,
+        registry: crate::provider::auth::AuthAdapterRegistry,
+    ) -> Self {
+        self.provider_auth_registry = Some(registry);
         self
     }
 
@@ -897,11 +910,20 @@ impl MorphzRuntimeBuilder {
         self.client.attach_provider_account_state_store(
             Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>
         );
-        let provider_auth_manager = Arc::new(crate::provider::auth::ProviderAuthManager::new(
-            self.config.auth_accounts.clone(),
-            Arc::clone(&secret_store),
-            Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>,
-        ));
+        let provider_auth_manager = match self.provider_auth_registry {
+            Some(registry) => crate::provider::auth::ProviderAuthManager::new_with_registry(
+                self.config.auth_accounts.clone(),
+                Arc::clone(&secret_store),
+                Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>,
+                registry,
+            ),
+            None => crate::provider::auth::ProviderAuthManager::new(
+                self.config.auth_accounts.clone(),
+                Arc::clone(&secret_store),
+                Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>,
+            ),
+        };
+        let provider_auth_manager = Arc::new(provider_auth_manager);
         self.client
             .attach_provider_auth_manager(Arc::clone(&provider_auth_manager));
         let harness_registry = Arc::new(DomainHarnessRegistry::default());
@@ -916,6 +938,7 @@ impl MorphzRuntimeBuilder {
             &self.config,
             &self.config.llm.model,
         )));
+        let provider_catalog_config = self.config.clone();
         let model_prompt_token_limit_overrides = RwLock::new(HashMap::new());
         let context_engine = Arc::new(
             ContextEngine::new(
@@ -1241,6 +1264,7 @@ impl MorphzRuntimeBuilder {
         Ok(MorphzRuntime {
             inner: Arc::new(RuntimeInner {
                 config: self.config,
+                provider_catalog_config: RwLock::new(provider_catalog_config),
                 identity: self.identity,
                 identity_provider,
                 permissions,
@@ -1411,6 +1435,10 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
 
 struct RuntimeInner {
     config: AppConfig,
+    /// Authoritative in-process Provider/Account/Route catalog. Unlike the
+    /// immutable startup config, operator mutations replace this snapshot and
+    /// the routed client atomically without restarting the Runtime.
+    provider_catalog_config: RwLock<AppConfig>,
     identity: RuntimeIdentity,
     identity_provider: Arc<dyn IdentityProvider>,
     permissions: Arc<PermissionBroker>,
@@ -1453,6 +1481,27 @@ pub struct MorphzRuntime {
 impl MorphzRuntime {
     pub fn builder(config: AppConfig, client: Arc<dyn Client>) -> MorphzRuntimeBuilder {
         MorphzRuntimeBuilder::new(config, client)
+    }
+
+    pub fn provider_catalog_config(&self) -> Result<AppConfig, RuntimeError> {
+        self.inner
+            .provider_catalog_config
+            .read()
+            .map(|config| config.clone())
+            .map_err(|_| std::io::Error::other("Provider catalog lock poisoned").into())
+    }
+
+    pub fn replace_provider_catalog(&self, config: AppConfig) -> Result<(), RuntimeError> {
+        // Replace the actual request router before publishing the control-plane
+        // snapshot. A failed catalog never becomes visible as active state.
+        self.inner.client.replace_provider_catalog(&config)?;
+        let mut current = self
+            .inner
+            .provider_catalog_config
+            .write()
+            .map_err(|_| std::io::Error::other("Provider catalog lock poisoned"))?;
+        *current = config;
+        Ok(())
     }
 
     pub async fn start(&self) -> Result<(), RuntimeError> {
@@ -1757,6 +1806,20 @@ impl MorphzRuntime {
             .map_err(Into::into)
     }
 
+    /// Register a newly persisted auth account in the live OAuth authority.
+    /// This deliberately does not hot-swap Provider routing: the account can
+    /// authenticate now, while the saved route becomes active after restart.
+    pub fn register_provider_auth_account(
+        &self,
+        account_id: &str,
+        account: AuthAccountConfig,
+    ) -> Result<(), RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .register_account(account_id, account)
+            .map_err(Into::into)
+    }
+
     pub async fn continue_provider_oauth_login(
         &self,
         login_id: &str,
@@ -1790,10 +1853,31 @@ impl MorphzRuntime {
             .map_err(Into::into)
     }
 
+    /// OAuth capability discovery must remain available before a model
+    /// Provider has been configured. First-run Dashboard setup depends only
+    /// on the registered auth adapters, not on a valid routing catalog.
+    pub fn provider_oauth_adapter_descriptors(
+        &self,
+    ) -> Vec<crate::provider::auth::AuthAdapterDescriptor> {
+        self.inner.provider_auth_manager.adapter_descriptors()
+    }
+
     /// Authoritative, secret-free Provider control-plane projection shared by
     /// SDK, CLI, HTTP and Dashboard.
     pub async fn provider_control_snapshot(&self) -> Result<ProviderControlSnapshot, RuntimeError> {
-        let catalog = EffectiveProviderCatalog::from_config(&self.inner.config)?;
+        let config = self.provider_catalog_config()?;
+        let catalog = match EffectiveProviderCatalog::from_config(&config) {
+            Ok(catalog) => catalog,
+            Err(_)
+                if config.providers.is_empty()
+                    && config.provider_instances.is_empty()
+                    && config.auth_accounts.is_empty()
+                    && config.model_routes.is_empty() =>
+            {
+                EffectiveProviderCatalog::empty()
+            }
+            Err(error) => return Err(error.into()),
+        };
         let mut auth_accounts = BTreeMap::new();
         for (account_id, config) in &catalog.auth_accounts {
             let state = self

@@ -9,7 +9,8 @@ use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::config::{
     save_managed_auth_account_at, save_managed_model_route_at, save_managed_provider_catalog_at,
     save_managed_provider_instance_at, AppConfig, AuthAccountConfig, CredentialConfig,
-    ModelRouteConfig, ProviderInstanceConfig,
+    ModelProtocol, ModelRouteAffinity, ModelRouteCandidateConfig, ModelRouteConfig,
+    ModelRouteSelection, ProviderInstanceConfig, ProviderModelConfig,
 };
 use crate::event::Event;
 use crate::execution::JobReceipt;
@@ -53,6 +54,7 @@ use crate::runtime::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
@@ -109,6 +111,25 @@ impl std::error::Error for SdkError {}
 
 pub type SdkResult<T> = Result<T, SdkError>;
 
+/// Product-level OAuth setup request. Callers choose a supported service;
+/// Provider, account and route identifiers remain an implementation detail of
+/// the SDK instead of leaking into the ordinary Dashboard flow.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OAuthProviderSetup {
+    pub provider_id: String,
+    pub provider_adapter: String,
+    pub protocol: ModelProtocol,
+    pub base_url: String,
+    pub account_id: String,
+    pub auth_adapter: String,
+    pub credential_ref: String,
+    pub secret_backend: Option<String>,
+    pub account_label: String,
+    pub route_id: String,
+    pub model_alias: String,
+    pub physical_model: String,
+}
+
 fn validate_provider_catalog_snapshot(snapshot: &ProviderControlSnapshot) -> SdkResult<()> {
     let mut app = AppConfig::default();
     app.provider_instances = snapshot.provider_instances.clone();
@@ -124,10 +145,7 @@ fn validate_provider_catalog_snapshot(snapshot: &ProviderControlSnapshot) -> Sdk
 }
 
 /// Fold catalog edits already persisted in the managed layer over the live
-/// Runtime projection before validating the next edit. Static catalog changes
-/// intentionally require a restart, but operators must still be able to add a
-/// Provider, then its accounts, then its routes without restarting between
-/// each object.
+/// Runtime projection before validating the next edit.
 fn merge_managed_provider_catalog(
     snapshot: &mut ProviderControlSnapshot,
     managed_config_path: &Path,
@@ -588,6 +606,12 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    pub fn provider_oauth_adapter_descriptors(
+        &self,
+    ) -> Vec<crate::provider::auth::AuthAdapterDescriptor> {
+        self.runtime.provider_oauth_adapter_descriptors()
+    }
+
     pub async fn recent_provider_attempts(
         &self,
         limit: usize,
@@ -633,6 +657,15 @@ impl MorphzSdk {
             .insert(provider_id.to_string(), provider.clone());
         validate_provider_catalog_snapshot(&snapshot)?;
         save_managed_provider_instance_at(managed_config_path, provider_id, &provider)
+            .map_err(SdkError::internal)?;
+        let mut live = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        live.provider_instances
+            .insert(provider_id.to_string(), provider);
+        self.runtime
+            .replace_provider_catalog(live)
             .map_err(SdkError::internal)?;
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ProviderInstance,
@@ -695,11 +728,149 @@ impl MorphzSdk {
             &route,
         )
         .map_err(SdkError::internal)?;
+        if account.auth_adapter.ends_with("-oauth") {
+            self.runtime
+                .register_provider_auth_account(account_id, account.clone())
+                .map_err(SdkError::internal)?;
+        }
+        let mut live = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        live.provider_instances
+            .insert(provider_id.to_string(), provider);
+        live.auth_accounts.insert(account_id.to_string(), account);
+        if let Some((credential_id, credential)) = credential {
+            live.credentials
+                .insert(credential_id.to_string(), credential);
+        }
+        live.model_routes.insert(route_id.to_string(), route);
+        self.runtime
+            .replace_provider_catalog(live)
+            .map_err(SdkError::internal)?;
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ProviderCatalog,
             route_id,
             managed_config_path,
         ))
+    }
+
+    /// Create one OAuth-backed account inside an existing Provider pool (or
+    /// create the minimal Provider/Route graph on first use) and immediately
+    /// start its real authorization flow. This is the normal setup boundary;
+    /// callers never have to manufacture catalog identifiers in the browser.
+    pub async fn setup_oauth_provider_account(
+        &self,
+        managed_config_path: &Path,
+        setup: OAuthProviderSetup,
+    ) -> SdkResult<OAuthLoginChallenge> {
+        for (label, value) in [
+            ("Provider ID", setup.provider_id.as_str()),
+            ("Provider Adapter", setup.provider_adapter.as_str()),
+            ("Provider URL", setup.base_url.as_str()),
+            ("Account ID", setup.account_id.as_str()),
+            ("Auth Adapter", setup.auth_adapter.as_str()),
+            ("Credential Ref", setup.credential_ref.as_str()),
+            ("Model Route", setup.route_id.as_str()),
+            ("Model Alias", setup.model_alias.as_str()),
+            ("Physical Model", setup.physical_model.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    format!("{label} 不能为空"),
+                ));
+            }
+        }
+
+        let mut snapshot = self.provider_control_snapshot().await?;
+        merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
+
+        let mut provider = snapshot
+            .provider_instances
+            .get(&setup.provider_id)
+            .cloned()
+            .unwrap_or_else(|| ProviderInstanceConfig {
+                adapter: setup.provider_adapter.clone(),
+                protocol: setup.protocol.clone(),
+                base_url: setup.base_url.clone(),
+                accounts: Vec::new(),
+                models: BTreeMap::new(),
+                headers: BTreeMap::new(),
+                env_headers: BTreeMap::new(),
+            });
+        provider.adapter = setup.provider_adapter.clone();
+        provider.protocol = setup.protocol.clone();
+        provider.base_url = setup.base_url.clone();
+        if !provider.accounts.iter().any(|id| id == &setup.account_id) {
+            provider.accounts.push(setup.account_id.clone());
+        }
+        provider
+            .models
+            .entry(setup.physical_model.clone())
+            .or_insert_with(ProviderModelConfig::default);
+
+        let account = AuthAccountConfig {
+            auth_adapter: setup.auth_adapter.clone(),
+            credential_ref: setup.credential_ref.clone(),
+            secret_backend: setup.secret_backend.clone(),
+            provider: Some(setup.provider_id.clone()),
+            label: Some(setup.account_label.clone()),
+            enabled: true,
+        };
+
+        let mut route = snapshot
+            .model_routes
+            .get(&setup.route_id)
+            .cloned()
+            .unwrap_or_else(|| ModelRouteConfig {
+                aliases: Vec::new(),
+                candidates: Vec::new(),
+                affinity: ModelRouteAffinity::Context,
+                selection: ModelRouteSelection::AvailableLeastRecentlyUsed,
+                fallback: false,
+            });
+        if setup.model_alias != setup.route_id
+            && !route
+                .aliases
+                .iter()
+                .any(|alias| alias == &setup.model_alias)
+        {
+            route.aliases.push(setup.model_alias.clone());
+        }
+        let candidate_exists = route.candidates.iter().any(|candidate| {
+            candidate.provider == setup.provider_id
+                && candidate.model == setup.physical_model
+                && candidate.account.as_deref() == Some(setup.account_id.as_str())
+        });
+        if !candidate_exists {
+            let priority = route
+                .candidates
+                .iter()
+                .map(|candidate| candidate.priority)
+                .max()
+                .map_or(0, |priority| priority.saturating_add(1));
+            route.candidates.push(ModelRouteCandidateConfig {
+                provider: setup.provider_id.clone(),
+                model: setup.physical_model.clone(),
+                priority,
+                account: Some(setup.account_id.clone()),
+                capabilities: Vec::new(),
+            });
+        }
+
+        self.put_provider_catalog_config(
+            managed_config_path,
+            &setup.provider_id,
+            provider,
+            &setup.account_id,
+            account,
+            None,
+            &setup.route_id,
+            route,
+        )
+        .await?;
+        self.start_provider_oauth_login(&setup.account_id).await
     }
 
     pub async fn put_auth_account_config(
@@ -727,6 +898,19 @@ impl MorphzSdk {
         validate_provider_catalog_snapshot(&snapshot)?;
         save_managed_auth_account_at(managed_config_path, account_id, &account)
             .map_err(SdkError::internal)?;
+        if account.auth_adapter.ends_with("-oauth") {
+            self.runtime
+                .register_provider_auth_account(account_id, account.clone())
+                .map_err(SdkError::internal)?;
+        }
+        let mut live = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        live.auth_accounts.insert(account_id.to_string(), account);
+        self.runtime
+            .replace_provider_catalog(live)
+            .map_err(SdkError::internal)?;
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::AuthAccount,
             account_id,
@@ -747,6 +931,14 @@ impl MorphzSdk {
             .insert(route_id.to_string(), route.clone());
         validate_provider_catalog_snapshot(&snapshot)?;
         save_managed_model_route_at(managed_config_path, route_id, &route)
+            .map_err(SdkError::internal)?;
+        let mut live = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        live.model_routes.insert(route_id.to_string(), route);
+        self.runtime
+            .replace_provider_catalog(live)
             .map_err(SdkError::internal)?;
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ModelRoute,

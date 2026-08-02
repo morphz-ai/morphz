@@ -1,8 +1,8 @@
 use crate::approval::ApprovalDecision;
 use crate::artifact::ArtifactTransferStageKind;
 use crate::config::{
-    save_managed_inference_at, AuthAccountConfig, ModelRouteConfig, ProviderInstanceConfig,
-    ServerIdentityConfig, ServerIdentityMode,
+    save_managed_inference_at, AuthAccountConfig, ModelProtocol, ModelRouteConfig,
+    ProviderInstanceConfig, ServerIdentityConfig, ServerIdentityMode,
 };
 use crate::event::Event;
 use crate::execution_target::EdgeArtifactDataDirection;
@@ -25,9 +25,9 @@ use crate::sdk::{
     AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, ClaimEdgeCommand,
     ConnectExecutionNodeCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
     ExactHarnessRef, ExecutionJobQuery, ExecutionNodeHeartbeatCommand, FinishEdgeCommand,
-    HeartbeatEdgeCommand, MessageAttachmentInput, MorphzSdk, PairExecutionNodeCommand,
-    RetryDialogueTurnCommand, RotateExecutionNodeKeyCommand, SdkError, SdkErrorCode,
-    SendMessageCommand, SessionEventsQuery, SubmitArtifactTransferCommand,
+    HeartbeatEdgeCommand, MessageAttachmentInput, MorphzSdk, OAuthProviderSetup,
+    PairExecutionNodeCommand, RetryDialogueTurnCommand, RotateExecutionNodeKeyCommand, SdkError,
+    SdkErrorCode, SendMessageCommand, SessionEventsQuery, SubmitArtifactTransferCommand,
 };
 use axum::{
     body::Body,
@@ -268,6 +268,27 @@ struct PutProviderCatalogSetupRequest {
     credential: Option<crate::config::CredentialConfig>,
     route_id: String,
     route: ModelRouteConfig,
+}
+
+#[derive(serde::Deserialize)]
+struct StartOAuthProviderSetupRequest {
+    service: String,
+}
+
+/// OAuth services whose complete Dashboard bootstrap path is implemented by
+/// this exact Runtime build. This is deliberately separate from the auth
+/// adapter catalog: an adapter may exist for SDK/CLI use while the embedded
+/// Dashboard bootstrap endpoint is absent (for example when an older Runtime
+/// serves a newer hot-reloaded Dashboard).
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+struct OAuthProviderSetupServiceDescriptor {
+    id: &'static str,
+    auth_adapter: &'static str,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+struct OAuthProviderSetupServicesResponse {
+    services: Vec<OAuthProviderSetupServiceDescriptor>,
 }
 
 #[derive(serde::Deserialize)]
@@ -718,6 +739,14 @@ impl Server {
             .route(
                 "/api/runtime/providers/setup",
                 axum::routing::put(handle_put_provider_catalog_setup),
+            )
+            .route(
+                "/api/runtime/providers/oauth/start",
+                post(handle_start_oauth_provider_setup),
+            )
+            .route(
+                "/api/runtime/providers/oauth/services",
+                get(handle_oauth_provider_setup_services),
             )
             .route(
                 "/api/runtime/providers/instances/:provider_id",
@@ -1463,6 +1492,168 @@ async fn handle_control_provider_account(
     {
         Ok(record) => Json(record).into_response(),
         Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+    }
+}
+
+fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static str> {
+    let account_id = api_id("account");
+    let credential_ref = format!(
+        "MORPHZ_OAUTH_{}",
+        account_id
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            })
+            .collect::<String>()
+    );
+    let setup = match service.trim() {
+        "codex" => OAuthProviderSetup {
+            provider_id: "codex-subscription".to_string(),
+            provider_adapter: "openai-codex".to_string(),
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            account_id,
+            auth_adapter: "codex-oauth".to_string(),
+            credential_ref,
+            secret_backend: Some("morphz_env_file".to_string()),
+            account_label: "Codex".to_string(),
+            route_id: "gpt-5.6".to_string(),
+            model_alias: "gpt-5.6".to_string(),
+            physical_model: "gpt-5.6".to_string(),
+        },
+        "kimi" => OAuthProviderSetup {
+            provider_id: "kimi-code".to_string(),
+            provider_adapter: "kimi-code".to_string(),
+            protocol: ModelProtocol::OpenaiChat,
+            base_url: "https://api.kimi.com/coding/v1".to_string(),
+            account_id,
+            auth_adapter: "kimi-oauth".to_string(),
+            credential_ref,
+            secret_backend: Some("morphz_env_file".to_string()),
+            account_label: "Kimi".to_string(),
+            route_id: "kimi-k3".to_string(),
+            model_alias: "kimi-k3".to_string(),
+            physical_model: "k3".to_string(),
+        },
+        "claude" | "anthropic" => OAuthProviderSetup {
+            provider_id: "claude-subscription".to_string(),
+            provider_adapter: "claude-code".to_string(),
+            protocol: ModelProtocol::AnthropicMessages,
+            base_url: "https://api.anthropic.com/v1".to_string(),
+            account_id,
+            auth_adapter: "claude-oauth".to_string(),
+            credential_ref,
+            secret_backend: Some("morphz_env_file".to_string()),
+            account_label: "Claude".to_string(),
+            route_id: "claude".to_string(),
+            model_alias: "claude".to_string(),
+            physical_model: "claude-opus-4-6".to_string(),
+        },
+        "antigravity" => OAuthProviderSetup {
+            provider_id: "antigravity-subscription".to_string(),
+            provider_adapter: "google-antigravity".to_string(),
+            protocol: ModelProtocol::GeminiContent,
+            base_url: "https://cloudcode-pa.googleapis.com".to_string(),
+            account_id,
+            auth_adapter: "antigravity-oauth".to_string(),
+            credential_ref,
+            secret_backend: Some("morphz_env_file".to_string()),
+            account_label: "Antigravity".to_string(),
+            route_id: "gemini".to_string(),
+            model_alias: "gemini".to_string(),
+            physical_model: "gemini-3-pro-high".to_string(),
+        },
+        "xai" => OAuthProviderSetup {
+            provider_id: "xai-subscription".to_string(),
+            provider_adapter: "xai-subscription".to_string(),
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://cli-chat-proxy.grok.com/v1".to_string(),
+            account_id,
+            auth_adapter: "xai-oauth".to_string(),
+            credential_ref,
+            secret_backend: Some("morphz_env_file".to_string()),
+            account_label: "xAI".to_string(),
+            route_id: "grok".to_string(),
+            model_alias: "grok".to_string(),
+            physical_model: "grok-4.5".to_string(),
+        },
+        _ => return Err("该 OAuth 服务尚未接入 Runtime"),
+    };
+    Ok(setup)
+}
+
+fn oauth_provider_setup_service_descriptors() -> Vec<OAuthProviderSetupServiceDescriptor> {
+    vec![
+        OAuthProviderSetupServiceDescriptor {
+            id: "codex",
+            auth_adapter: "codex-oauth",
+        },
+        OAuthProviderSetupServiceDescriptor {
+            id: "kimi",
+            auth_adapter: "kimi-oauth",
+        },
+        OAuthProviderSetupServiceDescriptor {
+            id: "anthropic",
+            auth_adapter: "claude-oauth",
+        },
+        OAuthProviderSetupServiceDescriptor {
+            id: "antigravity",
+            auth_adapter: "antigravity-oauth",
+        },
+        OAuthProviderSetupServiceDescriptor {
+            id: "xai",
+            auth_adapter: "xai-oauth",
+        },
+    ]
+}
+
+async fn handle_oauth_provider_setup_services(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let registered = state
+        .sdk
+        .provider_oauth_adapter_descriptors()
+        .into_iter()
+        .map(|adapter| adapter.id)
+        .collect::<HashSet<_>>();
+    Json(OAuthProviderSetupServicesResponse {
+        services: oauth_provider_setup_service_descriptors()
+            .into_iter()
+            .filter(|service| registered.contains(service.auth_adapter))
+            .collect(),
+    })
+    .into_response()
+}
+
+async fn handle_start_oauth_provider_setup(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<StartOAuthProviderSetupRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "无法确定 Morphz 受管配置路径",
+        );
+    };
+    let setup = match oauth_provider_setup(&request.service) {
+        Ok(setup) => setup,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+    };
+    match state.sdk.setup_oauth_provider_account(path, setup).await {
+        Ok(challenge) => (StatusCode::CREATED, Json(challenge)).into_response(),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -5334,8 +5525,141 @@ mod tests {
         Response, ToolDefinition,
     };
     use crate::memory::{ScheduleStore as _, ThreadStore as _};
+    use crate::provider::auth::{
+        AdapterLoginResult, AdapterLoginStart, AuthAdapter, AuthAdapterRegistry, OAuthFlowKind,
+        OAuthLoginProgress, OAuthTokenSet, RequestAuthorization,
+    };
     use crate::runtime::{RuntimeIdentity, RuntimeToolPolicy};
+    use crate::secret_store::{SecretStore, SecretValueBackend};
+    use chrono::{Duration as ChronoDuration, Utc};
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
     use tempfile::NamedTempFile;
+
+    #[derive(Default)]
+    struct WebTestSecretBackend {
+        values: Mutex<BTreeMap<String, String>>,
+    }
+
+    impl SecretValueBackend for WebTestSecretBackend {
+        fn backend_id(&self) -> &'static str {
+            "web_test_memory"
+        }
+
+        fn storage_kind(&self) -> &'static str {
+            "memory"
+        }
+
+        fn put(&self, locator: &str, value: &str) -> Result<(), String> {
+            self.values
+                .lock()
+                .map_err(|_| "web test secret backend poisoned".to_string())?
+                .insert(locator.to_string(), value.to_string());
+            Ok(())
+        }
+
+        fn get(&self, locator: &str) -> Result<Option<String>, String> {
+            Ok(self
+                .values
+                .lock()
+                .map_err(|_| "web test secret backend poisoned".to_string())?
+                .get(locator)
+                .cloned())
+        }
+
+        fn delete(&self, locator: &str) -> Result<bool, String> {
+            Ok(self
+                .values
+                .lock()
+                .map_err(|_| "web test secret backend poisoned".to_string())?
+                .remove(locator)
+                .is_some())
+        }
+    }
+
+    struct WebTestOAuthAdapter {
+        id: &'static str,
+        flow: OAuthFlowKind,
+    }
+
+    #[async_trait::async_trait]
+    impl AuthAdapter for WebTestOAuthAdapter {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+
+        fn version(&self) -> &'static str {
+            "1"
+        }
+
+        fn flow(&self) -> OAuthFlowKind {
+            self.flow
+        }
+
+        async fn start_login(&self) -> Result<AdapterLoginStart, String> {
+            if self.flow == OAuthFlowKind::AuthorizationCodePkce {
+                return Ok(AdapterLoginStart {
+                    flow: self.flow,
+                    authorization_url: Some(
+                        "https://auth.example.test/authorize?state=morphz-test".to_string(),
+                    ),
+                    verification_uri: None,
+                    verification_uri_complete: None,
+                    user_code: None,
+                    expires_at: Utc::now() + ChronoDuration::minutes(10),
+                    poll_interval_secs: 1,
+                    state: serde_json::json!({"state": "morphz-test"}),
+                });
+            }
+            Ok(AdapterLoginStart {
+                flow: self.flow,
+                authorization_url: None,
+                verification_uri: Some("https://auth.example.test/device".to_string()),
+                verification_uri_complete: Some(
+                    "https://auth.example.test/device?code=MORPHZ-TEST".to_string(),
+                ),
+                user_code: Some("MORPHZ-TEST".to_string()),
+                expires_at: Utc::now() + ChronoDuration::minutes(10),
+                poll_interval_secs: 5,
+                state: serde_json::json!({"device_code": "device-test"}),
+            })
+        }
+
+        async fn continue_login(
+            &self,
+            _state: &Value,
+            completion: OAuthLoginCompletion,
+        ) -> Result<AdapterLoginResult, String> {
+            assert_eq!(completion, OAuthLoginCompletion::Poll);
+            Ok(AdapterLoginResult::Complete(OAuthTokenSet {
+                adapter_id: self.id().to_string(),
+                adapter_version: self.version().to_string(),
+                access_token: "web-test-access-token".to_string(),
+                refresh_token: Some("web-test-refresh-token".to_string()),
+                id_token: None,
+                token_type: Some("Bearer".to_string()),
+                scopes: vec!["model.invoke".to_string()],
+                expires_at: Some(Utc::now() + ChronoDuration::hours(1)),
+                subject: Some("subject-web-test".to_string()),
+                account_id: Some("provider-account-web-test".to_string()),
+                email: Some("oauth@example.test".to_string()),
+                device_id: None,
+                metadata: BTreeMap::new(),
+            }))
+        }
+
+        async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
+            Ok(current.clone())
+        }
+
+        fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
+            Ok(RequestAuthorization {
+                bearer_token: token.access_token.clone(),
+                headers: BTreeMap::new(),
+            })
+        }
+    }
 
     #[derive(Default)]
     struct ReplyClient {
@@ -5345,6 +5669,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Client for ReplyClient {
+        fn replace_provider_catalog(&self, _config: &AppConfig) -> Result<(), String> {
+            Ok(())
+        }
+
         fn model(&self) -> Option<String> {
             self.model.read().ok().and_then(|value| value.clone())
         }
@@ -5404,6 +5732,23 @@ mod tests {
         path: &std::path::Path,
         start_workers: bool,
     ) -> (Arc<AppState>, MorphzRuntime) {
+        test_state_at_with_workers_and_auth(path, start_workers, None).await
+    }
+
+    async fn test_state_at_with_workers_and_auth(
+        path: &std::path::Path,
+        start_workers: bool,
+        auth_registry: Option<AuthAdapterRegistry>,
+    ) -> (Arc<AppState>, MorphzRuntime) {
+        test_state_at_with_workers_auth_and_secrets(path, start_workers, auth_registry, None).await
+    }
+
+    async fn test_state_at_with_workers_auth_and_secrets(
+        path: &std::path::Path,
+        start_workers: bool,
+        auth_registry: Option<AuthAdapterRegistry>,
+        secret_store: Option<Arc<SecretStore>>,
+    ) -> (Arc<AppState>, MorphzRuntime) {
         let mut config = AppConfig::default();
         config.llm.provider = Some("fixture-provider".to_string());
         config.llm.models.push("fixture-model".to_string());
@@ -5415,7 +5760,16 @@ mod tests {
                 ..crate::config::ProviderConfig::default()
             },
         );
-        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient::default()))
+        let secret_store = secret_store.unwrap_or_else(|| {
+            Arc::new(
+                SecretStore::new(
+                    path.with_extension("managed-secrets.json"),
+                    Arc::new(WebTestSecretBackend::default()),
+                )
+                .unwrap(),
+            )
+        });
+        let mut builder = MorphzRuntime::builder(config, Arc::new(ReplyClient::default()))
             .database_path(path.to_str().unwrap())
             .identity(RuntimeIdentity {
                 agent_id: "agent-test".to_string(),
@@ -5426,9 +5780,11 @@ mod tests {
                 context_only: true,
                 coding_eval: false,
             })
-            .build()
-            .await
-            .unwrap();
+            .secret_store(secret_store);
+        if let Some(registry) = auth_registry {
+            builder = builder.provider_auth_registry(registry);
+        }
+        let runtime = builder.build().await.unwrap();
         if start_workers {
             runtime.start().await.unwrap();
         }
@@ -5548,7 +5904,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let edit_response = handle_edit_objective(
-            State(state),
+            State(Arc::clone(&state)),
             Path("objective-http-harness".to_string()),
             HeaderMap::new(),
             Query(AuthQuery::default()),
@@ -6270,7 +6626,16 @@ mod tests {
         )
         .await
         .into_response();
-        assert_eq!(response.status(), StatusCode::OK);
+        if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            panic!(
+                "unexpected provider mutation response {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
 
         let account = AuthAccountConfig {
             auth_adapter: "none".to_string(),
@@ -6287,7 +6652,16 @@ mod tests {
         )
         .await
         .into_response();
-        assert_eq!(response.status(), StatusCode::OK);
+        if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            panic!(
+                "unexpected account mutation response {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
 
         let response = handle_put_provider_instance_config(
             State(Arc::clone(&state)),
@@ -6408,6 +6782,433 @@ mod tests {
             ["dashboard/model"]
         );
         assert_eq!(managed.llm.model, "dashboard-model");
+    }
+
+    #[tokio::test]
+    async fn dashboard_oauth_bootstrap_catalog_and_start_cover_all_supported_services() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let env_path = tmp.path().join(".env");
+        let secret_store = Arc::new(
+            SecretStore::with_backends(
+                tmp.path().join("managed-secrets.json"),
+                "morphz_env_file",
+                vec![Arc::new(
+                    crate::secret_store::HostEnvFileSecretBackend::new(&env_path),
+                )],
+            )
+            .unwrap(),
+        );
+        let expected = [
+            ("codex", "codex-oauth", OAuthFlowKind::DeviceCode),
+            ("kimi", "kimi-oauth", OAuthFlowKind::DeviceCode),
+            (
+                "anthropic",
+                "claude-oauth",
+                OAuthFlowKind::AuthorizationCodePkce,
+            ),
+            (
+                "antigravity",
+                "antigravity-oauth",
+                OAuthFlowKind::AuthorizationCodePkce,
+            ),
+            ("xai", "xai-oauth", OAuthFlowKind::DeviceCode),
+        ];
+        let mut registry = AuthAdapterRegistry::default();
+        for (_, adapter_id, flow) in expected {
+            registry.register(Arc::new(WebTestOAuthAdapter {
+                id: adapter_id,
+                flow,
+            }));
+        }
+        let (state, runtime) = test_state_at_with_workers_auth_and_secrets(
+            &database_path,
+            false,
+            Some(registry),
+            Some(secret_store),
+        )
+        .await;
+
+        let catalog = handle_oauth_provider_setup_services(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(catalog.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(catalog.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        let services = payload["services"].as_array().unwrap();
+        assert_eq!(services.len(), expected.len());
+        let mut authenticated_accounts = Vec::new();
+        for (service_id, adapter_id, flow) in expected {
+            assert!(services.iter().any(|service| {
+                service["id"] == service_id && service["auth_adapter"] == adapter_id
+            }));
+
+            let started = handle_start_oauth_provider_setup(
+                State(Arc::clone(&state)),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+                Json(StartOAuthProviderSetupRequest {
+                    service: service_id.to_string(),
+                }),
+            )
+            .await
+            .into_response();
+            let status = started.status();
+            let body = axum::body::to_bytes(started.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(
+                status,
+                StatusCode::CREATED,
+                "{service_id} OAuth bootstrap failed: {}",
+                String::from_utf8_lossy(&body)
+            );
+            let challenge: crate::provider::auth::OAuthLoginChallenge =
+                serde_json::from_slice(&body).unwrap();
+            assert_eq!(challenge.adapter_id, adapter_id);
+            assert_eq!(challenge.flow, flow);
+            match flow {
+                OAuthFlowKind::DeviceCode => {
+                    assert_eq!(challenge.user_code.as_deref(), Some("MORPHZ-TEST"));
+                }
+                OAuthFlowKind::AuthorizationCodePkce => {
+                    assert!(challenge.authorization_url.is_some());
+                    assert!(challenge.user_code.is_none());
+                }
+            }
+
+            let completed = handle_continue_provider_oauth_login(
+                State(Arc::clone(&state)),
+                Path(challenge.login_id),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+                Json(OAuthLoginCompletion::Poll),
+            )
+            .await
+            .into_response();
+            let completed_status = completed.status();
+            let completed_body = axum::body::to_bytes(completed.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(
+                completed_status,
+                StatusCode::OK,
+                "{service_id} OAuth completion failed: {}",
+                String::from_utf8_lossy(&completed_body)
+            );
+            let progress: OAuthLoginProgress = serde_json::from_slice(&completed_body).unwrap();
+            let OAuthLoginProgress::Complete { account } = progress else {
+                panic!("{service_id} OAuth login did not complete")
+            };
+            assert_eq!(account.account_id, challenge.account_id);
+            authenticated_accounts.push(challenge.account_id);
+        }
+
+        let snapshot = runtime.provider_control_snapshot().await.unwrap();
+        for account_id in authenticated_accounts {
+            let account = snapshot.auth_accounts.get(&account_id).unwrap();
+            assert!(account.authenticated, "{account_id} was not authenticated");
+        }
+    }
+
+    #[tokio::test]
+    async fn dashboard_oauth_bootstrap_preserves_multiple_accounts_per_service() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let env_path = tmp.path().join(".env");
+        let secret_store = Arc::new(
+            SecretStore::with_backends(
+                tmp.path().join("managed-secrets.json"),
+                "morphz_env_file",
+                vec![Arc::new(
+                    crate::secret_store::HostEnvFileSecretBackend::new(&env_path),
+                )],
+            )
+            .unwrap(),
+        );
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(Arc::new(WebTestOAuthAdapter {
+            id: "codex-oauth",
+            flow: OAuthFlowKind::DeviceCode,
+        }));
+        let (state, runtime) = test_state_at_with_workers_auth_and_secrets(
+            &database_path,
+            false,
+            Some(registry),
+            Some(secret_store),
+        )
+        .await;
+
+        let mut account_ids = Vec::new();
+        for _ in 0..2 {
+            let started = handle_start_oauth_provider_setup(
+                State(Arc::clone(&state)),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+                Json(StartOAuthProviderSetupRequest {
+                    service: "codex".to_string(),
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(started.status(), StatusCode::CREATED);
+            let body = axum::body::to_bytes(started.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let challenge: crate::provider::auth::OAuthLoginChallenge =
+                serde_json::from_slice(&body).unwrap();
+            account_ids.push(challenge.account_id.clone());
+
+            let completed = handle_continue_provider_oauth_login(
+                State(Arc::clone(&state)),
+                Path(challenge.login_id),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+                Json(OAuthLoginCompletion::Poll),
+            )
+            .await
+            .into_response();
+            assert_eq!(completed.status(), StatusCode::OK);
+        }
+
+        assert_ne!(account_ids[0], account_ids[1]);
+        let snapshot = runtime.provider_control_snapshot().await.unwrap();
+        let provider = &snapshot.provider_instances["codex-subscription"];
+        assert_eq!(provider.accounts.len(), 2);
+        assert!(account_ids.iter().all(|id| provider.accounts.contains(id)));
+        let route = &snapshot.model_routes["gpt-5.6"];
+        assert_eq!(route.candidates.len(), 2);
+        assert!(account_ids.iter().all(|account_id| route
+            .candidates
+            .iter()
+            .any(|candidate| candidate.account.as_deref() == Some(account_id.as_str()))));
+    }
+
+    #[tokio::test]
+    async fn dashboard_oauth_setup_can_start_login_without_runtime_restart() {
+        // SecretStore intentionally tightens its own directory permissions.
+        // Give it a test-owned directory instead of placing the catalog next
+        // to a NamedTempFile in macOS' shared temporary directory.
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(Arc::new(WebTestOAuthAdapter {
+            id: "web-test-oauth",
+            flow: OAuthFlowKind::DeviceCode,
+        }));
+        let (state, runtime) =
+            test_state_at_with_workers_and_auth(&database_path, false, Some(registry)).await;
+
+        let setup = handle_put_provider_catalog_setup(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderCatalogSetupRequest {
+                provider_id: "oauth-provider".to_string(),
+                provider: ProviderInstanceConfig {
+                    adapter: "oauth-test".to_string(),
+                    protocol: crate::config::ModelProtocol::OpenaiResponses,
+                    base_url: "https://api.example.test/v1".to_string(),
+                    accounts: vec!["oauth-account".to_string()],
+                    ..ProviderInstanceConfig::default()
+                },
+                account_id: "oauth-account".to_string(),
+                account: AuthAccountConfig {
+                    auth_adapter: "web-test-oauth".to_string(),
+                    credential_ref: "MORPHZ_OAUTH_TEST_TOKEN".to_string(),
+                    provider: Some("oauth-provider".to_string()),
+                    label: Some("OAuth test".to_string()),
+                    ..AuthAccountConfig::default()
+                },
+                credential_id: None,
+                credential: None,
+                route_id: "oauth-model".to_string(),
+                route: ModelRouteConfig {
+                    aliases: vec!["oauth/model".to_string()],
+                    candidates: vec![crate::config::ModelRouteCandidateConfig {
+                        provider: "oauth-provider".to_string(),
+                        account: Some("oauth-account".to_string()),
+                        model: "physical-model".to_string(),
+                        ..crate::config::ModelRouteCandidateConfig::default()
+                    }],
+                    ..ModelRouteConfig::default()
+                },
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(setup.status(), StatusCode::OK);
+
+        let start = handle_start_provider_oauth_login(
+            State(Arc::clone(&state)),
+            Path("oauth-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        let start_status = start.status();
+        let body = axum::body::to_bytes(start.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            start_status,
+            StatusCode::CREATED,
+            "OAuth start failed: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let challenge: crate::provider::auth::OAuthLoginChallenge =
+            serde_json::from_slice(&body).unwrap();
+        assert_eq!(challenge.account_id, "oauth-account");
+        assert_eq!(challenge.adapter_id, "web-test-oauth");
+        assert_eq!(challenge.flow, OAuthFlowKind::DeviceCode);
+        assert_eq!(challenge.user_code.as_deref(), Some("MORPHZ-TEST"));
+        assert_eq!(
+            challenge.verification_uri_complete.as_deref(),
+            Some("https://auth.example.test/device?code=MORPHZ-TEST")
+        );
+
+        let login_id = challenge.login_id.clone();
+        let completed = handle_continue_provider_oauth_login(
+            State(Arc::clone(&state)),
+            Path(login_id),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(OAuthLoginCompletion::Poll),
+        )
+        .await
+        .into_response();
+        let completed_status = completed.status();
+        let completed_body = axum::body::to_bytes(completed.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            completed_status,
+            StatusCode::OK,
+            "OAuth completion failed: {}",
+            String::from_utf8_lossy(&completed_body)
+        );
+        let progress: OAuthLoginProgress = serde_json::from_slice(&completed_body).unwrap();
+        let OAuthLoginProgress::Complete { account } = progress else {
+            panic!("OAuth login did not reach a terminal authenticated state")
+        };
+        assert_eq!(account.account_id, "oauth-account");
+        assert_eq!(account.email.as_deref(), Some("oauth@example.test"));
+
+        let snapshot = runtime.provider_control_snapshot().await.unwrap();
+        let account = &snapshot.auth_accounts["oauth-account"];
+        assert!(account.authenticated);
+        assert_eq!(
+            account
+                .oauth_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.email.as_deref()),
+            Some("oauth@example.test")
+        );
+        assert!(snapshot.provider_instances.contains_key("oauth-provider"));
+        assert!(snapshot.model_routes.contains_key("oauth-model"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_oauth_setup_uses_headless_env_secret_backend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let env_path = tmp.path().join(".env");
+        let secret_store = Arc::new(
+            SecretStore::with_backends(
+                tmp.path().join("managed-secrets.json"),
+                "morphz_env_file",
+                vec![Arc::new(
+                    crate::secret_store::HostEnvFileSecretBackend::new(&env_path),
+                )],
+            )
+            .unwrap(),
+        );
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(Arc::new(WebTestOAuthAdapter {
+            id: "web-test-oauth",
+            flow: OAuthFlowKind::DeviceCode,
+        }));
+        let (state, _runtime) = test_state_at_with_workers_auth_and_secrets(
+            &database_path,
+            false,
+            Some(registry),
+            Some(secret_store),
+        )
+        .await;
+
+        let setup = handle_put_provider_catalog_setup(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderCatalogSetupRequest {
+                provider_id: "oauth-provider".to_string(),
+                provider: ProviderInstanceConfig {
+                    adapter: "oauth-test".to_string(),
+                    protocol: crate::config::ModelProtocol::OpenaiResponses,
+                    base_url: "https://api.example.test/v1".to_string(),
+                    accounts: vec!["oauth-account".to_string()],
+                    ..ProviderInstanceConfig::default()
+                },
+                account_id: "oauth-account".to_string(),
+                account: AuthAccountConfig {
+                    auth_adapter: "web-test-oauth".to_string(),
+                    credential_ref: "MORPHZ_OAUTH_TEST_TOKEN".to_string(),
+                    secret_backend: Some("morphz_env_file".to_string()),
+                    provider: Some("oauth-provider".to_string()),
+                    label: Some("OAuth test".to_string()),
+                    ..AuthAccountConfig::default()
+                },
+                credential_id: None,
+                credential: None,
+                route_id: "oauth-model".to_string(),
+                route: ModelRouteConfig {
+                    aliases: vec!["oauth/model".to_string()],
+                    candidates: vec![crate::config::ModelRouteCandidateConfig {
+                        provider: "oauth-provider".to_string(),
+                        account: Some("oauth-account".to_string()),
+                        model: "physical-model".to_string(),
+                        ..crate::config::ModelRouteCandidateConfig::default()
+                    }],
+                    ..ModelRouteConfig::default()
+                },
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(setup.status(), StatusCode::OK);
+
+        let start = handle_start_provider_oauth_login(
+            State(state),
+            Path("oauth-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        let start_status = start.status();
+        let body = axum::body::to_bytes(start.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            start_status,
+            StatusCode::CREATED,
+            "OAuth start failed: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let challenge: crate::provider::auth::OAuthLoginChallenge =
+            serde_json::from_slice(&body).unwrap();
+        assert_eq!(challenge.user_code.as_deref(), Some("MORPHZ-TEST"));
+
+        let env = std::fs::read_to_string(env_path).unwrap();
+        assert!(env.contains("MORPHZ_OAUTH_LOGIN_"));
+        assert!(!env.contains("MORPHZ_OAUTH_TEST_TOKEN="));
     }
 
     #[tokio::test]
