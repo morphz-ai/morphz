@@ -35,6 +35,8 @@ export interface LiveModelAttempt {
   toolCallCount: number
   reasoningSummaryPersisted: boolean
   responseResolved: boolean
+  /** Runtime's authoritative physical-attempt terminal marker. */
+  terminal: boolean
   error?: string
 }
 
@@ -145,6 +147,7 @@ function reduceAttempt(
         toolCallCount: 0,
         reasoningSummaryPersisted: false,
         responseResolved: false,
+        terminal: false,
       },
     }
   }
@@ -217,6 +220,7 @@ function reduceAttemptState(
         status: item.state === 'failed' ? 'failed' : 'settling',
         runtimeState: 'settling',
         error: item.state === 'failed' ? item.detail ?? current.error : current.error,
+        terminal: true,
       },
     }
   }
@@ -243,6 +247,7 @@ function reduceAttemptState(
       toolCallCount: current?.toolCallCount ?? 0,
       reasoningSummaryPersisted: current?.reasoningSummaryPersisted ?? false,
       responseResolved: current?.responseResolved ?? false,
+      terminal: false,
     },
   }
 }
@@ -325,7 +330,8 @@ export function modelStreamReducer(state: LiveModelState, action: ModelStreamAct
 
   const activeActivationIds = new Set(action.activeActivationIds)
   const entries = Object.entries(state.attempts).filter(([, attempt]) => (
-    activeActivationIds.has(attempt.activationId) || attempt.lastEventMs >= action.cutoffMs
+    activeActivationIds.has(attempt.activationId)
+      || (!attempt.terminal && attempt.lastEventMs >= action.cutoffMs)
   ))
   return entries.length === Object.keys(state.attempts).length
     ? state

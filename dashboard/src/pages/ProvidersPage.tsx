@@ -16,12 +16,18 @@ import {
   Server,
   ShieldCheck,
   Save,
+  Settings2,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DashboardApiClient } from '../api/client'
+import {
+  groupPhysicalEvaluations,
+  type ModelAttemptBinding,
+  type ModelUsageRecord,
+} from '../app/providerEvaluations'
 
 interface ProviderModelConfig {
   context_window_tokens?: number
@@ -124,41 +130,6 @@ interface AuthAdapterDescriptor {
   last_verified_on?: string
 }
 
-interface ModelAttemptBinding {
-  requested_alias: string
-  route_id: string
-  route_revision: string
-  provider_instance_id: string
-  auth_account_id: string
-  physical_model: string
-  protocol: string
-  provider_adapter: string
-  provider_adapter_version: string
-  endpoint: string
-  capabilities: string[]
-}
-
-interface ModelUsageRecord {
-  event_id: string
-  timestamp: string
-  context_id: string
-  session_id: string
-  attempt_id: string
-  model?: string
-  model_binding?: ModelAttemptBinding
-  usage: {
-    input_tokens?: number
-    cached_input_tokens?: number
-    output_tokens?: number
-    total_tokens?: number
-  }
-  cost?: {
-    amount: number
-    currency: string
-    pricing_version: string
-  }
-}
-
 interface ModelRouteDiagnostic {
   checked_at: string
   binding: ModelAttemptBinding
@@ -200,10 +171,27 @@ interface CatalogEditorState {
 }
 
 interface CatalogMutationReceipt {
-  kind: CatalogEditorKind
+  kind: CatalogEditorKind | 'provider_catalog'
   id: string
   managed_config_path: string
   restart_required: boolean
+}
+
+type ProviderSetupMode = 'oauth' | 'api_key'
+
+interface ProviderSetupState {
+  mode: ProviderSetupMode
+  preset: 'codex' | 'kimi' | 'custom'
+  providerId: string
+  accountId: string
+  routeId: string
+  alias: string
+  physicalModel: string
+  adapter: string
+  authAdapter: string
+  protocol: string
+  baseUrl: string
+  apiKey: string
 }
 
 const EMPTY_SNAPSHOT: ProviderControlSnapshot = {
@@ -222,6 +210,14 @@ function localDate(value?: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
+function defaultSetup(): ProviderSetupState {
+  return {
+    mode: 'oauth', preset: 'codex', providerId: 'codex-subscription', accountId: 'codex-subscription-default',
+    routeId: 'gpt-5.6', alias: 'gpt-5.6', physicalModel: 'gpt-5.6', adapter: 'openai-codex',
+    authAdapter: 'codex-oauth', protocol: 'openai-responses', baseUrl: 'https://chatgpt.com/backend-api/codex', apiKey: '',
+  }
+}
+
 export function ProvidersPage({ api }: ProvidersPageProps) {
   const { t } = useTranslation()
   const [snapshot, setSnapshot] = useState<ProviderControlSnapshot>(EMPTY_SNAPSHOT)
@@ -236,6 +232,8 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const [catalogNotice, setCatalogNotice] = useState('')
   const [diagnostic, setDiagnostic] = useState<ModelRouteDiagnostic | null>(null)
   const [diagnosing, setDiagnosing] = useState('')
+  const [setup, setSetup] = useState<ProviderSetupState | null>(null)
+  const [savingSetup, setSavingSetup] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -261,6 +259,92 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const instances = useMemo(() => Object.entries(snapshot.provider_instances), [snapshot.provider_instances])
   const accounts = useMemo(() => Object.entries(snapshot.auth_accounts), [snapshot.auth_accounts])
   const routes = useMemo(() => Object.entries(snapshot.model_routes), [snapshot.model_routes])
+  const physicalEvaluations = useMemo(() => groupPhysicalEvaluations(attempts), [attempts])
+
+  const applySetupPreset = (preset: ProviderSetupState['preset']) => {
+    setSetup(current => {
+      const mode = current?.mode ?? 'oauth'
+      if (preset === 'codex') return { ...defaultSetup(), mode, preset }
+      if (preset === 'kimi') return {
+        ...defaultSetup(), mode, preset, providerId: 'kimi-code', accountId: 'kimi-code-default',
+        routeId: 'kimi-k3', alias: 'kimi-k3', physicalModel: 'k3', adapter: 'kimi-code',
+        authAdapter: 'kimi-oauth', protocol: 'openai-chat', baseUrl: 'https://api.kimi.com/coding/v1',
+      }
+      return {
+        ...defaultSetup(), mode: 'api_key', preset, providerId: 'custom', accountId: 'custom-default',
+        routeId: 'custom-model', alias: 'custom-model', physicalModel: '', adapter: 'protocol-compatible',
+        authAdapter: 'credential', protocol: 'openai-responses', baseUrl: '',
+      }
+    })
+  }
+
+  const saveProviderSetup = async () => {
+    if (!setup) return
+    const providerId = setup.providerId.trim()
+    const accountId = setup.accountId.trim()
+    const routeId = setup.routeId.trim()
+    const alias = setup.alias.trim() || routeId
+    const physicalModel = setup.physicalModel.trim()
+    if (!providerId || !accountId || !routeId || !physicalModel || !setup.baseUrl.trim()) {
+      setError(t('providers.setupRequired'))
+      return
+    }
+    setSavingSetup(true)
+    setError('')
+    try {
+      let credentialId: string | undefined
+      let credential: Record<string, unknown> | undefined
+      let credentialRef = ''
+      let secretBackend: string | undefined
+      if (setup.mode === 'api_key' && setup.apiKey) {
+        const envName = `MORPHZ_PROVIDER_${providerId.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}_API_KEY`
+        await api.command('/api/runtime/secrets', 'POST', {
+          name: envName,
+          value: setup.apiKey,
+          scope_kind: 'runtime',
+          value_backend: 'morphz_env_file',
+        })
+        credentialId = `${providerId}-api-key`
+        credentialRef = credentialId
+        secretBackend = 'morphz_env_file'
+        credential = { source: 'env', name: envName, service: null, command: [] }
+      } else if (setup.mode === 'oauth') {
+        credentialRef = `MORPHZ_OAUTH_${accountId.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}`
+        secretBackend = 'morphz_env_file'
+      }
+      const receipt = await api.command<CatalogMutationReceipt>('/api/runtime/providers/setup', 'PUT', {
+        provider_id: providerId,
+        provider: {
+          adapter: setup.adapter.trim(), protocol: setup.protocol, base_url: setup.baseUrl.trim(), accounts: [accountId],
+          models: { [physicalModel]: {} }, headers: {}, env_headers: {},
+        },
+        account_id: accountId,
+        account: {
+          auth_adapter: setup.mode === 'oauth' ? setup.authAdapter : (credentialRef ? 'credential' : 'none'),
+          credential_ref: credentialRef,
+          secret_backend: secretBackend,
+          provider: providerId,
+          label: t('providers.defaultAccount'),
+          enabled: true,
+        },
+        credential_id: credentialId,
+        credential,
+        route_id: routeId,
+        route: {
+          aliases: alias === routeId ? [] : [alias],
+          candidates: [{ provider: providerId, model: physicalModel, priority: 0, account: accountId, capabilities: [] }],
+          affinity: 'context', selection: 'available-least-recently-used', fallback: false,
+        },
+      })
+      setCatalogNotice(t('providers.setupSaved', { path: receipt.managed_config_path }))
+      setSetup(null)
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setSavingSetup(false)
+    }
+  }
 
   const mutateAccount = async (accountId: string, record: ProviderAccountRecord) => {
     setBusyAccount(accountId)
@@ -430,9 +514,12 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
           <h1>{t('providers.heading')}</h1>
           <p>{t('providers.description')}</p>
         </div>
-        <button type="button" onClick={() => void refresh()} disabled={loading}>
-          <RefreshCw className={loading ? 'is-spinning' : ''} size={14} /> {t('providers.refresh')}
-        </button>
+        <nav className="provider-heading-actions">
+          <button className="is-primary" type="button" onClick={() => setSetup(defaultSetup())}><Plus size={14} /> {t('providers.addService')}</button>
+          <button type="button" onClick={() => void refresh()} disabled={loading}>
+            <RefreshCw className={loading ? 'is-spinning' : ''} size={14} /> {t('providers.refresh')}
+          </button>
+        </nav>
       </header>
 
       {error && <p className="provider-control-error">{error}</p>}
@@ -467,24 +554,26 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       <section className="provider-control-section">
         <header><span><Activity size={15} /> {t('providers.recentAttempts')}</span><small>{t('providers.recentAttemptsHint')}</small></header>
         <div className="provider-attempt-list">
-          {attempts.slice(0, 20).map(attempt => {
+          {physicalEvaluations.map(group => {
+            const attempt = group.latest
             const binding = attempt.model_binding
             return (
-              <article key={attempt.event_id}>
+              <article key={group.key}>
                 <header>
-                  <span><strong>{binding?.requested_alias ?? attempt.model ?? '—'}</strong><code>{attempt.attempt_id}</code></span>
+                  <span><strong>{binding?.requested_alias ?? attempt.model ?? '—'}</strong><code>{binding ? `${binding.provider_instance_id} / ${binding.auth_account_id}` : t('providers.legacyAttempt')}</code></span>
                   <time dateTime={attempt.timestamp}>{localDate(attempt.timestamp)}</time>
                 </header>
                 <div>
                   <span><small>{t('providers.physicalModel')}</small><strong>{binding?.physical_model ?? attempt.model ?? '—'}</strong></span>
-                  <span><small>{t('providers.providerInstance')}</small><strong>{binding?.provider_instance_id ?? t('providers.legacyAttempt')}</strong></span>
-                  <span><small>{t('providers.authAccount')}</small><strong>{binding?.auth_account_id ?? '—'}</strong></span>
+                  <span><small>{t('providers.evaluationCount')}</small><strong>{t('providers.attemptCount', { count: group.attempts })}</strong></span>
+                  <span><small>{t('providers.inputAndCache')}</small><strong>{group.inputTokens.toLocaleString()} / {group.cachedInputTokens.toLocaleString()}</strong></span>
+                  <span><small>{t('providers.outputTokens')}</small><strong>{group.outputTokens.toLocaleString()}</strong></span>
                   <span><small>{t('providers.routeRevision')}</small><strong>{binding ? `${binding.route_id} · ${binding.route_revision}` : '—'}</strong></span>
                 </div>
                 <footer>
-                  <code>{attempt.context_id} / {attempt.session_id}</code>
-                  <span>{t('providers.usageTokens', { count: attempt.usage.total_tokens ?? 0 })}</span>
-                  {attempt.cost && <span>{attempt.cost.amount.toFixed(6)} {attempt.cost.currency}</span>}
+                  <code>{t('providers.scopeCount', { contexts: group.contextIds.size, sessions: group.sessionIds.size })}</code>
+                  <span>{t('providers.usageTokens', { count: group.totalTokens })}</span>
+                  {group.cost && <span>{group.cost.amount.toFixed(6)} {group.cost.currency}</span>}
                 </footer>
               </article>
             )
@@ -628,6 +717,49 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
           {!loading && snapshot.discovered_models.length === 0 && <p className="provider-empty">{t('providers.noRemoteCatalog')}</p>}
         </div>
       </section>
+
+      {setup && (
+        <div className="provider-oauth-backdrop" role="presentation" onMouseDown={event => {
+          if (event.currentTarget === event.target) setSetup(null)
+        }}>
+          <section className="provider-oauth-dialog provider-setup-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-setup-title">
+            <header>
+              <span><Settings2 size={16} /><strong id="provider-setup-title">{t('providers.setupTitle')}</strong></span>
+              <button type="button" onClick={() => setSetup(null)} aria-label={t('providers.cancel')}><X size={15} /></button>
+            </header>
+            <p>{t('providers.setupHint')}</p>
+            <nav className="provider-setup-modes">
+              <button className={setup.mode === 'oauth' ? 'is-active' : ''} type="button" onClick={() => setSetup(current => current ? { ...current, mode: 'oauth', apiKey: '' } : current)}><LogIn size={14} /> {t('providers.oauthSetup')}</button>
+              <button className={setup.mode === 'api_key' ? 'is-active' : ''} type="button" onClick={() => setSetup(current => current ? { ...current, mode: 'api_key', preset: 'custom', authAdapter: 'credential' } : current)}><KeyRound size={14} /> {t('providers.apiSetup')}</button>
+            </nav>
+            {setup.mode === 'oauth' && (
+              <div className="provider-setup-presets">
+                {(['codex', 'kimi'] as const).map(preset => <button className={setup.preset === preset ? 'is-active' : ''} type="button" key={preset} onClick={() => applySetupPreset(preset)}>{t(`providers.presets.${preset}`)}</button>)}
+              </div>
+            )}
+            <div className="provider-setup-grid">
+              <label><span>{t('providers.providerId')}</span><input value={setup.providerId} onChange={event => setSetup(current => current ? { ...current, providerId: event.target.value } : current)} /></label>
+              <label><span>{t('providers.accountId')}</span><input value={setup.accountId} onChange={event => setSetup(current => current ? { ...current, accountId: event.target.value } : current)} /></label>
+              <label><span>{t('providers.modelAlias')}</span><input value={setup.alias} onChange={event => setSetup(current => current ? { ...current, alias: event.target.value, routeId: event.target.value } : current)} /></label>
+              <label><span>{t('providers.physicalModel')}</span><input value={setup.physicalModel} onChange={event => setSetup(current => current ? { ...current, physicalModel: event.target.value } : current)} /></label>
+              <label className="is-wide"><span>{t('providers.baseUrl')}</span><input value={setup.baseUrl} onChange={event => setSetup(current => current ? { ...current, baseUrl: event.target.value } : current)} /></label>
+              {setup.mode === 'api_key' && <label className="is-wide"><span>{t('providers.apiKeyOptional')}</span><input autoComplete="new-password" type="password" value={setup.apiKey} onChange={event => setSetup(current => current ? { ...current, apiKey: event.target.value } : current)} /></label>}
+            </div>
+            <details className="provider-setup-advanced">
+              <summary>{t('providers.advanced')}</summary>
+              <div className="provider-setup-grid">
+                <label><span>{t('providers.protocol')}</span><select value={setup.protocol} onChange={event => setSetup(current => current ? { ...current, protocol: event.target.value } : current)}><option value="openai-responses">openai-responses</option><option value="openai-chat">openai-chat</option><option value="anthropic-messages">anthropic-messages</option><option value="gemini-content">gemini-content</option></select></label>
+                <label><span>{t('providers.adapter')}</span><input value={setup.adapter} onChange={event => setSetup(current => current ? { ...current, adapter: event.target.value } : current)} /></label>
+              </div>
+            </details>
+            <p className="provider-setup-restart">{t('providers.setupRestart')}</p>
+            <footer>
+              <button type="button" onClick={() => setSetup(null)}>{t('providers.cancel')}</button>
+              <button className="is-primary" type="button" disabled={savingSetup} onClick={() => void saveProviderSetup()}><Save size={13} /> {savingSetup ? t('providers.busy') : t('providers.saveRestart')}</button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       {challenge && (
         <div className="provider-oauth-backdrop" role="presentation" onMouseDown={event => {

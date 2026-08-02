@@ -47,10 +47,11 @@ use crate::memory::{
     NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
     RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, SessionPrincipalBinding, SessionRecord, SessionStore, SessionUpdate,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
-    ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadPhase, ThreadRecord,
-    ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    ScheduleStatus, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore,
+    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
+    ThreadControlState, ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
+    ThreadSupervisorKind, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -440,6 +441,10 @@ pub struct RuntimeOverviewQuery {
     pub include_archived: bool,
     pub context_limit: Option<usize>,
     pub sessions_per_context: Option<usize>,
+    /// Optional operator drill-down. When present, the Runtime projects only
+    /// this Context so the Dashboard can expand its Session cards without
+    /// increasing the global command-board fan-out.
+    pub context_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -5033,7 +5038,7 @@ impl MorphzRuntime {
         const DEFAULT_CONTEXT_LIMIT: usize = 40;
         const MAX_CONTEXT_LIMIT: usize = 100;
         const DEFAULT_SESSIONS_PER_CONTEXT: usize = 6;
-        const MAX_SESSIONS_PER_CONTEXT: usize = 20;
+        const MAX_SESSIONS_PER_CONTEXT: usize = 200;
         const MAX_ACTIVITY_ROWS: usize = 4_000;
 
         let context_limit = query
@@ -5050,13 +5055,24 @@ impl MorphzRuntime {
         // ordering after joining authoritative scheduler state.
         let session_candidate_limit = MAX_SESSIONS_PER_CONTEXT;
         let requested_context_rows = context_limit.saturating_add(1);
-        let mut contexts = self
-            .inner
-            .store
-            .list_recent_contexts(query.include_archived, requested_context_rows)
-            .await?;
-        let has_more_contexts = contexts.len() > context_limit;
-        contexts.truncate(context_limit);
+        let mut contexts = if let Some(context_id) = query.context_id.as_deref() {
+            self.inner
+                .store
+                .get_context(context_id)
+                .await?
+                .filter(|context| query.include_archived || context.status == SessionStatus::Active)
+                .into_iter()
+                .collect()
+        } else {
+            self.inner
+                .store
+                .list_recent_contexts(query.include_archived, requested_context_rows)
+                .await?
+        };
+        let has_more_contexts = query.context_id.is_none() && contexts.len() > context_limit;
+        if query.context_id.is_none() {
+            contexts.truncate(context_limit);
+        }
         if contexts.is_empty() {
             return Ok(RuntimeOverview {
                 generated_at: chrono::Utc::now(),

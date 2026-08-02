@@ -2719,8 +2719,14 @@ export default function App() {
           .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]?.id ?? nextSessions[0]?.id ?? ''
       })
       setError('')
+      return {
+        contexts: nextContexts,
+        sessions: nextSessions,
+        delegations: nextDelegations,
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
+      return undefined
     } finally {
       setCatalogReady(true)
     }
@@ -2984,7 +2990,12 @@ export default function App() {
         DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>('/api/delegations')
           .then(delegationsResult => {
             if (delegationsResult && isCurrentScope()) {
-              setDelegations(delegationsResult.delegations ?? [])
+              const nextDelegations = delegationsResult.delegations ?? []
+              setDelegations(nextDelegations)
+              const knownContextIds = new Set(contexts.map(context => context.id))
+              if (nextDelegations.some(delegation => !knownContextIds.has(delegation.child_context_id))) {
+                void loadCatalog()
+              }
             }
           }),
       ]
@@ -3006,7 +3017,7 @@ export default function App() {
         )
       }
     }
-  }, [])
+  }, [contexts, loadCatalog])
 
   const loadContextProjection = useCallback(async (sessionId: string, contextId: string) => {
     if (!sessionId || !contextId) return
@@ -3070,6 +3081,29 @@ export default function App() {
       setRuntimeOverviewError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setRuntimeOverviewLoading(false)
+    }
+  }, [])
+
+  const expandRuntimeOverviewSessions = useCallback(async (contextId: string) => {
+    try {
+      const params = new URLSearchParams({
+        context_id: contextId,
+        context_limit: '1',
+        sessions_per_context: '200',
+      })
+      const expanded = await DASHBOARD_API.get<RuntimeOverview>(`/api/overview?${params.toString()}`)
+      const expandedContext = expanded.contexts[0]
+      if (!expandedContext) return
+      setRuntimeOverview(current => current ? {
+        ...current,
+        generated_at: expanded.generated_at,
+        contexts: current.contexts.map(item => (
+          item.context.id === contextId ? expandedContext : item
+        )),
+      } : current)
+      setRuntimeOverviewError('')
+    } catch (reason) {
+      setRuntimeOverviewError(reason instanceof Error ? reason.message : String(reason))
     }
   }, [])
 
@@ -3548,6 +3582,7 @@ export default function App() {
   useEffect(() => {
     authoritativeRefreshRef.current = (topic: string) => {
       const invalidated = invalidatedQueriesForTopic(topic)
+      if (invalidated.includes('catalog')) void loadCatalog()
       const refreshesSession = invalidated.includes('session')
       if (refreshesSession) void loadSession(selectedSessionId, selectedContextId)
       if (!refreshesSession && invalidated.includes('overview')) {
@@ -3575,6 +3610,7 @@ export default function App() {
     ledgerBeforeSequence,
     ledgerFilters,
     loadLedger,
+    loadCatalog,
     loadMindTransactions,
     loadOverview,
     loadRuntimeOverview,
@@ -5715,17 +5751,24 @@ export default function App() {
       onDeleteObjective={objective => void deleteObjective(objective)}
       onThreadControl={(thread, action) => void controlThread(thread, action)}
       onOpenDelegationContext={delegation => {
-        const childSession = sessions.find(session => session.id === delegation.child_session_id)
-        if (childSession) {
-          chooseSession(childSession)
-          return
-        }
-        const childContext = contexts.find(context => context.id === delegation.child_context_id)
-        if (childContext) {
-          activateContext(childContext)
-          return
-        }
-        setError(t('errors.delegationContextUnavailable'))
+        void (async () => {
+          let childSession = sessions.find(session => session.id === delegation.child_session_id)
+          let childContext = contexts.find(context => context.id === delegation.child_context_id)
+          if (!childSession && !childContext) {
+            const catalog = await loadCatalog()
+            childSession = catalog?.sessions.find(session => session.id === delegation.child_session_id)
+            childContext = catalog?.contexts.find(context => context.id === delegation.child_context_id)
+          }
+          if (childSession) {
+            chooseSession(childSession)
+            return
+          }
+          if (childContext) {
+            activateContext(childContext)
+            return
+          }
+          setError(t('errors.delegationContextUnavailable'))
+        })()
       }}
     />
   )
@@ -6343,6 +6386,7 @@ export default function App() {
                 setSelectedSessionId(sessionId)
                 navigate(dashboardPath('dialogue', contextId, sessionId))
               }}
+              onExpandSessions={expandRuntimeOverviewSessions}
             />
           )}
           {view === 'overview' && Boolean(route.contextId) && (

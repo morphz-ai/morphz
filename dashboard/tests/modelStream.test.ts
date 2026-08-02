@@ -138,6 +138,39 @@ test('physical terminal state keeps the draft until a durable semantic outcome r
   assert.equal(state.attempts['attempt-a'], undefined)
 })
 
+test('authoritative reconciliation removes a terminal physical attempt once its Activation is inactive', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 100,
+    items: [stream('attempt-a', 'work-a', { kind: 'started' })],
+  })
+  state = modelStreamReducer(state, {
+    type: 'attempt_state',
+    sessionId: 'session-a',
+    nowMs: 110,
+    item: {
+      attemptId: 'attempt-a',
+      activationId: 'work-a',
+      threadKind: 'execution',
+      state: 'completed',
+      terminal: true,
+      timestamp: '2026-07-17T00:00:01Z',
+    },
+  })
+
+  // The attempt is deliberately recent. Terminal state, rather than the
+  // age cutoff, must decide whether a stale "generating" indicator survives.
+  state = modelStreamReducer(state, {
+    type: 'reconcile',
+    sessionId: 'session-a',
+    activeActivationIds: [],
+    cutoffMs: 0,
+  })
+  assert.equal(state.attempts['attempt-a'], undefined)
+})
+
 test('resolve before persistence keeps a summary-only shell, then persistence clears it', () => {
   let state = createLiveModelState('session-a')
   state = modelStreamReducer(state, {

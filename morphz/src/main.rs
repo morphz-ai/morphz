@@ -703,11 +703,29 @@ fn build_client(
     if !required {
         return Ok(Arc::new(OfflineClient));
     }
-    let (client, selected) = build_configured_client(
+    let configured = build_configured_client(
         app_config,
         option_value(invocation, "provider"),
         option_value(invocation, "model"),
-    )?;
+    );
+    let (client, selected) = match configured {
+        Ok(configured) => configured,
+        Err(error)
+            if (invocation.command_path() == ["serve"]
+                || invocation.command_path() == ["dashboard"])
+                && app_config.provider_instances.is_empty()
+                && app_config.model_routes.is_empty()
+                && app_config.providers.is_empty()
+                && app_config.llm.provider.is_none() =>
+        {
+            tracing::warn!(
+                error = %error,
+                "尚未配置模型服务；Runtime 以离线控制面启动，请在 Dashboard 完成模型设置后重启"
+            );
+            return Ok(Arc::new(OfflineClient));
+        }
+        Err(error) => return Err(error),
+    };
     tracing::info!(
         provider = %selected.id,
         protocol = selected.protocol.as_str(),

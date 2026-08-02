@@ -115,6 +115,7 @@ interface RuntimeOverviewPageProps {
   onRefresh: () => void
   onOpenContext: (contextId: string) => void
   onOpenSession: (contextId: string, sessionId: string) => void
+  onExpandSessions: (contextId: string) => Promise<void>
 }
 
 function ago(timestamp: string, language: string): string {
@@ -236,6 +237,7 @@ function ContextGroup({
   onToggleContext,
   onOpenContext,
   onOpenSession,
+  onExpandSessions,
 }: {
   item: RuntimeOverviewContext
   children: RuntimeOverviewContext[]
@@ -244,9 +246,11 @@ function ContextGroup({
   onToggleContext: (contextId: string) => void
   onOpenContext: (contextId: string) => void
   onOpenSession: (contextId: string, sessionId: string) => void
+  onExpandSessions: (contextId: string) => Promise<void>
 }) {
   const { t } = useTranslation()
   const expanded = !collapsed.has(item.context.id)
+  const [expandingSessions, setExpandingSessions] = useState(false)
   return (
     <section className={`runtime-overview-context ${item.delegation ? 'is-delegation' : ''}`}>
       <header className="runtime-overview-context-header">
@@ -289,9 +293,17 @@ function ContextGroup({
             )}
           </div>
           {item.hidden_session_count > 0 && (
-            <button className="runtime-overview-hidden" type="button" onClick={() => onOpenContext(item.context.id)}>
+            <button
+              className="runtime-overview-hidden"
+              disabled={expandingSessions}
+              type="button"
+              onClick={() => {
+                setExpandingSessions(true)
+                void onExpandSessions(item.context.id).finally(() => setExpandingSessions(false))
+              }}
+            >
               {t('runtimeOverview.hiddenSessions', { count: item.hidden_session_count })}
-              <ChevronRight size={12} />
+              {expandingSessions ? <RefreshCw className="is-spinning" size={12} /> : <ChevronDown size={12} />}
             </button>
           )}
           {children.length > 0 && (
@@ -307,6 +319,7 @@ function ContextGroup({
                   onToggleContext={onToggleContext}
                   onOpenContext={onOpenContext}
                   onOpenSession={onOpenSession}
+                  onExpandSessions={onExpandSessions}
                 />
               ))}
             </div>
@@ -324,6 +337,7 @@ export function RuntimeOverviewPage({
   onRefresh,
   onOpenContext,
   onOpenSession,
+  onExpandSessions,
 }: RuntimeOverviewPageProps) {
   const { t, i18n } = useTranslation()
   const [query, setQuery] = useState('')
@@ -375,7 +389,9 @@ export function RuntimeOverviewPage({
     collapseInitialized.current = true
     const next = new Set<string>()
     for (const item of overview.contexts) {
-      if (item.attention_count === 0 && item.running_activation_count === 0) next.add(item.context.id)
+      if (item.delegation || (item.attention_count === 0 && item.running_activation_count === 0)) {
+        next.add(item.context.id)
+      }
     }
     setCollapsed(next)
   }, [overview])
@@ -450,6 +466,7 @@ export function RuntimeOverviewPage({
               onToggleContext={toggleContext}
               onOpenContext={onOpenContext}
               onOpenSession={onOpenSession}
+              onExpandSessions={onExpandSessions}
             />
           ))}
         </div>

@@ -259,6 +259,18 @@ struct ControlProviderAccountRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct PutProviderCatalogSetupRequest {
+    provider_id: String,
+    provider: ProviderInstanceConfig,
+    account_id: String,
+    account: AuthAccountConfig,
+    credential_id: Option<String>,
+    credential: Option<crate::config::CredentialConfig>,
+    route_id: String,
+    route: ModelRouteConfig,
+}
+
+#[derive(serde::Deserialize)]
 struct MutateScheduleRequest {
     action: String,
     expected_revision: u64,
@@ -460,6 +472,7 @@ struct RuntimeOverviewHttpQuery {
     include_archived: bool,
     context_limit: Option<usize>,
     sessions_per_context: Option<usize>,
+    context_id: Option<String>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -701,6 +714,10 @@ impl Server {
             .route(
                 "/api/runtime/providers/accounts/:account_id",
                 patch(handle_control_provider_account),
+            )
+            .route(
+                "/api/runtime/providers/setup",
+                axum::routing::put(handle_put_provider_catalog_setup),
             )
             .route(
                 "/api/runtime/providers/instances/:provider_id",
@@ -1326,6 +1343,50 @@ async fn handle_put_provider_instance_config(
     match state
         .sdk
         .put_provider_instance_config(path, &provider_id, provider)
+        .await
+    {
+        Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_put_provider_catalog_setup(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<PutProviderCatalogSetupRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "无法确定 Morphz 受管配置路径",
+        );
+    };
+    let credential = match (request.credential_id.as_deref(), request.credential) {
+        (Some(id), Some(config)) => Some((id, config)),
+        (None, None) => None,
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "credential_id 与 credential 必须同时提供或同时省略",
+            )
+        }
+    };
+    match state
+        .sdk
+        .put_provider_catalog_config(
+            path,
+            request.provider_id.trim(),
+            request.provider,
+            request.account_id.trim(),
+            request.account,
+            credential,
+            request.route_id.trim(),
+            request.route,
+        )
         .await
     {
         Ok(receipt) => Json(receipt).into_response(),
@@ -3584,6 +3645,7 @@ async fn handle_get_runtime_overview(
             include_archived: query.include_archived,
             context_limit: query.context_limit,
             sessions_per_context: query.sessions_per_context,
+            context_id: query.context_id,
         })
         .await
     {
@@ -5892,6 +5954,7 @@ mod tests {
                 include_archived: false,
                 context_limit: Some(10),
                 sessions_per_context: Some(4),
+                context_id: None,
             }),
         )
         .await
@@ -5906,6 +5969,7 @@ mod tests {
                 include_archived: false,
                 context_limit: Some(10),
                 sessions_per_context: Some(4),
+                context_id: None,
             }),
         )
         .await
@@ -6272,6 +6336,78 @@ mod tests {
             managed.model_routes["coding-secondary"].aliases,
             ["secondary/coding"]
         );
+    }
+
+    #[tokio::test]
+    async fn dashboard_provider_setup_atomically_persists_a_complete_catalog() {
+        let tmp = NamedTempFile::new().unwrap();
+        let database_path = tmp.path().to_path_buf();
+        drop(tmp);
+        let (state, _runtime) = test_state_at_with_workers(&database_path, false).await;
+        let managed_config_path = state.managed_config_path.clone().unwrap();
+
+        let response = handle_put_provider_catalog_setup(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderCatalogSetupRequest {
+                provider_id: "dashboard-provider".to_string(),
+                provider: ProviderInstanceConfig {
+                    adapter: "openai-compatible".to_string(),
+                    protocol: crate::config::ModelProtocol::OpenaiResponses,
+                    base_url: "http://localhost:9912/v1".to_string(),
+                    accounts: vec!["dashboard-account".to_string()],
+                    ..ProviderInstanceConfig::default()
+                },
+                account_id: "dashboard-account".to_string(),
+                account: AuthAccountConfig {
+                    auth_adapter: "credential".to_string(),
+                    credential_ref: "dashboard-credential".to_string(),
+                    provider: Some("dashboard-provider".to_string()),
+                    ..AuthAccountConfig::default()
+                },
+                credential_id: Some("dashboard-credential".to_string()),
+                credential: Some(crate::config::CredentialConfig {
+                    source: crate::config::CredentialSource::Env,
+                    name: Some("MORPHZ_PROVIDER_DASHBOARD_API_KEY".to_string()),
+                    ..crate::config::CredentialConfig::default()
+                }),
+                route_id: "dashboard-model".to_string(),
+                route: ModelRouteConfig {
+                    aliases: vec!["dashboard/model".to_string()],
+                    candidates: vec![crate::config::ModelRouteCandidateConfig {
+                        provider: "dashboard-provider".to_string(),
+                        account: Some("dashboard-account".to_string()),
+                        model: "physical-model".to_string(),
+                        ..crate::config::ModelRouteCandidateConfig::default()
+                    }],
+                    ..ModelRouteConfig::default()
+                },
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let managed: AppConfig =
+            toml::from_str(&std::fs::read_to_string(managed_config_path).unwrap()).unwrap();
+        assert_eq!(
+            managed.provider_instances["dashboard-provider"].accounts,
+            ["dashboard-account"]
+        );
+        assert_eq!(
+            managed.auth_accounts["dashboard-account"].credential_ref,
+            "dashboard-credential"
+        );
+        assert_eq!(
+            managed.credentials["dashboard-credential"].name.as_deref(),
+            Some("MORPHZ_PROVIDER_DASHBOARD_API_KEY")
+        );
+        assert_eq!(
+            managed.model_routes["dashboard-model"].aliases,
+            ["dashboard/model"]
+        );
+        assert_eq!(managed.llm.model, "dashboard-model");
     }
 
     #[tokio::test]
@@ -6863,6 +6999,7 @@ mod tests {
                 include_archived: false,
                 context_limit: Some(10),
                 sessions_per_context: Some(4),
+                context_id: None,
             }),
         )
         .await

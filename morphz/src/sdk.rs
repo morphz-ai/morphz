@@ -7,8 +7,9 @@
 
 use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::config::{
-    save_managed_auth_account_at, save_managed_model_route_at, save_managed_provider_instance_at,
-    AppConfig, AuthAccountConfig, ModelRouteConfig, ProviderInstanceConfig,
+    save_managed_auth_account_at, save_managed_model_route_at, save_managed_provider_catalog_at,
+    save_managed_provider_instance_at, AppConfig, AuthAccountConfig, CredentialConfig,
+    ModelRouteConfig, ProviderInstanceConfig,
 };
 use crate::event::Event;
 use crate::execution::JobReceipt;
@@ -636,6 +637,67 @@ impl MorphzSdk {
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ProviderInstance,
             provider_id,
+            managed_config_path,
+        ))
+    }
+
+    /// Atomically persist one complete Provider/Account/Route graph.
+    ///
+    /// This is the setup boundary shared by Dashboard, HTTP clients and future
+    /// SDK hosts.  Saving the three objects independently can expose a broken
+    /// intermediate catalog after a process stop, so first-run setup must use
+    /// this operation instead of sequencing the individual mutation methods.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn put_provider_catalog_config(
+        &self,
+        managed_config_path: &Path,
+        provider_id: &str,
+        provider: ProviderInstanceConfig,
+        account_id: &str,
+        account: AuthAccountConfig,
+        credential: Option<(&str, CredentialConfig)>,
+        route_id: &str,
+        route: ModelRouteConfig,
+    ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let mut snapshot = self.provider_control_snapshot().await?;
+        merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
+        snapshot
+            .provider_instances
+            .insert(provider_id.to_string(), provider.clone());
+        snapshot.auth_accounts.insert(
+            account_id.to_string(),
+            crate::provider::control::ProviderAccountControlRecord {
+                effective_enabled: account.enabled(),
+                oauth: !matches!(
+                    account.auth_adapter.as_str(),
+                    "credential" | "none" | "env" | "api-key"
+                ),
+                authenticated: false,
+                oauth_metadata: None,
+                state: None,
+                config: account.clone(),
+            },
+        );
+        snapshot
+            .model_routes
+            .insert(route_id.to_string(), route.clone());
+        validate_provider_catalog_snapshot(&snapshot)?;
+
+        let credential_ref = credential.as_ref().map(|(id, config)| (*id, config));
+        save_managed_provider_catalog_at(
+            managed_config_path,
+            provider_id,
+            &provider,
+            account_id,
+            &account,
+            credential_ref,
+            route_id,
+            &route,
+        )
+        .map_err(SdkError::internal)?;
+        Ok(ProviderCatalogMutationReceipt::new(
+            ProviderCatalogObjectKind::ProviderCatalog,
+            route_id,
             managed_config_path,
         ))
     }

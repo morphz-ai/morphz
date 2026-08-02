@@ -237,6 +237,16 @@ test('objective lineage links durable outputs back to their Thread and Objective
     threadIds: ['thread-alpha'],
     objectiveIds: ['objective-alpha'],
   })
+
+  assert.deepEqual(index.forEvent({
+    id: 'delivery-alpha',
+    payload: {
+      covers: ['thread-alpha'],
+    },
+  }), {
+    threadIds: ['thread-alpha'],
+    objectiveIds: ['objective-alpha'],
+  })
 })
 
 test('concurrently live entities never share a tint slot', () => {

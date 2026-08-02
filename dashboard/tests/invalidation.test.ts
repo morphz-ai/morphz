@@ -22,4 +22,7 @@ test('durable events invalidate shared projections by semantic scope', () => {
   assert.deepEqual(invalidatedQueriesForTopic('runtime/model_reasoning_summary'), [
     'session', 'overview', 'scheduler', 'ledger', 'thread',
   ])
+  assert.deepEqual(invalidatedQueriesForTopic('runtime/delegation_result'), [
+    'session', 'overview', 'scheduler', 'ledger', 'catalog',
+  ])
 })

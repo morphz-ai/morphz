@@ -43,6 +43,13 @@ function stringField(payload: Record<string, unknown>, key: string): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function stringListField(payload: Record<string, unknown>, key: string): string[] {
+  const value = payload[key]
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+    : []
+}
+
 function unique(values: Iterable<string>): string[] {
   return [...new Set([...values].filter(Boolean))]
 }
@@ -164,6 +171,8 @@ export function buildObjectiveLineageIndex(
     const threadIds = unique([
       directThreadId,
       ...activationLineage.threadIds,
+      ...stringListField(event.payload, 'covers'),
+      ...stringListField(event.payload, 'defer_covers'),
       ...(threadIdsByRootTurn.get(rootTurnId) ?? []),
     ])
     return mergeLineage(

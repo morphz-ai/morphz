@@ -52,6 +52,7 @@ pub enum ProviderAccountControlAction {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderCatalogObjectKind {
+    ProviderCatalog,
     ProviderInstance,
     AuthAccount,
     ModelRoute,
