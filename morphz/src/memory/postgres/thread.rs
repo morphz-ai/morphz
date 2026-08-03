@@ -86,6 +86,7 @@ fn parse_lifetime(value: &str) -> Result<ThreadLifetime, StoreError> {
 
 fn parse_supervisor_kind(value: &str) -> Result<ThreadSupervisorKind, StoreError> {
     match value {
+        "thread" => Ok(ThreadSupervisorKind::Thread),
         "evaluation" => Ok(ThreadSupervisorKind::Evaluation),
         "objective" => Ok(ThreadSupervisorKind::Objective),
         "runtime" => Ok(ThreadSupervisorKind::Runtime),
@@ -965,10 +966,10 @@ impl ThreadStore for PostgresStore {
                     let barrier = thread_group_barrier_event(&terminal_group, parent.as_ref())?;
                     append_event_in_tx(&mut tx, &barrier).await?;
                     match terminal_group.supervisor_kind {
-                        ThreadSupervisorKind::Evaluation => {
+                        ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
                             let parent = parent
                                 .as_ref()
-                                .ok_or("Evaluation Thread Group 关闭缺少 parent Thread")?;
+                                .ok_or("attached Thread Group 关闭缺少 parent Thread")?;
                             append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id)
                                 .await?;
                         }
@@ -1025,10 +1026,13 @@ impl ThreadStore for PostgresStore {
                     thread_terminal_barrier_event(&current, &outcome, parent.as_ref())?
                 {
                     append_event_in_tx(&mut tx, &barrier).await?;
-                    if current.supervision.supervisor_kind == ThreadSupervisorKind::Evaluation {
+                    if matches!(
+                        current.supervision.supervisor_kind,
+                        ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation
+                    ) {
                         let parent = parent
                             .as_ref()
-                            .ok_or("Evaluation Thread 关闭缺少 parent Thread")?;
+                            .ok_or("attached Thread 关闭缺少 parent Thread")?;
                         append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id).await?;
                     }
                 }

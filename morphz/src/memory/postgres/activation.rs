@@ -1360,6 +1360,7 @@ impl ActivationStore for PostgresStore {
             .get::<String, _>("supervisor_kind")
             .as_str()
         {
+            "thread" => ThreadSupervisorKind::Thread,
             "evaluation" => ThreadSupervisorKind::Evaluation,
             "objective" => ThreadSupervisorKind::Objective,
             "runtime" => ThreadSupervisorKind::Runtime,
@@ -1426,12 +1427,17 @@ impl ActivationStore for PostgresStore {
         if terminal_kind == ThreadLifecycle::Completed.as_str() {
             let open_group_ids = sqlx::query_scalar::<_, String>(
                 r#"SELECT id FROM thread_groups
-                   WHERE supervisor_kind = 'evaluation'
-                     AND supervisor_id = $1
+                   WHERE ((supervisor_kind = 'thread'
+                           AND supervisor_id = $1
+                           AND generation = $2)
+                          OR (supervisor_kind = 'evaluation'
+                              AND supervisor_id = $3))
                      AND status = 'open'
                      AND terminal_count < required_count
                    ORDER BY created_at, id"#,
             )
+            .bind(thread_id)
+            .bind(thread_generation)
             .bind(activation_id)
             .fetch_all(&mut *tx)
             .await?;
@@ -1777,6 +1783,7 @@ impl ActivationStore for PostgresStore {
                     && group_update.rows_affected() == 1
                 {
                     let supervisor_kind = match group.get::<String, _>("supervisor_kind").as_str() {
+                        "thread" => ThreadSupervisorKind::Thread,
                         "evaluation" => ThreadSupervisorKind::Evaluation,
                         "objective" => ThreadSupervisorKind::Objective,
                         "runtime" => ThreadSupervisorKind::Runtime,
@@ -1808,10 +1815,10 @@ impl ActivationStore for PostgresStore {
                     );
                     payload.insert("terminal_summary".to_string(), terminal_summary);
                     let (topic, event_type, signal_target_thread_id) = match supervisor_kind {
-                        ThreadSupervisorKind::Evaluation => {
+                        ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
                             let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
                                 format!(
-                                    "Evaluation Thread Group '{}' 的成员 '{}' 缺少 parent_thread_id",
+                                    "attached Thread Group '{}' 的成员 '{}' 缺少 parent_thread_id",
                                     group_id, thread_id
                                 )
                             })?;
@@ -1997,10 +2004,10 @@ impl ActivationStore for PostgresStore {
                 }),
             );
             let (topic, event_type, signal_target_thread_id) = match supervisor_kind {
-                ThreadSupervisorKind::Evaluation => {
+                ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
                     let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
                         format!(
-                            "attached Thread '{}' 缺少 parent_thread_id，无法向 Evaluation 交付",
+                            "attached Thread '{}' 缺少 parent_thread_id，无法向父 Thread 交付",
                             thread_id
                         )
                     })?;

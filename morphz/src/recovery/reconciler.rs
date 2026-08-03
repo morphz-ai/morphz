@@ -27,6 +27,7 @@ impl SchedulerReconciler {
     /// from scheduler projection rows alone.
     pub fn audit_supervision(
         objectives: &[ObjectiveRecord],
+        threads: &[ThreadRecord],
         activations: &[ThreadActivationRecord],
         groups: &[ThreadGroupRecord],
         existing_barrier_event_ids: &HashSet<String>,
@@ -40,6 +41,11 @@ impl SchedulerReconciler {
             .iter()
             .filter(|activation| !activation.status.is_terminal())
             .map(|activation| activation.id.as_str())
+            .collect::<HashSet<_>>();
+        let thread_generations = threads
+            .iter()
+            .filter(|thread| thread.lifecycle == ThreadLifecycle::Open)
+            .map(|thread| (thread.id.as_str(), thread.generation))
             .collect::<HashSet<_>>();
         let mut violations = Vec::new();
         for group in groups {
@@ -66,6 +72,9 @@ impl SchedulerReconciler {
                 continue;
             }
             let owner_exists = match group.supervisor_kind {
+                ThreadSupervisorKind::Thread => {
+                    thread_generations.contains(&(group.supervisor_id.as_str(), group.generation))
+                }
                 ThreadSupervisorKind::Evaluation => {
                     activation_ids.contains(group.supervisor_id.as_str())
                 }
@@ -188,6 +197,48 @@ mod tests {
     }
 
     #[test]
+    fn attached_group_is_owned_by_the_open_parent_thread_generation() {
+        let parent = thread("parent-thread");
+        let now = Utc::now();
+        let mut group = ThreadGroupRecord {
+            id: "attached-group".into(),
+            revision: 1,
+            context_id: parent.context_id.clone(),
+            session_id: parent.session_id.clone(),
+            supervisor_kind: ThreadSupervisorKind::Thread,
+            supervisor_id: parent.id.clone(),
+            generation: parent.generation,
+            policy: ThreadGroupPolicy::All,
+            required_count: 1,
+            terminal_count: 0,
+            successful_count: 0,
+            status: ThreadGroupStatus::Open,
+            completion_contract: serde_json::Value::Object(Default::default()),
+            terminal_summary: serde_json::Value::Object(Default::default()),
+            barrier_event_id: None,
+            created_at: now,
+            updated_at: now,
+            satisfied_at: None,
+        };
+
+        assert!(SchedulerReconciler::audit_supervision(
+            &[],
+            std::slice::from_ref(&parent),
+            &[],
+            std::slice::from_ref(&group),
+            &HashSet::new(),
+        )
+        .is_empty());
+
+        group.generation += 1;
+        let violations =
+            SchedulerReconciler::audit_supervision(&[], &[parent], &[], &[group], &HashSet::new());
+        assert!(violations
+            .iter()
+            .any(|violation| { violation.code == SchedulerInvariantCode::GroupSupervisorMissing }));
+    }
+
+    #[test]
     fn every_terminal_group_requires_an_existing_barrier_event() {
         let now = Utc::now();
         let mut group = ThreadGroupRecord {
@@ -213,6 +264,7 @@ mod tests {
         let violations = SchedulerReconciler::audit_supervision(
             &[],
             &[],
+            &[],
             std::slice::from_ref(&group),
             &HashSet::new(),
         );
@@ -224,6 +276,7 @@ mod tests {
         let violations = SchedulerReconciler::audit_supervision(
             &[],
             &[],
+            &[],
             std::slice::from_ref(&group),
             &HashSet::new(),
         );
@@ -232,6 +285,8 @@ mod tests {
         }));
 
         let existing = HashSet::from(["barrier-a".to_string()]);
-        assert!(SchedulerReconciler::audit_supervision(&[], &[], &[group], &existing).is_empty());
+        assert!(
+            SchedulerReconciler::audit_supervision(&[], &[], &[], &[group], &existing).is_empty()
+        );
     }
 }

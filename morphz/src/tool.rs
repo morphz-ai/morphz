@@ -13,7 +13,7 @@ use crate::memory::{
     ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
     RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus,
     ScheduledObjectiveWaitBinding, SessionStatus, SessionStore, ThreadGroupPolicy, ThreadKind,
-    ThreadLifecycle, ThreadLifetime, ThreadPromotionMutation, ThreadPromotionRequest,
+    ThreadLifecycle, ThreadLifetime, ThreadPromotionMutation, ThreadPromotionRequest, ThreadRecord,
     ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::TYPE_OBJECTIVE_CONTROL;
@@ -1948,10 +1948,14 @@ impl ScheduleTxTool {
         expected_revision: u64,
         objective_binding: ScheduleObjectiveBinding,
         attempt_id: &str,
-        context_id: &str,
-        session_id: &str,
         route: &ToolCausalRoute,
+        parent_thread: &ThreadRecord,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        if parent_thread.id != route.thread_id || parent_thread.lifecycle != ThreadLifecycle::Open {
+            return Err("当前父 Thread 路由已失效，不能升格 attached Thread".into());
+        }
+        let context_id = parent_thread.context_id.as_str();
+        let session_id = parent_thread.session_id.as_str();
         let target = self
             .sessions
             .get_thread(&thread_id)
@@ -1962,15 +1966,21 @@ impl ScheduleTxTool {
         }
         if target.lifecycle != ThreadLifecycle::Open
             || target.supervision.lifetime != ThreadLifetime::Attached
-            || target.supervision.supervisor_kind != ThreadSupervisorKind::Evaluation
         {
-            return Err("只有仍 open、由当前 Evaluation 监督的 attached Thread 可以升格".into());
+            return Err("只有仍 open 的 attached Thread 可以升格".into());
         }
-        if target.supervision.supervisor_id.as_deref() != Some(route.activation_id.as_str())
-            || target.supervision.origin_evaluation_id.as_deref()
-                != Some(route.activation_id.as_str())
-        {
-            return Err("不能升格其他 Evaluation 拥有的 attached Thread".into());
+        let owned_by_parent_thread = target.supervision.supervisor_kind
+            == ThreadSupervisorKind::Thread
+            && target.supervision.supervisor_id.as_deref() == Some(route.thread_id.as_str())
+            && target.supervision.parent_thread_id.as_deref() == Some(route.thread_id.as_str())
+            && target.supervision.generation == parent_thread.generation;
+        let owned_by_legacy_activation = target.supervision.supervisor_kind
+            == ThreadSupervisorKind::Evaluation
+            && target.supervision.supervisor_id.as_deref() == Some(route.activation_id.as_str())
+            && target.supervision.origin_evaluation_id.as_deref()
+                == Some(route.activation_id.as_str());
+        if !owned_by_parent_thread && !owned_by_legacy_activation {
+            return Err("不能升格其他父 Thread generation 拥有的 attached Thread".into());
         }
         let source_group_id = target
             .supervision
@@ -2147,7 +2157,7 @@ impl ScheduleTxTool {
                 "target_generation": target_generation,
                 "completion_criteria": completion_criteria,
                 "text": format!(
-                    "Thread '{}' 已由当前 Evaluation 原子移交给 Objective '{}'",
+                    "Thread '{}' 已由当前父 Thread 原子移交给 Objective '{}'",
                     thread_id, objective_id
                 ),
             })
@@ -2463,7 +2473,7 @@ fn schedule_promote_operation_schema() -> serde_json::Value {
         "type": "object",
         "properties": {
             "op": {"const": "promote"},
-            "thread_id": {"type": "string", "description": "当前 Evaluation 拥有的 open attached Thread"},
+            "thread_id": {"type": "string", "description": "当前父 Thread generation 拥有的 open attached Thread"},
             "expected_revision": {"type": "integer", "minimum": 1, "description": "创建/检查 Thread 时返回的 revision；过期值会返回 conflict"},
             "objective": schedule_objective_binding_schema()
         },
@@ -2487,7 +2497,7 @@ impl Tool for ScheduleTxTool {
         let promote_operation_schema = schedule_promote_operation_schema();
         ToolDefinition {
             name: self.name().to_string(),
-            description: "创建或控制受监督 Thread 调度计划。spawn 必须声明 lifetime：attached 由当前 Evaluation 检查，durable 必须绑定 current/existing/create Objective，disposable 是不保证恢复或交付的尽力执行；多个 sibling 可用 group(all|any) 形成一次权威 barrier。promote 可把当前 Evaluation 已启动的 attached Thread 原子移交给 current/existing/create Objective，不会重复启动工作。objective.mode=create 会把独立 Objective、初始等待、Thread、Group 与 Schedule 原子提交。enqueue/spawn 可原子批量创建；promote 与 inspect/pause/resume/reschedule/cancel 必须单独提交，并使用 expected_revision 防止过期写。not_before 或 delay_seconds 设置时间，every_seconds 设置周期；after 指定依赖 Thread。schedule_tx 必须是本次响应中唯一的工具调用。".to_string(),
+            description: "创建或控制受监督 Thread 调度计划。spawn 必须声明 lifetime：attached 由当前父 Thread generation 检查，durable 必须绑定 current/existing/create Objective，disposable 是不保证恢复或交付的尽力执行；多个 sibling 可用 group(all|any) 形成一次权威 barrier。promote 可把当前父 Thread 已启动的 attached Thread 原子移交给 current/existing/create Objective，不会重复启动工作。objective.mode=create 会把独立 Objective、初始等待、Thread、Group 与 Schedule 原子提交。enqueue/spawn 可原子批量创建；promote 与 inspect/pause/resume/reschedule/cancel 必须单独提交，并使用 expected_revision 防止过期写。not_before 或 delay_seconds 设置时间，every_seconds 设置周期；after 指定依赖 Thread。schedule_tx 必须是本次响应中唯一的工具调用。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2706,9 +2716,8 @@ impl Tool for ScheduleTxTool {
                     expected_revision,
                     objective,
                     &attempt_id,
-                    &context_id,
-                    &session_id,
                     &route,
+                    &current_thread,
                 )
                 .await;
         }
@@ -2797,13 +2806,14 @@ impl Tool for ScheduleTxTool {
                     ThreadLifetime::Attached => {
                         if objective.is_some() {
                             return Err(
-                                "lifetime=attached 由当前 Evaluation 监督，不能携带 objective"
+                                "lifetime=attached 由当前父 Thread generation 监督，不能携带 objective"
                                     .into(),
                             );
                         }
-                        ThreadSupervision::evaluation(
-                            route.activation_id.clone(),
+                        ThreadSupervision::attached(
                             route.thread_id.clone(),
+                            current_thread.generation,
+                            route.activation_id.clone(),
                         )
                     }
                     ThreadLifetime::Durable => {
@@ -3296,7 +3306,7 @@ impl Tool for ScheduleTxTool {
             "guidance": if group_plans.is_empty() {
                 "调度计划已原子持久化。durable Thread 的终态将唤醒绑定 Objective；disposable Thread 不保证恢复或交付。"
             } else {
-                "调度计划与 Thread Group 已原子持久化。Group 达到 all/any 条件后只产生一次 barrier；attached 会重新唤醒父 Evaluation，durable 会唤醒绑定 Objective。"
+                "调度计划与 Thread Group 已原子持久化。Group 达到 all/any 条件后只产生一次 barrier；attached 会重新唤醒父 Thread，durable 会唤醒绑定 Objective。"
             }
         })
         .to_string())
@@ -8308,7 +8318,7 @@ Body
         let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         let tool = ScheduleTxTool::new(Arc::clone(&scheduler), sessions)
             .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>);
-        let route = Some(ToolCausalRoute {
+        let spawn_route = Some(ToolCausalRoute {
             thread_id: "thread-thread-promotion-parent".to_string(),
             activation_id: "evaluation-thread-promotion".to_string(),
             root_turn_id: "root-thread-promotion".to_string(),
@@ -8332,7 +8342,7 @@ Body
                     "context-thread-promotion".to_string(),
                     CURRENT_ATTEMPT_ID.scope(
                         "attempt-thread-promotion".to_string(),
-                        CURRENT_CAUSAL_ROUTE.scope(route.clone(), tool.execute(&spawn)),
+                        CURRENT_CAUSAL_ROUTE.scope(spawn_route.clone(), tool.execute(&spawn)),
                     ),
                 ),
             )
@@ -8348,12 +8358,24 @@ Body
             .as_str()
             .expect("source group id")
             .to_string();
-        let revision = store
+        let attached = store
             .get_thread(&thread_id)
             .await
             .unwrap()
-            .expect("attached thread")
-            .revision;
+            .expect("attached thread");
+        assert_eq!(
+            attached.supervision.supervisor_kind,
+            ThreadSupervisorKind::Thread
+        );
+        assert_eq!(
+            attached.supervision.supervisor_id.as_deref(),
+            Some("thread-thread-promotion-parent")
+        );
+        assert_eq!(
+            attached.supervision.origin_evaluation_id.as_deref(),
+            Some("evaluation-thread-promotion")
+        );
+        let revision = attached.revision;
 
         let promote = serde_json::json!({
             "operations": [{
@@ -8369,6 +8391,10 @@ Body
             }]
         })
         .to_string();
+        let mut promote_route = spawn_route.expect("spawn route");
+        promote_route.activation_id = "evaluation-thread-promotion-successor".to_string();
+        promote_route.trigger_event_id = "tool-output-thread-promotion".to_string();
+        promote_route.trigger_sequence += 1;
         let promote_output = CURRENT_SESSION_ID
             .scope(
                 "session-thread-promotion".to_string(),
@@ -8376,7 +8402,7 @@ Body
                     "context-thread-promotion".to_string(),
                     CURRENT_ATTEMPT_ID.scope(
                         "attempt-thread-promotion".to_string(),
-                        CURRENT_CAUSAL_ROUTE.scope(route, tool.execute(&promote)),
+                        CURRENT_CAUSAL_ROUTE.scope(Some(promote_route), tool.execute(&promote)),
                     ),
                 ),
             )

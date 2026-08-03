@@ -5117,6 +5117,7 @@ impl MorphzRuntime {
         }
         invariant_violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
             &authority_objectives,
+            &authority_threads,
             &all_context_activations,
             &authority_groups,
             &barrier_event_ids,

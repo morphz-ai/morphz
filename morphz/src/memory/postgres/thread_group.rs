@@ -60,8 +60,50 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     Ok(())
 }
 
+pub(super) async fn migrate_attached_supervision_to_parent_threads(
+    pool: &PgPool,
+) -> Result<(), StoreError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        r#"UPDATE threads AS child
+           SET supervisor_kind = 'thread',
+               supervisor_id = child.parent_thread_id,
+               supervision_generation = parent.generation
+           FROM threads AS parent
+           WHERE child.parent_thread_id = parent.id
+             AND child.lifetime = 'attached'
+             AND child.status = 'open'
+             AND child.supervisor_kind = 'evaluation'"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"WITH owners AS (
+               SELECT DISTINCT ON (member.group_id)
+                      member.group_id, child.supervisor_id, child.supervision_generation
+               FROM thread_group_members AS member
+               JOIN threads AS child ON child.id = member.thread_id
+               WHERE child.supervisor_kind = 'thread'
+               ORDER BY member.group_id, member.ordinal
+           )
+           UPDATE thread_groups AS grouped
+           SET supervisor_kind = 'thread',
+               supervisor_id = owner.supervisor_id,
+               generation = owner.supervision_generation
+           FROM owners AS owner
+           WHERE grouped.status = 'open'
+             AND grouped.supervisor_kind = 'evaluation'
+             AND owner.group_id = grouped.id"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 fn parse_supervisor(value: &str) -> Result<ThreadSupervisorKind, StoreError> {
     match value {
+        "thread" => Ok(ThreadSupervisorKind::Thread),
         "evaluation" => Ok(ThreadSupervisorKind::Evaluation),
         "objective" => Ok(ThreadSupervisorKind::Objective),
         "runtime" => Ok(ThreadSupervisorKind::Runtime),

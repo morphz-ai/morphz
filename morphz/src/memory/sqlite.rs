@@ -661,7 +661,7 @@ impl SqliteStore {
             lifetime TEXT NOT NULL DEFAULT 'durable'
                 CHECK(lifetime IN ('attached', 'durable', 'disposable')),
             supervisor_kind TEXT NOT NULL DEFAULT 'legacy'
-                CHECK(supervisor_kind IN ('evaluation', 'objective', 'runtime', 'none', 'legacy')),
+                CHECK(supervisor_kind IN ('thread', 'evaluation', 'objective', 'runtime', 'none', 'legacy')),
             supervisor_id TEXT,
             supervision_generation INTEGER NOT NULL DEFAULT 1
                 CHECK(supervision_generation >= 1),
@@ -1302,7 +1302,7 @@ impl SqliteStore {
             ),
             (
                 "supervisor_kind",
-                "TEXT NOT NULL DEFAULT 'legacy' CHECK(supervisor_kind IN ('evaluation', 'objective', 'runtime', 'none', 'legacy'))",
+                "TEXT NOT NULL DEFAULT 'legacy' CHECK(supervisor_kind IN ('thread', 'evaluation', 'objective', 'runtime', 'none', 'legacy'))",
             ),
             ("supervisor_id", "TEXT"),
             (
@@ -1328,6 +1328,7 @@ impl SqliteStore {
         sqlx::query("UPDATE threads SET kind = 'execution' WHERE kind = 'objective'")
             .execute(&pool)
             .await?;
+        migrate_thread_supervisor_kind_domain(&pool).await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_threads_supervisor
                ON threads(supervisor_kind, supervisor_id, status, updated_at DESC)"#,
@@ -1359,6 +1360,7 @@ impl SqliteStore {
         .execute(&pool)
         .await?;
         migrate_thread_group_member_history(&pool).await?;
+        migrate_attached_supervision_to_parent_threads(&pool).await?;
         let outcome_columns = sqlx::query("PRAGMA table_info(thread_outcomes)")
             .fetch_all(&pool)
             .await?
@@ -2516,7 +2518,206 @@ async fn migrate_threads_to_canonical_domain(
     Ok(())
 }
 
-/// A Thread may move from an Evaluation-owned Group to an Objective-owned
+/// SQLite cannot widen the `supervisor_kind` CHECK constraint in place. The
+/// Thread-owned attached lifetime is a new persisted domain value, so rebuild
+/// the table once while preserving every projection column and inbound key.
+async fn migrate_thread_supervisor_kind_domain(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let table_sql = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
+    )
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_default();
+    if table_sql.is_empty() || table_sql.contains("'thread'") {
+        return Ok(());
+    }
+
+    let unknown_rows = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM threads
+           WHERE supervisor_kind NOT IN ('evaluation', 'objective', 'runtime', 'none', 'legacy')"#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if unknown_rows != 0 {
+        return Err(
+            format!("threads 中存在 {unknown_rows} 条无法迁移的 supervisor_kind 记录").into(),
+        );
+    }
+
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *connection)
+        .await?;
+    let migration = async {
+        let mut tx = connection.begin().await?;
+        sqlx::query("DROP TABLE IF EXISTS threads_supervisor_migration")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"CREATE TABLE threads_supervisor_migration (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
+                agent_id TEXT NOT NULL,
+                context_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                initiating_principal_id TEXT,
+                root_turn_id TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'delivery')),
+                status TEXT NOT NULL CHECK(status IN ('open', 'completed', 'failed', 'cancelled')),
+                control_state TEXT NOT NULL DEFAULT 'active' CHECK(control_state IN ('active', 'paused')),
+                executor_kind TEXT NOT NULL,
+                executor_id TEXT,
+                target_id TEXT,
+                lifetime TEXT NOT NULL DEFAULT 'durable'
+                    CHECK(lifetime IN ('attached', 'durable', 'disposable')),
+                supervisor_kind TEXT NOT NULL DEFAULT 'legacy'
+                    CHECK(supervisor_kind IN ('thread', 'evaluation', 'objective', 'runtime', 'none', 'legacy')),
+                supervisor_id TEXT,
+                supervision_generation INTEGER NOT NULL DEFAULT 1
+                    CHECK(supervision_generation >= 1),
+                origin_evaluation_id TEXT,
+                parent_thread_id TEXT,
+                thread_group_id TEXT,
+                completion_contract_json TEXT NOT NULL DEFAULT '{}',
+                result_text TEXT,
+                result_event_id TEXT,
+                delivery_status TEXT NOT NULL DEFAULT 'none'
+                    CHECK(delivery_status IN ('none', 'pending', 'deferred', 'delivered')),
+                delivery_event_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO threads_supervisor_migration
+               (id, revision, generation, agent_id, context_id, session_id,
+                initiating_principal_id, root_turn_id, kind, status, control_state,
+                executor_kind, executor_id, target_id, lifetime, supervisor_kind,
+                supervisor_id, supervision_generation, origin_evaluation_id,
+                parent_thread_id, thread_group_id, completion_contract_json,
+                result_text, result_event_id, delivery_status, delivery_event_id,
+                created_at, updated_at)
+               SELECT id, revision, generation, agent_id, context_id, session_id,
+                      initiating_principal_id, root_turn_id, kind, status, control_state,
+                      executor_kind, executor_id, target_id, lifetime, supervisor_kind,
+                      supervisor_id, supervision_generation, origin_evaluation_id,
+                      parent_thread_id, thread_group_id, completion_contract_json,
+                      result_text, result_event_id, delivery_status, delivery_event_id,
+                      created_at, updated_at
+               FROM threads"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE threads").execute(&mut *tx).await?;
+        sqlx::query("ALTER TABLE threads_supervisor_migration RENAME TO threads")
+            .execute(&mut *tx)
+            .await?;
+        for statement in [
+            r#"CREATE INDEX idx_threads_context_status
+               ON threads(context_id, status, updated_at DESC)"#,
+            r#"CREATE INDEX idx_threads_session_delivery
+               ON threads(session_id, delivery_status, updated_at)"#,
+            r#"CREATE INDEX idx_threads_session_status
+               ON threads(session_id, status, updated_at DESC)"#,
+            r#"CREATE INDEX idx_threads_supervisor
+               ON threads(supervisor_kind, supervisor_id, status, updated_at DESC)"#,
+            r#"CREATE INDEX idx_threads_group
+               ON threads(thread_group_id, status, updated_at DESC)"#,
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .await;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *connection)
+        .await?;
+    migration?;
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&mut *connection)
+        .await?;
+    if !violations.is_empty() {
+        return Err(format!(
+            "Thread supervisor 领域迁移后发现 {} 条外键违规",
+            violations.len()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Upgrade only unfinished legacy attached work. Historical terminal rows keep
+/// their Evaluation owner as immutable audit evidence; live work follows the
+/// parent Thread generation that can actually continue across activations.
+async fn migrate_attached_supervision_to_parent_threads(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        r#"UPDATE threads AS child
+           SET supervisor_kind = 'thread',
+               supervisor_id = child.parent_thread_id,
+               supervision_generation = (
+                   SELECT parent.generation FROM threads AS parent
+                   WHERE parent.id = child.parent_thread_id
+               )
+           WHERE child.lifetime = 'attached'
+             AND child.status = 'open'
+             AND child.supervisor_kind = 'evaluation'
+             AND child.parent_thread_id IS NOT NULL
+             AND EXISTS (
+                 SELECT 1 FROM threads AS parent
+                 WHERE parent.id = child.parent_thread_id
+             )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"UPDATE thread_groups AS grouped
+           SET supervisor_kind = 'thread',
+               supervisor_id = (
+                   SELECT child.supervisor_id
+                   FROM thread_group_members AS member
+                   JOIN threads AS child ON child.id = member.thread_id
+                   WHERE member.group_id = grouped.id
+                     AND child.supervisor_kind = 'thread'
+                   ORDER BY member.ordinal
+                   LIMIT 1
+               ),
+               generation = (
+                   SELECT child.supervision_generation
+                   FROM thread_group_members AS member
+                   JOIN threads AS child ON child.id = member.thread_id
+                   WHERE member.group_id = grouped.id
+                     AND child.supervisor_kind = 'thread'
+                   ORDER BY member.ordinal
+                   LIMIT 1
+               )
+           WHERE grouped.status = 'open'
+             AND grouped.supervisor_kind = 'evaluation'
+             AND EXISTS (
+                 SELECT 1
+                 FROM thread_group_members AS member
+                 JOIN threads AS child ON child.id = member.thread_id
+                 WHERE member.group_id = grouped.id
+                   AND child.supervisor_kind = 'thread'
+             )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// A Thread may move from a parent-Thread-owned Group to an Objective-owned
 /// Group. The old membership is historical supervision evidence, so uniqueness
 /// applies only to the currently pending membership rather than to every row
 /// ever written for the Thread.
@@ -2902,6 +3103,7 @@ fn parse_thread_supervisor_kind(
     value: &str,
 ) -> Result<ThreadSupervisorKind, Box<dyn std::error::Error + Send + Sync>> {
     match value {
+        "thread" => Ok(ThreadSupervisorKind::Thread),
         "evaluation" => Ok(ThreadSupervisorKind::Evaluation),
         "objective" => Ok(ThreadSupervisorKind::Objective),
         "runtime" => Ok(ThreadSupervisorKind::Runtime),
@@ -7542,12 +7744,17 @@ impl ActivationStore for SqliteStore {
         if terminal_kind == ThreadLifecycle::Completed.as_str() {
             let open_group_ids = sqlx::query_scalar::<_, String>(
                 r#"SELECT id FROM thread_groups
-                   WHERE supervisor_kind = 'evaluation'
-                     AND supervisor_id = ?
+                   WHERE ((supervisor_kind = 'thread'
+                           AND supervisor_id = ?
+                           AND generation = ?)
+                          OR (supervisor_kind = 'evaluation'
+                              AND supervisor_id = ?))
                      AND status = 'open'
                      AND terminal_count < required_count
                    ORDER BY created_at, id"#,
             )
+            .bind(thread_id)
+            .bind(thread_generation)
             .bind(activation_id)
             .fetch_all(&mut *tx)
             .await?;
@@ -7907,10 +8114,10 @@ impl ActivationStore for SqliteStore {
                     );
                     payload.insert("terminal_summary".to_string(), terminal_summary);
                     let (topic, event_type, signal_target_thread_id) = match supervisor_kind {
-                        ThreadSupervisorKind::Evaluation => {
+                        ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
                             let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
                                 format!(
-                                    "Evaluation Thread Group '{}' 的成员 '{}' 缺少 parent_thread_id",
+                                    "attached Thread Group '{}' 的成员 '{}' 缺少 parent_thread_id",
                                     group_id, thread_id
                                 )
                             })?;
@@ -8103,10 +8310,10 @@ impl ActivationStore for SqliteStore {
                 }),
             );
             let (topic, event_type, signal_target_thread_id) = match supervisor_kind {
-                ThreadSupervisorKind::Evaluation => {
+                ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
                     let parent_id = parent_thread_id.as_deref().ok_or_else(|| {
                         format!(
-                            "attached Thread '{}' 缺少 parent_thread_id，无法向 Evaluation 交付",
+                            "attached Thread '{}' 缺少 parent_thread_id，无法向父 Thread 交付",
                             thread_id
                         )
                     })?;
@@ -9385,10 +9592,10 @@ impl ThreadStore for SqliteStore {
                     let barrier = thread_group_barrier_event(&terminal_group, parent.as_ref())?;
                     append_event_in_transaction(&mut tx, &barrier).await?;
                     match terminal_group.supervisor_kind {
-                        ThreadSupervisorKind::Evaluation => {
+                        ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
                             let parent = parent
                                 .as_ref()
-                                .ok_or("Evaluation Thread Group 关闭缺少 parent Thread")?;
+                                .ok_or("attached Thread Group 关闭缺少 parent Thread")?;
                             append_direct_thread_signal_in_transaction(
                                 &mut tx, &barrier, &parent.id,
                             )
@@ -9448,10 +9655,13 @@ impl ThreadStore for SqliteStore {
                     thread_terminal_barrier_event(&current, &outcome, parent.as_ref())?
                 {
                     append_event_in_transaction(&mut tx, &barrier).await?;
-                    if current.supervision.supervisor_kind == ThreadSupervisorKind::Evaluation {
+                    if matches!(
+                        current.supervision.supervisor_kind,
+                        ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation
+                    ) {
                         let parent = parent
                             .as_ref()
-                            .ok_or("Evaluation Thread 关闭缺少 parent Thread")?;
+                            .ok_or("attached Thread 关闭缺少 parent Thread")?;
                         append_direct_thread_signal_in_transaction(&mut tx, &barrier, &parent.id)
                             .await?;
                     }
@@ -10176,7 +10386,7 @@ impl ScheduleStore for SqliteStore {
                 ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy
             ) {
                 return Err(format!(
-                    "Thread Group '{}' 必须绑定 Evaluation、Objective 或 Runtime supervisor",
+                    "Thread Group '{}' 必须绑定父 Thread、Objective 或 Runtime supervisor",
                     plan.group.id
                 )
                 .into());
@@ -10534,7 +10744,7 @@ impl ScheduleStore for SqliteStore {
                    thread_group_id = ?,
                    updated_at = ?
                WHERE id = ? AND revision = ? AND status = 'open'
-                 AND lifetime = 'attached' AND supervisor_kind = 'evaluation'
+                 AND lifetime = 'attached' AND supervisor_kind IN ('thread', 'evaluation')
                  AND thread_group_id = ?"#,
         )
         .bind(&request.objective_id)
@@ -10560,8 +10770,7 @@ impl ScheduleStore for SqliteStore {
             }
             return Ok(ThreadPromotionMutation::Rejected {
                 current_thread,
-                reason: "Thread 不是指定 Evaluation Group 中仍然 open 的 attached Thread"
-                    .to_string(),
+                reason: "Thread 不是指定 attached Group 中仍然 open 的 attached Thread".to_string(),
             });
         }
 
@@ -10572,10 +10781,13 @@ impl ScheduleStore for SqliteStore {
             .ok_or_else(|| format!("源 Thread Group '{}' 不存在", request.source_group_id))?;
         let source_group_before = thread_group_from_row(&source_group_row)?;
         if source_group_before.status != ThreadGroupStatus::Open
-            || source_group_before.supervisor_kind != ThreadSupervisorKind::Evaluation
+            || !matches!(
+                source_group_before.supervisor_kind,
+                ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation
+            )
         {
             return Err(format!(
-                "源 Thread Group '{}' 不是 open Evaluation Group",
+                "源 Thread Group '{}' 不是 open attached Group",
                 request.source_group_id
             )
             .into());
@@ -10832,7 +11044,7 @@ impl ScheduleStore for SqliteStore {
                     "tool_name": "thread_group",
                     "tool_status": "success",
                     "text": format!(
-                        "Thread '{}' 已升格为 Objective '{}' 的 durable Thread；原 Evaluation Group 已释放该成员",
+                        "Thread '{}' 已升格为 Objective '{}' 的 durable Thread；原 attached Group 已释放该成员",
                         request.thread_id, request.objective_id
                     ),
                     "terminal_summary": source_summary,
@@ -16902,6 +17114,213 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_sqlite_supervisor_check_is_widened_without_losing_threads() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(tmp_file.path())
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id) VALUES ('legacy-session')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
+                agent_id TEXT NOT NULL, context_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                initiating_principal_id TEXT, root_turn_id TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'delivery')),
+                status TEXT NOT NULL CHECK(status IN ('open', 'completed', 'failed', 'cancelled')),
+                control_state TEXT NOT NULL DEFAULT 'active' CHECK(control_state IN ('active', 'paused')),
+                executor_kind TEXT NOT NULL, executor_id TEXT, target_id TEXT,
+                lifetime TEXT NOT NULL DEFAULT 'durable' CHECK(lifetime IN ('attached', 'durable', 'disposable')),
+                supervisor_kind TEXT NOT NULL DEFAULT 'legacy' CHECK(supervisor_kind IN ('evaluation', 'objective', 'runtime', 'none', 'legacy')),
+                supervisor_id TEXT,
+                supervision_generation INTEGER NOT NULL DEFAULT 1 CHECK(supervision_generation >= 1),
+                origin_evaluation_id TEXT, parent_thread_id TEXT, thread_group_id TEXT,
+                completion_contract_json TEXT NOT NULL DEFAULT '{}',
+                result_text TEXT, result_event_id TEXT,
+                delivery_status TEXT NOT NULL DEFAULT 'none' CHECK(delivery_status IN ('none', 'pending', 'deferred', 'delivered')),
+                delivery_event_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO threads
+               (id, agent_id, context_id, session_id, root_turn_id, kind, status,
+                executor_kind, supervisor_kind, created_at, updated_at)
+               VALUES ('legacy-thread', 'agent', 'context', 'legacy-session', 'legacy-root',
+                       'execution', 'open', 'self', 'legacy', 'now', 'now')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        migrate_thread_supervisor_kind_domain(&pool).await.unwrap();
+
+        let table_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(table_sql.contains("'thread'"));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM threads WHERE id = 'legacy-thread'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        sqlx::query("UPDATE threads SET supervisor_kind = 'thread' WHERE id = 'legacy-thread'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn live_legacy_attached_rows_migrate_to_parent_thread_generation() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "attached-migration-context".to_string(),
+                agent_id: "attached-migration-agent".to_string(),
+                title: "Attached migration".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "attached-migration-session".to_string(),
+                agent_id: "attached-migration-agent".to_string(),
+                context_id: "attached-migration-context".to_string(),
+                parent_session_id: None,
+                title: "Attached migration".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let parent = store
+            .ensure_thread(NewThread {
+                id: "attached-migration-parent".to_string(),
+                agent_id: "attached-migration-agent".to_string(),
+                context_id: "attached-migration-context".to_string(),
+                session_id: "attached-migration-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "attached-migration-parent-root".to_string(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO threads
+               (id, revision, generation, agent_id, context_id, session_id, root_turn_id,
+                kind, status, control_state, executor_kind, lifetime, supervisor_kind,
+                supervisor_id, supervision_generation, origin_evaluation_id,
+                parent_thread_id, thread_group_id, completion_contract_json,
+                delivery_status, created_at, updated_at)
+               VALUES (?, 1, 1, ?, ?, ?, ?, 'execution', 'open', 'active', 'model',
+                       'attached', 'evaluation', ?, 1, ?, ?, ?, '{}', 'none', ?, ?)"#,
+        )
+        .bind("attached-migration-child")
+        .bind("attached-migration-agent")
+        .bind("attached-migration-context")
+        .bind("attached-migration-session")
+        .bind("attached-migration-child-root")
+        .bind("finished-origin-activation")
+        .bind("finished-origin-activation")
+        .bind(&parent.id)
+        .bind("attached-migration-group")
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO thread_groups
+               (id, revision, context_id, session_id, supervisor_kind, supervisor_id,
+                generation, policy, required_count, terminal_count, successful_count,
+                status, completion_contract_json, terminal_summary_json, created_at, updated_at)
+               VALUES (?, 1, ?, ?, 'evaluation', ?, 1, 'all', 1, 0, 0,
+                       'open', '{}', '{}', ?, ?)"#,
+        )
+        .bind("attached-migration-group")
+        .bind("attached-migration-context")
+        .bind("attached-migration-session")
+        .bind("finished-origin-activation")
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO thread_group_members
+               (group_id, thread_id, ordinal, required, status, created_at, updated_at)
+               VALUES (?, ?, 0, 1, 'pending', ?, ?)"#,
+        )
+        .bind("attached-migration-group")
+        .bind("attached-migration-child")
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        migrate_attached_supervision_to_parent_threads(&store.pool)
+            .await
+            .unwrap();
+
+        let child = store
+            .get_thread("attached-migration-child")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            child.supervision.supervisor_kind,
+            ThreadSupervisorKind::Thread
+        );
+        assert_eq!(
+            child.supervision.supervisor_id.as_deref(),
+            Some(parent.id.as_str())
+        );
+        assert_eq!(child.supervision.generation, parent.generation);
+        assert_eq!(
+            child.supervision.origin_evaluation_id.as_deref(),
+            Some("finished-origin-activation")
+        );
+        let group = store
+            .get_thread_group("attached-migration-group")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(group.supervisor_kind, ThreadSupervisorKind::Thread);
+        assert_eq!(group.supervisor_id, parent.id);
+        assert_eq!(group.generation, parent.generation);
+    }
+
+    #[tokio::test]
     async fn scheduler_dependency_store_is_idempotent_and_generation_fenced() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
@@ -21315,6 +21734,104 @@ mod tests {
             ThreadActivationMutation::Updated(record) => record,
             other => panic!("unexpected activation mutation: {other:?}"),
         };
+        let mut attached_supervision = crate::memory::ThreadSupervision::attached(
+            thread.id.clone(),
+            thread.generation,
+            "retry-origin-activation",
+        );
+        attached_supervision.thread_group_id = Some("retry-attached-group".to_string());
+        let attached = store
+            .ensure_thread(NewThread {
+                id: "retry-attached-child".to_string(),
+                agent_id: "retry-agent".to_string(),
+                context_id: "retry-context".to_string(),
+                session_id: "retry-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "retry-attached-root".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "model".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: attached_supervision,
+            })
+            .await
+            .unwrap();
+        let group_time = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO thread_groups
+               (id, revision, context_id, session_id, supervisor_kind, supervisor_id,
+                generation, policy, required_count, terminal_count, successful_count,
+                status, completion_contract_json, terminal_summary_json, created_at, updated_at)
+               VALUES (?, 1, ?, ?, 'thread', ?, ?, 'all', 1, 0, 0,
+                       'open', '{}', '{}', ?, ?)"#,
+        )
+        .bind("retry-attached-group")
+        .bind("retry-context")
+        .bind("retry-session")
+        .bind(&thread.id)
+        .bind(i64::try_from(thread.generation).unwrap())
+        .bind(&group_time)
+        .bind(&group_time)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO thread_group_members
+               (group_id, thread_id, ordinal, required, status, created_at, updated_at)
+               VALUES (?, ?, 0, 1, 'pending', ?, ?)"#,
+        )
+        .bind("retry-attached-group")
+        .bind(&attached.id)
+        .bind(&group_time)
+        .bind(&group_time)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let premature_reply = Event::new(
+            "retry-premature-reply".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "assistant_message".to_string(),
+            "chat/reply".to_string(),
+            serde_json::json!({
+                "context_id": "retry-context",
+                "session_id": "retry-session",
+                "root_turn_id": "retry-root",
+                "thread_id": "retry-thread",
+                "disposition": "deliver",
+                "text": "finished too early"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert_eq!(
+            store
+                .commit_activation_outcome(&running.id, &premature_reply)
+                .await
+                .unwrap(),
+            ActivationOutcomeCommit::DeferredByOpenThreadGroups {
+                group_ids: vec!["retry-attached-group".to_string()],
+            },
+            "a successor Activation must not finish the parent Thread while its generation owns required attached work",
+        );
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(premature_reply.id),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+        sqlx::query("DELETE FROM thread_groups WHERE id = ?")
+            .bind("retry-attached-group")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM threads WHERE id = ?")
+            .bind(&attached.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
         let failure = Event::new(
             "retry-failure-reply".to_string(),
             "Runtime-Orchestrator".to_string(),
@@ -23196,6 +23713,132 @@ mod tests {
                 .unwrap(),
             ThreadMutation::Conflict { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn attached_group_barrier_wakes_its_parent_thread_after_origin_activation_ends() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "attached-barrier-context".to_string(),
+                agent_id: "attached-barrier-agent".to_string(),
+                title: "Attached barrier".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "attached-barrier-session".to_string(),
+                agent_id: "attached-barrier-agent".to_string(),
+                context_id: "attached-barrier-context".to_string(),
+                parent_session_id: None,
+                title: "Attached barrier".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let parent = store
+            .ensure_thread(NewThread {
+                id: "attached-barrier-parent".to_string(),
+                agent_id: "attached-barrier-agent".to_string(),
+                context_id: "attached-barrier-context".to_string(),
+                session_id: "attached-barrier-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "attached-barrier-parent-root".to_string(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let mut child_supervision = ThreadSupervision::attached(
+            parent.id.clone(),
+            parent.generation,
+            "already-finished-origin-activation",
+        );
+        child_supervision.thread_group_id = Some("attached-barrier-group".to_string());
+        let child = store
+            .ensure_thread(NewThread {
+                id: "attached-barrier-child".to_string(),
+                agent_id: "attached-barrier-agent".to_string(),
+                context_id: "attached-barrier-context".to_string(),
+                session_id: "attached-barrier-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "attached-barrier-child-root".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: child_supervision,
+            })
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO thread_groups
+               (id, revision, context_id, session_id, supervisor_kind, supervisor_id,
+                generation, policy, required_count, terminal_count, successful_count,
+                status, completion_contract_json, terminal_summary_json, created_at, updated_at)
+               VALUES (?, 1, ?, ?, 'thread', ?, ?, 'all', 1, 0, 0,
+                       'open', '{}', '{}', ?, ?)"#,
+        )
+        .bind("attached-barrier-group")
+        .bind("attached-barrier-context")
+        .bind("attached-barrier-session")
+        .bind(&parent.id)
+        .bind(i64::try_from(parent.generation).unwrap())
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO thread_group_members
+               (group_id, thread_id, ordinal, required, status, created_at, updated_at)
+               VALUES (?, ?, 0, 1, 'pending', ?, ?)"#,
+        )
+        .bind("attached-barrier-group")
+        .bind(&child.id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let closed = match store
+            .control_thread(
+                &child.id,
+                child.revision,
+                ThreadControlAction::Close,
+                Some("test barrier wake"),
+                Some("test"),
+            )
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected close mutation: {other:?}"),
+        };
+        assert_eq!(closed.lifecycle, ThreadLifecycle::Cancelled);
+        let group = store
+            .get_thread_group("attached-barrier-group")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(group.status, ThreadGroupStatus::Failed);
+        let barrier_id = group.barrier_event_id.expect("terminal barrier event");
+        let signal = store
+            .next_pending_thread_signal(&parent.id)
+            .await
+            .unwrap()
+            .expect("barrier must wake the parent Thread");
+        assert_eq!(signal.event_id, barrier_id);
+        assert_eq!(signal.thread_generation, parent.generation);
     }
 
     #[tokio::test]

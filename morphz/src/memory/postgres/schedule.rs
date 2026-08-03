@@ -441,7 +441,7 @@ impl ScheduleStore for PostgresStore {
                 ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy
             ) {
                 return Err(format!(
-                    "Thread Group '{}' 必须绑定 Evaluation、Objective 或 Runtime supervisor",
+                    "Thread Group '{}' 必须绑定父 Thread、Objective 或 Runtime supervisor",
                     plan.group.id
                 )
                 .into());
@@ -760,7 +760,7 @@ impl ScheduleStore for PostgresStore {
                    thread_group_id = $3,
                    updated_at = $4
                WHERE id = $5 AND revision = $6 AND status = 'open'
-                 AND lifetime = 'attached' AND supervisor_kind = 'evaluation'
+                 AND lifetime = 'attached' AND supervisor_kind IN ('thread', 'evaluation')
                  AND thread_group_id = $7"#,
         )
         .bind(&request.objective_id)
@@ -786,8 +786,7 @@ impl ScheduleStore for PostgresStore {
             }
             return Ok(ThreadPromotionMutation::Rejected {
                 current_thread,
-                reason: "Thread 不是指定 Evaluation Group 中仍然 open 的 attached Thread"
-                    .to_string(),
+                reason: "Thread 不是指定 attached Group 中仍然 open 的 attached Thread".to_string(),
             });
         }
 
@@ -798,10 +797,13 @@ impl ScheduleStore for PostgresStore {
             .ok_or_else(|| format!("源 Thread Group '{}' 不存在", request.source_group_id))?;
         let source_group_before = group_from_row(&source_group_row)?;
         if source_group_before.status != ThreadGroupStatus::Open
-            || source_group_before.supervisor_kind != ThreadSupervisorKind::Evaluation
+            || !matches!(
+                source_group_before.supervisor_kind,
+                ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation
+            )
         {
             return Err(format!(
-                "源 Thread Group '{}' 不是 open Evaluation Group",
+                "源 Thread Group '{}' 不是 open attached Group",
                 request.source_group_id
             )
             .into());
@@ -1049,7 +1051,7 @@ impl ScheduleStore for PostgresStore {
                     "tool_name": "thread_group",
                     "tool_status": "success",
                     "text": format!(
-                        "Thread '{}' 已升格为 Objective '{}' 的 durable Thread；原 Evaluation Group 已释放该成员",
+                        "Thread '{}' 已升格为 Objective '{}' 的 durable Thread；原 attached Group 已释放该成员",
                         request.thread_id, request.objective_id
                     ),
                     "terminal_summary": source_summary,

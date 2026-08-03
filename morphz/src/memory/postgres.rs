@@ -148,6 +148,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260803_01_attached_parent_thread_supervision",
+                    thread_group::migrate_attached_supervision_to_parent_threads(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260718_05_activations",
                     activation::migrate(&store.pool),
                 )

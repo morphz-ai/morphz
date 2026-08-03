@@ -2882,6 +2882,7 @@ impl Orchestrator {
             );
             violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
                 &objectives,
+                &threads,
                 &activations,
                 &groups,
                 &barrier_event_ids,
@@ -8542,7 +8543,7 @@ impl Orchestrator {
                     activation_id = %route.activation_id,
                     event_id = %event.id,
                     thread_group_ids = ?group_ids,
-                    "Evaluation 仍有 required attached Thread；拒绝提前提交终态，等待 Group barrier 唤醒"
+                    "父 Thread generation 仍有 required attached Thread；拒绝提前提交终态，等待 Group barrier 唤醒"
                 );
                 (false, Vec::new())
             }

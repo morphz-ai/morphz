@@ -975,11 +975,12 @@
         "waiting": "Waiting for an external result"
       },
       "lifetimeValues": {
-        "attached": "Evaluation-attached",
+        "attached": "Parent Thread-attached",
         "durable": "Durably supervised",
         "disposable": "Disposable"
       },
       "supervisorValues": {
+        "thread": "Parent Thread",
         "evaluation": "Evaluation",
         "objective": "Objective",
         "runtime": "Runtime",

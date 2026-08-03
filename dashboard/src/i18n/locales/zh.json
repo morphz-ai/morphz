@@ -974,11 +974,12 @@
         "waiting": "等待外部结果"
       },
       "lifetimeValues": {
-        "attached": "随求值绑定",
+        "attached": "随父线程绑定",
         "durable": "持久监督",
         "disposable": "可丢弃"
       },
       "supervisorValues": {
+        "thread": "父线程",
         "evaluation": "求值",
         "objective": "目标",
         "runtime": "运行时",

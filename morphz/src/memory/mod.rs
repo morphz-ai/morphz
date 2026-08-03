@@ -2633,9 +2633,9 @@ pub fn thread_group_barrier_event(
         group.terminal_summary.clone(),
     );
     let (topic, event_type) = match group.supervisor_kind {
-        ThreadSupervisorKind::Evaluation => {
+        ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
             let parent = parent.ok_or_else(|| {
-                format!("Evaluation Thread Group '{}' 缺少父 Thread 投影", group.id)
+                format!("attached Thread Group '{}' 缺少父 Thread 投影", group.id)
             })?;
             payload.insert(
                 "session_id".to_string(),
@@ -2809,7 +2809,7 @@ pub fn thread_terminal_barrier_event(
     );
     let (topic, event_type) =
         match thread.supervision.supervisor_kind {
-            ThreadSupervisorKind::Evaluation => {
+            ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
                 let parent = parent
                     .ok_or_else(|| format!("attached Thread '{}' 缺少父 Thread 投影", thread.id))?;
                 payload.insert(
@@ -3206,6 +3206,7 @@ impl ThreadLifetime {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadSupervisorKind {
+    Thread,
     Evaluation,
     Objective,
     Runtime,
@@ -3216,6 +3217,7 @@ pub enum ThreadSupervisorKind {
 impl ThreadSupervisorKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Thread => "thread",
             Self::Evaluation => "evaluation",
             Self::Objective => "objective",
             Self::Runtime => "runtime",
@@ -3241,18 +3243,19 @@ pub struct ThreadSupervision {
 }
 
 impl ThreadSupervision {
-    pub fn evaluation(
-        evaluation_id: impl Into<String>,
+    pub fn attached(
         parent_thread_id: impl Into<String>,
+        parent_thread_generation: u64,
+        origin_evaluation_id: impl Into<String>,
     ) -> Self {
-        let evaluation_id = evaluation_id.into();
+        let parent_thread_id = parent_thread_id.into();
         Self {
             lifetime: ThreadLifetime::Attached,
-            supervisor_kind: ThreadSupervisorKind::Evaluation,
-            supervisor_id: Some(evaluation_id.clone()),
-            generation: 1,
-            origin_evaluation_id: Some(evaluation_id),
-            parent_thread_id: Some(parent_thread_id.into()),
+            supervisor_kind: ThreadSupervisorKind::Thread,
+            supervisor_id: Some(parent_thread_id.clone()),
+            generation: parent_thread_generation.max(1),
+            origin_evaluation_id: Some(origin_evaluation_id.into()),
+            parent_thread_id: Some(parent_thread_id),
             thread_group_id: None,
             completion_contract: JsonValue::Object(Default::default()),
         }
@@ -3341,10 +3344,11 @@ impl ThreadSupervision {
             return Err("Thread supervision generation 必须大于 0".to_string());
         }
         match (self.lifetime, self.supervisor_kind) {
-            (ThreadLifetime::Attached, ThreadSupervisorKind::Evaluation)
+            (ThreadLifetime::Attached, ThreadSupervisorKind::Thread)
                 if self.supervisor_id.is_some()
                     && self.origin_evaluation_id.is_some()
-                    && self.parent_thread_id.is_some() => {}
+                    && self.parent_thread_id.is_some()
+                    && self.supervisor_id == self.parent_thread_id => {}
             (ThreadLifetime::Durable, ThreadSupervisorKind::Objective)
                 if kind == ThreadKind::Execution
                     && self.supervisor_id.is_some()
@@ -3592,9 +3596,9 @@ pub struct ScheduledObjectiveWaitBinding {
     pub bound_event: crate::event::Event,
 }
 
-/// Atomic transfer of one open attached Thread from its owning Evaluation to
-/// an Objective.  The source Group member is released in the same transaction
-/// which installs the new Objective-owned Group, so neither supervisor can
+/// Atomic transfer of one open attached Thread from its owning parent Thread
+/// generation to an Objective. The transaction releases the source Group
+/// member while installing the new Objective-owned Group, so neither owner can
 /// observe a half-transferred Thread.
 #[derive(Debug, Clone)]
 pub struct ThreadPromotionRequest {

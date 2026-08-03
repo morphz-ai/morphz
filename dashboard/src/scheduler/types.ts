@@ -48,7 +48,7 @@ export interface ThreadRecord {
   target_id?: string
   supervision: {
     lifetime: 'attached' | 'durable' | 'disposable'
-    supervisor_kind: 'evaluation' | 'objective' | 'runtime' | 'none' | 'legacy'
+    supervisor_kind: 'thread' | 'evaluation' | 'objective' | 'runtime' | 'none' | 'legacy'
     supervisor_id?: string
     generation: number
     origin_evaluation_id?: string
@@ -169,7 +169,7 @@ export interface ThreadGroupRecord {
   revision: number
   context_id: string
   session_id: string
-  supervisor_kind: 'evaluation' | 'objective' | 'runtime' | 'none' | 'legacy'
+  supervisor_kind: 'thread' | 'evaluation' | 'objective' | 'runtime' | 'none' | 'legacy'
   supervisor_id: string
   generation: number
   policy: 'all' | 'any'
