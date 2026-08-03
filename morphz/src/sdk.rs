@@ -8,10 +8,10 @@
 use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::config::{
     remove_managed_provider_accounts_at, save_managed_auth_account_at, save_managed_model_route_at,
-    save_managed_provider_catalog_at, save_managed_provider_instance_at, AppConfig,
-    AuthAccountConfig, CredentialConfig, ModelProtocol, ModelRouteAffinity,
-    ModelRouteCandidateConfig, ModelRouteConfig, ModelRouteSelection, ProviderInstanceConfig,
-    ProviderModelConfig,
+    save_managed_provider_account_models_at, save_managed_provider_catalog_at,
+    save_managed_provider_instance_at, AppConfig, AuthAccountConfig, CredentialConfig,
+    ModelProtocol, ModelRouteAffinity, ModelRouteCandidateConfig, ModelRouteConfig,
+    ModelRouteSelection, ProviderInstanceConfig, ProviderModelConfig,
 };
 use crate::event::Event;
 use crate::execution::JobReceipt;
@@ -1132,6 +1132,256 @@ impl MorphzSdk {
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ModelRoute,
             route_id,
+            managed_config_path,
+        ))
+    }
+
+    /// Replace the enabled physical-model subset for one account. Remote
+    /// discovery remains observational data; this method is the explicit
+    /// operator decision that turns discovered models into logical routes.
+    pub async fn put_provider_account_models(
+        &self,
+        managed_config_path: &Path,
+        account_id: &str,
+        models: BTreeMap<String, ProviderModelConfig>,
+    ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        if models.is_empty() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "每个已启用账号至少需要选择一个模型",
+            ));
+        }
+        for (model, profile) in &models {
+            if model.trim().is_empty() || model.trim() != model {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    "模型 ID 不能为空或包含首尾空白",
+                ));
+            }
+            if profile
+                .context_window_tokens
+                .zip(profile.max_output_tokens)
+                .is_some_and(|(window, output)| output >= window)
+            {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    format!("模型 '{model}' 的最大输出必须小于上下文窗口"),
+                ));
+            }
+            if profile
+                .context_window_tokens
+                .zip(profile.max_input_tokens)
+                .is_some_and(|(window, input)| input > window)
+                || profile
+                    .context_window_tokens
+                    .zip(profile.max_input_tokens.zip(profile.max_output_tokens))
+                    .is_some_and(|(window, (input, output))| input.saturating_add(output) > window)
+            {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    format!("模型 '{model}' 的输入与输出容量超过上下文窗口"),
+                ));
+            }
+        }
+
+        let mut snapshot = self.provider_control_snapshot().await?;
+        merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
+        let account = snapshot.auth_accounts.get(account_id).ok_or_else(|| {
+            SdkError::new(
+                SdkErrorCode::NotFound,
+                format!("Auth Account '{account_id}' 不存在"),
+            )
+        })?;
+        let provider_id = account
+            .config
+            .provider
+            .clone()
+            .or_else(|| {
+                snapshot
+                    .provider_instances
+                    .iter()
+                    .find(|(_, provider)| provider.accounts.iter().any(|id| id == account_id))
+                    .map(|(provider_id, _)| provider_id.clone())
+            })
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    format!("Auth Account '{account_id}' 尚未关联 Provider Instance"),
+                )
+            })?;
+        let mut provider = snapshot
+            .provider_instances
+            .get(&provider_id)
+            .cloned()
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::NotFound,
+                    format!("Provider Instance '{provider_id}' 不存在"),
+                )
+            })?;
+
+        let mut selectable = snapshot
+            .discovered_models
+            .iter()
+            .filter(|record| {
+                record.provider_instance_id == provider_id && record.auth_account_id == account_id
+            })
+            .map(|record| record.physical_model.clone())
+            .collect::<BTreeSet<_>>();
+        let mut preferred_routes = BTreeMap::<String, String>::new();
+        for (route_id, route) in &snapshot.model_routes {
+            for candidate in &route.candidates {
+                if candidate.provider == provider_id
+                    && candidate.account.as_deref() == Some(account_id)
+                {
+                    selectable.insert(candidate.model.clone());
+                    preferred_routes
+                        .entry(candidate.model.clone())
+                        .or_insert_with(|| route_id.clone());
+                }
+            }
+        }
+        if let Some(unknown) = models.keys().find(|model| !selectable.contains(*model)) {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                format!("模型 '{unknown}' 不在该账号最近发现的目录中"),
+            ));
+        }
+
+        let original_routes = snapshot.model_routes.clone();
+        for route in snapshot.model_routes.values_mut() {
+            route.candidates.retain(|candidate| {
+                candidate.provider != provider_id
+                    || candidate.account.as_deref() != Some(account_id)
+            });
+        }
+        snapshot
+            .model_routes
+            .retain(|_, route| !route.candidates.is_empty());
+
+        for model in models.keys() {
+            let existing_route = preferred_routes.get(model).cloned().or_else(|| {
+                snapshot.model_routes.iter().find_map(|(route_id, route)| {
+                    route
+                        .candidates
+                        .iter()
+                        .any(|candidate| {
+                            candidate.provider == provider_id && candidate.model == *model
+                        })
+                        .then(|| route_id.clone())
+                })
+            });
+            let route_id = existing_route.unwrap_or_else(|| {
+                let alias_in_use = |candidate: &str| {
+                    snapshot.model_routes.iter().any(|(route_id, route)| {
+                        route_id == candidate
+                            || route.aliases.iter().any(|alias| alias == candidate)
+                    })
+                };
+                if !alias_in_use(model) {
+                    return model.clone();
+                }
+                let base = format!("{provider_id}:{model}");
+                if !alias_in_use(&base) {
+                    return base;
+                }
+                (2..)
+                    .map(|index| format!("{base}:{index}"))
+                    .find(|candidate| !alias_in_use(candidate))
+                    .expect("an unbounded route suffix must eventually be unique")
+            });
+            let route = snapshot
+                .model_routes
+                .entry(route_id)
+                .or_insert_with(|| ModelRouteConfig {
+                    aliases: Vec::new(),
+                    candidates: Vec::new(),
+                    affinity: ModelRouteAffinity::Context,
+                    selection: ModelRouteSelection::AvailableLeastRecentlyUsed,
+                    fallback: false,
+                });
+            let priority = route
+                .candidates
+                .iter()
+                .map(|candidate| candidate.priority)
+                .max()
+                .map_or(0, |priority| priority.saturating_add(1));
+            route.candidates.push(ModelRouteCandidateConfig {
+                provider: provider_id.clone(),
+                model: model.clone(),
+                priority,
+                account: Some(account_id.to_string()),
+                capabilities: Vec::new(),
+            });
+        }
+
+        let referenced_models = snapshot
+            .model_routes
+            .values()
+            .flat_map(|route| route.candidates.iter())
+            .filter(|candidate| candidate.provider == provider_id)
+            .map(|candidate| candidate.model.clone())
+            .collect::<BTreeSet<_>>();
+        provider
+            .models
+            .retain(|model, _| referenced_models.contains(model));
+        for (model, profile) in models {
+            provider.models.insert(model, profile);
+        }
+        snapshot
+            .provider_instances
+            .insert(provider_id.clone(), provider.clone());
+        validate_provider_catalog_snapshot(&snapshot)?;
+
+        let changed_routes = snapshot
+            .model_routes
+            .iter()
+            .filter(|(route_id, route)| original_routes.get(*route_id) != Some(*route))
+            .map(|(route_id, route)| (route_id.clone(), route.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let removed_route_ids = original_routes
+            .keys()
+            .filter(|route_id| !snapshot.model_routes.contains_key(*route_id))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let selected_still_exists = snapshot.model_routes.iter().any(|(route_id, route)| {
+            route_id == &snapshot.selected_model_alias
+                || route
+                    .aliases
+                    .iter()
+                    .any(|alias| alias == &snapshot.selected_model_alias)
+        });
+        let fallback_model = (!selected_still_exists)
+            .then(|| snapshot.model_routes.keys().next().cloned())
+            .flatten();
+
+        save_managed_provider_account_models_at(
+            managed_config_path,
+            &provider_id,
+            &provider,
+            &changed_routes,
+            &removed_route_ids,
+            fallback_model.as_deref(),
+        )
+        .map_err(SdkError::internal)?;
+        let mut live = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        live.provider_instances.insert(provider_id, provider);
+        for route_id in &removed_route_ids {
+            live.model_routes.remove(route_id);
+        }
+        live.model_routes.extend(changed_routes);
+        if let Some(model) = fallback_model {
+            live.llm.model = model;
+        }
+        self.runtime
+            .replace_provider_catalog(live)
+            .map_err(SdkError::internal)?;
+        Ok(ProviderCatalogMutationReceipt::new(
+            ProviderCatalogObjectKind::ProviderCatalog,
+            account_id,
             managed_config_path,
         ))
     }

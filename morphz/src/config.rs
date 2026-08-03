@@ -893,7 +893,7 @@ pub struct ModelRouteCandidateConfig {
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelRouteConfig {
     /// Additional public aliases. The map key itself is always an alias too.
@@ -1477,6 +1477,54 @@ pub fn save_managed_model_route(
     let path = managed_config_path()?;
     save_managed_model_route_at(&path, route_id, route)?;
     Ok(path)
+}
+
+/// Atomically persist the model choices for one Provider account. Model
+/// discovery is runtime data; only the operator's enabled subset and optional
+/// capability overrides belong in managed configuration.
+pub fn save_managed_provider_account_models_at(
+    path: &Path,
+    provider_id: &str,
+    provider: &ProviderInstanceConfig,
+    changed_routes: &BTreeMap<String, ModelRouteConfig>,
+    removed_route_ids: &BTreeSet<String>,
+    selected_model: Option<&str>,
+) -> Result<(), String> {
+    validate_catalog_key("Provider Instance", provider_id)?;
+    for route_id in changed_routes.keys() {
+        validate_catalog_key("Model Route", route_id)?;
+    }
+    let mut root = read_managed_value(path)?;
+    insert_managed_value(
+        &mut root,
+        &["provider_instances", provider_id],
+        toml::Value::try_from(provider)
+            .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
+    )?;
+    for (route_id, route) in changed_routes {
+        insert_managed_value(
+            &mut root,
+            &["model_routes", route_id],
+            toml::Value::try_from(route)
+                .map_err(|error| format!("无法序列化 Model Route: {error}"))?,
+        )?;
+    }
+    if let Some(routes) = root
+        .get_mut("model_routes")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for route_id in removed_route_ids {
+            routes.remove(route_id);
+        }
+    }
+    if let Some(model) = selected_model {
+        insert_managed_value(
+            &mut root,
+            &["llm", "model"],
+            toml::Value::String(model.to_string()),
+        )?;
+    }
+    write_managed_value(path, &root)
 }
 
 /// Atomically persist the minimal routed Provider catalog produced by first

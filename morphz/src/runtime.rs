@@ -113,29 +113,109 @@ pub enum ContextTokenBudgetUpdate {
 }
 
 fn resolve_model_context_capacity(config: &AppConfig, model: &str) -> ModelContextCapacity {
-    let provider_id = config.llm.provider.clone();
-    let profile = provider_id
+    let legacy_provider_id = config.llm.provider.clone();
+    let legacy_profile = legacy_provider_id
         .as_deref()
         .and_then(|provider_id| config.providers.get(provider_id))
         .and_then(|provider| provider.models.get(model));
-    let configured_prompt_token_limit =
-        profile.and_then(crate::config::ProviderModelConfig::prompt_token_limit);
-    let prompt_token_limit = configured_prompt_token_limit
-        .unwrap_or(config.orchestrator.context_hard_token_limit)
-        .max(1);
+    let routed = EffectiveProviderCatalog::from_config(config)
+        .ok()
+        .and_then(|catalog| {
+            let (_, route) = catalog.resolve_route(model).ok()?;
+            let candidates = route
+                .candidates
+                .iter()
+                .filter_map(|candidate| {
+                    catalog
+                        .provider_instances
+                        .get(&candidate.provider)
+                        .map(|provider| {
+                            (
+                                candidate.provider.clone(),
+                                provider.models.get(&candidate.model).cloned(),
+                            )
+                        })
+                })
+                .collect::<Vec<_>>();
+            (!candidates.is_empty()).then_some(candidates)
+        });
+    let fallback = config.orchestrator.context_hard_token_limit.max(1);
+    let (provider_id, prompt_token_limit, context_window_tokens, max_output_tokens, source) =
+        if let Some(candidates) = routed {
+            let provider_id = candidates
+                .iter()
+                .map(|(provider_id, _)| provider_id)
+                .all(|provider_id| provider_id == &candidates[0].0)
+                .then(|| candidates[0].0.clone());
+            let prompt_token_limit = candidates
+                .iter()
+                .map(|(_, profile)| {
+                    profile
+                        .as_ref()
+                        .and_then(crate::config::ProviderModelConfig::prompt_token_limit)
+                        .unwrap_or(fallback)
+                })
+                .min()
+                .unwrap_or(fallback)
+                .max(1);
+            let all_context_windows = candidates
+                .iter()
+                .map(|(_, profile)| {
+                    profile
+                        .as_ref()
+                        .and_then(|profile| profile.context_window_tokens)
+                })
+                .collect::<Option<Vec<_>>>();
+            let all_output_limits = candidates
+                .iter()
+                .map(|(_, profile)| {
+                    profile
+                        .as_ref()
+                        .and_then(|profile| profile.max_output_tokens)
+                        .or(config.llm.max_output_tokens.map(|value| value as usize))
+                })
+                .collect::<Option<Vec<_>>>();
+            let configured = candidates.iter().any(|(_, profile)| {
+                profile
+                    .as_ref()
+                    .and_then(crate::config::ProviderModelConfig::prompt_token_limit)
+                    .is_some()
+            });
+            (
+                provider_id,
+                prompt_token_limit,
+                all_context_windows.and_then(|values| values.into_iter().min()),
+                all_output_limits.and_then(|values| values.into_iter().min()),
+                if configured {
+                    "provider-route-model-config"
+                } else {
+                    "runtime-default"
+                },
+            )
+        } else {
+            let configured_prompt_token_limit =
+                legacy_profile.and_then(crate::config::ProviderModelConfig::prompt_token_limit);
+            (
+                legacy_provider_id,
+                configured_prompt_token_limit.unwrap_or(fallback).max(1),
+                legacy_profile.and_then(|profile| profile.context_window_tokens),
+                legacy_profile
+                    .and_then(|profile| profile.max_output_tokens)
+                    .or(config.llm.max_output_tokens.map(|value| value as usize)),
+                if configured_prompt_token_limit.is_some() {
+                    "provider-model-config"
+                } else {
+                    "runtime-default"
+                },
+            )
+        };
     ModelContextCapacity {
         provider: provider_id,
         model: model.to_string(),
         prompt_token_limit,
-        context_window_tokens: profile.and_then(|profile| profile.context_window_tokens),
-        max_output_tokens: profile
-            .and_then(|profile| profile.max_output_tokens)
-            .or(config.llm.max_output_tokens.map(|value| value as usize)),
-        source: if configured_prompt_token_limit.is_some() {
-            "provider-model-config".to_string()
-        } else {
-            "runtime-default".to_string()
-        },
+        context_window_tokens,
+        max_output_tokens,
+        source: source.to_string(),
     }
 }
 
@@ -1501,6 +1581,12 @@ impl MorphzRuntime {
             .write()
             .map_err(|_| std::io::Error::other("Provider catalog lock poisoned"))?;
         *current = config;
+        let capacity = resolve_model_context_capacity(&current, &self.model());
+        *self
+            .inner
+            .model_context_capacity
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
         Ok(())
     }
 
@@ -2293,6 +2379,9 @@ impl MorphzRuntime {
         if !configured.is_empty() && !models.iter().any(|model| model == configured) {
             models.insert(0, configured.to_string());
         }
+        if let Ok(config) = self.provider_catalog_config() {
+            models.extend(config.model_routes.keys().cloned());
+        }
         models.sort();
         models.dedup();
         models
@@ -2305,10 +2394,11 @@ impl MorphzRuntime {
             .iter()
             .any(|allowed| allowed == model)
         {
-            return Err(format!("模型 '{model}' 未在 llm.models 中配置，拒绝运行期切换").into());
+            return Err(format!("模型 '{model}' 尚未启用，拒绝运行期切换").into());
         }
         self.inner.client.set_model(model)?;
-        let mut capacity = resolve_model_context_capacity(&self.inner.config, model);
+        let catalog = self.provider_catalog_config()?;
+        let mut capacity = resolve_model_context_capacity(&catalog, model);
         if let Some(limit) = self
             .inner
             .model_prompt_token_limit_overrides
@@ -2350,7 +2440,7 @@ impl MorphzRuntime {
             .iter()
             .any(|allowed| allowed == model)
         {
-            return Err(format!("模型 '{model}' 未在 llm.models 中配置，拒绝修改容量").into());
+            return Err(format!("模型 '{model}' 尚未启用，拒绝修改容量").into());
         }
         self.inner
             .model_prompt_token_limit_overrides
@@ -2358,7 +2448,8 @@ impl MorphzRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(model.to_string(), prompt_token_limit);
         if self.model() == model {
-            let mut capacity = resolve_model_context_capacity(&self.inner.config, model);
+            let catalog = self.provider_catalog_config()?;
+            let mut capacity = resolve_model_context_capacity(&catalog, model);
             capacity.prompt_token_limit = prompt_token_limit;
             capacity.source = "managed-provider-model-override".to_string();
             *self

@@ -2,7 +2,7 @@ use crate::approval::ApprovalDecision;
 use crate::artifact::ArtifactTransferStageKind;
 use crate::config::{
     save_managed_inference_at, AuthAccountConfig, ModelProtocol, ModelRouteConfig,
-    ProviderInstanceConfig, ServerIdentityConfig, ServerIdentityMode,
+    ProviderInstanceConfig, ProviderModelConfig, ServerIdentityConfig, ServerIdentityMode,
 };
 use crate::event::Event;
 use crate::execution_target::EdgeArtifactDataDirection;
@@ -47,7 +47,7 @@ use base64::Engine;
 use futures_util::StreamExt;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -283,6 +283,19 @@ struct DiscoverProviderModelsRequest {
 #[derive(serde::Serialize)]
 struct DiscoverProviderModelsResponse {
     models: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct PutProviderAccountModelsRequest {
+    models: Vec<ProviderAccountModelSelection>,
+}
+
+#[derive(serde::Deserialize)]
+struct ProviderAccountModelSelection {
+    id: String,
+    context_window_tokens: Option<usize>,
+    max_input_tokens: Option<usize>,
+    max_output_tokens: Option<usize>,
 }
 
 #[derive(serde::Deserialize)]
@@ -797,6 +810,10 @@ impl Server {
             .route(
                 "/api/runtime/providers/accounts/:account_id/config",
                 axum::routing::put(handle_put_auth_account_config),
+            )
+            .route(
+                "/api/runtime/providers/accounts/:account_id/models",
+                axum::routing::put(handle_put_provider_account_models),
             )
             .route(
                 "/api/runtime/providers/routes/:route_id",
@@ -1520,6 +1537,47 @@ async fn handle_put_auth_account_config(
     }
 }
 
+async fn handle_put_provider_account_models(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<PutProviderAccountModelsRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "无法确定 Morphz 受管配置路径",
+        );
+    };
+    let mut models = BTreeMap::new();
+    for selection in request.models {
+        let id = selection.id.trim().to_string();
+        if id.is_empty() || models.contains_key(&id) {
+            return error_response(StatusCode::BAD_REQUEST, "模型 ID 不能为空且不能重复");
+        }
+        models.insert(
+            id,
+            ProviderModelConfig {
+                context_window_tokens: selection.context_window_tokens,
+                max_input_tokens: selection.max_input_tokens,
+                max_output_tokens: selection.max_output_tokens,
+            },
+        );
+    }
+    match state
+        .sdk
+        .put_provider_account_models(path, &account_id, models)
+        .await
+    {
+        Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
 async fn handle_put_model_route_config(
     State(state): State<Arc<AppState>>,
     Path(route_id): Path<String>,
@@ -2223,7 +2281,7 @@ async fn handle_update_inference(
     {
         return error_response(
             StatusCode::BAD_REQUEST,
-            format!("模型 '{model}' 未在 llm.models 中配置，拒绝运行期切换"),
+            format!("模型 '{model}' 尚未启用，拒绝运行期切换"),
         );
     }
     let effort = match request.reasoning_effort.as_deref().map(str::trim) {
@@ -6992,6 +7050,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enabled_account_models_join_the_live_inference_catalog_with_capacity_profiles() {
+        let tmp = NamedTempFile::new().unwrap();
+        let database_path = tmp.path().to_path_buf();
+        drop(tmp);
+        let (state, runtime) = test_state_at_with_workers(&database_path, false).await;
+        let managed_config_path = state.managed_config_path.clone().unwrap();
+
+        let setup = handle_put_provider_catalog_setup(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderCatalogSetupRequest {
+                provider_id: "subscription-provider".to_string(),
+                provider: ProviderInstanceConfig {
+                    adapter: "openai-compatible".to_string(),
+                    protocol: crate::config::ModelProtocol::OpenaiResponses,
+                    base_url: "https://models.example.test/v1".to_string(),
+                    accounts: vec!["subscription-account".to_string()],
+                    ..ProviderInstanceConfig::default()
+                },
+                account_id: "subscription-account".to_string(),
+                account: AuthAccountConfig {
+                    auth_adapter: "none".to_string(),
+                    provider: Some("subscription-provider".to_string()),
+                    ..AuthAccountConfig::default()
+                },
+                credential_id: None,
+                credential: None,
+                route_id: "subscription-model".to_string(),
+                route: ModelRouteConfig {
+                    candidates: vec![crate::config::ModelRouteCandidateConfig {
+                        provider: "subscription-provider".to_string(),
+                        account: Some("subscription-account".to_string()),
+                        model: "physical-subscription-model".to_string(),
+                        ..crate::config::ModelRouteCandidateConfig::default()
+                    }],
+                    ..ModelRouteConfig::default()
+                },
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(setup.status(), StatusCode::OK);
+        assert!(runtime
+            .configured_models()
+            .contains(&"subscription-model".to_string()));
+
+        let saved = handle_put_provider_account_models(
+            State(Arc::clone(&state)),
+            Path("subscription-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderAccountModelsRequest {
+                models: vec![ProviderAccountModelSelection {
+                    id: "physical-subscription-model".to_string(),
+                    context_window_tokens: Some(200_000),
+                    max_input_tokens: None,
+                    max_output_tokens: Some(4_000),
+                }],
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(saved.status(), StatusCode::OK);
+
+        let switched = handle_update_inference(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateInferenceRequest {
+                model: Some("subscription-model".to_string()),
+                reasoning_effort: None,
+                prompt_token_limit: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(switched.status(), StatusCode::OK);
+        assert_eq!(runtime.model(), "subscription-model");
+        assert_eq!(runtime.model_context_capacity().prompt_token_limit, 196_000);
+        assert_eq!(
+            runtime.model_context_capacity().source,
+            "provider-route-model-config"
+        );
+
+        let managed: AppConfig =
+            toml::from_str(&std::fs::read_to_string(managed_config_path).unwrap()).unwrap();
+        assert_eq!(
+            managed.provider_instances["subscription-provider"].models
+                ["physical-subscription-model"]
+                .context_window_tokens,
+            Some(200_000)
+        );
+        assert_eq!(managed.llm.model, "subscription-model");
+    }
+
+    #[tokio::test]
     async fn public_runtime_oauth_callback_accepts_only_live_opaque_state() {
         let unknown = handle_provider_oauth_callback(Query(OAuthCallbackQuery {
             state: "unknown-state".to_string(),
@@ -7589,7 +7744,7 @@ mod tests {
         assert_eq!(setup.status(), StatusCode::OK);
 
         let start = handle_start_provider_oauth_login(
-            State(state),
+            State(Arc::clone(&state)),
             Path("oauth-account".to_string()),
             HeaderMap::new(),
             Query(AuthQuery::default()),
@@ -7610,9 +7765,24 @@ mod tests {
             serde_json::from_slice(&body).unwrap();
         assert_eq!(challenge.user_code.as_deref(), Some("MORPHZ-TEST"));
 
+        // An unfinished login is process-local transaction state. It must not
+        // create a Secret Backend record or even an empty env file.
+        assert!(!env_path.exists());
+
+        let completed = handle_continue_provider_oauth_login(
+            State(state),
+            Path(challenge.login_id),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(OAuthLoginCompletion::Poll),
+        )
+        .await
+        .into_response();
+        assert_eq!(completed.status(), StatusCode::OK);
+
         let env = std::fs::read_to_string(env_path).unwrap();
-        assert!(env.contains("MORPHZ_OAUTH_LOGIN_"));
-        assert!(!env.contains("MORPHZ_OAUTH_TEST_TOKEN="));
+        assert!(!env.contains("MORPHZ_OAUTH_LOGIN_"));
+        assert!(env.contains("MORPHZ_OAUTH_TEST_TOKEN="));
     }
 
     #[tokio::test]

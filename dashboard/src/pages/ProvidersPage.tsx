@@ -199,6 +199,24 @@ interface CatalogMutationReceipt {
   restart_required: boolean
 }
 
+interface AccountModelOption {
+  id: string
+  enabled: boolean
+  contextWindowTokens: string
+  maxInputTokens: string
+  maxOutputTokens: string
+}
+
+interface AccountModelEditorState {
+  accountId: string
+  providerId: string
+  label: string
+  options: AccountModelOption[]
+  loading: boolean
+  error: string
+  errorKind: 'catalog' | 'validation' | 'save' | ''
+}
+
 type ProviderSetupMode = 'oauth' | 'api_key'
 
 interface ProviderSetupState {
@@ -344,6 +362,10 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const [catalogNotice, setCatalogNotice] = useState('')
   const [diagnostic, setDiagnostic] = useState<ModelRouteDiagnostic | null>(null)
   const [diagnosing, setDiagnosing] = useState('')
+  const [diagnosticAccountId, setDiagnosticAccountId] = useState('')
+  const [diagnosticError, setDiagnosticError] = useState('')
+  const [modelEditor, setModelEditor] = useState<AccountModelEditorState | null>(null)
+  const [savingModels, setSavingModels] = useState(false)
   const [setup, setSetup] = useState<ProviderSetupState | null>(null)
   const [savingSetup, setSavingSetup] = useState(false)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
@@ -891,6 +913,9 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
 
   const diagnoseRoute = async (routeId: string, accountId?: string) => {
     setDiagnosing(accountId ? `account:${accountId}` : `route:${routeId}`)
+    setDiagnosticAccountId(accountId ?? '')
+    setDiagnosticError('')
+    setDiagnostic(null)
     setError('')
     try {
       const result = await api.command<ModelRouteDiagnostic>(
@@ -901,7 +926,9 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       setDiagnostic(result)
       await refresh()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      const message = reason instanceof Error ? reason.message : String(reason)
+      if (accountId) setDiagnosticError(message)
+      else setError(message)
     } finally {
       setDiagnosing('')
     }
@@ -929,6 +956,136 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     route.candidates.some(candidate => candidate.account === accountId
       || snapshot.provider_instances[candidate.provider]?.accounts.includes(accountId))
   ))?.[0]
+
+  const accountModelOptions = (
+    accountId: string,
+    providerId: string,
+    additionallyDiscovered: string[] = [],
+  ): AccountModelOption[] => {
+    const enabled = new Set<string>()
+    for (const route of Object.values(snapshot.model_routes)) {
+      for (const candidate of route.candidates) {
+        if (candidate.provider === providerId && candidate.account === accountId) enabled.add(candidate.model)
+      }
+    }
+    const discovered = new Set([
+      ...snapshot.discovered_models
+        .filter(model => model.provider_instance_id === providerId && model.auth_account_id === accountId)
+        .map(model => model.physical_model),
+      ...additionallyDiscovered,
+      ...enabled,
+    ])
+    const profiles = snapshot.provider_instances[providerId]?.models ?? {}
+    return Array.from(discovered).sort().map(id => ({
+      id,
+      enabled: enabled.has(id),
+      contextWindowTokens: profiles[id]?.context_window_tokens?.toString() ?? '',
+      maxInputTokens: profiles[id]?.max_input_tokens?.toString() ?? '',
+      maxOutputTokens: profiles[id]?.max_output_tokens?.toString() ?? '',
+    }))
+  }
+
+  const openAccountModels = async (accountId: string, label: string) => {
+    const record = snapshot.auth_accounts[accountId]
+    const providerId = record?.config.provider
+      ?? instances.find(([, provider]) => provider.accounts.includes(accountId))?.[0]
+    if (!providerId) {
+      setError(t('providers.modelProviderMissing'))
+      return
+    }
+    setModelEditor({
+      accountId,
+      providerId,
+      label,
+      options: accountModelOptions(accountId, providerId),
+      loading: true,
+      error: '',
+      errorKind: '',
+    })
+    const routeId = compatibleRouteForAccount(accountId)
+    if (!routeId) {
+      setModelEditor(current => current?.accountId === accountId
+        ? { ...current, loading: false, error: t('providers.modelRouteMissing'), errorKind: 'catalog' }
+        : current)
+      return
+    }
+    try {
+      const result = await api.command<ModelRouteDiagnostic>(
+        `/api/runtime/providers/routes/${encodeURIComponent(routeId)}/refresh-models`,
+        'POST',
+        { account_id: accountId },
+      )
+      setModelEditor(current => current?.accountId === accountId
+        ? {
+            ...current,
+            options: accountModelOptions(accountId, providerId, result.discovered_models),
+            loading: false,
+            error: result.catalog_error ?? '',
+            errorKind: result.catalog_error ? 'catalog' : '',
+          }
+        : current)
+      await refresh()
+    } catch (reason) {
+      setModelEditor(current => current?.accountId === accountId
+        ? { ...current, loading: false, error: reason instanceof Error ? reason.message : String(reason), errorKind: 'catalog' }
+        : current)
+    }
+  }
+
+  const updateAccountModel = (id: string, update: Partial<AccountModelOption>) => {
+    setModelEditor(current => current ? {
+      ...current,
+      options: current.options.map(option => option.id === id ? { ...option, ...update } : option),
+      error: '',
+      errorKind: '',
+    } : current)
+  }
+
+  const saveAccountModels = async () => {
+    if (!modelEditor || savingModels) return
+    const selected = modelEditor.options.filter(option => option.enabled)
+    if (selected.length === 0) {
+      setModelEditor(current => current ? { ...current, error: t('providers.selectAtLeastOneModel'), errorKind: 'validation' } : current)
+      return
+    }
+    const optionalTokens = (value: string): number | undefined => value.trim() ? Number(value) : undefined
+    const invalid = selected.some(option => [
+      option.contextWindowTokens,
+      option.maxInputTokens,
+      option.maxOutputTokens,
+    ].some(value => value.trim() && (!Number.isSafeInteger(Number(value)) || Number(value) <= 0)))
+    if (invalid) {
+      setModelEditor(current => current ? { ...current, error: t('providers.invalidModelCapacity'), errorKind: 'validation' } : current)
+      return
+    }
+    setSavingModels(true)
+    setModelEditor(current => current ? { ...current, error: '', errorKind: '' } : current)
+    try {
+      const receipt = await api.command<CatalogMutationReceipt>(
+        `/api/runtime/providers/accounts/${encodeURIComponent(modelEditor.accountId)}/models`,
+        'PUT',
+        {
+          models: selected.map(option => ({
+            id: option.id,
+            context_window_tokens: optionalTokens(option.contextWindowTokens),
+            max_input_tokens: optionalTokens(option.maxInputTokens),
+            max_output_tokens: optionalTokens(option.maxOutputTokens),
+          })),
+        },
+      )
+      setCatalogNotice(t('providers.modelsSaved', { path: receipt.managed_config_path }))
+      setModelEditor(null)
+      await refresh()
+    } catch (reason) {
+      setModelEditor(current => current ? {
+        ...current,
+        error: reason instanceof Error ? reason.message : String(reason),
+        errorKind: 'save',
+      } : current)
+    } finally {
+      setSavingModels(false)
+    }
+  }
 
   const challengeLabel = challenge
     ? (challengeLabelOverride || snapshot.auth_accounts[challenge.account_id]?.config.label || t('providers.oauthAccount'))
@@ -958,7 +1115,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
         <code>{localDate(snapshot.generated_at)}</code>
       </section>
 
-      {diagnostic && (
+      {diagnostic && !diagnosticAccountId && (
         <section className={`provider-diagnostic ${diagnostic.health_verified ? 'is-success' : 'is-failure'}`}>
           <header>
             <span><Activity size={15} /><strong>{t('providers.diagnosticTitle')}</strong></span>
@@ -1035,13 +1192,16 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
             const identity = record.oauth_metadata?.email
               || record.oauth_metadata?.subject
               || record.oauth_metadata?.provider_account_id
+            const accountLabel = identity || record.config.label || serviceName
+            const accountDiagnostic = diagnosticAccountId === accountId ? diagnostic : null
+            const isTesting = diagnosing === `account:${accountId}`
             return (
               <article className={!record.effective_enabled ? 'is-disabled' : ''} key={accountId}>
                 <span className={`provider-account-presence ${record.effective_enabled ? 'is-enabled' : ''}`}>
                   {(!record.oauth || record.authenticated) ? <CheckCircle2 size={15} /> : <CircleOff size={15} />}
                 </span>
                 <div className="provider-account-identity">
-                  <strong>{identity || record.config.label || serviceName}</strong>
+                  <strong>{accountLabel}</strong>
                   <small>{record.oauth
                     ? (identity ? serviceName : t('providers.authenticatedIdentityUnavailable', { service: serviceName }))
                     : serviceName}</small>
@@ -1058,9 +1218,15 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                   {record.oauth_metadata?.expires_at && <span>{t('providers.expires', { time: localDate(record.oauth_metadata.expires_at) })}</span>}
                 </div>
                 <nav>
+                  {(!record.oauth || record.authenticated) && (
+                    <button type="button" onClick={() => void openAccountModels(accountId, accountLabel)}>
+                      <Settings2 size={13} /> {t('providers.manageModels')}
+                    </button>
+                  )}
                   {(!record.oauth || record.authenticated) && compatibleRouteForAccount(accountId) && (
                     <button type="button" disabled={Boolean(diagnosing)} onClick={() => void diagnoseRoute(compatibleRouteForAccount(accountId)!, accountId)}>
-                      <Activity size={13} /> {t('providers.test')}
+                      {isTesting ? <RefreshCw className="is-spinning" size={13} /> : <Activity size={13} />}
+                      {isTesting ? t('providers.testing') : t('providers.test')}
                     </button>
                   )}
                   <button type="button" disabled={isBusy} onClick={() => openCatalogEditor('auth_account', accountId, record.config)}>
@@ -1085,6 +1251,24 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                     {record.effective_enabled ? t('providers.disable') : t('providers.enable')}
                   </button>
                 </nav>
+                {diagnosticAccountId === accountId && (isTesting || accountDiagnostic || diagnosticError) && (
+                  <section className={`provider-account-test-result ${accountDiagnostic?.health_verified ? 'is-success' : diagnosticError || (accountDiagnostic && !accountDiagnostic.health_verified) ? 'is-failure' : 'is-pending'}`} aria-live="polite">
+                    {isTesting ? (
+                      <><RefreshCw className="is-spinning" size={14} /><span><strong>{t('providers.testingAccount')}</strong><small>{t('providers.testingAccountHint')}</small></span></>
+                    ) : accountDiagnostic ? (
+                      <>
+                        {accountDiagnostic.health_verified ? <CheckCircle2 size={14} /> : <CircleOff size={14} />}
+                        <span>
+                          <strong>{accountDiagnostic.health_verified ? t('providers.testSucceeded') : t('providers.testFailed')}</strong>
+                          <small>{t('providers.testSummary', { count: accountDiagnostic.discovered_models.length, elapsed: accountDiagnostic.elapsed_ms })}</small>
+                          {(accountDiagnostic.health_error || accountDiagnostic.catalog_error) && <code>{accountDiagnostic.health_error ?? accountDiagnostic.catalog_error}</code>}
+                        </span>
+                      </>
+                    ) : (
+                      <><CircleOff size={14} /><span><strong>{t('providers.testFailed')}</strong><code>{diagnosticError}</code></span></>
+                    )}
+                  </section>
+                )}
               </article>
             )
           })}
@@ -1156,6 +1340,69 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
           </section>
         </div>
       </details>
+
+      {modelEditor && (
+        <div className="provider-oauth-backdrop" role="presentation" onMouseDown={event => {
+          if (event.currentTarget === event.target && !savingModels) setModelEditor(null)
+        }}>
+          <section className="provider-oauth-dialog provider-model-manager" role="dialog" aria-modal="true" aria-labelledby="provider-model-manager-title">
+            <header>
+              <span><Settings2 size={16} /><strong id="provider-model-manager-title">{t('providers.manageAccountModels', { account: modelEditor.label })}</strong></span>
+              <button type="button" disabled={savingModels} onClick={() => setModelEditor(null)} aria-label={t('providers.cancel')}><X size={15} /></button>
+            </header>
+            <p>{t('providers.modelManagerHint')}</p>
+            {modelEditor.loading && (
+              <div className="provider-model-manager-loading"><RefreshCw className="is-spinning" size={14} /> {t('providers.loadingAccountModels')}</div>
+            )}
+            {modelEditor.error && (
+              <div className="provider-model-manager-error" role="alert">
+                <CircleOff size={14} />
+                <span>
+                  <strong>{t(modelEditor.errorKind === 'validation'
+                    ? 'providers.modelSettingsInvalid'
+                    : modelEditor.errorKind === 'save'
+                      ? 'providers.modelSettingsSaveFailed'
+                      : 'providers.modelCatalogRefreshFailed')}</strong>
+                  <small>{modelEditor.errorKind === 'validation'
+                    ? modelEditor.error
+                    : t(modelEditor.errorKind === 'save'
+                        ? 'providers.modelSettingsSaveFailedHint'
+                        : 'providers.modelCatalogRefreshFailedHint')}</small>
+                  {modelEditor.errorKind !== 'validation' && <details><summary>{t('providers.errorDetails')}</summary><code>{modelEditor.error}</code></details>}
+                </span>
+              </div>
+            )}
+            <div className="provider-model-manager-list">
+              {modelEditor.options.map(option => (
+                <article className={option.enabled ? 'is-enabled' : ''} key={option.id}>
+                  <label>
+                    <input type="checkbox" checked={option.enabled} onChange={event => updateAccountModel(option.id, { enabled: event.target.checked })} />
+                    <span><strong>{option.id}</strong><small>{option.enabled ? t('providers.modelEnabled') : t('providers.modelNotEnabled')}</small></span>
+                  </label>
+                  {option.enabled && (
+                    <details>
+                      <summary>{t('providers.modelCapacityAdvanced')}</summary>
+                      <p>{t('providers.modelCapacityHint')}</p>
+                      <div>
+                        <label><span>{t('providers.contextWindow')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.contextWindowTokens} onChange={event => updateAccountModel(option.id, { contextWindowTokens: event.target.value })} /></label>
+                        <label><span>{t('providers.maxInput')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.maxInputTokens} onChange={event => updateAccountModel(option.id, { maxInputTokens: event.target.value })} /></label>
+                        <label><span>{t('providers.maxOutput')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.maxOutputTokens} onChange={event => updateAccountModel(option.id, { maxOutputTokens: event.target.value })} /></label>
+                      </div>
+                    </details>
+                  )}
+                </article>
+              ))}
+              {!modelEditor.loading && modelEditor.options.length === 0 && <p className="provider-empty">{t('providers.noAccountModels')}</p>}
+            </div>
+            <footer>
+              <button type="button" disabled={savingModels} onClick={() => setModelEditor(null)}>{t('providers.cancel')}</button>
+              <button className="is-primary" type="button" disabled={savingModels || modelEditor.loading || modelEditor.options.length === 0} onClick={() => void saveAccountModels()}>
+                <Save size={13} /> {savingModels ? t('providers.busy') : t('providers.saveEnabledModels')}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       {setup && (
         <div className="provider-oauth-backdrop" role="presentation" onMouseDown={event => {
