@@ -5323,6 +5323,12 @@ pub trait ProviderAccountStateStore: Send + Sync {
         last_error_kind: Option<&str>,
         mark_used: bool,
     ) -> Result<ProviderAccountStateRecord, Box<dyn std::error::Error + Send + Sync>>;
+    /// Delete every durable row owned by an Auth Account. OAuth setup uses
+    /// this only to migrate records created by older, pre-commit flows.
+    async fn delete_provider_account_records(
+        &self,
+        account_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_provider_account_affinity(
         &self,
         route_id: &str,

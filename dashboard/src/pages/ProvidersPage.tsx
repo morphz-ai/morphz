@@ -3,7 +3,9 @@ import {
   ArrowUpRight,
   CheckCircle2,
   CircleOff,
+  ClipboardPaste,
   Cloud,
+  Copy,
   KeyRound,
   Link2,
   LogIn,
@@ -15,6 +17,7 @@ import {
   Route,
   Server,
   ShieldCheck,
+  Smartphone,
   Save,
   Settings2,
   X,
@@ -28,6 +31,7 @@ import {
   type ModelAttemptBinding,
   type ModelUsageRecord,
 } from '../app/providerEvaluations'
+import { copyTextToClipboard, readTextFromClipboard } from '../utils/clipboard'
 
 interface ProviderModelConfig {
   context_window_tokens?: number
@@ -125,6 +129,7 @@ interface AuthAdapterDescriptor {
   id: string
   version: string
   flow: 'authorization_code_pkce' | 'device_code'
+  callback_mode: 'none' | 'loopback' | 'runtime'
   stability: 'stable' | 'compatibility' | 'experimental'
   upstream_reference?: string
   last_verified_on?: string
@@ -145,12 +150,20 @@ interface OAuthLoginChallenge {
   account_id: string
   adapter_id: string
   flow: 'authorization_code_pkce' | 'device_code'
+  callback_mode: 'none' | 'loopback' | 'runtime'
+  callback_state?: string
+  redirect_uri?: string
   authorization_url?: string
   verification_uri?: string
   verification_uri_complete?: string
   user_code?: string
   expires_at: string
   poll_interval_secs: number
+}
+
+interface OAuthCallbackSubmission {
+  login_id: string
+  progress: OAuthLoginProgress
 }
 
 interface OAuthSetupServiceDescriptor {
@@ -208,28 +221,22 @@ interface OAuthSetupPreset {
   authAdapter: string
 }
 
+interface OAuthPreparationState {
+  kind: 'setup' | 'account'
+  preset: OAuthSetupPreset
+  adapterId: string
+  accountId?: string
+}
+
 type OAuthConnectionRetry =
   | { kind: 'setup'; preset: OAuthSetupPreset }
-  | { kind: 'account'; accountId: string }
+  | { kind: 'account'; accountId: string; adapterId?: string }
 
 interface OAuthConnectionState {
   label: string
   stage: 'connecting' | 'failed'
   retry: OAuthConnectionRetry
   error?: string
-}
-
-interface ApiSetupPreset {
-  id: string
-  authAdapter: 'credential'
-  providerId: string
-  accountId: string
-  routeId: string
-  alias: string
-  physicalModel: string
-  adapter: string
-  protocol: string
-  baseUrl: string
 }
 
 // The browser only identifies the requested service. Provider, account and
@@ -240,24 +247,6 @@ const OAUTH_SETUP_PRESETS: OAuthSetupPreset[] = [
   { id: 'anthropic', authAdapter: 'claude-oauth' },
   { id: 'antigravity', authAdapter: 'antigravity-oauth' },
   { id: 'xai', authAdapter: 'xai-oauth' },
-]
-
-// OpenRouter and generic gateways use API credentials. They are intentionally
-// kept out of the OAuth catalog so the UI never advertises a login flow that
-// the Runtime does not implement.
-const API_SETUP_PRESETS: ApiSetupPreset[] = [
-  {
-    id: 'compatible', authAdapter: 'credential', providerId: 'custom',
-    accountId: 'custom-default', routeId: 'model', alias: 'model',
-    physicalModel: '', adapter: 'openai-compatible', protocol: 'openai-responses',
-    baseUrl: '',
-  },
-  {
-    id: 'openrouter', authAdapter: 'credential', providerId: 'openrouter',
-    accountId: 'openrouter-default', routeId: 'openrouter-model', alias: 'openrouter-model',
-    physicalModel: '', adapter: 'openai-compatible', protocol: 'openai-chat',
-    baseUrl: 'https://openrouter.ai/api/v1',
-  },
 ]
 
 const API_PROTOCOLS = [
@@ -284,23 +273,54 @@ function localDate(value?: string): string {
 }
 
 function defaultSetup(): ProviderSetupState {
-  return setupFromPreset(API_SETUP_PRESETS[0], 'oauth')
+  return setupForProtocol(API_PROTOCOLS[0], 'oauth')
 }
 
-function setupFromPreset(preset: ApiSetupPreset, mode: ProviderSetupMode): ProviderSetupState {
+function setupForProtocol(
+  protocol: (typeof API_PROTOCOLS)[number],
+  mode: ProviderSetupMode,
+): ProviderSetupState {
   const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+  const providerId = `api-${suffix}`
   return {
     mode,
-    preset: preset.id,
-    ...preset,
-    accountId: `${preset.providerId}-${suffix}`,
+    preset: protocol.id,
+    providerId,
+    accountId: `${providerId}-account`,
+    routeId: '',
+    alias: '',
+    physicalModel: '',
+    adapter: protocol.adapter,
+    authAdapter: 'credential',
+    protocol: protocol.id,
+    baseUrl: '',
     apiKey: '',
   }
 }
 
+function logicalAuthAdapter(adapter: string): string {
+  return adapter === 'codex-device-oauth' ? 'codex-oauth' : adapter
+}
+
 function presetForAccount(accountId: string, record: ProviderAccountRecord): OAuthSetupPreset | undefined {
   void accountId
-  return OAUTH_SETUP_PRESETS.find(preset => preset.authAdapter === record.config.auth_adapter)
+  const adapter = logicalAuthAdapter(record.config.auth_adapter)
+  return OAUTH_SETUP_PRESETS.find(preset => preset.authAdapter === adapter)
+}
+
+function loopbackPort(redirectUri?: string): string {
+  if (!redirectUri) return ''
+  try {
+    const url = new URL(redirectUri)
+    if (url.hostname !== 'localhost' && url.hostname !== '127.0.0.1' && url.hostname !== '::1') return ''
+    return url.port || (url.protocol === 'https:' ? '443' : '80')
+  } catch {
+    return ''
+  }
+}
+
+function stateSuffix(state?: string): string {
+  return state ? `…${state.slice(-8)}` : ''
 }
 
 export function ProvidersPage({ api }: ProvidersPageProps) {
@@ -316,6 +336,9 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const [challengeLabelOverride, setChallengeLabelOverride] = useState('')
   const [challengeError, setChallengeError] = useState('')
   const [authorizationResponse, setAuthorizationResponse] = useState('')
+  const [authorizationLinkCopied, setAuthorizationLinkCopied] = useState(false)
+  const [deviceCodeCopied, setDeviceCodeCopied] = useState(false)
+  const [oauthPreparation, setOAuthPreparation] = useState<OAuthPreparationState | null>(null)
   const [oauthConnection, setOAuthConnection] = useState<OAuthConnectionState | null>(null)
   const [catalogEditor, setCatalogEditor] = useState<CatalogEditorState | null>(null)
   const [catalogNotice, setCatalogNotice] = useState('')
@@ -323,6 +346,9 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const [diagnosing, setDiagnosing] = useState('')
   const [setup, setSetup] = useState<ProviderSetupState | null>(null)
   const [savingSetup, setSavingSetup] = useState(false)
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
+  const [discoveringModels, setDiscoveringModels] = useState(false)
+  const [modelDiscoveryError, setModelDiscoveryError] = useState('')
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -358,7 +384,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   }, [refresh])
 
   useEffect(() => {
-    if (!challenge) return
+    if (!challenge || busyAccount === challenge.account_id) return
 
     let cancelled = false
     const loginId = challenge.login_id
@@ -396,10 +422,15 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [api, challenge, refresh])
+  }, [api, busyAccount, challenge, refresh])
 
   const instances = useMemo(() => Object.entries(snapshot.provider_instances), [snapshot.provider_instances])
-  const accounts = useMemo(() => Object.entries(snapshot.auth_accounts), [snapshot.auth_accounts])
+  // OAuth setup attempts are never accounts. Old runtimes may still return
+  // unfinished rows during migration, so keep them out of the product UI.
+  const accounts = useMemo(
+    () => Object.entries(snapshot.auth_accounts).filter(([, record]) => !record.oauth || record.authenticated),
+    [snapshot.auth_accounts],
+  )
   const routes = useMemo(() => Object.entries(snapshot.model_routes), [snapshot.model_routes])
   const modelUsage = useMemo(() => groupModelUsageByAlias(attempts), [attempts])
   const oauthSetupOptions = useMemo(() => {
@@ -411,13 +442,52 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       return service && descriptor ? [{ preset, descriptor }] : []
     })
   }, [oauthSetupServices, snapshot.auth_adapters])
-
-  const applySetupPreset = (preset: ApiSetupPreset) => {
-    setSetup(current => setupFromPreset(preset, current?.mode ?? 'api_key'))
-  }
+  const codexDeviceAvailable = snapshot.auth_adapters.some(
+    adapter => adapter.id === 'codex-device-oauth' && adapter.flow === 'device_code',
+  )
 
   const switchSetupMode = (mode: ProviderSetupMode) => {
-    setSetup(setupFromPreset(API_SETUP_PRESETS[0], mode))
+    setSetup(setupForProtocol(API_PROTOCOLS[0], mode))
+    setDiscoveredModels([])
+    setModelDiscoveryError('')
+  }
+
+  const discoverModels = async () => {
+    if (!setup || setup.mode !== 'api_key') return
+    if (!setup.baseUrl.trim() || !setup.apiKey.trim()) {
+      setModelDiscoveryError(t('providers.discoveryRequired'))
+      return
+    }
+    setDiscoveringModels(true)
+    setModelDiscoveryError('')
+    setDiscoveredModels([])
+    try {
+      const response = await api.command<{ models: string[] }>(
+        '/api/runtime/providers/discover-models',
+        'POST',
+        {
+          protocol: setup.protocol,
+          base_url: setup.baseUrl.trim(),
+          api_key: setup.apiKey,
+        },
+      )
+      if (response.models.length === 0) {
+        setModelDiscoveryError(t('providers.noDiscoveredModels'))
+        return
+      }
+      setDiscoveredModels(response.models)
+      const physicalModel = response.models[0]
+      setSetup(current => current ? {
+        ...current,
+        physicalModel,
+        alias: physicalModel,
+        routeId: physicalModel,
+      } : current)
+    } catch (reason) {
+      setModelDiscoveryError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setDiscoveringModels(false)
+    }
   }
 
   const saveProviderSetup = async (requestedSetup: ProviderSetupState | null = setup) => {
@@ -427,7 +497,8 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     const routeId = requestedSetup.routeId.trim()
     const alias = requestedSetup.alias.trim() || routeId
     const physicalModel = requestedSetup.physicalModel.trim()
-    if (!providerId || !accountId || !routeId || !physicalModel || !requestedSetup.baseUrl.trim()) {
+    if (!providerId || !accountId || !routeId || !physicalModel
+      || !requestedSetup.baseUrl.trim() || !requestedSetup.apiKey.trim()) {
       setError(t('providers.setupRequired'))
       return
     }
@@ -493,8 +564,16 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
 
   const startOAuthSetup = async (preset: OAuthSetupPreset) => {
     const label = t(`providers.presets.${preset.id}`, { defaultValue: preset.id })
-    const popup = window.open('about:blank', `morphz-oauth-${preset.id}`, 'popup,width=720,height=820')
+    const descriptor = snapshot.auth_adapters.find(adapter => adapter.id === preset.authAdapter)
+    const opensBrowser = descriptor?.flow !== 'device_code'
+    const popup = opensBrowser
+      ? window.open('about:blank', `morphz-oauth-${preset.id}`, 'popup,width=720,height=820')
+      : null
+    const service = preset.id === 'codex' && preset.authAdapter === 'codex-device-oauth'
+      ? 'codex-device'
+      : preset.id
     setSetup(null)
+    setOAuthPreparation(null)
     setOAuthConnection({ label, stage: 'connecting', retry: { kind: 'setup', preset } })
     setSavingSetup(true)
     setError('')
@@ -502,12 +581,12 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       const next = await api.command<OAuthLoginChallenge>(
         '/api/runtime/providers/oauth/start',
         'POST',
-        { service: preset.id },
+        { service },
       )
       const authorizationUrl = next.authorization_url
         ?? next.verification_uri_complete
         ?? next.verification_uri
-      if (authorizationUrl) {
+      if (authorizationUrl && opensBrowser) {
         if (popup && !popup.closed) popup.location.replace(authorizationUrl)
         else window.open(authorizationUrl, '_blank', 'noopener,noreferrer')
       } else if (popup && !popup.closed) {
@@ -517,6 +596,8 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       setChallengeLabelOverride(label)
       setChallengeError('')
       setAuthorizationResponse('')
+      setAuthorizationLinkCopied(false)
+      setDeviceCodeCopied(false)
       setOAuthConnection(null)
     } catch (reason) {
       if (popup && !popup.closed) popup.close()
@@ -547,24 +628,32 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     }
   }
 
-  const startLogin = async (accountId: string) => {
+  const startLogin = async (accountId: string, adapterId?: string) => {
     const record = snapshot.auth_accounts[accountId]
     const preset = record ? presetForAccount(accountId, record) : undefined
     const label = record?.config.label
       || (preset ? t(`providers.presets.${preset.id}`, { defaultValue: preset.id }) : t('providers.oauthAccount'))
-    const popup = window.open('about:blank', `morphz-oauth-${accountId}`, 'popup,width=720,height=820')
-    setOAuthConnection({ label, stage: 'connecting', retry: { kind: 'account', accountId } })
+    const selectedAdapter = adapterId ?? record?.config.auth_adapter ?? ''
+    const descriptor = snapshot.auth_adapters.find(adapter => adapter.id === selectedAdapter)
+    const opensBrowser = descriptor?.flow !== 'device_code'
+    const popup = opensBrowser
+      ? window.open('about:blank', `morphz-oauth-${selectedAdapter || accountId}`, 'popup,width=720,height=820')
+      : null
+    setOAuthPreparation(null)
+    setOAuthConnection({ label, stage: 'connecting', retry: { kind: 'account', accountId, adapterId } })
     setBusyAccount(accountId)
     setError('')
     try {
       const next = await api.command<OAuthLoginChallenge>(
-        `/api/runtime/providers/accounts/${encodeURIComponent(accountId)}/oauth/start`,
+        adapterId
+          ? `/api/runtime/providers/accounts/${encodeURIComponent(accountId)}/oauth/start/${encodeURIComponent(adapterId)}`
+          : `/api/runtime/providers/accounts/${encodeURIComponent(accountId)}/oauth/start`,
         'POST',
       )
       const authorizationUrl = next.authorization_url
         ?? next.verification_uri_complete
         ?? next.verification_uri
-      if (authorizationUrl) {
+      if (authorizationUrl && opensBrowser) {
         if (popup && !popup.closed) popup.location.replace(authorizationUrl)
         else window.open(authorizationUrl, '_blank', 'noopener,noreferrer')
       } else if (popup && !popup.closed) {
@@ -574,13 +663,15 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       setChallengeLabelOverride(label)
       setChallengeError('')
       setAuthorizationResponse('')
+      setAuthorizationLinkCopied(false)
+      setDeviceCodeCopied(false)
       setOAuthConnection(null)
     } catch (reason) {
       if (popup && !popup.closed) popup.close()
       setOAuthConnection({
         label,
         stage: 'failed',
-        retry: { kind: 'account', accountId },
+        retry: { kind: 'account', accountId, adapterId },
         error: reason instanceof Error ? reason.message : String(reason),
       })
     } finally {
@@ -588,22 +679,85 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     }
   }
 
-  const continueLogin = async () => {
+  const prepareOAuthSetup = (preset: OAuthSetupPreset) => {
+    const adapterId = preset.id === 'codex' && codexDeviceAvailable
+      ? 'codex-device-oauth'
+      : preset.authAdapter
+    setSetup(null)
+    setOAuthPreparation({ kind: 'setup', preset, adapterId })
+  }
+
+  const prepareAccountLogin = (accountId: string, record: ProviderAccountRecord) => {
+    const preset = presetForAccount(accountId, record) ?? {
+      id: record.config.provider || record.config.auth_adapter,
+      authAdapter: record.config.auth_adapter,
+    }
+    const adapterId = preset.id === 'codex' && codexDeviceAvailable
+      ? 'codex-device-oauth'
+      : record.config.auth_adapter
+    setOAuthPreparation({ kind: 'account', preset, adapterId, accountId })
+  }
+
+  const preparationMethods = oauthPreparation
+    ? snapshot.auth_adapters.filter(adapter => oauthPreparation.preset.id === 'codex'
+      ? adapter.id === 'codex-oauth' || adapter.id === 'codex-device-oauth'
+      : adapter.id === oauthPreparation.preset.authAdapter)
+      .sort((left, right) => Number(right.flow === 'device_code') - Number(left.flow === 'device_code'))
+    : []
+  const preparationDescriptor = oauthPreparation
+    ? snapshot.auth_adapters.find(adapter => adapter.id === oauthPreparation.adapterId)
+    : undefined
+  const preparationRecord = oauthPreparation?.accountId
+    ? snapshot.auth_accounts[oauthPreparation.accountId]
+    : undefined
+  const preparationIdentity = preparationRecord?.oauth_metadata?.email
+    || preparationRecord?.oauth_metadata?.subject
+    || preparationRecord?.oauth_metadata?.provider_account_id
+  const preparationServiceLabel = oauthPreparation
+    ? t(`providers.presets.${oauthPreparation.preset.id}`, { defaultValue: oauthPreparation.preset.id })
+    : ''
+  const beginPreparedLogin = () => {
+    if (!oauthPreparation) return
+    if (oauthPreparation.kind === 'setup') {
+      void startOAuthSetup({
+        ...oauthPreparation.preset,
+        authAdapter: oauthPreparation.adapterId,
+      })
+      return
+    }
+    if (!oauthPreparation.accountId || !preparationRecord) return
+    const adapterId = oauthPreparation.adapterId === preparationRecord.config.auth_adapter
+      ? undefined
+      : oauthPreparation.adapterId
+    void startLogin(oauthPreparation.accountId, adapterId)
+  }
+
+  const continueLogin = async (submittedResponse?: string) => {
     if (!challenge) return
+    const callbackResponse = submittedResponse?.trim() || authorizationResponse.trim()
     setBusyAccount(challenge.account_id)
     setChallengeError('')
     try {
-      const progress = await api.command<OAuthLoginProgress>(
-        `/api/runtime/providers/oauth/${encodeURIComponent(challenge.login_id)}/continue`,
-        'POST',
-        challenge.flow === 'authorization_code_pkce' && authorizationResponse.trim()
-          ? { kind: 'authorization_response', response: authorizationResponse.trim() }
-          : { kind: 'poll' },
-      )
+      const manualCallback = challenge.flow === 'authorization_code_pkce'
+        && challenge.callback_mode === 'loopback'
+        && Boolean(callbackResponse)
+      const progress = manualCallback
+        ? (await api.command<OAuthCallbackSubmission>(
+            '/api/runtime/providers/oauth/callback',
+            'POST',
+            { redirect_url: callbackResponse },
+          )).progress
+        : await api.command<OAuthLoginProgress>(
+            `/api/runtime/providers/oauth/${encodeURIComponent(challenge.login_id)}/continue`,
+            'POST',
+            { kind: 'poll' },
+          )
       if (progress.status === 'complete') {
         setChallenge(null)
         setChallengeError('')
         setAuthorizationResponse('')
+        setAuthorizationLinkCopied(false)
+        setDeviceCodeCopied(false)
         await refresh()
       }
     } catch (reason) {
@@ -613,13 +767,74 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     }
   }
 
+  const challengeHint = challenge?.flow === 'device_code'
+    ? t('providers.deviceHint')
+    : challenge?.callback_mode === 'runtime'
+      ? t('providers.runtimeCallbackHint')
+      : t('providers.loopbackCallbackHint')
+  const challengeLoopbackPort = loopbackPort(challenge?.redirect_uri)
+  const sshTunnelCommand = challengeLoopbackPort
+    ? `ssh -N -L ${challengeLoopbackPort}:127.0.0.1:${challengeLoopbackPort} <user>@<morphz-host>`
+    : ''
+  const expectedCallbackExample = challenge?.redirect_uri
+    ? `${challenge.redirect_uri}?code=...&state=${challenge.callback_state ?? '...'}`
+    : t('providers.authorizationResponsePlaceholder')
+  const challengeAuthorizationUrl = challenge?.authorization_url
+    ?? challenge?.verification_uri_complete
+    ?? challenge?.verification_uri
+  const copyAuthorizationUrl = async () => {
+    if (!challengeAuthorizationUrl) return
+    try {
+      await copyTextToClipboard(challengeAuthorizationUrl)
+      setAuthorizationLinkCopied(true)
+      setChallengeError('')
+    } catch {
+      setChallengeError(t('providers.copyAuthorizationFailed'))
+    }
+  }
+
+  const copyDeviceCode = async () => {
+    if (!challenge?.user_code) return
+    try {
+      await copyTextToClipboard(challenge.user_code)
+      setDeviceCodeCopied(true)
+      setChallengeError('')
+    } catch {
+      setChallengeError(t('providers.copyDeviceCodeFailed'))
+    }
+  }
+
+  const submitCallbackFromClipboard = async () => {
+    try {
+      const callbackUrl = (await readTextFromClipboard()).trim()
+      if (!callbackUrl) throw new Error('empty clipboard')
+      setAuthorizationResponse(callbackUrl)
+      await continueLogin(callbackUrl)
+    } catch {
+      setChallengeError(t('providers.readCallbackClipboardFailed'))
+    }
+  }
+
+  const cancelLoginChallenge = () => {
+    const loginId = challenge?.login_id
+    setChallenge(null)
+    setChallengeError('')
+    setAuthorizationResponse('')
+    if (loginId) {
+      void api.command(
+        `/api/runtime/providers/oauth/${encodeURIComponent(loginId)}/continue`,
+        'DELETE',
+      ).catch(() => undefined)
+    }
+  }
+
   const retryOAuthConnection = () => {
     if (!oauthConnection) return
     const retry = oauthConnection.retry
     if (retry.kind === 'setup') {
       void startOAuthSetup(retry.preset)
     } else {
-      void startLogin(retry.accountId)
+      void startLogin(retry.accountId, retry.adapterId)
     }
   }
 
@@ -817,28 +1032,33 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
             const serviceName = preset
               ? t(`providers.presets.${preset.id}`, { defaultValue: preset.id })
               : (record.config.provider || t('providers.apiCredential'))
+            const identity = record.oauth_metadata?.email
+              || record.oauth_metadata?.subject
+              || record.oauth_metadata?.provider_account_id
             return (
               <article className={!record.effective_enabled ? 'is-disabled' : ''} key={accountId}>
                 <span className={`provider-account-presence ${record.effective_enabled ? 'is-enabled' : ''}`}>
-                  {record.authenticated ? <CheckCircle2 size={15} /> : <CircleOff size={15} />}
+                  {(!record.oauth || record.authenticated) ? <CheckCircle2 size={15} /> : <CircleOff size={15} />}
                 </span>
                 <div className="provider-account-identity">
-                  <strong>{record.config.label || serviceName}</strong>
-                  <small>{serviceName}</small>
-                  {(record.oauth_metadata?.email || record.oauth_metadata?.subject) && (
-                    <span>{record.oauth_metadata.email || record.oauth_metadata.subject}</span>
-                  )}
+                  <strong>{identity || record.config.label || serviceName}</strong>
+                  <small>{record.oauth
+                    ? (identity ? serviceName : t('providers.authenticatedIdentityUnavailable', { service: serviceName }))
+                    : serviceName}</small>
+                  <code>{t('providers.accountIdDisplay', { id: accountId })}</code>
                 </div>
                 <div className="provider-account-facts">
                   <span>{record.effective_enabled ? t('providers.enabled') : t('providers.disabled')}</span>
-                  <span>{record.authenticated ? t('providers.authenticated') : t('providers.notAuthenticated')}</span>
+                  <span>{record.oauth
+                    ? (record.authenticated ? t('providers.authenticated') : t('providers.notAuthenticated'))
+                    : (record.config.credential_ref ? t('providers.credentialConfigured') : t('providers.noAuthentication'))}</span>
                   {record.state && <span>{t('providers.status', { value: record.state.status })}</span>}
                   {record.state?.cooldown_until && <span>{t('providers.cooldown', { time: localDate(record.state.cooldown_until) })}</span>}
                   {record.state?.last_error_kind && <span>{t('providers.lastError', { value: record.state.last_error_kind })}</span>}
                   {record.oauth_metadata?.expires_at && <span>{t('providers.expires', { time: localDate(record.oauth_metadata.expires_at) })}</span>}
                 </div>
                 <nav>
-                  {compatibleRouteForAccount(accountId) && (
+                  {(!record.oauth || record.authenticated) && compatibleRouteForAccount(accountId) && (
                     <button type="button" disabled={Boolean(diagnosing)} onClick={() => void diagnoseRoute(compatibleRouteForAccount(accountId)!, accountId)}>
                       <Activity size={13} /> {t('providers.test')}
                     </button>
@@ -847,8 +1067,12 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                     <Pencil size={13} /> {t('providers.edit')}
                   </button>
                   {record.oauth && (
-                    <button type="button" disabled={isBusy} onClick={() => void startLogin(accountId)}>
-                      <LogIn size={13} /> {record.authenticated ? t('providers.relogin') : t('providers.login')}
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => prepareAccountLogin(accountId, record)}
+                    >
+                      <LogIn size={13} /> {t('providers.relogin')}
                     </button>
                   )}
                   {record.oauth && record.authenticated && (
@@ -959,14 +1183,14 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                 {!oauthServicesError && (
                   <div className="provider-setup-presets">
                     {oauthSetupOptions.map(({ preset }) => (
-                      <button
-                        type="button"
-                        key={preset.id}
-                        onClick={() => void startOAuthSetup(preset)}
-                      >
-                        <span>{t(`providers.presets.${preset.id}`, { defaultValue: preset.id })}</span>
-                        <small>{t('providers.oauthAvailable')}</small>
-                      </button>
+                        <button
+                          type="button"
+                          key={preset.id}
+                          onClick={() => prepareOAuthSetup(preset)}
+                        >
+                          <span>{t(`providers.presets.${preset.id}`, { defaultValue: preset.id })}</span>
+                          <small>{t('providers.reviewLoginSteps')}</small>
+                        </button>
                     ))}
                     {!loading && oauthSetupOptions.length === 0 && (
                       <p className="provider-oauth-services-empty">{t('providers.noOAuthServices')}</p>
@@ -976,14 +1200,6 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
               </>
             )}
             {setup.mode === 'api_key' && <>
-              <div className="provider-setup-presets provider-api-presets">
-                {API_SETUP_PRESETS.map(preset => (
-                  <button className={setup.preset === preset.id ? 'is-active' : ''} type="button" key={preset.id} onClick={() => applySetupPreset(preset)}>
-                    <span>{t(`providers.apiPresets.${preset.id}`, { defaultValue: preset.id })}</span>
-                    <small>{t(`providers.apiPresetHints.${preset.id}`, { defaultValue: '' })}</small>
-                  </button>
-                ))}
-              </div>
               <div className="provider-protocol-picker" role="radiogroup" aria-label={t('providers.protocol')}>
                 <span>{t('providers.protocol')}</span>
                 <div>
@@ -994,11 +1210,19 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                       role="radio"
                       aria-checked={setup.protocol === option.id}
                       key={option.id}
-                      onClick={() => setSetup(current => current ? {
-                        ...current,
-                        protocol: option.id,
-                        adapter: option.adapter,
-                      } : current)}
+                      onClick={() => {
+                        setSetup(current => current ? {
+                          ...current,
+                          preset: option.id,
+                          protocol: option.id,
+                          adapter: option.adapter,
+                          physicalModel: '',
+                          alias: '',
+                          routeId: '',
+                        } : current)
+                        setDiscoveredModels([])
+                        setModelDiscoveryError('')
+                      }}
                     >
                       <strong>{t(`providers.protocols.${option.id}.name`)}</strong>
                       <small>{t(`providers.protocols.${option.id}.hint`)}</small>
@@ -1007,28 +1231,130 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                 </div>
               </div>
               <div className="provider-setup-grid">
-                <label><span>{t('providers.modelAlias')}</span><input value={setup.alias} onChange={event => setSetup(current => current ? { ...current, alias: event.target.value, routeId: event.target.value } : current)} /></label>
-                <label><span>{t('providers.physicalModel')}</span><input value={setup.physicalModel} onChange={event => setSetup(current => current ? { ...current, physicalModel: event.target.value } : current)} /></label>
-                <label className="is-wide"><span>{t('providers.baseUrl')}</span><input value={setup.baseUrl} onChange={event => setSetup(current => current ? { ...current, baseUrl: event.target.value } : current)} /></label>
-                <label className="is-wide"><span>{t('providers.apiKeyOptional')}</span><input autoComplete="new-password" type="password" value={setup.apiKey} onChange={event => setSetup(current => current ? { ...current, apiKey: event.target.value } : current)} /></label>
+                <label className="is-wide"><span>{t('providers.baseUrl')}</span><input value={setup.baseUrl} onChange={event => {
+                  setSetup(current => current ? { ...current, baseUrl: event.target.value, physicalModel: '', alias: '', routeId: '' } : current)
+                  setDiscoveredModels([])
+                  setModelDiscoveryError('')
+                }} /></label>
+                <label className="is-wide"><span>{t('providers.apiKey')}</span><input autoComplete="new-password" type="password" value={setup.apiKey} onChange={event => {
+                  setSetup(current => current ? { ...current, apiKey: event.target.value, physicalModel: '', alias: '', routeId: '' } : current)
+                  setDiscoveredModels([])
+                  setModelDiscoveryError('')
+                }} /></label>
               </div>
+              <button className="provider-discover-models" type="button" disabled={discoveringModels} onClick={() => void discoverModels()}>
+                <RefreshCw className={discoveringModels ? 'is-spinning' : ''} size={14} />
+                {discoveringModels ? t('providers.discoveringModels') : t('providers.discoverModels')}
+              </button>
+              {modelDiscoveryError && <p className="provider-oauth-inline-error" role="alert">{modelDiscoveryError}</p>}
+              {discoveredModels.length > 0 && (
+                <label className="provider-model-selection">
+                  <span>{t('providers.selectModel')}</span>
+                  <select value={setup.physicalModel} onChange={event => setSetup(current => current ? {
+                    ...current,
+                    physicalModel: event.target.value,
+                    alias: event.target.value,
+                    routeId: event.target.value,
+                  } : current)}>
+                    {discoveredModels.map(model => <option value={model} key={model}>{model}</option>)}
+                  </select>
+                  <small>{t('providers.modelsDiscovered', { count: discoveredModels.length })}</small>
+                </label>
+              )}
             </>}
-            {setup.mode === 'api_key' && <details className="provider-setup-advanced">
-              <summary>{t('providers.advanced')}</summary>
-              <div className="provider-setup-grid">
-                <label><span>{t('providers.providerId')}</span><input value={setup.providerId} onChange={event => setSetup(current => current ? { ...current, providerId: event.target.value } : current)} /></label>
-                <label><span>{t('providers.accountId')}</span><input value={setup.accountId} onChange={event => setSetup(current => current ? { ...current, accountId: event.target.value } : current)} /></label>
-                <label className="is-wide"><span>{t('providers.baseUrl')}</span><input value={setup.baseUrl} onChange={event => setSetup(current => current ? { ...current, baseUrl: event.target.value } : current)} /></label>
-                <label><span>{t('providers.adapter')}</span><input value={setup.adapter} onChange={event => setSetup(current => current ? { ...current, adapter: event.target.value } : current)} /></label>
-              </div>
-            </details>}
-            {setup.mode === 'api_key' && <p className="provider-setup-restart">{t('providers.setupRestart')}</p>}
             <footer>
               <button type="button" onClick={() => setSetup(null)}>{t('providers.cancel')}</button>
-              {setup.mode === 'api_key' && <button className="is-primary" type="button" disabled={savingSetup} onClick={() => void saveProviderSetup()}>
+              {setup.mode === 'api_key' && <button className="is-primary" type="button" disabled={savingSetup || !setup.physicalModel} onClick={() => void saveProviderSetup()}>
                 <Save size={13} />
-                {savingSetup ? t('providers.busy') : t('providers.saveRestart')}
+                {savingSetup ? t('providers.busy') : t('providers.addSelectedModel')}
               </button>}
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {oauthPreparation && (
+        <div className="provider-oauth-backdrop" role="presentation" onMouseDown={event => {
+          if (event.currentTarget === event.target) setOAuthPreparation(null)
+        }}>
+          <section className="provider-oauth-dialog provider-login-preparation" role="dialog" aria-modal="true" aria-labelledby="provider-login-preparation-title">
+            <header>
+              <span><LogIn size={16} /><strong id="provider-login-preparation-title">{t('providers.loginPreparationTitle', { service: preparationServiceLabel })}</strong></span>
+              <button type="button" onClick={() => setOAuthPreparation(null)} aria-label={t('providers.cancel')}><X size={15} /></button>
+            </header>
+            <p>{t('providers.loginPreparationHint')}</p>
+            <div className="provider-oauth-service-summary">
+              <KeyRound size={18} />
+              <span>
+                <strong>{preparationIdentity || preparationServiceLabel}</strong>
+                <small>{preparationRecord
+                  ? (preparationIdentity
+                      ? t('providers.identifiedAccount', { service: preparationServiceLabel })
+                      : t('providers.unidentifiedAccount'))
+                  : t('providers.newServiceLogin')}</small>
+                {oauthPreparation.accountId && <code>{t('providers.accountIdDisplay', { id: oauthPreparation.accountId })}</code>}
+              </span>
+            </div>
+            {preparationMethods.length > 1 && (
+              <div className="provider-login-methods" role="radiogroup" aria-label={t('providers.loginMethod')}>
+                {preparationMethods.map(method => (
+                  <button
+                    className={oauthPreparation.adapterId === method.id ? 'is-active' : ''}
+                    type="button"
+                    role="radio"
+                    aria-checked={oauthPreparation.adapterId === method.id}
+                    key={method.id}
+                    onClick={() => setOAuthPreparation(current => current ? { ...current, adapterId: method.id } : current)}
+                  >
+                    {method.flow === 'device_code' ? <Smartphone size={15} /> : <ArrowUpRight size={15} />}
+                    <span>
+                      <strong>{method.flow === 'device_code' ? t('providers.deviceCodeLogin') : t('providers.browserLogin')}</strong>
+                      <small>{method.flow === 'device_code' ? t('providers.deviceLoginMethodHint') : t('providers.browserLoginMethodHint')}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <section className="provider-login-steps">
+              <strong>{preparationDescriptor?.flow === 'device_code'
+                ? t('providers.beforeDeviceLogin')
+                : t('providers.beforeBrowserLogin')}</strong>
+              {preparationDescriptor?.flow === 'device_code' ? (
+                <ol>
+                  <li>{t('providers.deviceLoginStepOne')}</li>
+                  <li>{t('providers.deviceLoginStepTwo')}</li>
+                  <li>{t('providers.deviceLoginStepThree')}</li>
+                </ol>
+              ) : (
+                <ol>
+                  <li>{t('providers.browserLoginStepOne')}</li>
+                  <li>{preparationDescriptor?.callback_mode === 'loopback'
+                    ? t('providers.browserLoginLoopbackStep')
+                    : t('providers.browserLoginReturnStep')}</li>
+                  <li>{t('providers.browserLoginStepThree')}</li>
+                </ol>
+              )}
+              {oauthPreparation.preset.id === 'codex' && preparationDescriptor?.flow === 'device_code' && (
+                <a href="https://learn.chatgpt.com/docs/auth#login-on-headless-devices" target="_blank" rel="noreferrer">
+                  {t('providers.deviceCodeEnableHelp')} <ArrowUpRight size={11} />
+                </a>
+              )}
+              {preparationDescriptor?.callback_mode === 'loopback' && (
+                <div className="provider-login-loopback-warning">
+                  <strong>{t('providers.remoteBrowserWarning')}</strong>
+                  <span>{t('providers.remoteBrowserWarningHint')}</span>
+                  {oauthPreparation.preset.id === 'codex' && <code>ssh -N -L 1455:127.0.0.1:1455 &lt;user&gt;@&lt;morphz-host&gt;</code>}
+                </div>
+              )}
+            </section>
+            <footer>
+              <button type="button" onClick={() => setOAuthPreparation(null)}>{t('providers.cancel')}</button>
+              <button className="is-primary" type="button" disabled={!preparationDescriptor} onClick={beginPreparedLogin}>
+                {preparationDescriptor?.flow === 'device_code' ? <Smartphone size={13} /> : <ArrowUpRight size={13} />}
+                {preparationDescriptor?.flow === 'device_code'
+                  ? t('providers.generateDeviceCode')
+                  : t('providers.openAuthorizationAndLogin')}
+              </button>
             </footer>
           </section>
         </div>
@@ -1068,39 +1394,84 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       {challenge && (
         <div className="provider-oauth-backdrop" role="presentation" onMouseDown={event => {
           if (event.currentTarget === event.target) {
-            setChallenge(null)
-            setChallengeError('')
+            cancelLoginChallenge()
           }
         }}>
-          <section className="provider-oauth-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-oauth-title">
+          <section className="provider-oauth-dialog provider-oauth-login-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-oauth-title">
             <header>
               <span><KeyRound size={16} /><strong id="provider-oauth-title">{t('providers.oauthTitle', { account: challengeLabel })}</strong></span>
-              <button type="button" onClick={() => { setChallenge(null); setChallengeError('') }} aria-label={t('providers.cancel')}><X size={15} /></button>
+              <button type="button" onClick={cancelLoginChallenge} aria-label={t('providers.cancel')}><X size={15} /></button>
             </header>
-            <p>{challenge.flow === 'device_code' ? t('providers.deviceHint') : t('providers.pkceHint')}</p>
-            {challenge.user_code && <div className="provider-device-code"><small>{t('providers.userCode')}</small><strong>{challenge.user_code}</strong></div>}
-            {(challenge.authorization_url || challenge.verification_uri_complete || challenge.verification_uri) && (
-              <a href={challenge.authorization_url ?? challenge.verification_uri_complete ?? challenge.verification_uri} target="_blank" rel="noreferrer">
-                <ArrowUpRight size={13} /> {t('providers.openAuthorization')}
-              </a>
+            <p>{challengeHint}</p>
+            {challenge.flow === 'authorization_code_pkce' && challenge.callback_mode === 'loopback' && (
+              <section className="provider-oauth-guide">
+                <strong>{t('providers.remoteLoginTitle')}</strong>
+                <small>{t('providers.runtimeBrowserOption')}</small>
+                <ol>
+                  <li>{t('providers.remoteLoginOpen')}</li>
+                  <li>{t('providers.remoteLoginCopy')}</li>
+                  <li>{t('providers.remoteLoginSubmit')}</li>
+                </ol>
+                {sshTunnelCommand && (
+                  <div>
+                    <small>{t('providers.sshTunnelOption')}</small>
+                    <code>{sshTunnelCommand}</code>
+                  </div>
+                )}
+                {challenge.callback_state && (
+                  <small>{t('providers.currentLoginState', { state: stateSuffix(challenge.callback_state) })}</small>
+                )}
+              </section>
             )}
-            {challenge.flow === 'authorization_code_pkce' && (
-              <label className="provider-oauth-callback">
-                <span>{t('providers.authorizationResponse')}</span>
-                <textarea
-                  value={authorizationResponse}
-                  onChange={event => setAuthorizationResponse(event.target.value)}
-                  placeholder={t('providers.authorizationResponsePlaceholder')}
-                  spellCheck={false}
-                />
-              </label>
+            {challenge.user_code && (
+              <div className="provider-device-code">
+                <span><small>{t('providers.userCode')}</small><strong>{challenge.user_code}</strong></span>
+                <button type="button" onClick={() => void copyDeviceCode()}>
+                  <Copy size={13} /> {deviceCodeCopied
+                    ? t('providers.deviceCodeCopied')
+                    : t('providers.copyDeviceCode')}
+                </button>
+              </div>
+            )}
+            {challengeAuthorizationUrl && (
+              <div className="provider-oauth-link-actions">
+                <a href={challengeAuthorizationUrl} target="_blank" rel="noreferrer">
+                  <ArrowUpRight size={13} /> {t('providers.openAuthorization')}
+                </a>
+                <button type="button" onClick={() => void copyAuthorizationUrl()}>
+                  <Copy size={13} /> {authorizationLinkCopied
+                    ? t('providers.authorizationLinkCopied')
+                    : t('providers.copyAuthorizationLink')}
+                </button>
+              </div>
+            )}
+            {challenge.flow === 'authorization_code_pkce' && challenge.callback_mode === 'loopback' && (
+              <div className="provider-oauth-callback">
+                <label>
+                  <span>{t('providers.authorizationResponse')}</span>
+                  <textarea
+                    value={authorizationResponse}
+                    onChange={event => setAuthorizationResponse(event.target.value)}
+                    placeholder={expectedCallbackExample}
+                    spellCheck={false}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={busyAccount === challenge.account_id}
+                  onClick={() => void submitCallbackFromClipboard()}
+                >
+                  <ClipboardPaste size={13} /> {t('providers.readClipboardAndSubmit')}
+                </button>
+                <small>{t('providers.readClipboardAndSubmitHint')}</small>
+              </div>
             )}
             {challengeError && <p className="provider-oauth-inline-error">{challengeError}</p>}
             <footer>
-              <button type="button" onClick={() => { setChallenge(null); setChallengeError('') }}>{t('providers.cancel')}</button>
+              <button type="button" onClick={cancelLoginChallenge}>{t('providers.cancel')}</button>
               <button className="is-primary" type="button" disabled={busyAccount === challenge.account_id} onClick={() => void continueLogin()}>
                 <Link2 size={13} /> {challenge.flow === 'authorization_code_pkce' && authorizationResponse.trim()
-                  ? t('providers.completeLogin')
+                  ? t('providers.submitCallbackUrl')
                   : t('providers.pollLogin')}
               </button>
             </footer>

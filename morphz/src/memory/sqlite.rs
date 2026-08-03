@@ -2252,6 +2252,33 @@ impl ProviderAccountStateStore for SqliteStore {
         provider_account_state_from_sqlite_row(&row)
     }
 
+    async fn delete_provider_account_records(
+        &self,
+        account_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM provider_account_affinities WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM provider_refresh_leases WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM provider_model_catalog WHERE auth_account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        let deleted = sqlx::query("DELETE FROM provider_account_states WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+            > 0;
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
     async fn get_provider_account_affinity(
         &self,
         route_id: &str,

@@ -65,12 +65,23 @@ test('model usage is shown once per stable alias while retaining physical paths'
   assert.equal(groups[0].paths.length, 2)
 })
 
-test('provider setup keeps OAuth accounts separate from API gateways', () => {
+test('API-key setup is protocol based and does not invent provider brands', () => {
   const oauthCatalog = providersSource.match(/const OAUTH_SETUP_PRESETS:[\s\S]*?\n\]/)?.[0] ?? ''
-  const apiCatalog = providersSource.match(/const API_SETUP_PRESETS:[\s\S]*?\n\]/)?.[0] ?? ''
+  const protocols = providersSource.match(/const API_PROTOCOLS = \[[\s\S]*?\n\]/)?.[0] ?? ''
 
   assert.doesNotMatch(oauthCatalog, /openrouter/i, 'OpenRouter must not pretend to be a native OAuth subscription')
-  assert.match(apiCatalog, /id: 'openrouter'/, 'OpenRouter must remain available as an API-key service')
+  assert.doesNotMatch(providersSource, /API_SETUP_PRESETS|apiPresets|id: 'openrouter'/)
+  assert.match(protocols, /openai-responses/)
+  assert.match(protocols, /openai-chat/)
+  assert.match(protocols, /anthropic-messages/)
+  assert.match(protocols, /gemini-content/)
+  assert.match(providersSource, /'\/api\/runtime\/providers\/discover-models'/)
+  assert.match(providersSource, /response\.models\.map|discoveredModels\.map/)
+})
+
+test('unfinished OAuth attempts are not rendered as accounts', () => {
+  assert.match(providersSource, /!record\.oauth \|\| record\.authenticated/)
+  assert.doesNotMatch(providersSource, /unfinishedLogin|groupProviderAccounts/)
 })
 
 test('provider setup only presents OAuth services whose complete Runtime bootstrap is published', () => {
@@ -88,14 +99,13 @@ test('provider setup only presents OAuth services whose complete Runtime bootstr
   assert.match(providersSource, /const services = new Map\(oauthSetupServices/)
 })
 
-test('ordinary OAuth setup starts login directly without exposing internal identifiers', () => {
-  const advanced = providersSource.match(/<details className="provider-setup-advanced">[\s\S]*?<\/details>/)?.[0] ?? ''
-
-  assert.match(advanced, /providers\.providerId/)
-  assert.match(advanced, /providers\.accountId/)
-  assert.match(providersSource, /onClick=\{\(\) => void startOAuthSetup\(preset\)\}/)
+test('ordinary OAuth setup reviews instructions before starting without exposing internal identifiers', () => {
+  assert.match(providersSource, /onClick=\{\(\) => prepareOAuthSetup\(preset\)\}/)
+  assert.match(providersSource, /const beginPreparedLogin/)
+  assert.match(providersSource, /providers\.loginPreparationHint/)
+  assert.match(providersSource, /providers\.generateDeviceCode/)
   assert.match(providersSource, /'\/api\/runtime\/providers\/oauth\/start'/)
-  assert.match(providersSource, /\{ service: preset\.id \}/)
+  assert.match(providersSource, /\{ service \}/)
   assert.match(providersSource, /window\.open\('about:blank'/)
   assert.doesNotMatch(
     providersSource.match(/const startOAuthSetup = async[\s\S]*?\n {2}const mutateAccount/)?.[0] ?? '',
@@ -109,4 +119,28 @@ test('ordinary OAuth setup starts login directly without exposing internal ident
   )
   assert.match(providersSource, /provider-oauth-progress/)
   assert.match(providersSource, /provider-oauth-inline-error/)
+  assert.doesNotMatch(
+    providersSource.match(/const OAUTH_SETUP_PRESETS:[\s\S]*?\n\]/)?.[0] ?? '',
+    /id: 'codex-device'/,
+    'device code is a Codex login method, not another Codex service',
+  )
+})
+
+test('remote loopback OAuth submits the browser URL by state and explains both handoff paths', () => {
+  assert.match(providersSource, /'\/api\/runtime\/providers\/oauth\/callback'/)
+  assert.match(providersSource, /\{ redirect_url: callbackResponse \}/)
+  assert.match(providersSource, /providers\.remoteLoginCopy/)
+  assert.match(providersSource, /providers\.runtimeBrowserOption/)
+  assert.match(providersSource, /copyTextToClipboard\(challengeAuthorizationUrl\)/)
+  assert.match(providersSource, /providers\.deviceLoginMethodHint/)
+  assert.match(providersSource, /copyTextToClipboard\(challenge\.user_code\)/)
+  assert.match(providersSource, /readTextFromClipboard\(\)/)
+  assert.match(providersSource, /continueLogin\(callbackUrl\)/)
+  assert.match(providersSource, /ssh -N -L/)
+  assert.match(providersSource, /challenge\.callback_state/)
+  assert.match(
+    providersSource,
+    /challenge\.callback_mode === 'loopback'/,
+    'manual callback handoff must only be shown for desktop loopback clients',
+  )
 })

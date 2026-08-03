@@ -1806,6 +1806,18 @@ impl MorphzRuntime {
             .map_err(Into::into)
     }
 
+    pub async fn start_provider_oauth_login_using(
+        &self,
+        account_id: &str,
+        adapter_id: &str,
+    ) -> Result<OAuthLoginChallenge, RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .start_login_using(account_id, adapter_id)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Register a newly persisted auth account in the live OAuth authority.
     /// This deliberately does not hot-swap Provider routing: the account can
     /// authenticate now, while the saved route becomes active after restart.
@@ -1818,6 +1830,75 @@ impl MorphzRuntime {
             .provider_auth_manager
             .register_account(account_id, account)
             .map_err(Into::into)
+    }
+
+    pub fn register_transient_provider_auth_account(
+        &self,
+        account_id: &str,
+        account: AuthAccountConfig,
+    ) -> Result<(), RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .register_transient_account(account_id, account)
+            .map_err(Into::into)
+    }
+
+    pub fn discard_transient_provider_auth_account(
+        &self,
+        account_id: &str,
+    ) -> Result<bool, RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .discard_transient_account(account_id)
+            .map_err(Into::into)
+    }
+
+    pub fn cancel_provider_oauth_login(&self, login_id: &str) -> Result<bool, RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .cancel_login(login_id)
+            .map_err(Into::into)
+    }
+
+    pub fn provider_oauth_login_exists(&self, login_id: &str) -> Result<bool, RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .has_login(login_id)
+            .map_err(Into::into)
+    }
+
+    pub async fn remove_provider_auth_account(
+        &self,
+        account_id: &str,
+    ) -> Result<bool, RuntimeError> {
+        let removed = self
+            .inner
+            .provider_auth_manager
+            .remove_account(account_id)?;
+        let records_removed = self
+            .inner
+            .store
+            .delete_provider_account_records(account_id)
+            .await?;
+        Ok(removed || records_removed)
+    }
+
+    pub async fn mark_provider_auth_account_ready(
+        &self,
+        account_id: &str,
+    ) -> Result<(), RuntimeError> {
+        self.inner
+            .store
+            .put_provider_account_state(
+                account_id,
+                None,
+                crate::memory::ProviderAccountStatus::Ready,
+                None,
+                None,
+                false,
+            )
+            .await?;
+        Ok(())
     }
 
     pub async fn continue_provider_oauth_login(

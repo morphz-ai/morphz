@@ -1,5 +1,6 @@
 export interface ClipboardEnvironment {
   secureContext: boolean
+  readText?: () => Promise<string>
   writeText?: (text: string) => Promise<void>
   legacyCopy: (text: string) => boolean
 }
@@ -48,11 +49,23 @@ function browserClipboardEnvironment(): ClipboardEnvironment {
   const clipboard = navigator.clipboard
   return {
     secureContext: window.isSecureContext,
+    readText: clipboard?.readText
+      ? clipboard.readText.bind(clipboard)
+      : undefined,
     writeText: clipboard?.writeText
       ? clipboard.writeText.bind(clipboard)
       : undefined,
     legacyCopy: legacyBrowserCopy,
   }
+}
+
+export async function readTextFromClipboard(
+  environment: ClipboardEnvironment = browserClipboardEnvironment(),
+): Promise<string> {
+  if (!environment.secureContext || !environment.readText) {
+    throw new Error('Clipboard read access is unavailable')
+  }
+  return environment.readText()
 }
 
 export async function copyTextToClipboard(

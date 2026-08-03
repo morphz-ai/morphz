@@ -7,10 +7,11 @@
 
 use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::config::{
-    save_managed_auth_account_at, save_managed_model_route_at, save_managed_provider_catalog_at,
-    save_managed_provider_instance_at, AppConfig, AuthAccountConfig, CredentialConfig,
-    ModelProtocol, ModelRouteAffinity, ModelRouteCandidateConfig, ModelRouteConfig,
-    ModelRouteSelection, ProviderInstanceConfig, ProviderModelConfig,
+    remove_managed_provider_accounts_at, save_managed_auth_account_at, save_managed_model_route_at,
+    save_managed_provider_catalog_at, save_managed_provider_instance_at, AppConfig,
+    AuthAccountConfig, CredentialConfig, ModelProtocol, ModelRouteAffinity,
+    ModelRouteCandidateConfig, ModelRouteConfig, ModelRouteSelection, ProviderInstanceConfig,
+    ProviderModelConfig,
 };
 use crate::event::Event;
 use crate::execution::JobReceipt;
@@ -54,9 +55,10 @@ use crate::runtime::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -122,6 +124,10 @@ pub struct OAuthProviderSetup {
     pub base_url: String,
     pub account_id: String,
     pub auth_adapter: String,
+    /// Optional delivery adapter for this login attempt. The durable account
+    /// keeps one canonical auth adapter while compatible transports (for
+    /// example Codex browser PKCE and device code) remain a user choice.
+    pub login_adapter: Option<String>,
     pub credential_ref: String,
     pub secret_backend: Option<String>,
     pub account_label: String,
@@ -180,6 +186,60 @@ fn merge_managed_provider_catalog(
     }
     snapshot.model_routes.extend(managed.model_routes);
     Ok(())
+}
+
+fn remove_accounts_from_catalog(config: &mut AppConfig, account_ids: &BTreeSet<String>) {
+    for account_id in account_ids {
+        config.auth_accounts.remove(account_id);
+    }
+
+    let empty_providers = config
+        .provider_instances
+        .iter_mut()
+        .filter_map(|(provider_id, provider)| {
+            let previous_len = provider.accounts.len();
+            provider
+                .accounts
+                .retain(|account_id| !account_ids.contains(account_id));
+            (previous_len != provider.accounts.len() && provider.accounts.is_empty())
+                .then(|| provider_id.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    config
+        .provider_instances
+        .retain(|provider_id, _| !empty_providers.contains(provider_id));
+
+    let empty_routes = config
+        .model_routes
+        .iter_mut()
+        .filter_map(|(route_id, route)| {
+            let previous_len = route.candidates.len();
+            route.candidates.retain(|candidate| {
+                candidate
+                    .account
+                    .as_ref()
+                    .is_none_or(|account_id| !account_ids.contains(account_id))
+                    && !empty_providers.contains(&candidate.provider)
+            });
+            (previous_len != route.candidates.len() && route.candidates.is_empty())
+                .then(|| route_id.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    config
+        .model_routes
+        .retain(|route_id, _| !empty_routes.contains(route_id));
+
+    if config
+        .llm
+        .provider
+        .as_ref()
+        .is_some_and(|provider_id| empty_providers.contains(provider_id))
+    {
+        config.llm.provider = None;
+    }
+    if empty_routes.contains(&config.llm.model) {
+        config.llm.model = AppConfig::default().llm.model;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -398,11 +458,21 @@ pub struct CreateObjectiveResult {
 #[derive(Clone)]
 pub struct MorphzSdk {
     runtime: MorphzRuntime,
+    pending_oauth_setups: Arc<RwLock<HashMap<String, PendingOAuthProviderSetup>>>,
+}
+
+#[derive(Clone)]
+struct PendingOAuthProviderSetup {
+    managed_config_path: PathBuf,
+    setup: OAuthProviderSetup,
 }
 
 impl MorphzSdk {
     pub fn new(runtime: MorphzRuntime) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            pending_oauth_setups: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     pub fn default_principal(&self) -> PrincipalAssertion {
@@ -606,6 +676,17 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    pub async fn discover_provider_models(
+        &self,
+        protocol: ModelProtocol,
+        base_url: &str,
+        api_key: &str,
+    ) -> SdkResult<Vec<String>> {
+        crate::provider::discover_protocol_models(protocol, base_url, api_key)
+            .await
+            .map_err(SdkError::internal)
+    }
+
     pub fn provider_oauth_adapter_descriptors(
         &self,
     ) -> Vec<crate::provider::auth::AuthAdapterDescriptor> {
@@ -783,8 +864,115 @@ impl MorphzSdk {
             }
         }
 
+        let account = AuthAccountConfig {
+            auth_adapter: setup.auth_adapter.clone(),
+            credential_ref: setup.credential_ref.clone(),
+            secret_backend: setup.secret_backend.clone(),
+            provider: Some(setup.provider_id.clone()),
+            label: Some(setup.account_label.clone()),
+            enabled: true,
+        };
+        self.runtime
+            .register_transient_provider_auth_account(&setup.account_id, account)
+            .map_err(SdkError::internal)?;
+        let challenge = match setup.login_adapter.as_deref() {
+            Some(adapter_id) if adapter_id != setup.auth_adapter => {
+                self.start_provider_oauth_login_using(&setup.account_id, adapter_id)
+                    .await
+            }
+            _ => self.start_provider_oauth_login(&setup.account_id).await,
+        };
+        let challenge = match challenge {
+            Ok(challenge) => challenge,
+            Err(error) => {
+                let _ = self
+                    .runtime
+                    .discard_transient_provider_auth_account(&setup.account_id);
+                return Err(error);
+            }
+        };
+        self.pending_oauth_setups
+            .write()
+            .map_err(|_| SdkError::internal("OAuth setup registry lock poisoned"))?
+            .insert(
+                challenge.login_id.clone(),
+                PendingOAuthProviderSetup {
+                    managed_config_path: managed_config_path.to_path_buf(),
+                    setup,
+                },
+            );
+        Ok(challenge)
+    }
+
+    /// One-time cleanup for catalogs written by older OAuth setup flows.
+    /// Authentication attempts without a token are not accounts and are
+    /// removed from managed config, the live router, Secret Store and state DB.
+    pub async fn prune_unfinished_oauth_accounts(
+        &self,
+        managed_config_path: &Path,
+    ) -> SdkResult<usize> {
+        if !managed_config_path.exists() {
+            return Ok(0);
+        }
+        let managed_contents =
+            std::fs::read_to_string(managed_config_path).map_err(SdkError::internal)?;
+        if managed_contents.trim().is_empty() {
+            return Ok(0);
+        }
+        let managed: AppConfig = toml::from_str(&managed_contents)
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
+        let managed_account_ids = managed
+            .auth_accounts
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let snapshot = self.provider_control_snapshot().await?;
+        let account_ids = snapshot
+            .auth_accounts
+            .iter()
+            .filter_map(|(account_id, record)| {
+                // Legacy setup attempts were written before authentication
+                // and never received a durable account-state row. Preserve a
+                // completed account if its Secret Backend is temporarily
+                // unavailable; absence of token metadata alone is not safe
+                // deletion evidence.
+                (managed_account_ids.contains(account_id)
+                    && record.oauth
+                    && !record.authenticated
+                    && record.state.is_none())
+                .then(|| account_id.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        if account_ids.is_empty() {
+            return Ok(0);
+        }
+
+        remove_managed_provider_accounts_at(managed_config_path, &account_ids)
+            .map_err(SdkError::internal)?;
+        for account_id in &account_ids {
+            self.runtime
+                .remove_provider_auth_account(account_id)
+                .await
+                .map_err(SdkError::internal)?;
+        }
+        let mut live = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        remove_accounts_from_catalog(&mut live, &account_ids);
+        self.runtime
+            .replace_provider_catalog(live)
+            .map_err(SdkError::internal)?;
+        Ok(account_ids.len())
+    }
+
+    async fn finalize_oauth_provider_account(
+        &self,
+        pending: &PendingOAuthProviderSetup,
+    ) -> SdkResult<()> {
+        let setup = &pending.setup;
         let mut snapshot = self.provider_control_snapshot().await?;
-        merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
+        merge_managed_provider_catalog(&mut snapshot, &pending.managed_config_path)?;
 
         let mut provider = snapshot
             .provider_instances
@@ -792,7 +980,7 @@ impl MorphzSdk {
             .cloned()
             .unwrap_or_else(|| ProviderInstanceConfig {
                 adapter: setup.provider_adapter.clone(),
-                protocol: setup.protocol.clone(),
+                protocol: setup.protocol,
                 base_url: setup.base_url.clone(),
                 accounts: Vec::new(),
                 models: BTreeMap::new(),
@@ -800,7 +988,7 @@ impl MorphzSdk {
                 env_headers: BTreeMap::new(),
             });
         provider.adapter = setup.provider_adapter.clone();
-        provider.protocol = setup.protocol.clone();
+        provider.protocol = setup.protocol;
         provider.base_url = setup.base_url.clone();
         if !provider.accounts.iter().any(|id| id == &setup.account_id) {
             provider.accounts.push(setup.account_id.clone());
@@ -818,7 +1006,6 @@ impl MorphzSdk {
             label: Some(setup.account_label.clone()),
             enabled: true,
         };
-
         let mut route = snapshot
             .model_routes
             .get(&setup.route_id)
@@ -838,12 +1025,11 @@ impl MorphzSdk {
         {
             route.aliases.push(setup.model_alias.clone());
         }
-        let candidate_exists = route.candidates.iter().any(|candidate| {
+        if !route.candidates.iter().any(|candidate| {
             candidate.provider == setup.provider_id
                 && candidate.model == setup.physical_model
                 && candidate.account.as_deref() == Some(setup.account_id.as_str())
-        });
-        if !candidate_exists {
+        }) {
             let priority = route
                 .candidates
                 .iter()
@@ -860,7 +1046,7 @@ impl MorphzSdk {
         }
 
         self.put_provider_catalog_config(
-            managed_config_path,
+            &pending.managed_config_path,
             &setup.provider_id,
             provider,
             &setup.account_id,
@@ -870,7 +1056,10 @@ impl MorphzSdk {
             route,
         )
         .await?;
-        self.start_provider_oauth_login(&setup.account_id).await
+        self.runtime
+            .mark_provider_auth_account_ready(&setup.account_id)
+            .await
+            .map_err(SdkError::internal)
     }
 
     pub async fn put_auth_account_config(
@@ -969,15 +1158,92 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    pub async fn start_provider_oauth_login_using(
+        &self,
+        account_id: &str,
+        adapter_id: &str,
+    ) -> SdkResult<OAuthLoginChallenge> {
+        self.runtime
+            .start_provider_oauth_login_using(account_id, adapter_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
     pub async fn continue_provider_oauth_login(
         &self,
         login_id: &str,
         completion: OAuthLoginCompletion,
     ) -> SdkResult<OAuthLoginProgress> {
-        self.runtime
+        let progress = self
+            .runtime
             .continue_provider_oauth_login(login_id, completion)
             .await
-            .map_err(SdkError::internal)
+            .map_err(SdkError::internal);
+        let progress = match progress {
+            Ok(progress) => progress,
+            Err(error) => {
+                // Adapters may report a temporary transport failure while the
+                // provider authorization is still valid. Keep the in-memory
+                // setup whenever the Auth Manager still owns the login; only
+                // expiry/terminal removal tears it down.
+                if !self
+                    .runtime
+                    .provider_oauth_login_exists(login_id)
+                    .unwrap_or(false)
+                {
+                    if let Ok(mut pending) = self.pending_oauth_setups.write() {
+                        if let Some(pending) = pending.remove(login_id) {
+                            let _ = self
+                                .runtime
+                                .discard_transient_provider_auth_account(&pending.setup.account_id);
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        };
+        if matches!(progress, OAuthLoginProgress::Complete { .. }) {
+            let pending = self
+                .pending_oauth_setups
+                .read()
+                .map_err(|_| SdkError::internal("OAuth setup registry lock poisoned"))?
+                .get(login_id)
+                .cloned();
+            if let Some(pending) = pending {
+                if let Err(error) = self.finalize_oauth_provider_account(&pending).await {
+                    if let Ok(mut setups) = self.pending_oauth_setups.write() {
+                        setups.remove(login_id);
+                    }
+                    let _ = self
+                        .runtime
+                        .discard_transient_provider_auth_account(&pending.setup.account_id);
+                    return Err(error);
+                }
+                self.pending_oauth_setups
+                    .write()
+                    .map_err(|_| SdkError::internal("OAuth setup registry lock poisoned"))?
+                    .remove(login_id);
+            }
+        }
+        Ok(progress)
+    }
+
+    pub fn cancel_provider_oauth_login(&self, login_id: &str) -> SdkResult<bool> {
+        let pending = self
+            .pending_oauth_setups
+            .write()
+            .map_err(|_| SdkError::internal("OAuth setup registry lock poisoned"))?
+            .remove(login_id);
+        let cancelled = self
+            .runtime
+            .cancel_provider_oauth_login(login_id)
+            .map_err(SdkError::internal)?;
+        if let Some(pending) = pending {
+            let _ = self
+                .runtime
+                .discard_transient_provider_auth_account(&pending.setup.account_id);
+        }
+        Ok(cancelled)
     }
 
     pub fn provider_oauth_account_metadata(

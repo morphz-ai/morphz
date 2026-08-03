@@ -856,6 +856,36 @@ pub async fn list_provider_models(
         .await
 }
 
+/// Discover a model catalog from setup credentials without registering a
+/// Provider, Auth Account, credential, or route. The API key lives only in
+/// this request and is dropped with the temporary protocol client.
+pub(crate) async fn discover_protocol_models(
+    protocol: ModelProtocol,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>, ProviderError> {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err("Provider URL 不能为空".into());
+    }
+    if api_key.trim().is_empty() {
+        return Err("API Key 不能为空".into());
+    }
+    let provider = ProviderConfig {
+        protocol,
+        base_url: base_url.to_string(),
+        ..ProviderConfig::default()
+    };
+    ProtocolClient::new(
+        &provider,
+        String::new(),
+        Some(api_key.trim().to_string()),
+        &LlmConfig::default(),
+    )?
+    .list_models()
+    .await
+}
+
 pub async fn probe_provider(
     app: &AppConfig,
     provider_id: &str,
@@ -3161,6 +3191,36 @@ mod tests {
             let models = client.list_models().await.unwrap();
             assert_eq!(models, ["model-a", "model-b"]);
         }
+    }
+
+    #[tokio::test]
+    async fn setup_model_discovery_uses_ephemeral_api_key_without_catalog_state() {
+        let app = Router::new().route(
+            "/models",
+            get(|headers: axum::http::HeaderMap| async move {
+                assert_eq!(
+                    headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("Bearer setup-secret")
+                );
+                Json(json!({"data":[{"id":"model-b"},{"id":"model-a"}]}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let models = discover_protocol_models(
+            ModelProtocol::OpenaiChat,
+            &format!("http://{address}"),
+            "setup-secret",
+        )
+        .await
+        .unwrap();
+        assert_eq!(models, ["model-a", "model-b"]);
     }
 
     #[tokio::test]

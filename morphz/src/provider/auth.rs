@@ -23,10 +23,20 @@ const TOKEN_REFRESH_SKEW_SECS: i64 = 300;
 const REFRESH_LEASE_SECS: i64 = 45;
 const REFRESH_WAIT_POLL_MILLIS: u64 = 125;
 const CODEX_ADAPTER_ID: &str = "codex-oauth";
+const CODEX_DEVICE_ADAPTER_ID: &str = "codex-device-oauth";
 const KIMI_ADAPTER_ID: &str = "kimi-oauth";
 const XAI_ADAPTER_ID: &str = "xai-oauth";
 const CLAUDE_ADAPTER_ID: &str = "claude-oauth";
 const ANTIGRAVITY_ADAPTER_ID: &str = "antigravity-oauth";
+
+fn oauth_adapters_compatible(configured: &str, actual: &str) -> bool {
+    configured == actual
+        || matches!(
+            (configured, actual),
+            (CODEX_ADAPTER_ID, CODEX_DEVICE_ADAPTER_ID)
+                | (CODEX_DEVICE_ADAPTER_ID, CODEX_ADAPTER_ID)
+        )
+}
 
 fn oauth_http_client() -> reqwest::Client {
     // Provider traffic already uses an explicit no-proxy client. Keep OAuth
@@ -48,6 +58,14 @@ struct LoopbackOAuthResult {
 static LOOPBACK_OAUTH_RESULTS: OnceLock<RwLock<HashMap<String, LoopbackOAuthResult>>> =
     OnceLock::new();
 static LOOPBACK_OAUTH_PORTS: OnceLock<RwLock<HashSet<u16>>> = OnceLock::new();
+#[derive(Debug, Clone)]
+struct PendingOAuthCallback {
+    expires_at: DateTime<Utc>,
+    login_id: Option<String>,
+}
+
+static PENDING_OAUTH_CALLBACKS: OnceLock<RwLock<HashMap<String, PendingOAuthCallback>>> =
+    OnceLock::new();
 
 fn loopback_oauth_results() -> &'static RwLock<HashMap<String, LoopbackOAuthResult>> {
     LOOPBACK_OAUTH_RESULTS.get_or_init(|| RwLock::new(HashMap::new()))
@@ -55,6 +73,148 @@ fn loopback_oauth_results() -> &'static RwLock<HashMap<String, LoopbackOAuthResu
 
 fn loopback_oauth_ports() -> &'static RwLock<HashSet<u16>> {
     LOOPBACK_OAUTH_PORTS.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+fn pending_oauth_callbacks() -> &'static RwLock<HashMap<String, PendingOAuthCallback>> {
+    PENDING_OAUTH_CALLBACKS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+pub(crate) fn register_oauth_callback(
+    state: &str,
+    expires_at: DateTime<Utc>,
+) -> Result<(), String> {
+    let now = Utc::now();
+    let mut pending = pending_oauth_callbacks()
+        .write()
+        .map_err(|_| "OAuth 回调状态锁损坏".to_string())?;
+    pending.retain(|_, callback| callback.expires_at > now);
+    pending.insert(
+        state.to_string(),
+        PendingOAuthCallback {
+            expires_at,
+            login_id: None,
+        },
+    );
+    Ok(())
+}
+
+fn bind_oauth_callback_login(state: &str, login_id: &str) -> Result<(), String> {
+    let now = Utc::now();
+    let mut pending = pending_oauth_callbacks()
+        .write()
+        .map_err(|_| "OAuth 回调状态锁损坏".to_string())?;
+    pending.retain(|_, callback| callback.expires_at > now);
+    let callback = pending
+        .get_mut(state)
+        .ok_or("OAuth 回调 state 未登记或已经过期")?;
+    callback.login_id = Some(login_id.to_string());
+    Ok(())
+}
+
+/// Resolve a pasted or public browser callback to the short-lived in-memory
+/// login context that created its state. The Dashboard's currently open dialog
+/// is not authoritative: a callback can outlive a page refresh or UI change.
+pub(crate) fn oauth_callback_login_id(state: &str) -> Result<String, String> {
+    let state = state.trim();
+    if state.is_empty() {
+        return Err("OAuth 回调缺少 state".to_string());
+    }
+    let now = Utc::now();
+    let mut pending = pending_oauth_callbacks()
+        .write()
+        .map_err(|_| "OAuth 回调状态锁损坏".to_string())?;
+    pending.retain(|_, callback| callback.expires_at > now);
+    pending
+        .get(state)
+        .and_then(|callback| callback.login_id.clone())
+        .ok_or_else(|| {
+            "该回调不属于仍在等待的登录；请重新开始登录并使用新页面中的回调地址".to_string()
+        })
+}
+
+fn state_fingerprint(state: &str) -> String {
+    let suffix = state
+        .char_indices()
+        .rev()
+        .nth(7)
+        .map(|(index, _)| &state[index..])
+        .unwrap_or(state);
+    format!("…{suffix}")
+}
+
+pub(crate) fn parse_authorization_response(response: &str) -> Result<(String, String), String> {
+    let response = response.trim();
+    if response.is_empty() {
+        return Err("OAuth 授权回调不能为空".to_string());
+    }
+    let query = reqwest::Url::parse(response)
+        .ok()
+        .and_then(|url| url.query().map(str::to_string))
+        .or_else(|| response.strip_prefix('?').map(str::to_string))
+        .unwrap_or_else(|| response.to_string());
+    let pairs = reqwest::Url::parse(&format!("http://localhost/?{query}"))
+        .map_err(|error| format!("OAuth 授权回调格式无效：{error}"))?
+        .query_pairs()
+        .into_owned()
+        .collect::<BTreeMap<_, _>>();
+    if let Some(error) = pairs.get("error") {
+        let description = pairs
+            .get("error_description")
+            .map(String::as_str)
+            .unwrap_or(error);
+        return Err(format!("OAuth 授权失败：{description}"));
+    }
+    let code = pairs
+        .get("code")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or("回调地址中没有 code；请复制浏览器地址栏里的完整 URL，而不是错误页面正文")?;
+    let state = pairs
+        .get("state")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or("回调地址中没有 state；请从地址栏复制包含 code 和 state 的完整 URL")?;
+    Ok((code.to_string(), state.to_string()))
+}
+
+/// Deliver one browser authorization result to the Runtime that owns the
+/// pending login. The opaque state is the only unauthenticated callback
+/// capability; unknown and expired states are rejected without retaining any
+/// attacker-supplied payload.
+pub fn submit_oauth_callback(
+    state: &str,
+    code: Option<String>,
+    error: Option<String>,
+) -> Result<(), String> {
+    let state = state.trim();
+    if state.is_empty() {
+        return Err("OAuth 回调缺少 state".to_string());
+    }
+    let mut results = loopback_oauth_results()
+        .write()
+        .map_err(|_| "OAuth 回调结果锁损坏".to_string())?;
+    let now = Utc::now();
+    let mut pending = pending_oauth_callbacks()
+        .write()
+        .map_err(|_| "OAuth 回调状态锁损坏".to_string())?;
+    pending.retain(|_, callback| callback.expires_at > now);
+    if pending.remove(state).is_none() {
+        return Err("OAuth 回调 state 不存在、已过期或不属于当前 Runtime".to_string());
+    }
+    results.insert(state.to_string(), LoopbackOAuthResult { code, error });
+    Ok(())
+}
+
+fn discard_oauth_callback(state: &str) -> Result<(), String> {
+    pending_oauth_callbacks()
+        .write()
+        .map_err(|_| "OAuth 回调状态锁损坏".to_string())?
+        .remove(state);
+    loopback_oauth_results()
+        .write()
+        .map_err(|_| "OAuth 回调结果锁损坏".to_string())?
+        .remove(state);
+    Ok(())
 }
 
 async fn ensure_loopback_oauth_listener(
@@ -115,11 +275,10 @@ async fn ensure_loopback_oauth_listener(
                     error = Some("OAuth 回调 URL 无效".to_string());
                 }
                 let success = state.is_some() && code.is_some() && error.is_none();
-                if let Some(state) = state {
-                    if let Ok(mut results) = loopback_oauth_results().write() {
-                        results.insert(state, LoopbackOAuthResult { code, error });
-                    }
-                }
+                let submitted = state
+                    .as_deref()
+                    .is_some_and(|state| submit_oauth_callback(state, code, error).is_ok());
+                let success = success && submitted;
                 let (status, title, detail) = if success {
                     (
                         "200 OK",
@@ -151,10 +310,17 @@ async fn ensure_loopback_oauth_listener(
 }
 
 fn take_loopback_oauth_result(state: &str) -> Result<Option<LoopbackOAuthResult>, String> {
-    Ok(loopback_oauth_results()
+    let result = loopback_oauth_results()
         .write()
         .map_err(|_| "OAuth 回调结果锁损坏".to_string())?
-        .remove(state))
+        .remove(state);
+    if result.is_some() {
+        pending_oauth_callbacks()
+            .write()
+            .map_err(|_| "OAuth 回调状态锁损坏".to_string())?
+            .remove(state);
+    }
+    Ok(result)
 }
 
 /// Encrypted-at-rest OAuth payload. This type intentionally has no `Debug`
@@ -223,6 +389,20 @@ pub enum OAuthFlowKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum OAuthCallbackMode {
+    /// No redirect callback is used (for example RFC 8628 device code).
+    None,
+    /// The provider redirects the browser to a loopback address registered to
+    /// a desktop/public client. It only completes automatically when browser
+    /// and Runtime share that loopback network namespace (or a tunnel).
+    Loopback,
+    /// The provider redirects to the Runtime's public HTTP callback endpoint.
+    /// This requires a web OAuth client that has the exact URI registered.
+    Runtime,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum AuthAdapterStability {
     Stable,
     Compatibility,
@@ -234,6 +414,7 @@ pub struct AuthAdapterDescriptor {
     pub id: String,
     pub version: String,
     pub flow: OAuthFlowKind,
+    pub callback_mode: OAuthCallbackMode,
     pub stability: AuthAdapterStability,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream_reference: Option<String>,
@@ -247,6 +428,11 @@ pub struct OAuthLoginChallenge {
     pub account_id: String,
     pub adapter_id: String,
     pub flow: OAuthFlowKind,
+    pub callback_mode: OAuthCallbackMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -275,41 +461,6 @@ pub enum OAuthLoginCompletion {
     Poll,
 }
 
-fn parse_authorization_response(response: &str) -> Result<(String, String), String> {
-    let response = response.trim();
-    if response.is_empty() {
-        return Err("OAuth 授权回调不能为空".to_string());
-    }
-    let query = reqwest::Url::parse(response)
-        .ok()
-        .and_then(|url| url.query().map(str::to_string))
-        .or_else(|| response.strip_prefix('?').map(str::to_string))
-        .unwrap_or_else(|| response.to_string());
-    let pairs = reqwest::Url::parse(&format!("http://localhost/?{query}"))
-        .map_err(|error| format!("OAuth 授权回调格式无效：{error}"))?
-        .query_pairs()
-        .into_owned()
-        .collect::<BTreeMap<_, _>>();
-    if let Some(error) = pairs.get("error") {
-        let description = pairs
-            .get("error_description")
-            .map(String::as_str)
-            .unwrap_or(error);
-        return Err(format!("OAuth 授权失败：{description}"));
-    }
-    let code = pairs
-        .get("code")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .ok_or("OAuth 授权回调缺少 code")?;
-    let state = pairs
-        .get("state")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .ok_or("OAuth 授权回调缺少 state")?;
-    Ok((code.to_string(), state.to_string()))
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OAuthAccountMetadata {
     pub account_id: String,
@@ -329,16 +480,19 @@ pub enum OAuthLoginProgress {
     Complete { account: OAuthAccountMetadata },
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 struct PendingLoginEnvelope {
     account_id: String,
     adapter_id: String,
     expires_at: DateTime<Utc>,
+    callback_state: Option<String>,
     state: Value,
 }
 
 pub struct AdapterLoginStart {
     pub flow: OAuthFlowKind,
+    pub callback_mode: OAuthCallbackMode,
+    pub redirect_uri: Option<String>,
     pub authorization_url: Option<String>,
     pub verification_uri: Option<String>,
     pub verification_uri_complete: Option<String>,
@@ -358,6 +512,12 @@ pub trait AuthAdapter: Send + Sync {
     fn id(&self) -> &'static str;
     fn version(&self) -> &'static str;
     fn flow(&self) -> OAuthFlowKind;
+    fn callback_mode(&self) -> OAuthCallbackMode {
+        match self.flow() {
+            OAuthFlowKind::AuthorizationCodePkce => OAuthCallbackMode::Loopback,
+            OAuthFlowKind::DeviceCode => OAuthCallbackMode::None,
+        }
+    }
     fn stability(&self) -> AuthAdapterStability {
         AuthAdapterStability::Experimental
     }
@@ -386,6 +546,7 @@ impl AuthAdapterRegistry {
     pub fn builtins() -> Self {
         let mut registry = Self::default();
         registry.register(Arc::new(CodexOAuthAdapter::default()));
+        registry.register(Arc::new(CodexDeviceOAuthAdapter::default()));
         registry.register(Arc::new(KimiOAuthAdapter::default()));
         registry.register(Arc::new(XaiOAuthAdapter::default()));
         registry.register(Arc::new(ClaudeOAuthAdapter::default()));
@@ -412,6 +573,7 @@ impl AuthAdapterRegistry {
                 id: adapter.id().to_string(),
                 version: adapter.version().to_string(),
                 flow: adapter.flow(),
+                callback_mode: adapter.callback_mode(),
                 stability: adapter.stability(),
                 upstream_reference: adapter.upstream_reference().map(str::to_string),
                 last_verified_on: adapter.last_verified_on().map(str::to_string),
@@ -427,6 +589,8 @@ impl AuthAdapterRegistry {
 /// router before authorization is materialized.
 pub struct ProviderAuthManager {
     accounts: RwLock<BTreeMap<String, AuthAccountConfig>>,
+    transient_accounts: RwLock<HashSet<String>>,
+    pending_logins: RwLock<HashMap<String, PendingLoginEnvelope>>,
     secret_store: Arc<SecretStore>,
     account_store: Arc<dyn ProviderAccountStateStore>,
     adapters: AuthAdapterRegistry,
@@ -454,6 +618,8 @@ impl ProviderAuthManager {
     ) -> Self {
         Self {
             accounts: RwLock::new(accounts),
+            transient_accounts: RwLock::new(HashSet::new()),
+            pending_logins: RwLock::new(HashMap::new()),
             secret_store,
             account_store,
             adapters,
@@ -476,7 +642,79 @@ impl ProviderAuthManager {
             .write()
             .map_err(|_| "OAuth Auth Account registry lock poisoned".to_string())?
             .insert(account_id.to_string(), account);
+        self.transient_accounts
+            .write()
+            .map_err(|_| "OAuth transient account registry lock poisoned".to_string())?
+            .remove(account_id);
         Ok(())
+    }
+
+    /// Register an account only for the lifetime of one interactive login.
+    /// It is deliberately absent from the Provider Catalog and durable account
+    /// state until the provider has returned a verified identity.
+    pub fn register_transient_account(
+        &self,
+        account_id: &str,
+        account: AuthAccountConfig,
+    ) -> Result<(), String> {
+        self.accounts
+            .write()
+            .map_err(|_| "OAuth Auth Account registry lock poisoned".to_string())?
+            .insert(account_id.to_string(), account);
+        self.transient_accounts
+            .write()
+            .map_err(|_| "OAuth transient account registry lock poisoned".to_string())?
+            .insert(account_id.to_string());
+        Ok(())
+    }
+
+    pub fn discard_transient_account(&self, account_id: &str) -> Result<bool, String> {
+        let transient = self
+            .transient_accounts
+            .write()
+            .map_err(|_| "OAuth transient account registry lock poisoned".to_string())?
+            .remove(account_id);
+        if !transient {
+            return Ok(false);
+        }
+        let account = self
+            .accounts
+            .write()
+            .map_err(|_| "OAuth Auth Account registry lock poisoned".to_string())?
+            .remove(account_id);
+        if let Some(account) = account {
+            let _ = self.secret_store.delete(&account.credential_ref);
+        }
+        Ok(true)
+    }
+
+    /// Remove an obsolete durable account from the live OAuth authority.
+    /// New login attempts never reach this path because they are transient.
+    pub fn remove_account(&self, account_id: &str) -> Result<bool, String> {
+        self.transient_accounts
+            .write()
+            .map_err(|_| "OAuth transient account registry lock poisoned".to_string())?
+            .remove(account_id);
+        self.pending_logins
+            .write()
+            .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
+            .retain(|_, pending| pending.account_id != account_id);
+        let account = self
+            .accounts
+            .write()
+            .map_err(|_| "OAuth Auth Account registry lock poisoned".to_string())?
+            .remove(account_id);
+        if let Some(account) = account {
+            let _ = self.secret_store.delete(&account.credential_ref);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn is_transient_account(&self, account_id: &str) -> bool {
+        self.transient_accounts
+            .read()
+            .is_ok_and(|accounts| accounts.contains(account_id))
     }
 
     pub fn adapter_descriptors(&self) -> Vec<AuthAdapterDescriptor> {
@@ -484,28 +722,80 @@ impl ProviderAuthManager {
     }
 
     pub async fn start_login(&self, account_id: &str) -> Result<OAuthLoginChallenge, String> {
+        self.start_login_with_adapter(account_id, None).await
+    }
+
+    /// Start an explicitly selected login delivery for an existing account.
+    /// Only adapters with identical token/materialization semantics can be
+    /// selected as alternatives; today that is Codex browser PKCE and Codex
+    /// device authorization. The account configuration itself stays stable.
+    pub async fn start_login_using(
+        &self,
+        account_id: &str,
+        adapter_id: &str,
+    ) -> Result<OAuthLoginChallenge, String> {
+        self.start_login_with_adapter(account_id, Some(adapter_id))
+            .await
+    }
+
+    async fn start_login_with_adapter(
+        &self,
+        account_id: &str,
+        requested_adapter_id: Option<&str>,
+    ) -> Result<OAuthLoginChallenge, String> {
         let account = self.oauth_account(account_id)?;
         validate_secret_alias(&account.credential_ref)?;
-        let adapter = self.adapters.get(&account.auth_adapter)?;
+        let adapter_id = requested_adapter_id.unwrap_or(&account.auth_adapter);
+        if !oauth_adapters_compatible(&account.auth_adapter, adapter_id) {
+            return Err(format!(
+                "Auth Account '{account_id}' 使用 '{}'，不能改用不兼容的 OAuth Adapter '{adapter_id}'",
+                account.auth_adapter
+            ));
+        }
+        let adapter = self.adapters.get(adapter_id)?;
         let started = adapter.start_login().await?;
+        let callback_state = match started.callback_mode {
+            OAuthCallbackMode::None => None,
+            OAuthCallbackMode::Loopback | OAuthCallbackMode::Runtime => Some(
+                started
+                    .state
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .filter(|state| !state.trim().is_empty())
+                    .ok_or("OAuth Adapter 没有返回可关联的 callback state")?
+                    .to_string(),
+            ),
+        };
         let login_id = format!("MORPHZ_OAUTH_LOGIN_{}", random_hex(16)?);
         let pending = PendingLoginEnvelope {
             account_id: account_id.to_string(),
             adapter_id: adapter.id().to_string(),
             expires_at: started.expires_at,
+            callback_state: callback_state.clone(),
             state: started.state,
         };
-        self.put_secret(
-            &account,
-            &login_id,
-            &serde_json::to_string(&pending)
-                .map_err(|error| format!("OAuth 登录状态无法序列化：{error}"))?,
-        )?;
+        self.pending_logins
+            .write()
+            .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
+            .insert(login_id.clone(), pending);
+        if let Some(callback_state) = callback_state.as_deref() {
+            if let Err(error) = register_oauth_callback(callback_state, started.expires_at)
+                .and_then(|()| bind_oauth_callback_login(callback_state, &login_id))
+            {
+                if let Ok(mut pending) = self.pending_logins.write() {
+                    pending.remove(&login_id);
+                }
+                return Err(error);
+            }
+        }
         Ok(OAuthLoginChallenge {
             login_id,
             account_id: account_id.to_string(),
             adapter_id: adapter.id().to_string(),
             flow: started.flow,
+            callback_mode: started.callback_mode,
+            callback_state,
+            redirect_uri: started.redirect_uri,
             authorization_url: started.authorization_url,
             verification_uri: started.verification_uri,
             verification_uri_complete: started.verification_uri_complete,
@@ -520,19 +810,25 @@ impl ProviderAuthManager {
         login_id: &str,
         completion: OAuthLoginCompletion,
     ) -> Result<OAuthLoginProgress, String> {
-        validate_secret_alias(login_id)?;
-        let pending_raw = self
-            .secret_store
-            .resolve(login_id, SecretUseContext::default())?
+        let mut pending = self
+            .pending_logins
+            .read()
+            .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
+            .get(login_id)
+            .cloned()
             .ok_or_else(|| format!("OAuth Login '{login_id}' 不存在或已完成"))?;
-        let mut pending: PendingLoginEnvelope = serde_json::from_str(&pending_raw)
-            .map_err(|error| format!("OAuth Login '{login_id}' 状态损坏：{error}"))?;
         if pending.expires_at <= Utc::now() {
-            let _ = self.secret_store.delete(login_id);
+            if let Ok(mut logins) = self.pending_logins.write() {
+                logins.remove(login_id);
+            }
+            let _ = self.discard_transient_account(&pending.account_id);
+            if let Some(state) = pending.callback_state.as_deref() {
+                let _ = discard_oauth_callback(state);
+            }
             return Err(format!("OAuth Login '{login_id}' 已过期"));
         }
         let account = self.oauth_account(&pending.account_id)?;
-        if account.auth_adapter != pending.adapter_id {
+        if !oauth_adapters_compatible(&account.auth_adapter, &pending.adapter_id) {
             return Err(format!(
                 "OAuth Login '{}' 的 Adapter '{}' 与账号当前配置 '{}' 不一致",
                 login_id, pending.adapter_id, account.auth_adapter
@@ -545,33 +841,60 @@ impl ProviderAuthManager {
                 state,
             } => {
                 pending.state = state;
-                self.put_secret(
-                    &account,
-                    login_id,
-                    &serde_json::to_string(&pending)
-                        .map_err(|error| format!("OAuth 登录状态无法序列化：{error}"))?,
-                )?;
+                self.pending_logins
+                    .write()
+                    .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
+                    .insert(login_id.to_string(), pending);
                 Ok(OAuthLoginProgress::Pending { retry_after_secs })
             }
             AdapterLoginResult::Complete(token) => {
                 self.store_token(&account, &token)?;
-                let _ = self.secret_store.delete(login_id);
-                let _ = self
-                    .account_store
-                    .put_provider_account_state(
-                        &pending.account_id,
-                        None,
-                        ProviderAccountStatus::Ready,
-                        None,
-                        None,
-                        false,
-                    )
-                    .await;
+                self.pending_logins
+                    .write()
+                    .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
+                    .remove(login_id);
+                if !self.is_transient_account(&pending.account_id) {
+                    let _ = self
+                        .account_store
+                        .put_provider_account_state(
+                            &pending.account_id,
+                            None,
+                            ProviderAccountStatus::Ready,
+                            None,
+                            None,
+                            false,
+                        )
+                        .await;
+                }
                 Ok(OAuthLoginProgress::Complete {
                     account: token.public_metadata(&pending.account_id),
                 })
             }
         }
+    }
+
+    pub fn cancel_login(&self, login_id: &str) -> Result<bool, String> {
+        let pending = self
+            .pending_logins
+            .write()
+            .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
+            .remove(login_id);
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        if let Some(state) = pending.callback_state.as_deref() {
+            let _ = discard_oauth_callback(state);
+        }
+        let _ = self.discard_transient_account(&pending.account_id);
+        Ok(true)
+    }
+
+    pub fn has_login(&self, login_id: &str) -> Result<bool, String> {
+        Ok(self
+            .pending_logins
+            .read()
+            .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
+            .contains_key(login_id))
     }
 
     pub async fn materialize_authorization(
@@ -581,7 +904,7 @@ impl ProviderAuthManager {
         let account = self.oauth_account(account_id)?;
         let adapter = self.adapters.get(&account.auth_adapter)?;
         let mut token = self.load_token(&account)?;
-        if token.adapter_id != adapter.id() {
+        if !oauth_adapters_compatible(adapter.id(), &token.adapter_id) {
             return Err(format!(
                 "Auth Account '{account_id}' 的 Token Adapter '{}' 与配置 '{}' 不一致",
                 token.adapter_id,
@@ -867,6 +1190,207 @@ impl Drop for RefreshLeaseGuard {
 #[derive(Clone)]
 pub struct CodexOAuthAdapter {
     http: reqwest::Client,
+    auth_url: String,
+    token_url: String,
+    client_id: String,
+    redirect_uri: String,
+    listen_loopback: bool,
+}
+
+impl Default for CodexOAuthAdapter {
+    fn default() -> Self {
+        Self {
+            http: oauth_http_client(),
+            auth_url: "https://auth.openai.com/oauth/authorize".to_string(),
+            token_url: "https://auth.openai.com/oauth/token".to_string(),
+            client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_string(),
+            // This exact URI is allow-listed for the public Codex CLI client.
+            // It must not be replaced with a remote Dashboard host.
+            redirect_uri: "http://localhost:1455/auth/callback".to_string(),
+            listen_loopback: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CodexBrowserPending {
+    state: String,
+    verifier: String,
+}
+
+impl CodexOAuthAdapter {
+    #[cfg(test)]
+    fn with_test_endpoints(
+        auth_url: impl Into<String>,
+        token_url: impl Into<String>,
+        client_id: impl Into<String>,
+        redirect_uri: impl Into<String>,
+    ) -> Self {
+        Self {
+            http: oauth_http_client(),
+            auth_url: auth_url.into(),
+            token_url: token_url.into(),
+            client_id: client_id.into(),
+            redirect_uri: redirect_uri.into(),
+            listen_loopback: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AuthAdapter for CodexOAuthAdapter {
+    fn id(&self) -> &'static str {
+        CODEX_ADAPTER_ID
+    }
+
+    fn version(&self) -> &'static str {
+        "openai-codex-browser-pkce-2026-08-03"
+    }
+
+    fn flow(&self) -> OAuthFlowKind {
+        OAuthFlowKind::AuthorizationCodePkce
+    }
+
+    fn callback_mode(&self) -> OAuthCallbackMode {
+        OAuthCallbackMode::Loopback
+    }
+
+    fn stability(&self) -> AuthAdapterStability {
+        AuthAdapterStability::Stable
+    }
+
+    fn upstream_reference(&self) -> Option<&'static str> {
+        Some("openai/codex")
+    }
+
+    fn last_verified_on(&self) -> Option<&'static str> {
+        Some("2026-08-03")
+    }
+
+    async fn start_login(&self) -> Result<AdapterLoginStart, String> {
+        if self.listen_loopback {
+            ensure_loopback_oauth_listener(1455, "/auth/callback").await?;
+        }
+        let state = random_hex(32)?;
+        let verifier = random_hex(32)?;
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        let expires_at = Utc::now() + ChronoDuration::minutes(15);
+        let mut url = reqwest::Url::parse(&self.auth_url)
+            .map_err(|error| format!("Codex OAuth Authorization URL 无效：{error}"))?;
+        url.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", &self.client_id)
+            .append_pair("redirect_uri", &self.redirect_uri)
+            .append_pair(
+                "scope",
+                "openid profile email offline_access api.connectors.read api.connectors.invoke",
+            )
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("id_token_add_organizations", "true")
+            .append_pair("codex_cli_simplified_flow", "true")
+            .append_pair("state", &state)
+            .append_pair("originator", "codex_cli_rs");
+        Ok(AdapterLoginStart {
+            flow: OAuthFlowKind::AuthorizationCodePkce,
+            callback_mode: OAuthCallbackMode::Loopback,
+            redirect_uri: Some(self.redirect_uri.clone()),
+            authorization_url: Some(url.to_string()),
+            verification_uri: None,
+            verification_uri_complete: None,
+            user_code: None,
+            expires_at,
+            poll_interval_secs: 2,
+            state: serde_json::to_value(CodexBrowserPending { state, verifier })
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
+    async fn continue_login(
+        &self,
+        state: &Value,
+        completion: OAuthLoginCompletion,
+    ) -> Result<AdapterLoginResult, String> {
+        let pending: CodexBrowserPending =
+            serde_json::from_value(state.clone()).map_err(|error| error.to_string())?;
+        let (code, returned_state) = match completion {
+            OAuthLoginCompletion::Poll => {
+                let Some(result) = take_loopback_oauth_result(&pending.state)? else {
+                    return Ok(AdapterLoginResult::Pending {
+                        retry_after_secs: 2,
+                        state: state.clone(),
+                    });
+                };
+                if let Some(error) = result.error {
+                    return Err(format!("Codex OAuth 授权失败：{error}"));
+                }
+                (
+                    result.code.ok_or("Codex OAuth 回调缺少授权码")?,
+                    pending.state.clone(),
+                )
+            }
+            OAuthLoginCompletion::AuthorizationCode { code, state } => (code, state),
+            OAuthLoginCompletion::AuthorizationResponse { response } => {
+                parse_authorization_response(&response)?
+            }
+        };
+        if returned_state != pending.state {
+            return Err(format!(
+                "粘贴的回调属于另一次 Codex 登录（本次 state {}，回调 state {}）。请使用当前窗口的授权链接重新授权，或取消后重新开始；不要提交旧页面的 URL",
+                state_fingerprint(&pending.state),
+                state_fingerprint(&returned_state)
+            ));
+        }
+        discard_oauth_callback(&pending.state)?;
+        let response = post_token_form(
+            &self.http,
+            &self.token_url,
+            &[
+                ("grant_type", "authorization_code"),
+                ("client_id", &self.client_id),
+                ("code", code.trim()),
+                ("redirect_uri", &self.redirect_uri),
+                ("code_verifier", &pending.verifier),
+            ],
+            &BTreeMap::new(),
+        )
+        .await?;
+        Ok(AdapterLoginResult::Complete(codex_token_set(
+            self.id(),
+            self.version(),
+            response,
+        )?))
+    }
+
+    async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
+        let refresh = current
+            .refresh_token
+            .as_deref()
+            .ok_or("Codex OAuth 缺少 Refresh Token")?;
+        let response = post_token_form(
+            &self.http,
+            &self.token_url,
+            &[
+                ("client_id", &self.client_id),
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh),
+                ("scope", "openid profile email"),
+            ],
+            &BTreeMap::new(),
+        )
+        .await?;
+        codex_token_set(self.id(), self.version(), response)
+    }
+
+    fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
+        codex_materialize(token)
+    }
+}
+
+#[derive(Clone)]
+pub struct CodexDeviceOAuthAdapter {
+    http: reqwest::Client,
     device_user_code_url: String,
     device_token_url: String,
     token_url: String,
@@ -874,7 +1398,7 @@ pub struct CodexOAuthAdapter {
     redirect_uri: String,
 }
 
-impl Default for CodexOAuthAdapter {
+impl Default for CodexDeviceOAuthAdapter {
     fn default() -> Self {
         Self {
             http: oauth_http_client(),
@@ -888,7 +1412,7 @@ impl Default for CodexOAuthAdapter {
     }
 }
 
-impl CodexOAuthAdapter {
+impl CodexDeviceOAuthAdapter {
     /// Construct a Codex Device Flow adapter with explicit endpoints. This is
     /// used by deterministic contract tests and compatible private gateways.
     pub fn with_device_endpoints(
@@ -909,7 +1433,7 @@ impl CodexOAuthAdapter {
 }
 
 #[derive(Serialize, Deserialize)]
-struct CodexPending {
+struct CodexDevicePending {
     device_auth_id: String,
     user_code: String,
     interval_secs: u64,
@@ -953,13 +1477,13 @@ struct OAuthTokenResponse {
 }
 
 #[async_trait::async_trait]
-impl AuthAdapter for CodexOAuthAdapter {
+impl AuthAdapter for CodexDeviceOAuthAdapter {
     fn id(&self) -> &'static str {
-        CODEX_ADAPTER_ID
+        CODEX_DEVICE_ADAPTER_ID
     }
 
     fn version(&self) -> &'static str {
-        "cliproxyapi-compatible-2026-08-01"
+        "openai-device-auth-2026-08-03"
     }
 
     fn flow(&self) -> OAuthFlowKind {
@@ -967,15 +1491,15 @@ impl AuthAdapter for CodexOAuthAdapter {
     }
 
     fn stability(&self) -> AuthAdapterStability {
-        AuthAdapterStability::Compatibility
+        AuthAdapterStability::Stable
     }
 
     fn upstream_reference(&self) -> Option<&'static str> {
-        Some("router-for-me/CLIProxyAPI")
+        Some("openai/codex")
     }
 
     fn last_verified_on(&self) -> Option<&'static str> {
-        None
+        Some("2026-08-03")
     }
 
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
@@ -992,6 +1516,12 @@ impl AuthAdapter for CodexOAuthAdapter {
             .bytes()
             .await
             .map_err(|error| format!("Codex Device Authorization 响应读取失败：{error}"))?;
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(
+                "当前 ChatGPT 账号或工作区尚未启用 Codex 设备码登录。请在 ChatGPT 安全设置（或工作区权限）中启用 Device Code，或继续使用浏览器回调"
+                    .to_string(),
+            );
+        }
         if !status.is_success() {
             return Err(format!(
                 "Codex Device Authorization 返回 HTTP {}: {}",
@@ -1012,13 +1542,15 @@ impl AuthAdapter for CodexOAuthAdapter {
         let interval_secs = parse_oauth_interval(&payload.interval, 5).clamp(1, 30);
         Ok(AdapterLoginStart {
             flow: OAuthFlowKind::DeviceCode,
+            callback_mode: OAuthCallbackMode::None,
+            redirect_uri: None,
             authorization_url: None,
             verification_uri: Some("https://auth.openai.com/codex/device".to_string()),
             verification_uri_complete: None,
             user_code: Some(user_code.clone()),
             expires_at: Utc::now() + ChronoDuration::minutes(15),
             poll_interval_secs: interval_secs,
-            state: serde_json::to_value(CodexPending {
+            state: serde_json::to_value(CodexDevicePending {
                 device_auth_id: payload.device_auth_id,
                 user_code,
                 interval_secs,
@@ -1032,7 +1564,7 @@ impl AuthAdapter for CodexOAuthAdapter {
         state: &Value,
         completion: OAuthLoginCompletion,
     ) -> Result<AdapterLoginResult, String> {
-        let mut pending: CodexPending =
+        let mut pending: CodexDevicePending =
             serde_json::from_value(state.clone()).map_err(|error| error.to_string())?;
         if completion != OAuthLoginCompletion::Poll {
             return Err("Codex Device Flow 只能轮询，不能提交授权码".to_string());
@@ -1094,6 +1626,7 @@ impl AuthAdapter for CodexOAuthAdapter {
         )
         .await?;
         Ok(AdapterLoginResult::Complete(codex_token_set(
+            self.id(),
             self.version(),
             response,
         )?))
@@ -1116,33 +1649,41 @@ impl AuthAdapter for CodexOAuthAdapter {
             &BTreeMap::new(),
         )
         .await?;
-        codex_token_set(self.version(), response)
+        codex_token_set(self.id(), self.version(), response)
     }
 
     fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
-        if token.access_token.trim().is_empty() {
-            return Err("Codex OAuth Access Token 为空".to_string());
-        }
-        let account_id = token
-            .account_id
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .ok_or("Codex OAuth Token 缺少 ChatGPT Account ID")?;
-        Ok(RequestAuthorization {
-            bearer_token: token.access_token.clone(),
-            headers: BTreeMap::from([
-                ("ChatGPT-Account-ID".to_string(), account_id.to_string()),
-                ("Originator".to_string(), "codex-tui".to_string()),
-                (
-                    "User-Agent".to_string(),
-                    "codex-tui/0.146.0 (morphz; oauth)".to_string(),
-                ),
-            ]),
-        })
+        codex_materialize(token)
     }
 }
 
-fn codex_token_set(version: &str, response: OAuthTokenResponse) -> Result<OAuthTokenSet, String> {
+fn codex_materialize(token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
+    if token.access_token.trim().is_empty() {
+        return Err("Codex OAuth Access Token 为空".to_string());
+    }
+    let account_id = token
+        .account_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("Codex OAuth Token 缺少 ChatGPT Account ID")?;
+    Ok(RequestAuthorization {
+        bearer_token: token.access_token.clone(),
+        headers: BTreeMap::from([
+            ("ChatGPT-Account-ID".to_string(), account_id.to_string()),
+            ("Originator".to_string(), "codex_cli_rs".to_string()),
+            (
+                "User-Agent".to_string(),
+                "codex-cli/morphz (oauth)".to_string(),
+            ),
+        ]),
+    })
+}
+
+fn codex_token_set(
+    adapter_id: &str,
+    version: &str,
+    response: OAuthTokenResponse,
+) -> Result<OAuthTokenSet, String> {
     if response.access_token.trim().is_empty() {
         return Err("Codex OAuth Token Endpoint 返回空 Access Token".to_string());
     }
@@ -1152,7 +1693,7 @@ fn codex_token_set(version: &str, response: OAuthTokenResponse) -> Result<OAuthT
             .or(Some(response.access_token.as_str())),
     );
     Ok(OAuthTokenSet {
-        adapter_id: CODEX_ADAPTER_ID.to_string(),
+        adapter_id: adapter_id.to_string(),
         adapter_version: version.to_string(),
         access_token: response.access_token,
         refresh_token: (!response.refresh_token.is_empty()).then_some(response.refresh_token),
@@ -1311,6 +1852,8 @@ impl AuthAdapter for KimiOAuthAdapter {
         let expires_at = Utc::now() + ChronoDuration::seconds(payload.expires_in.min(900).max(1));
         Ok(AdapterLoginStart {
             flow: OAuthFlowKind::DeviceCode,
+            callback_mode: OAuthCallbackMode::None,
+            redirect_uri: None,
             authorization_url: None,
             verification_uri: (!payload.verification_uri.is_empty())
                 .then_some(payload.verification_uri),
@@ -1663,13 +2206,16 @@ impl AuthAdapter for ClaudeOAuthAdapter {
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", &state);
+        let expires_at = Utc::now() + ChronoDuration::minutes(15);
         Ok(AdapterLoginStart {
             flow: OAuthFlowKind::AuthorizationCodePkce,
+            callback_mode: OAuthCallbackMode::Loopback,
+            redirect_uri: Some(self.redirect_uri.clone()),
             authorization_url: Some(url.to_string()),
             verification_uri: None,
             verification_uri_complete: None,
             user_code: None,
-            expires_at: Utc::now() + ChronoDuration::minutes(15),
+            expires_at,
             poll_interval_secs: 2,
             state: serde_json::to_value(ClaudePending { state, verifier })
                 .map_err(|error| error.to_string())?,
@@ -1712,8 +2258,13 @@ impl AuthAdapter for ClaudeOAuthAdapter {
             .filter(|value| !value.is_empty());
         let verified_state = fragment_state.unwrap_or(returned_state.trim());
         if verified_state != pending.state {
-            return Err("Claude OAuth state 校验失败".to_string());
+            return Err(format!(
+                "粘贴的回调属于另一次 Claude 登录（本次 state {}，回调 state {}）。请使用当前窗口的授权链接重新授权，或取消后重新开始",
+                state_fingerprint(&pending.state),
+                state_fingerprint(verified_state)
+            ));
         }
+        discard_oauth_callback(&pending.state)?;
         let response = self
             .exchange(serde_json::json!({
                 "code": code,
@@ -1777,11 +2328,12 @@ pub struct AntigravityOAuthAdapter {
     client_secret: String,
     redirect_uri: String,
     listen_loopback: bool,
+    configuration_error: Option<String>,
 }
 
 impl Default for AntigravityOAuthAdapter {
     fn default() -> Self {
-        Self {
+        let mut adapter = Self {
             http: oauth_http_client(),
             auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
             token_url: "https://oauth2.googleapis.com/token".to_string(),
@@ -1793,13 +2345,73 @@ impl Default for AntigravityOAuthAdapter {
             client_secret: "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".to_string(),
             redirect_uri: "http://localhost:51121/oauth-callback".to_string(),
             listen_loopback: true,
+            configuration_error: None,
+        };
+        let public_base_url = std::env::var("MORPHZ_OAUTH_PUBLIC_BASE_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let client_id = std::env::var("MORPHZ_ANTIGRAVITY_OAUTH_CLIENT_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let client_secret = std::env::var("MORPHZ_ANTIGRAVITY_OAUTH_CLIENT_SECRET")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        match (public_base_url, client_id, client_secret) {
+            (None, None, None) => {}
+            (Some(base), Some(client_id), Some(client_secret)) => {
+                match runtime_oauth_callback_url(&base) {
+                    Ok(redirect_uri) => {
+                        adapter.client_id = client_id;
+                        adapter.client_secret = client_secret;
+                        adapter.redirect_uri = redirect_uri;
+                        adapter.listen_loopback = false;
+                    }
+                    Err(error) => adapter.configuration_error = Some(error),
+                }
+            }
+            _ => {
+                adapter.configuration_error = Some(
+                    "服务端 Antigravity OAuth 必须同时配置 MORPHZ_OAUTH_PUBLIC_BASE_URL、MORPHZ_ANTIGRAVITY_OAUTH_CLIENT_ID 和 MORPHZ_ANTIGRAVITY_OAUTH_CLIENT_SECRET"
+                        .to_string(),
+                );
+            }
         }
+        adapter
     }
+}
+
+fn runtime_oauth_callback_url(public_base_url: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(public_base_url.trim())
+        .map_err(|error| format!("MORPHZ_OAUTH_PUBLIC_BASE_URL 无效：{error}"))?;
+    if url.username() != ""
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("MORPHZ_OAUTH_PUBLIC_BASE_URL 不能包含凭证、查询参数或片段".to_string());
+    }
+    let host = url.host_str().unwrap_or_default();
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        return Err(
+            "服务端 OAuth 公开回调必须使用 HTTPS；仅 loopback 开发地址可使用 HTTP".to_string(),
+        );
+    }
+    let prefix = url.path().trim_end_matches('/');
+    url.set_path(&format!("{prefix}/api/runtime/providers/oauth/callback"));
+    Ok(url.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AntigravityPending {
     state: String,
+    verifier: String,
 }
 
 impl AntigravityOAuthAdapter {
@@ -1823,6 +2435,7 @@ impl AntigravityOAuthAdapter {
             client_secret: client_secret.into(),
             redirect_uri: redirect_uri.into(),
             listen_loopback: false,
+            configuration_error: None,
         }
     }
 
@@ -1934,6 +2547,19 @@ impl AuthAdapter for AntigravityOAuthAdapter {
         OAuthFlowKind::AuthorizationCodePkce
     }
 
+    fn callback_mode(&self) -> OAuthCallbackMode {
+        if self.listen_loopback {
+            OAuthCallbackMode::Loopback
+        } else if self
+            .redirect_uri
+            .contains("/api/runtime/providers/oauth/callback")
+        {
+            OAuthCallbackMode::Runtime
+        } else {
+            OAuthCallbackMode::Loopback
+        }
+    }
+
     fn stability(&self) -> AuthAdapterStability {
         AuthAdapterStability::Compatibility
     }
@@ -1947,10 +2573,16 @@ impl AuthAdapter for AntigravityOAuthAdapter {
     }
 
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
+        if let Some(error) = self.configuration_error.as_deref() {
+            return Err(error.to_string());
+        }
         if self.listen_loopback {
             ensure_loopback_oauth_listener(51121, "/oauth-callback").await?;
         }
         let state = random_hex(16)?;
+        let verifier = random_hex(32)?;
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
         let mut url = reqwest::Url::parse(&self.auth_url)
             .map_err(|error| format!("Antigravity Authorization URL 无效：{error}"))?;
         url.query_pairs_mut()
@@ -1963,16 +2595,21 @@ impl AuthAdapter for AntigravityOAuthAdapter {
                 "scope",
                 "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs",
             )
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256")
             .append_pair("state", &state);
+        let expires_at = Utc::now() + ChronoDuration::minutes(15);
         Ok(AdapterLoginStart {
             flow: OAuthFlowKind::AuthorizationCodePkce,
+            callback_mode: self.callback_mode(),
+            redirect_uri: Some(self.redirect_uri.clone()),
             authorization_url: Some(url.to_string()),
             verification_uri: None,
             verification_uri_complete: None,
             user_code: None,
-            expires_at: Utc::now() + ChronoDuration::minutes(15),
+            expires_at,
             poll_interval_secs: 2,
-            state: serde_json::to_value(AntigravityPending { state })
+            state: serde_json::to_value(AntigravityPending { state, verifier })
                 .map_err(|error| error.to_string())?,
         })
     }
@@ -2006,8 +2643,13 @@ impl AuthAdapter for AntigravityOAuthAdapter {
             }
         };
         if returned_state != pending.state {
-            return Err("Antigravity OAuth state 校验失败".to_string());
+            return Err(format!(
+                "粘贴的回调属于另一次 Antigravity 登录（本次 state {}，回调 state {}）。请使用当前窗口的授权链接重新授权，或取消后重新开始",
+                state_fingerprint(&pending.state),
+                state_fingerprint(&returned_state)
+            ));
         }
+        discard_oauth_callback(&pending.state)?;
         let response = post_token_form(
             &self.http,
             &self.token_url,
@@ -2017,6 +2659,7 @@ impl AuthAdapter for AntigravityOAuthAdapter {
                 ("client_secret", &self.client_secret),
                 ("redirect_uri", &self.redirect_uri),
                 ("grant_type", "authorization_code"),
+                ("code_verifier", &pending.verifier),
             ],
             &BTreeMap::new(),
         )
@@ -2254,6 +2897,8 @@ impl AuthAdapter for XaiOAuthAdapter {
         let expires_in = payload.expires_in.clamp(1, 1_800);
         Ok(AdapterLoginStart {
             flow: OAuthFlowKind::DeviceCode,
+            callback_mode: OAuthCallbackMode::None,
+            redirect_uri: None,
             authorization_url: None,
             verification_uri: (!payload.verification_uri.trim().is_empty())
                 .then_some(payload.verification_uri),
@@ -2640,6 +3285,44 @@ mod tests {
         assert_eq!(registered.enabled, account.enabled);
     }
 
+    #[tokio::test]
+    async fn unfinished_login_exists_only_in_memory_and_cancel_leaves_no_account() {
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(Arc::new(CodexOAuthAdapter::with_test_endpoints(
+            "https://auth.example.test/oauth/authorize",
+            "https://auth.example.test/oauth/token",
+            "test-client",
+            "http://localhost:1455/auth/callback",
+        )));
+        let (_directory, manager, secret_store) =
+            test_manager(oauth_account(CODEX_ADAPTER_ID), registry).await;
+        manager
+            .register_transient_account("attempt-only", oauth_account(CODEX_ADAPTER_ID))
+            .unwrap();
+
+        let challenge = manager.start_login("attempt-only").await.unwrap();
+        assert!(manager.has_login(&challenge.login_id).unwrap());
+        assert!(manager.account("attempt-only").is_some());
+        assert!(secret_store
+            .resolve("MORPHZ_TEST_OAUTH_TOKEN", SecretUseContext::default())
+            .unwrap()
+            .is_none());
+        assert!(manager
+            .account_store
+            .get_provider_account_state("attempt-only")
+            .await
+            .unwrap()
+            .is_none());
+
+        assert!(manager.cancel_login(&challenge.login_id).unwrap());
+        assert!(!manager.has_login(&challenge.login_id).unwrap());
+        assert!(manager.account("attempt-only").is_none());
+        assert!(secret_store
+            .resolve("MORPHZ_TEST_OAUTH_TOKEN", SecretUseContext::default())
+            .unwrap()
+            .is_none());
+    }
+
     fn oauth_account(adapter: &str) -> AuthAccountConfig {
         AuthAccountConfig {
             auth_adapter: adapter.to_string(),
@@ -2706,6 +3389,15 @@ mod tests {
                 "scope": "openid profile email"
             }));
         }
+        assert_eq!(
+            form.get("client_id").map(String::as_str),
+            Some("test-client")
+        );
+        assert!(!form
+            .get("code_verifier")
+            .map(String::as_str)
+            .unwrap_or_default()
+            .is_empty());
         Json(json!({
             "access_token": "codex-access-initial",
             "refresh_token": "codex-refresh-initial",
@@ -2717,7 +3409,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_device_contract_and_refresh_fencing_are_durable() {
+    async fn codex_browser_pkce_is_default_and_refresh_fencing_is_durable() {
         let refreshes = Arc::new(AtomicUsize::new(0));
         let device_polls = Arc::new(AtomicUsize::new(0));
         let id_token = unsigned_jwt(json!({
@@ -2728,8 +3420,6 @@ mod tests {
             }
         }));
         let app = Router::new()
-            .route("/device/usercode", post(codex_device_user_code_endpoint))
-            .route("/device/token", post(codex_device_token_endpoint))
             .route("/token", post(codex_token_endpoint))
             .with_state(CodexServerState {
                 refreshes: Arc::clone(&refreshes),
@@ -2740,29 +3430,53 @@ mod tests {
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let adapter = Arc::new(CodexOAuthAdapter::with_device_endpoints(
-            format!("http://{address}/device/usercode"),
-            format!("http://{address}/device/token"),
+        let adapter = Arc::new(CodexOAuthAdapter::with_test_endpoints(
+            "https://auth.example.test/oauth/authorize",
             format!("http://{address}/token"),
             "test-client",
+            "http://localhost:1455/auth/callback",
         ));
         let started = adapter.start_login().await.unwrap();
-        assert_eq!(started.flow, OAuthFlowKind::DeviceCode);
-        assert_eq!(started.user_code.as_deref(), Some("CODEX-1234"));
-        assert_eq!(started.poll_interval_secs, 1);
-        assert!(matches!(
-            adapter
-                .continue_login(&started.state, OAuthLoginCompletion::Poll)
-                .await
-                .unwrap(),
-            AdapterLoginResult::Pending { .. }
-        ));
+        assert_eq!(started.flow, OAuthFlowKind::AuthorizationCodePkce);
+        assert_eq!(started.callback_mode, OAuthCallbackMode::Loopback);
+        assert_eq!(
+            started.redirect_uri.as_deref(),
+            Some("http://localhost:1455/auth/callback")
+        );
+        let auth_url = reqwest::Url::parse(started.authorization_url.as_deref().unwrap()).unwrap();
+        let params = auth_url
+            .query_pairs()
+            .into_owned()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            params.get("response_type").map(String::as_str),
+            Some("code")
+        );
+        assert_eq!(
+            params.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        assert!(params
+            .get("code_challenge")
+            .is_some_and(|value| !value.is_empty()));
+        assert_eq!(
+            params.get("originator").map(String::as_str),
+            Some("codex_cli_rs")
+        );
+        let state = params["state"].clone();
         let AdapterLoginResult::Complete(token) = adapter
-            .continue_login(&started.state, OAuthLoginCompletion::Poll)
+            .continue_login(
+                &started.state,
+                OAuthLoginCompletion::AuthorizationResponse {
+                    response: format!(
+                        "http://localhost:1455/auth/callback?code=browser-code&state={state}"
+                    ),
+                },
+            )
             .await
             .unwrap()
         else {
-            panic!("codex device authorization unexpectedly remained pending");
+            panic!("codex browser authorization unexpectedly remained pending");
         };
         assert_eq!(token.account_id.as_deref(), Some("chatgpt-account-1"));
         assert_eq!(token.email.as_deref(), Some("codex@example.test"));
@@ -2802,6 +3516,93 @@ mod tests {
             .unwrap()
             .unwrap()
             .contains("codex-access-refreshed"));
+    }
+
+    #[tokio::test]
+    async fn codex_device_flow_remains_an_explicit_fallback_adapter() {
+        let id_token = unsigned_jwt(json!({
+            "sub": "subject-device",
+            "email": "codex-device@example.test",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "chatgpt-account-device"
+            }
+        }));
+        let state = CodexServerState {
+            refreshes: Arc::new(AtomicUsize::new(0)),
+            device_polls: Arc::new(AtomicUsize::new(0)),
+            id_token,
+        };
+        let app = Router::new()
+            .route("/device/usercode", post(codex_device_user_code_endpoint))
+            .route("/device/token", post(codex_device_token_endpoint))
+            .route("/token", post(codex_token_endpoint))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let adapter = CodexDeviceOAuthAdapter::with_device_endpoints(
+            format!("http://{address}/device/usercode"),
+            format!("http://{address}/device/token"),
+            format!("http://{address}/token"),
+            "test-client",
+        );
+        let started = adapter.start_login().await.unwrap();
+        assert_eq!(started.flow, OAuthFlowKind::DeviceCode);
+        assert_eq!(started.callback_mode, OAuthCallbackMode::None);
+        assert_eq!(started.user_code.as_deref(), Some("CODEX-1234"));
+        assert!(matches!(
+            adapter
+                .continue_login(&started.state, OAuthLoginCompletion::Poll)
+                .await
+                .unwrap(),
+            AdapterLoginResult::Pending { .. }
+        ));
+        let AdapterLoginResult::Complete(token) = adapter
+            .continue_login(&started.state, OAuthLoginCompletion::Poll)
+            .await
+            .unwrap()
+        else {
+            panic!("codex device authorization unexpectedly remained pending");
+        };
+        assert_eq!(token.adapter_id, CODEX_DEVICE_ADAPTER_ID);
+
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(Arc::new(CodexOAuthAdapter::with_test_endpoints(
+            "https://auth.example/authorize",
+            format!("http://{address}/token"),
+            "test-client",
+            "http://localhost:1455/auth/callback",
+        )));
+        registry.register(Arc::new(adapter));
+        let (_directory, manager, _secret_store) =
+            test_manager(oauth_account(CODEX_ADAPTER_ID), registry).await;
+
+        let challenge = manager
+            .start_login_using("oauth-account", CODEX_DEVICE_ADAPTER_ID)
+            .await
+            .unwrap();
+        assert_eq!(challenge.adapter_id, CODEX_DEVICE_ADAPTER_ID);
+        assert_eq!(challenge.user_code.as_deref(), Some("CODEX-1234"));
+        assert!(matches!(
+            manager
+                .continue_login(&challenge.login_id, OAuthLoginCompletion::Poll)
+                .await
+                .unwrap(),
+            OAuthLoginProgress::Complete { .. }
+        ));
+        assert_eq!(
+            manager
+                .materialize_authorization("oauth-account")
+                .await
+                .unwrap()
+                .bearer_token,
+            "codex-access-initial"
+        );
+        assert!(manager
+            .start_login_using("oauth-account", KIMI_ADAPTER_ID)
+            .await
+            .unwrap_err()
+            .contains("不能改用不兼容"));
     }
 
     #[derive(Clone, Default)]
@@ -2963,6 +3764,11 @@ mod tests {
             form.get("client_id").map(String::as_str),
             Some("antigravity-test-client")
         );
+        assert!(!form
+            .get("code_verifier")
+            .map(String::as_str)
+            .unwrap_or_default()
+            .is_empty());
         Json(json!({
             "access_token": "antigravity-access",
             "refresh_token": "antigravity-refresh",
@@ -3012,6 +3818,21 @@ mod tests {
         );
         let started = adapter.start_login().await.unwrap();
         let state = authorization_state(&started);
+        let authorization_url =
+            reqwest::Url::parse(started.authorization_url.as_deref().unwrap()).unwrap();
+        let authorization_params = authorization_url
+            .query_pairs()
+            .into_owned()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            authorization_params
+                .get("code_challenge_method")
+                .map(String::as_str),
+            Some("S256")
+        );
+        assert!(authorization_params
+            .get("code_challenge")
+            .is_some_and(|value| !value.is_empty()));
         let AdapterLoginResult::Complete(token) = adapter
             .continue_login(
                 &started.state,
@@ -3040,6 +3861,20 @@ mod tests {
                 .map(String::as_str),
             Some("morphz-project")
         );
+    }
+
+    #[test]
+    fn runtime_oauth_callback_url_preserves_mount_prefix_and_requires_https() {
+        assert_eq!(
+            runtime_oauth_callback_url("https://morphz.example/runtime").unwrap(),
+            "https://morphz.example/runtime/api/runtime/providers/oauth/callback"
+        );
+        assert_eq!(
+            runtime_oauth_callback_url("http://localhost:8080").unwrap(),
+            "http://localhost:8080/api/runtime/providers/oauth/callback"
+        );
+        assert!(runtime_oauth_callback_url("http://192.168.1.61:8080").is_err());
+        assert!(runtime_oauth_callback_url("https://user:pass@morphz.example").is_err());
     }
 
     #[derive(Clone)]
@@ -3152,23 +3987,39 @@ mod tests {
         assert!(parse_authorization_response("?error=access_denied&state=s").is_err());
     }
 
+    #[test]
+    fn pasted_callback_state_routes_to_the_login_that_created_it() {
+        let old_state = format!("old-state-{}", random_hex(8).unwrap());
+        let new_state = format!("new-state-{}", random_hex(8).unwrap());
+        let expires_at = Utc::now() + ChronoDuration::minutes(5);
+
+        register_oauth_callback(&old_state, expires_at).unwrap();
+        bind_oauth_callback_login(&old_state, "old-login").unwrap();
+        register_oauth_callback(&new_state, expires_at).unwrap();
+        bind_oauth_callback_login(&new_state, "new-login").unwrap();
+
+        assert_eq!(oauth_callback_login_id(&old_state).unwrap(), "old-login");
+        assert_eq!(oauth_callback_login_id(&new_state).unwrap(), "new-login");
+        assert!(oauth_callback_login_id("unknown-state").is_err());
+
+        discard_oauth_callback(&old_state).unwrap();
+        discard_oauth_callback(&new_state).unwrap();
+    }
+
     /// Explicit network smoke test for the upstream Codex subscription login
     /// contract. It stays ignored in the normal suite because it depends on an
     /// external service, but release verification can run it without completing
     /// or persisting a user login.
     #[tokio::test]
     #[ignore = "requires access to auth.openai.com"]
-    async fn live_codex_device_login_returns_a_real_challenge() {
+    async fn live_codex_browser_login_returns_a_real_challenge() {
         let started = CodexOAuthAdapter::default().start_login().await.unwrap();
-        assert_eq!(started.flow, OAuthFlowKind::DeviceCode);
-        assert_eq!(
-            started.verification_uri.as_deref(),
-            Some("https://auth.openai.com/codex/device")
-        );
+        assert_eq!(started.flow, OAuthFlowKind::AuthorizationCodePkce);
+        assert_eq!(started.callback_mode, OAuthCallbackMode::Loopback);
         assert!(started
-            .user_code
+            .authorization_url
             .as_deref()
-            .is_some_and(|code| !code.is_empty()));
+            .is_some_and(|url| url.starts_with("https://auth.openai.com/oauth/authorize")));
     }
 
     /// Explicit network smoke test for the upstream Kimi subscription login

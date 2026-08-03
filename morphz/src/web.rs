@@ -15,7 +15,10 @@ use crate::memory::{
     ThreadMutation,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
-use crate::provider::auth::OAuthLoginCompletion;
+use crate::provider::auth::{
+    oauth_callback_login_id, parse_authorization_response, submit_oauth_callback,
+    OAuthLoginCompletion, OAuthLoginProgress,
+};
 use crate::provider::control::ProviderAccountControlAction;
 use crate::runtime::{
     AcknowledgeAttentionCommand, ContextOverviewQuery, LedgerQuery, ModelUsageQuery, MorphzRuntime,
@@ -271,8 +274,39 @@ struct PutProviderCatalogSetupRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct DiscoverProviderModelsRequest {
+    protocol: crate::config::ModelProtocol,
+    base_url: String,
+    api_key: String,
+}
+
+#[derive(serde::Serialize)]
+struct DiscoverProviderModelsResponse {
+    models: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct StartOAuthProviderSetupRequest {
     service: String,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct OAuthCallbackQuery {
+    state: String,
+    code: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct SubmitOAuthCallbackRequest {
+    redirect_url: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SubmitOAuthCallbackResponse {
+    login_id: String,
+    progress: OAuthLoginProgress,
 }
 
 /// OAuth services whose complete Dashboard bootstrap path is implemented by
@@ -741,8 +775,16 @@ impl Server {
                 axum::routing::put(handle_put_provider_catalog_setup),
             )
             .route(
+                "/api/runtime/providers/discover-models",
+                post(handle_discover_provider_models),
+            )
+            .route(
                 "/api/runtime/providers/oauth/start",
                 post(handle_start_oauth_provider_setup),
+            )
+            .route(
+                "/api/runtime/providers/oauth/callback",
+                get(handle_provider_oauth_callback).post(handle_submit_provider_oauth_callback),
             )
             .route(
                 "/api/runtime/providers/oauth/services",
@@ -773,12 +815,17 @@ impl Server {
                 post(handle_start_provider_oauth_login),
             )
             .route(
+                "/api/runtime/providers/accounts/:account_id/oauth/start/:adapter_id",
+                post(handle_start_provider_oauth_login_using),
+            )
+            .route(
                 "/api/runtime/providers/accounts/:account_id/oauth/logout",
                 post(handle_logout_provider_oauth_account),
             )
             .route(
                 "/api/runtime/providers/oauth/:login_id/continue",
-                post(handle_continue_provider_oauth_login),
+                post(handle_continue_provider_oauth_login)
+                    .delete(handle_cancel_provider_oauth_login),
             )
             .route(
                 "/api/runtime/inference",
@@ -1289,9 +1336,33 @@ async fn handle_provider_control_snapshot(
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if let Some(path) = state.managed_config_path.as_deref() {
+        if let Err(error) = state.sdk.prune_unfinished_oauth_accounts(path).await {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+        }
+    }
     match state.sdk.provider_control_snapshot().await {
         Ok(snapshot) => Json(snapshot).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_discover_provider_models(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<DiscoverProviderModelsRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .discover_provider_models(request.protocol, &request.base_url, &request.api_key)
+        .await
+    {
+        Ok(models) => Json(DiscoverProviderModelsResponse { models }).into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.message),
     }
 }
 
@@ -1509,13 +1580,18 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             .collect::<String>()
     );
     let setup = match service.trim() {
-        "codex" => OAuthProviderSetup {
+        "codex" | "codex-device" => OAuthProviderSetup {
             provider_id: "codex-subscription".to_string(),
             provider_adapter: "openai-codex".to_string(),
             protocol: ModelProtocol::OpenaiResponses,
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
             account_id,
             auth_adapter: "codex-oauth".to_string(),
+            login_adapter: Some(if service.trim() == "codex-device" {
+                "codex-device-oauth".to_string()
+            } else {
+                "codex-oauth".to_string()
+            }),
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "Codex".to_string(),
@@ -1530,6 +1606,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             base_url: "https://api.kimi.com/coding/v1".to_string(),
             account_id,
             auth_adapter: "kimi-oauth".to_string(),
+            login_adapter: None,
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "Kimi".to_string(),
@@ -1544,6 +1621,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             base_url: "https://api.anthropic.com/v1".to_string(),
             account_id,
             auth_adapter: "claude-oauth".to_string(),
+            login_adapter: None,
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "Claude".to_string(),
@@ -1558,6 +1636,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             base_url: "https://cloudcode-pa.googleapis.com".to_string(),
             account_id,
             auth_adapter: "antigravity-oauth".to_string(),
+            login_adapter: None,
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "Antigravity".to_string(),
@@ -1572,6 +1651,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             base_url: "https://cli-chat-proxy.grok.com/v1".to_string(),
             account_id,
             auth_adapter: "xai-oauth".to_string(),
+            login_adapter: None,
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "xAI".to_string(),
@@ -1657,6 +1737,85 @@ async fn handle_start_oauth_provider_setup(
     }
 }
 
+/// Public OAuth redirect endpoint for web-client credentials registered to the
+/// Runtime's public URL. It intentionally does not require the Dashboard bearer
+/// token: the short-lived, unguessable state is the callback capability, and
+/// unknown/expired states are rejected before any payload is retained.
+async fn handle_provider_oauth_callback(Query(query): Query<OAuthCallbackQuery>) -> Response {
+    let error = query
+        .error_description
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| query.error.filter(|value| !value.trim().is_empty()));
+    let success = error.is_none()
+        && query
+            .code
+            .as_deref()
+            .is_some_and(|code| !code.trim().is_empty());
+    let submitted = submit_oauth_callback(&query.state, query.code, error);
+    let (status, title, detail) = match submitted {
+        Ok(()) if success => (
+            StatusCode::OK,
+            "Morphz 登录完成",
+            "凭证已安全交给 Runtime，可以关闭此页面。",
+        ),
+        Ok(()) => (
+            StatusCode::BAD_REQUEST,
+            "Morphz 登录失败",
+            "授权服务返回了错误，请回到 Dashboard 查看详情。",
+        ),
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            "Morphz 登录已失效",
+            "该授权请求不存在或已经过期，请回到 Dashboard 重新登录。",
+        ),
+    };
+    let body = format!(
+        "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>{title}</title><style>body{{font:16px system-ui;margin:10vh auto;max-width:34rem;padding:2rem;color:#20222a}}h1{{font-size:1.5rem}}</style><h1>{title}</h1><p>{detail}</p>"
+    );
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(body))
+        .expect("OAuth callback response must be valid")
+}
+
+/// Authenticated remote-browser handoff. Unlike the account-specific
+/// continuation endpoint, this resolves the original in-memory login context
+/// from the callback's own state. A page refresh or a newer dialog therefore
+/// cannot route a valid authorization code to the wrong PKCE verifier.
+async fn handle_submit_provider_oauth_callback(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<SubmitOAuthCallbackRequest>,
+) -> Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (_, callback_state) = match parse_authorization_response(&request.redirect_url) {
+        Ok(callback) => callback,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    let login_id = match oauth_callback_login_id(&callback_state) {
+        Ok(login_id) => login_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    match state
+        .sdk
+        .continue_provider_oauth_login(
+            &login_id,
+            OAuthLoginCompletion::AuthorizationResponse {
+                response: request.redirect_url,
+            },
+        )
+        .await
+    {
+        Ok(progress) => Json(SubmitOAuthCallbackResponse { login_id, progress }).into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.message),
+    }
+}
+
 async fn handle_start_provider_oauth_login(
     State(state): State<Arc<AppState>>,
     Path(account_id): Path<String>,
@@ -1669,6 +1828,25 @@ async fn handle_start_provider_oauth_login(
     match state.sdk.start_provider_oauth_login(&account_id).await {
         Ok(challenge) => (StatusCode::CREATED, Json(challenge)).into_response(),
         Err(error) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    }
+}
+
+async fn handle_start_provider_oauth_login_using(
+    State(state): State<Arc<AppState>>,
+    Path((account_id, adapter_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .start_provider_oauth_login_using(&account_id, &adapter_id)
+        .await
+    {
+        Ok(challenge) => (StatusCode::CREATED, Json(challenge)).into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.message),
     }
 }
 
@@ -1688,7 +1866,23 @@ async fn handle_continue_provider_oauth_login(
         .await
     {
         Ok(progress) => Json(progress).into_response(),
-        Err(error) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.message),
+    }
+}
+
+async fn handle_cancel_provider_oauth_login(
+    State(state): State<Arc<AppState>>,
+    Path(login_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.sdk.cancel_provider_oauth_login(&login_id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.message),
     }
 }
 
@@ -5526,8 +5720,8 @@ mod tests {
     };
     use crate::memory::{ScheduleStore as _, ThreadStore as _};
     use crate::provider::auth::{
-        AdapterLoginResult, AdapterLoginStart, AuthAdapter, AuthAdapterRegistry, OAuthFlowKind,
-        OAuthLoginProgress, OAuthTokenSet, RequestAuthorization,
+        AdapterLoginResult, AdapterLoginStart, AuthAdapter, AuthAdapterRegistry, OAuthCallbackMode,
+        OAuthFlowKind, OAuthLoginProgress, OAuthTokenSet, RequestAuthorization,
     };
     use crate::runtime::{RuntimeIdentity, RuntimeToolPolicy};
     use crate::secret_store::{SecretStore, SecretValueBackend};
@@ -5601,6 +5795,8 @@ mod tests {
             if self.flow == OAuthFlowKind::AuthorizationCodePkce {
                 return Ok(AdapterLoginStart {
                     flow: self.flow,
+                    callback_mode: OAuthCallbackMode::Loopback,
+                    redirect_uri: Some("http://localhost/callback".to_string()),
                     authorization_url: Some(
                         "https://auth.example.test/authorize?state=morphz-test".to_string(),
                     ),
@@ -5614,6 +5810,8 @@ mod tests {
             }
             Ok(AdapterLoginStart {
                 flow: self.flow,
+                callback_mode: OAuthCallbackMode::None,
+                redirect_uri: None,
                 authorization_url: None,
                 verification_uri: Some("https://auth.example.test/device".to_string()),
                 verification_uri_complete: Some(
@@ -5631,7 +5829,16 @@ mod tests {
             _state: &Value,
             completion: OAuthLoginCompletion,
         ) -> Result<AdapterLoginResult, String> {
-            assert_eq!(completion, OAuthLoginCompletion::Poll);
+            match completion {
+                OAuthLoginCompletion::Poll => {}
+                OAuthLoginCompletion::AuthorizationResponse { response } => {
+                    assert_eq!(
+                        parse_authorization_response(&response).unwrap(),
+                        ("web-code".to_string(), "morphz-test".to_string())
+                    );
+                }
+                other => panic!("unexpected web OAuth completion: {other:?}"),
+            }
             Ok(AdapterLoginResult::Complete(OAuthTokenSet {
                 adapter_id: self.id().to_string(),
                 adapter_version: self.version().to_string(),
@@ -6785,6 +6992,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_runtime_oauth_callback_accepts_only_live_opaque_state() {
+        let unknown = handle_provider_oauth_callback(Query(OAuthCallbackQuery {
+            state: "unknown-state".to_string(),
+            code: Some("unknown-code".to_string()),
+            ..OAuthCallbackQuery::default()
+        }))
+        .await;
+        assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+
+        let state = "runtime-callback-state";
+        crate::provider::auth::register_oauth_callback(
+            state,
+            Utc::now() + ChronoDuration::minutes(5),
+        )
+        .unwrap();
+        let accepted = handle_provider_oauth_callback(Query(OAuthCallbackQuery {
+            state: state.to_string(),
+            code: Some("authorization-code".to_string()),
+            ..OAuthCallbackQuery::default()
+        }))
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        assert_eq!(
+            accepted
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+
+        let replay = handle_provider_oauth_callback(Query(OAuthCallbackQuery {
+            state: state.to_string(),
+            code: Some("replacement-code".to_string()),
+            ..OAuthCallbackQuery::default()
+        }))
+        .await;
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn dashboard_oauth_bootstrap_catalog_and_start_cover_all_supported_services() {
         let tmp = tempfile::tempdir().unwrap();
         let database_path = tmp.path().join("morphz.db");
@@ -6800,7 +7047,7 @@ mod tests {
             .unwrap(),
         );
         let expected = [
-            ("codex", "codex-oauth", OAuthFlowKind::DeviceCode),
+            ("codex", "codex-oauth", OAuthFlowKind::AuthorizationCodePkce),
             ("kimi", "kimi-oauth", OAuthFlowKind::DeviceCode),
             (
                 "anthropic",
@@ -6821,6 +7068,10 @@ mod tests {
                 flow,
             }));
         }
+        registry.register(Arc::new(WebTestOAuthAdapter {
+            id: "codex-device-oauth",
+            flow: OAuthFlowKind::DeviceCode,
+        }));
         let (state, runtime) = test_state_at_with_workers_auth_and_secrets(
             &database_path,
             false,
@@ -6843,6 +7094,9 @@ mod tests {
         let payload: Value = serde_json::from_slice(&body).unwrap();
         let services = payload["services"].as_array().unwrap();
         assert_eq!(services.len(), expected.len());
+        assert!(!services
+            .iter()
+            .any(|service| service["id"] == "codex-device"));
         let mut authenticated_accounts = Vec::new();
         for (service_id, adapter_id, flow) in expected {
             assert!(services.iter().any(|service| {
@@ -6873,6 +7127,20 @@ mod tests {
                 serde_json::from_slice(&body).unwrap();
             assert_eq!(challenge.adapter_id, adapter_id);
             assert_eq!(challenge.flow, flow);
+            let before_completion = runtime.provider_control_snapshot().await.unwrap();
+            assert!(
+                !before_completion
+                    .auth_accounts
+                    .contains_key(&challenge.account_id),
+                "{service_id} created an account before authentication completed"
+            );
+            if let Some(path) = state.managed_config_path.as_deref() {
+                let managed = std::fs::read_to_string(path).unwrap_or_default();
+                assert!(
+                    !managed.contains(&challenge.account_id),
+                    "{service_id} wrote an unfinished account to managed config"
+                );
+            }
             match flow {
                 OAuthFlowKind::DeviceCode => {
                     assert_eq!(challenge.user_code.as_deref(), Some("MORPHZ-TEST"));
@@ -6880,18 +7148,71 @@ mod tests {
                 OAuthFlowKind::AuthorizationCodePkce => {
                     assert!(challenge.authorization_url.is_some());
                     assert!(challenge.user_code.is_none());
+                    assert_eq!(challenge.callback_state.as_deref(), Some("morphz-test"));
                 }
             }
 
-            let completed = handle_continue_provider_oauth_login(
-                State(Arc::clone(&state)),
-                Path(challenge.login_id),
-                HeaderMap::new(),
-                Query(AuthQuery::default()),
-                Json(OAuthLoginCompletion::Poll),
-            )
-            .await
-            .into_response();
+            if service_id == "codex" {
+                let device_started = handle_start_oauth_provider_setup(
+                    State(Arc::clone(&state)),
+                    HeaderMap::new(),
+                    Query(AuthQuery::default()),
+                    Json(StartOAuthProviderSetupRequest {
+                        service: "codex-device".to_string(),
+                    }),
+                )
+                .await
+                .into_response();
+                assert_eq!(device_started.status(), StatusCode::CREATED);
+                let device_body = axum::body::to_bytes(device_started.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let device_challenge: crate::provider::auth::OAuthLoginChallenge =
+                    serde_json::from_slice(&device_body).unwrap();
+                assert_ne!(device_challenge.account_id, challenge.account_id);
+                assert_eq!(device_challenge.adapter_id, "codex-device-oauth");
+                assert_eq!(device_challenge.user_code.as_deref(), Some("MORPHZ-TEST"));
+
+                let device_cancelled = handle_cancel_provider_oauth_login(
+                    State(Arc::clone(&state)),
+                    Path(device_challenge.login_id),
+                    HeaderMap::new(),
+                    Query(AuthQuery::default()),
+                )
+                .await
+                .into_response();
+                assert_eq!(device_cancelled.status(), StatusCode::NO_CONTENT);
+                assert!(!runtime
+                    .provider_control_snapshot()
+                    .await
+                    .unwrap()
+                    .auth_accounts
+                    .contains_key(&device_challenge.account_id));
+            }
+
+            let manual_callback = service_id == "codex";
+            let completed = if manual_callback {
+                handle_submit_provider_oauth_callback(
+                    State(Arc::clone(&state)),
+                    HeaderMap::new(),
+                    Query(AuthQuery::default()),
+                    Json(SubmitOAuthCallbackRequest {
+                        redirect_url: "http://localhost/callback?code=web-code&state=morphz-test"
+                            .to_string(),
+                    }),
+                )
+                .await
+            } else {
+                handle_continue_provider_oauth_login(
+                    State(Arc::clone(&state)),
+                    Path(challenge.login_id.clone()),
+                    HeaderMap::new(),
+                    Query(AuthQuery::default()),
+                    Json(OAuthLoginCompletion::Poll),
+                )
+                .await
+                .into_response()
+            };
             let completed_status = completed.status();
             let completed_body = axum::body::to_bytes(completed.into_body(), usize::MAX)
                 .await
@@ -6902,7 +7223,14 @@ mod tests {
                 "{service_id} OAuth completion failed: {}",
                 String::from_utf8_lossy(&completed_body)
             );
-            let progress: OAuthLoginProgress = serde_json::from_slice(&completed_body).unwrap();
+            let progress: OAuthLoginProgress = if manual_callback {
+                let submission: SubmitOAuthCallbackResponse =
+                    serde_json::from_slice(&completed_body).unwrap();
+                assert_eq!(submission.login_id, challenge.login_id);
+                submission.progress
+            } else {
+                serde_json::from_slice(&completed_body).unwrap()
+            };
             let OAuthLoginProgress::Complete { account } = progress else {
                 panic!("{service_id} OAuth login did not complete")
             };
@@ -6988,6 +7316,82 @@ mod tests {
             .candidates
             .iter()
             .any(|candidate| candidate.account.as_deref() == Some(account_id.as_str()))));
+    }
+
+    #[tokio::test]
+    async fn provider_snapshot_migrates_legacy_unfinished_oauth_accounts_away() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(Arc::new(WebTestOAuthAdapter {
+            id: "codex-oauth",
+            flow: OAuthFlowKind::DeviceCode,
+        }));
+        let (state, runtime) =
+            test_state_at_with_workers_and_auth(&database_path, false, Some(registry)).await;
+        let managed_path = state.managed_config_path.clone().unwrap();
+        let setup = oauth_provider_setup("codex").unwrap();
+        let mut provider = ProviderInstanceConfig {
+            adapter: setup.provider_adapter.clone(),
+            protocol: setup.protocol,
+            base_url: setup.base_url.clone(),
+            accounts: vec![setup.account_id.clone()],
+            ..ProviderInstanceConfig::default()
+        };
+        provider.models.insert(
+            setup.physical_model.clone(),
+            crate::config::ProviderModelConfig::default(),
+        );
+        let account = AuthAccountConfig {
+            auth_adapter: setup.auth_adapter.clone(),
+            credential_ref: setup.credential_ref.clone(),
+            provider: Some(setup.provider_id.clone()),
+            enabled: true,
+            ..AuthAccountConfig::default()
+        };
+        let route = ModelRouteConfig {
+            candidates: vec![crate::config::ModelRouteCandidateConfig {
+                provider: setup.provider_id.clone(),
+                model: setup.physical_model.clone(),
+                account: Some(setup.account_id.clone()),
+                ..crate::config::ModelRouteCandidateConfig::default()
+            }],
+            ..ModelRouteConfig::default()
+        };
+        state
+            .sdk
+            .put_provider_catalog_config(
+                &managed_path,
+                &setup.provider_id,
+                provider,
+                &setup.account_id,
+                account,
+                None,
+                &setup.route_id,
+                route,
+            )
+            .await
+            .unwrap();
+        let legacy = runtime.provider_control_snapshot().await.unwrap();
+        let legacy_account = legacy.auth_accounts.get(&setup.account_id).unwrap();
+        assert!(!legacy_account.authenticated);
+        assert!(legacy_account.state.is_none());
+
+        let response = handle_provider_control_snapshot(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let migrated = runtime.provider_control_snapshot().await.unwrap();
+        assert!(!migrated.auth_accounts.contains_key(&setup.account_id));
+        assert!(!migrated.provider_instances.contains_key(&setup.provider_id));
+        assert!(!migrated.model_routes.contains_key(&setup.route_id));
+        assert!(!std::fs::read_to_string(managed_path)
+            .unwrap()
+            .contains(&setup.account_id));
     }
 
     #[tokio::test]

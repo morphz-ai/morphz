@@ -1562,6 +1562,97 @@ pub fn save_managed_provider_catalog(
     Ok(path)
 }
 
+/// Remove catalog fragments left by pre-transactional OAuth setup versions.
+/// A login attempt is not an account: once the referenced accounts are gone,
+/// empty Provider pools and routes are removed in the same managed-file write.
+pub fn remove_managed_provider_accounts_at(
+    path: &Path,
+    account_ids: &BTreeSet<String>,
+) -> Result<(), String> {
+    if account_ids.is_empty() || !path.exists() {
+        return Ok(());
+    }
+    let mut root = read_managed_value(path)?;
+    if let Some(accounts) = root
+        .get_mut("auth_accounts")
+        .and_then(toml::Value::as_table_mut)
+    {
+        accounts.retain(|account_id, _| !account_ids.contains(account_id));
+    }
+
+    let mut empty_providers = BTreeSet::new();
+    if let Some(providers) = root
+        .get_mut("provider_instances")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for (provider_id, provider) in providers.iter_mut() {
+            if let Some(accounts) = provider
+                .get_mut("accounts")
+                .and_then(toml::Value::as_array_mut)
+            {
+                let previous_len = accounts.len();
+                accounts.retain(|account| {
+                    account
+                        .as_str()
+                        .is_none_or(|account_id| !account_ids.contains(account_id))
+                });
+                if previous_len != accounts.len() && accounts.is_empty() {
+                    empty_providers.insert(provider_id.clone());
+                }
+            }
+        }
+        providers.retain(|provider_id, _| !empty_providers.contains(provider_id));
+    }
+
+    let mut empty_routes = BTreeSet::new();
+    if let Some(routes) = root
+        .get_mut("model_routes")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for (route_id, route) in routes.iter_mut() {
+            if let Some(candidates) = route
+                .get_mut("candidates")
+                .and_then(toml::Value::as_array_mut)
+            {
+                let previous_len = candidates.len();
+                candidates.retain(|candidate| {
+                    let account_removed = candidate
+                        .get("account")
+                        .and_then(toml::Value::as_str)
+                        .is_some_and(|account_id| account_ids.contains(account_id));
+                    let provider_removed = candidate
+                        .get("provider")
+                        .and_then(toml::Value::as_str)
+                        .is_some_and(|provider_id| empty_providers.contains(provider_id));
+                    !account_removed && !provider_removed
+                });
+                if previous_len != candidates.len() && candidates.is_empty() {
+                    empty_routes.insert(route_id.clone());
+                }
+            }
+        }
+        routes.retain(|route_id, _| !empty_routes.contains(route_id));
+    }
+
+    if let Some(llm) = root.get_mut("llm").and_then(toml::Value::as_table_mut) {
+        if llm
+            .get("provider")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|provider_id| empty_providers.contains(provider_id))
+        {
+            llm.remove("provider");
+        }
+        if llm
+            .get("model")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|route_id| empty_routes.contains(route_id))
+        {
+            llm.remove("model");
+        }
+    }
+    write_managed_value(path, &root)
+}
+
 /// Persist the operator-selected inference profile in Morphz's managed
 /// configuration layer. `reasoning_effort = "default"` is written
 /// deliberately instead of removing the key: the managed layer must be able
@@ -2927,5 +3018,59 @@ max_input_tokens = 0
         assert_eq!(persisted.llm.model, "gpt-5.6");
         assert!(!contents.contains("super-secret-access-token"));
         assert!(!contents.contains("refresh_token"));
+    }
+
+    #[test]
+    fn unfinished_oauth_catalog_cleanup_removes_the_entire_orphan_graph() {
+        let temp = TempDir::new().unwrap();
+        let managed_path = temp.path().join("managed.toml");
+        let provider = ProviderInstanceConfig {
+            adapter: "openai-codex".to_string(),
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            accounts: vec!["attempt-account".to_string()],
+            ..ProviderInstanceConfig::default()
+        };
+        let account = AuthAccountConfig {
+            auth_adapter: "codex-oauth".to_string(),
+            credential_ref: "MORPHZ_OAUTH_ATTEMPT".to_string(),
+            provider: Some("codex-subscription".to_string()),
+            ..AuthAccountConfig::default()
+        };
+        let route = ModelRouteConfig {
+            candidates: vec![ModelRouteCandidateConfig {
+                provider: "codex-subscription".to_string(),
+                model: "gpt-5.6".to_string(),
+                account: Some("attempt-account".to_string()),
+                ..ModelRouteCandidateConfig::default()
+            }],
+            ..ModelRouteConfig::default()
+        };
+        save_managed_provider_catalog_at(
+            &managed_path,
+            "codex-subscription",
+            &provider,
+            "attempt-account",
+            &account,
+            None,
+            "gpt-5.6",
+            &route,
+        )
+        .unwrap();
+
+        remove_managed_provider_accounts_at(
+            &managed_path,
+            &BTreeSet::from(["attempt-account".to_string()]),
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&managed_path).unwrap();
+        let persisted: AppConfig = toml::from_str(&contents).unwrap();
+        assert!(persisted.auth_accounts.is_empty());
+        assert!(persisted.provider_instances.is_empty());
+        assert!(persisted.model_routes.is_empty());
+        assert_eq!(persisted.llm.provider, None);
+        assert!(!contents.contains("attempt-account"));
+        assert!(!contents.contains("MORPHZ_OAUTH_ATTEMPT"));
     }
 }

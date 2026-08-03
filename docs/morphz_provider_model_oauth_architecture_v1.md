@@ -61,8 +61,7 @@ Morphz 原生支持一组克制的主流认证适配器，而不是追逐上百�
 - Kimi OAuth；
 - Google/Antigravity OAuth；
 - xAI OAuth；
-- OpenRouter 的官方认证方式；
-- API Key、无认证和现有 Credential Helper。
+- API Key、无认证和现有 Credential Helper；OpenRouter 等网关只通过这里的协议入口接入，不单列品牌登录。
 
 这里的“内置”指 Morphz 维护认证生命周期和必要的 Provider 方言，不代表所有服务都获得同等稳定性承诺。每个适配器必须明确标注：
 
@@ -112,12 +111,12 @@ model alias: gpt-5.6
 
 ### 2.5 v1 的实现边界
 
-v1 已按同一 `AuthAdapter` 生命周期实现五种计划内 OAuth 流程：
+v1 已按同一 `AuthAdapter` 生命周期实现五种计划内 OAuth 服务：
 
-- Codex：Device Authorization、Responses 方言；
+- Codex：浏览器 Authorization Code + PKCE 为通用登录，Device Authorization 是需要上游显式启用、适合远程/无头环境的推荐选择，Responses 方言；
 - Kimi Code：Device Authorization、Chat Completions 方言；
 - Anthropic/Claude：Authorization Code + PKCE、本地回调、Anthropic Messages 方言；
-- Google/Antigravity：Authorization Code + PKCE、本地回调、Gemini Content 方言；
+- Google/Antigravity：Authorization Code + PKCE；内置桌面凭据使用本地回调，自有 Web OAuth 客户端可使用 Runtime HTTPS 回调；Gemini Content 方言；
 - xAI：OIDC Discovery + Device Authorization、OpenAI 兼容方言。
 
 这些 Adapter 已完成不依赖真实订阅的确定性登录、刷新、敏感字段隔离和请求物化测试。真实登录和模型端点冒烟必须由 Operator 使用自己的账号完成，不能用假账号、静态展示数据或个人订阅作为 CI 依赖。OpenRouter、CLIProxyAPI 和其他 Gateway 继续通过四种兼容协议与 API Key/无认证方式接入，不需要 Morphz 感知网关产品本身。
@@ -250,11 +249,38 @@ Device Flow 不是把用户设备变成服务器，也不是让 Morphz 保存用
 
 1. Morphz 向 Provider 申请短期 `device_code` 和可展示的 `user_code`；
 2. 用户在任意已登录浏览器打开 Provider 的验证地址，输入 `user_code` 并批准；
-3. Morphz 使用仅由当前登录事务持有的 `device_code` 有界轮询 Token Endpoint；
+3. Morphz 使用仅存在于当前进程内存中的 `device_code` 有界轮询 Token Endpoint；
 4. Provider 在批准前返回 `authorization_pending`，批准后才签发 Access/Refresh Token；
-5. Token 直接进入所选 Secret Backend，控制面只持久化非敏感账号元数据。
+5. 认证成功后才把 Token、账号、Provider 和 Route 作为一个完成边界提交；任一步失败都会回滚本次结果。
 
-它特别适合 SSH、无 GUI 服务器和远程 Dashboard，因为浏览器不需要与 Morphz 运行在同一台机器。`user_code` 是短期配对码，不是长期凭证；过期、拒绝和慢速轮询都必须作为明确状态处理。
+它特别适合 SSH、无 GUI 服务器和远程 Dashboard，因为浏览器不需要与 Morphz 运行在同一台机器。`user_code` 是短期配对码，不是长期凭证；过期、拒绝和慢速轮询都必须作为明确状态处理。Codex 官方目前把 Device Code（beta）列为无头设备首选，但个人账号需要先在 ChatGPT 安全设置中启用，工作区账号也可能需要管理员开放权限。因此 Morphz 把它显示为明确的“远程推荐”选择；启动失败时保留浏览器回调方案，不做不可见的静默降级。
+
+#### 4.2.2 Authorization Code 回调的部署语义
+
+Authorization Code + PKCE 必须显式区分三种回调能力：
+
+- `loopback`：OAuth 客户端注册的是 `http://localhost:<port>/...`。浏览器把结果发送给“浏览器所在机器”的 loopback；只有浏览器与 Runtime 同机，或 Operator 建立了对应端口转发时，Runtime 才能自动收到回调。远程 Dashboard 可以把浏览器最终打开的完整回调 URL 粘贴回 Runtime，由 Runtime 校验 `state` 后交换 Token；不能把 `localhost` 直接替换成服务器 IP。
+- `runtime`：OAuth 客户端注册的是 Runtime 的公开 HTTPS 地址。Provider 会直接回到 `/api/runtime/providers/oauth/callback`，控制面随后轮询同一个 Runtime 完成登录。
+- `none`：Device Authorization 等不需要浏览器回调的流程。
+
+`state` 是短期、一次性的回调能力。公开回调不使用 Dashboard Bearer Token，只接受当前 Runtime 已登记且未过期的 `state`，首次提交后立即失效；授权码、错误正文和 Token 均不得写入 URL 日志或持久化到浏览器。
+
+远程部署的 `loopback` 界面必须给 Operator 四种可执行选择，而不是只报告 localhost 不可达：
+
+1. Provider 支持且账号已启用时，优先改用 Device Code：Dashboard 展示一次性设备码和复制按钮，用户在任意浏览器输入，Runtime 轮询完成；不会产生 localhost 跳转。
+2. Morphz 主机有图形桌面时，复制授权链接并在该主机的浏览器打开，回调自动进入本机 Runtime；Dashboard 不从远程 HTTP 请求擅自启动服务器 GUI 进程，因为它通常没有可复用的桌面会话。
+3. 在访问端先执行 `ssh -N -L <port>:127.0.0.1:<port> <user>@<morphz-host>`，再在访问端浏览器授权；访问端的 localhost 会通过隧道进入 Runtime，自动完成登录。
+4. 不建立隧道时，在浏览器到达 `http://localhost:<port>/...?code=...&state=...` 后复制**地址栏中的完整 URL**，即使页面显示连接被拒绝也不影响授权结果；Dashboard 可以从剪贴板读取并立即提交，也必须保留手工粘贴入口。
+
+第 4 条使用全局、需要 Operator 身份的回填入口。服务端先从 URL 解析 `state`，再按 `state` 找回当前进程内创建该授权链接的短期内存上下文，包括 `login_id`、PKCE verifier 和 Adapter；不能用当前弹窗或当前页面保存的 `login_id` 代替这一步。这样即使 Dashboard 刷新、用户打开了新弹窗，旧回调也只会完成它所属的登录，或在过期后被明确拒绝，而不会产生含糊的 state 校验失败。CLIProxyAPI 的远程管理界面采用的也是这种“完整 redirect URL → 全局 callback endpoint → state 关联短期登录上下文”的交接方式。
+
+桌面 OAuth 客户端的 redirect URI 由 Provider 的 allow-list 固定，不能通过运行时配置变成公网地址。Antigravity 只有在 Operator 同时配置下列三项、并在 Google Cloud 为该 Web OAuth 客户端精确注册生成的回调 URI 后，才切换为 `runtime`：
+
+- `MORPHZ_OAUTH_PUBLIC_BASE_URL`：外部可访问的 HTTPS 基地址；
+- `MORPHZ_ANTIGRAVITY_OAUTH_CLIENT_ID`：Operator 自有 Web OAuth Client ID；
+- `MORPHZ_ANTIGRAVITY_OAUTH_CLIENT_SECRET`：对应 Client Secret。
+
+任意一项缺失都会拒绝启动该登录，而不是退回一个看似可用但无法到达的回调地址。Codex Browser Flow 的公共 CLI 客户端目前只允许 `http://localhost:1455/auth/callback`，所以远程部署优先使用已启用的 Device Code；Browser Flow 则使用同机浏览器、SSH 端口转发或完整回调 URL 交接，不能伪装成 Runtime 公网回调。
 
 ### 4.3 ProviderAdapter
 
@@ -286,7 +312,7 @@ revoked
 disabled
 ```
 
-账号元数据和运行状态可以持久化；Access Token、Refresh Token 和敏感 Cookie 只存在 Secret Store 的值后端。
+Auth Account 只在登录完成后成立。授权链接、PKCE verifier、Device Code、轮询间隔和 `state` 只存在当前进程内存，不写入数据库、Secret Store、配置文件或其他磁盘状态；取消、失败、超时或进程重启后不留下账号和待完成记录。认证成功后，账号元数据和运行状态才可以持久化；Access Token、Refresh Token 和敏感 Cookie 只存在 Secret Store 的值后端。
 
 ### 4.5 Model Alias 与 ModelRoute
 
@@ -433,7 +459,8 @@ OAuth 不新建第二套 Secret Store。
 - Refresh Token；
 - ID Token（若确有必要）；
 - Provider 要求的敏感 Cookie 或会话材料；
-- PKCE/Device Flow 中必须跨进程恢复的临时秘密。
+
+PKCE verifier、Device Code 与回调 `state` 不属于值后端：v1 不恢复未完成登录，所有这些材料只在进程内短期存在。
 
 ### 6.3 禁止保存的位置
 
@@ -575,18 +602,22 @@ Provider 管理属于 Operator 控制面，至少展示：
 - 实际 Attempt 使用的 Provider、账号别名和模型；
 - Token usage 与按账号/Provider 归因的成本。
 
+服务、登录方式和账号身份必须是三个不同概念。Codex 在服务目录中只出现一次；浏览器 PKCE 与 Device Code 是进入 Codex 后选择的登录方式，不能伪装成两个 Codex 服务。用户第一次点击服务时只进入登录准备页，先看到远程回调条件、设备码启用要求和现有账号状态；只有再次明确点击“生成设备码”或“打开授权页面并登录”才真正启动授权。Device Flow 生成设备码后停留在 Dashboard，由用户复制设备码并主动打开验证页面，不自动用新窗口遮挡当前说明。
+
+账号只有在授权完成后才创建。授权前不写 Account、Provider、Route、状态行或凭证，也不在 Dashboard 账号列表显示任何“未完成登录”；取消、失败、超时和 Runtime 重启都只丢弃进程内短期上下文。已经认证的多账号分别展示，并优先显示 Provider 返回的 `email`、`subject` 或账号 ID；Provider 没有返回可显示身份时必须如实说明。产品界面中的标识直接称为“ID”，不使用“内部记录”之类面向实现者的描述。
+
 Dashboard 不展示 Token，不允许复制 Refresh Token，也不把 OAuth 回调结果保存在浏览器中。
 
 ### 9.3 Setup
 
 首次启动继续保持简单：
 
-1. 选择主流服务、兼容端点或本地端点；
-2. 选择 API Key、OAuth、环境变量、Credential Helper 或无认证；
-3. 完成登录/保存；
-4. 选择模型；
-5. 执行 Provider Conformance 冒烟测试；
-6. 建立默认 Model Route。
+1. OAuth 入口选择服务；API Key 入口只选择 `openai-responses`、`openai-chat`、`anthropic-messages` 或 `gemini-content` 协议，不把 OpenRouter 等品牌伪装成独立认证类型；
+2. OAuth 界面先按 `loopback`、`runtime` 或 `none` 展示真实交付方式，再由用户明确开始；API Key 界面只要求 Base URL 与 API Key；
+3. API Key 在不持久化任何配置的前提下连接 `/models` 目录，取得模型列表；
+4. 用户从返回目录选择模型，不手填物理模型名；
+5. OAuth 登录成功或 API 模型选择确认后，才创建 Account、Provider 和默认 Model Route；
+6. 对完成配置执行 Provider Conformance 冒烟测试。
 
 多账号、复杂 Route 和优先级不是首次启动必填项，后续在 Provider 管理中配置。
 
@@ -716,7 +747,7 @@ Pi 当前凭证仓库以 Provider ID 为键，天然表达一个 Provider 一个
 | Model Route | 已实现稳定 Alias、多 Candidate、不同物理模型名和能力过滤 | `ModelRouteConfig` |
 | Attempt Binding | 已持久化 Alias、Route revision、Provider、账号、物理模型、协议、Adapter 与 Endpoint | `model_attempt_bindings` |
 | 多账号调度 | 已实现 durable affinity、状态过滤、cooldown、LRU 选择、failover 与 refresh fencing | SQLite/PostgreSQL Projection |
-| OAuth | 已实现统一生命周期，以及 Codex、Kimi、Claude、Antigravity、xAI 五种 Adapter | `AuthAdapter` + Secret Store |
+| OAuth | 已实现统一生命周期，以及 Codex、Kimi、Claude、Antigravity、xAI 五种服务；Codex 浏览器 PKCE 与远程推荐的 Device Flow 是两个兼容 Adapter | `AuthAdapter` + Secret Store |
 | Secret 隔离 | OAuth Token 只物化到物理 HTTP Authorization；控制面 DTO 不携带敏感值，错误正文会脱敏 | Secret Store + `RequestAuthorization` |
 | Catalog | 已实现显式手工模型与成功远端目录的持久 Projection；刷新失败不抹除最后成功快照 | `provider_model_catalog` |
 | SDK/HTTP/CLI | 已共用 Application API，支持查看、诊断、测试、配置、账号控制、OAuth、目录刷新 | `MorphzSdk` |
@@ -790,3 +821,12 @@ Morphz Runtime
 - Pi OAuth 抽象与 Credential Store：<https://github.com/earendil-works/pi/blob/a116523434806910336b9de3e38a41aa5860030b/packages/ai/src/auth/types.ts>
 - Pi Codex Provider Factory：<https://github.com/earendil-works/pi/blob/a116523434806910336b9de3e38a41aa5860030b/packages/ai/src/providers/openai-codex.ts>
 - CLIProxyAPI：<https://github.com/router-for-me/CLIProxyAPI>
+- Codex CLI 登录命令：<https://learn.chatgpt.com/docs/developer-commands#codex-login>
+- Codex 无头设备登录说明：<https://learn.chatgpt.com/docs/auth#login-on-headless-devices>
+- Codex Device Code 实现：<https://github.com/openai/codex/blob/main/codex-rs/login/src/device_code_auth.rs>
+- Codex loopback 回调实现：<https://github.com/openai/codex/blob/main/codex-rs/login/src/server.rs>
+- CLIProxyAPI OAuth callback state 路由：<https://github.com/router-for-me/CLIProxyAPI/blob/main/internal/api/handlers/management/oauth_callback.go>
+- CLIProxyAPI Codex OAuth session 与 callback forwarder：<https://github.com/router-for-me/CLIProxyAPI/blob/main/internal/api/handlers/management/auth_files_provider_oauth.go>
+- CLIProxyAPI Management Center 远程回调 URL 交接界面：<https://github.com/router-for-me/Cli-Proxy-API-Management-Center/blob/main/src/pages/OAuthPage.tsx>
+- Google 桌面应用 OAuth：<https://developers.google.com/identity/protocols/oauth2/native-app>
+- Google Web Server OAuth：<https://developers.google.com/identity/protocols/oauth2/web-server>

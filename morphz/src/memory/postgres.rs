@@ -1074,6 +1074,30 @@ impl ProviderAccountStateStore for PostgresStore {
         provider_account_state_from_pg_row(&row)
     }
 
+    async fn delete_provider_account_records(&self, account_id: &str) -> Result<bool, StoreError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM provider_account_affinities WHERE account_id = $1")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM provider_refresh_leases WHERE account_id = $1")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM provider_model_catalog WHERE auth_account_id = $1")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        let deleted = sqlx::query("DELETE FROM provider_account_states WHERE account_id = $1")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+            > 0;
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
     async fn get_provider_account_affinity(
         &self,
         route_id: &str,

@@ -1,7 +1,34 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { copyTextToClipboard, type ClipboardEnvironment } from '../src/utils/clipboard.ts'
+import {
+  copyTextToClipboard,
+  readTextFromClipboard,
+  type ClipboardEnvironment,
+} from '../src/utils/clipboard.ts'
+
+test('reads a callback URL from the Clipboard API in a secure context', async () => {
+  const environment: ClipboardEnvironment = {
+    secureContext: true,
+    readText: async () => 'http://localhost:1455/auth/callback?code=x&state=y',
+    legacyCopy: () => false,
+  }
+
+  assert.equal(
+    await readTextFromClipboard(environment),
+    'http://localhost:1455/auth/callback?code=x&state=y',
+  )
+})
+
+test('does not pretend an insecure page can read the clipboard', async () => {
+  const environment: ClipboardEnvironment = {
+    secureContext: false,
+    readText: async () => 'secret',
+    legacyCopy: () => false,
+  }
+
+  await assert.rejects(readTextFromClipboard(environment), /Clipboard read access is unavailable/)
+})
 
 test('uses Clipboard API in a secure context', async () => {
   const calls: string[] = []
