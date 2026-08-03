@@ -8122,7 +8122,7 @@ impl ActivationStore for SqliteStore {
                                 )
                             })?;
                             let parent = sqlx::query(
-                                "SELECT session_id, root_turn_id FROM threads WHERE id = ?",
+                                "SELECT session_id, root_turn_id, status FROM threads WHERE id = ?",
                             )
                             .bind(parent_id)
                             .fetch_one(&mut *tx)
@@ -8167,7 +8167,8 @@ impl ActivationStore for SqliteStore {
                             (
                                 "chat/thread_group_terminal",
                                 TYPE_TOOL_OUTPUT.to_string(),
-                                Some(parent_id.to_string()),
+                                (parent.get::<String, _>("status") == "open")
+                                    .then(|| parent_id.to_string()),
                             )
                         }
                         ThreadSupervisorKind::Objective => {
@@ -8317,11 +8318,12 @@ impl ActivationStore for SqliteStore {
                             thread_id
                         )
                     })?;
-                    let parent =
-                        sqlx::query("SELECT session_id, root_turn_id FROM threads WHERE id = ?")
-                            .bind(parent_id)
-                            .fetch_one(&mut *tx)
-                            .await?;
+                    let parent = sqlx::query(
+                        "SELECT session_id, root_turn_id, status FROM threads WHERE id = ?",
+                    )
+                    .bind(parent_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
                     payload.insert(
                         "session_id".to_string(),
                         JsonValue::String(parent.get("session_id")),
@@ -8360,7 +8362,8 @@ impl ActivationStore for SqliteStore {
                     (
                         "chat/thread_terminal",
                         TYPE_TOOL_OUTPUT.to_string(),
-                        Some(parent_id.to_string()),
+                        (parent.get::<String, _>("status") == "open")
+                            .then(|| parent_id.to_string()),
                     )
                 }
                 ThreadSupervisorKind::Objective => {
@@ -9405,6 +9408,15 @@ impl ThreadStore for SqliteStore {
             .bind(i64::try_from(current.generation)?)
             .execute(&mut *tx)
             .await?;
+            sqlx::query(
+                r#"UPDATE schedules
+                   SET revision = revision + 1, status = 'cancelled', updated_at = ?
+                   WHERE thread_id = ? AND status IN ('queued', 'paused')"#,
+            )
+            .bind(&now)
+            .bind(&current.id)
+            .execute(&mut *tx)
+            .await?;
             let evidence_refs = vec![result_event.id.clone()];
             let unresolved_failures = vec![reason.to_string()];
             let check_results = serde_json::json!({
@@ -9531,9 +9543,16 @@ impl ThreadStore for SqliteStore {
                     successful_count,
                     &group.completion_contract,
                 );
+                let next_status = if group.status.is_terminal() {
+                    group.status
+                } else {
+                    evaluation.status
+                };
+                let transitioned_to_terminal =
+                    group.status == ThreadGroupStatus::Open && next_status.is_terminal();
                 let terminal_summary = serde_json::json!({
                     "group_id": group.id,
-                    "status": evaluation.status.as_str(),
+                    "status": next_status.as_str(),
                     "policy": group.policy.as_str(),
                     "required_count": group.required_count,
                     "terminal_count": terminal_count,
@@ -9544,25 +9563,28 @@ impl ThreadStore for SqliteStore {
                     "last_thread_id": current.id,
                 });
                 let barrier_id = format!("thread_group_barrier_{}_g{}", group.id, group.generation);
-                sqlx::query(
+                let barrier_event_id = if group.status.is_terminal() {
+                    group.barrier_event_id.as_deref()
+                } else if next_status.is_terminal() {
+                    Some(barrier_id.as_str())
+                } else {
+                    None
+                };
+                let group_update = sqlx::query(
                     r#"UPDATE thread_groups
                        SET revision = revision + 1, terminal_count = ?,
                            successful_count = ?, status = ?,
                            terminal_summary_json = ?, barrier_event_id = ?,
-                           updated_at = ?, satisfied_at = ?
-                       WHERE id = ? AND status = 'open'"#,
+                           updated_at = ?, satisfied_at = COALESCE(satisfied_at, ?)
+                       WHERE id = ?"#,
                 )
                 .bind(i64::try_from(terminal_count)?)
                 .bind(i64::try_from(successful_count)?)
-                .bind(evaluation.status.as_str())
+                .bind(next_status.as_str())
                 .bind(serde_json::to_string(&terminal_summary)?)
-                .bind(if evaluation.status.is_terminal() {
-                    Some(barrier_id.as_str())
-                } else {
-                    None
-                })
+                .bind(barrier_event_id)
                 .bind(&now)
-                .bind(if evaluation.status.is_terminal() {
+                .bind(if next_status.is_terminal() {
                     Some(now.as_str())
                 } else {
                     None
@@ -9570,7 +9592,7 @@ impl ThreadStore for SqliteStore {
                 .bind(group_id)
                 .execute(&mut *tx)
                 .await?;
-                if evaluation.status.is_terminal() {
+                if transitioned_to_terminal && group_update.rows_affected() == 1 {
                     let terminal_group_row =
                         sqlx::query("SELECT * FROM thread_groups WHERE id = ?")
                             .bind(group_id)
@@ -9596,10 +9618,12 @@ impl ThreadStore for SqliteStore {
                             let parent = parent
                                 .as_ref()
                                 .ok_or("attached Thread Group 关闭缺少 parent Thread")?;
-                            append_direct_thread_signal_in_transaction(
-                                &mut tx, &barrier, &parent.id,
-                            )
-                            .await?;
+                            if parent.lifecycle == ThreadLifecycle::Open {
+                                append_direct_thread_signal_in_transaction(
+                                    &mut tx, &barrier, &parent.id,
+                                )
+                                .await?;
+                            }
                         }
                         ThreadSupervisorKind::Objective => {
                             sqlx::query(
@@ -9662,8 +9686,12 @@ impl ThreadStore for SqliteStore {
                         let parent = parent
                             .as_ref()
                             .ok_or("attached Thread 关闭缺少 parent Thread")?;
-                        append_direct_thread_signal_in_transaction(&mut tx, &barrier, &parent.id)
+                        if parent.lifecycle == ThreadLifecycle::Open {
+                            append_direct_thread_signal_in_transaction(
+                                &mut tx, &barrier, &parent.id,
+                            )
                             .await?;
+                        }
                     }
                 }
             }
@@ -11024,10 +11052,11 @@ impl ScheduleStore for SqliteStore {
                 .parent_thread_id
                 .as_deref()
                 .ok_or("升格 Thread 缺少原 Evaluation parent_thread_id")?;
-            let parent = sqlx::query("SELECT session_id, root_turn_id FROM threads WHERE id = ?")
-                .bind(parent_thread_id)
-                .fetch_one(&mut *tx)
-                .await?;
+            let parent =
+                sqlx::query("SELECT session_id, root_turn_id, status FROM threads WHERE id = ?")
+                    .bind(parent_thread_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
             let barrier = Event::new(
                 source_barrier_id,
                 "Runtime".to_string(),
@@ -11054,7 +11083,10 @@ impl ScheduleStore for SqliteStore {
                 .clone(),
             );
             append_event_in_transaction(&mut tx, &barrier).await?;
-            append_direct_thread_signal_in_transaction(&mut tx, &barrier, parent_thread_id).await?;
+            if parent.get::<String, _>("status") == "open" {
+                append_direct_thread_signal_in_transaction(&mut tx, &barrier, parent_thread_id)
+                    .await?;
+            }
         }
         append_event_in_transaction(&mut tx, &request.promoted_event).await?;
 
@@ -23839,6 +23871,187 @@ mod tests {
             .expect("barrier must wake the parent Thread");
         assert_eq!(signal.event_id, barrier_id);
         assert_eq!(signal.thread_generation, parent.generation);
+    }
+
+    #[tokio::test]
+    async fn attached_group_can_close_after_its_parent_is_terminal() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "orphaned-group-context".to_string(),
+                agent_id: "orphaned-group-agent".to_string(),
+                title: "Orphaned attached group".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "orphaned-group-session".to_string(),
+                agent_id: "orphaned-group-agent".to_string(),
+                context_id: "orphaned-group-context".to_string(),
+                parent_session_id: None,
+                title: "Orphaned attached group".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let parent = store
+            .ensure_thread(NewThread {
+                id: "orphaned-group-parent".to_string(),
+                agent_id: "orphaned-group-agent".to_string(),
+                context_id: "orphaned-group-context".to_string(),
+                session_id: "orphaned-group-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "orphaned-group-parent-root".to_string(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        sqlx::query("UPDATE threads SET status = 'completed' WHERE id = ?")
+            .bind(&parent.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+        let mut children = Vec::new();
+        for ordinal in 0..2 {
+            let mut supervision = ThreadSupervision::attached(
+                parent.id.clone(),
+                parent.generation,
+                "already-finished-origin-activation",
+            );
+            supervision.thread_group_id = Some("orphaned-group".to_string());
+            children.push(
+                store
+                    .ensure_thread(NewThread {
+                        id: format!("orphaned-group-child-{ordinal}"),
+                        agent_id: "orphaned-group-agent".to_string(),
+                        context_id: "orphaned-group-context".to_string(),
+                        session_id: "orphaned-group-session".to_string(),
+                        initiating_principal_id: None,
+                        root_turn_id: format!("orphaned-group-child-root-{ordinal}"),
+                        kind: ThreadKind::Execution,
+                        executor_kind: "self".to_string(),
+                        executor_id: None,
+                        target_id: None,
+                        supervision,
+                    })
+                    .await
+                    .unwrap(),
+            );
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO thread_groups
+               (id, revision, context_id, session_id, supervisor_kind, supervisor_id,
+                generation, policy, required_count, terminal_count, successful_count,
+                status, completion_contract_json, terminal_summary_json, created_at, updated_at)
+               VALUES (?, 1, ?, ?, 'thread', ?, ?, 'all', 2, 0, 0,
+                       'open', '{}', '{}', ?, ?)"#,
+        )
+        .bind("orphaned-group")
+        .bind("orphaned-group-context")
+        .bind("orphaned-group-session")
+        .bind(&parent.id)
+        .bind(i64::try_from(parent.generation).unwrap())
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        for (ordinal, child) in children.iter().enumerate() {
+            sqlx::query(
+                r#"INSERT INTO thread_group_members
+                   (group_id, thread_id, ordinal, required, status, created_at, updated_at)
+                   VALUES (?, ?, ?, 1, 'pending', ?, ?)"#,
+            )
+            .bind("orphaned-group")
+            .bind(&child.id)
+            .bind(i64::try_from(ordinal).unwrap())
+            .bind(&now)
+            .bind(&now)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            r#"INSERT INTO schedules
+               (id, revision, thread_id, source_turn_id, intent, status,
+                dependency_thread_ids_json, created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, 'queued', '[]', ?, ?)"#,
+        )
+        .bind("orphaned-group-queued-schedule")
+        .bind(&children[1].id)
+        .bind("orphaned-group-source-turn")
+        .bind("orphaned group work that must not dispatch after close")
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        for child in &children {
+            let closed = store
+                .control_thread(
+                    &child.id,
+                    child.revision,
+                    ThreadControlAction::Close,
+                    Some("close orphaned attached work"),
+                    Some("test"),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                closed,
+                ThreadMutation::Updated(ThreadRecord {
+                    lifecycle: ThreadLifecycle::Cancelled,
+                    ..
+                })
+            ));
+        }
+
+        let group = store
+            .get_thread_group("orphaned-group")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(group.status, ThreadGroupStatus::Failed);
+        assert_eq!(group.terminal_count, 2);
+        assert_eq!(group.successful_count, 0);
+        let barrier_id = "thread_group_barrier_orphaned-group_g1";
+        assert_eq!(group.barrier_event_id.as_deref(), Some(barrier_id));
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(barrier_id.to_string()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1,
+        );
+        let parent_signal_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_signals WHERE thread_id = ?")
+                .bind(&parent.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(parent_signal_count, 0);
+        let queued_schedule_status: String =
+            sqlx::query_scalar("SELECT status FROM schedules WHERE id = ?")
+                .bind("orphaned-group-queued-schedule")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(queued_schedule_status, "cancelled");
     }
 
     #[tokio::test]

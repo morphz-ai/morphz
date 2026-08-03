@@ -1031,10 +1031,11 @@ impl ScheduleStore for PostgresStore {
                 .parent_thread_id
                 .as_deref()
                 .ok_or("升格 Thread 缺少原 Evaluation parent_thread_id")?;
-            let parent = sqlx::query("SELECT session_id, root_turn_id FROM threads WHERE id = $1")
-                .bind(parent_thread_id)
-                .fetch_one(&mut *tx)
-                .await?;
+            let parent =
+                sqlx::query("SELECT session_id, root_turn_id, status FROM threads WHERE id = $1")
+                    .bind(parent_thread_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
             let barrier = Event::new(
                 source_barrier_id,
                 "Runtime".to_string(),
@@ -1061,7 +1062,9 @@ impl ScheduleStore for PostgresStore {
                 .clone(),
             );
             append_event_in_tx(&mut tx, &barrier).await?;
-            append_direct_thread_signal_in_tx(&mut tx, &barrier, parent_thread_id).await?;
+            if parent.get::<String, _>("status") == "open" {
+                append_direct_thread_signal_in_tx(&mut tx, &barrier, parent_thread_id).await?;
+            }
         }
         append_event_in_tx(&mut tx, &request.promoted_event).await?;
         let source_group_row = sqlx::query("SELECT * FROM thread_groups WHERE id = $1")

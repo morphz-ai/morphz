@@ -7,8 +7,8 @@ use crate::memory::{
     evaluate_thread_group_contract, thread_cancellation_event, thread_group_barrier_event,
     thread_terminal_barrier_event, DeliveryFlushCommit, DeliveryStatus, NewThread,
     ObjectiveWaitCondition, RuntimeTimerRecord, ThreadControlAction, ThreadControlState,
-    ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadRecord,
-    ThreadStore, ThreadSupervision, ThreadSupervisorKind,
+    ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation,
+    ThreadOutcomeRecord, ThreadRecord, ThreadStore, ThreadSupervision, ThreadSupervisorKind,
 };
 use chrono::Duration;
 use serde_json::{json, Value as JsonValue};
@@ -778,6 +778,15 @@ impl ThreadStore for PostgresStore {
             .bind(i64::try_from(current.generation)?)
             .execute(&mut *tx)
             .await?;
+            sqlx::query(
+                r#"UPDATE schedules
+                   SET revision = revision + 1, status = 'cancelled', updated_at = $1
+                   WHERE thread_id = $2 AND status IN ('queued', 'paused')"#,
+            )
+            .bind(&now)
+            .bind(&current.id)
+            .execute(&mut *tx)
+            .await?;
             let evidence_refs = serde_json::json!([result_event.id]);
             let unresolved_failures = serde_json::json!([reason]);
             let check_results = serde_json::json!({
@@ -905,9 +914,16 @@ impl ThreadStore for PostgresStore {
                     successful_count,
                     &group.completion_contract,
                 );
+                let next_status = if group.status.is_terminal() {
+                    group.status
+                } else {
+                    evaluation.status
+                };
+                let transitioned_to_terminal =
+                    group.status == ThreadGroupStatus::Open && next_status.is_terminal();
                 let terminal_summary = serde_json::json!({
                     "group_id": group.id,
-                    "status": evaluation.status.as_str(),
+                    "status": next_status.as_str(),
                     "policy": group.policy.as_str(),
                     "required_count": group.required_count,
                     "terminal_count": terminal_count,
@@ -918,25 +934,28 @@ impl ThreadStore for PostgresStore {
                     "last_thread_id": current.id,
                 });
                 let barrier_id = format!("thread_group_barrier_{}_g{}", group.id, group.generation);
-                sqlx::query(
+                let barrier_event_id = if group.status.is_terminal() {
+                    group.barrier_event_id.as_deref()
+                } else if next_status.is_terminal() {
+                    Some(barrier_id.as_str())
+                } else {
+                    None
+                };
+                let group_update = sqlx::query(
                     r#"UPDATE thread_groups
                        SET revision = revision + 1, terminal_count = $1,
                            successful_count = $2, status = $3,
                            terminal_summary_json = $4, barrier_event_id = $5,
-                           updated_at = $6, satisfied_at = $7
-                       WHERE id = $8 AND status = 'open'"#,
+                           updated_at = $6, satisfied_at = COALESCE(satisfied_at, $7)
+                       WHERE id = $8"#,
                 )
                 .bind(i64::try_from(terminal_count)?)
                 .bind(i64::try_from(successful_count)?)
-                .bind(evaluation.status.as_str())
+                .bind(next_status.as_str())
                 .bind(&terminal_summary)
-                .bind(if evaluation.status.is_terminal() {
-                    Some(barrier_id.as_str())
-                } else {
-                    None
-                })
+                .bind(barrier_event_id)
                 .bind(&now)
-                .bind(if evaluation.status.is_terminal() {
+                .bind(if next_status.is_terminal() {
                     Some(now.as_str())
                 } else {
                     None
@@ -944,7 +963,7 @@ impl ThreadStore for PostgresStore {
                 .bind(group_id)
                 .execute(&mut *tx)
                 .await?;
-                if evaluation.status.is_terminal() {
+                if transitioned_to_terminal && group_update.rows_affected() == 1 {
                     let terminal_group_row =
                         sqlx::query("SELECT * FROM thread_groups WHERE id = $1")
                             .bind(group_id)
@@ -970,8 +989,10 @@ impl ThreadStore for PostgresStore {
                             let parent = parent
                                 .as_ref()
                                 .ok_or("attached Thread Group 关闭缺少 parent Thread")?;
-                            append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id)
-                                .await?;
+                            if parent.lifecycle == ThreadLifecycle::Open {
+                                append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id)
+                                    .await?;
+                            }
                         }
                         ThreadSupervisorKind::Objective => {
                             sqlx::query(
@@ -1033,7 +1054,10 @@ impl ThreadStore for PostgresStore {
                         let parent = parent
                             .as_ref()
                             .ok_or("attached Thread 关闭缺少 parent Thread")?;
-                        append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id).await?;
+                        if parent.lifecycle == ThreadLifecycle::Open {
+                            append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id)
+                                .await?;
+                        }
                     }
                 }
             }

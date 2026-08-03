@@ -1823,7 +1823,7 @@ impl ActivationStore for PostgresStore {
                                 )
                             })?;
                             let parent = sqlx::query(
-                                "SELECT session_id, root_turn_id FROM threads WHERE id = $1",
+                                "SELECT session_id, root_turn_id, status FROM threads WHERE id = $1",
                             )
                             .bind(parent_id)
                             .fetch_one(&mut *tx)
@@ -1868,7 +1868,8 @@ impl ActivationStore for PostgresStore {
                             (
                                 "chat/thread_group_terminal",
                                 TYPE_TOOL_OUTPUT.to_string(),
-                                Some(parent_id.to_string()),
+                                (parent.get::<String, _>("status") == "open")
+                                    .then(|| parent_id.to_string()),
                             )
                         }
                         ThreadSupervisorKind::Objective => {
@@ -2011,11 +2012,12 @@ impl ActivationStore for PostgresStore {
                             thread_id
                         )
                     })?;
-                    let parent =
-                        sqlx::query("SELECT session_id, root_turn_id FROM threads WHERE id = $1")
-                            .bind(parent_id)
-                            .fetch_one(&mut *tx)
-                            .await?;
+                    let parent = sqlx::query(
+                        "SELECT session_id, root_turn_id, status FROM threads WHERE id = $1",
+                    )
+                    .bind(parent_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
                     payload.insert(
                         "session_id".to_string(),
                         JsonValue::String(parent.get("session_id")),
@@ -2054,7 +2056,8 @@ impl ActivationStore for PostgresStore {
                     (
                         "chat/thread_terminal",
                         TYPE_TOOL_OUTPUT.to_string(),
-                        Some(parent_id.to_string()),
+                        (parent.get::<String, _>("status") == "open")
+                            .then(|| parent_id.to_string()),
                     )
                 }
                 ThreadSupervisorKind::Objective => {
