@@ -18,7 +18,8 @@ pub use commands::{
     ControlThreadCommand, FinishObjectiveEvaluationCommand, KernelCommand, KernelCommandHeader,
     KernelCommandPayload, KernelResult, PrepareObjectiveCompletionCommand, PromoteThreadCommand,
     RegisterDependencyCommand, RenewObjectiveEvaluationCommand, RestartDialogueTurnCommand,
-    SatisfyDependencyCommand, SpawnSupervisedGroupCommand, TransitionActivationCommand,
+    SatisfyDependencyCommand, SatisfyThreadResourceDependencyCommand, SpawnSupervisedGroupCommand,
+    TransitionActivationCommand,
 };
 pub use domain::{
     audit_scheduler_invariants, derive_objective_readiness, objective_wait_dependency_key,
@@ -34,4 +35,7 @@ pub use snapshot::{
     SchedulerObjectiveSnapshot, SchedulerQuery, SchedulerResultSnapshot, SchedulerSnapshot,
     SchedulerSummary, SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
 };
-pub use store::{NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyStore};
+pub use store::{
+    NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyStore,
+    ThreadResourceWakeCommit,
+};

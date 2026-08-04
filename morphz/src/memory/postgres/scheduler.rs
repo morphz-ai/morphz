@@ -1,10 +1,14 @@
-use super::{now_text, parse_time, PostgresStore, StoreError};
+use super::{
+    append_direct_thread_signal_in_tx, append_event_in_tx, now_text, parse_time, PostgresStore,
+    StoreError,
+};
+use crate::event::Event;
 use crate::memory::ObjectiveWaitCondition;
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
     SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyMutation,
     SchedulerDependencyOwnerKind, SchedulerDependencyRecord, SchedulerDependencyStatus,
-    SchedulerDependencyStore,
+    SchedulerDependencyStore, ThreadResourceWakeCommit,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
@@ -296,6 +300,116 @@ impl SchedulerDependencyStore for PostgresStore {
         Ok(SchedulerDependencyMutation::Conflict {
             current,
             reason: "Scheduler dependency fence、状态或 satisfaction Event 不匹配".to_string(),
+        })
+    }
+
+    async fn satisfy_thread_resource_dependency(
+        &self,
+        id: &str,
+        owner_generation: u64,
+        dependency_generation: u64,
+        satisfied_by_event_id: &str,
+        wake_event: &Event,
+    ) -> Result<ThreadResourceWakeCommit, StoreError> {
+        if satisfied_by_event_id.trim().is_empty() {
+            return Err("Thread Resource dependency satisfaction Event ID 不能为空".into());
+        }
+        let owner_generation_i64 = i64::try_from(owner_generation)?;
+        let dependency_generation_i64 = i64::try_from(dependency_generation)?;
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query("SELECT * FROM scheduler_dependencies WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("Thread Resource dependency '{id}' 不存在"))?;
+        let current = dependency_from_row(&row)?;
+        if current.owner_kind != SchedulerDependencyOwnerKind::Thread
+            || current.dependency_kind != SchedulerDependencyKind::Resource
+        {
+            return Err(
+                format!("Scheduler dependency '{id}' 不是 Thread Resource dependency").into(),
+            );
+        }
+        if current.owner_generation != owner_generation
+            || current.dependency_generation != dependency_generation
+        {
+            return Err(
+                format!("Thread Resource dependency '{id}' generation fence 不匹配").into(),
+            );
+        }
+        if current.status == SchedulerDependencyStatus::Satisfied
+            && current.satisfied_by_event_id.as_deref() == Some(satisfied_by_event_id)
+        {
+            let exists = sqlx::query_scalar::<_, String>("SELECT id FROM events WHERE id = $1")
+                .bind(&wake_event.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            if exists.is_none() {
+                return Err(format!(
+                    "Thread Resource dependency '{}' 已满足，但 wake Event '{}' 不存在",
+                    id, wake_event.id
+                )
+                .into());
+            }
+            tx.commit().await?;
+            return Ok(ThreadResourceWakeCommit {
+                dependency: current,
+                wake_event: wake_event.clone(),
+                existing: true,
+            });
+        }
+        if current.status != SchedulerDependencyStatus::Pending {
+            return Err(format!(
+                "Thread Resource dependency '{}' 当前状态为 '{}'，不能满足",
+                id,
+                current.status.as_str()
+            )
+            .into());
+        }
+        let thread = sqlx::query("SELECT generation, status FROM threads WHERE id = $1 FOR UPDATE")
+            .bind(&current.owner_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("Thread '{}' 不存在", current.owner_id))?;
+        if thread.get::<i64, _>("generation") != owner_generation_i64
+            || thread.get::<String, _>("status") != "open"
+        {
+            return Err(format!(
+                "Thread Resource dependency '{}' 的 owner Thread 已终结或 generation 已变化",
+                id
+            )
+            .into());
+        }
+        append_event_in_tx(&mut tx, wake_event).await?;
+        append_direct_thread_signal_in_tx(&mut tx, wake_event, &current.owner_id).await?;
+        let updated = sqlx::query(
+            r#"UPDATE scheduler_dependencies
+               SET status = 'satisfied', satisfied_by_event_id = $1,
+                   satisfied_at = $2, updated_at = $2
+               WHERE id = $3 AND owner_generation = $4 AND dependency_generation = $5
+                 AND status = 'pending'"#,
+        )
+        .bind(satisfied_by_event_id)
+        .bind(&now)
+        .bind(id)
+        .bind(owner_generation_i64)
+        .bind(dependency_generation_i64)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(format!("Thread Resource dependency '{id}' 无法原子满足").into());
+        }
+        let row = sqlx::query("SELECT * FROM scheduler_dependencies WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let dependency = dependency_from_row(&row)?;
+        tx.commit().await?;
+        Ok(ThreadResourceWakeCommit {
+            dependency,
+            wake_event: wake_event.clone(),
+            existing: false,
         })
     }
 

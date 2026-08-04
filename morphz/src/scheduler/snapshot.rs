@@ -183,6 +183,7 @@ pub fn thread_phase(
     pending_signals: &[ThreadSignalRecord],
     activations: &[SchedulerActivationSnapshot],
     schedules: &[ScheduleRecord],
+    dependencies: &[SchedulerDependencyRecord],
 ) -> ThreadPhase {
     if thread.lifecycle.is_terminal() {
         return ThreadPhase::Idle;
@@ -207,6 +208,15 @@ pub fn thread_phase(
         .any(|signal| signal.status == crate::memory::ThreadSignalStatus::Pending)
     {
         return ThreadPhase::Runnable;
+    }
+    if dependencies.iter().any(|dependency| {
+        dependency.owner_kind == super::SchedulerDependencyOwnerKind::Thread
+            && dependency.owner_id == thread.id
+            && dependency.owner_generation == thread.generation
+            && dependency.required
+            && dependency.status == super::SchedulerDependencyStatus::Pending
+    }) {
+        return ThreadPhase::Waiting;
     }
     if activations.iter().any(|activation| {
         activation

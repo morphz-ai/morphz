@@ -51,7 +51,8 @@ use crate::plan_execution::{
     PlanExecutionResult, PlanExecutionRoute, PlanResumeReceipt,
 };
 use crate::scheduler::{
-    SchedulerDependencyFilter, SchedulerDependencyOwnerKind, SchedulerInvariantViolation,
+    SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
+    SchedulerDependencyStatus, SchedulerInvariantViolation,
 };
 use crate::sexpr::SExpr;
 use crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
@@ -2183,6 +2184,193 @@ impl Orchestrator {
         }
     }
 
+    async fn handle_thread_resource_available(&self, event: Event) -> Result<(), DynError> {
+        let Some(resource) = event
+            .payload
+            .get("resource")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(());
+        };
+        let Some(context_id) = event
+            .payload
+            .get("context_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(());
+        };
+        let Some(store) = self.plan_store.as_ref() else {
+            return Ok(());
+        };
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        let dependencies = store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                dependency_kind: Some(SchedulerDependencyKind::Resource),
+                dependency_id: Some(resource.to_string()),
+                status: Some(SchedulerDependencyStatus::Pending),
+                required_only: true,
+                ..Default::default()
+            })
+            .await?;
+        for dependency in dependencies {
+            let Some(thread) = session_store.get_thread(&dependency.owner_id).await? else {
+                tracing::warn!(
+                    dependency_id = %dependency.id,
+                    thread_id = %dependency.owner_id,
+                    "Provider 恢复依赖的 Thread 不存在；保留依赖供不变量审计"
+                );
+                continue;
+            };
+            if thread.context_id != context_id
+                || thread.generation != dependency.owner_generation
+                || thread.lifecycle != ThreadLifecycle::Open
+            {
+                continue;
+            }
+            let wake_event_id = crate::scheduler::stable_command_id(
+                "provider-recovered-event",
+                &format!("{}\0{}", dependency.id, event.id),
+            );
+            let wake_event = Event::new(
+                wake_event_id,
+                "Runtime-ProviderRecovery".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "runtime/provider_recovered".to_string(),
+                serde_json::json!({
+                    "context_id": thread.context_id,
+                    "session_id": thread.session_id,
+                    "thread_id": thread.id,
+                    "root_turn_id": thread.root_turn_id,
+                    "thread_generation": thread.generation,
+                    "principal_id": thread.initiating_principal_id,
+                    "resource": resource,
+                    "dependency_id": dependency.id,
+                    "recovery_event_id": event.id,
+                    "recovery_phase": event.payload.get("recovery_phase").cloned().unwrap_or(serde_json::Value::Null),
+                    "recovery_reason": event.payload.get("recovery_reason").cloned().unwrap_or(serde_json::Value::Null),
+                    "runtime_force_evaluation": true,
+                    "wake_policy": "direct_signal",
+                })
+                .as_object()
+                .cloned()
+                .ok_or("Provider recovery wake payload 不是 object")?,
+            );
+            let commit_result: Result<crate::scheduler::ThreadResourceWakeCommit, DynError> =
+                if let Some(kernel) = self.scheduler_kernel.as_ref() {
+                    match kernel
+                    .execute(
+                        crate::controllers::DeliveryController::satisfy_thread_resource_dependency(
+                            &dependency.id,
+                            dependency.owner_generation,
+                            dependency.dependency_generation,
+                            &event.id,
+                            wake_event,
+                            context_id,
+                            "Runtime-ProviderRecovery",
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(crate::scheduler::KernelResult::ThreadResourceDependencySatisfied(
+                            commit,
+                        )) => Ok(commit),
+                        Ok(_) => Err(
+                            "SatisfyThreadResourceDependency command returned wrong result".into(),
+                        ),
+                        Err(error) => Err(Box::new(error) as DynError),
+                    }
+                } else {
+                    store
+                        .satisfy_thread_resource_dependency(
+                            &dependency.id,
+                            dependency.owner_generation,
+                            dependency.dependency_generation,
+                            &event.id,
+                            &wake_event,
+                        )
+                        .await
+                };
+            let commit = match commit_result {
+                Ok(commit) => commit,
+                Err(error) => {
+                    tracing::warn!(
+                        dependency_id = %dependency.id,
+                        thread_id = %dependency.owner_id,
+                        recovery_event_id = %event.id,
+                        %error,
+                        "Provider 恢复与 Thread 状态发生竞争；跳过该依赖并继续处理其他等待者"
+                    );
+                    continue;
+                }
+            };
+            tracing::info!(
+                dependency_id = %commit.dependency.id,
+                thread_id = %commit.dependency.owner_id,
+                recovery_event_id = %event.id,
+                replay = commit.existing,
+                "Provider 恢复已原子满足 Thread 依赖并写入唤醒 Signal"
+            );
+            // The Event and its direct Signal are already durable. This only
+            // wakes the live executor; replay is safe because Signal claim is
+            // fenced by Thread generation and Activation ownership.
+            self.bus.dispatch_persisted(commit.wake_event).await?;
+        }
+        Ok(())
+    }
+
+    async fn recover_thread_provider_waits(&self) -> Result<(), DynError> {
+        let Some(store) = self.plan_store.as_ref() else {
+            return Ok(());
+        };
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        let resource = self.client.provider_resource_key();
+        let dependencies = store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                dependency_kind: Some(SchedulerDependencyKind::Resource),
+                dependency_id: Some(resource.clone()),
+                status: Some(SchedulerDependencyStatus::Pending),
+                required_only: true,
+                ..Default::default()
+            })
+            .await?;
+        let mut contexts = BTreeSet::new();
+        for dependency in dependencies {
+            let Some(thread) = session_store.get_thread(&dependency.owner_id).await? else {
+                continue;
+            };
+            if thread.lifecycle == ThreadLifecycle::Open
+                && thread.generation == dependency.owner_generation
+            {
+                contexts.insert(thread.context_id);
+            }
+        }
+        if contexts.is_empty() {
+            return Ok(());
+        }
+        tracing::info!(
+            provider_resource = %resource,
+            waiting_contexts = contexts.len(),
+            "Runtime 重启后恢复 Provider 等待探针"
+        );
+        let failure = ModelFailure::new(
+            ModelFailureKind::ServerUnavailable,
+            "Runtime restart recovered persistent Provider waits",
+        )
+        .with_retry_after(Some(1));
+        for context_id in contexts {
+            self.record_provider_failure(&context_id, &failure).await;
+        }
+        Ok(())
+    }
+
     async fn acquire_model_provider_slot(
         &self,
         deadline: tokio::time::Instant,
@@ -2313,6 +2501,7 @@ impl Orchestrator {
     pub fn new_test_with_context_engine(
         bus: Arc<InMemoryEventBus>,
         store: Arc<dyn EventStore>,
+        plan_store: Option<Arc<dyn crate::memory::RuntimeStore>>,
         action_groups: Arc<dyn ActionGroupStore>,
         client: Arc<dyn Client>,
         registry: Arc<Registry>,
@@ -2323,7 +2512,7 @@ impl Orchestrator {
         let orchestrator = Self::assemble_with_scheduler_kernel(
             bus,
             store,
-            None,
+            plan_store,
             None,
             client,
             registry,
@@ -2699,6 +2888,26 @@ impl Orchestrator {
                 Box::pin(async move { orchestrator.handle_chat_event(event).await })
             }),
         );
+        if self.plan_store.is_some() {
+            let orchestrator = Arc::clone(&self);
+            self.bus.subscribe(
+                "runtime/resource_available".to_string(),
+                Arc::new(move |event| {
+                    let orchestrator = Arc::clone(&orchestrator);
+                    Box::pin(
+                        async move { orchestrator.handle_thread_resource_available(event).await },
+                    )
+                }),
+            );
+            let orchestrator = Arc::clone(&self);
+            self.bus.subscribe(
+                "runtime/provider_recovered".to_string(),
+                Arc::new(move |event| {
+                    let orchestrator = Arc::clone(&orchestrator);
+                    Box::pin(async move { orchestrator.handle_chat_event(event).await })
+                }),
+            );
+        }
 
         // Reconcile authoritative scheduler state before redispatching any
         // model Activation. Event dispatch starts concurrent handler futures;
@@ -2707,6 +2916,7 @@ impl Orchestrator {
         // fail with SQLITE_BUSY.
         self.rebuild_activation_admission_queue().await?;
         self.audit_supervision_invariants().await?;
+        self.recover_thread_provider_waits().await?;
         self.reconcile_durable_plans().await?;
         self.recover_delegations().await?;
         self.reconcile_orphaned_threads().await?;
@@ -3420,6 +3630,21 @@ impl Orchestrator {
             .into_iter()
             .map(|intent| intent.thread_id)
             .collect::<HashSet<_>>();
+        let pending_dependency_threads = if let Some(store) = self.plan_store.as_ref() {
+            store
+                .list_scheduler_dependencies(SchedulerDependencyFilter {
+                    owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                    status: Some(SchedulerDependencyStatus::Pending),
+                    required_only: true,
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .map(|dependency| dependency.owner_id)
+                .collect::<HashSet<_>>()
+        } else {
+            HashSet::new()
+        };
         for context in session_store.list_contexts(false).await? {
             let pending_signal_threads = session_store
                 .list_context_thread_signals(
@@ -3446,6 +3671,7 @@ impl Orchestrator {
                     || active_roots.contains(&thread.root_turn_id)
                     || scheduled_threads.contains(&thread.id)
                     || pending_signal_threads.contains(&thread.id)
+                    || pending_dependency_threads.contains(&thread.id)
                 {
                     continue;
                 }
@@ -7220,15 +7446,14 @@ impl Orchestrator {
 
                     if bounded_critical_projection {
                         if recovery_observation_limit <= 1 {
-                            return self
-                                .publish_runtime_failure(
-                                    session_id,
-                                    &model_attempt_id,
-                                    "critical_maintenance_minimum_projection",
-                                    &failure,
-                                    context.parent_session_id.as_deref(),
-                                )
-                                .await;
+                            return Box::pin(self.publish_runtime_failure(
+                                session_id,
+                                &model_attempt_id,
+                                "critical_maintenance_minimum_projection",
+                                &failure,
+                                context.parent_session_id.as_deref(),
+                            ))
+                            .await;
                         }
                         recovery_observation_limit = (recovery_observation_limit / 2).max(1);
                     } else {
@@ -7419,15 +7644,14 @@ impl Orchestrator {
                         .await?;
                         let failure =
                             ModelFailure::new(ModelFailureKind::StreamIdleTimeout, reason);
-                        return self
-                            .publish_runtime_failure(
-                                session_id,
-                                &model_attempt_id,
-                                "reasoning_continuation",
-                                &failure,
-                                context.parent_session_id.as_deref(),
-                            )
-                            .await;
+                        return Box::pin(self.publish_runtime_failure(
+                            session_id,
+                            &model_attempt_id,
+                            "reasoning_continuation",
+                            &failure,
+                            context.parent_session_id.as_deref(),
+                        ))
+                        .await;
                     }
                     // This is a continuation, not a fresh protocol retry: the
                     // next physical request receives the latest saved
@@ -7492,15 +7716,14 @@ impl Orchestrator {
                         Some(&provider_error),
                     )
                     .await?;
-                    return self
-                        .publish_runtime_failure(
-                            session_id,
-                            &model_attempt_id,
-                            "llm_completion",
-                            &failure,
-                            context.parent_session_id.as_deref(),
-                        )
-                        .await;
+                    return Box::pin(self.publish_runtime_failure(
+                        session_id,
+                        &model_attempt_id,
+                        "llm_completion",
+                        &failure,
+                        context.parent_session_id.as_deref(),
+                    ))
+                    .await;
                 }
             };
 
@@ -8907,10 +9130,24 @@ impl Orchestrator {
             }
         }
         let commit = committed.ok_or("Evaluation outcome 持久化没有产生结果")?;
-        let (should_dispatch, ready_signal_event_ids) = match commit {
+        let requested_provider_wait = event
+            .payload
+            .get("disposition")
+            .and_then(serde_json::Value::as_str)
+            == Some("provider_wait");
+        let (should_dispatch, ready_signal_event_ids, thread_terminal) = match commit {
             ActivationOutcomeCommit::Committed {
                 ready_signal_event_ids,
-            } => (true, ready_signal_event_ids),
+            } => (true, ready_signal_event_ids, true),
+            ActivationOutcomeCommit::Suspended { ref dependency_id } => {
+                tracing::info!(
+                    activation_id = %route.activation_id,
+                    thread_id = %route.thread_id,
+                    dependency_id,
+                    "Thread 已持久化进入 Provider 等待；保留 open lifecycle"
+                );
+                (true, Vec::new(), false)
+            }
             ActivationOutcomeCommit::Existing { ref event_id } if event_id == &event.id => {
                 // The process may have committed the immutable outcome and
                 // failed before dispatching it.  Redispatching that exact
@@ -8920,7 +9157,7 @@ impl Orchestrator {
                     event_id = %event.id,
                     "恢复已持久化但尚未确认派发的 Evaluation outcome"
                 );
-                (true, Vec::new())
+                (true, Vec::new(), !requested_provider_wait)
             }
             ActivationOutcomeCommit::Existing { ref event_id } => {
                 tracing::warn!(
@@ -8929,7 +9166,7 @@ impl Orchestrator {
                     committed_event_id = %event_id,
                     "抑制同一 Thread Activation 的重复终态输出"
                 );
-                (false, Vec::new())
+                (false, Vec::new(), false)
             }
             ActivationOutcomeCommit::DeferredByOpenThreadGroups { ref group_ids } => {
                 tracing::info!(
@@ -8938,7 +9175,7 @@ impl Orchestrator {
                     thread_group_ids = ?group_ids,
                     "父 Thread generation 仍有 required attached Thread；拒绝提前提交终态，等待 Group barrier 唤醒"
                 );
-                (false, Vec::new())
+                (false, Vec::new(), false)
             }
             ActivationOutcomeCommit::StaleGeneration => {
                 tracing::warn!(
@@ -8946,7 +9183,7 @@ impl Orchestrator {
                     event_id = %event.id,
                     "抑制已被 DialogueTurn generation fencing 的过期终态输出"
                 );
-                (false, Vec::new())
+                (false, Vec::new(), false)
             }
             ActivationOutcomeCommit::StaleActivation => {
                 tracing::warn!(
@@ -8954,7 +9191,7 @@ impl Orchestrator {
                     event_id = %event.id,
                     "抑制已被取消或终结的物理 Activation 过期输出"
                 );
-                (false, Vec::new())
+                (false, Vec::new(), false)
             }
         };
         if should_dispatch {
@@ -9012,22 +9249,24 @@ impl Orchestrator {
                     })?;
                 self.bus.dispatch_persisted(signal_event).await?;
             }
-            self.revoke_thread_capability_leases(
-                &route.thread_id,
-                "owning Thread reached a terminal outcome",
-            )
-            .await;
-            if let Some(scheduler) = &self.thread_scheduler {
-                if let Err(error) = scheduler.dependency_completed(&route.thread_id).await {
-                    // The terminal Thread and outcome are already durable.
-                    // Startup recovery re-arms every queued schedule, so
-                    // dependency notification failure must not suppress the
-                    // user-visible terminal outcome.
-                    tracing::error!(
-                        thread_id = %route.thread_id,
-                        %error,
-                        "Thread 已终止，但依赖 Schedule 即时唤醒失败；等待恢复路径重放"
-                    );
+            if thread_terminal {
+                self.revoke_thread_capability_leases(
+                    &route.thread_id,
+                    "owning Thread reached a terminal outcome",
+                )
+                .await;
+                if let Some(scheduler) = &self.thread_scheduler {
+                    if let Err(error) = scheduler.dependency_completed(&route.thread_id).await {
+                        // The terminal Thread and outcome are already durable.
+                        // Startup recovery re-arms every queued schedule, so
+                        // dependency notification failure must not suppress the
+                        // user-visible terminal outcome.
+                        tracing::error!(
+                            thread_id = %route.thread_id,
+                            %error,
+                            "Thread 已终止，但依赖 Schedule 即时唤醒失败；等待恢复路径重放"
+                        );
+                    }
                 }
             }
             return Ok(true);
@@ -9211,6 +9450,90 @@ impl Orchestrator {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn publish_provider_wait(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        attempt_id: &str,
+        stage: &str,
+        failure: &ModelFailure,
+        parent_session_id: Option<&str>,
+        provider_resource: &str,
+        error_text: &str,
+        incident: &RuntimeFailureObservation,
+        user_message: &str,
+    ) -> Result<(), DynError> {
+        let route = self
+            .activation_route(attempt_id)
+            .ok_or("Provider wait 缺少 Activation route")?;
+        let mut wait_payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("disposition".to_string(), json!("provider_wait")),
+            (
+                "text".to_string(),
+                json!(if incident.should_notify_user {
+                    user_message
+                } else {
+                    ""
+                }),
+            ),
+            ("provider_resource".to_string(), json!(provider_resource)),
+            (
+                "provider_wait_generation".to_string(),
+                json!(route.trigger_sequence.max(1)),
+            ),
+            (
+                "runtime_failure_kind".to_string(),
+                json!(failure.kind.as_str()),
+            ),
+            ("runtime_failure_stage".to_string(), json!(stage)),
+            ("runtime_failure_error".to_string(), json!(error_text)),
+            (
+                "runtime_failure_incident_id".to_string(),
+                json!(&incident.id),
+            ),
+            (
+                "runtime_failure_incident_occurrence".to_string(),
+                json!(incident.occurrence),
+            ),
+            (
+                "runtime_failure_user_notice_suppressed".to_string(),
+                json!(!incident.should_notify_user),
+            ),
+        ];
+        if let Some(parent_session_id) = parent_session_id {
+            wait_payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
+        }
+        if let Some(seconds) = failure.retry_after_secs {
+            wait_payload.push(("retry_after_secs".to_string(), json!(seconds)));
+        }
+        self.append_activation_route(attempt_id, &mut wait_payload);
+        let wait_event = Event::new(
+            format!("provider_wait_{}", route.activation_id),
+            "Runtime-Orchestrator".to_string(),
+            TYPE_AGENT_CALL.to_string(),
+            if incident.should_notify_user {
+                "chat/progress".to_string()
+            } else {
+                "runtime/provider_wait".to_string()
+            },
+            wait_payload.into_iter().collect(),
+        );
+        if self
+            .commit_and_dispatch_outcome(attempt_id, &wait_event)
+            .await?
+        {
+            // Provider monitoring is normally armed at the physical failure
+            // boundary. Re-arming after the durable dependency commit closes
+            // the race where a fast probe publishes before the wait exists.
+            self.record_provider_failure(context_id, failure).await;
+        }
+        Ok(())
+    }
+
     async fn publish_runtime_failure(
         &self,
         session_id: &str,
@@ -9231,7 +9554,22 @@ impl Orchestrator {
         };
         let incident =
             self.register_runtime_failure_incident(&context_id, stage, failure, &wait_resource);
-        if incident.should_notify_user {
+        let ordinary_provider_wait = failure.kind.uses_provider_recovery()
+            && self.activation_route(attempt_id).is_some_and(|route| {
+                self.objective_evaluations
+                    .get_for_activation(&route.activation_id)
+                    .is_none()
+            });
+        if incident.should_notify_user && ordinary_provider_wait {
+            tracing::warn!(
+                session_id,
+                attempt_id,
+                incident_id = %incident.id,
+                error = %error_text,
+                failure_kind = failure.kind.as_str(),
+                "LLM 请求在重试后失败；Thread 转入持久 Provider 等待"
+            );
+        } else if incident.should_notify_user {
             tracing::error!(
                 session_id,
                 attempt_id,
@@ -9255,9 +9593,9 @@ impl Orchestrator {
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
             ("stage".to_string(), json!(stage)),
-            ("error".to_string(), json!(error_text)),
+            ("error".to_string(), json!(&error_text)),
             ("failure_kind".to_string(), json!(failure.kind.as_str())),
-            ("provider_resource".to_string(), json!(provider_resource)),
+            ("provider_resource".to_string(), json!(&provider_resource)),
             ("incident_id".to_string(), json!(&incident.id)),
             (
                 "incident_occurrence".to_string(),
@@ -9276,7 +9614,7 @@ impl Orchestrator {
         if let Some(seconds) = failure.retry_after_secs {
             payload.push(("retry_after_secs".to_string(), json!(seconds)));
         }
-        if incident.should_notify_user {
+        if incident.should_notify_user && !ordinary_provider_wait {
             self.append_activation_route(attempt_id, &mut payload);
             self.bus
                 .publish(Event::new(
@@ -9317,6 +9655,22 @@ impl Orchestrator {
                 "Runtime 的完整 Attempt 超过执行期限，已取消本回合以避免用户一直等待。当前 Session、Mind 与已提交文件修改均已保留。"
             }
         };
+        if ordinary_provider_wait {
+            Box::pin(self.publish_provider_wait(
+                &context_id,
+                session_id,
+                attempt_id,
+                stage,
+                failure,
+                parent_session_id,
+                &provider_resource,
+                &error_text,
+                &incident,
+                user_message,
+            ))
+            .await?;
+            return Ok(());
+        }
         let mut attributes = vec![
             (
                 "runtime_failure_kind".to_string(),

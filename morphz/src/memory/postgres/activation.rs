@@ -12,6 +12,9 @@ use crate::memory::{
     ThreadActivationRecord, ThreadActivationStatus, ThreadGroupPolicy, ThreadGroupStatus,
     ThreadKind, ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervisorKind,
 };
+use crate::scheduler::{
+    stable_scheduler_dependency_id, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
+};
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::PgRow;
@@ -1409,6 +1412,162 @@ impl ActivationStore for PostgresStore {
                 None => ActivationOutcomeCommit::StaleActivation,
             });
         }
+        if disposition == "provider_wait" {
+            let resource = event
+                .payload
+                .get("provider_resource")
+                .and_then(JsonValue::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or("Provider wait outcome 缺少 provider_resource")?;
+            let dependency_generation = event
+                .payload
+                .get("provider_wait_generation")
+                .and_then(JsonValue::as_u64)
+                .filter(|value| *value > 0)
+                .ok_or("Provider wait outcome 缺少有效的 provider_wait_generation")?;
+            let thread_generation_u64 = u64::try_from(thread_generation)?;
+            let dependency_id = stable_scheduler_dependency_id(
+                SchedulerDependencyOwnerKind::Thread,
+                thread_id,
+                thread_generation_u64,
+                SchedulerDependencyKind::Resource,
+                resource,
+                dependency_generation,
+            );
+            append_event_in_tx(&mut tx, event).await?;
+            let activation_terminal = sqlx::query(
+                r#"UPDATE thread_activations
+                   SET revision = revision + 1, status = 'completed', claimed_by = NULL,
+                       lease_expires_at = NULL, updated_at = $1
+                   WHERE id = $2 AND generation = $3 AND status = 'running'"#,
+            )
+            .bind(&now)
+            .bind(activation_id)
+            .bind(activation_generation)
+            .execute(&mut *tx)
+            .await?;
+            if activation_terminal.rows_affected() != 1 {
+                return Err(format!(
+                    "Provider wait outcome 无法原子结束 Activation '{}'",
+                    activation_id
+                )
+                .into());
+            }
+            sqlx::query(
+                r#"UPDATE thread_signals
+                   SET status = 'acknowledged', acknowledged_at = $1
+                   WHERE id IN (
+                     SELECT signal_id FROM activation_signals WHERE activation_id = $2
+                   ) AND status = 'claimed'"#,
+            )
+            .bind(&now)
+            .bind(activation_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE scheduler_dependencies
+                   SET status = 'cancelled', updated_at = $1
+                   WHERE owner_kind = 'thread' AND owner_id = $2
+                     AND owner_generation = $3 AND dependency_kind = 'resource'
+                     AND dependency_id = $4 AND status = 'pending' AND id <> $5"#,
+            )
+            .bind(&now)
+            .bind(thread_id)
+            .bind(thread_generation)
+            .bind(resource)
+            .bind(&dependency_id)
+            .execute(&mut *tx)
+            .await?;
+            let metadata = serde_json::json!({
+                "source": "provider_wait",
+                "context_id": event.payload.get("context_id").cloned().unwrap_or(JsonValue::Null),
+                "session_id": session_id,
+                "activation_id": activation_id,
+                "wait_event_id": event.id,
+                "runtime_failure_kind": event.payload.get("runtime_failure_kind").cloned().unwrap_or(JsonValue::Null),
+                "runtime_failure_stage": event.payload.get("runtime_failure_stage").cloned().unwrap_or(JsonValue::Null),
+                "runtime_failure_incident_id": event.payload.get("runtime_failure_incident_id").cloned().unwrap_or(JsonValue::Null),
+            });
+            let inserted = sqlx::query(
+                r#"INSERT INTO scheduler_dependencies
+                   (id, owner_kind, owner_id, owner_generation,
+                    dependency_kind, dependency_id, dependency_generation,
+                    required, status, metadata_json, created_at, updated_at)
+                   VALUES ($1, 'thread', $2, $3, 'resource', $4, $5,
+                           TRUE, 'pending', $6, $7, $7)
+                   ON CONFLICT(id) DO NOTHING"#,
+            )
+            .bind(&dependency_id)
+            .bind(thread_id)
+            .bind(thread_generation)
+            .bind(resource)
+            .bind(i64::try_from(dependency_generation)?)
+            .bind(&metadata)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            if inserted.rows_affected() != 1 {
+                let row = sqlx::query("SELECT * FROM scheduler_dependencies WHERE id = $1")
+                    .bind(&dependency_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                let current_owner_id: String = row.get("owner_id");
+                let current_owner_generation: i64 = row.get("owner_generation");
+                let current_kind: String = row.get("dependency_kind");
+                let current_resource: String = row.get("dependency_id");
+                let current_dependency_generation: i64 = row.get("dependency_generation");
+                let current_status: String = row.get("status");
+                if current_owner_id != thread_id
+                    || current_owner_generation != thread_generation
+                    || current_kind != "resource"
+                    || current_resource != resource
+                    || current_dependency_generation != i64::try_from(dependency_generation)?
+                    || current_status != "pending"
+                {
+                    return Err(format!(
+                        "Provider wait dependency ID '{}' 已被不同内容占用",
+                        dependency_id
+                    )
+                    .into());
+                }
+            }
+            let thread_update = sqlx::query(
+                r#"UPDATE threads SET revision = revision + 1, updated_at = $1
+                   WHERE id = $2 AND generation = $3 AND status = 'open'"#,
+            )
+            .bind(&now)
+            .bind(thread_id)
+            .bind(thread_generation)
+            .execute(&mut *tx)
+            .await?;
+            if thread_update.rows_affected() != 1 {
+                return Err(
+                    format!("Provider wait outcome 的 Thread '{}' 已终结", thread_id).into(),
+                );
+            }
+            sqlx::query(
+                r#"INSERT INTO evaluation_outcomes
+                   (activation_id, session_id, disposition, event_id, created_at)
+                   VALUES ($1, $2, $3, $4, $5)"#,
+            )
+            .bind(activation_id)
+            .bind(session_id)
+            .bind(disposition)
+            .bind(&event.id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            let activity_at = event
+                .timestamp
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            sqlx::query("UPDATE sessions SET updated_at = $1, last_activity_at = $1 WHERE id = $2")
+                .bind(activity_at)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok(ActivationOutcomeCommit::Suspended { dependency_id });
+        }
         let result_text = event.payload.get("text").and_then(JsonValue::as_str);
         let terminal_kind = event
             .payload
@@ -1740,6 +1899,17 @@ impl ActivationStore for PostgresStore {
                 format!("Evaluation outcome 无法原子提交 Thread '{thread_id}' 终态").into(),
             );
         }
+        sqlx::query(
+            r#"UPDATE scheduler_dependencies
+               SET status = 'cancelled', updated_at = $1
+               WHERE owner_kind = 'thread' AND owner_id = $2
+                 AND owner_generation = $3 AND status = 'pending'"#,
+        )
+        .bind(&now)
+        .bind(thread_id)
+        .bind(thread_generation)
+        .execute(&mut *tx)
+        .await?;
         let mut ready_signal_event_ids = Vec::new();
         if let Some(group_id) = thread_group_id.as_deref() {
             let member_status = match terminal_kind {
@@ -2352,16 +2522,24 @@ impl ActivationStore for PostgresStore {
             tx.commit().await?;
             return Ok(DialogueTurnRetryMutation::Conflict { current });
         }
-        let rejected = if current.kind != ThreadKind::DialogueTurn {
-            Some("只有 DialogueTurn 可以通过此原语重启".to_string())
+        let retryable_execution = current.kind == ThreadKind::Execution
+            && current.supervision.supervisor_kind == ThreadSupervisorKind::Runtime
+            && current.supervision.parent_thread_id.is_none()
+            && current.supervision.thread_group_id.is_none()
+            && current.supervision.origin_evaluation_id.is_none();
+        let rejected = if current.kind != ThreadKind::DialogueTurn && !retryable_execution {
+            Some(
+                "只有 DialogueTurn 或 Runtime 直接监督的根 Execution Thread 可以原位重试"
+                    .to_string(),
+            )
         } else if !current.lifecycle.is_terminal() {
-            Some("DialogueTurn 尚未进入终态".to_string())
+            Some("Thread 尚未进入终态".to_string())
         } else if current.context_id != context_id || current.session_id != session_id {
             Some("Retry Event 与 DialogueTurn route 不一致".to_string())
         } else if current.result_event_id.as_deref()
             != Some(request.expected_result_event_id.as_str())
         {
-            Some("DialogueTurn 的当前结果已经变化".to_string())
+            Some("Thread 的当前结果已经变化".to_string())
         } else {
             None
         };

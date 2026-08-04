@@ -355,6 +355,25 @@ impl SchedulerKernel {
                     .map_err(store_error)?;
                 Ok(KernelResult::DependencySatisfied(mutation))
             }
+            KernelCommandPayload::SatisfyThreadResourceDependency(payload) => {
+                if command.header.generation != Some(payload.owner_generation) {
+                    return Err(KernelError::InvalidCommand(
+                        "Thread Resource dependency generation disagrees with command fence".into(),
+                    ));
+                }
+                let commit = self
+                    .store
+                    .satisfy_thread_resource_dependency(
+                        &payload.dependency_id,
+                        payload.owner_generation,
+                        payload.dependency_generation,
+                        &payload.satisfied_by_event_id,
+                        &payload.wake_event,
+                    )
+                    .await
+                    .map_err(store_error)?;
+                Ok(KernelResult::ThreadResourceDependencySatisfied(commit))
+            }
             KernelCommandPayload::CancelDependencies {
                 owner_kind,
                 owner_id,

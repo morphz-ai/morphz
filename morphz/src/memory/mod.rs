@@ -815,6 +815,13 @@ pub enum ActivationOutcomeCommit {
         /// executor; it must not infer or materialize another route.
         ready_signal_event_ids: Vec<String>,
     },
+    /// The physical Activation reached a durable Provider-recovery boundary,
+    /// but its logical Thread remains open. The same transaction appends the
+    /// nonterminal notice, acknowledges the claimed Signal batch and registers
+    /// one required Thread -> Resource dependency.
+    Suspended {
+        dependency_id: String,
+    },
     Existing {
         event_id: String,
     },
@@ -4650,13 +4657,13 @@ pub trait ActivationStore: Send + Sync {
         lease_expires_at: Option<DateTime<Utc>>,
         context_snapshot_version: Option<u64>,
     ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>;
-    /// Commit the one authoritative terminal outcome for a Thread Activation.
+    /// Commit the one authoritative outcome boundary for a Thread Activation.
     ///
-    /// The Store transaction fences the running Activation generation, marks
-    /// the Activation and Thread terminal, appends the immutable outcome Event,
-    /// acknowledges every claimed input Signal, and advances the supervised
-    /// Group/dependency/delivery projections before it commits.  Callers must
-    /// not reproduce these state transitions in a second transaction.
+    /// A terminal outcome marks both Activation and Thread terminal. A
+    /// `provider_wait` disposition instead marks only the Activation terminal
+    /// and atomically registers a required Thread Resource dependency while
+    /// leaving the logical Thread open. Callers must not reproduce either
+    /// transition in a second transaction.
     async fn commit_activation_outcome(
         &self,
         activation_id: &str,

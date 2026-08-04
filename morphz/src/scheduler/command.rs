@@ -8,6 +8,7 @@ use crate::memory::{
 };
 use crate::scheduler::{
     NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyOwnerKind,
+    ThreadResourceWakeCommit,
 };
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -192,6 +193,15 @@ pub struct SatisfyDependencyCommand {
 }
 
 #[derive(Debug, Clone)]
+pub struct SatisfyThreadResourceDependencyCommand {
+    pub dependency_id: String,
+    pub owner_generation: u64,
+    pub dependency_generation: u64,
+    pub satisfied_by_event_id: String,
+    pub wake_event: crate::event::Event,
+}
+
+#[derive(Debug, Clone)]
 pub enum KernelCommandPayload {
     SpawnSupervisedGroup(SpawnSupervisedGroupCommand),
     PromoteThread(PromoteThreadCommand),
@@ -208,6 +218,7 @@ pub enum KernelCommandPayload {
     CommitThreadOutcome(CommitThreadOutcomeCommand),
     RegisterDependency(RegisterDependencyCommand),
     SatisfyDependency(SatisfyDependencyCommand),
+    SatisfyThreadResourceDependency(SatisfyThreadResourceDependencyCommand),
     CancelDependencies {
         owner_kind: SchedulerDependencyOwnerKind,
         owner_id: String,
@@ -235,5 +246,6 @@ pub enum KernelResult {
     ThreadOutcomeCommitted(ActivationOutcomeCommit),
     DependencyRegistered(SchedulerDependencyMutation),
     DependencySatisfied(SchedulerDependencyMutation),
+    ThreadResourceDependencySatisfied(ThreadResourceWakeCommit),
     DependenciesCancelled { count: u64 },
 }

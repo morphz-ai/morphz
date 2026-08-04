@@ -17,6 +17,10 @@ use morphz::memory::{
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
 use morphz::permission::PermissionConfig;
+use morphz::scheduler::{
+    SchedulerDependencyFilter, SchedulerDependencyOwnerKind, SchedulerDependencyStatus,
+    SchedulerDependencyStore as _,
+};
 use morphz::sexpr::{parse, SExpr};
 use morphz::timer::TimerEngine;
 use morphz::tool::{DelegateTool, EditFileTool, ReadFileTool, Registry, Tool, WriteFileTool};
@@ -79,6 +83,18 @@ struct SharedTransientFailureClient {
     calls: AtomicUsize,
     health_probe_calls: AtomicUsize,
     initial_barrier: tokio::sync::Barrier,
+}
+
+struct RecoveringTransientClient {
+    calls: AtomicUsize,
+    health_probe_calls: AtomicUsize,
+}
+
+struct PersistentOutageClient;
+
+struct HealthyAfterRestartClient {
+    calls: AtomicUsize,
+    health_probe_calls: AtomicUsize,
 }
 
 struct PartialReasoningProviderFailureClient {
@@ -318,6 +334,81 @@ impl Client for SharedTransientFailureClient {
             ModelFailureKind::TransientNetwork,
             "simulated independent health probe failure",
         )))
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for RecoveringTransientClient {
+    fn provider_resource_key(&self) -> String {
+        "model-provider:test-recovering-outage".to_string()
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(Box::new(
+                ModelFailure::new(
+                    ModelFailureKind::ServerUnavailable,
+                    "simulated one-shot provider outage",
+                )
+                .with_retry_after(Some(1)),
+            ));
+        }
+        Ok(text_reply_response("continued after provider recovery"))
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for PersistentOutageClient {
+    fn provider_resource_key(&self) -> String {
+        "model-provider:test-restart-outage".to_string()
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        Err(Box::new(
+            ModelFailure::new(
+                ModelFailureKind::ServerUnavailable,
+                "simulated outage across Runtime restart",
+            )
+            .with_retry_after(Some(1)),
+        ))
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        std::future::pending().await
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for HealthyAfterRestartClient {
+    fn provider_resource_key(&self) -> String {
+        "model-provider:test-restart-outage".to_string()
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(text_reply_response("continued after Runtime restart"))
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -615,6 +706,30 @@ fn new_test_orchestrator(
     Orchestrator::new_test_with_context_engine(
         bus,
         Arc::clone(&store) as Arc<dyn EventStore>,
+        None,
+        store as Arc<dyn morphz::memory::ActionGroupStore>,
+        client,
+        registry,
+        config,
+        context_engine,
+        Arc::clone(&timers),
+    )
+    .unwrap()
+}
+
+fn new_test_orchestrator_with_runtime_store(
+    bus: Arc<InMemoryEventBus>,
+    store: Arc<SqliteStore>,
+    client: Arc<dyn Client>,
+    registry: Arc<Registry>,
+    config: morphz::config::OrchestratorConfig,
+    context_engine: Arc<ContextEngine>,
+) -> Arc<Orchestrator> {
+    let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+    Orchestrator::new_test_with_context_engine(
+        bus,
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Some(Arc::clone(&store) as Arc<dyn morphz::memory::RuntimeStore>),
         store as Arc<dyn morphz::memory::ActionGroupStore>,
         client,
         registry,
@@ -880,12 +995,13 @@ async fn wait_for_topic_count(
     Vec::new()
 }
 
-async fn wait_for_context_terminal_count(
+async fn wait_for_disposition_count(
     store: &Arc<SqliteStore>,
     context_id: &str,
+    disposition: &str,
     expected: usize,
 ) -> Vec<Event> {
-    for _ in 0..80 {
+    for _ in 0..240 {
         let events = store
             .query(QueryFilter {
                 context_id: Some(context_id.to_string()),
@@ -894,7 +1010,13 @@ async fn wait_for_context_terminal_count(
             .await
             .unwrap()
             .into_iter()
-            .filter(|event| matches!(event.topic.as_str(), "chat/reply" | "chat/no_reply"))
+            .filter(|event| {
+                event
+                    .payload
+                    .get("disposition")
+                    .and_then(|value| value.as_str())
+                    == Some(disposition)
+            })
             .collect::<Vec<_>>();
         if events.len() >= expected {
             return events;
@@ -2054,7 +2176,7 @@ async fn test_response_protocol_fuses_after_two_failed_corrections() {
 }
 
 #[tokio::test]
-async fn test_llm_failure_is_audited_and_always_replies_to_user() {
+async fn test_llm_failure_is_audited_and_persists_provider_wait() {
     let session_id = "attempt_llm_failure";
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("llm-failure.db");
@@ -2077,38 +2199,57 @@ async fn test_llm_failure_is_audited_and_always_replies_to_user() {
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, session_id, "do work").await;
-    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
-    let failures = wait_for_topic(&store, "chat/runtime_error", session_id).await;
+    let waits = wait_for_disposition_count(&store, session_id, "provider_wait", 1).await;
 
-    assert_eq!(replies.len(), 1);
-    assert!(replies[0]
+    assert_eq!(waits.len(), 1);
+    assert!(waits[0]
         .payload
         .get("text")
         .and_then(|value| value.as_str())
         .unwrap()
         .contains("模型请求失败"));
     assert_eq!(
-        replies[0]
+        waits[0]
             .payload
             .get("runtime_failure_kind")
             .and_then(|value| value.as_str()),
         Some("unknown")
     );
-    assert_eq!(failures.len(), 1);
+    let failures = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("chat/runtime_error".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(failures.is_empty(), "等待状态不能同时伪装成终态错误");
+    let replies = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("chat/reply".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(replies.is_empty());
+    let threads = store.list_context_threads(session_id, true).await.unwrap();
     assert_eq!(
-        failures[0]
-            .payload
-            .get("stage")
-            .and_then(|value| value.as_str()),
-        Some("llm_completion")
+        threads
+            .iter()
+            .filter(|thread| thread.lifecycle == ThreadLifecycle::Open)
+            .count(),
+        1
     );
-    assert!(failures[0]
-        .payload
-        .get("error")
-        .and_then(|value| value.as_str())
-        .unwrap()
-        .contains("simulated LLM transport timeout"));
-    assert!(failures[0].payload.get("incident_id").is_some());
+    let dependencies = store
+        .list_scheduler_dependencies(SchedulerDependencyFilter {
+            owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+            status: Some(SchedulerDependencyStatus::Pending),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(dependencies.len(), 1);
 }
 
 #[tokio::test]
@@ -4889,6 +5030,155 @@ async fn test_distinct_sessions_evaluate_concurrently_in_shared_context() {
 }
 
 #[tokio::test]
+async fn provider_recovery_resumes_the_same_open_thread() {
+    let context_id = "provider-recovery-context";
+    let session_id = "provider-recovery-session";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("provider-recovery.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(RecoveringTransientClient {
+        calls: AtomicUsize::new(0),
+        health_probe_calls: AtomicUsize::new(0),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator_with_runtime_store(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user_in_context(&bus, context_id, session_id, "continue after outage").await;
+    let replies = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        wait_for_topic(&store, "chat/reply", session_id),
+    )
+    .await
+    .expect("Provider recovery should wake the Thread");
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("continued after provider recovery")
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(client.health_probe_calls.load(Ordering::SeqCst), 1);
+
+    let waits = wait_for_disposition_count(&store, context_id, "provider_wait", 1).await;
+    assert_eq!(waits.len(), 1);
+    let thread_id = waits[0]
+        .payload
+        .get("thread_id")
+        .and_then(|value| value.as_str())
+        .unwrap();
+    let threads = store.list_context_threads(context_id, true).await.unwrap();
+    let thread = threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .unwrap();
+    assert_eq!(thread.lifecycle, ThreadLifecycle::Completed);
+    assert_eq!(
+        thread.generation, 1,
+        "recovery must resume the same logical Thread"
+    );
+    let dependencies = store
+        .list_scheduler_dependencies(SchedulerDependencyFilter {
+            owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+            owner_id: Some(thread_id.to_string()),
+            status: Some(SchedulerDependencyStatus::Satisfied),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(dependencies.len(), 1);
+    assert!(dependencies[0].satisfied_by_event_id.is_some());
+}
+
+#[tokio::test]
+async fn provider_wait_survives_runtime_restart() {
+    let context_id = "provider-restart-context";
+    let session_id = "provider-restart-session";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("provider-restart.db");
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+
+    let first_bus = Arc::new(InMemoryEventBus::new());
+    install_test_session_registry(&first_bus, &store);
+    let config = morphz::config::OrchestratorConfig::default();
+    let first_engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let first_orchestrator = new_test_orchestrator(
+        Arc::clone(&first_bus),
+        Arc::clone(&store),
+        Arc::new(PersistentOutageClient) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config.clone(),
+        first_engine,
+    );
+    Arc::clone(&first_orchestrator).start().await.unwrap();
+    publish_user_in_context(&first_bus, context_id, session_id, "survive restart").await;
+    assert_eq!(
+        wait_for_disposition_count(&store, context_id, "provider_wait", 1)
+            .await
+            .len(),
+        1
+    );
+    drop(first_orchestrator);
+    drop(first_bus);
+
+    let second_bus = Arc::new(InMemoryEventBus::new());
+    let recovering_client = Arc::new(HealthyAfterRestartClient {
+        calls: AtomicUsize::new(0),
+        health_probe_calls: AtomicUsize::new(0),
+    });
+    let second_engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let second_orchestrator = new_test_orchestrator_with_runtime_store(
+        Arc::clone(&second_bus),
+        Arc::clone(&store),
+        Arc::clone(&recovering_client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        second_engine,
+    );
+    second_orchestrator.start().await.unwrap();
+
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("continued after Runtime restart")
+    );
+    assert_eq!(
+        recovering_client.health_probe_calls.load(Ordering::SeqCst),
+        1
+    );
+    assert_eq!(recovering_client.calls.load(Ordering::SeqCst), 1);
+    let threads = store.list_context_threads(context_id, true).await.unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].lifecycle, ThreadLifecycle::Completed);
+    assert_eq!(threads[0].generation, 1);
+}
+
+#[tokio::test]
 async fn shared_provider_outage_requires_three_small_probe_failures_before_opening() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("shared-provider-outage.db");
@@ -4920,7 +5210,7 @@ async fn shared_provider_outage_requires_three_small_probe_failures_before_openi
         publish_user_in_context(&bus, "provider-outage-context", "outage-b", "second"),
     );
     assert_eq!(
-        wait_for_context_terminal_count(&store, "provider-outage-context", 2)
+        wait_for_disposition_count(&store, "provider-outage-context", "provider_wait", 2)
             .await
             .len(),
         2
@@ -4934,10 +5224,10 @@ async fn shared_provider_outage_requires_three_small_probe_failures_before_openi
     )
     .await;
     assert_eq!(
-        wait_for_topic(&store, "chat/no_reply", "outage-c")
+        wait_for_disposition_count(&store, "provider-outage-context", "provider_wait", 3)
             .await
             .len(),
-        1
+        3
     );
     assert_eq!(
         client.calls.load(Ordering::SeqCst),
@@ -4962,10 +5252,10 @@ async fn shared_provider_outage_requires_three_small_probe_failures_before_openi
     )
     .await;
     assert_eq!(
-        wait_for_topic(&store, "chat/no_reply", "outage-d")
+        wait_for_disposition_count(&store, "provider-outage-context", "provider_wait", 4)
             .await
             .len(),
-        1
+        4
     );
     assert_eq!(client.calls.load(Ordering::SeqCst), 3);
 
@@ -4993,16 +5283,36 @@ async fn shared_provider_outage_requires_three_small_probe_failures_before_openi
         })
         .await
         .unwrap();
-    assert_eq!(
-        replies.len(),
-        1,
-        "one outage must produce one visible notice"
+    assert!(replies.is_empty(), "Provider wait is non-terminal");
+    assert!(
+        silent.is_empty(),
+        "Provider wait is not a no-reply terminal outcome"
     );
-    assert_eq!(silent.len(), 3, "other failed Activations still terminate");
-    assert_eq!(incidents.len(), 1, "one outage must create one incident");
-    assert!(silent.iter().all(
-        |event| event.payload.get("runtime_failure_user_notice_suppressed") == Some(&json!(true))
-    ));
+    assert!(
+        incidents.is_empty(),
+        "Provider wait is not a terminal runtime error"
+    );
+    let waits =
+        wait_for_disposition_count(&store, "provider-outage-context", "provider_wait", 4).await;
+    assert_eq!(
+        waits
+            .iter()
+            .filter(|event| {
+                event.payload.get("runtime_failure_user_notice_suppressed") == Some(&json!(false))
+            })
+            .count(),
+        1,
+        "one outage must produce one visible wait notice"
+    );
+    assert_eq!(
+        waits
+            .iter()
+            .filter(|event| {
+                event.payload.get("runtime_failure_user_notice_suppressed") == Some(&json!(true))
+            })
+            .count(),
+        3
+    );
 }
 
 #[tokio::test]
@@ -5032,7 +5342,7 @@ async fn partial_reasoning_before_provider_failure_does_not_retry_business_reque
 
     publish_user(&bus, "partial-provider-a", "first request").await;
     assert_eq!(
-        wait_for_topic(&store, "chat/reply", "partial-provider-a")
+        wait_for_disposition_count(&store, "partial-provider-a", "provider_wait", 1,)
             .await
             .len(),
         1

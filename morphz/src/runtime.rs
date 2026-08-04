@@ -4976,6 +4976,27 @@ impl MorphzRuntime {
             }
         }
 
+        let mut thread_dependencies = Vec::new();
+        for thread in &authority_threads {
+            thread_dependencies.extend(
+                self.inner
+                    .store
+                    .list_scheduler_dependencies(SchedulerDependencyFilter {
+                        owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                        owner_id: Some(thread.id.clone()),
+                        ..SchedulerDependencyFilter::default()
+                    })
+                    .await?,
+            );
+        }
+        let mut dependencies_by_thread = HashMap::<String, Vec<_>>::new();
+        for dependency in &thread_dependencies {
+            dependencies_by_thread
+                .entry(dependency.owner_id.clone())
+                .or_default()
+                .push(dependency.clone());
+        }
+
         let mut threads = Vec::with_capacity(all_threads.len());
         for thread in all_threads {
             let outcome = self.inner.store.get_thread_outcome(&thread.id).await?;
@@ -4984,11 +5005,15 @@ impl MorphzRuntime {
                 .unwrap_or_default();
             let thread_activations = activations_by_thread.remove(&thread.id).unwrap_or_default();
             let schedules = schedules_by_thread.remove(&thread.id).unwrap_or_default();
+            let dependencies = dependencies_by_thread
+                .remove(&thread.id)
+                .unwrap_or_default();
             let phase = crate::scheduler::thread_phase(
                 &thread,
                 &pending_signals,
                 &thread_activations,
                 &schedules,
+                &dependencies,
             );
             threads.push(SchedulerThreadSnapshot {
                 thread,
@@ -5064,7 +5089,7 @@ impl MorphzRuntime {
                 )
             })
             .count();
-        let mut dependencies = Vec::new();
+        let mut dependencies = thread_dependencies;
         for objective in &authority_objectives {
             dependencies.extend(
                 self.inner
@@ -5072,18 +5097,6 @@ impl MorphzRuntime {
                     .list_scheduler_dependencies(SchedulerDependencyFilter {
                         owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
                         owner_id: Some(objective.id.clone()),
-                        ..SchedulerDependencyFilter::default()
-                    })
-                    .await?,
-            );
-        }
-        for thread in &authority_threads {
-            dependencies.extend(
-                self.inner
-                    .store
-                    .list_scheduler_dependencies(SchedulerDependencyFilter {
-                        owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
-                        owner_id: Some(thread.id.clone()),
                         ..SchedulerDependencyFilter::default()
                     })
                     .await?,
@@ -6002,11 +6015,21 @@ impl MorphzRuntime {
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
+        let dependencies = self
+            .inner
+            .store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                owner_id: Some(thread_id.to_string()),
+                ..SchedulerDependencyFilter::default()
+            })
+            .await?;
         let phase = crate::scheduler::thread_phase(
             &thread,
             &pending_signals,
             &activation_snapshots,
             &schedules,
+            &dependencies,
         );
         let mut model_attempt_events = Vec::new();
         for topic in [

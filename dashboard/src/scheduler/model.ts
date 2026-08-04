@@ -164,9 +164,9 @@ export function threadCarriesExecution(thread: SchedulerThreadSnapshot): boolean
 
 /**
  * A failure reply is retryable only while it is still the authoritative
- * terminal result of the same logical DialogueTurn. This prevents an old
- * failure card from starting another generation after the Turn has already
- * been reopened, completed, or superseded by a newer result.
+ * terminal result of the same logical Thread. Besides ordinary DialogueTurn,
+ * a root Execution Thread directly supervised by Runtime is safe to replay:
+ * it has no parent/group/Objective consumer that could receive a duplicate.
  */
 export function retryableDialogueThread(
   threads: SchedulerThreadSnapshot[],
@@ -180,7 +180,13 @@ export function retryableDialogueThread(
   const rootTurnId = typeof payload.root_turn_id === 'string' ? payload.root_turn_id : ''
   return threads.find(snapshot => {
     const thread = snapshot.thread
-    return thread.kind === 'dialogue_turn'
+    const retryableKind = thread.kind === 'dialogue_turn'
+      || (thread.kind === 'execution'
+        && thread.supervision?.supervisor_kind === 'runtime'
+        && !thread.supervision?.parent_thread_id
+        && !thread.supervision?.thread_group_id
+        && !thread.supervision?.origin_evaluation_id)
+    return retryableKind
       && thread.lifecycle === 'failed'
       && thread.result_event_id === eventId
       && ((!threadId && !rootTurnId)

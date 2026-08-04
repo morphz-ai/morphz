@@ -2,6 +2,7 @@ use super::domain::{
     SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
     SchedulerDependencyRecord,
 };
+use crate::event::Event;
 use serde_json::Value as JsonValue;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +27,16 @@ pub enum SchedulerDependencyMutation {
         reason: String,
     },
     NotFound,
+}
+
+/// Crash-safe handoff from one satisfied Thread Resource dependency to its
+/// exact successor Signal. `existing` means the same recovery Event already
+/// completed the handoff and may safely be redispatched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadResourceWakeCommit {
+    pub dependency: SchedulerDependencyRecord,
+    pub wake_event: Event,
+    pub existing: bool,
 }
 
 /// Persistence boundary for scheduler readiness facts.
@@ -60,6 +71,17 @@ pub trait SchedulerDependencyStore: Send + Sync {
         dependency_generation: u64,
         satisfied_by_event_id: &str,
     ) -> Result<SchedulerDependencyMutation, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Atomically satisfies a pending Thread -> Resource dependency, appends
+    /// the immutable per-Thread recovery Event and creates its direct Signal.
+    async fn satisfy_thread_resource_dependency(
+        &self,
+        id: &str,
+        owner_generation: u64,
+        dependency_generation: u64,
+        satisfied_by_event_id: &str,
+        wake_event: &Event,
+    ) -> Result<ThreadResourceWakeCommit, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Cancels nonterminal edges owned by an obsolete generation. This is a
     /// lifecycle operation, not semantic satisfaction.

@@ -2,7 +2,7 @@ use crate::event::Event;
 use crate::memory::NewThread;
 use crate::scheduler::{
     CommitDeliveryOutcomeCommand, CommitThreadOutcomeCommand, KernelCommand, KernelCommandHeader,
-    KernelCommandPayload,
+    KernelCommandPayload, SatisfyThreadResourceDependencyCommand,
 };
 
 /// Lowers a finite Activation result to the Kernel's atomic
@@ -53,6 +53,40 @@ impl DeliveryController {
                 activation_id: activation_id.to_string(),
                 event,
             }),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn satisfy_thread_resource_dependency(
+        dependency_id: &str,
+        owner_generation: u64,
+        dependency_generation: u64,
+        satisfied_by_event_id: &str,
+        wake_event: Event,
+        context_id: &str,
+        actor: &str,
+    ) -> KernelCommand {
+        let material = format!(
+            "thread-resource-wake\0{dependency_id}\0{owner_generation}\0{dependency_generation}\0{satisfied_by_event_id}\0{}",
+            wake_event.id
+        );
+        KernelCommand {
+            header: KernelCommandHeader::new(
+                crate::scheduler::stable_command_id("thread-resource-wake", &material),
+                satisfied_by_event_id,
+                context_id,
+                actor,
+            )
+            .with_generation(owner_generation),
+            payload: KernelCommandPayload::SatisfyThreadResourceDependency(
+                SatisfyThreadResourceDependencyCommand {
+                    dependency_id: dependency_id.to_string(),
+                    owner_generation,
+                    dependency_generation,
+                    satisfied_by_event_id: satisfied_by_event_id.to_string(),
+                    wake_event,
+                },
+            ),
         }
     }
 }

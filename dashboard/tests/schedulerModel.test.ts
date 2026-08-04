@@ -302,3 +302,31 @@ test('failure reply retries only the still-authoritative failed DialogueTurn gen
     thread_id: failed.thread.id,
   }), undefined)
 })
+
+test('failure reply may retry only a Runtime-owned root Execution Thread', () => {
+  const failed = fixture().threads[0]
+  failed.thread.kind = 'execution'
+  failed.thread.lifecycle = 'failed'
+  failed.thread.result_event_id = 'execution-failure-1'
+  failed.thread.supervision = {
+    lifetime: 'durable',
+    supervisor_kind: 'runtime',
+    supervisor_id: 'dialogue-router',
+    generation: failed.thread.generation,
+    completion_contract: {},
+  }
+
+  assert.equal(
+    retryableDialogueThread([failed], 'execution-failure-1', {
+      runtime_failure_kind: 'server_unavailable',
+      thread_id: failed.thread.id,
+    })?.thread.id,
+    failed.thread.id,
+  )
+
+  failed.thread.supervision.parent_thread_id = 'parent-thread'
+  assert.equal(retryableDialogueThread([failed], 'execution-failure-1', {
+    runtime_failure_kind: 'server_unavailable',
+    thread_id: failed.thread.id,
+  }), undefined)
+})

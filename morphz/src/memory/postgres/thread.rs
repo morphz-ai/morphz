@@ -787,6 +787,17 @@ impl ThreadStore for PostgresStore {
             .bind(&current.id)
             .execute(&mut *tx)
             .await?;
+            sqlx::query(
+                r#"UPDATE scheduler_dependencies
+                   SET status = 'cancelled', updated_at = $1
+                   WHERE owner_kind = 'thread' AND owner_id = $2
+                     AND owner_generation = $3 AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&current.id)
+            .bind(i64::try_from(current.generation)?)
+            .execute(&mut *tx)
+            .await?;
             let evidence_refs = serde_json::json!([result_event.id]);
             let unresolved_failures = serde_json::json!([reason]);
             let check_results = serde_json::json!({
