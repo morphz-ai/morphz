@@ -7511,6 +7511,27 @@ mod tests {
                 .candidates
                 .iter()
                 .all(|candidate| candidate.account.as_deref() != Some(account_id.as_str())))));
+        let managed: AppConfig = toml::from_str(
+            &std::fs::read_to_string(state.managed_config_path.as_deref().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(account_ids
+            .iter()
+            .all(|account_id| managed.auth_accounts.contains_key(account_id)));
+        assert!(account_ids
+            .iter()
+            .all(
+                |account_id| managed.provider_instances["codex-subscription"]
+                    .accounts
+                    .contains(account_id)
+            ));
+        assert!(managed
+            .model_routes
+            .values()
+            .all(|route| account_ids.iter().all(|account_id| route
+                .candidates
+                .iter()
+                .all(|candidate| candidate.account.as_deref() != Some(account_id.as_str())))));
     }
 
     #[tokio::test]
