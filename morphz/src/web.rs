@@ -298,6 +298,7 @@ struct PutProviderAccountModelsRequest {
 #[derive(serde::Deserialize)]
 struct ProviderAccountModelSelection {
     id: String,
+    alias: Option<String>,
     context_window_tokens: Option<usize>,
     max_input_tokens: Option<usize>,
     max_output_tokens: Option<usize>,
@@ -1621,11 +1622,16 @@ async fn handle_put_provider_account_models(
         );
     };
     let mut models = BTreeMap::new();
+    let mut display_aliases = BTreeMap::new();
     for selection in request.models {
         let id = selection.id.trim().to_string();
         if id.is_empty() || models.contains_key(&id) {
             return error_response(StatusCode::BAD_REQUEST, "模型 ID 不能为空且不能重复");
         }
+        let display_alias = selection
+            .alias
+            .and_then(|alias| (!alias.trim().is_empty()).then_some(alias));
+        display_aliases.insert(id.clone(), display_alias);
         models.insert(
             id,
             ProviderModelConfig {
@@ -1637,7 +1643,7 @@ async fn handle_put_provider_account_models(
     }
     match state
         .sdk
-        .put_provider_account_models(path, &account_id, models)
+        .put_provider_account_models(path, &account_id, models, display_aliases)
         .await
     {
         Ok(receipt) => Json(receipt).into_response(),
@@ -7144,7 +7150,7 @@ mod tests {
                     base_url: "https://models.example.test/v1".to_string(),
                     accounts: vec!["subscription-account".to_string()],
                     models: BTreeMap::from([(
-                        "invented-default".to_string(),
+                        "physical-subscription-model".to_string(),
                         crate::config::ProviderModelConfig::default(),
                     )]),
                     ..ProviderInstanceConfig::default()
@@ -7162,7 +7168,7 @@ mod tests {
                     candidates: vec![crate::config::ModelRouteCandidateConfig {
                         provider: "subscription-provider".to_string(),
                         account: Some("subscription-account".to_string()),
-                        model: "invented-default".to_string(),
+                        model: "physical-subscription-model".to_string(),
                         ..crate::config::ModelRouteCandidateConfig::default()
                     }],
                     ..ModelRouteConfig::default()
@@ -7179,7 +7185,7 @@ mod tests {
         let before_discovery = runtime.inference_model_options().await.unwrap();
         assert!(before_discovery
             .iter()
-            .all(|option| option.id != "subscription-model" && option.label != "invented-default"));
+            .all(|option| option.id != "subscription-model"));
 
         let projection = SqliteStore::new(database_path.to_str().unwrap())
             .await
@@ -7207,6 +7213,7 @@ mod tests {
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
                     id: "physical-subscription-model".to_string(),
+                    alias: None,
                     context_window_tokens: Some(200_000),
                     max_input_tokens: None,
                     max_output_tokens: Some(4_000),
@@ -7222,11 +7229,37 @@ mod tests {
             .iter()
             .find(|option| option.label == "physical-subscription-model")
             .unwrap();
-        assert_eq!(physical.id, "physical-subscription-model");
+        assert_eq!(physical.id, "subscription-model");
         assert_eq!(physical.physical_models, ["physical-subscription-model"]);
         assert!(after_enablement
             .iter()
-            .all(|option| option.id != "subscription-model" && option.label != "invented-default"));
+            .all(|option| option.label != "subscription-model"));
+
+        let aliased = handle_put_provider_account_models(
+            State(Arc::clone(&state)),
+            Path("subscription-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderAccountModelsRequest {
+                models: vec![ProviderAccountModelSelection {
+                    id: "physical-subscription-model".to_string(),
+                    alias: Some("fast-subscription".to_string()),
+                    context_window_tokens: Some(200_000),
+                    max_input_tokens: None,
+                    max_output_tokens: Some(4_000),
+                }],
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(aliased.status(), StatusCode::OK);
+        let after_alias = runtime.inference_model_options().await.unwrap();
+        let alias = after_alias
+            .iter()
+            .find(|option| option.id == "subscription-model")
+            .unwrap();
+        assert_eq!(alias.label, "fast-subscription");
+        assert_eq!(alias.physical_models, ["physical-subscription-model"]);
 
         let status_response = handle_status(
             State(Arc::clone(&state)),
@@ -7240,21 +7273,22 @@ mod tests {
             .await
             .unwrap();
         let status: crate::runtime::RuntimeStatus = serde_json::from_slice(&status_body).unwrap();
-        assert!(status
-            .models
-            .contains(&"physical-subscription-model".to_string()));
+        assert!(status.models.contains(&"subscription-model".to_string()));
         assert!(status
             .model_options
             .iter()
-            .any(|option| option.label == "physical-subscription-model"));
-        assert!(!status.models.contains(&"subscription-model".to_string()));
+            .any(|option| option.label == "fast-subscription"));
+        assert!(!status
+            .model_options
+            .iter()
+            .any(|option| option.label == "subscription-model"));
 
         let switched = handle_update_inference(
             State(state),
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(UpdateInferenceRequest {
-                model: Some("physical-subscription-model".to_string()),
+                model: Some("subscription-model".to_string()),
                 reasoning_effort: None,
                 prompt_token_limit: None,
             }),
@@ -7262,7 +7296,7 @@ mod tests {
         .await
         .into_response();
         assert_eq!(switched.status(), StatusCode::OK);
-        assert_eq!(runtime.model(), "physical-subscription-model");
+        assert_eq!(runtime.model(), "subscription-model");
         assert_eq!(runtime.model_context_capacity().prompt_token_limit, 196_000);
         assert_eq!(
             runtime.model_context_capacity().source,
@@ -7277,7 +7311,13 @@ mod tests {
                 .context_window_tokens,
             Some(200_000)
         );
-        assert_eq!(managed.llm.model, "physical-subscription-model");
+        assert_eq!(managed.llm.model, "subscription-model");
+        assert_eq!(
+            managed.model_routes["subscription-model"]
+                .display_alias
+                .as_deref(),
+            Some("fast-subscription")
+        );
     }
 
     #[tokio::test]

@@ -115,6 +115,7 @@ impl EffectiveProviderCatalog {
                 model_routes.insert(
                     model.clone(),
                     ModelRouteConfig {
+                        display_alias: None,
                         aliases: Vec::new(),
                         candidates: vec![ModelRouteCandidateConfig {
                             provider: provider_id.clone(),
@@ -170,6 +171,21 @@ impl EffectiveProviderCatalog {
             }
             for alias in &route.aliases {
                 register_alias(&mut aliases, alias, route_id)?;
+            }
+            if let Some(display_alias) = route.display_alias.as_deref() {
+                let display_alias = display_alias.trim();
+                if display_alias.is_empty() {
+                    return Err(format!(
+                        "Model Route '{route_id}' 的 display_alias 不能为空"
+                    ));
+                }
+                if display_alias != route_id
+                    && !route.aliases.iter().any(|alias| alias == display_alias)
+                {
+                    return Err(format!(
+                        "Model Route '{route_id}' 的展示别名 '{display_alias}' 不是该 Route 的可用别名"
+                    ));
+                }
             }
             for candidate in &route.candidates {
                 let provider = provider_instances.get(&candidate.provider).ok_or_else(|| {

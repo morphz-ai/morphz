@@ -78,6 +78,7 @@ test('API-key setup is protocol based and does not invent provider brands', () =
   assert.match(protocols, /gemini-content/)
   assert.match(providersSource, /'\/api\/runtime\/providers\/discover-models'/)
   assert.match(providersSource, /response\.models\.map|discoveredModels\.map/)
+  assert.match(providersSource, /display_alias: requestedSetup\.alias\.trim\(\) \|\| undefined/)
 })
 
 test('unfinished OAuth attempts are not rendered as accounts', () => {
@@ -100,10 +101,12 @@ test('authenticated accounts discover and explicitly enable models outside the l
   assert.match(providersSource, /\/api\/runtime\/providers\/accounts\/\$\{encodeURIComponent\(accountId\)\}\/refresh-models/)
   assert.match(providersSource, /\/api\/runtime\/providers\/accounts\/\$\{encodeURIComponent\(modelEditor\.accountId\)\}\/models/)
   assert.match(providersSource, /providers\.modelCapacityAdvanced/)
+  assert.match(providersSource, /providers\.modelAliasOptional/)
+  assert.match(providersSource, /alias: option\.alias\.trim\(\) \|\| undefined/)
   assert.match(providersSource, /placeholder=\{t\('providers\.automatic'\)\}/)
 })
 
-test('conversation selector renders physical catalog labels instead of route aliases', () => {
+test('conversation selector renders the catalog display label, never the route control id', () => {
   assert.match(appSource, /status\?\.model_options/)
   assert.match(appSource, /<option key=\{option\.id\} value=\{option\.id\}>\{option\.label\}<\/option>/)
   assert.doesNotMatch(appSource, /\(status\?\.models \?\? \(status\?\.model/)

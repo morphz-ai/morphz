@@ -97,6 +97,7 @@ interface ModelRouteCandidate {
 }
 
 interface ModelRouteConfig {
+  display_alias?: string
   aliases: string[]
   candidates: ModelRouteCandidate[]
   affinity: string
@@ -218,6 +219,7 @@ interface CatalogMutationReceipt {
 interface AccountModelOption {
   id: string
   enabled: boolean
+  alias: string
   contextWindowTokens: string
   maxInputTokens: string
   maxOutputTokens: string
@@ -334,6 +336,12 @@ function setupForProtocol(
 
 function logicalAuthAdapter(adapter: string): string {
   return adapter === 'codex-device-oauth' ? 'codex-oauth' : adapter
+}
+
+function modelRouteDisplayLabel(route: ModelRouteConfig): string {
+  return route.display_alias?.trim()
+    || route.aliases[0]?.trim()
+    || Array.from(new Set(route.candidates.map(candidate => candidate.model))).join(' / ')
 }
 
 function presetForAccount(accountId: string, record: ProviderAccountRecord): OAuthSetupPreset | undefined {
@@ -519,7 +527,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       setSetup(current => current ? {
         ...current,
         physicalModel,
-        alias: physicalModel,
+        alias: '',
         routeId: physicalModel,
       } : current)
     } catch (reason) {
@@ -578,13 +586,14 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
           credential_ref: credentialRef,
           secret_backend: secretBackend,
           provider: providerId,
-          label: requestedSetup.alias.trim() || t('providers.defaultAccount'),
+          label: t('providers.defaultAccount'),
           enabled: true,
         },
         credential_id: credentialId,
         credential,
         route_id: routeId,
         route: {
+          display_alias: requestedSetup.alias.trim() || undefined,
           aliases: alias === routeId ? [] : [alias],
           candidates: [...candidates, { provider: providerId, model: physicalModel, priority: candidates.length, account: accountId, capabilities: [] }],
           affinity: 'context', selection: 'available-least-recently-used', fallback: false,
@@ -996,9 +1005,14 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     additionallyDiscovered: string[] = [],
   ): AccountModelOption[] => {
     const enabled = new Set<string>()
+    const aliases = new Map<string, string>()
     for (const route of Object.values(snapshot.model_routes)) {
       for (const candidate of route.candidates) {
-        if (candidate.provider === providerId && candidate.account === accountId) enabled.add(candidate.model)
+        if (candidate.provider === providerId && candidate.account === accountId) {
+          enabled.add(candidate.model)
+          const alias = route.display_alias?.trim() || route.aliases[0]?.trim() || ''
+          if (alias && !aliases.has(candidate.model)) aliases.set(candidate.model, alias)
+        }
       }
     }
     const authoritativeDiscovery = additionallyDiscovered.length > 0
@@ -1013,6 +1027,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     return Array.from(discovered).sort().map(id => ({
       id,
       enabled: enabled.has(id),
+      alias: aliases.get(id) ?? '',
       contextWindowTokens: profiles[id]?.context_window_tokens?.toString() ?? '',
       maxInputTokens: profiles[id]?.max_input_tokens?.toString() ?? '',
       maxOutputTokens: profiles[id]?.max_output_tokens?.toString() ?? '',
@@ -1094,6 +1109,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
         {
           models: selected.map(option => ({
             id: option.id,
+            alias: option.alias.trim() || undefined,
             context_window_tokens: optionalTokens(option.contextWindowTokens),
             max_input_tokens: optionalTokens(option.maxInputTokens),
             max_output_tokens: optionalTokens(option.maxOutputTokens),
@@ -1117,6 +1133,12 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const challengeLabel = challenge
     ? (challengeLabelOverride || snapshot.auth_accounts[challenge.account_id]?.config.label || t('providers.oauthAccount'))
     : ''
+  const selectedRoute = routes.find(([routeId, route]) => (
+    routeId === snapshot.selected_model_alias || route.aliases.includes(snapshot.selected_model_alias)
+  ))
+  const selectedModelLabel = selectedRoute
+    ? modelRouteDisplayLabel(selectedRoute[1])
+    : snapshot.selected_model_alias
 
   return (
     <section className="providers-view">
@@ -1138,7 +1160,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
 
       <section className="provider-selected-alias">
         <Route size={17} />
-        <span><small>{t('providers.selectedAlias')}</small><strong>{snapshot.selected_model_alias || '—'}</strong></span>
+        <span><small>{t('providers.selectedAlias')}</small><strong>{selectedModelLabel || '—'}</strong></span>
         <code>{localDate(snapshot.generated_at)}</code>
       </section>
 
@@ -1331,7 +1353,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                 <article className={routeId === snapshot.selected_model_alias || route.aliases.includes(snapshot.selected_model_alias) ? 'is-selected' : ''} key={routeId}>
                   <header>
                     <Route size={15} />
-                    <span><strong>{routeId}</strong><small>{route.aliases.length > 0 ? t('providers.aliases', { value: route.aliases.join(', ') }) : '—'}</small></span>
+                    <span><strong>{modelRouteDisplayLabel(route) || '—'}</strong><small>{t('providers.routeIdentity', { value: routeId })}{route.aliases.length > 0 ? ` · ${t('providers.aliases', { value: route.aliases.join(', ') })}` : ''}</small></span>
                     <div><em>{t('providers.affinity', { value: route.affinity })}</em><em>{t('providers.selection', { value: route.selection })}</em>{route.fallback && <em>{t('providers.fallback')}</em>}</div>
                     <nav>
                       <button type="button" disabled={Boolean(diagnosing)} onClick={() => void diagnoseRoute(routeId)}><Activity size={13} /> {t('providers.test')}</button>
@@ -1411,15 +1433,24 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                     <span><strong>{option.id}</strong><small>{option.enabled ? t('providers.modelEnabled') : t('providers.modelNotEnabled')}</small></span>
                   </label>
                   {option.enabled && (
-                    <details>
-                      <summary>{t('providers.modelCapacityAdvanced')}</summary>
-                      <p>{t('providers.modelCapacityHint')}</p>
-                      <div>
-                        <label><span>{t('providers.contextWindow')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.contextWindowTokens} onChange={event => updateAccountModel(option.id, { contextWindowTokens: event.target.value })} /></label>
-                        <label><span>{t('providers.maxInput')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.maxInputTokens} onChange={event => updateAccountModel(option.id, { maxInputTokens: event.target.value })} /></label>
-                        <label><span>{t('providers.maxOutput')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.maxOutputTokens} onChange={event => updateAccountModel(option.id, { maxOutputTokens: event.target.value })} /></label>
+                    <>
+                      <div className="provider-model-alias">
+                        <label>
+                          <span>{t('providers.modelAliasOptional')}</span>
+                          <input placeholder={option.id} value={option.alias} onChange={event => updateAccountModel(option.id, { alias: event.target.value })} />
+                        </label>
+                        <small>{t('providers.modelAliasHint')}</small>
                       </div>
-                    </details>
+                      <details>
+                        <summary>{t('providers.modelCapacityAdvanced')}</summary>
+                        <p>{t('providers.modelCapacityHint')}</p>
+                        <div>
+                          <label><span>{t('providers.contextWindow')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.contextWindowTokens} onChange={event => updateAccountModel(option.id, { contextWindowTokens: event.target.value })} /></label>
+                          <label><span>{t('providers.maxInput')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.maxInputTokens} onChange={event => updateAccountModel(option.id, { maxInputTokens: event.target.value })} /></label>
+                          <label><span>{t('providers.maxOutput')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.maxOutputTokens} onChange={event => updateAccountModel(option.id, { maxOutputTokens: event.target.value })} /></label>
+                        </div>
+                      </details>
+                    </>
                   )}
                 </article>
               ))}
@@ -1531,12 +1562,15 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                   <select value={setup.physicalModel} onChange={event => setSetup(current => current ? {
                     ...current,
                     physicalModel: event.target.value,
-                    alias: event.target.value,
+                    alias: '',
                     routeId: event.target.value,
                   } : current)}>
                     {discoveredModels.map(model => <option value={model} key={model}>{model}</option>)}
                   </select>
                   <small>{t('providers.modelsDiscovered', { count: discoveredModels.length })}</small>
+                  <span>{t('providers.modelAliasOptional')}</span>
+                  <input placeholder={setup.physicalModel} value={setup.alias} onChange={event => setSetup(current => current ? { ...current, alias: event.target.value } : current)} />
+                  <small>{t('providers.modelAliasHint')}</small>
                 </label>
               )}
             </>}

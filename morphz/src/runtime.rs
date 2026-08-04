@@ -2521,9 +2521,18 @@ impl MorphzRuntime {
             if physical_models.is_empty() {
                 continue;
             }
+            let label = route
+                .display_alias
+                .as_deref()
+                .into_iter()
+                .chain(route.aliases.iter().map(String::as_str))
+                .map(str::trim)
+                .find(|alias| !alias.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| physical_models.join(" / "));
             options.push(InferenceModelOption {
                 id: route_id.clone(),
-                label: physical_models.join(" / "),
+                label,
                 physical_models,
                 aliases: route.aliases.clone(),
                 source: "remote_catalog".to_string(),

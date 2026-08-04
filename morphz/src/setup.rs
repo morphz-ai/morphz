@@ -1051,6 +1051,7 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
         path
     } else {
         let route = ModelRouteConfig {
+            display_alias: None,
             aliases: Vec::new(),
             candidates: vec![ModelRouteCandidateConfig {
                 provider: provider_id.clone(),

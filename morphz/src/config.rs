@@ -896,7 +896,13 @@ pub struct ModelRouteCandidateConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelRouteConfig {
-    /// Additional public aliases. The map key itself is always an alias too.
+    /// User-selected alias preferred by operator-facing model selectors. A
+    /// generated Route ID is not a display alias unless the operator records
+    /// it here explicitly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_alias: Option<String>,
+    /// Additional public aliases accepted for route resolution. The map key
+    /// is also accepted by the routing engine, but may be system-generated.
     pub aliases: Vec<String>,
     pub candidates: Vec<ModelRouteCandidateConfig>,
     pub affinity: ModelRouteAffinity,
@@ -3048,6 +3054,7 @@ max_input_tokens = 0
             ..AuthAccountConfig::default()
         };
         let route = ModelRouteConfig {
+            display_alias: Some("openai/gpt-5.6".to_string()),
             aliases: vec!["openai/gpt-5.6".to_string()],
             candidates: vec![ModelRouteCandidateConfig {
                 provider: "openai-subscription".to_string(),
@@ -3082,6 +3089,10 @@ max_input_tokens = 0
         assert_eq!(
             persisted.model_routes["gpt-5.6"].aliases,
             ["openai/gpt-5.6"]
+        );
+        assert_eq!(
+            persisted.model_routes["gpt-5.6"].display_alias.as_deref(),
+            Some("openai/gpt-5.6")
         );
         assert_eq!(
             persisted.model_routes["gpt-5.6"].candidates[0].model,

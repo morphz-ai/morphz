@@ -1126,6 +1126,7 @@ impl MorphzSdk {
         managed_config_path: &Path,
         account_id: &str,
         models: BTreeMap<String, ProviderModelConfig>,
+        display_aliases: BTreeMap<String, Option<String>>,
     ) -> SdkResult<ProviderCatalogMutationReceipt> {
         if models.is_empty() {
             return Err(SdkError::new(
@@ -1163,6 +1164,17 @@ impl MorphzSdk {
                     SdkErrorCode::InvalidArgument,
                     format!("模型 '{model}' 的输入与输出容量超过上下文窗口"),
                 ));
+            }
+            if let Some(alias) = display_aliases
+                .get(model)
+                .and_then(|alias| alias.as_deref())
+            {
+                if alias.trim().is_empty() || alias.trim() != alias {
+                    return Err(SdkError::new(
+                        SdkErrorCode::InvalidArgument,
+                        format!("模型 '{model}' 的别名不能为空或包含首尾空白"),
+                    ));
+                }
             }
         }
 
@@ -1274,14 +1286,38 @@ impl MorphzSdk {
             });
             let route = snapshot
                 .model_routes
-                .entry(route_id)
+                .entry(route_id.clone())
                 .or_insert_with(|| ModelRouteConfig {
+                    display_alias: None,
                     aliases: Vec::new(),
                     candidates: Vec::new(),
                     affinity: ModelRouteAffinity::Context,
                     selection: ModelRouteSelection::AvailableLeastRecentlyUsed,
                     fallback: false,
                 });
+            let previous_display_alias = route
+                .display_alias
+                .clone()
+                .or_else(|| route.aliases.first().cloned());
+            if let Some(previous_display_alias) = previous_display_alias {
+                if previous_display_alias != route_id {
+                    route
+                        .aliases
+                        .retain(|alias| alias != &previous_display_alias);
+                }
+            }
+            let display_alias = display_aliases
+                .get(model)
+                .and_then(|alias| alias.as_ref())
+                .cloned();
+            route.display_alias = display_alias.clone();
+            if let Some(display_alias) = display_alias {
+                if display_alias != route_id
+                    && !route.aliases.iter().any(|alias| alias == &display_alias)
+                {
+                    route.aliases.insert(0, display_alias);
+                }
+            }
             let priority = route
                 .candidates
                 .iter()
