@@ -8,10 +8,11 @@
 use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::config::{
     remove_managed_provider_accounts_at, save_managed_auth_account_at, save_managed_model_route_at,
-    save_managed_provider_account_models_at, save_managed_provider_catalog_at,
-    save_managed_provider_instance_at, AppConfig, AuthAccountConfig, CredentialConfig,
-    ModelProtocol, ModelRouteAffinity, ModelRouteCandidateConfig, ModelRouteConfig,
-    ModelRouteSelection, ProviderInstanceConfig, ProviderModelConfig,
+    save_managed_provider_account_at, save_managed_provider_account_models_at,
+    save_managed_provider_catalog_at, save_managed_provider_instance_at, AppConfig,
+    AuthAccountConfig, CredentialConfig, ModelProtocol, ModelRouteAffinity,
+    ModelRouteCandidateConfig, ModelRouteConfig, ModelRouteSelection, ProviderInstanceConfig,
+    ProviderModelConfig,
 };
 use crate::event::Event;
 use crate::execution::JobReceipt;
@@ -22,7 +23,7 @@ pub use crate::harness::ExactHarnessRef;
 use crate::harness::{HarnessBinding, HarnessDescriptor};
 use crate::harness_package::HarnessPackage;
 use crate::identity::PrincipalAssertion;
-use crate::llm::ModelRouteDiagnostic;
+use crate::llm::{ModelRouteDiagnostic, ProviderAccountDiagnostic};
 use crate::memory::{
     ArtifactTransferExecutionRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
     CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate, EdgeCommandMutation,
@@ -114,7 +115,7 @@ impl std::error::Error for SdkError {}
 pub type SdkResult<T> = Result<T, SdkError>;
 
 /// Product-level OAuth setup request. Callers choose a supported service;
-/// Provider, account and route identifiers remain an implementation detail of
+/// Provider and account identifiers remain an implementation detail of
 /// the SDK instead of leaking into the ordinary Dashboard flow.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OAuthProviderSetup {
@@ -131,9 +132,6 @@ pub struct OAuthProviderSetup {
     pub credential_ref: String,
     pub secret_backend: Option<String>,
     pub account_label: String,
-    pub route_id: String,
-    pub model_alias: String,
-    pub physical_model: String,
 }
 
 fn validate_provider_catalog_snapshot(snapshot: &ProviderControlSnapshot) -> SdkResult<()> {
@@ -725,6 +723,28 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    pub async fn diagnose_provider_account(
+        &self,
+        account_id: &str,
+        model: Option<&str>,
+    ) -> SdkResult<ProviderAccountDiagnostic> {
+        self.runtime
+            .diagnose_provider_account(account_id, model)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn refresh_provider_account_catalog(
+        &self,
+        account_id: &str,
+        model: Option<&str>,
+    ) -> SdkResult<ProviderAccountDiagnostic> {
+        self.runtime
+            .refresh_provider_account_catalog(account_id, model)
+            .await
+            .map_err(SdkError::internal)
+    }
+
     pub async fn put_provider_instance_config(
         &self,
         managed_config_path: &Path,
@@ -836,10 +856,8 @@ impl MorphzSdk {
         ))
     }
 
-    /// Create one OAuth-backed account inside an existing Provider pool (or
-    /// create the minimal Provider/Route graph on first use) and immediately
-    /// start its real authorization flow. This is the normal setup boundary;
-    /// callers never have to manufacture catalog identifiers in the browser.
+    /// Start OAuth for one account. No Provider, account, model or route is
+    /// persisted until authorization succeeds.
     pub async fn setup_oauth_provider_account(
         &self,
         managed_config_path: &Path,
@@ -852,9 +870,6 @@ impl MorphzSdk {
             ("Account ID", setup.account_id.as_str()),
             ("Auth Adapter", setup.auth_adapter.as_str()),
             ("Credential Ref", setup.credential_ref.as_str()),
-            ("Model Route", setup.route_id.as_str()),
-            ("Model Alias", setup.model_alias.as_str()),
-            ("Physical Model", setup.physical_model.as_str()),
         ] {
             if value.trim().is_empty() {
                 return Err(SdkError::new(
@@ -993,10 +1008,6 @@ impl MorphzSdk {
         if !provider.accounts.iter().any(|id| id == &setup.account_id) {
             provider.accounts.push(setup.account_id.clone());
         }
-        provider
-            .models
-            .entry(setup.physical_model.clone())
-            .or_insert_with(ProviderModelConfig::default);
 
         let account = AuthAccountConfig {
             auth_adapter: setup.auth_adapter.clone(),
@@ -1006,56 +1017,27 @@ impl MorphzSdk {
             label: Some(setup.account_label.clone()),
             enabled: true,
         };
-        let mut route = snapshot
-            .model_routes
-            .get(&setup.route_id)
-            .cloned()
-            .unwrap_or_else(|| ModelRouteConfig {
-                aliases: Vec::new(),
-                candidates: Vec::new(),
-                affinity: ModelRouteAffinity::Context,
-                selection: ModelRouteSelection::AvailableLeastRecentlyUsed,
-                fallback: false,
-            });
-        if setup.model_alias != setup.route_id
-            && !route
-                .aliases
-                .iter()
-                .any(|alias| alias == &setup.model_alias)
-        {
-            route.aliases.push(setup.model_alias.clone());
-        }
-        if !route.candidates.iter().any(|candidate| {
-            candidate.provider == setup.provider_id
-                && candidate.model == setup.physical_model
-                && candidate.account.as_deref() == Some(setup.account_id.as_str())
-        }) {
-            let priority = route
-                .candidates
-                .iter()
-                .map(|candidate| candidate.priority)
-                .max()
-                .map_or(0, |priority| priority.saturating_add(1));
-            route.candidates.push(ModelRouteCandidateConfig {
-                provider: setup.provider_id.clone(),
-                model: setup.physical_model.clone(),
-                priority,
-                account: Some(setup.account_id.clone()),
-                capabilities: Vec::new(),
-            });
-        }
-
-        self.put_provider_catalog_config(
+        let mut live = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        live.provider_instances
+            .insert(setup.provider_id.clone(), provider.clone());
+        live.auth_accounts
+            .insert(setup.account_id.clone(), account.clone());
+        EffectiveProviderCatalog::from_config(&live)
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error))?;
+        save_managed_provider_account_at(
             &pending.managed_config_path,
             &setup.provider_id,
-            provider,
+            &provider,
             &setup.account_id,
-            account,
-            None,
-            &setup.route_id,
-            route,
+            &account,
         )
-        .await?;
+        .map_err(SdkError::internal)?;
+        self.runtime
+            .replace_provider_catalog(live)
+            .map_err(SdkError::internal)?;
         self.runtime
             .mark_provider_auth_account_ready(&setup.account_id)
             .await

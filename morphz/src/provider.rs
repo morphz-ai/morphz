@@ -24,6 +24,19 @@ pub mod routing;
 pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
 pub type ConfiguredClient = (Arc<dyn Client>, SelectedProvider);
 
+// ChatGPT's Codex catalog endpoint is versioned independently from Morphz.
+// Keep this compatibility value aligned with the Codex request headers and
+// allow operators to advance it without rebuilding if the upstream raises its
+// minimum client version.
+const CODEX_CLIENT_VERSION: &str = "0.144.4";
+
+fn codex_client_version() -> String {
+    std::env::var("MORPHZ_CODEX_CLIENT_VERSION")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| CODEX_CLIENT_VERSION.to_string())
+}
+
 #[derive(Debug, Clone)]
 pub struct SelectedProvider {
     pub id: String,
@@ -797,10 +810,16 @@ impl ProtocolClient {
     }
 
     pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
-        let endpoint = format!("{}/models", self.base_url);
+        let mut endpoint = reqwest::Url::parse(&format!("{}/models", self.base_url))?;
+        if self.adapter == "openai-codex" {
+            let client_version = codex_client_version();
+            endpoint
+                .query_pairs_mut()
+                .append_pair("client_version", client_version.trim());
+        }
         let response = tokio::time::timeout(
             self.stream_idle_timeout,
-            self.authorize(self.http.get(&endpoint)).send(),
+            self.authorize(self.http.get(endpoint)).send(),
         )
         .await
         .map_err(|_| {
@@ -832,6 +851,7 @@ impl ProtocolClient {
             .filter_map(|row| {
                 row.get("id")
                     .or_else(|| row.get("name"))
+                    .or_else(|| row.get("slug"))
                     .and_then(Value::as_str)
             })
             .map(|model| model.strip_prefix("models/").unwrap_or(model).to_string())
@@ -1162,11 +1182,31 @@ impl Client for ProtocolClient {
             })?
             .map_err(|error| boxed_model_failure(request_model_failure(error)))?;
         // A reasoning model may legitimately spend this tiny budget on a
-        // reasoning-only item. For circuit health, a schema-valid successful
-        // response is sufficient; instruction following is not what this
-        // probe measures.
-        let _ = parse_response(self.protocol, self.normalize_response(value))?;
+        // reasoning-only item or stop at its output limit. For circuit health,
+        // a schema-valid successful response is sufficient; completeness and
+        // instruction following belong to inference tests, not connectivity.
+        let normalized = self.normalize_response(value);
+        if !health_response_schema_valid(self.protocol, &normalized) {
+            let _ = parse_response(self.protocol, normalized)?;
+        }
         Ok(())
+    }
+}
+
+fn health_response_schema_valid(protocol: ModelProtocol, value: &Value) -> bool {
+    match protocol {
+        ModelProtocol::OpenaiChat => value
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("message"))
+            .is_some_and(Value::is_object),
+        ModelProtocol::OpenaiResponses => {
+            value.get("output").is_some_and(Value::is_array)
+                || value.get("status").is_some_and(Value::is_string)
+        }
+        ModelProtocol::AnthropicMessages => value.get("content").is_some_and(Value::is_array),
+        ModelProtocol::GeminiContent => value.get("candidates").is_some_and(Value::is_array),
     }
 }
 
@@ -3191,6 +3231,82 @@ mod tests {
             let models = client.list_models().await.unwrap();
             assert_eq!(models, ["model-a", "model-b"]);
         }
+    }
+
+    #[tokio::test]
+    async fn codex_catalog_uses_client_version_and_slug_ids() {
+        let app =
+            Router::new().route(
+                "/models",
+                get(
+                    |axum::extract::Query(query): axum::extract::Query<
+                        BTreeMap<String, String>,
+                    >| async move {
+                        let expected_version = codex_client_version();
+                        assert_eq!(
+                            query.get("client_version").map(String::as_str),
+                            Some(expected_version.as_str())
+                        );
+                        Json(json!({
+                            "models": [
+                                {"slug": "gpt-5.6-sol"},
+                                {"slug": "gpt-5.6-terra"}
+                            ]
+                        }))
+                    },
+                ),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ProtocolClient::new_with_adapter(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "openai-codex",
+            String::new(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            client.list_models().await.unwrap(),
+            ["gpt-5.6-sol", "gpt-5.6-terra"]
+        );
+    }
+
+    #[tokio::test]
+    async fn health_probe_accepts_schema_valid_length_limited_chat_response() {
+        let app = Router::new().route(
+            "/chat/completions",
+            post(|| async {
+                Json(json!({
+                    "choices": [{
+                        "finish_reason": "length",
+                        "message": {"content": ""}
+                    }]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiChat,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "k3".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        client.probe_health().await.unwrap();
     }
 
     #[tokio::test]

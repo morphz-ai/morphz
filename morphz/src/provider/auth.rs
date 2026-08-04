@@ -28,6 +28,7 @@ const KIMI_ADAPTER_ID: &str = "kimi-oauth";
 const XAI_ADAPTER_ID: &str = "xai-oauth";
 const CLAUDE_ADAPTER_ID: &str = "claude-oauth";
 const ANTIGRAVITY_ADAPTER_ID: &str = "antigravity-oauth";
+const XAI_GROK_CLIENT_VERSION: &str = "0.2.93";
 
 fn oauth_adapters_compatible(configured: &str, actual: &str) -> bool {
     configured == actual
@@ -1666,6 +1667,7 @@ fn codex_materialize(token: &OAuthTokenSet) -> Result<RequestAuthorization, Stri
         .as_deref()
         .filter(|value| !value.is_empty())
         .ok_or("Codex OAuth Token 缺少 ChatGPT Account ID")?;
+    let client_version = super::codex_client_version();
     Ok(RequestAuthorization {
         bearer_token: token.access_token.clone(),
         headers: BTreeMap::from([
@@ -1673,7 +1675,7 @@ fn codex_materialize(token: &OAuthTokenSet) -> Result<RequestAuthorization, Stri
             ("Originator".to_string(), "codex_cli_rs".to_string()),
             (
                 "User-Agent".to_string(),
-                "codex-cli/morphz (oauth)".to_string(),
+                format!("codex_cli_rs/{client_version} (morphz; oauth)"),
             ),
         ]),
     })
@@ -2996,7 +2998,17 @@ impl AuthAdapter for XaiOAuthAdapter {
         }
         Ok(RequestAuthorization {
             bearer_token: token.access_token.clone(),
-            headers: BTreeMap::new(),
+            headers: BTreeMap::from([
+                ("X-XAI-Token-Auth".to_string(), "xai-grok-cli".to_string()),
+                (
+                    "x-grok-client-version".to_string(),
+                    XAI_GROK_CLIENT_VERSION.to_string(),
+                ),
+                (
+                    "User-Agent".to_string(),
+                    format!("xai-grok-workspace/{XAI_GROK_CLIENT_VERSION}"),
+                ),
+            ]),
         })
     }
 }
@@ -3968,9 +3980,21 @@ mod tests {
         };
         assert_eq!(token.subject.as_deref(), Some("xai-subject"));
         assert_eq!(token.email.as_deref(), Some("xai@example.test"));
+        let authorization = adapter.materialize(&token).unwrap();
+        assert_eq!(authorization.bearer_token, "xai-access");
         assert_eq!(
-            adapter.materialize(&token).unwrap().bearer_token,
-            "xai-access"
+            authorization
+                .headers
+                .get("x-grok-client-version")
+                .map(String::as_str),
+            Some(XAI_GROK_CLIENT_VERSION)
+        );
+        assert_eq!(
+            authorization
+                .headers
+                .get("X-XAI-Token-Auth")
+                .map(String::as_str),
+            Some("xai-grok-cli")
         );
     }
 

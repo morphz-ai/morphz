@@ -13,8 +13,8 @@ use crate::config::{
 };
 use crate::llm::{
     Client, Message, ModelAttemptBinding, ModelFailure, ModelFailureKind, ModelRequestContext,
-    ModelRouteDiagnostic, ModelStreamSender, PromptTokenCount, ReasoningEffort, Response,
-    ToolDefinition,
+    ModelRouteDiagnostic, ModelStreamSender, PromptTokenCount, ProviderAccountDiagnostic,
+    ReasoningEffort, Response, ToolDefinition,
 };
 use crate::memory::{ProviderAccountStateStore, ProviderAccountStatus};
 use chrono::{Duration as ChronoDuration, Utc};
@@ -1104,6 +1104,145 @@ impl Client for RoutedClient {
             elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             discovered_models,
             catalog_error,
+            health_verified,
+            health_error,
+        })
+    }
+
+    async fn diagnose_provider_account(
+        &self,
+        account_id: &str,
+        model: Option<&str>,
+    ) -> Result<ProviderAccountDiagnostic, ProviderError> {
+        let catalog = self.catalog()?;
+        let account = catalog
+            .auth_accounts
+            .get(account_id)
+            .ok_or_else(|| format!("Auth Account '{account_id}' 不存在"))?;
+        let provider_id = account
+            .provider
+            .clone()
+            .or_else(|| {
+                catalog
+                    .provider_instances
+                    .iter()
+                    .find(|(_, provider)| provider.accounts.iter().any(|id| id == account_id))
+                    .map(|(provider_id, _)| provider_id.clone())
+            })
+            .ok_or_else(|| format!("Auth Account '{account_id}' 尚未关联 Provider Instance"))?;
+        let provider = catalog
+            .provider_instances
+            .get(&provider_id)
+            .ok_or_else(|| format!("Provider Instance '{provider_id}' 不存在"))?;
+        if !provider.accounts.iter().any(|id| id == account_id) {
+            return Err(format!(
+                "Auth Account '{account_id}' 不属于 Provider Instance '{provider_id}'"
+            )
+            .into());
+        }
+
+        let requested_model = model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let enabled_model = catalog.model_routes.values().find_map(|route| {
+            route.candidates.iter().find_map(|candidate| {
+                (candidate.provider == provider_id
+                    && candidate.account.as_deref() == Some(account_id))
+                .then(|| candidate.model.clone())
+            })
+        });
+        let initial_model = requested_model
+            .clone()
+            .or(enabled_model.clone())
+            .unwrap_or_default();
+        let binding_for = |physical_model: String| ModelAttemptBinding {
+            requested_alias: physical_model.clone(),
+            route_id: format!("account:{account_id}"),
+            route_revision: "account-diagnostic-v1".to_string(),
+            provider_instance_id: provider_id.clone(),
+            auth_account_id: account_id.to_string(),
+            physical_model,
+            protocol: provider.protocol.as_str().to_string(),
+            provider_adapter: provider.adapter.clone(),
+            provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
+            endpoint: provider.base_url.clone(),
+            capabilities: Vec::new(),
+        };
+
+        let started = std::time::Instant::now();
+        let _lease = AccountLease::acquire(account_id, Arc::clone(&self.state))?;
+        let discovery_client = self
+            .protocol_client(&binding_for(initial_model.clone()))
+            .await?;
+        let (discovered_models, catalog_error) = match discovery_client.list_models().await {
+            Ok(models) => (models, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
+        let probed_model = requested_model
+            .or_else(|| {
+                enabled_model.filter(|model| {
+                    discovered_models.is_empty() || discovered_models.contains(model)
+                })
+            })
+            .or_else(|| discovered_models.first().cloned());
+        let health_result = if let Some(probed_model) = probed_model.as_deref() {
+            Some(
+                self.protocol_client(&binding_for(probed_model.to_string()))
+                    .await?
+                    .probe_health()
+                    .await,
+            )
+        } else {
+            None
+        };
+
+        if let (Some(store), Some(health_result)) = (self.account_store(), health_result.as_ref()) {
+            let (status, cooldown_until, error_kind) = match health_result {
+                Ok(()) => (ProviderAccountStatus::Ready, None, None),
+                Err(error) => match error.downcast_ref::<ModelFailure>().map(|value| value.kind) {
+                    Some(ModelFailureKind::RateLimited) => (
+                        ProviderAccountStatus::RateLimited,
+                        Some(Utc::now() + ChronoDuration::seconds(60)),
+                        Some(ModelFailureKind::RateLimited.as_str()),
+                    ),
+                    Some(ModelFailureKind::Authentication) => (
+                        ProviderAccountStatus::Invalid,
+                        None,
+                        Some(ModelFailureKind::Authentication.as_str()),
+                    ),
+                    Some(kind) => (ProviderAccountStatus::Ready, None, Some(kind.as_str())),
+                    None => (ProviderAccountStatus::Ready, None, Some("unknown")),
+                },
+            };
+            let _ = store
+                .put_provider_account_state(
+                    account_id,
+                    None,
+                    status,
+                    cooldown_until,
+                    error_kind,
+                    false,
+                )
+                .await;
+        }
+        let (health_verified, health_error) = match health_result {
+            Some(Ok(())) => (true, None),
+            Some(Err(error)) => (false, Some(error.to_string())),
+            None => (false, None),
+        };
+        Ok(ProviderAccountDiagnostic {
+            checked_at: Utc::now(),
+            provider_instance_id: provider_id,
+            auth_account_id: account_id.to_string(),
+            protocol: provider.protocol.as_str().to_string(),
+            provider_adapter: provider.adapter.clone(),
+            provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
+            endpoint: provider.base_url.clone(),
+            elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            discovered_models,
+            catalog_error,
+            probed_model,
             health_verified,
             health_error,
         })

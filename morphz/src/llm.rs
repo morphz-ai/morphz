@@ -570,6 +570,30 @@ pub struct ModelRouteDiagnostic {
     pub health_error: Option<String>,
 }
 
+/// Secret-free result of an explicit operator check against one Provider
+/// account. Account checks do not require a Model Route: OAuth establishes the
+/// account first, and model discovery/selection is a separate operator step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderAccountDiagnostic {
+    pub checked_at: chrono::DateTime<chrono::Utc>,
+    pub provider_instance_id: String,
+    pub auth_account_id: String,
+    pub protocol: String,
+    pub provider_adapter: String,
+    pub provider_adapter_version: String,
+    pub endpoint: String,
+    pub elapsed_ms: u64,
+    #[serde(default)]
+    pub discovered_models: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probed_model: Option<String>,
+    pub health_verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_error: Option<String>,
+}
+
 #[async_trait::async_trait]
 pub trait Client: Send + Sync {
     /// Replace the effective Provider/Account/Route catalog for subsequent
@@ -675,6 +699,16 @@ pub trait Client: Send + Sync {
         _account_id: Option<&str>,
     ) -> Result<ModelRouteDiagnostic, Box<dyn std::error::Error + Send + Sync>> {
         Err("当前模型客户端不支持 Model Route 诊断".into())
+    }
+
+    /// Discover and optionally probe one Provider account without requiring a
+    /// pre-existing Model Route.
+    async fn diagnose_provider_account(
+        &self,
+        _account_id: &str,
+        _model: Option<&str>,
+    ) -> Result<ProviderAccountDiagnostic, Box<dyn std::error::Error + Send + Sync>> {
+        Err("当前模型客户端不支持 Provider Account 诊断".into())
     }
 
     /// 在 completion 之前本地计量完整 Prompt。实现不得为核心求值增加远程请求。

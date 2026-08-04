@@ -26,7 +26,10 @@ use crate::harness_tool::{HarnessListTool, HarnessSelectTool};
 use crate::identity::{
     IdentityEvidence, IdentityProvider, PrincipalAssertion, StaticIdentityProvider,
 };
-use crate::llm::{Client, ModelAttemptBinding, ModelRouteDiagnostic, ModelUsage, ReasoningEffort};
+use crate::llm::{
+    Client, ModelAttemptBinding, ModelRouteDiagnostic, ModelUsage, ProviderAccountDiagnostic,
+    ReasoningEffort,
+};
 use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
@@ -2136,7 +2139,6 @@ impl MorphzRuntime {
             .client
             .diagnose_model_route(alias, account_id)
             .await
-            .map_err(Into::into)
     }
 
     /// Refresh and durably project a Provider's remote physical model
@@ -2157,6 +2159,45 @@ impl MorphzRuntime {
                     &binding.provider_adapter,
                     &binding.provider_adapter_version,
                     &binding.protocol,
+                    "remote_provider",
+                    &diagnostic.discovered_models,
+                    diagnostic.checked_at,
+                )
+                .await?;
+        }
+        Ok(diagnostic)
+    }
+
+    /// Test one Provider account without requiring the account to have an
+    /// enabled Model Route already.
+    pub async fn diagnose_provider_account(
+        &self,
+        account_id: &str,
+        model: Option<&str>,
+    ) -> Result<ProviderAccountDiagnostic, RuntimeError> {
+        self.inner
+            .client
+            .diagnose_provider_account(account_id, model)
+            .await
+    }
+
+    /// Refresh and durably project the remote model catalog for one account.
+    /// This is the discovery step used before the operator enables models.
+    pub async fn refresh_provider_account_catalog(
+        &self,
+        account_id: &str,
+        model: Option<&str>,
+    ) -> Result<ProviderAccountDiagnostic, RuntimeError> {
+        let diagnostic = self.diagnose_provider_account(account_id, model).await?;
+        if diagnostic.catalog_error.is_none() {
+            self.inner
+                .store
+                .replace_provider_model_catalog(
+                    &diagnostic.provider_instance_id,
+                    &diagnostic.auth_account_id,
+                    &diagnostic.provider_adapter,
+                    &diagnostic.provider_adapter_version,
+                    &diagnostic.protocol,
                     "remote_provider",
                     &diagnostic.discovered_models,
                     diagnostic.checked_at,

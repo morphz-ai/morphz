@@ -32,7 +32,7 @@
     "testingAccountHint": "正在读取模型目录并发送最小健康请求。",
     "testSucceeded": "实测成功",
     "testFailed": "实测失败",
-    "testSummary": "发现 {{count}} 个模型 · 耗时 {{elapsed}} ms",
+    "testSummary": "发现 {{count}} 个模型 · 实测 {{model}} · 耗时 {{elapsed}} ms",
     "refreshCatalog": "刷新目录",
     "remoteCatalog": "远端模型目录",
     "remoteCatalogHint": "",

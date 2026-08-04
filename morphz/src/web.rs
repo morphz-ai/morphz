@@ -114,6 +114,11 @@ struct ModelRouteDiagnosticRequest {
 }
 
 #[derive(Default, serde::Deserialize)]
+struct ProviderAccountDiagnosticRequest {
+    model: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
 struct SessionListQuery {
     #[serde(default)]
     include_archived: bool,
@@ -816,6 +821,14 @@ impl Server {
                 axum::routing::put(handle_put_provider_account_models),
             )
             .route(
+                "/api/runtime/providers/accounts/:account_id/test",
+                post(handle_diagnose_provider_account),
+            )
+            .route(
+                "/api/runtime/providers/accounts/:account_id/refresh-models",
+                post(handle_refresh_provider_account_catalog),
+            )
+            .route(
                 "/api/runtime/providers/routes/:route_id",
                 axum::routing::put(handle_put_model_route_config),
             )
@@ -1441,6 +1454,46 @@ async fn handle_refresh_model_catalog(
     }
 }
 
+async fn handle_diagnose_provider_account(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ProviderAccountDiagnosticRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .diagnose_provider_account(&account_id, request.model.as_deref())
+        .await
+    {
+        Ok(diagnostic) => Json(diagnostic).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_refresh_provider_account_catalog(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ProviderAccountDiagnosticRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .refresh_provider_account_catalog(&account_id, request.model.as_deref())
+        .await
+    {
+        Ok(diagnostic) => Json(diagnostic).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
 async fn handle_put_provider_instance_config(
     State(state): State<Arc<AppState>>,
     Path(provider_id): Path<String>,
@@ -1653,9 +1706,6 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "Codex".to_string(),
-            route_id: "gpt-5.6".to_string(),
-            model_alias: "gpt-5.6".to_string(),
-            physical_model: "gpt-5.6".to_string(),
         },
         "kimi" => OAuthProviderSetup {
             provider_id: "kimi-code".to_string(),
@@ -1668,9 +1718,6 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "Kimi".to_string(),
-            route_id: "kimi-k3".to_string(),
-            model_alias: "kimi-k3".to_string(),
-            physical_model: "k3".to_string(),
         },
         "claude" | "anthropic" => OAuthProviderSetup {
             provider_id: "claude-subscription".to_string(),
@@ -1683,9 +1730,6 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "Claude".to_string(),
-            route_id: "claude".to_string(),
-            model_alias: "claude".to_string(),
-            physical_model: "claude-opus-4-6".to_string(),
         },
         "antigravity" => OAuthProviderSetup {
             provider_id: "antigravity-subscription".to_string(),
@@ -1698,9 +1742,6 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "Antigravity".to_string(),
-            route_id: "gemini".to_string(),
-            model_alias: "gemini".to_string(),
-            physical_model: "gemini-3-pro-high".to_string(),
         },
         "xai" => OAuthProviderSetup {
             provider_id: "xai-subscription".to_string(),
@@ -1713,9 +1754,6 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             credential_ref,
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "xAI".to_string(),
-            route_id: "grok".to_string(),
-            model_alias: "grok".to_string(),
-            physical_model: "grok-4.5".to_string(),
         },
         _ => return Err("该 OAuth 服务尚未接入 Runtime"),
     };
@@ -7465,12 +7503,14 @@ mod tests {
         let provider = &snapshot.provider_instances["codex-subscription"];
         assert_eq!(provider.accounts.len(), 2);
         assert!(account_ids.iter().all(|id| provider.accounts.contains(id)));
-        let route = &snapshot.model_routes["gpt-5.6"];
-        assert_eq!(route.candidates.len(), 2);
-        assert!(account_ids.iter().all(|account_id| route
-            .candidates
-            .iter()
-            .any(|candidate| candidate.account.as_deref() == Some(account_id.as_str()))));
+        assert!(provider.models.is_empty());
+        assert!(snapshot
+            .model_routes
+            .values()
+            .all(|route| account_ids.iter().all(|account_id| route
+                .candidates
+                .iter()
+                .all(|candidate| candidate.account.as_deref() != Some(account_id.as_str())))));
     }
 
     #[tokio::test]
@@ -7486,6 +7526,8 @@ mod tests {
             test_state_at_with_workers_and_auth(&database_path, false, Some(registry)).await;
         let managed_path = state.managed_config_path.clone().unwrap();
         let setup = oauth_provider_setup("codex").unwrap();
+        let legacy_model = "gpt-5.6";
+        let legacy_route_id = "gpt-5.6";
         let mut provider = ProviderInstanceConfig {
             adapter: setup.provider_adapter.clone(),
             protocol: setup.protocol,
@@ -7494,7 +7536,7 @@ mod tests {
             ..ProviderInstanceConfig::default()
         };
         provider.models.insert(
-            setup.physical_model.clone(),
+            legacy_model.to_string(),
             crate::config::ProviderModelConfig::default(),
         );
         let account = AuthAccountConfig {
@@ -7507,7 +7549,7 @@ mod tests {
         let route = ModelRouteConfig {
             candidates: vec![crate::config::ModelRouteCandidateConfig {
                 provider: setup.provider_id.clone(),
-                model: setup.physical_model.clone(),
+                model: legacy_model.to_string(),
                 account: Some(setup.account_id.clone()),
                 ..crate::config::ModelRouteCandidateConfig::default()
             }],
@@ -7522,7 +7564,7 @@ mod tests {
                 &setup.account_id,
                 account,
                 None,
-                &setup.route_id,
+                legacy_route_id,
                 route,
             )
             .await
@@ -7543,7 +7585,7 @@ mod tests {
         let migrated = runtime.provider_control_snapshot().await.unwrap();
         assert!(!migrated.auth_accounts.contains_key(&setup.account_id));
         assert!(!migrated.provider_instances.contains_key(&setup.provider_id));
-        assert!(!migrated.model_routes.contains_key(&setup.route_id));
+        assert!(!migrated.model_routes.contains_key(legacy_route_id));
         assert!(!std::fs::read_to_string(managed_path)
             .unwrap()
             .contains(&setup.account_id));

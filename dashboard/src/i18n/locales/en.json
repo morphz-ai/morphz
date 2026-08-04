@@ -32,7 +32,7 @@
     "testingAccountHint": "Loading the model catalog and sending a minimal health request.",
     "testSucceeded": "Test succeeded",
     "testFailed": "Test failed",
-    "testSummary": "{{count}} models found · {{elapsed}} ms",
+    "testSummary": "{{count}} models found · tested {{model}} · {{elapsed}} ms",
     "refreshCatalog": "Refresh catalog",
     "remoteCatalog": "Remote model catalog",
     "remoteCatalogHint": "",

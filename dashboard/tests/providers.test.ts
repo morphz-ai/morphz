@@ -89,14 +89,14 @@ test('account tests report progress and results beside the account that started 
   assert.match(providersSource, /providers\.testingAccount/)
   assert.match(providersSource, /providers\.testSucceeded/)
   assert.match(providersSource, /providers\.testFailed/)
-  assert.match(providersSource, /accountDiagnostic\.elapsed_ms/)
-  assert.match(providersSource, /accountDiagnostic\.discovered_models\.length/)
+  assert.match(providersSource, /currentAccountDiagnostic\.elapsed_ms/)
+  assert.match(providersSource, /currentAccountDiagnostic\.discovered_models\.length/)
 })
 
 test('authenticated accounts discover and explicitly enable models outside the login form', () => {
   assert.match(providersSource, /openAccountModels/)
   assert.match(providersSource, /providers\.manageModels/)
-  assert.match(providersSource, /\/api\/runtime\/providers\/routes\/\$\{encodeURIComponent\(routeId\)\}\/refresh-models/)
+  assert.match(providersSource, /\/api\/runtime\/providers\/accounts\/\$\{encodeURIComponent\(accountId\)\}\/refresh-models/)
   assert.match(providersSource, /\/api\/runtime\/providers\/accounts\/\$\{encodeURIComponent\(modelEditor\.accountId\)\}\/models/)
   assert.match(providersSource, /providers\.modelCapacityAdvanced/)
   assert.match(providersSource, /placeholder=\{t\('providers\.automatic'\)\}/)

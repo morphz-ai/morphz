@@ -1453,6 +1453,34 @@ pub fn save_managed_auth_account(
     Ok(path)
 }
 
+/// Atomically persist a Provider Instance and one Auth Account without
+/// inventing a Model Route. OAuth proves account ownership first; discovered
+/// models become routes only after the operator enables them.
+pub fn save_managed_provider_account_at(
+    path: &Path,
+    provider_id: &str,
+    provider: &ProviderInstanceConfig,
+    account_id: &str,
+    account: &AuthAccountConfig,
+) -> Result<(), String> {
+    validate_catalog_key("Provider Instance", provider_id)?;
+    validate_catalog_key("Auth Account", account_id)?;
+    let mut root = read_managed_value(path)?;
+    insert_managed_value(
+        &mut root,
+        &["provider_instances", provider_id],
+        toml::Value::try_from(provider)
+            .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
+    )?;
+    insert_managed_value(
+        &mut root,
+        &["auth_accounts", account_id],
+        toml::Value::try_from(account)
+            .map_err(|error| format!("无法序列化 Auth Account: {error}"))?,
+    )?;
+    write_managed_value(path, &root)
+}
+
 /// Persist one logical Model Route, including aliases and its ordered
 /// Provider/model candidates.
 pub fn save_managed_model_route_at(

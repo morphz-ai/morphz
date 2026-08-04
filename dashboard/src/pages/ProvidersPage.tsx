@@ -145,6 +145,22 @@ interface ModelRouteDiagnostic {
   health_error?: string
 }
 
+interface ProviderAccountDiagnostic {
+  checked_at: string
+  provider_instance_id: string
+  auth_account_id: string
+  protocol: string
+  provider_adapter: string
+  provider_adapter_version: string
+  endpoint: string
+  elapsed_ms: number
+  discovered_models: string[]
+  catalog_error?: string
+  probed_model?: string
+  health_verified: boolean
+  health_error?: string
+}
+
 interface OAuthLoginChallenge {
   login_id: string
   account_id: string
@@ -361,6 +377,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const [catalogEditor, setCatalogEditor] = useState<CatalogEditorState | null>(null)
   const [catalogNotice, setCatalogNotice] = useState('')
   const [diagnostic, setDiagnostic] = useState<ModelRouteDiagnostic | null>(null)
+  const [accountDiagnostic, setAccountDiagnostic] = useState<ProviderAccountDiagnostic | null>(null)
   const [diagnosing, setDiagnosing] = useState('')
   const [diagnosticAccountId, setDiagnosticAccountId] = useState('')
   const [diagnosticError, setDiagnosticError] = useState('')
@@ -934,6 +951,27 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     }
   }
 
+  const diagnoseAccount = async (accountId: string) => {
+    setDiagnosing(`account:${accountId}`)
+    setDiagnosticAccountId(accountId)
+    setAccountDiagnostic(null)
+    setDiagnosticError('')
+    setError('')
+    try {
+      const result = await api.command<ProviderAccountDiagnostic>(
+        `/api/runtime/providers/accounts/${encodeURIComponent(accountId)}/refresh-models`,
+        'POST',
+        {},
+      )
+      setAccountDiagnostic(result)
+      await refresh()
+    } catch (reason) {
+      setDiagnosticError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setDiagnosing('')
+    }
+  }
+
   const refreshRouteCatalog = async (routeId: string, accountId?: string) => {
     setDiagnosing(accountId ? `catalog-account:${accountId}` : `catalog-route:${routeId}`)
     setError('')
@@ -952,11 +990,6 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     }
   }
 
-  const compatibleRouteForAccount = (accountId: string): string | undefined => routes.find(([, route]) => (
-    route.candidates.some(candidate => candidate.account === accountId
-      || snapshot.provider_instances[candidate.provider]?.accounts.includes(accountId))
-  ))?.[0]
-
   const accountModelOptions = (
     accountId: string,
     providerId: string,
@@ -968,12 +1001,13 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
         if (candidate.provider === providerId && candidate.account === accountId) enabled.add(candidate.model)
       }
     }
+    const authoritativeDiscovery = additionallyDiscovered.length > 0
     const discovered = new Set([
       ...snapshot.discovered_models
         .filter(model => model.provider_instance_id === providerId && model.auth_account_id === accountId)
         .map(model => model.physical_model),
       ...additionallyDiscovered,
-      ...enabled,
+      ...(authoritativeDiscovery ? [] : enabled),
     ])
     const profiles = snapshot.provider_instances[providerId]?.models ?? {}
     return Array.from(discovered).sort().map(id => ({
@@ -1002,18 +1036,11 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       error: '',
       errorKind: '',
     })
-    const routeId = compatibleRouteForAccount(accountId)
-    if (!routeId) {
-      setModelEditor(current => current?.accountId === accountId
-        ? { ...current, loading: false, error: t('providers.modelRouteMissing'), errorKind: 'catalog' }
-        : current)
-      return
-    }
     try {
-      const result = await api.command<ModelRouteDiagnostic>(
-        `/api/runtime/providers/routes/${encodeURIComponent(routeId)}/refresh-models`,
+      const result = await api.command<ProviderAccountDiagnostic>(
+        `/api/runtime/providers/accounts/${encodeURIComponent(accountId)}/refresh-models`,
         'POST',
-        { account_id: accountId },
+        {},
       )
       setModelEditor(current => current?.accountId === accountId
         ? {
@@ -1193,7 +1220,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
               || record.oauth_metadata?.subject
               || record.oauth_metadata?.provider_account_id
             const accountLabel = identity || record.config.label || serviceName
-            const accountDiagnostic = diagnosticAccountId === accountId ? diagnostic : null
+            const currentAccountDiagnostic = diagnosticAccountId === accountId ? accountDiagnostic : null
             const isTesting = diagnosing === `account:${accountId}`
             return (
               <article className={!record.effective_enabled ? 'is-disabled' : ''} key={accountId}>
@@ -1223,8 +1250,8 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                       <Settings2 size={13} /> {t('providers.manageModels')}
                     </button>
                   )}
-                  {(!record.oauth || record.authenticated) && compatibleRouteForAccount(accountId) && (
-                    <button type="button" disabled={Boolean(diagnosing)} onClick={() => void diagnoseRoute(compatibleRouteForAccount(accountId)!, accountId)}>
+                  {(!record.oauth || record.authenticated) && (
+                    <button type="button" disabled={Boolean(diagnosing)} onClick={() => void diagnoseAccount(accountId)}>
                       {isTesting ? <RefreshCw className="is-spinning" size={13} /> : <Activity size={13} />}
                       {isTesting ? t('providers.testing') : t('providers.test')}
                     </button>
@@ -1251,17 +1278,21 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                     {record.effective_enabled ? t('providers.disable') : t('providers.enable')}
                   </button>
                 </nav>
-                {diagnosticAccountId === accountId && (isTesting || accountDiagnostic || diagnosticError) && (
-                  <section className={`provider-account-test-result ${accountDiagnostic?.health_verified ? 'is-success' : diagnosticError || (accountDiagnostic && !accountDiagnostic.health_verified) ? 'is-failure' : 'is-pending'}`} aria-live="polite">
+                {diagnosticAccountId === accountId && (isTesting || currentAccountDiagnostic || diagnosticError) && (
+                  <section className={`provider-account-test-result ${currentAccountDiagnostic?.health_verified ? 'is-success' : diagnosticError || (currentAccountDiagnostic && !currentAccountDiagnostic.health_verified) ? 'is-failure' : 'is-pending'}`} aria-live="polite">
                     {isTesting ? (
                       <><RefreshCw className="is-spinning" size={14} /><span><strong>{t('providers.testingAccount')}</strong><small>{t('providers.testingAccountHint')}</small></span></>
-                    ) : accountDiagnostic ? (
+                    ) : currentAccountDiagnostic ? (
                       <>
-                        {accountDiagnostic.health_verified ? <CheckCircle2 size={14} /> : <CircleOff size={14} />}
+                        {currentAccountDiagnostic.health_verified ? <CheckCircle2 size={14} /> : <CircleOff size={14} />}
                         <span>
-                          <strong>{accountDiagnostic.health_verified ? t('providers.testSucceeded') : t('providers.testFailed')}</strong>
-                          <small>{t('providers.testSummary', { count: accountDiagnostic.discovered_models.length, elapsed: accountDiagnostic.elapsed_ms })}</small>
-                          {(accountDiagnostic.health_error || accountDiagnostic.catalog_error) && <code>{accountDiagnostic.health_error ?? accountDiagnostic.catalog_error}</code>}
+                          <strong>{currentAccountDiagnostic.health_verified ? t('providers.testSucceeded') : t('providers.testFailed')}</strong>
+                          <small>{t('providers.testSummary', {
+                            count: currentAccountDiagnostic.discovered_models.length,
+                            model: currentAccountDiagnostic.probed_model ?? '—',
+                            elapsed: currentAccountDiagnostic.elapsed_ms,
+                          })}</small>
+                          {(currentAccountDiagnostic.health_error || currentAccountDiagnostic.catalog_error) && <code>{currentAccountDiagnostic.health_error ?? currentAccountDiagnostic.catalog_error}</code>}
                         </span>
                       </>
                     ) : (
