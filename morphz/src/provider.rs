@@ -10,7 +10,7 @@ use base64::Engine;
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -455,6 +455,9 @@ impl ProtocolClient {
     }
 
     fn adapt_request(&self, model: &str, request: Value) -> Value {
+        if self.adapter == "openai-codex" {
+            return adapt_codex_request(request);
+        }
         if self.adapter != "google-antigravity" {
             return request;
         }
@@ -856,8 +859,13 @@ impl ProtocolClient {
             })
             .map(|model| model.strip_prefix("models/").unwrap_or(model).to_string())
             .collect::<Vec<_>>();
-        models.sort();
-        models.dedup();
+        if self.adapter == "openai-codex" {
+            let mut seen = HashSet::new();
+            models.retain(|model| seen.insert(model.clone()));
+        } else {
+            models.sort();
+            models.dedup();
+        }
         Ok(models)
     }
 }
@@ -1101,6 +1109,14 @@ impl Client for ProtocolClient {
     ) -> Result<Response, ProviderError> {
         let model = self.model_snapshot();
         let request = self.request_for_model(&model, &messages, &tools);
+        if self.adapter == "openai-codex" {
+            // ChatGPT's Codex backend only accepts Responses requests in its
+            // streaming form. Aggregate that stream here for callers using
+            // the non-streaming Client API, matching the official client and
+            // CLIProxyAPI compatibility boundary.
+            let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
+            return self.send_stream(&model, &request, None, &stream).await;
+        }
         let response = self.send(&model, &request).await?;
         parse_response(self.protocol, self.normalize_response(response))
     }
@@ -1149,6 +1165,21 @@ impl Client for ProtocolClient {
             &model,
             build_request(self.protocol, &model, Some(64), None, &messages, &[]),
         );
+        if self.adapter == "openai-codex" {
+            let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
+            return tokio::time::timeout(
+                HEALTH_PROBE_TIMEOUT,
+                self.send_stream(&model, &body, None, &stream),
+            )
+            .await
+            .map_err(|_| {
+                boxed_model_failure(ModelFailure::new(
+                    ModelFailureKind::FirstByteTimeout,
+                    "Codex health probe timed out",
+                ))
+            })?
+            .map(|_| ());
+        }
         let endpoint = self.endpoint_for(false, &model)?;
         let response = tokio::time::timeout(
             HEALTH_PROBE_TIMEOUT,
@@ -1951,6 +1982,67 @@ fn build_openai_responses_request(
                 })
                 .collect(),
         );
+    }
+    request
+}
+
+fn adapt_codex_request(mut request: Value) -> Value {
+    let Some(object) = request.as_object_mut() else {
+        return request;
+    };
+
+    object.insert("store".to_string(), Value::Bool(false));
+    object.insert(
+        "include".to_string(),
+        json!(["reasoning.encrypted_content"]),
+    );
+
+    // These fields are valid for the public Responses API but rejected by
+    // the ChatGPT Codex backend. CLIProxyAPI applies the same compatibility
+    // boundary before forwarding a request upstream.
+    for field in [
+        "max_output_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "top_p",
+        "truncation",
+        "context_management",
+        "user",
+        "previous_response_id",
+        "generate",
+        "prompt_cache_retention",
+        "safety_identifier",
+        "stream_options",
+    ] {
+        object.remove(field);
+    }
+    if object
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .is_some_and(|tier| tier != "priority")
+    {
+        object.remove("service_tier");
+    }
+
+    let has_tools = object
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty());
+    if has_tools {
+        object.insert("parallel_tool_calls".to_string(), Value::Bool(true));
+    } else {
+        object.remove("parallel_tool_calls");
+    }
+
+    if object.get("instructions").is_none_or(Value::is_null) {
+        object.insert("instructions".to_string(), Value::String(String::new()));
+    }
+    if let Some(input) = object.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input {
+            if item.get("role").and_then(Value::as_str) == Some("system") {
+                item["role"] = Value::String("developer".to_string());
+            }
+        }
     }
     request
 }
@@ -3233,6 +3325,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn codex_request_matches_subscription_backend_contract() {
+        let request = json!({
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "hello"}
+            ],
+            "tools": [{"type": "function", "name": "probe"}],
+            "max_output_tokens": 64,
+            "temperature": 0.5,
+            "truncation": "auto",
+            "user": "unsupported"
+        });
+
+        let adapted = adapt_codex_request(request);
+
+        assert_eq!(adapted.get("store"), Some(&Value::Bool(false)));
+        assert_eq!(
+            adapted.get("include"),
+            Some(&json!(["reasoning.encrypted_content"]))
+        );
+        assert_eq!(adapted.get("parallel_tool_calls"), Some(&Value::Bool(true)));
+        assert_eq!(adapted.get("instructions"), Some(&json!("")));
+        assert_eq!(adapted.pointer("/input/0/role"), Some(&json!("developer")));
+        for rejected in ["max_output_tokens", "temperature", "truncation", "user"] {
+            assert!(adapted.get(rejected).is_none(), "field={rejected}");
+        }
+    }
+
     #[tokio::test]
     async fn codex_catalog_uses_client_version_and_slug_ids() {
         let app =
@@ -3249,6 +3371,8 @@ mod tests {
                         );
                         Json(json!({
                             "models": [
+                                {"slug": "gpt-5.6-sol"},
+                                {"slug": "codex-auto-review"},
                                 {"slug": "gpt-5.6-sol"},
                                 {"slug": "gpt-5.6-terra"}
                             ]
@@ -3274,8 +3398,45 @@ mod tests {
 
         assert_eq!(
             client.list_models().await.unwrap(),
-            ["gpt-5.6-sol", "gpt-5.6-terra"]
+            ["gpt-5.6-sol", "codex-auto-review", "gpt-5.6-terra"]
         );
+    }
+
+    #[tokio::test]
+    async fn codex_health_probe_uses_required_streaming_request() {
+        let app = Router::new().route(
+            "/responses",
+            post(|Json(body): Json<Value>| async move {
+                assert_eq!(body.get("model"), Some(&json!("gpt-5.6-sol")));
+                assert_eq!(body.get("stream"), Some(&Value::Bool(true)));
+                assert_eq!(body.get("store"), Some(&Value::Bool(false)));
+                assert_eq!(
+                    body.get("include"),
+                    Some(&json!(["reasoning.encrypted_content"]))
+                );
+                assert!(body.get("max_output_tokens").is_none());
+                sse(
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"MORPHZ_OK\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{}}}\n\n",
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ProtocolClient::new_with_adapter(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "openai-codex",
+            "gpt-5.6-sol".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        client.probe_health().await.unwrap();
     }
 
     #[tokio::test]
