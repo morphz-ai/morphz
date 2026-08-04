@@ -268,13 +268,13 @@ test('a live entity keeps its slot while its neighbours come and go', () => {
   assert.ok([...second.values()].includes(first.get('beta') as number))
 })
 
-test('entities beyond the palette stay neutral instead of repeating a colour', () => {
+test('entities beyond the curated palette remain tinted without repeating a slot', () => {
   const ids = Array.from({ length: TINT_PALETTE_SIZE + 3 }, (_, index) => `entity-${index}`)
   const slots = assignTintSlots(ids, new Map())
-  assert.equal(slots.size, TINT_PALETTE_SIZE)
-  assert.equal(new Set(slots.values()).size, TINT_PALETTE_SIZE)
+  assert.equal(slots.size, ids.length)
+  assert.equal(new Set(slots.values()).size, ids.length)
   for (const id of ids.slice(TINT_PALETTE_SIZE)) {
-    assert.equal(toneForSlot(slots.get(id)), undefined)
+    assert.match(toneForSlot(slots.get(id))?.color ?? '', /^hsl\(/)
   }
 })
 

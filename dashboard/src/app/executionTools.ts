@@ -13,6 +13,11 @@ export interface ToolTimelineItem extends PresentedToolCall {
   result?: string
 }
 
+function toolArgumentsQuality(call: PresentedToolCall): number {
+  if (!call.arguments.trim() || call.arguments.trim() === '{}') return 0
+  return call.truncated === true ? 1 : 2
+}
+
 /** Runtime-owned target identities carried by a physical tool invocation. */
 export function executionTargetIds(argumentsText: string): string[] {
   let value: unknown
@@ -47,8 +52,18 @@ export function buildToolTimeline(events: ReadonlyArray<ToolTimelineEvent>): Too
     if (selectedCalls.length > 0) {
       for (const call of selectedCalls) {
         const previous = calls.get(call.id)
+        // `chat/assistant_call` owns the complete invocation while
+        // `runtime/tool_calls_selected` carries a bounded activity preview.
+        // A large write usually puts `path` after several KiB of `content`, so
+        // replacing the complete call with that later, invalid JSON preview
+        // makes the summary claim that no file was specified. Keep the richer
+        // argument source while still accepting a preview when it is all the
+        // Dashboard has (for example during a narrowly paged live tail).
+        const argumentsSource = previous && toolArgumentsQuality(previous) > toolArgumentsQuality(call)
+          ? previous
+          : call
         calls.set(call.id, {
-          ...call,
+          ...argumentsSource,
           timestamp: previous?.timestamp ?? event.timestamp,
           status: previous?.status ?? 'running',
           result: previous?.result,

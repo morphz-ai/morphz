@@ -66,6 +66,51 @@ test('a selected call remains running until its Tool Output arrives', () => {
   }])[0]?.status, 'running')
 })
 
+test('a truncated Runtime preview never replaces complete Assistant Call arguments', () => {
+  const completeArguments = JSON.stringify({
+    content: 'x'.repeat(6_000),
+    mode: 'create',
+    path: 'chapters/012.md',
+  })
+  const timeline = buildToolTimeline([{
+    timestamp: '2026-07-28T02:35:10Z',
+    topic: 'chat/assistant_call',
+    payload: {
+      tool_calls: [{
+        id: 'call-write',
+        type: 'function',
+        function: { name: 'write', arguments: completeArguments },
+      }],
+    },
+  }, {
+    timestamp: '2026-07-28T02:35:11Z',
+    topic: 'runtime/tool_calls_selected',
+    payload: {
+      calls: [{
+        id: 'call-write',
+        name: 'write',
+        arguments: '{\n  "content": "xxxxxxxx\n… <参数预览已截断，共 6049 字符>',
+        arguments_chars: 6049,
+        truncated: true,
+      }],
+    },
+  }, {
+    timestamp: '2026-07-28T02:35:12Z',
+    type: 'tool_output',
+    topic: 'chat/tool_output',
+    payload: {
+      tool_call_id: 'call-write',
+      tool_name: 'write',
+      tool_status: 'success',
+      text: 'created chapters/012.md',
+    },
+  }])
+
+  assert.equal(timeline[0]?.arguments, completeArguments)
+  assert.equal(timeline[0]?.truncated, undefined)
+  assert.equal(JSON.parse(timeline[0]?.arguments ?? '{}').path, 'chapters/012.md')
+})
+
 test('domain-specific Runtime Tool Outputs terminate the selected call', () => {
   const timeline = buildToolTimeline([{
     timestamp: '2026-07-28T02:35:10Z',

@@ -223,9 +223,10 @@ export const TINT_PALETTE_SIZE = objectiveTones.length
  * entity is gone. Callers pass the previous assignment back in; ordering of
  * `activeIds` decides who claims a freed slot first.
  *
- * Beyond `TINT_PALETTE_SIZE` live entities the extra ones are deliberately left
- * unassigned. Saying "these six are distinct and the rest are neutral" is
- * honest; recycling colours would fabricate distinctions that do not hold.
+ * The first slots use the hand-tuned palette. Further slots are still unique
+ * and receive generated tones: turning tinting off merely because a message
+ * window contains more than six historical entities makes the same Thread or
+ * Objective appear and disappear as the operator refreshes or filters it.
  */
 export function assignTintSlots(
   activeIds: readonly string[],
@@ -243,8 +244,7 @@ export function assignTintSlots(
   for (const id of wanted) {
     if (next.has(id)) continue
     let slot = 0
-    while (slot < objectiveTones.length && taken.has(slot)) slot += 1
-    if (slot >= objectiveTones.length) continue
+    while (taken.has(slot)) slot += 1
     next.set(id, slot)
     taken.add(slot)
   }
@@ -252,7 +252,18 @@ export function assignTintSlots(
 }
 
 export function toneForSlot(slot: number | undefined): ObjectiveTone | undefined {
-  return slot === undefined ? undefined : objectiveTones[slot]
+  if (slot === undefined || !Number.isSafeInteger(slot) || slot < 0) return undefined
+  const curated = objectiveTones[slot]
+  if (curated) return curated
+  // Golden-angle spacing avoids repeating the six curated colours and keeps
+  // adjacent overflow slots visually apart. Saturation/lightness bands add a
+  // second deterministic dimension without producing colours too dark for the
+  // Dashboard's borders and identifier chips.
+  const overflow = slot - objectiveTones.length
+  const hue = Math.round((188 + overflow * 137.508) % 360)
+  const saturation = 64 + (overflow % 3) * 5
+  const lightness = 57 + (Math.floor(overflow / 3) % 3) * 4
+  return { color: `hsl(${hue} ${saturation}% ${lightness}%)` }
 }
 
 /** The id a message is coloured by, given the dimension in effect. */
