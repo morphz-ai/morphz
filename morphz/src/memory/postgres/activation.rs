@@ -7,10 +7,10 @@ use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
     evaluate_thread_completion_contract, evaluate_thread_group_contract, ActivationOutcomeCommit,
     ActivationStore, DialogueTurnRetryMutation, DialogueTurnRetryRequest, NewThreadActivation,
-    NewThreadSignal, ObjectiveWaitCondition, SessionAttentionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadGroupPolicy, ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadSupervisorKind,
+    NewThreadSignal, ObjectiveCompletionIntent, ObjectiveStatus, ObjectiveWaitCondition,
+    SessionAttentionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadGroupPolicy, ThreadGroupStatus,
+    ThreadKind, ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervisorKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -1507,17 +1507,91 @@ impl ActivationStore for PostgresStore {
             && supervisor_kind == ThreadSupervisorKind::Objective
             && supervisor_id.is_some()
             && origin_evaluation_id.is_none();
-        let objective_is_terminal = if is_objective_primary_execution {
-            sqlx::query_scalar::<_, String>("SELECT status FROM objectives WHERE id = $1")
-                .bind(supervisor_id.as_deref().expect("checked above"))
-                .fetch_optional(&mut *tx)
-                .await?
-                .is_some_and(|status| {
-                    matches!(status.as_str(), "completed" | "cancelled" | "failed")
-                })
-        } else {
-            false
-        };
+        let routed_objective_id = event
+            .payload
+            .get("objective_id")
+            .and_then(JsonValue::as_str);
+        let routed_evaluation_id = event
+            .payload
+            .get("objective_evaluation_id")
+            .and_then(JsonValue::as_str);
+        let objective_evaluation_elapsed_seconds = i64::try_from(
+            event
+                .payload
+                .get("objective_evaluation_elapsed_seconds")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or_default(),
+        )?;
+        let completion_objective_id = routed_objective_id.or_else(|| {
+            is_objective_primary_execution
+                .then_some(supervisor_id.as_deref())
+                .flatten()
+        });
+        let mut objective_is_terminal = false;
+        if let Some(objective_id) = completion_objective_id {
+            let row = sqlx::query(
+                r#"SELECT status, active_evaluation_id, completion_intent_json
+                   FROM objectives WHERE id = $1 FOR UPDATE"#,
+            )
+            .bind(objective_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(row) = row {
+                let status: String = row.get("status");
+                objective_is_terminal =
+                    matches!(status.as_str(), "completed" | "cancelled" | "failed");
+                let active_evaluation_id: Option<String> = row.get("active_evaluation_id");
+                let intent_json: Option<JsonValue> = row.get("completion_intent_json");
+                if !objective_is_terminal
+                    && terminal_lifecycle == ThreadLifecycle::Completed
+                    && status == ObjectiveStatus::Active.as_str()
+                {
+                    if let Some(intent_json) = intent_json {
+                        let intent: ObjectiveCompletionIntent =
+                            serde_json::from_value(intent_json.clone())?;
+                        let routed_completion_matches = routed_objective_id == Some(objective_id)
+                            && routed_evaluation_id == Some(intent.evaluation_id.as_str());
+                        let primary_completion_matches = is_objective_primary_execution
+                            && supervisor_id.as_deref() == Some(objective_id);
+                        if (routed_completion_matches || primary_completion_matches)
+                            && intent.activation_id == activation_id
+                            && active_evaluation_id.as_deref()
+                                == Some(intent.evaluation_id.as_str())
+                        {
+                            let completed = sqlx::query(
+                                r#"UPDATE objectives
+                                   SET status = 'completed', status_reason = $1,
+                                       wait_condition_json = NULL,
+                                       completion_intent_json = NULL,
+                                       active_evaluation_id = NULL,
+                                       evaluation_lease_expires_at = NULL,
+                                       time_used_seconds = time_used_seconds + $2,
+                                       revision = revision + 1, updated_at = $3
+                                   WHERE id = $4 AND status = 'active'
+                                     AND active_evaluation_id = $5
+                                     AND completion_intent_json = $6"#,
+                            )
+                            .bind(&intent.reason)
+                            .bind(objective_evaluation_elapsed_seconds)
+                            .bind(&now)
+                            .bind(objective_id)
+                            .bind(&intent.evaluation_id)
+                            .bind(&intent_json)
+                            .execute(&mut *tx)
+                            .await?;
+                            if completed.rows_affected() != 1 {
+                                return Err(format!(
+                                    "Objective '{}' completion intent 无法原子提交",
+                                    objective_id
+                                )
+                                .into());
+                            }
+                            objective_is_terminal = true;
+                        }
+                    }
+                }
+            }
+        }
         if is_objective_primary_execution && !objective_is_terminal {
             append_event_in_tx(&mut tx, event).await?;
             let activation_terminal_status = match terminal_lifecycle {

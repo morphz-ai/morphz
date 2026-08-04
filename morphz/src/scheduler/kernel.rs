@@ -186,6 +186,28 @@ impl SchedulerKernel {
                     .map_err(store_error)?;
                 Ok(KernelResult::ObjectiveEvaluationMutated(mutation))
             }
+            KernelCommandPayload::PrepareObjectiveCompletion(payload) => {
+                let expected_revision = required_revision(&command.header)?;
+                validate_objective_generation(
+                    self.store.as_ref(),
+                    &payload.objective_id,
+                    command.header.generation,
+                )
+                .await?;
+                let mutation = self
+                    .store
+                    .prepare_objective_completion(
+                        &payload.objective_id,
+                        expected_revision,
+                        &payload.evaluation_id,
+                        &payload.activation_id,
+                        &payload.reason,
+                        &payload.evidence_refs,
+                    )
+                    .await
+                    .map_err(store_error)?;
+                Ok(KernelResult::ObjectiveEvaluationMutated(mutation))
+            }
             KernelCommandPayload::FinishObjectiveEvaluation(payload) => {
                 validate_objective_generation(
                     self.store.as_ref(),

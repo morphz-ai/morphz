@@ -5979,6 +5979,7 @@ mod tests {
             wait_condition: Some(ObjectiveWaitCondition::ToolTask {
                 task_id: "task-123".to_string(),
             }),
+            completion_intent: None,
             active_evaluation_id: None,
             evaluation_lease_expires_at: None,
             continuation_sequence: 2,

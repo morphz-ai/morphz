@@ -32,24 +32,24 @@ use crate::memory::{
     NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
     NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
     NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
-    NewThreadGroupPlan, NewThreadSignal, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
-    PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
-    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
-    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
-    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
-    RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus,
-    ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
-    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadControlAction, ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord,
-    ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus,
-    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation,
-    ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord, ThreadPromotionRequest,
-    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, ThreadSupervision,
-    ThreadSupervisorKind, TimerStore, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    NewThreadGroupPlan, NewThreadSignal, ObjectiveCompletionIntent, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
+    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
+    ProviderAccountAffinityRecord, ProviderAccountStateRecord, ProviderAccountStateStore,
+    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
+    ProviderRefreshLeaseRecord, QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
+    ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
+    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
+    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate,
+    SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
+    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
+    ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime,
+    ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord,
+    ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore,
+    ThreadSupervision, ThreadSupervisorKind, TimerStore, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
@@ -572,6 +572,7 @@ impl SqliteStore {
             status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'blocked', 'completed', 'cancelled', 'failed')),
             status_reason TEXT,
             wait_condition_json TEXT,
+            completion_intent_json TEXT,
             active_evaluation_id TEXT,
             evaluation_lease_expires_at TEXT,
             continuation_sequence INTEGER NOT NULL DEFAULT 0 CHECK(continuation_sequence >= 0),
@@ -1483,6 +1484,14 @@ impl SqliteStore {
                 .execute(&pool)
                 .await?;
             backfill_objective_status_reasons(&pool).await?;
+        }
+        if !objective_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "completion_intent_json")
+        {
+            sqlx::query("ALTER TABLE objectives ADD COLUMN completion_intent_json TEXT")
+                .execute(&pool)
+                .await?;
         }
         if !objective_columns
             .iter()
@@ -3584,6 +3593,10 @@ fn objective_from_row(
         .get::<Option<String>, _>("wait_condition_json")
         .map(|json| serde_json::from_str::<ObjectiveWaitCondition>(&json))
         .transpose()?;
+    let completion_intent = row
+        .get::<Option<String>, _>("completion_intent_json")
+        .map(|json| serde_json::from_str::<ObjectiveCompletionIntent>(&json))
+        .transpose()?;
     Ok(ObjectiveRecord {
         id: row.get("id"),
         agent_id: row.get("agent_id"),
@@ -3599,6 +3612,7 @@ fn objective_from_row(
         status: parse_objective_status(&row.get::<String, _>("status"))?,
         status_reason: row.get("status_reason"),
         wait_condition,
+        completion_intent,
         active_evaluation_id: row.get("active_evaluation_id"),
         evaluation_lease_expires_at: row
             .get::<Option<String>, _>("evaluation_lease_expires_at")
@@ -7820,17 +7834,90 @@ impl ActivationStore for SqliteStore {
             && supervisor_kind == ThreadSupervisorKind::Objective
             && supervisor_id.is_some()
             && origin_evaluation_id.is_none();
-        let objective_is_terminal = if is_objective_primary_execution {
-            sqlx::query_scalar::<_, String>("SELECT status FROM objectives WHERE id = ?")
-                .bind(supervisor_id.as_deref().expect("checked above"))
-                .fetch_optional(&mut *tx)
-                .await?
-                .is_some_and(|status| {
-                    matches!(status.as_str(), "completed" | "cancelled" | "failed")
-                })
-        } else {
-            false
-        };
+        let routed_objective_id = event
+            .payload
+            .get("objective_id")
+            .and_then(JsonValue::as_str);
+        let routed_evaluation_id = event
+            .payload
+            .get("objective_evaluation_id")
+            .and_then(JsonValue::as_str);
+        let objective_evaluation_elapsed_seconds = i64::try_from(
+            event
+                .payload
+                .get("objective_evaluation_elapsed_seconds")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or_default(),
+        )?;
+        let completion_objective_id = routed_objective_id.or_else(|| {
+            is_objective_primary_execution
+                .then_some(supervisor_id.as_deref())
+                .flatten()
+        });
+        let mut objective_is_terminal = false;
+        if let Some(objective_id) = completion_objective_id {
+            let row = sqlx::query(
+                r#"SELECT status, active_evaluation_id, completion_intent_json
+                   FROM objectives WHERE id = ?"#,
+            )
+            .bind(objective_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(row) = row {
+                let status: String = row.get("status");
+                objective_is_terminal =
+                    matches!(status.as_str(), "completed" | "cancelled" | "failed");
+                let active_evaluation_id: Option<String> = row.get("active_evaluation_id");
+                let completion_intent_json: Option<String> = row.get("completion_intent_json");
+                if !objective_is_terminal
+                    && terminal_lifecycle == ThreadLifecycle::Completed
+                    && status == ObjectiveStatus::Active.as_str()
+                {
+                    if let Some(intent_json) = completion_intent_json {
+                        let intent: ObjectiveCompletionIntent = serde_json::from_str(&intent_json)?;
+                        let routed_completion_matches = routed_objective_id == Some(objective_id)
+                            && routed_evaluation_id == Some(intent.evaluation_id.as_str());
+                        let primary_completion_matches = is_objective_primary_execution
+                            && supervisor_id.as_deref() == Some(objective_id);
+                        if (routed_completion_matches || primary_completion_matches)
+                            && intent.activation_id == activation_id
+                            && active_evaluation_id.as_deref()
+                                == Some(intent.evaluation_id.as_str())
+                        {
+                            let completed = sqlx::query(
+                                r#"UPDATE objectives
+                                   SET status = 'completed', status_reason = ?,
+                                       wait_condition_json = NULL,
+                                       completion_intent_json = NULL,
+                                       active_evaluation_id = NULL,
+                                       evaluation_lease_expires_at = NULL,
+                                       time_used_seconds = time_used_seconds + ?,
+                                       revision = revision + 1, updated_at = ?
+                                   WHERE id = ? AND status = 'active'
+                                     AND active_evaluation_id = ?
+                                     AND completion_intent_json = ?"#,
+                            )
+                            .bind(&intent.reason)
+                            .bind(objective_evaluation_elapsed_seconds)
+                            .bind(&now)
+                            .bind(objective_id)
+                            .bind(&intent.evaluation_id)
+                            .bind(&intent_json)
+                            .execute(&mut *tx)
+                            .await?;
+                            if completed.rows_affected() != 1 {
+                                return Err(format!(
+                                    "Objective '{}' completion intent 无法原子提交",
+                                    objective_id
+                                )
+                                .into());
+                            }
+                            objective_is_terminal = true;
+                        }
+                    }
+                }
+            }
+        }
         if is_objective_primary_execution && !objective_is_terminal {
             append_event_in_transaction(&mut tx, event).await?;
             let activation_terminal_status = match terminal_lifecycle {
@@ -11628,7 +11715,7 @@ impl DelegationStore for SqliteStore {
 
 const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
     coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
-    initiating_principal_id, stated_objective, revision, generation, status, status_reason, wait_condition_json, active_evaluation_id,
+    initiating_principal_id, stated_objective, revision, generation, status, status_reason, wait_condition_json, completion_intent_json, active_evaluation_id,
     evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
     time_used_seconds, created_at, updated_at
     FROM objectives"#;
@@ -11846,7 +11933,7 @@ impl ObjectiveStore for SqliteStore {
             .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let result = sqlx::query(
-            "UPDATE objectives SET stated_objective = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?",
+            "UPDATE objectives SET stated_objective = ?, completion_intent_json = NULL, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?",
         )
         .bind(stated_objective)
         .bind(now)
@@ -11909,6 +11996,7 @@ impl ObjectiveStore for SqliteStore {
         let result = sqlx::query(
             r#"UPDATE objectives
                SET status = ?, status_reason = ?, wait_condition_json = ?,
+                   completion_intent_json = NULL,
                    generation = generation + ?,
                    revision = revision + 1, updated_at = ?
                WHERE id = ? AND revision = ?"#,
@@ -11960,6 +12048,79 @@ impl ObjectiveStore for SqliteStore {
         })
     }
 
+    async fn prepare_objective_completion(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        activation_id: &str,
+        reason: &str,
+        evidence_refs: &[String],
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let evaluation_id = evaluation_id.trim();
+        let activation_id = activation_id.trim();
+        let reason = reason.trim();
+        if evaluation_id.is_empty() || activation_id.is_empty() || reason.is_empty() {
+            return Err("Objective 完成意图必须包含 Evaluation、Activation 与原因".into());
+        }
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        let same_intent = current.completion_intent.as_ref().is_some_and(|intent| {
+            intent.evaluation_id == evaluation_id
+                && intent.activation_id == activation_id
+                && intent.reason == reason
+                && intent.evidence_refs == evidence_refs
+        });
+        if same_intent {
+            return Ok(ObjectiveMutation::Updated(current));
+        }
+        if current.revision != expected_revision
+            || current.status != ObjectiveStatus::Active
+            || current.wait_condition.is_some()
+            || current.active_evaluation_id.as_deref() != Some(evaluation_id)
+            || current.completion_intent.is_some()
+        {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let intent = ObjectiveCompletionIntent {
+            evaluation_id: evaluation_id.to_string(),
+            activation_id: activation_id.to_string(),
+            reason: reason.to_string(),
+            evidence_refs: evidence_refs.to_vec(),
+            requested_at: Utc::now(),
+        };
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET completion_intent_json = ?, revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'active'
+                 AND wait_condition_json IS NULL AND completion_intent_json IS NULL
+                 AND active_evaluation_id = ?"#,
+        )
+        .bind(serde_json::to_string(&intent)?)
+        .bind(
+            intent
+                .requested_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        )
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .bind(evaluation_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective 完成意图提交后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
     async fn claim_objective_evaluation(
         &self,
         id: &str,
@@ -11975,6 +12136,7 @@ impl ObjectiveStore for SqliteStore {
         };
         if current.revision != expected_revision
             || current.status != ObjectiveStatus::Active
+            || current.completion_intent.is_some()
             || current
                 .evaluation_lease_expires_at
                 .is_some_and(|expires_at| expires_at > Utc::now())
@@ -12038,6 +12200,7 @@ impl ObjectiveStore for SqliteStore {
         };
         if current.revision != expected_revision
             || current.status != ObjectiveStatus::Active
+            || current.completion_intent.is_some()
             || current
                 .evaluation_lease_expires_at
                 .is_some_and(|expires_at| expires_at > Utc::now())
@@ -12135,6 +12298,7 @@ impl ObjectiveStore for SqliteStore {
         let result = sqlx::query(
             r#"UPDATE objectives
                SET active_evaluation_id = NULL, evaluation_lease_expires_at = NULL,
+                   completion_intent_json = NULL,
                    tokens_used = tokens_used + ?, time_used_seconds = time_used_seconds + ?,
                    revision = revision + 1, updated_at = ?
                WHERE id = ? AND revision = ? AND active_evaluation_id = ?"#,
@@ -24836,9 +25000,8 @@ mod tests {
     #[tokio::test]
     async fn objective_claim_and_continuation_outbox_commit_atomically() {
         let tmp_file = NamedTempFile::new().unwrap();
-        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
-            .await
-            .unwrap();
+        let db_path = tmp_file.path().to_path_buf();
+        let store = SqliteStore::new(db_path.to_str().unwrap()).await.unwrap();
         store
             .create_agent_bundle(
                 NewAgent {
@@ -24977,6 +25140,174 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+
+        let signal = signals[0].clone();
+        let trigger_sequence = signal.sequence;
+        let activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: signal.id,
+                    thread_id: signal.thread_id,
+                    thread_generation: signal.thread_generation,
+                    event_id: signal.event_id,
+                    principal_id: signal.principal_id,
+                    sequence: signal.sequence,
+                    kind: signal.kind,
+                    parent_activation_id: signal.parent_activation_id,
+                },
+                NewThreadActivation {
+                    id: "objective-finalization-activation".to_string(),
+                    agent_id: "objective-outbox-agent".to_string(),
+                    context_id: "objective-outbox-context".to_string(),
+                    session_id: "objective-outbox-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: continuation.id.clone(),
+                    trigger_sequence,
+                    trigger_kind: continuation.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: continuation_root.clone(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let running = match store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Running,
+                Some("test-runtime"),
+                Some(Utc::now() + chrono::Duration::minutes(1)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(running) => running,
+            mutation => panic!("unexpected Activation mutation: {mutation:?}"),
+        };
+        let prepared = store
+            .prepare_objective_completion(
+                "objective-outbox",
+                2,
+                "objective-evaluation",
+                &running.id,
+                "全部验收条件已满足",
+                &["objective-continuation-event".to_string()],
+            )
+            .await
+            .unwrap();
+        let ObjectiveMutation::Updated(prepared) = prepared else {
+            panic!("completion intent should be prepared");
+        };
+        assert_eq!(prepared.status, ObjectiveStatus::Active);
+        assert_eq!(prepared.revision, 3);
+        assert_eq!(
+            prepared.active_evaluation_id.as_deref(),
+            Some("objective-evaluation")
+        );
+        assert_eq!(
+            prepared
+                .completion_intent
+                .as_ref()
+                .map(|intent| intent.activation_id.as_str()),
+            Some(running.id.as_str())
+        );
+        let replayed = store
+            .prepare_objective_completion(
+                "objective-outbox",
+                2,
+                "objective-evaluation",
+                &running.id,
+                "全部验收条件已满足",
+                &["objective-continuation-event".to_string()],
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            replayed,
+            ObjectiveMutation::Updated(ObjectiveRecord { revision: 3, .. })
+        ));
+        store.pool.close().await;
+        drop(store);
+        let store = SqliteStore::new(db_path.to_str().unwrap()).await.unwrap();
+        let recovered = store
+            .get_objective("objective-outbox")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, ObjectiveStatus::Active);
+        assert_eq!(recovered.completion_intent, prepared.completion_intent);
+        assert_eq!(
+            recovered.active_evaluation_id.as_deref(),
+            Some("objective-evaluation")
+        );
+
+        let final_reply = Event::new(
+            "objective-final-reply".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "assistant_message".to_string(),
+            "chat/reply".to_string(),
+            serde_json::json!({
+                "context_id": "objective-outbox-context",
+                "session_id": "objective-outbox-session",
+                "root_turn_id": continuation_root,
+                "thread_id": continuation_thread.id,
+                "activation_id": running.id,
+                "objective_id": "objective-outbox",
+                "objective_evaluation_id": "objective-evaluation",
+                "disposition": "deliver",
+                "text": "完整最终交付"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert_eq!(
+            store
+                .commit_activation_outcome(&running.id, &final_reply)
+                .await
+                .unwrap(),
+            ActivationOutcomeCommit::Committed {
+                ready_signal_event_ids: Vec::new()
+            }
+        );
+        let completed = store
+            .get_objective("objective-outbox")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.status, ObjectiveStatus::Completed);
+        assert!(completed.completion_intent.is_none());
+        assert!(completed.active_evaluation_id.is_none());
+        assert_eq!(
+            store
+                .get_thread(&continuation_thread.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .lifecycle,
+            ThreadLifecycle::Completed
+        );
+        assert_eq!(
+            store
+                .get_thread_activation(&running.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ThreadActivationStatus::Succeeded
+        );
+        assert_eq!(
+            store
+                .get_thread_outcome(&continuation_thread.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .result_event_id,
+            final_reply.id
+        );
     }
 
     #[tokio::test]

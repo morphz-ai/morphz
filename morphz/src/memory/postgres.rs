@@ -12,8 +12,8 @@ use crate::memory::{
     causal_payload_string, AttentionAcknowledgementRecord, CognitiveClockStore,
     ContextCognitiveClock, EventAppend, EventStore, MindProjectionCommit, MindProjectionHead,
     MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective,
-    NewRuntimeTimer, NewThread, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
+    NewRuntimeTimer, NewThread, ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveRecord,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
     ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
     ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
     RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
@@ -502,6 +502,7 @@ impl PostgresStore {
                 status TEXT NOT NULL,
                 status_reason TEXT,
                 wait_condition_json JSONB,
+                completion_intent_json JSONB,
                 active_evaluation_id TEXT,
                 evaluation_lease_expires_at TEXT,
                 continuation_sequence BIGINT NOT NULL DEFAULT 0,
@@ -523,6 +524,8 @@ impl PostgresStore {
                ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
             r#"ALTER TABLE objectives
                ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
+            r#"ALTER TABLE objectives
+               ADD COLUMN IF NOT EXISTS completion_intent_json JSONB"#,
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -1308,6 +1311,10 @@ fn objective_from_row(row: &PgRow) -> Result<ObjectiveRecord, StoreError> {
         .get::<Option<JsonValue>, _>("wait_condition_json")
         .map(serde_json::from_value::<ObjectiveWaitCondition>)
         .transpose()?;
+    let completion_intent = row
+        .get::<Option<JsonValue>, _>("completion_intent_json")
+        .map(serde_json::from_value::<ObjectiveCompletionIntent>)
+        .transpose()?;
     Ok(ObjectiveRecord {
         id: row.get("id"),
         agent_id: row.get("agent_id"),
@@ -1323,6 +1330,7 @@ fn objective_from_row(row: &PgRow) -> Result<ObjectiveRecord, StoreError> {
         status: parse_objective_status(&row.get::<String, _>("status"))?,
         status_reason: row.get("status_reason"),
         wait_condition,
+        completion_intent,
         active_evaluation_id: row.get("active_evaluation_id"),
         evaluation_lease_expires_at: row
             .get::<Option<String>, _>("evaluation_lease_expires_at")
@@ -2654,7 +2662,7 @@ impl RecallProjectionStore for PostgresStore {
 
 const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
     coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
-    initiating_principal_id, stated_objective, revision, generation, status, status_reason, wait_condition_json, active_evaluation_id,
+    initiating_principal_id, stated_objective, revision, generation, status, status_reason, wait_condition_json, completion_intent_json, active_evaluation_id,
     evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
     time_used_seconds, created_at, updated_at
     FROM objectives"#;
@@ -2941,6 +2949,7 @@ impl ObjectiveStore for PostgresStore {
         }
         let result = sqlx::query(
             r#"UPDATE objectives SET stated_objective = $1,
+               completion_intent_json = NULL,
                revision = revision + 1, updated_at = $2
                WHERE id = $3 AND revision = $4"#,
         )
@@ -3003,6 +3012,7 @@ impl ObjectiveStore for PostgresStore {
         let result = sqlx::query(
             r#"UPDATE objectives
                SET status = $1, status_reason = $2, wait_condition_json = $3,
+                   completion_intent_json = NULL,
                    generation = generation + $4,
                    revision = revision + 1, updated_at = $5
                WHERE id = $6 AND revision = $7"#,
@@ -3049,6 +3059,79 @@ impl ObjectiveStore for PostgresStore {
         })
     }
 
+    async fn prepare_objective_completion(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        activation_id: &str,
+        reason: &str,
+        evidence_refs: &[String],
+    ) -> Result<ObjectiveMutation, StoreError> {
+        let evaluation_id = evaluation_id.trim();
+        let activation_id = activation_id.trim();
+        let reason = reason.trim();
+        if evaluation_id.is_empty() || activation_id.is_empty() || reason.is_empty() {
+            return Err("Objective 完成意图必须包含 Evaluation、Activation 与原因".into());
+        }
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        let same_intent = current.completion_intent.as_ref().is_some_and(|intent| {
+            intent.evaluation_id == evaluation_id
+                && intent.activation_id == activation_id
+                && intent.reason == reason
+                && intent.evidence_refs == evidence_refs
+        });
+        if same_intent {
+            return Ok(ObjectiveMutation::Updated(current));
+        }
+        if current.revision != expected_revision
+            || current.status != ObjectiveStatus::Active
+            || current.wait_condition.is_some()
+            || current.active_evaluation_id.as_deref() != Some(evaluation_id)
+            || current.completion_intent.is_some()
+        {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let intent = ObjectiveCompletionIntent {
+            evaluation_id: evaluation_id.to_string(),
+            activation_id: activation_id.to_string(),
+            reason: reason.to_string(),
+            evidence_refs: evidence_refs.to_vec(),
+            requested_at: Utc::now(),
+        };
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET completion_intent_json = $1, revision = revision + 1, updated_at = $2
+               WHERE id = $3 AND revision = $4 AND status = 'active'
+                 AND wait_condition_json IS NULL AND completion_intent_json IS NULL
+                 AND active_evaluation_id = $5"#,
+        )
+        .bind(serde_json::to_value(&intent)?)
+        .bind(
+            intent
+                .requested_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        )
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .bind(evaluation_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective 完成意图提交后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
     async fn claim_objective_evaluation(
         &self,
         id: &str,
@@ -3064,6 +3147,7 @@ impl ObjectiveStore for PostgresStore {
         };
         if current.revision != expected_revision
             || current.status != ObjectiveStatus::Active
+            || current.completion_intent.is_some()
             || current
                 .evaluation_lease_expires_at
                 .is_some_and(|expires_at| expires_at > Utc::now())
@@ -3123,6 +3207,7 @@ impl ObjectiveStore for PostgresStore {
         };
         if current.revision != expected_revision
             || current.status != ObjectiveStatus::Active
+            || current.completion_intent.is_some()
             || current
                 .evaluation_lease_expires_at
                 .is_some_and(|expires_at| expires_at > Utc::now())
@@ -3276,6 +3361,7 @@ impl ObjectiveStore for PostgresStore {
         let result = sqlx::query(
             r#"UPDATE objectives
                SET active_evaluation_id = NULL, evaluation_lease_expires_at = NULL,
+                   completion_intent_json = NULL,
                    tokens_used = tokens_used + $1,
                    time_used_seconds = time_used_seconds + $2,
                    revision = revision + 1, updated_at = $3

@@ -5493,6 +5493,10 @@ fn render_evaluation_directive(
             if let Some(active_evaluation_id) = &objective.active_evaluation_id {
                 fields.push(pair("active-evaluation", atom(active_evaluation_id)));
             }
+            if let Some(intent) = &objective.completion_intent {
+                fields.push(pair("phase", atom("finalizing")));
+                fields.push(pair("finalizing-activation", atom(&intent.activation_id)));
+            }
             if let Some(reason) = &objective.status_reason {
                 fields.push(pair("status-reason", atom(reason)));
             }
@@ -5948,6 +5952,11 @@ fn render_objectives(objectives: &[ObjectiveRecord]) -> SExpr {
                 ];
                 if let Some(evaluation_id) = &objective.active_evaluation_id {
                     fields.push(pair("evaluation", atom(evaluation_id)));
+                }
+                if let Some(intent) = &objective.completion_intent {
+                    fields.push(pair("phase", atom("finalizing")));
+                    fields.push(pair("finalizing-activation", atom(&intent.activation_id)));
+                    fields.push(pair("completion-reason", atom(&intent.reason)));
                 }
                 if let Some(reason) = &objective.status_reason {
                     fields.push(pair("status-reason", atom(reason)));
@@ -6965,7 +6974,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "completion",
-                        atom("只有调用 objective_update(status=completed) 并通过 revision 与证据引用校验，才会把 Objective 提交为完成；不得从回复文本猜测完成"),
+                        atom("objective_update(status=completed) 通过 revision 与证据引用校验后只持久化 finalizing 意图；同一 Activation 随后生成完整最终回复，回复与 Objective、Activation、Thread、ThreadOutcome 在一个事务中提交完成；不得从普通回复文本猜测完成"),
                     ),
                     pair(
                         "continuation",
@@ -10609,6 +10618,7 @@ mod tests {
             status: ObjectiveStatus::Active,
             status_reason: Some("等待后台工具".to_string()),
             wait_condition: None,
+            completion_intent: None,
             active_evaluation_id: Some("objective-evaluation".to_string()),
             evaluation_lease_expires_at: None,
             continuation_sequence: 2,

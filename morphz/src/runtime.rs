@@ -7041,7 +7041,7 @@ mod tests {
     use super::*;
     use crate::config::{ProviderConfig, ProviderModelConfig};
     use crate::llm::{Message, Response, ToolCallRepr, ToolDefinition};
-    use crate::memory::SessionDirectoryStore as _;
+    use crate::memory::{ActivationStore as _, SessionDirectoryStore as _};
     use crate::permission::PermissionMode;
     use crate::sdk::MessageAttachmentInput;
     use tempfile::NamedTempFile;
@@ -8207,6 +8207,11 @@ mod tests {
         calls: AtomicU64,
     }
 
+    struct ObjectiveCompletionRecoveryClient {
+        calls: AtomicU64,
+        observed_repaired_receipt: AtomicBool,
+    }
+
     struct SharedContextObjectiveClient {
         calls: AtomicU64,
     }
@@ -8647,6 +8652,31 @@ mod tests {
                     arguments: arguments.to_string(),
                 }],
             })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for ObjectiveCompletionRecoveryClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) != 0 {
+                return Err("completion recovery produced an extra model evaluation".into());
+            }
+            let transcript = serde_json::to_string(&messages)?;
+            let observed = transcript.contains("completion_prepared")
+                && transcript.contains("Runtime 已持久化你的 Objective 完成决定")
+                && tools.iter().all(|tool| tool.name == "no_reply");
+            self.observed_repaired_receipt
+                .store(observed, Ordering::SeqCst);
+            if !observed {
+                return Err(
+                    "completion recovery did not reconstruct the finalization protocol".into(),
+                );
+            }
+            Ok(text_response("recovered-completion-final-report"))
         }
     }
 
@@ -13056,6 +13086,85 @@ mod tests {
         assert_eq!(objective.continuation_sequence, 2);
         assert_eq!(client.calls.load(Ordering::SeqCst), 5);
 
+        let assistant_calls = runtime
+            .query_events(QueryFilter {
+                topic: Some("chat/assistant_call".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event
+                    .payload
+                    .get("objective_id")
+                    .and_then(|value| value.as_str())
+                    == Some(objective_id.as_str())
+            })
+            .collect::<Vec<_>>();
+        let completion_call = assistant_calls
+            .iter()
+            .find(|event| {
+                event
+                    .payload
+                    .get("tool_calls")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|calls| {
+                        calls.iter().any(|call| {
+                            call.pointer("/function/name")
+                                .and_then(|value| value.as_str())
+                                == Some("objective_update")
+                        })
+                    })
+            })
+            .expect("completed control call should be durable");
+        let final_call = assistant_calls
+            .iter()
+            .find(|event| {
+                event.payload.get("phase").and_then(|value| value.as_str())
+                    == Some("objective-finalization")
+            })
+            .expect("final report should have its own durable call boundary");
+        assert!(final_call.id.ends_with("_final"));
+        assert_eq!(
+            completion_call
+                .payload
+                .get("activation_id")
+                .and_then(|value| value.as_str()),
+            final_call
+                .payload
+                .get("activation_id")
+                .and_then(|value| value.as_str()),
+            "completion decision and final report must stay in one Activation"
+        );
+        let completion_outputs = runtime
+            .query_events(QueryFilter {
+                topic: Some("chat/tool_output".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(completion_outputs.iter().any(|event| {
+            event
+                .payload
+                .get("tool_name")
+                .and_then(|value| value.as_str())
+                == Some("objective_update")
+                && event
+                    .payload
+                    .get("wake_policy")
+                    .and_then(|value| value.as_str())
+                    == Some("none")
+                && event
+                    .payload
+                    .get("activation_id")
+                    .and_then(|value| value.as_str())
+                    == completion_call
+                        .payload
+                        .get("activation_id")
+                        .and_then(|value| value.as_str())
+        }));
+
         let matching = runtime
             .list_context_objectives(&runtime.identity().context_id, true)
             .await
@@ -13427,15 +13536,12 @@ mod tests {
             reply.payload.get("text").and_then(|value| value.as_str()),
             Some("wait-objective-complete")
         );
-        assert_eq!(
-            runtime
-                .get_objective("objective-wait")
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            ObjectiveStatus::Completed
-        );
+        let objective = runtime
+            .get_objective("objective-wait")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(objective.status, ObjectiveStatus::Completed);
         assert_eq!(client.calls.load(Ordering::SeqCst), 4);
     }
 
@@ -13542,6 +13648,262 @@ mod tests {
                     .and_then(|value| value.as_str())
                     == Some("objective-recover")
             }));
+    }
+
+    #[tokio::test]
+    async fn runtime_restart_repairs_completion_receipt_and_finishes_original_activation() {
+        let database = NamedTempFile::new().unwrap();
+        let database_path = database.path().to_string_lossy().into_owned();
+        let store = SqliteStore::new(&database_path).await.unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "default-agent".to_string(),
+                    title: "Completion Recovery Agent".to_string(),
+                    root_context_id: "context-default".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-default".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    title: "Completion Recovery Context".to_string(),
+                },
+                NewSession {
+                    id: "session-completion-recover".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    context_id: "context-default".to_string(),
+                    parent_session_id: None,
+                    title: "Completion Recovery Session".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_objective(NewObjective {
+                id: "objective-completion-recover".to_string(),
+                agent_id: "default-agent".to_string(),
+                context_id: "context-default".to_string(),
+                coordinator_session_id: "session-completion-recover".to_string(),
+                delivery_session_id: "session-completion-recover".to_string(),
+                parent_objective_id: None,
+                source_event_id: "completion-recovery-source".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "恢复已准备但尚未交付的完成决定".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let root_turn_id =
+            crate::memory::objective_primary_execution_root_id("objective-completion-recover", 1);
+        let continuation = Event::new(
+            "completion-recovery-continuation".to_string(),
+            "ObjectiveSupervisor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!("context-default")),
+                (
+                    "session_id".to_string(),
+                    json!("session-completion-recover"),
+                ),
+                (
+                    "objective_id".to_string(),
+                    json!("objective-completion-recover"),
+                ),
+                (
+                    "objective_evaluation_id".to_string(),
+                    json!("completion-recovery-evaluation"),
+                ),
+                ("root_turn_id".to_string(), json!(root_turn_id)),
+            ]),
+        );
+        let thread = NewThread {
+            id: crate::memory::stable_thread_id(&root_turn_id),
+            agent_id: "default-agent".to_string(),
+            context_id: "context-default".to_string(),
+            session_id: "session-completion-recover".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: root_turn_id.clone(),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::objective_primary_execution(
+                "objective-completion-recover",
+                1,
+            ),
+        };
+        assert!(matches!(
+            store
+                .claim_objective_evaluation_with_signal(
+                    "objective-completion-recover",
+                    1,
+                    "completion-recovery-evaluation",
+                    chrono::Utc::now() + chrono::Duration::minutes(1),
+                    &continuation,
+                    &thread,
+                )
+                .await
+                .unwrap(),
+            ObjectiveMutation::Updated(_)
+        ));
+        let signal = store
+            .list_context_thread_signals("context-default", Some(ThreadSignalStatus::Pending))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|signal| signal.event_id == continuation.id)
+            .unwrap();
+        let trigger_sequence = signal.sequence;
+        let activation = store
+            .claim_thread_signal_batch(
+                crate::memory::NewThreadSignal {
+                    id: signal.id,
+                    thread_id: signal.thread_id,
+                    thread_generation: signal.thread_generation,
+                    event_id: signal.event_id,
+                    principal_id: signal.principal_id,
+                    sequence: signal.sequence,
+                    kind: signal.kind,
+                    parent_activation_id: signal.parent_activation_id,
+                },
+                NewThreadActivation {
+                    id: "completion-recovery-activation".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    context_id: "context-default".to_string(),
+                    session_id: "session-completion-recover".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: continuation.id.clone(),
+                    trigger_sequence,
+                    trigger_kind: continuation.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: root_turn_id.clone(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let activation = match store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Running,
+                Some("dead-runtime"),
+                Some(chrono::Utc::now() + chrono::Duration::milliseconds(1)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            crate::memory::ThreadActivationMutation::Updated(activation) => activation,
+            mutation => panic!("unexpected Activation mutation: {mutation:?}"),
+        };
+        let completion_call_id = "completion-recovery-call";
+        let completion_arguments = json!({
+            "objective_id": "objective-completion-recover",
+            "base_revision": 2,
+            "status": "completed",
+            "reason": "完成条件与证据均已审计",
+            "evidence_refs": []
+        })
+        .to_string();
+        store
+            .append(Event::new(
+                format!("call_{}", activation.id),
+                "Agent-Morphz".to_string(),
+                crate::event::TYPE_AGENT_CALL.to_string(),
+                "chat/assistant_call".to_string(),
+                serde_json::Map::from_iter([
+                    ("context_id".to_string(), json!("context-default")),
+                    (
+                        "session_id".to_string(),
+                        json!("session-completion-recover"),
+                    ),
+                    ("attempt_id".to_string(), json!(activation.id)),
+                    ("activation_id".to_string(), json!(activation.id)),
+                    ("thread_id".to_string(), json!(thread.id)),
+                    ("root_turn_id".to_string(), json!(root_turn_id)),
+                    ("phase".to_string(), json!("work")),
+                    ("text".to_string(), json!("")),
+                    (
+                        "tool_calls".to_string(),
+                        json!([{
+                            "id": completion_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "objective_update",
+                                "arguments": completion_arguments
+                            }
+                        }]),
+                    ),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .prepare_objective_completion(
+                    "objective-completion-recover",
+                    2,
+                    "completion-recovery-evaluation",
+                    &activation.id,
+                    "完成条件与证据均已审计",
+                    &[],
+                )
+                .await
+                .unwrap(),
+            ObjectiveMutation::Updated(_)
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        drop(store);
+
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(ObjectiveCompletionRecoveryClient {
+            calls: AtomicU64::new(0),
+            observed_repaired_receipt: AtomicBool::new(false),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(&database_path)
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(Value::as_str),
+            Some("recovered-completion-final-report")
+        );
+        assert_eq!(
+            runtime
+                .get_objective("objective-completion-recover")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ObjectiveStatus::Completed
+        );
+        assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+        assert!(client.observed_repaired_receipt.load(Ordering::SeqCst));
+        let repaired = runtime
+            .query_events(QueryFilter {
+                event_id: Some(format!("output_{}_{}", activation.id, completion_call_id)),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(repaired[0].payload.get("recovered"), Some(&json!(true)));
     }
 
     #[tokio::test]

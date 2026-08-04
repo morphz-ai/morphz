@@ -621,6 +621,7 @@ mod tests {
             status: ObjectiveStatus::Active,
             status_reason: None,
             wait_condition: None,
+            completion_intent: None,
             active_evaluation_id: None,
             evaluation_lease_expires_at: None,
             continuation_sequence: 0,

@@ -528,7 +528,7 @@ impl Tool for ObjectiveUpdateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "objective_update".to_string(),
-            description: "显式提交当前长期 Objective 的 Runtime 控制状态。普通文本或 no_reply 只结束本次 Evaluation，不能替代 Objective 完成。completed 必须给出真实原因并引用已有证据；需要等待确定事件时保持 active 并提交 wait_condition；只有确实无法自动等待或继续推进时才用 blocked。Agent 无权通过此工具 pause/cancel。".to_string(),
+            description: "显式提交当前长期 Objective 的 Runtime 控制状态。completed 会先持久化 finalizing 意图，随后 Runtime 在同一 Activation 中要求你生成完整最终回复；只有该回复成功落库时 Objective、Activation 与 Thread 才原子完成。completed 必须给出真实原因并引用已有证据；需要等待确定事件时保持 active 并提交 wait_condition；只有确实无法自动等待或继续推进时才用 blocked。Agent 无权通过此工具 pause/cancel。".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -697,7 +697,43 @@ impl Tool for ObjectiveUpdateTool {
                 if args.wait_condition.is_some() {
                     return Err("completed Objective 不能携带 wait_condition".into());
                 }
-                (ObjectiveStatus::Completed, None)
+                let mutation = self
+                    .supervisor
+                    .prepare_completion(
+                        &args.objective_id,
+                        args.base_revision,
+                        &active.evaluation_id,
+                        canonical_activation_id(&attempt_id),
+                        reason,
+                        args.evidence_refs.clone(),
+                    )
+                    .await?;
+                return Ok(serde_json::to_string_pretty(&match mutation {
+                    ObjectiveMutation::Updated(updated) => json!({
+                        "status": "completion_prepared",
+                        "objective_id": updated.id,
+                        "revision": updated.revision,
+                        "objective_status": updated.status,
+                        "objective_phase": "finalizing",
+                        "evidence_refs": args.evidence_refs,
+                        "next_action": "在当前 Activation 中返回完整、无工具的最终报告；最终回复将与 Objective、Activation、Thread 和 ThreadOutcome 原子提交。"
+                    }),
+                    ObjectiveMutation::Conflict { current } => json!({
+                        "status": "revision_conflict",
+                        "objective_id": current.id,
+                        "expected_revision": args.base_revision,
+                        "current_revision": current.revision,
+                        "current_status": current.status,
+                        "current_status_reason": current.status_reason,
+                        "wait_condition": current.wait_condition,
+                        "completion_intent": current.completion_intent,
+                        "guidance": "以最新 Context Encoding 为准重新判断，禁止用过期 revision 覆盖。"
+                    }),
+                    ObjectiveMutation::NotFound => json!({
+                        "status": "not_found",
+                        "objective_id": args.objective_id
+                    }),
+                })?);
             }
             AgentObjectiveStatus::Blocked => {
                 if args.wait_condition.is_some() {
@@ -735,9 +771,7 @@ impl Tool for ObjectiveUpdateTool {
                 "objective_status": updated.status,
                 "wait_condition": updated.wait_condition,
                 "evidence_refs": args.evidence_refs,
-                "next_action": if updated.status.is_terminal() {
-                    "返回无工具普通文本交付最终报告；它只结束当前 Evaluation。"
-                } else if updated.status == ObjectiveStatus::Blocked {
+                "next_action": if updated.status == ObjectiveStatus::Blocked {
                     "返回无工具普通文本向使用者说明阻塞原因；Runtime 将停止自动续跑，直到收到显式恢复。"
                 } else if updated.wait_condition.is_some() {
                     "返回普通文本说明等待状态，或调用 no_reply 明确无需发送消息；Runtime 将在条件满足时唤醒。"
@@ -1262,6 +1296,43 @@ impl ObjectiveSupervisor {
             .await
     }
 
+    async fn prepare_objective_completion_transition(
+        &self,
+        objective: &ObjectiveRecord,
+        evaluation_id: &str,
+        activation_id: &str,
+        reason: &str,
+        evidence_refs: Vec<String>,
+    ) -> Result<ObjectiveMutation, DynError> {
+        if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            return match kernel
+                .execute(crate::controllers::ObjectiveController::prepare_completion(
+                    objective,
+                    evaluation_id,
+                    activation_id,
+                    reason,
+                    evidence_refs,
+                    activation_id,
+                    "ObjectiveSupervisor",
+                ))
+                .await?
+            {
+                KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
+                _ => Err("Scheduler Kernel 返回了错误的 Objective completion 结果".into()),
+            };
+        }
+        self.store
+            .prepare_objective_completion(
+                &objective.id,
+                objective.revision,
+                evaluation_id,
+                activation_id,
+                reason,
+                &evidence_refs,
+            )
+            .await
+    }
+
     async fn finish_objective_evaluation(
         &self,
         objective_id: &str,
@@ -1517,6 +1588,80 @@ impl ObjectiveSupervisor {
         );
         for mut objective in self.store.list_recoverable_objectives().await? {
             self.publish_recovery_observation(&objective).await?;
+            if let Some(intent) = objective.completion_intent.clone() {
+                let matching_owner = objective.status == ObjectiveStatus::Active
+                    && objective.active_evaluation_id.as_deref()
+                        == Some(intent.evaluation_id.as_str());
+                let activation = if matching_owner {
+                    if let Some(store) = self.activation_store.as_ref() {
+                        store.get_thread_activation(&intent.activation_id).await?
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let activation_recoverable = activation.as_ref().is_some_and(|activation| {
+                    !matches!(
+                        activation.status,
+                        ThreadActivationStatus::Succeeded
+                            | ThreadActivationStatus::Failed
+                            | ThreadActivationStatus::Cancelled
+                    )
+                });
+                if matching_owner && activation_recoverable {
+                    if !objective
+                        .evaluation_lease_expires_at
+                        .is_some_and(|expires_at| expires_at > Utc::now())
+                    {
+                        if let ObjectiveMutation::Updated(renewed) = self
+                            .renew_objective_evaluation(
+                                &objective.id,
+                                &intent.evaluation_id,
+                                Utc::now() + self.lease_duration,
+                                "completion-recovery",
+                            )
+                            .await?
+                        {
+                            objective = renewed;
+                        }
+                    }
+                    let binding = ActiveObjectiveEvaluation {
+                        objective_id: objective.id.clone(),
+                        evaluation_id: intent.evaluation_id.clone(),
+                        revision: objective.revision,
+                        started_at: intent.requested_at,
+                    };
+                    let _ = self.evaluations.try_bind(&objective.id, binding.clone());
+                    self.evaluations
+                        .bind_activation(&intent.activation_id, binding);
+                    self.publish_state_event(
+                        "completion_recovered",
+                        &objective,
+                        Some(&intent.activation_id),
+                    )
+                    .await?;
+                } else if matching_owner {
+                    if let ObjectiveMutation::Updated(released) = self
+                        .finish_objective_evaluation(
+                            &objective.id,
+                            &intent.evaluation_id,
+                            0,
+                            0,
+                            "completion-recovery-invalidated",
+                        )
+                        .await?
+                    {
+                        objective = released;
+                        self.publish_state_event(
+                            "completion_invalidated",
+                            &objective,
+                            Some(&intent.activation_id),
+                        )
+                        .await?;
+                    }
+                }
+            }
             if objective.status != ObjectiveStatus::Active {
                 if let Some(evaluation_id) = objective.active_evaluation_id.as_deref() {
                     if let ObjectiveMutation::Updated(recovered) = self
@@ -1839,6 +1984,39 @@ impl ObjectiveSupervisor {
             if updated.status == ObjectiveStatus::Failed {
                 self.reconcile_context(&updated.context_id).await?;
             }
+        }
+        Ok(mutation)
+    }
+
+    pub async fn prepare_completion(
+        self: &Arc<Self>,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        activation_id: &str,
+        reason: &str,
+        evidence_refs: Vec<String>,
+    ) -> Result<ObjectiveMutation, DynError> {
+        let current = self
+            .store
+            .get_objective(id)
+            .await?
+            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+        if current.revision != expected_revision {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let mutation = self
+            .prepare_objective_completion_transition(
+                &current,
+                evaluation_id,
+                activation_id,
+                reason,
+                evidence_refs,
+            )
+            .await?;
+        if let ObjectiveMutation::Updated(updated) = &mutation {
+            self.publish_state_event("completion_prepared", updated, Some(reason))
+                .await?;
         }
         Ok(mutation)
     }

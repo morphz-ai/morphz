@@ -116,6 +116,15 @@ pub struct RenewObjectiveEvaluationCommand {
 }
 
 #[derive(Debug, Clone)]
+pub struct PrepareObjectiveCompletionCommand {
+    pub objective_id: String,
+    pub evaluation_id: String,
+    pub activation_id: String,
+    pub reason: String,
+    pub evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct FinishObjectiveEvaluationCommand {
     pub objective_id: String,
     pub evaluation_id: String,
@@ -190,6 +199,7 @@ pub enum KernelCommandPayload {
     ControlObjective(ControlObjectiveCommand),
     ClaimObjectiveEvaluation(ClaimObjectiveEvaluationCommand),
     RenewObjectiveEvaluation(RenewObjectiveEvaluationCommand),
+    PrepareObjectiveCompletion(PrepareObjectiveCompletionCommand),
     FinishObjectiveEvaluation(FinishObjectiveEvaluationCommand),
     TransitionActivation(TransitionActivationCommand),
     RestartDialogueTurn(RestartDialogueTurnCommand),

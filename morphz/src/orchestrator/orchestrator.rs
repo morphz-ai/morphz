@@ -380,7 +380,7 @@ Context 的物理编码顺序与权限域不同。它固定为 `protocol → eva
 12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须返回普通文本、调用 no_reply 或执行必要的物理动作。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不要在反复扫描与阅读中消耗无进展的模型求值。
 14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。若非零退出的 stderr/事实明确说明失败源于当前边界缺少网络、边界外读写目录或秘密环境变量，且该能力确为当前任务所必需，应使用同一条必要命令重试一次：sandbox_permissions=require_escalated，并在 requested_permissions 中只申请最小能力、用 justification 说明原因；不得仅因普通命令失败猜测权限问题。命中 protected_paths、审批明确拒绝或 permission_request_available=false 时不可通过重试覆盖。exec 转入后台且 Runtime 仍报告任务非终态时，普通等待独占调用 no_reply(mode=wait)；任务结束会主动唤醒。收到终态 success/failed/cancelled/timeout 后必须处理该结果，不得再次用 wait。只有存在明确截止时间或停滞监督需求时，才用 check_task_after 安排一次检查点；届时可调用 task_status、继续安排检查或 kill_task。不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；使用者应把凭证预先保存为 Secret Store 别名（兼容 Runtime 启动环境变量）。需要秘密能力且尚不清楚可用别名时，先调用 list_secrets；随后只在 requested_permissions.secret_env 中按名称申请对单个子进程注入，绝不请求、读取或回显凭证值。
-15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才是它的 Objective Evaluation，并可通过当前 Execution Thread 推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑或恢复其主 Execution Thread；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
+15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才是它的 Objective Evaluation，并可通过当前 Execution Thread 推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑或恢复其主 Execution Thread；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。completed 回执会在同一 Activation 内开启最终交付 Attempt；请生成完整普通文本，不要缩水为工具确认语。最终回复与 Objective、Activation、Thread 终态原子提交。
 16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，普通文本或 no_reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
 17. 调度决策由你负责，Runtime 只执行并发与时序机制。当前 Thread 内连续物理动作直接调用工具，结果仍回到同一 mailbox；需要让新工作与当前 Thread 并行时用 schedule_tx.spawn，需要等待当前或指定 Thread 完成后串行推进时用 schedule_tx.enqueue/after。已有调度的状态先用 schedule_tx.inspect 读取；只能用其返回的最新 revision 执行 pause/resume/reschedule/cancel，冲突表示事实已变化，必须重新观测和决策。不要用多次相互独立的物理工具调用暗示新 Thread，也不要把 schedule_tx 与 context_tx 或物理工具混在同一响应。定时调度到期只是一条新的 observation；必须根据届时的真实 Context 再决策，不得预先声称结果已完成。
 18. 物理动作必须尊重 Execution Target。Thread 的首个物理动作会形成权威 Target 绑定；后续省略 target 时继承该绑定，但工具回执仍会显示实际 Target。不得在同一 Thread 中偷偷换机；跨 Target 工作使用 schedule_tx.spawn 的 target 创建新的 Execution Thread，或在尚未绑定的 Thread 首次调用时显式指定。
@@ -874,10 +874,10 @@ const CRITICAL_MAINTENANCE_PROMPT: &str = r#"Runtime 当前进入 critical-maint
 - 本次只能调用当前实际提供的工具。外部物理工具已被暂时撤下；不要重复刚才的物理工具调用，也不要假定它已执行。
 - 优先用一次 context_tx 准确压缩 Mind/Inbox：保留当前目标、用户约束、最新可靠事实、未完成工作和继续执行所需证据；摘要或 retire 陈旧、重复、已被新事实取代的内容。
 - recall 仅用于维护前确实缺失的原始证据；不要借此展开新的外部工作。完成维护后 Runtime 会重新计算压力并恢复适用的物理工具。
-- 若当前 Evaluation 绑定了 active Objective，objective_update 仍会保留。已经具备完成证据时应直接提交 Objective 终态，不能为了维护 Context 而把已完成目标留在 active。
+- 若当前 Evaluation 绑定了 active Objective，objective_update 仍会保留。已经具备完成证据时应提交 completed 以进入同一 Activation 的 finalizing 阶段，不能为了维护 Context 而把已完成目标悬空。
 - 若调用本轮未提供的工具，Runtime 会拒绝执行，并以对应 tool_call_id 返回明确的 rejected 工具结果。"#;
 
-const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本轮普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次 Evaluation 强制进入 final-reply 阶段。请返回普通文本，如实交付已完成状态、最近一次可靠验证和剩余工作；若确认无需发送消息，可独占调用 no_reply。若当前 Evaluation 绑定了 active Objective，objective_update 是唯一额外保留的控制工具：已有充分完成证据时必须先提交 Objective 终态；证据不足时保持真实状态，Supervisor 将继续推进。"#;
+const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本轮普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次 Evaluation 强制进入 final-reply 阶段。请返回普通文本，如实交付已完成状态、最近一次可靠验证和剩余工作；若确认无需发送消息，可独占调用 no_reply。若当前 Evaluation 绑定了 active Objective，objective_update 是唯一额外保留的控制工具：已有充分完成证据时必须先提交 completed 以进入同一 Activation 的 finalizing 阶段；证据不足时保持真实状态，Supervisor 将继续推进。"#;
 
 const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请返回普通文本结束当前 Evaluation、独占调用 no_reply，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
@@ -891,6 +891,10 @@ const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
 const RESPONSE_PROTOCOL_ERROR: &str = "Response protocol error：当前 Evaluation 尚未产生合法终态。需要向当前 active Session 回复时，返回非空普通 assistant 文本且不调用工具；有意静默时独占调用 no_reply(mode=silent)；仅在 Runtime 仍有可验证的非终态事件时调用 no_reply(mode=wait)。空响应、缺少/错误 mode、no_reply 与其他工具混用、或 no_reply 同时携带正文都是协议错误。";
 const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error：Runtime 只声明全部直接子目标已经终结，不替 Agent 判断父目标是否完成。本次求值不能以普通文本或 no_reply 悬空结束；请自主选择并提交一个可持久化结果：调用 objective_update 更新 completed、blocked 或精确 wait，或者执行实际动作、创建新的子目标。";
+const OBJECTIVE_FINALIZATION_PROMPT: &str = r#"Runtime 已持久化你的 Objective 完成决定，但尚未结束 Objective。现在仍在同一个 Activation 中，请基于刚才审计的完整证据生成面向用户的最终交付：
+- 返回完整的普通 assistant 文本，不要调用任何工具；不要因为刚刚已经解释过而缩短或省略最终报告。
+- 若确实没有任何内容需要发送，只能独占调用 no_reply(mode=silent)。
+- 最终响应提交成功后，Runtime 会在同一事务中完成 Objective、Activation、Thread 与 ThreadOutcome；在此之前 Objective 保持 active 并继续续租。"#;
 const REASONING_ONLY_RESPONSE_REASON: &str =
     "模型只返回了推理摘要，未产生普通文本、工具调用或 no_reply";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -917,6 +921,7 @@ struct ToolExecutionOptions {
 #[derive(Debug, Default)]
 struct ToolExecutionOutcome {
     context_tx_succeeded: bool,
+    outputs: Vec<Event>,
 }
 
 #[derive(Debug, Clone)]
@@ -1514,6 +1519,20 @@ fn validate_final_reply_response(
     response: &crate::llm::Response,
     decision: Option<TerminalDecision>,
 ) -> Result<Option<TerminalDecision>, String> {
+    if effective_phase == "objective-finalization" {
+        return match decision {
+            Some(TerminalDecision::Deliver(_))
+            | Some(TerminalDecision::NoReply(NoReplyMode::Silent)) => Ok(decision),
+            Some(TerminalDecision::NoReply(NoReplyMode::Wait)) => Err(
+                "Objective finalization 不能进入等待；请提交完整最终报告，或在确实无需发送时调用 no_reply(mode=silent)"
+                    .to_string(),
+            ),
+            None => Err(
+                "Objective finalization 必须返回无工具普通文本，或独占调用 no_reply(mode=silent)"
+                    .to_string(),
+            ),
+        };
+    }
     if effective_phase != "final-reply" || decision.is_some() {
         return Ok(decision);
     }
@@ -1527,6 +1546,52 @@ fn validate_final_reply_response(
             "final-reply 阶段必须返回普通文本、独占调用 no_reply，或为当前绑定的 active Objective 独占调用 objective_update"
                 .to_string(),
         )
+    }
+}
+
+fn completed_objective_update_call(response: &crate::llm::Response) -> bool {
+    if response.tool_calls.len() != 1 || !response.content.trim().is_empty() {
+        return false;
+    }
+    let call = &response.tool_calls[0];
+    if call.func_name != "objective_update" {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(&call.arguments)
+        .ok()
+        .and_then(|arguments| {
+            arguments
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .map(|status| status == "completed")
+        })
+        .unwrap_or(false)
+}
+
+fn validate_objective_completion_call(response: &crate::llm::Response) -> Result<(), String> {
+    let completion_calls = response
+        .tool_calls
+        .iter()
+        .filter(|call| {
+            call.func_name == "objective_update"
+                && serde_json::from_str::<serde_json::Value>(&call.arguments)
+                    .ok()
+                    .and_then(|arguments| {
+                        arguments
+                            .get("status")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|status| status == "completed")
+                    })
+                    .unwrap_or(false)
+        })
+        .count();
+    if completion_calls == 0 {
+        return Ok(());
+    }
+    if completed_objective_update_call(response) {
+        Ok(())
+    } else {
+        Err("objective_update(status=completed) 必须是响应中唯一的工具调用，且不能同时携带普通文本；Runtime 会在同一 Activation 中提供专门的最终交付 Attempt".to_string())
     }
 }
 
@@ -5963,17 +6028,156 @@ impl Orchestrator {
     /// owning Thread Activation reached a terminal state. Re-asking the model here could produce a new
     /// set of call IDs and repeat an external side effect, so recovery always reuses the exact
     /// persisted plan. `execute_tool_calls` also reuses any already durable output events.
+    async fn persisted_objective_completion_call(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        activation_id: &str,
+    ) -> Result<Option<(Event, crate::llm::ToolCall, Event)>, DynError> {
+        let calls = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                activation_id: Some(activation_id.to_string()),
+                topic: Some("chat/assistant_call".to_string()),
+                latest_k: Some(32),
+                ..Default::default()
+            })
+            .await?;
+        for event in calls.into_iter().rev() {
+            let tool_calls = serde_json::from_value::<Vec<crate::llm::ToolCall>>(
+                event
+                    .payload
+                    .get("tool_calls")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+            )?;
+            for call in tool_calls {
+                let arguments =
+                    serde_json::from_str::<serde_json::Value>(&call.function.arguments).ok();
+                let completed = call.function.name == "objective_update"
+                    && arguments
+                        .as_ref()
+                        .and_then(|arguments| arguments.get("status"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("completed");
+                if !completed {
+                    continue;
+                }
+                let output_id = format!("output_{activation_id}_{}", call.id);
+                let output = self
+                    .context_engine
+                    .find_event(context_id, &output_id)
+                    .await?;
+                let output = if let Some(output) = output {
+                    output
+                } else {
+                    let Some(binding) =
+                        self.objective_evaluations.get_for_activation(activation_id)
+                    else {
+                        continue;
+                    };
+                    let Some(supervisor) = self.objective_supervisor.as_ref() else {
+                        continue;
+                    };
+                    let Some(objective) = supervisor.get(&binding.objective_id).await? else {
+                        continue;
+                    };
+                    let Some(intent) = objective.completion_intent.as_ref() else {
+                        continue;
+                    };
+                    let call_objective_id = arguments
+                        .as_ref()
+                        .and_then(|arguments| arguments.get("objective_id"))
+                        .and_then(serde_json::Value::as_str);
+                    if call_objective_id != Some(objective.id.as_str())
+                        || intent.activation_id != activation_id
+                        || intent.evaluation_id != binding.evaluation_id
+                    {
+                        continue;
+                    }
+                    let mut payload = vec![
+                        ("context_id".to_string(), json!(context_id)),
+                        ("session_id".to_string(), json!(session_id)),
+                        ("attempt_id".to_string(), json!(activation_id)),
+                        ("tool_call_id".to_string(), json!(call.id)),
+                        ("caused_by".to_string(), json!(call.id)),
+                        ("tool_name".to_string(), json!(call.function.name)),
+                        ("tool_status".to_string(), json!("success")),
+                        ("wake_policy".to_string(), json!("none")),
+                        ("output_empty".to_string(), json!(false)),
+                        (
+                            "text".to_string(),
+                            json!(json!({
+                                "status": "completion_prepared",
+                                "objective_id": objective.id,
+                                "revision": objective.revision,
+                                "objective_status": objective.status,
+                                "objective_phase": "finalizing",
+                                "evidence_refs": intent.evidence_refs,
+                                "next_action": "在当前 Activation 中返回完整、无工具的最终报告；最终回复将与 Objective、Activation、Thread 和 ThreadOutcome 原子提交。"
+                            })
+                            .to_string()),
+                        ),
+                        ("objective_id".to_string(), json!(objective.id)),
+                        (
+                            "objective_evaluation_id".to_string(),
+                            json!(binding.evaluation_id),
+                        ),
+                        (
+                            "objective_revision".to_string(),
+                            json!(objective.revision),
+                        ),
+                        ("recovered".to_string(), json!(true)),
+                    ];
+                    self.append_activation_route(activation_id, &mut payload);
+                    let output = Event::new(
+                        output_id,
+                        "Runtime-Recovery".to_string(),
+                        TYPE_TOOL_OUTPUT.to_string(),
+                        "chat/tool_output".to_string(),
+                        payload.into_iter().collect(),
+                    );
+                    self.store.append(output.clone()).await?;
+                    self.bus.dispatch_persisted(output.clone()).await?;
+                    output
+                };
+                let prepared = output
+                    .payload
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                    .and_then(|receipt| {
+                        receipt
+                            .get("status")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|status| status == "completion_prepared")
+                    })
+                    .unwrap_or(false);
+                if prepared {
+                    return Ok(Some((event, call, output)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     async fn resume_persisted_activation(
         &self,
         session_id: &str,
         activation: &ThreadActivationRecord,
     ) -> Result<bool, DynError> {
         let assistant_event_id = format!("call_{}", activation.id);
-        let Some(assistant_call) = self
+        let final_event_id = format!("call_{}_final", activation.id);
+        let assistant_call = self
             .context_engine
-            .find_event(&activation.context_id, &assistant_event_id)
+            .find_event(&activation.context_id, &final_event_id)
             .await?
-        else {
+            .or(self
+                .context_engine
+                .find_event(&activation.context_id, &assistant_event_id)
+                .await?);
+        let Some(assistant_call) = assistant_call else {
             return Ok(false);
         };
         if assistant_call.topic != "chat/assistant_call" {
@@ -6248,16 +6452,26 @@ impl Orchestrator {
                 }
             }
         }
+        let persisted_final_response = self
+            .context_engine
+            .find_event(
+                &activation.context_id,
+                &format!("call_{}_final", activation.id),
+            )
+            .await?;
         let persisted_physical_plan = persisted_assistant_call
             .as_ref()
             .is_some_and(event_contains_physical_tool_plan);
-        let persisted_terminal = persisted_assistant_call.as_ref().is_some_and(|event| {
-            event
-                .payload
-                .get("terminal_outcome")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-        });
+        let persisted_terminal = persisted_final_response
+            .as_ref()
+            .or(persisted_assistant_call.as_ref())
+            .is_some_and(|event| {
+                event
+                    .payload
+                    .get("terminal_outcome")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+            });
         let dialogue_gate = self.dialogue_thread_gate(session_id);
         let dialogue_bound = if matches!(
             activation.trigger_kind.as_str(),
@@ -6363,9 +6577,26 @@ impl Orchestrator {
                 delivery_thread_ids,
             },
         );
-        if self
-            .resume_persisted_activation(session_id, activation)
-            .await?
+        let recovering_completion_intent = if let (Some(supervisor), Some(binding)) = (
+            self.objective_supervisor.as_ref(),
+            self.objective_evaluations
+                .get_for_activation(&activation.id),
+        ) {
+            supervisor
+                .get(&binding.objective_id)
+                .await?
+                .and_then(|objective| objective.completion_intent)
+                .is_some_and(|intent| {
+                    intent.activation_id == activation.id
+                        && intent.evaluation_id == binding.evaluation_id
+                })
+        } else {
+            false
+        };
+        if (!recovering_completion_intent || persisted_final_response.is_some())
+            && self
+                .resume_persisted_activation(session_id, activation)
+                .await?
         {
             if let Some(lease) = dialogue_lease.as_mut() {
                 if persisted_terminal {
@@ -6549,6 +6780,9 @@ impl Orchestrator {
         } else {
             context.turn_budget.phase.clone()
         };
+        if recovering_completion_intent {
+            effective_phase = "objective-finalization".to_string();
+        }
         let mut bounded_critical_projection = context.pressure.level == "critical";
         let mut recovery_observation_limit = 1usize;
         let mut critical_recovery_source = None;
@@ -6686,6 +6920,37 @@ impl Orchestrator {
         restrict_tools_to_scope(&mut tools, plan_infer_tools.as_ref());
         if thread.executor_kind != "plan_infer" {
             tools.push(no_reply_tool_definition());
+        }
+        if recovering_completion_intent {
+            let (assistant_call, call, output) = self
+                .persisted_objective_completion_call(
+                    &activation.context_id,
+                    session_id,
+                    &activation.id,
+                )
+                .await?
+                .ok_or("恢复 Objective finalization 时缺少持久 completion 调用或工具回执")?;
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: assistant_call
+                    .payload
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(vec![call.clone()]),
+            });
+            messages.push(self.standard_tool_result_message(&call, &output));
+            messages.push(Message {
+                role: "user".to_string(),
+                content: OBJECTIVE_FINALIZATION_PROMPT.to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            });
+            tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
         }
         // A Runtime-owned Harness entry is the root program for the current
         // Evaluation. A `plan_infer` Thread is already a child node of that
@@ -6831,6 +7096,7 @@ impl Orchestrator {
         let mut previous_reasoning_summary: Option<String> = None;
         let mut reasoning_history = Vec::new();
         let mut interrupted_public_text = String::new();
+        let mut completion_prepared = recovering_completion_intent;
         let (response, terminal_decision, terminal_model_attempt_id) = loop {
             let request_index = model_request_index;
             model_request_index = model_request_index.saturating_add(1);
@@ -7239,10 +7505,11 @@ impl Orchestrator {
             };
 
             let classification = validate_schedule_tx_response(&response)
+                .and_then(|_| validate_objective_completion_call(&response))
                 .and_then(|_| classify_terminal_response(&response))
                 .and_then(|decision| {
                     validate_objective_closure_review_response(
-                        initial_objective_closure_review,
+                        initial_objective_closure_review && !completion_prepared,
                         decision,
                     )
                 })
@@ -7255,6 +7522,84 @@ impl Orchestrator {
                     )
                 });
             match classification {
+                Ok(None) if !completion_prepared && completed_objective_update_call(&response) => {
+                    let call = response.tool_calls[0].clone();
+                    let protocol_call = crate::llm::ToolCall {
+                        id: call.id.clone(),
+                        r#type: call.r#type.clone(),
+                        function: crate::llm::FunctionCall {
+                            name: call.func_name.clone(),
+                            arguments: call.arguments.clone(),
+                        },
+                    };
+                    let outcome = self
+                        .execute_tool_calls(
+                            session_id,
+                            &attempt_id,
+                            response,
+                            &effective_phase,
+                            ToolExecutionOptions {
+                                context_tx_allowed: false,
+                                wake_on_output: false,
+                                plan_execution_id: None,
+                                continuation_tool_calls: None,
+                                allowed_tool_names: allowed_tool_names.clone(),
+                                record_assistant_call: true,
+                                model_attempt_id: Some(model_attempt_id.clone()),
+                            },
+                        )
+                        .await?;
+                    let output = outcome
+                        .outputs
+                        .into_iter()
+                        .next()
+                        .ok_or("Objective completion 工具没有产生持久结果")?;
+                    protocol_messages.push(Message {
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: Some(vec![protocol_call.clone()]),
+                    });
+                    protocol_messages
+                        .push(self.standard_tool_result_message(&protocol_call, &output));
+                    inspect_delivered_output_ids.insert(output.id.clone());
+                    let completion_committed = output
+                        .payload
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                        .and_then(|receipt| {
+                            receipt
+                                .get("status")
+                                .and_then(serde_json::Value::as_str)
+                                .map(|status| status == "completion_prepared")
+                        })
+                        .unwrap_or(false);
+                    if completion_committed {
+                        completion_prepared = true;
+                        effective_phase = "objective-finalization".to_string();
+                        tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
+                        allowed_tool_names = tools.iter().map(|tool| tool.name.clone()).collect();
+                        protocol_messages.push(Message {
+                            role: "user".to_string(),
+                            content: OBJECTIVE_FINALIZATION_PROMPT.to_string(),
+                            name: None,
+                            tool_call_id: None,
+                            tool_calls: None,
+                        });
+                    } else {
+                        protocol_messages.push(Message {
+                            role: "user".to_string(),
+                            content: "Objective 完成请求没有进入 finalizing；请依据工具回执和最新 revision 重新判断。".to_string(),
+                            name: None,
+                            tool_call_id: None,
+                            tool_calls: None,
+                        });
+                    }
+                    base_protocol_messages = protocol_messages.clone();
+                    continue;
+                }
                 Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait))) => {
                     let active_root_tasks = active_background_task_count_for_root(
                         session_id,
@@ -7363,11 +7708,12 @@ impl Orchestrator {
             let pending_routed_inputs =
                 self.uncovered_routed_inputs(session_id, activation).await?;
             let explicit_wait = matches!(&decision, TerminalDecision::NoReply(NoReplyMode::Wait));
-            if explicit_wait
-                || (thread_kind != "dialogue_turn"
-                    && (active_root_tasks > 0
-                        || pending_schedules > 0
-                        || pending_routed_inputs > 0))
+            if !completion_prepared
+                && (explicit_wait
+                    || (thread_kind != "dialogue_turn"
+                        && (active_root_tasks > 0
+                            || pending_schedules > 0
+                            || pending_routed_inputs > 0)))
             {
                 if let TerminalDecision::Deliver(content) = &decision {
                     // `reply(deliver)` is the model's own judgement that the
@@ -7775,6 +8121,48 @@ impl Orchestrator {
                 payload.into_iter().collect(),
             ))
             .await?;
+        let objective_finalizing = if let (Some(supervisor), Some(binding)) = (
+            self.objective_supervisor.as_ref(),
+            self.objective_evaluations.get_for_activation(attempt_id),
+        ) {
+            let activation_id = attempt_id
+                .split_once("_response_retry_")
+                .map(|(base, _)| base)
+                .unwrap_or(attempt_id);
+            supervisor
+                .get(&binding.objective_id)
+                .await?
+                .is_some_and(|objective| {
+                    objective.completion_intent.as_ref().is_some_and(|intent| {
+                        intent.activation_id == activation_id
+                            && intent.evaluation_id == binding.evaluation_id
+                    })
+                })
+        } else {
+            false
+        };
+        if objective_finalizing {
+            return self
+                .publish_reply_with_attributes(
+                    session_id,
+                    attempt_id,
+                    None,
+                    "模型连续三次没有生成合法的 Objective 最终报告。本次完成意图已撤销，Objective 未被标记为完成；请检查模型状态后继续。".to_string(),
+                    parent_session_id,
+                    vec![
+                        ("terminal_kind".to_string(), json!("failed")),
+                        (
+                            "runtime_failure_kind".to_string(),
+                            json!("objective_finalization_protocol"),
+                        ),
+                        (
+                            "runtime_failure_stage".to_string(),
+                            json!("objective_finalization"),
+                        ),
+                    ],
+                )
+                .await;
+        }
         self.publish_reply(
             session_id,
             attempt_id,
@@ -7821,9 +8209,14 @@ impl Orchestrator {
             ),
         ];
         self.append_activation_route(attempt_id, &mut payload);
+        let event_id = if phase == "objective-finalization" {
+            format!("call_{attempt_id}_final")
+        } else {
+            format!("call_{attempt_id}")
+        };
         self.bus
             .publish(Event::new(
-                format!("call_{attempt_id}"),
+                event_id,
                 "Agent-Morphz".to_string(),
                 TYPE_AGENT_CALL.to_string(),
                 "chat/assistant_call".to_string(),
@@ -10700,11 +11093,13 @@ impl Orchestrator {
         if let Some(model_attempt_id) = options.model_attempt_id.as_deref() {
             assistant_call_payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
         }
+        let durable_attempt_id = options.model_attempt_id.as_deref().unwrap_or(attempt_id);
+        let assistant_call_event_id = format!("call_{durable_attempt_id}");
         if options.record_assistant_call {
             self.append_activation_route(attempt_id, &mut assistant_call_payload);
             self.bus
                 .publish(Event::new(
-                    format!("call_{}", attempt_id),
+                    assistant_call_event_id.clone(),
                     "Agent-Morphz".to_string(),
                     TYPE_AGENT_CALL.to_string(),
                     "chat/assistant_call".to_string(),
@@ -10725,7 +11120,7 @@ impl Orchestrator {
         if let Some(model_attempt_id) = options.model_attempt_id.as_deref() {
             selected_payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
         }
-        let selected_event_id = format!("tool_calls_selected_{attempt_id}");
+        let selected_event_id = format!("tool_calls_selected_{durable_attempt_id}");
         let record_selection = if options.record_assistant_call {
             true
         } else {
@@ -10847,7 +11242,7 @@ impl Orchestrator {
                         agent_id: agent_id.clone(),
                         context_id: context_id.clone(),
                         session_id: session_id.to_string(),
-                        assistant_call_event_id: format!("call_{attempt_id}"),
+                        assistant_call_event_id: assistant_call_event_id.clone(),
                         objective_id: objective.as_ref().map(|value| value.objective_id.clone()),
                         objective_evaluation_id: objective
                             .as_ref()
@@ -11568,6 +11963,7 @@ impl Orchestrator {
             {
                 outcome.context_tx_succeeded = context_tx_output_succeeded(output);
             }
+            outcome.outputs.push(output.clone());
         }
         if let Some(group_id) = action_group_id {
             let settled_event = action_group_settled
@@ -11791,6 +12187,7 @@ impl Orchestrator {
             payload.push(("caused_by".to_string(), json!(route.trigger_event_id)));
         }
         if let Some(active) = self.objective_evaluations.get_for_activation(attempt_id) {
+            let elapsed_seconds = (Utc::now() - active.started_at).num_seconds().max(0) as u64;
             payload.extend([
                 ("objective_id".to_string(), json!(active.objective_id)),
                 (
@@ -11798,6 +12195,10 @@ impl Orchestrator {
                     json!(active.evaluation_id),
                 ),
                 ("objective_revision".to_string(), json!(active.revision)),
+                (
+                    "objective_evaluation_elapsed_seconds".to_string(),
+                    json!(elapsed_seconds),
+                ),
             ]);
         }
     }
@@ -13879,9 +14280,9 @@ mod tests {
     use super::{
         activation_admission_class, apply_prompt_estimate_delta, baseline_system_prompt,
         classify_terminal_response, cognitive_sexpr_vm_system_prompt,
-        compact_context_inspect_for_persistence, compose_context_encoding,
-        critical_maintenance_transaction_available, derived_thread_kind, extend_exec_output_facts,
-        harness_entry_callable_tools, legacy_plan_effect_sequence,
+        compact_context_inspect_for_persistence, completed_objective_update_call,
+        compose_context_encoding, critical_maintenance_transaction_available, derived_thread_kind,
+        extend_exec_output_facts, harness_entry_callable_tools, legacy_plan_effect_sequence,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
         plan_infer_tool_scope, recovery_owns_activation, render_harness_context,
         render_system_contract, restrict_tools_to_scope, retain_context_maintenance_tools,
@@ -13889,10 +14290,10 @@ mod tests {
         semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
         should_force_final_for_maintenance, tool_call_activity_preview,
         validate_final_reply_response, validate_objective_closure_review_response,
-        DialogueThreadGate, DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics,
-        DynError, EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
-        ModelReasoningSummaryAccumulator, NoReplyMode, TerminalDecision,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        validate_objective_completion_call, DialogueThreadGate, DialogueThreadLease,
+        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
+        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        NoReplyMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -14740,6 +15141,7 @@ mod tests {
             status: crate::memory::ObjectiveStatus::Active,
             status_reason: None,
             wait_condition: None,
+            completion_intent: None,
             active_evaluation_id: Some("evaluation-current".into()),
             evaluation_lease_expires_at: None,
             continuation_sequence: 0,
@@ -14948,6 +15350,43 @@ mod tests {
             validate_final_reply_response("work", true, &physical_tool, None),
             Ok(None)
         );
+
+        assert!(completed_objective_update_call(&objective_update));
+        assert!(validate_objective_completion_call(&objective_update).is_ok());
+        let mut mixed_completion = objective_update.clone();
+        mixed_completion.content = "提前写出的最终报告".to_string();
+        assert!(validate_objective_completion_call(&mixed_completion).is_err());
+
+        let final_text = Some(TerminalDecision::Deliver("完整最终报告".to_string()));
+        assert_eq!(
+            validate_final_reply_response(
+                "objective-finalization",
+                true,
+                &crate::llm::Response {
+                    content: "完整最终报告".to_string(),
+                    tool_calls: Vec::new(),
+                },
+                final_text.clone(),
+            ),
+            Ok(final_text)
+        );
+        assert!(validate_final_reply_response(
+            "objective-finalization",
+            true,
+            &physical_tool,
+            None,
+        )
+        .is_err());
+        assert!(validate_final_reply_response(
+            "objective-finalization",
+            true,
+            &crate::llm::Response {
+                content: String::new(),
+                tool_calls: Vec::new(),
+            },
+            Some(TerminalDecision::NoReply(NoReplyMode::Wait)),
+        )
+        .is_err());
     }
 
     #[test]

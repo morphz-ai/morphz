@@ -3782,6 +3782,19 @@ pub enum ObjectiveWaitCondition {
     },
 }
 
+/// Durable hand-off between the model's completion decision and the final
+/// user-facing reply. Preparing this intent does not terminalize the
+/// Objective: its owning Evaluation keeps the lease until the same Activation
+/// atomically commits the final reply and scheduler outcomes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectiveCompletionIntent {
+    pub evaluation_id: String,
+    pub activation_id: String,
+    pub reason: String,
+    pub evidence_refs: Vec<String>,
+    pub requested_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectiveRecord {
     pub id: String,
@@ -3806,6 +3819,10 @@ pub struct ObjectiveRecord {
     /// event remains authoritative; this projection makes UI/API reads direct.
     pub status_reason: Option<String>,
     pub wait_condition: Option<ObjectiveWaitCondition>,
+    /// Present only while the owning Activation is producing the final reply.
+    /// The public lifecycle status intentionally remains `active` until that
+    /// reply and all physical scheduler outcomes commit together.
+    pub completion_intent: Option<ObjectiveCompletionIntent>,
     pub active_evaluation_id: Option<String>,
     pub evaluation_lease_expires_at: Option<DateTime<Utc>>,
     pub continuation_sequence: u64,
@@ -5139,6 +5156,19 @@ pub trait ObjectiveStore: Send + Sync {
         status: ObjectiveStatus,
         wait_condition: Option<ObjectiveWaitCondition>,
         reason: Option<&str>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Persist an audited completion decision without ending the Objective or
+    /// releasing its Evaluation lease. The matching Activation consumes this
+    /// intent when it atomically commits its final outcome.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_objective_completion(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        activation_id: &str,
+        reason: &str,
+        evidence_refs: &[String],
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     async fn claim_objective_evaluation(
         &self,

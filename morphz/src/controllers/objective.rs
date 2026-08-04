@@ -2,8 +2,8 @@ use crate::memory::{ObjectiveRecord, ObjectiveStatus, ObjectiveWaitCondition};
 use crate::scheduler::{
     derive_objective_readiness, ClaimObjectiveEvaluationCommand, ControlObjectiveCommand,
     FinishObjectiveEvaluationCommand, KernelCommand, KernelCommandHeader, KernelCommandPayload,
-    ObjectiveReadiness, RenewObjectiveEvaluationCommand, SatisfyDependencyCommand,
-    SchedulerDependencyRecord,
+    ObjectiveReadiness, PrepareObjectiveCompletionCommand, RenewObjectiveEvaluationCommand,
+    SatisfyDependencyCommand, SchedulerDependencyRecord,
 };
 use chrono::{DateTime, Utc};
 
@@ -96,6 +96,40 @@ impl ObjectiveController {
                     evaluation_id: evaluation_id.to_string(),
                     tokens_used,
                     time_used_seconds,
+                },
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_completion(
+        objective: &ObjectiveRecord,
+        evaluation_id: &str,
+        activation_id: &str,
+        reason: &str,
+        evidence_refs: Vec<String>,
+        causation_id: &str,
+        actor: &str,
+    ) -> KernelCommand {
+        let material = format!(
+            "objective-prepare-completion\0{}\0{}\0{}\0{}\0{}",
+            objective.id, objective.revision, objective.generation, evaluation_id, activation_id
+        );
+        KernelCommand {
+            header: KernelCommandHeader::new(
+                crate::scheduler::stable_command_id("objective-prepare-completion", &material),
+                causation_id,
+                &objective.context_id,
+                actor,
+            )
+            .with_fence(objective.revision, Some(objective.generation)),
+            payload: KernelCommandPayload::PrepareObjectiveCompletion(
+                PrepareObjectiveCompletionCommand {
+                    objective_id: objective.id.clone(),
+                    evaluation_id: evaluation_id.to_string(),
+                    activation_id: activation_id.to_string(),
+                    reason: reason.to_string(),
+                    evidence_refs,
                 },
             ),
         }
