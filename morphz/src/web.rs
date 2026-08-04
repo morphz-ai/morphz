@@ -481,7 +481,10 @@ struct EdgeArtifactDownloadQuery {
 #[derive(Default, serde::Deserialize)]
 struct RecallSearchHttpQuery {
     token: Option<String>,
-    query: String,
+    query: Option<String>,
+    start_time: Option<chrono::DateTime<chrono::Utc>>,
+    end_time: Option<chrono::DateTime<chrono::Utc>>,
+    cursor: Option<String>,
     limit: Option<usize>,
 }
 
@@ -2006,15 +2009,19 @@ async fn handle_search_recall(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if query.query.trim().is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "query 不能为空");
+    let query_text = query.query.unwrap_or_default();
+    if query_text.trim().is_empty() && query.start_time.is_none() && query.end_time.is_none() {
+        return error_response(StatusCode::BAD_REQUEST, "query 或时间范围不能为空");
     }
     match state
         .runtime
         .search_recall(RecallSearchRequest {
             context_id,
-            query: query.query,
+            query: query_text,
+            start_time: query.start_time,
+            end_time: query.end_time,
             limit: query.limit.unwrap_or(20).clamp(1, 100),
+            cursor: query.cursor,
         })
         .await
     {
@@ -2077,7 +2084,10 @@ async fn handle_search_dialogue_history(
         .search_recall(RecallSearchRequest {
             context_id: context_id.clone(),
             query: query_text.to_string(),
+            start_time: None,
+            end_time: None,
             limit: candidate_limit,
+            cursor: None,
         })
         .await
     {
@@ -8873,7 +8883,10 @@ mod tests {
             HeaderMap::new(),
             Query(RecallSearchHttpQuery {
                 token: None,
-                query: "阳光电源".to_string(),
+                query: Some("阳光电源".to_string()),
+                start_time: None,
+                end_time: None,
+                cursor: None,
                 limit: Some(10),
             }),
         )

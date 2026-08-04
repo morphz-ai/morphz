@@ -10,11 +10,12 @@ use crate::memory::{
     ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetRecord,
     ExecutionTargetStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
     MindSnapshotRecord, NewMindProjection, ObjectiveRecord, ObjectiveStore, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallProjectionStore, RecallSearchHit,
-    ScheduleRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
-    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionStatus, SessionStore,
-    ThreadActivationRecord, ThreadGroupMemberRecord, ThreadGroupRecord, ThreadOutcomeRecord,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, WorkerCoordinationMode,
+    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    RecallProjectionStore, RecallSearchHit, ScheduleRecord, ScheduleStatus, SessionAttentionState,
+    SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
+    SessionStatus, SessionStore, ThreadActivationRecord, ThreadGroupMemberRecord,
+    ThreadGroupRecord, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, WorkerCoordinationMode,
 };
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
@@ -22,7 +23,7 @@ use crate::orchestrator::context_contract::{
 };
 use crate::sexpr::{parse, SExpr};
 use crate::tool::{active_background_task_count, get_tasks_map};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -881,14 +882,20 @@ pub struct FrameRecallRequest {
 pub struct RecallSearchRequest {
     pub context_id: String,
     pub query: String,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
     pub limit: usize,
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RecallSearchPage {
     pub context_id: String,
     pub query: String,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
     pub matches: Vec<RecallSearchHit>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -956,6 +963,15 @@ struct FrameRecallCursor {
     include_events: bool,
     max_nodes: usize,
     offset: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RecallSearchCursor {
+    context_id: String,
+    normalized_query: String,
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    before_sequence: u64,
 }
 
 fn select_session_working_set(
@@ -3579,6 +3595,34 @@ impl ContextEngine {
         Ok(serde_json::from_slice(&payload)?)
     }
 
+    fn encode_recall_search_cursor(&self, cursor: &RecallSearchCursor) -> Result<String, DynError> {
+        let payload = serde_json::to_vec(cursor)?;
+        let mut signed = Vec::with_capacity(self.recall_cursor_secret.len() + payload.len());
+        signed.extend_from_slice(&self.recall_cursor_secret);
+        signed.extend_from_slice(&payload);
+        let signature = Sha256::digest(&signed);
+        Ok(format!(
+            "{}.{}",
+            hex_encode(&payload),
+            hex_encode(&signature)
+        ))
+    }
+
+    fn decode_recall_search_cursor(&self, cursor: &str) -> Result<RecallSearchCursor, DynError> {
+        let (payload, signature) = cursor
+            .split_once('.')
+            .ok_or("Recall search cursor 格式无效")?;
+        let payload = hex_decode(payload)?;
+        let signature = hex_decode(signature)?;
+        let mut signed = Vec::with_capacity(self.recall_cursor_secret.len() + payload.len());
+        signed.extend_from_slice(&self.recall_cursor_secret);
+        signed.extend_from_slice(&payload);
+        if signature.as_slice() != Sha256::digest(&signed).as_slice() {
+            return Err("Recall search cursor 签名无效".into());
+        }
+        Ok(serde_json::from_slice(&payload)?)
+    }
+
     pub async fn mind_version(&self, context_id: &str) -> Result<u64, DynError> {
         Ok(self.load_current_mind(context_id, None).await?.version)
     }
@@ -3750,6 +3794,7 @@ impl ContextEngine {
                     score: 1.0,
                     preview,
                     updated_sequence: event.sequence.unwrap_or_default(),
+                    occurred_at: Some(event.timestamp),
                 }
             })
             .collect::<Vec<_>>();
@@ -4021,13 +4066,150 @@ impl ContextRecallService for ContextEngine {
         &self,
         request: RecallSearchRequest,
     ) -> Result<RecallSearchPage, DynError> {
-        let matches = self
-            .search_recall_documents(&request.context_id, &request.query, request.limit)
-            .await?;
+        let query = request.query.trim().to_string();
+        if query.is_empty() && request.start_time.is_none() && request.end_time.is_none() {
+            return Err("Recall search 必须提供 query 或时间范围".into());
+        }
+        if request
+            .start_time
+            .zip(request.end_time)
+            .is_some_and(|(start, end)| start >= end)
+        {
+            return Err("Recall start_time 必须早于 end_time".into());
+        }
+        let normalized_query = crate::memory::normalize_recall_text(&query);
+        let mut before_sequence = None;
+        if let Some(cursor) = request.cursor.as_deref() {
+            let cursor = self.decode_recall_search_cursor(cursor)?;
+            if cursor.context_id != request.context_id
+                || cursor.normalized_query != normalized_query
+                || cursor.start_time != request.start_time
+                || cursor.end_time != request.end_time
+            {
+                return Err("Recall search cursor 与当前查询参数不匹配".into());
+            }
+            before_sequence = Some(cursor.before_sequence);
+        }
+        let limit = request.limit.clamp(1, 100);
+        let chronological = request.start_time.is_some()
+            || request.end_time.is_some()
+            || request.cursor.is_some()
+            || normalized_query.is_empty();
+        let matches = if normalized_query.is_empty() {
+            let events = self
+                .store
+                .query(QueryFilter {
+                    context_id: Some(request.context_id.clone()),
+                    start_time: request.start_time,
+                    end_time: request.end_time,
+                    before_sequence,
+                    topics: vec![
+                        "chat/user_message".to_string(),
+                        "chat/reply".to_string(),
+                        "chat/tool_output".to_string(),
+                        "chat/file_change".to_string(),
+                        "chat/outbound_message".to_string(),
+                        "chat/context_tx_committed".to_string(),
+                        "runtime/thread_result".to_string(),
+                        "runtime/delegation_result".to_string(),
+                    ],
+                    latest_k: Some(limit),
+                    ..Default::default()
+                })
+                .await?;
+            events
+                .into_iter()
+                .rev()
+                .map(|event| {
+                    let preview = event_text(&event).chars().take(500).collect();
+                    RecallSearchHit {
+                        document_kind: RecallDocumentKind::Event,
+                        document_id: event.id,
+                        revision: 0,
+                        retired: false,
+                        score: 1.0,
+                        preview,
+                        updated_sequence: event.sequence.unwrap_or_default(),
+                        occurred_at: Some(event.timestamp),
+                    }
+                })
+                .collect()
+        } else if let Some(store) = &self.recall_projection_store {
+            store
+                .query_recall_documents(RecallDocumentSearchRequest {
+                    context_id: request.context_id.clone(),
+                    normalized_query: Some(normalized_query.clone()),
+                    start_time: request.start_time,
+                    end_time: request.end_time,
+                    before_sequence,
+                    limit,
+                })
+                .await?
+        } else {
+            let candidates = self
+                .store
+                .query(QueryFilter {
+                    context_id: Some(request.context_id.clone()),
+                    start_time: request.start_time,
+                    end_time: request.end_time,
+                    before_sequence,
+                    excluded_topics: vec!["chat/context_inspect".to_string()],
+                    latest_k: Some(limit.saturating_mul(8).clamp(limit, 800)),
+                    ..Default::default()
+                })
+                .await?;
+            let mut matches = candidates
+                .into_iter()
+                .rev()
+                .filter(|event| {
+                    crate::memory::event_has_recall_value(event)
+                        && (normalized_query.is_empty()
+                            || crate::memory::normalize_recall_text(&event_text(event))
+                                .contains(&normalized_query))
+                })
+                .take(limit)
+                .map(|event| {
+                    let preview = event_text(&event).chars().take(500).collect();
+                    RecallSearchHit {
+                        document_kind: RecallDocumentKind::Event,
+                        document_id: event.id,
+                        revision: 0,
+                        retired: false,
+                        score: 1.0,
+                        preview,
+                        updated_sequence: event.sequence.unwrap_or_default(),
+                        occurred_at: Some(event.timestamp),
+                    }
+                })
+                .collect::<Vec<_>>();
+            matches.sort_by_key(|hit| std::cmp::Reverse(hit.updated_sequence));
+            matches
+        };
+        let next_cursor = if chronological && matches.len() == limit {
+            matches
+                .last()
+                .map(|hit| hit.updated_sequence)
+                .filter(|sequence| *sequence > 0)
+                .map(|before_sequence| {
+                    self.encode_recall_search_cursor(&RecallSearchCursor {
+                        context_id: request.context_id.clone(),
+                        normalized_query: normalized_query.clone(),
+                        start_time: request.start_time,
+                        end_time: request.end_time,
+                        before_sequence,
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
         Ok(RecallSearchPage {
             context_id: request.context_id,
-            query: request.query,
+            query,
+            start_time: request.start_time,
+            end_time: request.end_time,
             matches,
+            next_cursor,
         })
     }
 
@@ -7820,14 +8002,18 @@ fn frame_recall_document(
         text.push(' ');
         text.push_str(&relation.object);
     }
-    let searchable_text = crate::memory::segment_recall_text(&text);
+    let searchable_chunks = crate::memory::segment_recall_chunks(&text);
+    let searchable_text = searchable_chunks.first().cloned().unwrap_or_default();
     let retired = retired_override.unwrap_or_else(|| state.retired.contains(&frame.id));
     let state_hash = format!(
         "{:x}",
         Sha256::digest(
             format!(
                 "{}:{}:{}:{}",
-                frame.revision, retired, searchable_text, state.version
+                frame.revision,
+                retired,
+                searchable_chunks.join("\0"),
+                state.version
             )
             .as_bytes()
         )
@@ -7838,6 +8024,7 @@ fn frame_recall_document(
         document_id: frame.id.clone(),
         revision: frame.revision,
         searchable_text,
+        searchable_chunks,
         preview: frame.body.chars().take(500).collect(),
         retired,
         updated_sequence: state.version,

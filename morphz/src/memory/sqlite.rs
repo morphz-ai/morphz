@@ -37,19 +37,20 @@ use crate::memory::{
     PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
     ProviderAccountAffinityRecord, ProviderAccountStateRecord, ProviderAccountStateStore,
     ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
-    ProviderRefreshLeaseRecord, QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
-    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
-    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate,
-    SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
-    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
-    ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime,
-    ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord,
-    ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore,
-    ThreadSupervision, ThreadSupervisorKind, TimerStore, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    ProviderRefreshLeaseRecord, QueryFilter, RecallDocument, RecallDocumentKind,
+    RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
+    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
+    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
+    ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
+    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
+    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadControlAction, ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord,
+    ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus,
+    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation,
+    ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord, ThreadPromotionRequest,
+    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, ThreadSupervision,
+    ThreadSupervisorKind, TimerStore, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
@@ -1530,6 +1531,8 @@ const ATTENTION_PROJECTION_BACKFILL_MIGRATION: &str =
     "20260723_01_attention_acknowledgement_projection";
 const RECALL_FTS_BACKFILL_MIGRATION: &str = "20260722_01_recall_fts_backfill";
 const RECALL_SEGMENTED_INDEX_MIGRATION: &str = "20260725_01_recall_segmented_index";
+const RECALL_CHUNKED_INDEX_MIGRATION: &str = "20260805_01_recall_chunked_index";
+const RECALL_CHUNK_EVENT_BACKFILL_MIGRATION: &str = "20260805_02_recall_chunk_event_backfill";
 
 /// Rewrites every stored Recall document under the current Runtime segmenter
 /// and refills the freshly created FTS index.
@@ -1675,6 +1678,19 @@ async fn migrate_recall_projection(
            );
            CREATE INDEX IF NOT EXISTS idx_recall_documents_context_updated
              ON recall_documents(context_id, updated_sequence DESC, document_id);
+           CREATE TABLE IF NOT EXISTS recall_document_chunks (
+               context_id TEXT NOT NULL,
+               document_kind TEXT NOT NULL CHECK(document_kind IN ('event', 'frame')),
+               document_id TEXT NOT NULL,
+               chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
+               searchable_text TEXT NOT NULL,
+               PRIMARY KEY(context_id, document_kind, document_id, chunk_index),
+               FOREIGN KEY(context_id, document_kind, document_id)
+                 REFERENCES recall_documents(context_id, document_kind, document_id)
+                 ON DELETE CASCADE
+           );
+           CREATE INDEX IF NOT EXISTS idx_recall_chunks_document
+             ON recall_document_chunks(context_id, document_kind, document_id, chunk_index);
            CREATE TABLE IF NOT EXISTS recall_projection_outbox (
                context_id TEXT NOT NULL,
                document_kind TEXT NOT NULL CHECK(document_kind IN ('event', 'frame')),
@@ -1706,18 +1722,28 @@ async fn migrate_recall_projection(
     // rolls back and is retried on the next start, instead of leaving Recall
     // with an index that is present but half populated.
     let mut tx = pool.begin().await?;
-    let claimed =
+    let segmented_claimed =
         sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
             .bind(RECALL_SEGMENTED_INDEX_MIGRATION)
             .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
             .execute(&mut *tx)
             .await?;
-    let rebuilding = claimed.rows_affected() > 0;
+    let chunked_claimed =
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(RECALL_CHUNKED_INDEX_MIGRATION)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .execute(&mut *tx)
+            .await?;
+    let resegmenting = segmented_claimed.rows_affected() > 0;
+    let rebuilding = resegmenting || chunked_claimed.rows_affected() > 0;
     if rebuilding {
         for statement in [
             "DROP TRIGGER IF EXISTS recall_documents_ai",
             "DROP TRIGGER IF EXISTS recall_documents_ad",
             "DROP TRIGGER IF EXISTS recall_documents_au",
+            "DROP TRIGGER IF EXISTS recall_document_chunks_ai",
+            "DROP TRIGGER IF EXISTS recall_document_chunks_ad",
+            "DROP TRIGGER IF EXISTS recall_document_chunks_au",
             "DROP TABLE IF EXISTS recall_documents_fts",
         ] {
             sqlx::query(statement).execute(&mut *tx).await?;
@@ -1728,6 +1754,7 @@ async fn migrate_recall_projection(
                context_id UNINDEXED,
                document_kind UNINDEXED,
                document_id UNINDEXED,
+               chunk_index UNINDEXED,
                searchable_text,
                tokenize='unicode61'
            )"#,
@@ -1739,8 +1766,29 @@ async fn migrate_recall_projection(
         tx.rollback().await?;
         return Ok(());
     }
-    if rebuilding {
+    if resegmenting {
         resegment_recall_documents(&mut tx).await?;
+    }
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO recall_document_chunks
+           (context_id, document_kind, document_id, chunk_index, searchable_text)
+           SELECT context_id, document_kind, document_id, 0, searchable_text
+           FROM recall_documents"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    if rebuilding {
+        sqlx::query("DELETE FROM recall_documents_fts")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"INSERT INTO recall_documents_fts
+               (context_id, document_kind, document_id, chunk_index, searchable_text)
+               SELECT context_id, document_kind, document_id, chunk_index, searchable_text
+               FROM recall_document_chunks"#,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
 
@@ -1751,33 +1799,61 @@ async fn migrate_recall_projection(
     // into a full FTS delete+insert and held SQLite's single-writer slot for
     // seconds.  Recreate only this derived trigger on startup; the FTS table is
     // a rebuildable Projection and no Ledger data is affected.
-    sqlx::query("DROP TRIGGER IF EXISTS recall_documents_au")
-        .execute(pool)
-        .await?;
+    for trigger in [
+        "recall_documents_ai",
+        "recall_documents_ad",
+        "recall_documents_au",
+        "recall_document_chunks_ai",
+        "recall_document_chunks_ad",
+        "recall_document_chunks_au",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger}"))
+            .execute(pool)
+            .await?;
+    }
 
     for statement in [
         r#"CREATE TRIGGER IF NOT EXISTS recall_documents_ai AFTER INSERT ON recall_documents BEGIN
-             INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
-             VALUES (new.context_id, new.document_kind, new.document_id, new.searchable_text);
-           END"#,
-        r#"CREATE TRIGGER IF NOT EXISTS recall_documents_ad AFTER DELETE ON recall_documents BEGIN
-             DELETE FROM recall_documents_fts
-             WHERE context_id = old.context_id AND document_kind = old.document_kind
-               AND document_id = old.document_id;
+             INSERT INTO recall_document_chunks
+               (context_id, document_kind, document_id, chunk_index, searchable_text)
+             VALUES (new.context_id, new.document_kind, new.document_id, 0, new.searchable_text);
            END"#,
         r#"CREATE TRIGGER IF NOT EXISTS recall_documents_au
-           AFTER UPDATE OF context_id, document_kind, document_id, searchable_text
+           AFTER UPDATE OF searchable_text
            ON recall_documents
-           WHEN old.context_id IS NOT new.context_id
-             OR old.document_kind IS NOT new.document_kind
-             OR old.document_id IS NOT new.document_id
-             OR old.searchable_text IS NOT new.searchable_text
+           WHEN old.searchable_text IS NOT new.searchable_text
+           BEGIN
+             DELETE FROM recall_document_chunks
+             WHERE context_id = old.context_id AND document_kind = old.document_kind
+               AND document_id = old.document_id;
+             INSERT INTO recall_document_chunks
+               (context_id, document_kind, document_id, chunk_index, searchable_text)
+             VALUES (new.context_id, new.document_kind, new.document_id, 0, new.searchable_text);
+           END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS recall_document_chunks_ai
+           AFTER INSERT ON recall_document_chunks BEGIN
+             INSERT INTO recall_documents_fts
+               (context_id, document_kind, document_id, chunk_index, searchable_text)
+             VALUES (new.context_id, new.document_kind, new.document_id,
+                     new.chunk_index, new.searchable_text);
+           END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS recall_document_chunks_ad
+           AFTER DELETE ON recall_document_chunks BEGIN
+             DELETE FROM recall_documents_fts
+             WHERE context_id = old.context_id AND document_kind = old.document_kind
+               AND document_id = old.document_id AND chunk_index = old.chunk_index;
+           END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS recall_document_chunks_au
+           AFTER UPDATE OF context_id, document_kind, document_id, chunk_index, searchable_text
+           ON recall_document_chunks
            BEGIN
              DELETE FROM recall_documents_fts
              WHERE context_id = old.context_id AND document_kind = old.document_kind
-               AND document_id = old.document_id;
-             INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
-             VALUES (new.context_id, new.document_kind, new.document_id, new.searchable_text);
+               AND document_id = old.document_id AND chunk_index = old.chunk_index;
+             INSERT INTO recall_documents_fts
+               (context_id, document_kind, document_id, chunk_index, searchable_text)
+             VALUES (new.context_id, new.document_kind, new.document_id,
+                     new.chunk_index, new.searchable_text);
            END"#,
     ] {
         sqlx::query(statement).execute(pool).await?;
@@ -1792,18 +1868,64 @@ async fn migrate_recall_projection(
             .await?;
     if claimed.rows_affected() == 0 {
         tx.rollback().await?;
+    } else {
+        sqlx::query(
+            r#"INSERT INTO recall_documents_fts
+               (context_id, document_kind, document_id, chunk_index, searchable_text)
+               SELECT c.context_id, c.document_kind, c.document_id, c.chunk_index, c.searchable_text
+               FROM recall_document_chunks c
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM recall_documents_fts f
+                 WHERE f.context_id = c.context_id AND f.document_kind = c.document_kind
+                   AND f.document_id = c.document_id AND f.chunk_index = c.chunk_index
+               )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+    }
+
+    // Existing Event documents may have been projected by a binary that
+    // discarded everything after the first 16 KiB. Re-enqueue their immutable
+    // Ledger source once; the ordinary bounded projection worker rebuilds all
+    // chunks without making startup scan or tokenize large payloads.
+    let mut tx = pool.begin().await?;
+    let claimed =
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(RECALL_CHUNK_EVENT_BACKFILL_MIGRATION)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .execute(&mut *tx)
+            .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
         return Ok(());
     }
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
     sqlx::query(
-        r#"INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
-           SELECT d.context_id, d.document_kind, d.document_id, d.searchable_text
-           FROM recall_documents d
-           WHERE NOT EXISTS (
-             SELECT 1 FROM recall_documents_fts f
-             WHERE f.context_id = d.context_id AND f.document_kind = d.document_kind
-               AND f.document_id = d.document_id
-           )"#,
+        r#"INSERT OR IGNORE INTO recall_projection_outbox
+           (context_id, document_kind, document_id, generation, document_json,
+            status, attempts, available_at, claimed_by, claim_expires_at,
+            last_error, created_at, updated_at)
+           SELECT e.context_id, 'event', e.id,
+                  CASE WHEN e.rowid > 0 THEN e.rowid ELSE 1 END,
+                  CASE WHEN COALESCE(d.retired, 0) = 1
+                       THEN '{"retired":true}' ELSE '{"retired":false}' END,
+                  'pending', 0, ?, NULL, NULL, NULL, ?, ?
+           FROM events e
+           LEFT JOIN recall_documents d
+             ON d.context_id = e.context_id AND d.document_kind = 'event'
+            AND d.document_id = e.id
+           WHERE e.context_id IS NOT NULL
+             AND e.topic IN (
+               'chat/user_message', 'chat/reply', 'chat/tool_output',
+               'chat/file_change', 'chat/outbound_message',
+               'chat/context_tx_committed', 'runtime/thread_result',
+               'runtime/delegation_result'
+             )"#,
     )
+    .bind(&now)
+    .bind(&now)
+    .bind(&now)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -4462,7 +4584,12 @@ async fn upsert_recall_document_in_transaction(
     document: &RecallDocument,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let started = std::time::Instant::now();
-    sqlx::query(
+    let chunks = if document.searchable_chunks.is_empty() {
+        crate::memory::chunk_segmented_recall_text(&document.searchable_text)
+    } else {
+        document.searchable_chunks.clone()
+    };
+    let result = sqlx::query(
         r#"INSERT INTO recall_documents
            (context_id, document_kind, document_id, revision, searchable_text, preview,
             retired, updated_sequence, state_hash)
@@ -4487,13 +4614,43 @@ async fn upsert_recall_document_in_transaction(
     .bind(&document.state_hash)
     .execute(&mut **tx)
     .await?;
+    if result.rows_affected() > 0 {
+        sqlx::query(
+            r#"DELETE FROM recall_document_chunks
+               WHERE context_id = ? AND document_kind = ? AND document_id = ?"#,
+        )
+        .bind(&document.context_id)
+        .bind(document.document_kind.as_str())
+        .bind(&document.document_id)
+        .execute(&mut **tx)
+        .await?;
+        for (chunk_index, searchable_text) in chunks.iter().enumerate() {
+            sqlx::query(
+                r#"INSERT INTO recall_document_chunks
+                   (context_id, document_kind, document_id, chunk_index, searchable_text)
+                   VALUES (?, ?, ?, ?, ?)"#,
+            )
+            .bind(&document.context_id)
+            .bind(document.document_kind.as_str())
+            .bind(&document.document_id)
+            .bind(i64::try_from(chunk_index)?)
+            .bind(searchable_text)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
     let elapsed = started.elapsed();
+    let searchable_chars = chunks
+        .iter()
+        .map(|chunk| chunk.chars().count())
+        .sum::<usize>();
     if elapsed >= std::time::Duration::from_millis(500) {
         tracing::warn!(
             context_id = %document.context_id,
             document_kind = %document.document_kind.as_str(),
             document_id = %document.document_id,
-            searchable_chars = document.searchable_text.chars().count(),
+            searchable_chars,
+            chunk_count = chunks.len(),
             elapsed_ms = elapsed.as_millis(),
             "Recall document UPSERT（含同步 FTS trigger）耗时过长"
         );
@@ -4502,7 +4659,8 @@ async fn upsert_recall_document_in_transaction(
             context_id = %document.context_id,
             document_kind = %document.document_kind.as_str(),
             document_id = %document.document_id,
-            searchable_chars = document.searchable_text.chars().count(),
+            searchable_chars,
+            chunk_count = chunks.len(),
             elapsed_ms = elapsed.as_millis(),
             "Recall document UPSERT 完成"
         );
@@ -17011,7 +17169,7 @@ async fn sqlite_recall_capability(
         unicode_normalization: "nfkc+lowercase".to_string(),
         segmenter: crate::memory::RECALL_SEGMENTER.to_string(),
         detail: if indexed {
-            "SQLite FTS5 unicode61 index over Runtime-segmented terms".to_string()
+            "SQLite FTS5 unicode61 index over chunked Runtime-segmented terms".to_string()
         } else {
             "SQLite FTS5 unavailable; exact Recall document id only".to_string()
         },
@@ -17284,7 +17442,29 @@ impl RecallProjectionStore for SqliteStore {
         normalized_query: &str,
         limit: usize,
     ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>> {
-        let limit = limit.clamp(1, 100);
+        self.query_recall_documents(RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: Some(normalized_query.to_string()),
+            start_time: None,
+            end_time: None,
+            before_sequence: None,
+            limit,
+        })
+        .await
+    }
+
+    async fn query_recall_documents(
+        &self,
+        request: RecallDocumentSearchRequest,
+    ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>> {
+        if request
+            .start_time
+            .zip(request.end_time)
+            .is_some_and(|(start, end)| start >= end)
+        {
+            return Err("Recall start_time 必须早于 end_time".into());
+        }
+        let limit = request.limit.clamp(1, 100);
         let candidate_limit = (limit.saturating_mul(8)).clamp(64, 512);
         let capability = sqlite_recall_capability(&self.pool).await?;
         // The index stores Runtime-segmented terms, so the query has to be
@@ -17292,59 +17472,147 @@ impl RecallProjectionStore for SqliteStore {
         // term is indexable now: the previous three-character floor came from
         // the trigram tokenizer and silently dropped the most common Chinese
         // word form out of Recall.
-        let (requested, phrase) = crate::memory::recall_phrase_request(normalized_query);
+        let normalized_query = request
+            .normalized_query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty());
+        let (requested, phrase) = normalized_query
+            .map(crate::memory::recall_phrase_request)
+            .unwrap_or(("", false));
         let terms = crate::memory::segment_recall_terms(requested);
         let use_fts = capability.indexed && !terms.is_empty();
+        let chronological = request.start_time.is_some()
+            || request.end_time.is_some()
+            || request.before_sequence.is_some()
+            || normalized_query.is_none();
+        let start_time = request
+            .start_time
+            .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let end_time = request
+            .end_time
+            .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
         let rows = if use_fts {
             let expression = sqlite_fts_query(&terms, phrase);
-            sqlx::query(
+            let mut query = QueryBuilder::new(
                 r#"SELECT d.document_kind, d.document_id, d.revision, d.retired,
-                          d.preview, d.searchable_text, d.updated_sequence,
-                          CASE WHEN d.document_id = ? THEN 1000000.0
-                               ELSE -bm25(recall_documents_fts) END AS score
-                   FROM recall_documents_fts
+                          d.preview, "#,
+            );
+            query.push("group_concat(c.searchable_text, ' ') AS searchable_text, d.updated_sequence, e.timestamp, CASE WHEN d.document_id = ");
+            query.push_bind(normalized_query.unwrap_or_default());
+            query.push(" THEN 1000000.0 ELSE 1.0 END AS score");
+            query.push(
+                r#" FROM recall_documents_fts
+                   JOIN recall_document_chunks c
+                     ON c.context_id = recall_documents_fts.context_id
+                    AND c.document_kind = recall_documents_fts.document_kind
+                    AND c.document_id = recall_documents_fts.document_id
+                    AND c.chunk_index = recall_documents_fts.chunk_index
                    JOIN recall_documents d
-                     ON d.context_id = recall_documents_fts.context_id
-                    AND d.document_kind = recall_documents_fts.document_kind
-                    AND d.document_id = recall_documents_fts.document_id
-                   WHERE recall_documents_fts MATCH ?
-                     AND recall_documents_fts.context_id = ?
-                   ORDER BY (d.document_id = ?) DESC,
-                            bm25(recall_documents_fts) ASC,
-                            d.updated_sequence DESC, d.document_id ASC
-                   LIMIT ?"#,
-            )
-            .bind(normalized_query)
-            .bind(expression)
-            .bind(context_id)
-            .bind(normalized_query)
-            .bind(i64::try_from(candidate_limit)?)
-            .fetch_all(&self.pool)
-            .await?
+                     ON d.context_id = c.context_id
+                    AND d.document_kind = c.document_kind
+                    AND d.document_id = c.document_id
+                   LEFT JOIN events e ON d.document_kind = 'event'
+                    AND e.id = d.document_id AND e.context_id = d.context_id
+                   WHERE recall_documents_fts MATCH "#,
+            );
+            query.push_bind(expression);
+            query.push(" AND recall_documents_fts.context_id = ");
+            query.push_bind(&request.context_id);
+            if let Some(start_time) = &start_time {
+                query.push(" AND d.document_kind = 'event' AND e.timestamp >= ");
+                query.push_bind(start_time);
+            }
+            if let Some(end_time) = &end_time {
+                query.push(" AND d.document_kind = 'event' AND e.timestamp < ");
+                query.push_bind(end_time);
+            }
+            if let Some(before_sequence) = request.before_sequence {
+                query.push(" AND d.updated_sequence < ");
+                query.push_bind(i64::try_from(before_sequence)?);
+            }
+            // LIMIT applies to logical documents, never physical chunks. A
+            // very long document that matches in hundreds of chunks must not
+            // crowd every other result out of the candidate window.
+            query.push(
+                " GROUP BY d.context_id, d.document_kind, d.document_id, d.revision, d.retired, d.preview, d.updated_sequence, e.timestamp",
+            );
+            if chronological {
+                query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC");
+            } else {
+                query.push(" ORDER BY (d.document_id = ");
+                query.push_bind(normalized_query.unwrap_or_default());
+                query.push(") DESC, d.updated_sequence DESC, d.document_id ASC");
+            }
+            query.push(" LIMIT ");
+            query.push_bind(i64::try_from(candidate_limit)?);
+            query.build().fetch_all(&self.pool).await?
+        } else if normalized_query.is_none() {
+            let mut query = QueryBuilder::new(
+                r#"SELECT d.document_kind, d.document_id, d.revision, d.retired,
+                          d.preview, d.searchable_text, d.updated_sequence, e.timestamp,
+                          1.0 AS score
+                   FROM recall_documents d
+                   JOIN events e ON e.id = d.document_id AND e.context_id = d.context_id
+                   WHERE d.context_id = "#,
+            );
+            query.push_bind(&request.context_id);
+            query.push(" AND d.document_kind = 'event'");
+            if let Some(start_time) = &start_time {
+                query.push(" AND e.timestamp >= ");
+                query.push_bind(start_time);
+            }
+            if let Some(end_time) = &end_time {
+                query.push(" AND e.timestamp < ");
+                query.push_bind(end_time);
+            }
+            if let Some(before_sequence) = request.before_sequence {
+                query.push(" AND d.updated_sequence < ");
+                query.push_bind(i64::try_from(before_sequence)?);
+            }
+            query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
+            query.push_bind(i64::try_from(limit)?);
+            query.build().fetch_all(&self.pool).await?
         } else {
-            sqlx::query(
-                r#"SELECT document_kind, document_id, revision, retired, preview,
-                          searchable_text,
-                          updated_sequence,
-                          CASE WHEN document_id = ? THEN 1000000.0 ELSE 1.0 END AS score
-                   FROM recall_documents
-                   WHERE context_id = ? AND document_id = ?
-                   ORDER BY (document_id = ?) DESC, updated_sequence DESC, document_id ASC
-                   LIMIT ?"#,
-            )
-            .bind(normalized_query)
-            .bind(context_id)
-            .bind(normalized_query)
-            .bind(normalized_query)
-            .bind(i64::try_from(limit)?)
-            .fetch_all(&self.pool)
-            .await?
+            let normalized_query = normalized_query.unwrap_or_default();
+            let mut query = QueryBuilder::new(
+                r#"SELECT d.document_kind, d.document_id, d.revision, d.retired, d.preview,
+                          d.searchable_text, d.updated_sequence, e.timestamp,
+                          CASE WHEN d.document_id = "#,
+            );
+            query.push_bind(normalized_query);
+            query.push(
+                r#" THEN 1000000.0 ELSE 1.0 END AS score
+                   FROM recall_documents d
+                   LEFT JOIN events e ON d.document_kind = 'event'
+                    AND e.id = d.document_id AND e.context_id = d.context_id
+                   WHERE d.context_id = "#,
+            );
+            query.push_bind(&request.context_id);
+            query.push(" AND d.document_id = ");
+            query.push_bind(normalized_query);
+            if let Some(start_time) = &start_time {
+                query.push(" AND d.document_kind = 'event' AND e.timestamp >= ");
+                query.push_bind(start_time);
+            }
+            if let Some(end_time) = &end_time {
+                query.push(" AND d.document_kind = 'event' AND e.timestamp < ");
+                query.push_bind(end_time);
+            }
+            if let Some(before_sequence) = request.before_sequence {
+                query.push(" AND d.updated_sequence < ");
+                query.push_bind(i64::try_from(before_sequence)?);
+            }
+            query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
+            query.push_bind(i64::try_from(limit)?);
+            query.build().fetch_all(&self.pool).await?
         };
         let candidates = rows
             .into_iter()
             .map(|row| {
+                let searchable_text = row.get::<String, _>("searchable_text");
                 Ok(crate::memory::RecallSearchCandidate {
-                    searchable_text: row.get("searchable_text"),
+                    searchable_text: searchable_text.clone(),
                     hit: RecallSearchHit {
                         document_kind: recall_kind_from_str(
                             &row.get::<String, _>("document_kind"),
@@ -17353,19 +17621,44 @@ impl RecallProjectionStore for SqliteStore {
                         revision: u64::try_from(row.get::<i64, _>("revision"))?,
                         retired: row.get::<i64, _>("retired") != 0,
                         score: row.get("score"),
-                        preview: row.get("preview"),
+                        preview: if terms.is_empty() {
+                            row.get("preview")
+                        } else {
+                            crate::memory::recall_match_preview(
+                                &searchable_text,
+                                &terms,
+                                &row.get::<String, _>("preview"),
+                            )
+                        },
                         updated_sequence: u64::try_from(row.get::<i64, _>("updated_sequence"))?,
+                        occurred_at: row
+                            .get::<Option<String>, _>("timestamp")
+                            .map(|timestamp| parse_time(&timestamp)),
                     },
                 })
             })
             .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
-        Ok(crate::memory::rank_recall_candidates(
+        let mut matches = crate::memory::rank_recall_candidates(
             candidates,
             &terms,
             phrase,
-            normalized_query,
-            limit,
-        ))
+            normalized_query.unwrap_or_default(),
+            if chronological {
+                candidate_limit
+            } else {
+                limit
+            },
+        );
+        if chronological {
+            matches.sort_by(|left, right| {
+                right
+                    .updated_sequence
+                    .cmp(&left.updated_sequence)
+                    .then_with(|| left.document_id.cmp(&right.document_id))
+            });
+            matches.truncate(limit);
+        }
+        Ok(matches)
     }
 
     async fn replace_recall_documents(
@@ -18285,6 +18578,7 @@ mod tests {
             searchable_text: crate::memory::segment_recall_text(
                 "memory/rust-sandbox Rust 沙箱 权限申请",
             ),
+            searchable_chunks: Vec::new(),
             preview: "Rust 沙箱权限经验".to_string(),
             retired: true,
             updated_sequence: 7,
@@ -18298,6 +18592,7 @@ mod tests {
             searchable_text: crate::memory::segment_recall_text(
                 "三个产品部署到同一个物理节点，共享服务器资源",
             ),
+            searchable_chunks: Vec::new(),
             preview: "三个产品共享物理部署节点".to_string(),
             retired: false,
             updated_sequence: 8,
@@ -18309,6 +18604,7 @@ mod tests {
             document_id: "memory/server-only".to_string(),
             revision: 1,
             searchable_text: crate::memory::segment_recall_text("服务器健康检查"),
+            searchable_chunks: Vec::new(),
             preview: "服务器健康检查".to_string(),
             retired: false,
             updated_sequence: 9,
@@ -18327,6 +18623,7 @@ mod tests {
             document_id: event_document.get("document_id"),
             revision: u64::try_from(event_document.get::<i64, _>("revision")).unwrap(),
             searchable_text: event_document.get("searchable_text"),
+            searchable_chunks: Vec::new(),
             preview: event_document.get("preview"),
             retired: event_document.get::<i64, _>("retired") != 0,
             updated_sequence: u64::try_from(event_document.get::<i64, _>("updated_sequence"))
@@ -18412,6 +18709,210 @@ mod tests {
         let audit = store.inspect_recall_index("recall-context").await.unwrap();
         assert_eq!(audit.event_documents, 1);
         assert_eq!(audit.frame_documents, 3);
+    }
+
+    #[tokio::test]
+    async fn recall_indexes_long_event_suffix_and_pages_an_authoritative_time_range() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "recall-time-context".to_string(),
+                agent_id: "recall-agent".to_string(),
+                title: "Recall time Context".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let timestamps = [
+            "2026-08-04T09:00:00Z",
+            "2026-08-04T10:00:00Z",
+            "2026-08-04T11:00:00Z",
+        ];
+        for (index, timestamp) in timestamps.into_iter().enumerate() {
+            let text = if index == 0 {
+                format!(
+                    "{} 终点火炬只存在于旧上限之后",
+                    "普通历史内容 ".repeat(5_000)
+                )
+            } else {
+                format!("时间范围事件 {index}")
+            };
+            let mut event = Event::new(
+                format!("recall-time-event-{index}"),
+                "User".to_string(),
+                crate::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "recall-time-context",
+                    "session_id": "recall-time-session",
+                    "text": text,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
+            event.timestamp = chrono::DateTime::parse_from_rfc3339(timestamp)
+                .unwrap()
+                .with_timezone(&Utc);
+            store.append(event).await.unwrap();
+        }
+        let projected = store
+            .project_recall_outbox_batch("recall-time-worker", 8)
+            .await
+            .unwrap();
+        assert_eq!(projected.projected, 3);
+        assert!(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM recall_document_chunks
+                   WHERE document_id = 'recall-time-event-0'"#,
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+                > 1
+        );
+
+        let suffix = store
+            .search_recall_documents("recall-time-context", "终点火炬", 10)
+            .await
+            .unwrap();
+        assert_eq!(suffix.len(), 1);
+        assert_eq!(suffix[0].document_id, "recall-time-event-0");
+
+        let start_time = chrono::DateTime::parse_from_rfc3339("2026-08-04T09:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let end_time = chrono::DateTime::parse_from_rfc3339("2026-08-04T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let first = store
+            .query_recall_documents(RecallDocumentSearchRequest {
+                context_id: "recall-time-context".to_string(),
+                normalized_query: None,
+                start_time: Some(start_time),
+                end_time: Some(end_time),
+                before_sequence: None,
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(first[0].document_id, "recall-time-event-2");
+        assert_eq!(
+            first[0].occurred_at.unwrap().to_rfc3339(),
+            "2026-08-04T11:00:00+00:00"
+        );
+
+        let second = store
+            .query_recall_documents(RecallDocumentSearchRequest {
+                context_id: "recall-time-context".to_string(),
+                normalized_query: None,
+                start_time: Some(start_time),
+                end_time: Some(end_time),
+                before_sequence: Some(first[0].updated_sequence),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(second[0].document_id, "recall-time-event-1");
+
+        let combined = store
+            .query_recall_documents(RecallDocumentSearchRequest {
+                context_id: "recall-time-context".to_string(),
+                normalized_query: Some("时间范围事件".to_string()),
+                start_time: Some(start_time),
+                end_time: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-08-04T11:00:00Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                ),
+                before_sequence: None,
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(combined.len(), 1, "end_time 必须是排他的");
+        assert_eq!(combined[0].document_id, "recall-time-event-1");
+    }
+
+    #[tokio::test]
+    async fn recall_chunk_migration_reprojects_old_truncated_events_from_the_ledger() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap().to_string();
+        let store = SqliteStore::new(&path).await.unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "recall-migration-context".to_string(),
+                agent_id: "recall-agent".to_string(),
+                title: "Recall migration".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                "recall-migration-event".to_string(),
+                "User".to_string(),
+                crate::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "recall-migration-context",
+                    "session_id": "recall-migration-session",
+                    "text": format!(
+                        "{} 迁移后缀证据",
+                        "旧索引前缀 ".repeat(5_000)
+                    ),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        store
+            .project_recall_outbox_batch("recall-migration-initial", 8)
+            .await
+            .unwrap();
+
+        // Simulate the old projection: only chunk zero remains and the new
+        // one-time Event backfill has not run yet.
+        sqlx::query(
+            r#"DELETE FROM recall_document_chunks
+               WHERE document_id = 'recall-migration-event' AND chunk_index > 0"#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM recall_projection_outbox")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
+            .bind(RECALL_CHUNK_EVENT_BACKFILL_MIGRATION)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.pool.close().await;
+
+        let restarted = SqliteStore::new(&path).await.unwrap();
+        let pending = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM recall_projection_outbox
+               WHERE document_id = 'recall-migration-event' AND status = 'pending'"#,
+        )
+        .fetch_one(&restarted.pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 1);
+        restarted
+            .project_recall_outbox_batch("recall-migration-rebuild", 8)
+            .await
+            .unwrap();
+        let suffix = restarted
+            .search_recall_documents("recall-migration-context", "迁移后缀证据", 8)
+            .await
+            .unwrap();
+        assert_eq!(suffix[0].document_id, "recall-migration-event");
     }
 
     #[tokio::test]

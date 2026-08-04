@@ -2070,9 +2070,13 @@ where
 
 async fn assert_recall_projection_conformance<S>(store: Arc<S>)
 where
-    S: RecallProjectionStore + Send + Sync + 'static,
+    S: EventStore + RecallProjectionStore + Send + Sync + 'static,
 {
     let context_id = "conformance-context";
+    let long_chunks = morphz::memory::segment_recall_chunks(&format!(
+        "{} 终点火炬只存在于旧上限之后",
+        "普通历史内容 ".repeat(5_000)
+    ));
     let documents = vec![
         RecallDocument {
             context_id: context_id.to_string(),
@@ -2082,6 +2086,7 @@ where
             searchable_text: morphz::memory::segment_recall_text(
                 "memory/sandbox-permission 沙箱权限审批 Rust 沙箱",
             ),
+            searchable_chunks: Vec::new(),
             preview: "沙箱权限审批应区分拒绝与可申请的能力扩张".to_string(),
             retired: true,
             updated_sequence: 20,
@@ -2095,6 +2100,7 @@ where
             searchable_text: morphz::memory::segment_recall_text(
                 "related case memory/sandbox-permission 后续案例",
             ),
+            searchable_chunks: Vec::new(),
             preview: "后续案例".to_string(),
             retired: false,
             updated_sequence: 30,
@@ -2106,10 +2112,49 @@ where
             document_id: "recall-event".to_string(),
             revision: 0,
             searchable_text: morphz::memory::segment_recall_text("全角ＡＢＣ 与中文阳光电源"),
+            searchable_chunks: Vec::new(),
             preview: "全角ＡＢＣ 与中文阳光电源".to_string(),
             retired: false,
             updated_sequence: 10,
             state_hash: "recall-event-hash".to_string(),
+        },
+        RecallDocument {
+            context_id: context_id.to_string(),
+            document_kind: RecallDocumentKind::Event,
+            document_id: "recall-long-event".to_string(),
+            revision: 0,
+            searchable_text: long_chunks.first().cloned().unwrap(),
+            searchable_chunks: long_chunks,
+            preview: "普通历史内容".to_string(),
+            retired: false,
+            updated_sequence: 40,
+            state_hash: "recall-long-event-hash".to_string(),
+        },
+        RecallDocument {
+            context_id: context_id.to_string(),
+            document_kind: RecallDocumentKind::Event,
+            document_id: "recall-many-matching-chunks".to_string(),
+            revision: 0,
+            searchable_text: "共享 标记 chunk0".to_string(),
+            searchable_chunks: (0..80)
+                .map(|index| format!("共享 标记 chunk{index}"))
+                .collect(),
+            preview: "一个拥有许多匹配分块的文档".to_string(),
+            retired: false,
+            updated_sequence: 50,
+            state_hash: "recall-many-matching-chunks-hash".to_string(),
+        },
+        RecallDocument {
+            context_id: context_id.to_string(),
+            document_kind: RecallDocumentKind::Event,
+            document_id: "recall-second-shared-result".to_string(),
+            revision: 0,
+            searchable_text: "共享 标记 second".to_string(),
+            searchable_chunks: Vec::new(),
+            preview: "不能被前一个长文档的物理分块挤掉".to_string(),
+            retired: false,
+            updated_sequence: 45,
+            state_hash: "recall-second-shared-result-hash".to_string(),
         },
     ];
     let audit = store
@@ -2117,7 +2162,7 @@ where
         .await
         .unwrap();
     assert_eq!(audit.frame_documents, 2);
-    assert_eq!(audit.event_documents, 1);
+    assert_eq!(audit.event_documents, 4);
     assert_eq!(audit.capability.unicode_normalization, "nfkc+lowercase");
 
     let chinese = store
@@ -2139,6 +2184,26 @@ where
         .await
         .unwrap();
     assert!(nfkc.iter().any(|hit| hit.document_id == "recall-event"));
+
+    let suffix = store
+        .search_recall_documents(context_id, "终点火炬", 8)
+        .await
+        .unwrap();
+    assert!(suffix
+        .iter()
+        .any(|hit| hit.document_id == "recall-long-event"));
+
+    let logical_results = store
+        .search_recall_documents(context_id, "共享标记", 2)
+        .await
+        .unwrap();
+    assert_eq!(logical_results.len(), 2);
+    assert!(logical_results
+        .iter()
+        .any(|hit| hit.document_id == "recall-many-matching-chunks"));
+    assert!(logical_results
+        .iter()
+        .any(|hit| hit.document_id == "recall-second-shared-result"));
 
     let exact = store
         .search_recall_documents(
@@ -2190,6 +2255,70 @@ where
         morphz::memory::RECALL_SEGMENTER,
         "stored terms are only comparable against queries from the same segmenter"
     );
+
+    for (index, timestamp) in ["2026-08-04T10:00:00Z", "2026-08-04T11:00:00Z"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut event = Event::new(
+            format!("recall-time-conformance-{index}"),
+            "User".to_string(),
+            morphz::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": context_id,
+                "session_id": "conformance-session",
+                "text": format!("时间窗口证据 {index}"),
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        event.timestamp = chrono::DateTime::parse_from_rfc3339(timestamp)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        store.append(event).await.unwrap();
+    }
+    let projected = store
+        .project_recall_outbox_batch("recall-conformance-worker", 8)
+        .await
+        .unwrap();
+    assert_eq!(projected.projected, 2);
+    let start_time = chrono::DateTime::parse_from_rfc3339("2026-08-04T10:30:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let end_time = chrono::DateTime::parse_from_rfc3339("2026-08-04T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let timeline = store
+        .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: None,
+            start_time: Some(start_time),
+            end_time: Some(end_time),
+            before_sequence: None,
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(timeline[0].document_id, "recall-time-conformance-1");
+    let combined = store
+        .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: Some("时间窗口".to_string()),
+            start_time: None,
+            end_time: Some(
+                chrono::DateTime::parse_from_rfc3339("2026-08-04T11:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            ),
+            before_sequence: None,
+            limit: 8,
+        })
+        .await
+        .unwrap();
+    assert_eq!(combined.len(), 1);
+    assert_eq!(combined[0].document_id, "recall-time-conformance-0");
 }
 
 async fn assert_timer_lease_conformance<S>(store: Arc<S>)
@@ -4513,6 +4642,8 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260718_07_delivery",
         "20260718_08_delegations",
         "20260731_01_scheduler_dependencies",
+        "20260805_01_recall_chunked_index",
+        "20260805_02_recall_chunk_event_backfill",
     ] {
         assert!(
             applied_migrations.contains(version),

@@ -1493,17 +1493,44 @@ fn context_command(locale: Locale) -> Command {
                                 "Search indexed Event and Frame documents",
                                 "搜索已索引的事件与认知框架文档",
                             ))
-                            .arg(prompt_arg("QUERY", 1, None).help(locale.text(
-                                "Unicode lexical query",
-                                "Unicode 词法查询",
+                            .arg(prompt_arg("QUERY", 0, None).help(locale.text(
+                                "Optional Unicode lexical query",
+                                "可选 Unicode 词法查询",
                             )))
                             .arg(local_value_arg(
                                 "limit",
                                 "limit",
                                 "N",
                                 locale.text("Maximum matches", "最大匹配数量"),
+                            ))
+                            .arg(local_value_arg(
+                                "since",
+                                "since",
+                                "RFC3339",
+                                locale.text(
+                                    "Inclusive Event start time",
+                                    "事件起始时间（包含）",
+                                ),
+                            ))
+                            .arg(local_value_arg(
+                                "until",
+                                "until",
+                                "RFC3339",
+                                locale.text(
+                                    "Exclusive Event end time",
+                                    "事件结束时间（不包含）",
+                                ),
+                            ))
+                            .arg(local_value_arg(
+                                "cursor",
+                                "cursor",
+                                "CURSOR",
+                                locale.text(
+                                    "Opaque continuation cursor",
+                                    "不透明的续页游标",
+                                ),
                             )),
-                        "Example:\n  morphz context recall search 沙箱 权限 --limit=20 --format=json",
+                        "Examples:\n  morphz context recall search 沙箱 权限 --limit=20 --format=json\n  morphz context recall search --since=2026-08-04T00:00:00+08:00 --until=2026-08-05T00:00:00+08:00 --format=json",
                     ),
                     output_examples(
                         locale,

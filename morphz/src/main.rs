@@ -2648,8 +2648,21 @@ async fn search_context_recall(
     default_context_id: &str,
 ) -> Result<(), AppError> {
     let query = invocation.prompt_args().join(" ");
-    if query.trim().is_empty() {
-        return Err("context recall search 需要 QUERY".into());
+    let parse_time = |name: &str,
+                      value: Option<&str>|
+     -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
+        value
+            .map(|value| {
+                chrono::DateTime::parse_from_rfc3339(value)
+                    .map(|time| time.with_timezone(&chrono::Utc))
+                    .map_err(|_| format!("--{name} 必须是 RFC 3339 时间").into())
+            })
+            .transpose()
+    };
+    let start_time = parse_time("since", option_value(invocation, "since"))?;
+    let end_time = parse_time("until", option_value(invocation, "until"))?;
+    if query.trim().is_empty() && start_time.is_none() && end_time.is_none() {
+        return Err("context recall search 需要 QUERY 或 --since/--until 时间范围".into());
     }
     let limit = option_value(invocation, "limit")
         .unwrap_or("20")
@@ -2660,7 +2673,10 @@ async fn search_context_recall(
         .search_recall(RecallSearchRequest {
             context_id: selected_context_id(invocation, default_context_id, false).to_string(),
             query,
+            start_time,
+            end_time,
             limit,
+            cursor: option_value(invocation, "cursor").map(ToOwned::to_owned),
         })
         .await?;
     println!("{}", serde_json::to_string_pretty(&page)?);

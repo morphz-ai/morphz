@@ -16,10 +16,10 @@ use crate::memory::{
     ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
     ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
     ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
-    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
-    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
-    SessionProjectionStore, TimerStore,
+    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
+    SessionProjectionMutation, SessionProjectionStore, TimerStore,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -216,6 +216,18 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260725_01_recall_segmented_index",
                     store.resegment_recall_documents(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260805_01_recall_chunked_index",
+                    store.migrate_recall_chunk_projection(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260805_02_recall_chunk_event_backfill",
+                    store.enqueue_recall_chunk_event_backfill(),
                 )
                 .await?;
             // Index creation is retried outside the versioned migration so a
@@ -559,6 +571,69 @@ impl PostgresStore {
         Ok(())
     }
 
+    async fn migrate_recall_chunk_projection(&self) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS recall_document_chunks (
+                 context_id TEXT NOT NULL,
+                 document_kind TEXT NOT NULL CHECK(document_kind IN ('event', 'frame')),
+                 document_id TEXT NOT NULL,
+                 chunk_index BIGINT NOT NULL CHECK(chunk_index >= 0),
+                 searchable_text TEXT NOT NULL,
+                 PRIMARY KEY(context_id, document_kind, document_id, chunk_index),
+                 FOREIGN KEY(context_id, document_kind, document_id)
+                   REFERENCES recall_documents(context_id, document_kind, document_id)
+                   ON DELETE CASCADE
+               )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_recall_chunks_document
+               ON recall_document_chunks(context_id, document_kind, document_id, chunk_index)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO recall_document_chunks
+               (context_id, document_kind, document_id, chunk_index, searchable_text)
+               SELECT context_id, document_kind, document_id, 0, searchable_text
+               FROM recall_documents
+               ON CONFLICT(context_id, document_kind, document_id, chunk_index) DO NOTHING"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn enqueue_recall_chunk_event_backfill(&self) -> Result<(), StoreError> {
+        let now = now_text();
+        sqlx::query(
+            r#"INSERT INTO recall_projection_outbox
+               (context_id, document_kind, document_id, generation, document_json,
+                status, attempts, available_at, claimed_by, claim_expires_at,
+                last_error, created_at, updated_at)
+               SELECT e.context_id, 'event', e.id, GREATEST(e.sequence, 1),
+                      jsonb_build_object('retired', COALESCE(d.retired, FALSE)),
+                      'pending', 0, $1, NULL, NULL, NULL, $1, $1
+               FROM events e
+               LEFT JOIN recall_documents d
+                 ON d.context_id = e.context_id AND d.document_kind = 'event'
+                AND d.document_id = e.id
+               WHERE e.context_id IS NOT NULL
+                 AND e.topic IN (
+                   'chat/user_message', 'chat/reply', 'chat/tool_output',
+                   'chat/file_change', 'chat/outbound_message',
+                   'chat/context_tx_committed', 'runtime/thread_result',
+                   'runtime/delegation_result'
+                 )
+               ON CONFLICT(context_id, document_kind, document_id) DO NOTHING"#,
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn migrate_recall_outbox_attention_projection(&self) -> Result<(), StoreError> {
         for statement in [
             r#"CREATE INDEX IF NOT EXISTS idx_pg_events_context_topic_time
@@ -739,8 +814,8 @@ impl PostgresStore {
     /// cannot grant — `tsvector` is core PostgreSQL.
     async fn ensure_recall_search_acceleration(&self) -> Result<(), StoreError> {
         if let Err(error) = sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_pg_recall_documents_tsv
-               ON recall_documents USING GIN (to_tsvector('simple', searchable_text))"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_recall_chunks_tsv
+               ON recall_document_chunks USING GIN (to_tsvector('simple', searchable_text))"#,
         )
         .execute(&self.pool)
         .await
@@ -753,11 +828,16 @@ impl PostgresStore {
         }
         // The substring index this replaces is dead weight once queries match
         // whole segmented terms.
-        if let Err(error) = sqlx::query("DROP INDEX IF EXISTS idx_pg_recall_documents_trgm")
-            .execute(&self.pool)
-            .await
-        {
-            tracing::warn!(error = %error, "PostgreSQL 无法回收旧的 pg_trgm Recall 索引");
+        for index in [
+            "idx_pg_recall_documents_trgm",
+            "idx_pg_recall_documents_tsv",
+        ] {
+            if let Err(error) = sqlx::query(&format!("DROP INDEX IF EXISTS {index}"))
+                .execute(&self.pool)
+                .await
+            {
+                tracing::warn!(%index, error = %error, "PostgreSQL 无法回收旧的 Recall 索引");
+            }
         }
         Ok(())
     }
@@ -1643,7 +1723,12 @@ async fn upsert_recall_document_in_tx(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     document: &RecallDocument,
 ) -> Result<(), StoreError> {
-    sqlx::query(
+    let chunks = if document.searchable_chunks.is_empty() {
+        crate::memory::chunk_segmented_recall_text(&document.searchable_text)
+    } else {
+        document.searchable_chunks.clone()
+    };
+    let result = sqlx::query(
         r#"INSERT INTO recall_documents
            (context_id, document_kind, document_id, revision, searchable_text, preview,
             retired, updated_sequence, state_hash)
@@ -1668,6 +1753,31 @@ async fn upsert_recall_document_in_tx(
     .bind(&document.state_hash)
     .execute(&mut **tx)
     .await?;
+    if result.rows_affected() > 0 {
+        sqlx::query(
+            r#"DELETE FROM recall_document_chunks
+               WHERE context_id = $1 AND document_kind = $2 AND document_id = $3"#,
+        )
+        .bind(&document.context_id)
+        .bind(document.document_kind.as_str())
+        .bind(&document.document_id)
+        .execute(&mut **tx)
+        .await?;
+        for (chunk_index, searchable_text) in chunks.iter().enumerate() {
+            sqlx::query(
+                r#"INSERT INTO recall_document_chunks
+                   (context_id, document_kind, document_id, chunk_index, searchable_text)
+                   VALUES ($1, $2, $3, $4, $5)"#,
+            )
+            .bind(&document.context_id)
+            .bind(document.document_kind.as_str())
+            .bind(&document.document_id)
+            .bind(i64::try_from(chunk_index)?)
+            .bind(searchable_text)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -2226,7 +2336,7 @@ async fn postgres_recall_capability(pool: &PgPool) -> Result<RecallIndexCapabili
     let indexed = sqlx::query_scalar::<_, bool>(
         r#"SELECT EXISTS(
                     SELECT 1 FROM pg_indexes
-                    WHERE indexname = 'idx_pg_recall_documents_tsv'
+                    WHERE indexname = 'idx_pg_recall_chunks_tsv'
                   )"#,
     )
     .fetch_one(pool)
@@ -2241,9 +2351,9 @@ async fn postgres_recall_capability(pool: &PgPool) -> Result<RecallIndexCapabili
         unicode_normalization: "nfkc+lowercase".to_string(),
         segmenter: crate::memory::RECALL_SEGMENTER.to_string(),
         detail: if indexed {
-            "PostgreSQL pg_trgm GIN index over Runtime-segmented terms".to_string()
+            "PostgreSQL GIN tsvector index over chunked Runtime-segmented terms".to_string()
         } else {
-            "PostgreSQL pg_trgm unavailable; exact Recall document id only".to_string()
+            "PostgreSQL Recall index unavailable; exact Recall document id only".to_string()
         },
     })
 }
@@ -2448,14 +2558,43 @@ impl RecallProjectionStore for PostgresStore {
         normalized_query: &str,
         limit: usize,
     ) -> Result<Vec<RecallSearchHit>, StoreError> {
-        let limit = limit.clamp(1, 100);
-        let candidate_limit = i64::try_from((limit.saturating_mul(8)).clamp(64, 512))?;
+        self.query_recall_documents(RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: Some(normalized_query.to_string()),
+            start_time: None,
+            end_time: None,
+            before_sequence: None,
+            limit,
+        })
+        .await
+    }
+
+    async fn query_recall_documents(
+        &self,
+        request: RecallDocumentSearchRequest,
+    ) -> Result<Vec<RecallSearchHit>, StoreError> {
+        if request
+            .start_time
+            .zip(request.end_time)
+            .is_some_and(|(start, end)| start >= end)
+        {
+            return Err("Recall start_time 必须早于 end_time".into());
+        }
+        let limit = request.limit.clamp(1, 100);
+        let candidate_limit = (limit.saturating_mul(8)).clamp(64, 512);
         let capability = postgres_recall_capability(&self.pool).await?;
         // The index stores Runtime-segmented terms, so the query is segmented
         // the same way and matched whole. A quoted query asks for adjacency;
         // ordinary queries use web-search OR syntax to build a broad candidate
         // set, followed by backend-independent coverage ranking.
-        let (requested, phrase) = crate::memory::recall_phrase_request(normalized_query);
+        let normalized_query = request
+            .normalized_query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty());
+        let (requested, phrase) = normalized_query
+            .map(crate::memory::recall_phrase_request)
+            .unwrap_or(("", false));
         let terms = crate::memory::segment_recall_terms(requested);
         let mut seen = std::collections::HashSet::new();
         let distinct_terms = terms
@@ -2471,71 +2610,179 @@ impl RecallProjectionStore for PostgresStore {
             "websearch_to_tsquery"
         };
         let physical_query = if phrase { &segmented_query } else { &web_query };
+        let chronological = request.start_time.is_some()
+            || request.end_time.is_some()
+            || request.before_sequence.is_some()
+            || normalized_query.is_none();
+        let start_time = request
+            .start_time
+            .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let end_time = request
+            .end_time
+            .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
         let rows = if capability.indexed && !terms.is_empty() {
-            sqlx::query(&format!(
-                r#"SELECT document_kind, document_id, revision, retired, preview,
-                          searchable_text,
-                          updated_sequence,
-                          CASE WHEN document_id = $2 THEN 1000000.0
-                               ELSE ts_rank(to_tsvector('simple', searchable_text),
-                                            {tsquery}('simple', $3))::double precision
-                          END AS score
-                   FROM recall_documents
-                   WHERE context_id = $1
-                     AND to_tsvector('simple', searchable_text) @@ {tsquery}('simple', $3)
-                   ORDER BY (document_id = $2) DESC,
-                            ts_rank(to_tsvector('simple', searchable_text),
-                                    {tsquery}('simple', $3)) DESC,
-                            updated_sequence DESC, document_id ASC
-                   LIMIT $4"#
-            ))
-            .bind(context_id)
-            .bind(normalized_query)
-            .bind(physical_query)
-            .bind(candidate_limit)
-            .fetch_all(&self.pool)
-            .await?
+            let mut query = QueryBuilder::<Postgres>::new(
+                r#"SELECT d.document_kind, d.document_id, d.revision, d.retired,
+                          d.preview, "#,
+            );
+            query.push("string_agg(c.searchable_text, ' ' ORDER BY c.chunk_index) AS searchable_text, d.updated_sequence, e.timestamp, CASE WHEN d.document_id = ");
+            query.push_bind(normalized_query.unwrap_or_default());
+            query.push(" THEN 1000000.0::double precision ELSE 1.0::double precision END AS score");
+            query.push(
+                r#" FROM recall_document_chunks c
+                   JOIN recall_documents d
+                     ON d.context_id = c.context_id
+                    AND d.document_kind = c.document_kind
+                    AND d.document_id = c.document_id
+                   LEFT JOIN events e ON d.document_kind = 'event'
+                    AND e.id = d.document_id AND e.context_id = d.context_id
+                   WHERE c.context_id = "#,
+            );
+            query.push_bind(&request.context_id);
+            query.push(format!(
+                " AND to_tsvector('simple', c.searchable_text) @@ {tsquery}('simple', "
+            ));
+            query.push_bind(physical_query);
+            query.push(")");
+            if let Some(start_time) = &start_time {
+                query.push(" AND d.document_kind = 'event' AND e.timestamp >= ");
+                query.push_bind(start_time);
+            }
+            if let Some(end_time) = &end_time {
+                query.push(" AND d.document_kind = 'event' AND e.timestamp < ");
+                query.push_bind(end_time);
+            }
+            if let Some(before_sequence) = request.before_sequence {
+                query.push(" AND d.updated_sequence < ");
+                query.push_bind(i64::try_from(before_sequence)?);
+            }
+            // Bound candidates by logical document count. Without this GROUP
+            // a single multi-megabyte document can consume the whole LIMIT
+            // through hundreds of matching physical chunks.
+            query.push(
+                " GROUP BY d.context_id, d.document_kind, d.document_id, d.revision, d.retired, d.preview, d.updated_sequence, e.timestamp",
+            );
+            if chronological {
+                query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC");
+            } else {
+                query.push(" ORDER BY (d.document_id = ");
+                query.push_bind(normalized_query.unwrap_or_default());
+                query.push(") DESC, d.updated_sequence DESC, d.document_id ASC");
+            }
+            query.push(" LIMIT ");
+            query.push_bind(i64::try_from(candidate_limit)?);
+            query.build().fetch_all(&self.pool).await?
+        } else if normalized_query.is_none() {
+            let mut query = QueryBuilder::<Postgres>::new(
+                r#"SELECT d.document_kind, d.document_id, d.revision, d.retired,
+                          d.preview, d.searchable_text, d.updated_sequence, e.timestamp,
+                          1.0::double precision AS score
+                   FROM recall_documents d
+                   JOIN events e ON e.id = d.document_id AND e.context_id = d.context_id
+                   WHERE d.context_id = "#,
+            );
+            query.push_bind(&request.context_id);
+            query.push(" AND d.document_kind = 'event'");
+            if let Some(start_time) = &start_time {
+                query.push(" AND e.timestamp >= ");
+                query.push_bind(start_time);
+            }
+            if let Some(end_time) = &end_time {
+                query.push(" AND e.timestamp < ");
+                query.push_bind(end_time);
+            }
+            if let Some(before_sequence) = request.before_sequence {
+                query.push(" AND d.updated_sequence < ");
+                query.push_bind(i64::try_from(before_sequence)?);
+            }
+            query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
+            query.push_bind(i64::try_from(limit)?);
+            query.build().fetch_all(&self.pool).await?
         } else {
-            sqlx::query(
-                r#"SELECT document_kind, document_id, revision, retired, preview,
-                          searchable_text,
-                          updated_sequence,
-                          CASE WHEN document_id = $2 THEN 1000000.0 ELSE 1.0 END AS score
-                   FROM recall_documents
-                   WHERE context_id = $1 AND document_id = $2
-                   ORDER BY (document_id = $2) DESC, updated_sequence DESC, document_id ASC
-                   LIMIT $3"#,
-            )
-            .bind(context_id)
-            .bind(normalized_query)
-            .bind(i64::try_from(limit)?)
-            .fetch_all(&self.pool)
-            .await?
+            let normalized_query = normalized_query.unwrap_or_default();
+            let mut query = QueryBuilder::<Postgres>::new(
+                r#"SELECT d.document_kind, d.document_id, d.revision, d.retired, d.preview,
+                          d.searchable_text, d.updated_sequence, e.timestamp,
+                          CASE WHEN d.document_id = "#,
+            );
+            query.push_bind(normalized_query);
+            query.push(
+                r#" THEN 1000000.0 ELSE 1.0::double precision END AS score
+                   FROM recall_documents d
+                   LEFT JOIN events e ON d.document_kind = 'event'
+                    AND e.id = d.document_id AND e.context_id = d.context_id
+                   WHERE d.context_id = "#,
+            );
+            query.push_bind(&request.context_id);
+            query.push(" AND d.document_id = ");
+            query.push_bind(normalized_query);
+            if let Some(start_time) = &start_time {
+                query.push(" AND d.document_kind = 'event' AND e.timestamp >= ");
+                query.push_bind(start_time);
+            }
+            if let Some(end_time) = &end_time {
+                query.push(" AND d.document_kind = 'event' AND e.timestamp < ");
+                query.push_bind(end_time);
+            }
+            if let Some(before_sequence) = request.before_sequence {
+                query.push(" AND d.updated_sequence < ");
+                query.push_bind(i64::try_from(before_sequence)?);
+            }
+            query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
+            query.push_bind(i64::try_from(limit)?);
+            query.build().fetch_all(&self.pool).await?
         };
         let candidates = rows
             .into_iter()
             .map(|row| {
+                let searchable_text = row.get::<String, _>("searchable_text");
                 Ok(crate::memory::RecallSearchCandidate {
-                    searchable_text: row.get("searchable_text"),
+                    searchable_text: searchable_text.clone(),
                     hit: RecallSearchHit {
                         document_kind: pg_recall_kind(&row.get::<String, _>("document_kind"))?,
                         document_id: row.get("document_id"),
                         revision: u64::try_from(row.get::<i64, _>("revision"))?,
                         retired: row.get("retired"),
                         score: row.get("score"),
-                        preview: row.get("preview"),
+                        preview: if terms.is_empty() {
+                            row.get("preview")
+                        } else {
+                            crate::memory::recall_match_preview(
+                                &searchable_text,
+                                &terms,
+                                &row.get::<String, _>("preview"),
+                            )
+                        },
                         updated_sequence: u64::try_from(row.get::<i64, _>("updated_sequence"))?,
+                        occurred_at: row
+                            .get::<Option<String>, _>("timestamp")
+                            .map(|timestamp| parse_time(&timestamp))
+                            .transpose()?,
                     },
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
-        Ok(crate::memory::rank_recall_candidates(
+        let mut matches = crate::memory::rank_recall_candidates(
             candidates,
             &terms,
             phrase,
-            normalized_query,
-            limit,
-        ))
+            normalized_query.unwrap_or_default(),
+            if chronological {
+                candidate_limit
+            } else {
+                limit
+            },
+        );
+        if chronological {
+            matches.sort_by(|left, right| {
+                right
+                    .updated_sequence
+                    .cmp(&left.updated_sequence)
+                    .then_with(|| left.document_id.cmp(&right.document_id))
+            });
+            matches.truncate(limit);
+        }
+        Ok(matches)
     }
 
     async fn replace_recall_documents(

@@ -9,6 +9,7 @@ use crate::tool::{
     Tool, ToolExecutionClass, CURRENT_CAUSAL_ROUTE, CURRENT_CONTEXT_ID, CURRENT_PRINCIPAL_ID,
     CURRENT_SESSION_ID,
 };
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -116,6 +117,8 @@ struct RecallArgs {
     event_id: Option<String>,
     frame_id: Option<String>,
     query: Option<String>,
+    start_time: Option<String>,
+    end_time: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
     depth: Option<usize>,
@@ -140,13 +143,15 @@ impl Tool for RecallTool {
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
         ToolDefinition {
             name: "recall".to_string(),
-            description: format!("按稳定短引用或查询词主动读取 Event Ledger 原文及已退役 frame。Context 中 observation 的 ref 形如 @e27，由 Ledger sequence 确定性派生；event_id 参数优先使用该 ref，Runtime 会解析为完整 ID。用于验证摘要、恢复遗忘内容或分段读取被 preview 截断的大型输出；结果只进入 inbox，不会自动写入 Mind。event_id 模式单次最多返回 {max_chunk_chars} 个字符；如果 next_offset 非空，下一次必须把它原样作为 offset 继续读取，不要重复 offset=0 或猜测偏移。query 模式返回命中位置附近的片段和建议 offset。"),
+            description: format!("按稳定短引用、查询词或时间范围主动读取 Event Ledger 原文及已退役 frame。Context 中 observation 的 ref 形如 @e27，由 Ledger sequence 确定性派生；event_id 参数优先使用该 ref，Runtime 会解析为完整 ID。用于验证摘要、恢复遗忘内容或分段读取被 preview 截断的大型输出；结果只进入 inbox，不会自动写入 Mind。event_id 模式单次最多返回 {max_chunk_chars} 个字符；如果 next_offset 非空，下一次必须把它原样作为 offset 继续读取。搜索模式可单独使用时间范围，也可与 query 组合；结果带 next_cursor 时应原样继续分页。"),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "event_id": { "type": "string", "description": "Context observation 的稳定短 ref（如 @e27），也接受完整 Ledger event ID" },
                     "frame_id": { "type": "string", "description": "已存在或已退役的 frame ID" },
-                    "query": { "type": "string", "description": "在当前 Cognitive Context 的 Ledger 中搜索（覆盖其中所有 Session）" },
+                    "query": { "type": "string", "description": "可选关键词；在当前 Cognitive Context 的 Ledger 中搜索（覆盖其中所有 Session）" },
+                    "start_time": { "type": "string", "format": "date-time", "description": "可选起始时间（RFC 3339，包含）；可不提供 query 直接按时间召回" },
+                    "end_time": { "type": "string", "format": "date-time", "description": "可选结束时间（RFC 3339，不包含）" },
                     "offset": { "type": "integer", "minimum": 0, "description": "读取 event 原文的字符偏移；连续分页时必须使用上次结果的 next_offset" },
                     "limit": { "type": "integer", "minimum": 1, "maximum": max_chunk_chars, "description": format!("单次返回字符数，上限 {max_chunk_chars}") }
                     ,"depth": { "type": "integer", "minimum": 0, "maximum": 4, "description": "frame_id 模式的关系遍历深度；0 只返回目标 Frame" }
@@ -154,7 +159,7 @@ impl Tool for RecallTool {
                     ,"include_bodies": { "type": "boolean", "description": "是否返回 Frame body，默认 true" }
                     ,"include_events": { "type": "boolean", "description": "是否展开 Event source 原文；false 时仍返回 preview" }
                     ,"max_nodes": { "type": "integer", "minimum": 1, "maximum": 128, "description": "frame_id 模式单页最多节点数，默认 32" }
-                    ,"cursor": { "type": "string", "description": "继续 Frame 图遍历时原样使用上页 next_cursor" }
+                    ,"cursor": { "type": "string", "description": "继续 Frame 图或时间搜索时原样使用上页 next_cursor；不得修改" }
                 }
             }),
         }
@@ -168,14 +173,20 @@ impl Tool for RecallTool {
         args.event_id = non_empty(args.event_id);
         args.frame_id = non_empty(args.frame_id);
         args.query = non_empty(args.query);
+        args.start_time = non_empty(args.start_time);
+        args.end_time = non_empty(args.end_time);
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .map_err(|_| "recall 缺少 Runtime 注入的当前 cognitive context")?;
+        let search_selected = args.query.is_some()
+            || args.start_time.is_some()
+            || args.end_time.is_some()
+            || (args.cursor.is_some() && args.frame_id.is_none());
         let selected = usize::from(args.event_id.is_some())
             + usize::from(args.frame_id.is_some())
-            + usize::from(args.query.is_some());
+            + usize::from(search_selected);
         if selected != 1 {
-            return Err("recall 必须且只能提供 event_id、frame_id、query 其中之一".into());
+            return Err("recall 必须选择 event_id、frame_id 或搜索（query/时间范围）之一".into());
         }
 
         if let Some(frame_id) = args.frame_id {
@@ -212,16 +223,27 @@ impl Tool for RecallTool {
         }
 
         let query = args.query.unwrap_or_default();
+        let start_time = parse_recall_time("start_time", args.start_time)?;
+        let end_time = parse_recall_time("end_time", args.end_time)?;
         let limit = args.limit.unwrap_or(10).clamp(1, 50);
         let page = self
             .context_engine
             .search_recall(RecallSearchRequest {
                 context_id,
                 query: query.clone(),
+                start_time,
+                end_time,
                 limit,
+                cursor: non_empty(args.cursor),
             })
             .await?;
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
+        let page_start_time = page.start_time;
+        let page_end_time = page.end_time;
+        let next_cursor = page.next_cursor.clone();
+        let paging_instruction = next_cursor.as_ref().map(|cursor| {
+            format!("下一次保持 query/start_time/end_time 不变，并原样传入 cursor={cursor}")
+        });
         let matches = page
             .matches
             .into_iter()
@@ -250,6 +272,7 @@ impl Tool for RecallTool {
                     "revision": hit.revision,
                     "retired": hit.retired,
                     "score": hit.score,
+                    "timestamp": hit.occurred_at,
                     "preview": hit.preview,
                     "suggested_recall": suggested_recall,
                 })
@@ -257,9 +280,26 @@ impl Tool for RecallTool {
             .collect::<Vec<_>>();
         Ok(serde_json::to_string_pretty(&serde_json::json!({
             "query": query,
+            "start_time": page_start_time,
+            "end_time": page_end_time,
             "matches": matches,
+            "next_cursor": next_cursor,
+            "paging_instruction": paging_instruction,
         }))?)
     }
+}
+
+fn parse_recall_time(
+    name: &str,
+    value: Option<String>,
+) -> Result<Option<DateTime<Utc>>, Box<dyn std::error::Error + Send + Sync>> {
+    value
+        .map(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .map(|time| time.with_timezone(&Utc))
+                .map_err(|_| format!("recall {name} 必须是 RFC 3339 时间").into())
+        })
+        .transpose()
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -334,7 +374,7 @@ mod tests {
     use super::*;
     use crate::config::OrchestratorConfig;
     use crate::memory::sqlite::SqliteStore;
-    use crate::memory::EventStore;
+    use crate::memory::{EventStore, SessionDirectoryStore};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -666,6 +706,93 @@ mod tests {
             .await
             .unwrap();
         assert!(result.contains("evidence"));
+    }
+
+    #[tokio::test]
+    async fn recall_time_range_can_page_without_guessing_keywords() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-time-range.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_context(crate::memory::NewCognitiveContext {
+                id: "recall-time-context".to_string(),
+                agent_id: "recall-agent".to_string(),
+                title: "Recall time".to_string(),
+            })
+            .await
+            .unwrap();
+        for (index, timestamp) in [
+            "2026-08-04T09:00:00Z",
+            "2026-08-04T10:00:00Z",
+            "2026-08-04T11:00:00Z",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut event = Event::new(
+                format!("event:time-{index}"),
+                "User".to_string(),
+                crate::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "recall-time-context",
+                    "session_id": "recall-time-session",
+                    "text": format!("时间事件 {index}"),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
+            event.timestamp = chrono::DateTime::parse_from_rfc3339(timestamp)
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            store.append(event).await.unwrap();
+        }
+        let engine = Arc::new(
+            ContextEngine::new(
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                OrchestratorConfig::default(),
+            )
+            .with_recall_projection_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::RecallProjectionStore>
+            ),
+        );
+        let tool = RecallTool::new(engine);
+        let first = CURRENT_CONTEXT_ID
+            .scope(
+                "recall-time-context".to_string(),
+                tool.execute(
+                    &serde_json::json!({
+                        "start_time": "2026-08-04T09:30:00Z",
+                        "end_time": "2026-08-04T12:00:00Z",
+                        "limit": 1
+                    })
+                    .to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(first["matches"][0]["document_id"], "event:time-2");
+        let cursor = first["next_cursor"].as_str().unwrap();
+
+        let second = CURRENT_CONTEXT_ID
+            .scope(
+                "recall-time-context".to_string(),
+                tool.execute(
+                    &serde_json::json!({
+                        "start_time": "2026-08-04T09:30:00Z",
+                        "end_time": "2026-08-04T12:00:00Z",
+                        "limit": 1,
+                        "cursor": cursor
+                    })
+                    .to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(second["matches"][0]["document_id"], "event:time-1");
     }
 
     #[test]

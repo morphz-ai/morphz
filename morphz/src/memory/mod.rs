@@ -3,7 +3,8 @@ pub mod postgres;
 pub mod sqlite;
 
 pub use lexical::{
-    recall_phrase_request, segment_recall_terms, segment_recall_text, RECALL_SEGMENTER,
+    chunk_segmented_recall_text, recall_phrase_request, segment_recall_chunks,
+    segment_recall_terms, segment_recall_text, RECALL_SEGMENTER,
 };
 
 use chrono::{DateTime, Utc};
@@ -35,6 +36,10 @@ pub struct RecallDocument {
     pub document_id: String,
     pub revision: u64,
     pub searchable_text: String,
+    /// Complete bounded physical-index chunks. `searchable_text` remains the
+    /// first chunk for wire/storage compatibility with older projections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub searchable_chunks: Vec<String>,
     pub preview: String,
     pub retired: bool,
     pub updated_sequence: u64,
@@ -50,6 +55,20 @@ pub struct RecallSearchHit {
     pub score: f64,
     pub preview: String,
     pub updated_sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecallDocumentSearchRequest {
+    pub context_id: String,
+    /// Empty means chronological Event recall without a lexical predicate.
+    pub normalized_query: Option<String>,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    /// Stable exclusive Ledger sequence boundary for backward pagination.
+    pub before_sequence: Option<u64>,
+    pub limit: usize,
 }
 
 /// One physical-index candidate before Runtime-level coverage ranking.
@@ -77,13 +96,47 @@ pub(crate) fn rank_recall_candidates(
     exact_document_id: &str,
     limit: usize,
 ) -> Vec<RecallSearchHit> {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
+
+    // One logical document can match through several physical chunks. Merge
+    // their lexical evidence before applying coverage ranking and keep the
+    // strongest chunk preview, so callers never see duplicate documents.
+    let mut merged = HashMap::<(String, String), RecallSearchCandidate>::new();
+    for candidate in candidates.drain(..) {
+        let key = (
+            candidate.hit.document_kind.as_str().to_string(),
+            candidate.hit.document_id.clone(),
+        );
+        match merged.entry(key) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(candidate);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let current = entry.get_mut();
+                if candidate.hit.score > current.hit.score {
+                    current.hit.score = candidate.hit.score;
+                    current.hit.preview = candidate.hit.preview;
+                }
+                if !candidate.searchable_text.is_empty() {
+                    if !current.searchable_text.is_empty() {
+                        current.searchable_text.push(' ');
+                    }
+                    current.searchable_text.push_str(&candidate.searchable_text);
+                }
+            }
+        }
+    }
+    candidates = merged.into_values().collect();
 
     let mut seen = HashSet::new();
     let terms = query_terms
         .iter()
         .filter(|term| seen.insert(term.as_str()))
         .collect::<Vec<_>>();
+    let requested_terms = terms
+        .iter()
+        .map(|term| term.as_str())
+        .collect::<HashSet<_>>();
     let total_weight = terms
         .iter()
         .map(|term| recall_term_weight(term))
@@ -93,10 +146,11 @@ pub(crate) fn rank_recall_candidates(
     let mut ranked = candidates
         .drain(..)
         .map(|candidate| {
-            let stored = candidate
+            let stored_terms = candidate
                 .searchable_text
                 .split_whitespace()
-                .collect::<HashSet<_>>();
+                .collect::<Vec<_>>();
+            let stored = stored_terms.iter().copied().collect::<HashSet<_>>();
             let matched = terms
                 .iter()
                 .filter(|term| stored.contains(term.as_str()))
@@ -107,8 +161,13 @@ pub(crate) fn rank_recall_candidates(
                 .map(|term| recall_term_weight(term))
                 .sum::<f64>()
                 / total_weight;
+            let density = stored_terms
+                .iter()
+                .filter(|term| requested_terms.contains(**term))
+                .count() as f64
+                / stored_terms.len().max(1) as f64;
             let exact = candidate.hit.document_id == exact_document_id;
-            (candidate.hit, exact, matched_count, coverage)
+            (candidate.hit, exact, matched_count, coverage, density)
         })
         .collect::<Vec<_>>();
 
@@ -116,12 +175,12 @@ pub(crate) fn rank_recall_candidates(
     if !phrase && minimum_matches > 1 {
         let useful = ranked
             .iter()
-            .filter(|(_, exact, matched, coverage)| {
+            .filter(|(_, exact, matched, coverage, _)| {
                 *exact || (*matched >= minimum_matches && *coverage >= 0.25)
             })
             .count();
         if useful > 0 {
-            ranked.retain(|(_, exact, matched, coverage)| {
+            ranked.retain(|(_, exact, matched, coverage, _)| {
                 *exact || (*matched >= minimum_matches && *coverage >= 0.25)
             });
         }
@@ -133,6 +192,7 @@ pub(crate) fn rank_recall_candidates(
             .cmp(&left.1)
             .then_with(|| right.3.total_cmp(&left.3))
             .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| right.4.total_cmp(&left.4))
             .then_with(|| right.0.score.total_cmp(&left.0.score))
             .then_with(|| right.0.updated_sequence.cmp(&left.0.updated_sequence))
             .then_with(|| left.0.document_id.cmp(&right.0.document_id))
@@ -140,13 +200,41 @@ pub(crate) fn rank_recall_candidates(
     ranked
         .into_iter()
         .take(limit.clamp(1, 100))
-        .map(|(mut hit, exact, _, coverage)| {
+        .map(|(mut hit, exact, _, coverage, _)| {
             // The public score now has one backend-independent interpretation:
             // exact id first, otherwise distinct query-term coverage.
             hit.score = if exact { 1_000_000.0 } else { coverage };
             hit
         })
         .collect()
+}
+
+pub(crate) fn recall_match_preview(
+    searchable_text: &str,
+    query_terms: &[String],
+    fallback: &str,
+) -> String {
+    const WIDTH: usize = RECALL_PREVIEW_MAX_CHARS;
+    let normalized = normalize_recall_text(searchable_text);
+    let first = query_terms
+        .iter()
+        .filter_map(|term| normalized.find(term).map(|offset| (offset, term)))
+        .min_by_key(|(offset, _)| *offset);
+    let Some((byte_offset, _)) = first else {
+        return fallback.chars().take(WIDTH).collect();
+    };
+    let char_offset = normalized[..byte_offset].chars().count();
+    let chars = searchable_text.chars().collect::<Vec<_>>();
+    let start = char_offset.saturating_sub(WIDTH / 3);
+    let end = (start + WIDTH).min(chars.len());
+    let mut preview = chars[start..end].iter().collect::<String>();
+    if start > 0 {
+        preview.insert(0, '…');
+    }
+    if end < chars.len() {
+        preview.push('…');
+    }
+    preview
 }
 
 fn recall_term_weight(term: &str) -> f64 {
@@ -222,6 +310,7 @@ pub struct AttentionAcknowledgementRecord {
 }
 
 pub const RECALL_SEARCHABLE_TEXT_MAX_CHARS: usize = 16 * 1024;
+pub const RECALL_SEARCH_CHUNK_OVERLAP_TERMS: usize = 32;
 pub const RECALL_PREVIEW_MAX_CHARS: usize = 500;
 
 /// Runtime diagnostics and transient scheduler protocol are deliberately not
@@ -260,17 +349,10 @@ pub fn recall_state_hash(searchable_text: &str, retired: bool) -> String {
 }
 
 fn push_recall_text(output: &mut String, value: &str) {
-    let remaining = RECALL_SEARCHABLE_TEXT_MAX_CHARS.saturating_sub(output.chars().count());
-    if remaining == 0 {
-        return;
-    }
-    output.extend(value.chars().take(remaining));
+    output.push_str(value);
 }
 
 fn collect_recall_scalars(value: &serde_json::Value, output: &mut String) {
-    if output.chars().count() >= RECALL_SEARCHABLE_TEXT_MAX_CHARS {
-        return;
-    }
     match value {
         serde_json::Value::String(value) => {
             push_recall_text(output, " ");
@@ -321,18 +403,20 @@ pub fn event_recall_document_with_retired(
         &serde_json::Value::Object(event.payload.clone()),
         &mut readable,
     );
-    let searchable_text = segment_recall_text(&readable);
+    let searchable_chunks = segment_recall_chunks(&readable);
+    let searchable_text = searchable_chunks.first().cloned().unwrap_or_default();
     let preview = readable
         .chars()
         .take(RECALL_PREVIEW_MAX_CHARS)
         .collect::<String>();
-    let state_hash = recall_state_hash(&searchable_text, retired);
+    let state_hash = recall_chunks_state_hash(&searchable_chunks, retired);
     RecallDocument {
         context_id: context_id.to_string(),
         document_kind: RecallDocumentKind::Event,
         document_id: event.id.clone(),
         revision: 0,
         searchable_text,
+        searchable_chunks,
         preview,
         retired,
         updated_sequence: sequence,
@@ -344,18 +428,31 @@ pub fn event_recall_document_with_retired(
 /// Context domain. The hash is recomputed so a bounded Projection remains
 /// deterministic and rebuildable.
 pub fn bound_recall_document(mut document: RecallDocument) -> RecallDocument {
+    if document.searchable_chunks.is_empty() {
+        document.searchable_chunks = chunk_segmented_recall_text(&document.searchable_text);
+    }
     document.searchable_text = document
-        .searchable_text
-        .chars()
-        .take(RECALL_SEARCHABLE_TEXT_MAX_CHARS)
-        .collect();
+        .searchable_chunks
+        .first()
+        .cloned()
+        .unwrap_or_default();
     document.preview = document
         .preview
         .chars()
         .take(RECALL_PREVIEW_MAX_CHARS)
         .collect();
-    document.state_hash = recall_state_hash(&document.searchable_text, document.retired);
+    document.state_hash = recall_chunks_state_hash(&document.searchable_chunks, document.retired);
     document
+}
+
+pub fn recall_chunks_state_hash(chunks: &[String], retired: bool) -> String {
+    let mut digest = sha2::Sha256::new();
+    digest.update(if retired { b"1\0" } else { b"0\0" });
+    for chunk in chunks {
+        digest.update(chunk.as_bytes());
+        digest.update(b"\0");
+    }
+    format!("{:x}", digest.finalize())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4005,6 +4102,14 @@ pub trait RecallProjectionStore: Send + Sync {
         context_id: &str,
         normalized_query: &str,
         limit: usize,
+    ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Searches the Recall projection with optional lexical and authoritative
+    /// Ledger-time constraints. Time-filtered results are ordered by immutable
+    /// Event sequence and use an exclusive `before_sequence` cursor.
+    async fn query_recall_documents(
+        &self,
+        request: RecallDocumentSearchRequest,
     ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Replaces the complete rebuildable index for one Context. This is an

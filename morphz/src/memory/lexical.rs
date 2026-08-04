@@ -10,7 +10,9 @@
 //! through [`segment_recall_terms`]. Anything that segments text by another
 //! route will silently stop matching the stored Projection.
 
-use crate::memory::{normalize_recall_text, RECALL_SEARCHABLE_TEXT_MAX_CHARS};
+use crate::memory::{
+    normalize_recall_text, RECALL_SEARCHABLE_TEXT_MAX_CHARS, RECALL_SEARCH_CHUNK_OVERLAP_TERMS,
+};
 use icu_segmenter::WordSegmenter;
 
 /// Identifies the segmentation contract inside `RecallIndexCapability`.
@@ -56,25 +58,93 @@ pub fn recall_phrase_request(normalized_query: &str) -> (&str, bool) {
     }
 }
 
-/// Renders the whitespace-joined form written to the physical index.
+/// Renders every lexical term into bounded physical-index chunks.
 ///
-/// The storage bound is applied on whole terms so a truncated document never
-/// ends in a partial term that matches nothing.
-pub fn segment_recall_text(raw: &str) -> String {
-    let mut output = String::new();
-    for term in segment_recall_terms(raw) {
-        let separator = usize::from(!output.is_empty());
-        if output.chars().count() + separator + term.chars().count()
-            > RECALL_SEARCHABLE_TEXT_MAX_CHARS
+/// A Recall document is one logical result but may occupy many physical rows.
+/// Adjacent chunks repeat a small number of whole terms so a phrase crossing a
+/// boundary remains discoverable. No suffix of a long Event or Frame is
+/// discarded merely because its first chunk reached the storage bound.
+pub fn segment_recall_chunks(raw: &str) -> Vec<String> {
+    chunk_segmented_recall_terms(segment_recall_terms(raw))
+}
+
+/// Chunks text that has already passed through the Runtime segmenter. This is
+/// used only for compatibility with pre-chunk Recall documents and migrations.
+pub fn chunk_segmented_recall_text(segmented: &str) -> Vec<String> {
+    chunk_segmented_recall_terms(
+        segmented
+            .split_whitespace()
+            .filter(|term| !term.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+fn chunk_segmented_recall_terms(terms: Vec<String>) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = Vec::<String>::new();
+    let mut current_chars = 0_usize;
+
+    for term in terms {
+        let term_chars = term.chars().count();
+        let separator = usize::from(!current.is_empty());
+        if !current.is_empty()
+            && current_chars + separator + term_chars > RECALL_SEARCHABLE_TEXT_MAX_CHARS
         {
-            break;
+            chunks.push(current.join(" "));
+            current = current
+                .into_iter()
+                .rev()
+                .take(RECALL_SEARCH_CHUNK_OVERLAP_TERMS)
+                .collect::<Vec<_>>();
+            current.reverse();
+            current_chars = current
+                .iter()
+                .map(|term| term.chars().count())
+                .sum::<usize>()
+                + current.len().saturating_sub(1);
+            while !current.is_empty()
+                && current_chars + 1 + term_chars > RECALL_SEARCHABLE_TEXT_MAX_CHARS
+            {
+                let removed = current.remove(0);
+                current_chars = current_chars
+                    .saturating_sub(removed.chars().count())
+                    .saturating_sub(usize::from(!current.is_empty()));
+            }
         }
-        if separator == 1 {
-            output.push(' ');
+
+        if term_chars > RECALL_SEARCHABLE_TEXT_MAX_CHARS {
+            if !current.is_empty() {
+                chunks.push(current.join(" "));
+                current.clear();
+                current_chars = 0;
+            }
+            let chars = term.chars().collect::<Vec<_>>();
+            for slice in chars.chunks(RECALL_SEARCHABLE_TEXT_MAX_CHARS) {
+                chunks.push(slice.iter().collect());
+            }
+            continue;
         }
-        output.push_str(&term);
+
+        if !current.is_empty() {
+            current_chars += 1;
+        }
+        current_chars += term_chars;
+        current.push(term);
     }
-    output
+    if !current.is_empty() {
+        chunks.push(current.join(" "));
+    }
+    chunks
+}
+
+/// Compatibility view used by callers that need one bounded string. New
+/// Recall documents persist all chunks through [`segment_recall_chunks`].
+pub fn segment_recall_text(raw: &str) -> String {
+    segment_recall_chunks(raw)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -136,11 +206,27 @@ mod tests {
     }
 
     #[test]
-    fn storage_bound_truncates_on_whole_terms() {
+    fn storage_bound_chunks_on_whole_terms_without_losing_the_suffix() {
         let text = "权限 ".repeat(RECALL_SEARCHABLE_TEXT_MAX_CHARS);
-        let indexed = segment_recall_text(&text);
-        assert!(indexed.chars().count() <= RECALL_SEARCHABLE_TEXT_MAX_CHARS);
-        assert!(indexed.split_whitespace().all(|term| term == "权限"));
+        let chunks = segment_recall_chunks(&text);
+        assert!(chunks.len() > 1);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.chars().count() <= RECALL_SEARCHABLE_TEXT_MAX_CHARS));
+        assert!(chunks
+            .iter()
+            .flat_map(|chunk| chunk.split_whitespace())
+            .all(|term| term == "权限"));
+        assert!(chunks.last().unwrap().contains("权限"));
+    }
+
+    #[test]
+    fn adjacent_chunks_overlap_to_preserve_boundary_phrases() {
+        let prefix = "甲".repeat(RECALL_SEARCHABLE_TEXT_MAX_CHARS - " boundary".chars().count());
+        let chunks = chunk_segmented_recall_text(&format!("{prefix} boundary phrase"));
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].ends_with("boundary"));
+        assert!(chunks[1].starts_with("boundary phrase"));
     }
 
     #[test]
