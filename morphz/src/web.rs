@@ -1179,7 +1179,18 @@ async fn handle_status(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    Json(state.sdk.runtime_status()).into_response()
+    let mut status = state.sdk.runtime_status();
+    match state.runtime.inference_model_options().await {
+        Ok(options) => {
+            status.models = options.iter().map(|option| option.id.clone()).collect();
+            status.model_options = options;
+        }
+        Err(error) => {
+            status.models.clear();
+            status.model_catalog_error = Some(error.to_string());
+        }
+    }
+    Json(status).into_response()
 }
 
 async fn handle_list_managed_secrets(
@@ -2301,9 +2312,19 @@ async fn handle_get_inference(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let options = match state.runtime.inference_model_options().await {
+        Ok(options) => options,
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("无法读取已发现并启用的模型目录：{error}"),
+            )
+        }
+    };
     Json(json!({
         "model": state.runtime.model(),
-        "models": state.runtime.configured_models(),
+        "models": options.iter().map(|option| option.id.clone()).collect::<Vec<_>>(),
+        "model_options": options,
         "reasoning_effort": state.runtime.reasoning_effort().map(ReasoningEffort::as_str),
         "prompt_token_limit": state.runtime.model_context_capacity().prompt_token_limit,
     }))
@@ -2321,15 +2342,19 @@ async fn handle_update_inference(
     }
     let current_model = state.runtime.model();
     let model = request.model.as_deref().unwrap_or(&current_model).trim();
-    if !state
-        .runtime
-        .configured_models()
-        .iter()
-        .any(|configured| configured == model)
-    {
+    let model_options = match state.runtime.inference_model_options().await {
+        Ok(options) => options,
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("无法读取已发现并启用的模型目录：{error}"),
+            )
+        }
+    };
+    if request.model.is_some() && !model_options.iter().any(|option| option.id == model) {
         return error_response(
             StatusCode::BAD_REQUEST,
-            format!("模型 '{model}' 尚未启用，拒绝运行期切换"),
+            format!("模型 '{model}' 不在已发现并启用的模型目录中，拒绝运行期切换"),
         );
     }
     let effort = match request.reasoning_effort.as_deref().map(str::trim) {
@@ -2388,7 +2413,8 @@ async fn handle_update_inference(
     }
     Json(json!({
         "model": state.runtime.model(),
-        "models": state.runtime.configured_models(),
+        "models": model_options.iter().map(|option| option.id.clone()).collect::<Vec<_>>(),
+        "model_options": model_options,
         "reasoning_effort": effort.map(ReasoningEffort::as_str),
         "prompt_token_limit": state.runtime.model_context_capacity().prompt_token_limit,
         "scope": "subsequent_requests",
@@ -5824,7 +5850,8 @@ mod tests {
         Client, Message, ModelStreamEvent, ModelStreamSender, PromptTokenCount, ReasoningEffort,
         Response, ToolDefinition,
     };
-    use crate::memory::{ScheduleStore as _, ThreadStore as _};
+    use crate::memory::sqlite::SqliteStore;
+    use crate::memory::{ProviderModelCatalogStore as _, ScheduleStore as _, ThreadStore as _};
     use crate::provider::auth::{
         AdapterLoginResult, AdapterLoginStart, AuthAdapter, AuthAdapterRegistry, OAuthCallbackMode,
         OAuthFlowKind, OAuthLoginProgress, OAuthTokenSet, RequestAuthorization,
@@ -7116,6 +7143,10 @@ mod tests {
                     protocol: crate::config::ModelProtocol::OpenaiResponses,
                     base_url: "https://models.example.test/v1".to_string(),
                     accounts: vec!["subscription-account".to_string()],
+                    models: BTreeMap::from([(
+                        "invented-default".to_string(),
+                        crate::config::ProviderModelConfig::default(),
+                    )]),
                     ..ProviderInstanceConfig::default()
                 },
                 account_id: "subscription-account".to_string(),
@@ -7131,7 +7162,7 @@ mod tests {
                     candidates: vec![crate::config::ModelRouteCandidateConfig {
                         provider: "subscription-provider".to_string(),
                         account: Some("subscription-account".to_string()),
-                        model: "physical-subscription-model".to_string(),
+                        model: "invented-default".to_string(),
                         ..crate::config::ModelRouteCandidateConfig::default()
                     }],
                     ..ModelRouteConfig::default()
@@ -7144,6 +7175,29 @@ mod tests {
         assert!(runtime
             .configured_models()
             .contains(&"subscription-model".to_string()));
+
+        let before_discovery = runtime.inference_model_options().await.unwrap();
+        assert!(before_discovery
+            .iter()
+            .all(|option| option.id != "subscription-model" && option.label != "invented-default"));
+
+        let projection = SqliteStore::new(database_path.to_str().unwrap())
+            .await
+            .unwrap();
+        projection
+            .replace_provider_model_catalog(
+                "subscription-provider",
+                "subscription-account",
+                "openai-compatible",
+                "test",
+                "openai-responses",
+                "remote_provider",
+                &["physical-subscription-model".to_string()],
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        drop(projection);
 
         let saved = handle_put_provider_account_models(
             State(Arc::clone(&state)),
@@ -7163,12 +7217,44 @@ mod tests {
         .into_response();
         assert_eq!(saved.status(), StatusCode::OK);
 
+        let after_enablement = runtime.inference_model_options().await.unwrap();
+        let physical = after_enablement
+            .iter()
+            .find(|option| option.label == "physical-subscription-model")
+            .unwrap();
+        assert_eq!(physical.id, "physical-subscription-model");
+        assert_eq!(physical.physical_models, ["physical-subscription-model"]);
+        assert!(after_enablement
+            .iter()
+            .all(|option| option.id != "subscription-model" && option.label != "invented-default"));
+
+        let status_response = handle_status(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_body = axum::body::to_bytes(status_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status: crate::runtime::RuntimeStatus = serde_json::from_slice(&status_body).unwrap();
+        assert!(status
+            .models
+            .contains(&"physical-subscription-model".to_string()));
+        assert!(status
+            .model_options
+            .iter()
+            .any(|option| option.label == "physical-subscription-model"));
+        assert!(!status.models.contains(&"subscription-model".to_string()));
+
         let switched = handle_update_inference(
             State(state),
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(UpdateInferenceRequest {
-                model: Some("subscription-model".to_string()),
+                model: Some("physical-subscription-model".to_string()),
                 reasoning_effort: None,
                 prompt_token_limit: None,
             }),
@@ -7176,7 +7262,7 @@ mod tests {
         .await
         .into_response();
         assert_eq!(switched.status(), StatusCode::OK);
-        assert_eq!(runtime.model(), "subscription-model");
+        assert_eq!(runtime.model(), "physical-subscription-model");
         assert_eq!(runtime.model_context_capacity().prompt_token_limit, 196_000);
         assert_eq!(
             runtime.model_context_capacity().source,
@@ -7191,7 +7277,7 @@ mod tests {
                 .context_window_tokens,
             Some(200_000)
         );
-        assert_eq!(managed.llm.model, "subscription-model");
+        assert_eq!(managed.llm.model, "physical-subscription-model");
     }
 
     #[tokio::test]
@@ -7604,6 +7690,30 @@ mod tests {
         let legacy_account = legacy.auth_accounts.get(&setup.account_id).unwrap();
         assert!(!legacy_account.authenticated);
         assert!(legacy_account.state.is_none());
+
+        let projection = SqliteStore::new(database_path.to_str().unwrap())
+            .await
+            .unwrap();
+        projection
+            .replace_provider_model_catalog(
+                &setup.provider_id,
+                &setup.account_id,
+                &setup.provider_adapter,
+                "test",
+                setup.protocol.as_str(),
+                "remote_provider",
+                &[legacy_model.to_string()],
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        drop(projection);
+        assert!(runtime
+            .inference_model_options()
+            .await
+            .unwrap()
+            .iter()
+            .all(|option| option.id != legacy_route_id));
 
         let response = handle_provider_control_snapshot(
             State(Arc::clone(&state)),

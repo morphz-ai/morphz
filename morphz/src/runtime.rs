@@ -765,6 +765,13 @@ pub struct RuntimeStatus {
     pub principal_id: String,
     pub model: String,
     pub models: Vec<String>,
+    /// Dashboard-facing choices. `id` is the stable route value submitted
+    /// back to Runtime; `label` and `physical_models` contain only actual
+    /// enabled physical models, never an operator alias presented as a model.
+    #[serde(default)]
+    pub model_options: Vec<InferenceModelOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_catalog_error: Option<String>,
     pub provider: Option<String>,
     pub reasoning_effort: Option<String>,
     pub tool_count: usize,
@@ -773,6 +780,19 @@ pub struct RuntimeStatus {
     pub permission_mode: crate::permission::PermissionMode,
     pub sandbox_mode: SandboxMode,
     pub reviewer: ReviewerKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InferenceModelOption {
+    pub id: String,
+    pub label: String,
+    pub physical_models: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// `remote_catalog` means the physical model was both discovered and
+    /// explicitly enabled. `manual` is a direct operator-supplied LLM model
+    /// that does not resolve through a managed Model Route.
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -2426,6 +2446,118 @@ impl MorphzRuntime {
         models.sort();
         models.dedup();
         models
+    }
+
+    /// Build the conversation model selector from the authoritative remote
+    /// catalog intersected with explicit operator enablement. Model Route IDs
+    /// remain control values, but are never exposed as if they were physical
+    /// model names.
+    pub async fn inference_model_options(&self) -> Result<Vec<InferenceModelOption>, RuntimeError> {
+        let config = self.provider_catalog_config()?;
+        let snapshot = self.provider_control_snapshot().await?;
+        let discovered = snapshot
+            .discovered_models
+            .iter()
+            .map(|record| {
+                (
+                    record.provider_instance_id.as_str(),
+                    record.auth_account_id.as_str(),
+                    record.physical_model.as_str(),
+                )
+            })
+            .collect::<HashSet<_>>();
+        let routed_names = config
+            .model_routes
+            .iter()
+            .flat_map(|(route_id, route)| {
+                std::iter::once(route_id.as_str()).chain(route.aliases.iter().map(String::as_str))
+            })
+            .collect::<HashSet<_>>();
+        let mut options = Vec::new();
+
+        for (route_id, route) in &snapshot.model_routes {
+            let mut physical_models = route
+                .candidates
+                .iter()
+                .filter_map(|candidate| {
+                    let provider = snapshot.provider_instances.get(&candidate.provider)?;
+                    if !provider.models.contains_key(&candidate.model) {
+                        return None;
+                    }
+                    let discovered_for_enabled_account =
+                        match candidate.account.as_deref() {
+                            Some(account_id) => {
+                                snapshot
+                                    .auth_accounts
+                                    .get(account_id)
+                                    .is_some_and(|account| {
+                                        account.effective_enabled
+                                            && (!account.oauth || account.authenticated)
+                                    })
+                                    && discovered.contains(&(
+                                        candidate.provider.as_str(),
+                                        account_id,
+                                        candidate.model.as_str(),
+                                    ))
+                            }
+                            None => discovered.iter().any(
+                                |(provider_id, account_id, physical_model)| {
+                                    *provider_id == candidate.provider
+                                        && *physical_model == candidate.model
+                                        && snapshot.auth_accounts.get(*account_id).is_some_and(
+                                            |account| {
+                                                account.effective_enabled
+                                                    && (!account.oauth || account.authenticated)
+                                            },
+                                        )
+                                },
+                            ),
+                        };
+                    discovered_for_enabled_account.then(|| candidate.model.clone())
+                })
+                .collect::<Vec<_>>();
+            physical_models.sort();
+            physical_models.dedup();
+            if physical_models.is_empty() {
+                continue;
+            }
+            options.push(InferenceModelOption {
+                id: route_id.clone(),
+                label: physical_models.join(" / "),
+                physical_models,
+                aliases: route.aliases.clone(),
+                source: "remote_catalog".to_string(),
+            });
+        }
+
+        // Preserve direct, explicitly entered models that do not resolve to a
+        // managed route. They are already physical names supplied by the
+        // operator, not guessed aliases manufactured by OAuth setup.
+        for model in config
+            .llm
+            .models
+            .iter()
+            .chain(std::iter::once(&config.llm.model))
+            .map(|model| model.trim())
+            .filter(|model| !model.is_empty() && !routed_names.contains(*model))
+        {
+            if options.iter().any(|option| option.id == model) {
+                continue;
+            }
+            options.push(InferenceModelOption {
+                id: model.to_string(),
+                label: model.to_string(),
+                physical_models: vec![model.to_string()],
+                aliases: Vec::new(),
+                source: "manual".to_string(),
+            });
+        }
+        options.sort_by(|left, right| {
+            left.label
+                .cmp(&right.label)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(options)
     }
 
     pub fn set_model(&self, model: &str) -> Result<(), RuntimeError> {
@@ -6283,6 +6415,8 @@ impl MorphzRuntime {
             principal_id: self.inner.identity.principal_id.clone(),
             model: self.model(),
             models: self.configured_models(),
+            model_options: Vec::new(),
+            model_catalog_error: None,
             provider: self.inner.config.llm.provider.clone(),
             reasoning_effort: self
                 .reasoning_effort()

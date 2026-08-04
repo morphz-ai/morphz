@@ -1,5 +1,6 @@
 use crate::config::{
-    morphz_home_dir, save_managed_provider_catalog, AppConfig, AuthAccountConfig, CredentialConfig,
+    managed_config_path, morphz_home_dir, save_managed_provider_account_at,
+    save_managed_provider_catalog, AppConfig, AuthAccountConfig, CredentialConfig,
     CredentialSource, ModelProtocol, ModelRouteAffinity, ModelRouteCandidateConfig,
     ModelRouteConfig, ModelRouteSelection, ProviderConfig, ProviderInstanceConfig,
 };
@@ -48,8 +49,6 @@ struct ProviderPreset {
     base_url: String,
     env_name: &'static str,
     oauth_adapter: Option<&'static str>,
-    default_model: Option<&'static str>,
-    default_alias: Option<&'static str>,
 }
 
 fn presets() -> Vec<ProviderPreset> {
@@ -62,8 +61,6 @@ fn presets() -> Vec<ProviderPreset> {
             base_url: catalog["openai"].base_url.clone(),
             env_name: "OPENAI_API_KEY",
             oauth_adapter: None,
-            default_model: None,
-            default_alias: None,
         },
         ProviderPreset {
             id: "codex-subscription",
@@ -72,8 +69,6 @@ fn presets() -> Vec<ProviderPreset> {
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
             env_name: "",
             oauth_adapter: Some("codex-oauth"),
-            default_model: Some("gpt-5.6"),
-            default_alias: Some("gpt-5.6"),
         },
         ProviderPreset {
             id: "anthropic",
@@ -82,8 +77,6 @@ fn presets() -> Vec<ProviderPreset> {
             base_url: catalog["anthropic"].base_url.clone(),
             env_name: "ANTHROPIC_API_KEY",
             oauth_adapter: None,
-            default_model: None,
-            default_alias: None,
         },
         ProviderPreset {
             id: "gemini",
@@ -92,8 +85,6 @@ fn presets() -> Vec<ProviderPreset> {
             base_url: catalog["gemini"].base_url.clone(),
             env_name: "GEMINI_API_KEY",
             oauth_adapter: None,
-            default_model: None,
-            default_alias: None,
         },
         ProviderPreset {
             id: "kimi-code",
@@ -102,8 +93,6 @@ fn presets() -> Vec<ProviderPreset> {
             base_url: "https://api.kimi.com/coding/v1".to_string(),
             env_name: "",
             oauth_adapter: Some("kimi-oauth"),
-            default_model: Some("k3"),
-            default_alias: Some("kimi-k3"),
         },
     ]
 }
@@ -817,39 +806,29 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
         .await?;
 
     ui.step = 2;
-    let (
-        provider_id,
-        provider_adapter,
-        protocol,
-        base_url,
-        default_env,
-        oauth_adapter,
-        default_model,
-        default_alias,
-    ) = if let Some(preset) = catalog.get(provider_choice) {
-        (
-            preset.id.to_string(),
-            preset.adapter.to_string(),
-            preset.protocol,
-            preset.base_url.clone(),
-            preset.env_name.to_string(),
-            preset.oauth_adapter.map(str::to_string),
-            preset.default_model.map(str::to_string),
-            preset.default_alias.map(str::to_string),
-        )
-    } else {
-        let provider_id = ui
-            .input(
-                locale.text("Provider ID", "服务商标识"),
-                locale.text(
-                    "A stable configuration name, for example local-proxy.",
-                    "配置中使用的稳定名称，例如 local-proxy。",
-                ),
-                Some("custom"),
-                false,
+    let (provider_id, provider_adapter, protocol, base_url, default_env, oauth_adapter) =
+        if let Some(preset) = catalog.get(provider_choice) {
+            (
+                preset.id.to_string(),
+                preset.adapter.to_string(),
+                preset.protocol,
+                preset.base_url.clone(),
+                preset.env_name.to_string(),
+                preset.oauth_adapter.map(str::to_string),
             )
-            .await?;
-        let protocol_choice = ui
+        } else {
+            let provider_id = ui
+                .input(
+                    locale.text("Provider ID", "服务商标识"),
+                    locale.text(
+                        "A stable configuration name, for example local-proxy.",
+                        "配置中使用的稳定名称，例如 local-proxy。",
+                    ),
+                    Some("custom"),
+                    false,
+                )
+                .await?;
+            let protocol_choice = ui
                 .choose(
                     locale.text("Choose a protocol", "选择通信协议"),
                     locale.text(
@@ -865,13 +844,13 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
                     1,
                 )
                 .await?;
-        let protocol = [
-            ModelProtocol::OpenaiResponses,
-            ModelProtocol::OpenaiChat,
-            ModelProtocol::AnthropicMessages,
-            ModelProtocol::GeminiContent,
-        ][protocol_choice];
-        let base_url = ui
+            let protocol = [
+                ModelProtocol::OpenaiResponses,
+                ModelProtocol::OpenaiChat,
+                ModelProtocol::AnthropicMessages,
+                ModelProtocol::GeminiContent,
+            ][protocol_choice];
+            let base_url = ui
                 .input(
                     locale.text("Provider URL", "服务商地址"),
                     locale.text(
@@ -882,17 +861,15 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
                     false,
                 )
                 .await?;
-        (
-            provider_id,
-            "protocol-compatible".to_string(),
-            protocol,
-            base_url,
-            "MORPHZ_PROVIDER_API_KEY".to_string(),
-            None,
-            None,
-            None,
-        )
-    };
+            (
+                provider_id,
+                "protocol-compatible".to_string(),
+                protocol,
+                base_url,
+                "MORPHZ_PROVIDER_API_KEY".to_string(),
+                None,
+            )
+        };
 
     ui.step = 3;
     let credential_id = provider_id.clone();
@@ -910,39 +887,17 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
 
     let (model, route_id, connection_verified, verification_message) = if oauth_adapter.is_some() {
         ui.step = 4;
-        let model = ui
-            .input(
-                locale.text("Provider model ID", "服务商模型标识"),
-                locale.text(
-                    "Use the exact physical model ID accepted by the subscription endpoint.",
-                    "填写订阅接口实际接受的物理模型标识。",
-                ),
-                default_model.as_deref(),
-                false,
-            )
-            .await?;
-        let route_id = ui
-            .input(
-                locale.text("Model alias", "模型别名"),
-                locale.text(
-                    "Runtime evaluations use this stable alias; it may differ from the Provider model ID.",
-                    "Runtime 求值使用这个稳定别名，它可以与服务商模型标识不同。",
-                ),
-                default_alias.as_deref().or(Some(model.as_str())),
-                false,
-            )
-            .await?;
         let account_id = format!("{provider_id}-default");
         let verification_message = if locale.is_chinese() {
             format!(
-                "OAuth Provider 图已保存。接下来 Morphz 将通过 Runtime 的统一账号生命周期启动登录。授权完成后可运行：\n\n  morphz model route test {route_id} --account {account_id}\n\n以后如需重新登录，可运行：\n\n  morphz provider account login {account_id}"
+                "OAuth Provider 与账号已保存，但尚未创建任何模型或路由。接下来 Morphz 将通过 Runtime 的统一账号生命周期启动登录。授权成功后，请在 Dashboard 的“身份与模型”页面为该账号加载真实模型目录并选择启用项。\n\n以后如需重新登录，可运行：\n\n  morphz provider account login {account_id}"
             )
         } else {
             format!(
-                "The OAuth provider graph is saved. Morphz will now start login through the Runtime's unified account lifecycle. After authorization, you can run:\n\n  morphz model route test {route_id} --account {account_id}\n\nTo sign in again later, run:\n\n  morphz provider account login {account_id}"
+                "The OAuth Provider and account are saved, but no model or route has been invented. Morphz will now start login through the Runtime's unified account lifecycle. After authorization, open Identity & Models in Dashboard to load the account's real model catalog and enable models.\n\nTo sign in again later, run:\n\n  morphz provider account login {account_id}"
             )
         };
-        (model, route_id, false, verification_message)
+        (String::new(), String::new(), false, verification_message)
     } else {
         let provider = ProviderConfig {
             protocol,
@@ -1090,38 +1045,48 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
         accounts: vec![account_id.clone()],
         ..ProviderInstanceConfig::default()
     };
-    let route = ModelRouteConfig {
-        aliases: Vec::new(),
-        candidates: vec![ModelRouteCandidateConfig {
-            provider: provider_id.clone(),
-            model: model.clone(),
-            priority: 0,
-            account: None,
-            capabilities: Vec::new(),
-        }],
-        affinity: ModelRouteAffinity::Context,
-        selection: ModelRouteSelection::AvailableLeastRecentlyUsed,
-        fallback: false,
+    let config_path = if oauth_adapter.is_some() {
+        let path = managed_config_path()?;
+        save_managed_provider_account_at(&path, &provider_id, &instance, &account_id, &account)?;
+        path
+    } else {
+        let route = ModelRouteConfig {
+            aliases: Vec::new(),
+            candidates: vec![ModelRouteCandidateConfig {
+                provider: provider_id.clone(),
+                model: model.clone(),
+                priority: 0,
+                account: None,
+                capabilities: Vec::new(),
+            }],
+            affinity: ModelRouteAffinity::Context,
+            selection: ModelRouteSelection::AvailableLeastRecentlyUsed,
+            fallback: false,
+        };
+        save_managed_provider_catalog(
+            &provider_id,
+            &instance,
+            &account_id,
+            &account,
+            credential
+                .as_ref()
+                .filter(|credential| credential.source != CredentialSource::None)
+                .map(|credential| (credential_id.as_str(), credential)),
+            &route_id,
+            &route,
+        )?
     };
-    let config_path = save_managed_provider_catalog(
-        &provider_id,
-        &instance,
-        &account_id,
-        &account,
-        credential
-            .as_ref()
-            .filter(|credential| credential.source != CredentialSource::None)
-            .map(|credential| (credential_id.as_str(), credential)),
-        &route_id,
-        &route,
-    )?;
     ui.acknowledge(
         if connection_verified {
             locale.text("Setup complete", "设置完成")
         } else {
             locale.text("Configuration saved", "配置已保存")
         },
-        &format!("{} · {} · {}", provider_id, protocol.as_str(), route_id),
+        &if route_id.is_empty() {
+            format!("{} · {}", provider_id, protocol.as_str())
+        } else {
+            format!("{} · {} · {}", provider_id, protocol.as_str(), route_id)
+        },
         &format!(
             "{verification_message}\n\n{}：{}",
             locale.text("Configuration", "配置文件"),
@@ -1589,14 +1554,11 @@ mod tests {
         assert_eq!(presets[0].protocol, ModelProtocol::OpenaiResponses);
         assert_eq!(presets[1].adapter, "openai-codex");
         assert_eq!(presets[1].oauth_adapter, Some("codex-oauth"));
-        assert_eq!(presets[1].default_model, Some("gpt-5.6"));
         assert_eq!(presets[2].protocol, ModelProtocol::AnthropicMessages);
         assert_eq!(presets[3].protocol, ModelProtocol::GeminiContent);
         assert_eq!(presets[4].adapter, "kimi-code");
         assert_eq!(presets[4].protocol, ModelProtocol::OpenaiChat);
         assert_eq!(presets[4].oauth_adapter, Some("kimi-oauth"));
-        assert_eq!(presets[4].default_model, Some("k3"));
-        assert_eq!(presets[4].default_alias, Some("kimi-k3"));
         assert!(presets
             .iter()
             .all(|preset| preset.base_url.starts_with("https://")));

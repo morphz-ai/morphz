@@ -902,6 +902,8 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .reasoning-control:focus-within, .reasoning-control:hover { border-color: var(--line-strong); background: var(--surface); }
 .model-control select:disabled,
 .reasoning-control select:disabled { cursor: wait; opacity: .55; }
+.model-control-empty { align-items: center; cursor: pointer; }
+.model-control-empty:hover { color: var(--text-soft); }
 
 .view-frame { min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
 .conversation-view, .scheduler-view, .cognition-view, .overview-view, .ledger-view, .runtime-view { min-height: 100%; }

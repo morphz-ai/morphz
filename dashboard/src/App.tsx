@@ -825,6 +825,14 @@ function scopedSessionReadPath(path: string, principalId?: string): string {
 
 type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'max'
 
+interface InferenceModelOption {
+  id: string
+  label: string
+  physical_models: string[]
+  aliases?: string[]
+  source: 'remote_catalog' | 'manual'
+}
+
 interface RuntimeStatus {
   generated_at: string
   started: boolean
@@ -843,6 +851,8 @@ interface RuntimeStatus {
   principal_id: string
   model: string
   models: string[]
+  model_options: InferenceModelOption[]
+  model_catalog_error?: string
   provider?: string
   reasoning_effort?: ReasoningEffortSetting | null
   tool_count: number
@@ -5792,6 +5802,11 @@ export default function App() {
     )
   }
 
+  const modelOptions = status?.model_options ?? []
+  const selectedModelOption = modelOptions.find(option => (
+    option.id === status?.model || option.aliases?.includes(status?.model ?? '')
+  ))
+
   return (
     <main className="page-shell" data-accent={accentTheme} data-color-mode={resolvedAppearanceMode}>
       <section className={`morphz-shell ${immersiveMode ? 'is-immersive' : ''}`} data-accent={accentTheme} data-view={view}>
@@ -5992,20 +6007,33 @@ export default function App() {
                 </div>
               )}
             </div>
-            <label className="model-control" title={t('model.selectorTitle')}>
-              <Bot size={15} />
-              <span>{t('model.selector').toUpperCase()}</span>
-              <select
-                aria-label={t('model.selector')}
-                disabled={changingModel || !status?.models?.length}
-                value={status?.model ?? ''}
-                onChange={event => void changeModel(event.target.value)}
+            {modelOptions.length > 0 ? (
+              <label className="model-control" title={t('model.selectorTitle')}>
+                <Bot size={15} />
+                <span>{t('model.selector').toUpperCase()}</span>
+                <select
+                  aria-label={t('model.selector')}
+                  disabled={changingModel}
+                  value={selectedModelOption?.id ?? ''}
+                  onChange={event => void changeModel(event.target.value)}
+                >
+                  {!selectedModelOption && <option value="" disabled>{t('model.chooseAvailable')}</option>}
+                  {modelOptions.map(option => (
+                    <option key={option.id} value={option.id}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <button
+                className="model-control model-control-empty"
+                type="button"
+                title={status?.model_catalog_error || t('model.manageModelsHint')}
+                onClick={() => setView('providers')}
               >
-                {(status?.models ?? (status?.model ? [status.model] : [])).map(model => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </select>
-            </label>
+                <Bot size={15} />
+                <span>{t('model.manageModels').toUpperCase()}</span>
+              </button>
+            )}
             <div className="context-budget-selector" ref={contextTokenBudgetRef}>
               <button
                 className={`theme-button context-budget-button ${contextTokenBudgetOpen ? 'is-active' : ''}`}

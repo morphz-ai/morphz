@@ -651,6 +651,9 @@
   "model": {
     "selector": "Model",
     "selectorTitle": "Switch the model for subsequent requests; active requests are unchanged",
+    "chooseAvailable": "Choose a discovered model",
+    "manageModels": "Manage models",
+    "manageModelsHint": "No discovered and enabled model is available. Open Identity & Models to load and enable models for a signed-in account.",
     "unavailable": "model unavailable",
     "tokens": "{{used}} / {{limit}}",
     "pressureTokens": "Estimated prompt pressure: {{used}} / {{limit}} · {{source}}",

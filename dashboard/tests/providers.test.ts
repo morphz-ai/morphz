@@ -8,6 +8,7 @@ const providersSource = readFileSync(
   new URL('../src/pages/ProvidersPage.tsx', import.meta.url),
   'utf8',
 )
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 
 function attempt(eventId: string, timestamp: string, routeId: string, routeRevision: string): ModelUsageRecord {
   return {
@@ -100,6 +101,14 @@ test('authenticated accounts discover and explicitly enable models outside the l
   assert.match(providersSource, /\/api\/runtime\/providers\/accounts\/\$\{encodeURIComponent\(modelEditor\.accountId\)\}\/models/)
   assert.match(providersSource, /providers\.modelCapacityAdvanced/)
   assert.match(providersSource, /placeholder=\{t\('providers\.automatic'\)\}/)
+})
+
+test('conversation selector renders physical catalog labels instead of route aliases', () => {
+  assert.match(appSource, /status\?\.model_options/)
+  assert.match(appSource, /<option key=\{option\.id\} value=\{option\.id\}>\{option\.label\}<\/option>/)
+  assert.doesNotMatch(appSource, /\(status\?\.models \?\? \(status\?\.model/)
+  assert.match(appSource, /model\.manageModels/)
+  assert.match(appSource, /setView\('providers'\)/)
 })
 
 test('provider setup only presents OAuth services whose complete Runtime bootstrap is published', () => {
