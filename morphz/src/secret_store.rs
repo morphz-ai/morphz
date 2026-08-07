@@ -5,7 +5,7 @@
 //! credential explicitly records its value backend; Morphz never silently
 //! changes storage when a backend is unavailable.
 
-use crate::config::{host_env_path, morphz_home_dir};
+use crate::config::{host_env_path, host_state_path};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -346,8 +346,7 @@ impl std::fmt::Debug for SecretStore {
 
 impl SecretStore {
     pub fn native_default() -> Result<Self, String> {
-        let catalog_path = morphz_home_dir()
-            .map(|path| path.join("managed-secrets.json"))
+        let catalog_path = host_state_path("managed-secrets.json")
             .ok_or_else(|| "无法确定 Morphz 用户配置目录".to_string())?;
         let env_path = host_env_path().ok_or_else(|| "无法确定 Morphz 用户环境文件".to_string())?;
         let native: Arc<dyn SecretValueBackend> = Arc::new(NativeKeyringSecretBackend);

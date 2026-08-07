@@ -789,9 +789,9 @@ pub struct InferenceModelOption {
     pub physical_models: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
-    /// `remote_catalog` means the physical model was both discovered and
-    /// explicitly enabled. `manual` is a direct operator-supplied LLM model
-    /// that does not resolve through a managed Model Route.
+    /// `configured` means the physical model was explicitly enabled in the
+    /// managed Provider catalog. `manual` is a direct operator-supplied LLM
+    /// model that does not resolve through a managed Model Route.
     pub source: String,
 }
 
@@ -2448,24 +2448,15 @@ impl MorphzRuntime {
         models
     }
 
-    /// Build the conversation model selector from the authoritative remote
-    /// catalog intersected with explicit operator enablement. Model Route IDs
-    /// remain control values, but are never exposed as if they were physical
-    /// model names.
+    /// Build the conversation model selector from explicit operator
+    /// enablement. Remote discovery is used to validate new selections, but
+    /// it is observational cache data and must not make an already enabled
+    /// model disappear after a database move, restart, or failed refresh.
+    /// Model Route IDs remain control values, but are never exposed as if they
+    /// were physical model names.
     pub async fn inference_model_options(&self) -> Result<Vec<InferenceModelOption>, RuntimeError> {
         let config = self.provider_catalog_config()?;
         let snapshot = self.provider_control_snapshot().await?;
-        let discovered = snapshot
-            .discovered_models
-            .iter()
-            .map(|record| {
-                (
-                    record.provider_instance_id.as_str(),
-                    record.auth_account_id.as_str(),
-                    record.physical_model.as_str(),
-                )
-            })
-            .collect::<HashSet<_>>();
         let routed_names = config
             .model_routes
             .iter()
@@ -2484,36 +2475,23 @@ impl MorphzRuntime {
                     if !provider.models.contains_key(&candidate.model) {
                         return None;
                     }
-                    let discovered_for_enabled_account =
-                        match candidate.account.as_deref() {
-                            Some(account_id) => {
-                                snapshot
-                                    .auth_accounts
-                                    .get(account_id)
-                                    .is_some_and(|account| {
-                                        account.effective_enabled
-                                            && (!account.oauth || account.authenticated)
-                                    })
-                                    && discovered.contains(&(
-                                        candidate.provider.as_str(),
-                                        account_id,
-                                        candidate.model.as_str(),
-                                    ))
-                            }
-                            None => discovered.iter().any(
-                                |(provider_id, account_id, physical_model)| {
-                                    *provider_id == candidate.provider
-                                        && *physical_model == candidate.model
-                                        && snapshot.auth_accounts.get(*account_id).is_some_and(
-                                            |account| {
-                                                account.effective_enabled
-                                                    && (!account.oauth || account.authenticated)
-                                            },
-                                        )
-                                },
-                            ),
-                        };
-                    discovered_for_enabled_account.then(|| candidate.model.clone())
+                    let account_available = |account_id: &str| {
+                        snapshot
+                            .auth_accounts
+                            .get(account_id)
+                            .is_some_and(|account| {
+                                account.effective_enabled
+                                    && (!account.oauth || account.authenticated)
+                            })
+                    };
+                    let available = match candidate.account.as_deref() {
+                        Some(account_id) => account_available(account_id),
+                        None => provider
+                            .accounts
+                            .iter()
+                            .any(|account_id| account_available(account_id)),
+                    };
+                    available.then(|| candidate.model.clone())
                 })
                 .collect::<Vec<_>>();
             physical_models.sort();
@@ -2535,7 +2513,7 @@ impl MorphzRuntime {
                 label,
                 physical_models,
                 aliases: route.aliases.clone(),
-                source: "remote_catalog".to_string(),
+                source: "configured".to_string(),
             });
         }
 

@@ -830,7 +830,7 @@ interface InferenceModelOption {
   label: string
   physical_models: string[]
   aliases?: string[]
-  source: 'remote_catalog' | 'manual'
+  source: 'configured' | 'manual'
 }
 
 interface RuntimeStatus {
@@ -5806,6 +5806,11 @@ export default function App() {
   const selectedModelOption = modelOptions.find(option => (
     option.id === status?.model || option.aliases?.includes(status?.model ?? '')
   ))
+  const selectedModelLabel = selectedModelOption?.label ?? t('model.unavailable')
+  const contextBudgetModelLabel = modelOptions.find(option => (
+    option.id === contextTokenBudget?.model
+      || option.aliases?.includes(contextTokenBudget?.model ?? '')
+  ))?.label ?? t('model.unavailable')
 
   return (
     <main className="page-shell" data-accent={accentTheme} data-color-mode={resolvedAppearanceMode}>
@@ -6131,7 +6136,7 @@ export default function App() {
                     <span><small>{t('contextBudget.reserve')}</small><strong>{compactTokens(contextTokenBudget.maintenance_reserve_tokens)}</strong></span>
                   </div>
                   <div className="context-budget-source">
-                    <span>{contextTokenBudget.provider ?? t('runtime.providerUnknown')} · {contextTokenBudget.model}</span>
+                    <span>{contextTokenBudget.provider ?? t('runtime.providerUnknown')} · {contextBudgetModelLabel}</span>
                     <code>{contextTokenBudget.capacity_source}</code>
                   </div>
                   {!contextTokenBudgetDraftValid && (
@@ -7687,7 +7692,7 @@ export default function App() {
                     : t('model.costUnavailable'),
                 ].join(' · ')}
               >Σ {compactTokens(modelUsagePage?.totals.total_tokens)}</span>
-              <span className={`model-status ${status?.model ? 'ok' : ''}`}>{status?.model ?? t('model.unavailable')}</span>
+              <span className={`model-status ${selectedModelOption ? 'ok' : ''}`}>{selectedModelLabel}</span>
               <span className="connection-status" title={t('nav.connection')}><i className={`status-dot ${wsStatus === 'connected' ? '' : wsStatus === 'connecting' ? 'connecting' : 'disconnected'}`} />{t(`connection.${wsStatus}`)}</span>
             </div>
           </div>

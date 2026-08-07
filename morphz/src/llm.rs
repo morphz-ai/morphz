@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Runtime-facing classification of a failed physical model request.
@@ -563,6 +564,11 @@ pub struct ModelRouteDiagnostic {
     pub elapsed_ms: u64,
     #[serde(default)]
     pub discovered_models: Vec<String>,
+    /// Exact capacity fields returned alongside the corresponding model row.
+    /// Missing fields remain `None`; the Runtime never fills them from model
+    /// names or a built-in capacity table.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub discovered_model_profiles: BTreeMap<String, crate::config::ProviderModelConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_error: Option<String>,
     pub health_verified: bool,
@@ -585,6 +591,9 @@ pub struct ProviderAccountDiagnostic {
     pub elapsed_ms: u64,
     #[serde(default)]
     pub discovered_models: Vec<String>,
+    /// Exact capacity fields returned alongside the corresponding model row.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub discovered_model_profiles: BTreeMap<String, crate::config::ProviderModelConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1290,7 +1290,7 @@ fn model_command(locale: Locale) -> Command {
                         "Model selection",
                         "模型选择",
                     ))),
-                "Examples:\n  morphz model use claude-sonnet\n  morphz model use anthropic/claude-sonnet",
+                "Examples:\n  morphz model use k3\n  morphz model use coding\n  morphz model use custom/model-name",
             ),
             Command::new("refresh")
                 .about(locale.text(
@@ -2317,9 +2317,9 @@ mod tests {
                 vec!["account-a", "account.toml"],
             ),
             (
-                vec!["model", "route", "set", "gpt-5.6", "route.toml"],
+                vec!["model", "route", "set", "route-alpha", "route.toml"],
                 vec!["model", "route", "set"],
-                vec!["gpt-5.6", "route.toml"],
+                vec!["route-alpha", "route.toml"],
             ),
         ] {
             let invocation = parse(&args);

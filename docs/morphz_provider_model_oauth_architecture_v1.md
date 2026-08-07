@@ -476,53 +476,63 @@ Headless 环境可以显式选择 Morphz `.env` 或企业 Secret Backend，但 O
 
 ## 7. 配置模型
 
-下面是目标语义示例，不代表当前解析器已经支持该格式：
+用户配置统一位于 `~/.morphz/morphz.toml`。文件使用面向操作者的
+`accounts / services / models / targets`；Runtime 内部仍可把 Target 称为
+Candidate，但该术语不泄漏到配置文件：
 
 ```toml
-[provider_instances.codex-subscription]
+[llm]
+model = "cliproxy-default"
+
+[services.codex-subscription]
 adapter = "openai-codex"
 protocol = "openai-responses"
 base_url = "https://chatgpt.com/backend-api/codex"
 accounts = ["codex-personal", "codex-team"]
 
-[auth_accounts.codex-personal]
+[accounts.codex-personal]
 auth_adapter = "codex-oauth"
 credential_ref = "oauth/codex-personal"
-enabled = true
 
-[auth_accounts.codex-team]
+[accounts.codex-team]
 auth_adapter = "codex-oauth"
 credential_ref = "oauth/codex-team"
-enabled = true
 
-[provider_instances.cliproxy-local]
+[services.cliproxy-local]
 adapter = "openai-compatible"
 protocol = "openai-responses"
 base_url = "http://127.0.0.1:8317/v1"
 accounts = ["cliproxy-local-key"]
 
-[auth_accounts.cliproxy-local-key]
+[accounts.cliproxy-local-key]
 auth_adapter = "api-key"
 credential_ref = "provider/cliproxy-local"
 
-[model_routes.gpt-5-6]
-aliases = ["gpt-5.6"]
-affinity = "objective"
-selection = "available-least-recently-used"
+# 单个调用目标直接写在模型表中，不需要数组或默认策略字段。
+[models.cliproxy-default]
+service = "cliproxy-local"
+account = "cliproxy-local-key"
+physical_model = "gpt-5.6-sol"
 
-[[model_routes.gpt-5-6.candidates]]
-provider = "codex-subscription"
-model = "gpt-5.6"
+# 多目标模型才展开 targets，并声明非默认路由策略。
+[models.gpt-5-6]
+aliases = ["gpt-5.6"]
+stickiness = "objective"
+strategy = "least-recently-used"
+
+[[models.gpt-5-6.targets]]
+service = "codex-subscription"
+physical_model = "gpt-5.6"
 priority = 10
 
-[[model_routes.gpt-5-6.candidates]]
-provider = "cliproxy-local"
-model = "gpt-5.6-sol"
+[[models.gpt-5-6.targets]]
+service = "cliproxy-local"
+physical_model = "gpt-5.6-sol"
 priority = 20
 
-[[model_routes.gpt-5-6.candidates]]
-provider = "openrouter"
-model = "openai/gpt-5.6"
+[[models.gpt-5-6.targets]]
+service = "openrouter"
+physical_model = "openai/gpt-5.6"
 priority = 30
 ```
 

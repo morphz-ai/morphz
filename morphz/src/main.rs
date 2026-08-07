@@ -19,6 +19,7 @@ use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMo
 use morphz::provider::auth::{OAuthFlowKind, OAuthLoginCompletion, OAuthLoginProgress};
 use morphz::provider::build_configured_client;
 use morphz::provider::control::ProviderAccountControlAction;
+use morphz::provider::routing::EffectiveProviderCatalog;
 use morphz::provider::{list_provider_models, probe_provider};
 use morphz::runtime::{
     MorphzRuntime, RuntimeEventStream, RuntimeIdentity, SchedulerQuery, SessionHandle,
@@ -1720,7 +1721,7 @@ async fn list_provider_accounts(
         return Ok(());
     }
     if snapshot.auth_accounts.is_empty() {
-        println!("尚未配置 Auth Account。请在 morphz.toml 的 auth_accounts 中添加账号。");
+        println!("尚未配置账号。请在 ~/.morphz/morphz.toml 的 [accounts] 中添加账号。");
         return Ok(());
     }
     for (account_id, account) in snapshot.auth_accounts {
@@ -1831,7 +1832,7 @@ async fn list_model_routes(
     } else {
         for (route_id, route) in snapshot.model_routes {
             println!(
-                "{route_id}\taliases={}\tcandidates={}\taffinity={:?}\tselection={:?}\tfallback={}",
+                "{route_id}\taliases={}\ttargets={}\tstickiness={:?}\tstrategy={:?}\tfallback={}",
                 route.aliases.join(","),
                 route.candidates.len(),
                 route.affinity,
@@ -2205,6 +2206,29 @@ fn use_model(app_config: &config::AppConfig, invocation: &Invocation) -> Result<
         .prompt_args()
         .first()
         .ok_or("用法: morphz model use [provider/]model")?;
+    if let Some(route_id) = EffectiveProviderCatalog::from_config(app_config)
+        .ok()
+        .and_then(|catalog| {
+            catalog
+                .resolve_route(value)
+                .ok()
+                .map(|(route_id, _)| route_id.to_string())
+        })
+    {
+        let path = config::managed_config_path()?;
+        config::save_managed_inference_at(
+            &path,
+            None,
+            &route_id,
+            app_config.llm.reasoning_effort,
+            None,
+        )?;
+        println!(
+            "已将默认模型设为 {route_id}；配置将在下一次求值或重启后生效。\n{}",
+            path.display()
+        );
+        return Ok(());
+    }
     let (provider, model) = value
         .split_once('/')
         .filter(|(provider, _)| app_config.providers.contains_key(*provider))

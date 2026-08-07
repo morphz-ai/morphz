@@ -9,6 +9,7 @@ const providersSource = readFileSync(
   'utf8',
 )
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const zhCatalog = readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8')
 
 function attempt(eventId: string, timestamp: string, routeId: string, routeRevision: string): ModelUsageRecord {
   return {
@@ -17,14 +18,14 @@ function attempt(eventId: string, timestamp: string, routeId: string, routeRevis
     context_id: 'context-a',
     session_id: 'session-a',
     attempt_id: `attempt-${eventId}`,
-    model: 'gpt-5.6',
+    model: 'physical-model-alpha',
     model_binding: {
       requested_alias: 'coding-primary',
       route_id: routeId,
       route_revision: routeRevision,
       provider_instance_id: 'openai-subscription',
       auth_account_id: 'openai-personal',
-      physical_model: 'gpt-5.6',
+      physical_model: 'physical-model-alpha',
       protocol: 'openai-responses',
       provider_adapter: 'openai-codex',
       provider_adapter_version: '1',
@@ -103,12 +104,23 @@ test('authenticated accounts discover and explicitly enable models outside the l
   assert.match(providersSource, /providers\.modelCapacityAdvanced/)
   assert.match(providersSource, /providers\.modelAliasOptional/)
   assert.match(providersSource, /alias: option\.alias\.trim\(\) \|\| undefined/)
-  assert.match(providersSource, /placeholder=\{t\('providers\.automatic'\)\}/)
+  assert.match(providersSource, /placeholder=\{t\('providers\.notProvided'\)\}/)
+})
+
+test('provider capacity is copied from catalog fields without speculative copy', () => {
+  assert.match(providersSource, /discovered_model_profiles/)
+  assert.match(providersSource, /result\.discovered_model_profiles \?\? \{\}/)
+  assert.match(zhCatalog, /服务目录返回的容量会直接填入/)
+  assert.match(zhCatalog, /服务未提供/)
+  assert.doesNotMatch(zhCatalog, /服务目录往往不提供可靠的容量信息/)
 })
 
 test('conversation selector renders the catalog display label, never the route control id', () => {
   assert.match(appSource, /status\?\.model_options/)
   assert.match(appSource, /<option key=\{option\.id\} value=\{option\.id\}>\{option\.label\}<\/option>/)
+  assert.match(appSource, /className=\{`model-status \$\{selectedModelOption \? 'ok' : ''\}`\}>\{selectedModelLabel\}/)
+  assert.match(appSource, /contextBudgetModelLabel/)
+  assert.doesNotMatch(appSource, /className=\{`model-status[^\n]*\}>\{status\?\.model/)
   assert.doesNotMatch(appSource, /\(status\?\.models \?\? \(status\?\.model/)
   assert.match(appSource, /model\.manageModels/)
   assert.match(appSource, /setView\('providers'\)/)

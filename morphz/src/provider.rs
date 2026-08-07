@@ -1,5 +1,6 @@
 use crate::config::{
     AppConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol, ProviderConfig,
+    ProviderModelConfig,
 };
 use crate::llm::{
     model_attachments, Client, Message, ModelAttachment, ModelFailure, ModelFailureKind,
@@ -56,6 +57,43 @@ pub struct ProviderProbe {
     pub normalized_stream_events: usize,
     pub tool_call_verified: bool,
     pub catalog_error: Option<String>,
+}
+
+/// One model row returned by the Provider's catalog endpoint. Capacity fields
+/// are copied only when the response contains an explicit numeric field; no
+/// model-name lookup table or inferred default participates in discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiscoveredProviderModel {
+    pub id: String,
+    pub profile: ProviderModelConfig,
+}
+
+fn positive_usize(value: Option<&Value>) -> Option<usize> {
+    value
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+}
+
+fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderModelConfig {
+    let context_window_tokens = ["context_window_tokens", "context_window", "context_length"]
+        .into_iter()
+        .find_map(|field| positive_usize(row.get(field)));
+    let max_input_tokens = positive_usize(row.get("max_input_tokens")).or_else(|| {
+        (protocol == ModelProtocol::GeminiContent)
+            .then(|| positive_usize(row.get("inputTokenLimit")))
+            .flatten()
+    });
+    let max_output_tokens = positive_usize(row.get("max_output_tokens")).or_else(|| {
+        (protocol == ModelProtocol::GeminiContent)
+            .then(|| positive_usize(row.get("outputTokenLimit")))
+            .flatten()
+    });
+    ProviderModelConfig {
+        context_window_tokens,
+        max_input_tokens,
+        max_output_tokens,
+    }
 }
 
 pub fn build_configured_client(
@@ -812,7 +850,9 @@ impl ProtocolClient {
         );
     }
 
-    pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
+    pub(crate) async fn list_model_catalog(
+        &self,
+    ) -> Result<Vec<DiscoveredProviderModel>, ProviderError> {
         let mut endpoint = reqwest::Url::parse(&format!("{}/models", self.base_url))?;
         if self.adapter == "openai-codex" {
             let client_version = codex_client_version();
@@ -852,21 +892,34 @@ impl ProtocolClient {
         let mut models = rows
             .iter()
             .filter_map(|row| {
-                row.get("id")
+                let id = row
+                    .get("id")
                     .or_else(|| row.get("name"))
                     .or_else(|| row.get("slug"))
-                    .and_then(Value::as_str)
+                    .and_then(Value::as_str)?;
+                Some(DiscoveredProviderModel {
+                    id: id.strip_prefix("models/").unwrap_or(id).to_string(),
+                    profile: discovered_model_profile(row, self.protocol),
+                })
             })
-            .map(|model| model.strip_prefix("models/").unwrap_or(model).to_string())
             .collect::<Vec<_>>();
         if self.adapter == "openai-codex" {
             let mut seen = HashSet::new();
-            models.retain(|model| seen.insert(model.clone()));
+            models.retain(|model| seen.insert(model.id.clone()));
         } else {
-            models.sort();
-            models.dedup();
+            models.sort_by(|left, right| left.id.cmp(&right.id));
+            models.dedup_by(|left, right| left.id == right.id);
         }
         Ok(models)
+    }
+
+    pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
+        Ok(self
+            .list_model_catalog()
+            .await?
+            .into_iter()
+            .map(|model| model.id)
+            .collect())
     }
 }
 
@@ -3328,7 +3381,7 @@ mod tests {
     #[test]
     fn codex_request_matches_subscription_backend_contract() {
         let request = json!({
-            "model": "gpt-5.6-sol",
+            "model": "codex-model-alpha",
             "input": [
                 {"role": "system", "content": "system"},
                 {"role": "user", "content": "hello"}
@@ -3371,10 +3424,10 @@ mod tests {
                         );
                         Json(json!({
                             "models": [
-                                {"slug": "gpt-5.6-sol"},
-                                {"slug": "codex-auto-review"},
-                                {"slug": "gpt-5.6-sol"},
-                                {"slug": "gpt-5.6-terra"}
+                                {"slug": "codex-model-alpha", "context_window": 200000},
+                                {"slug": "codex-review-model", "context_window": 120000},
+                                {"slug": "codex-model-alpha", "context_window": 200000},
+                                {"slug": "codex-model-beta", "context_window": 80000}
                             ]
                         }))
                     },
@@ -3396,10 +3449,68 @@ mod tests {
         )
         .unwrap();
 
+        let catalog = client.list_model_catalog().await.unwrap();
         assert_eq!(
-            client.list_models().await.unwrap(),
-            ["gpt-5.6-sol", "codex-auto-review", "gpt-5.6-terra"]
+            catalog
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "codex-model-alpha",
+                "codex-review-model",
+                "codex-model-beta"
+            ]
         );
+        assert_eq!(catalog[0].profile.context_window_tokens, Some(200_000));
+        assert_eq!(catalog[0].profile.max_input_tokens, None);
+        assert_eq!(catalog[0].profile.max_output_tokens, None);
+    }
+
+    #[tokio::test]
+    async fn model_catalog_copies_only_explicit_capacity_fields() {
+        let app = Router::new().route(
+            "/models",
+            get(|| async {
+                Json(json!({
+                    "data": [
+                        {"id": "model-with-context", "context_length": 262144},
+                        {
+                            "id": "model-with-explicit-limits",
+                            "max_input_tokens": 120000,
+                            "max_output_tokens": 8000
+                        },
+                        {"id": "model-without-capacity"}
+                    ]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ProtocolClient::new_with_adapter(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiChat,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "openai-compatible",
+            String::new(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        let catalog = client.list_model_catalog().await.unwrap();
+        assert_eq!(catalog[0].id, "model-with-context");
+        assert_eq!(catalog[0].profile.context_window_tokens, Some(262_144));
+        assert_eq!(catalog[0].profile.max_input_tokens, None);
+        assert_eq!(catalog[0].profile.max_output_tokens, None);
+        assert_eq!(catalog[1].id, "model-with-explicit-limits");
+        assert_eq!(catalog[1].profile.context_window_tokens, None);
+        assert_eq!(catalog[1].profile.max_input_tokens, Some(120_000));
+        assert_eq!(catalog[1].profile.max_output_tokens, Some(8_000));
+        assert_eq!(catalog[2].id, "model-without-capacity");
+        assert_eq!(catalog[2].profile, ProviderModelConfig::default());
     }
 
     #[tokio::test]
@@ -3407,7 +3518,7 @@ mod tests {
         let app = Router::new().route(
             "/responses",
             post(|Json(body): Json<Value>| async move {
-                assert_eq!(body.get("model"), Some(&json!("gpt-5.6-sol")));
+                assert_eq!(body.get("model"), Some(&json!("codex-model-alpha")));
                 assert_eq!(body.get("stream"), Some(&Value::Bool(true)));
                 assert_eq!(body.get("store"), Some(&Value::Bool(false)));
                 assert_eq!(
@@ -3430,7 +3541,7 @@ mod tests {
                 ..ProviderConfig::default()
             },
             "openai-codex",
-            "gpt-5.6-sol".to_string(),
+            "codex-model-alpha".to_string(),
             None,
             &LlmConfig::default(),
         )
@@ -3461,7 +3572,7 @@ mod tests {
                 base_url: format!("http://{address}"),
                 ..ProviderConfig::default()
             },
-            "k3".to_string(),
+            "chat-model-alpha".to_string(),
             None,
             &LlmConfig::default(),
         )

@@ -50,7 +50,7 @@ MORPHZ_API_TOKEN        Site Gateway 服务凭证
 ```
 
 `MORPHZ_API_TOKEN` 的变量名由 `service_token_env` 决定。两种凭证都属于宿主控制面，
-项目目录中的 `.morphz/config.toml` 不能覆盖它们，也不能配置为相同值。
+项目目录中的 `.morphz/morphz.toml` 不能覆盖它们，也不能配置为相同值。
 
 可信请求同时携带：
 

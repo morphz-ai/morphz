@@ -27098,7 +27098,7 @@ mod tests {
                 "1",
                 "openai-responses",
                 "remote_provider",
-                &["gpt-5.6".into(), "gpt-5.6-sol".into()],
+                &["model-alpha".into(), "model-beta".into()],
                 observed_at,
             )
             .await
@@ -27111,7 +27111,7 @@ mod tests {
                 "1",
                 "openai-responses",
                 "remote_provider",
-                &["gpt-5.6".into()],
+                &["model-alpha".into()],
                 observed_at,
             )
             .await
@@ -27138,7 +27138,7 @@ mod tests {
                 && record.adapter_version == "2"
         }));
         assert!(records.iter().any(|record| {
-            record.auth_account_id == "account-b" && record.physical_model == "gpt-5.6"
+            record.auth_account_id == "account-b" && record.physical_model == "model-alpha"
         }));
     }
 }

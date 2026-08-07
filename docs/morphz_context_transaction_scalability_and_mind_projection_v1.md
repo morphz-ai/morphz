@@ -725,7 +725,7 @@ url_env = "MORPHZ_POSTGRES_URL"
 max_connections = 16
 ```
 
-连接 URL 只从 `url_env` 指定的环境变量读取；不把含密码的 URL 写入普通配置、错误日志或 `storage_label`。项目级 `.morphz/config.toml` 不能改变 `storage.*`，避免工作区代码静默改变宿主持久层。
+连接 URL 只从 `url_env` 指定的环境变量读取；不把含密码的 URL 写入普通配置、错误日志或 `storage_label`。项目级 `.morphz/morphz.toml` 不能改变 `storage.*`，避免工作区代码静默改变宿主持久层。
 
 ### Phase 5：Frame 级 MVCC（已完成）
 

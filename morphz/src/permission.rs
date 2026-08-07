@@ -157,6 +157,7 @@ impl Default for PermissionConfig {
                 "**/.ssh".to_string(),
                 "**/.ssh/**".to_string(),
                 ".morphz/config.toml".to_string(),
+                ".morphz/morphz.toml".to_string(),
             ],
             network: false,
             sandbox_mode: SandboxMode::WorkspaceWrite,

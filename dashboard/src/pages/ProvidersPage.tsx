@@ -141,6 +141,7 @@ interface ModelRouteDiagnostic {
   binding: ModelAttemptBinding
   elapsed_ms: number
   discovered_models: string[]
+  discovered_model_profiles?: Record<string, ProviderModelConfig>
   catalog_error?: string
   health_verified: boolean
   health_error?: string
@@ -156,6 +157,7 @@ interface ProviderAccountDiagnostic {
   endpoint: string
   elapsed_ms: number
   discovered_models: string[]
+  discovered_model_profiles?: Record<string, ProviderModelConfig>
   catalog_error?: string
   probed_model?: string
   health_verified: boolean
@@ -1003,6 +1005,7 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
     accountId: string,
     providerId: string,
     additionallyDiscovered: string[] = [],
+    discoveredProfiles: Record<string, ProviderModelConfig> = {},
   ): AccountModelOption[] => {
     const enabled = new Set<string>()
     const aliases = new Map<string, string>()
@@ -1024,14 +1027,18 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       ...(authoritativeDiscovery ? [] : enabled),
     ])
     const profiles = snapshot.provider_instances[providerId]?.models ?? {}
-    return Array.from(discovered).sort().map(id => ({
-      id,
-      enabled: enabled.has(id),
-      alias: aliases.get(id) ?? '',
-      contextWindowTokens: profiles[id]?.context_window_tokens?.toString() ?? '',
-      maxInputTokens: profiles[id]?.max_input_tokens?.toString() ?? '',
-      maxOutputTokens: profiles[id]?.max_output_tokens?.toString() ?? '',
-    }))
+    return Array.from(discovered).sort().map(id => {
+      const configured = profiles[id]
+      const provider = discoveredProfiles[id]
+      return {
+        id,
+        enabled: enabled.has(id),
+        alias: aliases.get(id) ?? '',
+        contextWindowTokens: (configured?.context_window_tokens ?? provider?.context_window_tokens)?.toString() ?? '',
+        maxInputTokens: (configured?.max_input_tokens ?? provider?.max_input_tokens)?.toString() ?? '',
+        maxOutputTokens: (configured?.max_output_tokens ?? provider?.max_output_tokens)?.toString() ?? '',
+      }
+    })
   }
 
   const openAccountModels = async (accountId: string, label: string) => {
@@ -1060,7 +1067,12 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
       setModelEditor(current => current?.accountId === accountId
         ? {
             ...current,
-            options: accountModelOptions(accountId, providerId, result.discovered_models),
+            options: accountModelOptions(
+              accountId,
+              providerId,
+              result.discovered_models,
+              result.discovered_model_profiles ?? {},
+            ),
             loading: false,
             error: result.catalog_error ?? '',
             errorKind: result.catalog_error ? 'catalog' : '',
@@ -1445,9 +1457,9 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
                         <summary>{t('providers.modelCapacityAdvanced')}</summary>
                         <p>{t('providers.modelCapacityHint')}</p>
                         <div>
-                          <label><span>{t('providers.contextWindow')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.contextWindowTokens} onChange={event => updateAccountModel(option.id, { contextWindowTokens: event.target.value })} /></label>
-                          <label><span>{t('providers.maxInput')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.maxInputTokens} onChange={event => updateAccountModel(option.id, { maxInputTokens: event.target.value })} /></label>
-                          <label><span>{t('providers.maxOutput')}</span><input inputMode="numeric" placeholder={t('providers.automatic')} value={option.maxOutputTokens} onChange={event => updateAccountModel(option.id, { maxOutputTokens: event.target.value })} /></label>
+                          <label><span>{t('providers.contextWindow')}</span><input inputMode="numeric" placeholder={t('providers.notProvided')} value={option.contextWindowTokens} onChange={event => updateAccountModel(option.id, { contextWindowTokens: event.target.value })} /></label>
+                          <label><span>{t('providers.maxInput')}</span><input inputMode="numeric" placeholder={t('providers.notProvided')} value={option.maxInputTokens} onChange={event => updateAccountModel(option.id, { maxInputTokens: event.target.value })} /></label>
+                          <label><span>{t('providers.maxOutput')}</span><input inputMode="numeric" placeholder={t('providers.notProvided')} value={option.maxOutputTokens} onChange={event => updateAccountModel(option.id, { maxOutputTokens: event.target.value })} /></label>
                         </div>
                       </details>
                     </>

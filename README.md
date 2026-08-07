@@ -122,7 +122,7 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    ```
 
    这种可选的固定 Target 对应宿主连接描述符保存为
-   `~/.config/morphz/edge/ssh/production.json`（实际根目录遵循 Morphz 用户配置目录）：
+   `~/.morphz/edge/ssh/production.json`（实际根目录遵循 Morphz 用户目录）：
 
    ```json
    {
@@ -188,7 +188,7 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 
 `morphz serve` 默认监听 `127.0.0.1:8080`。SQLite 路径通过 `[storage.sqlite].path` 或
 `MORPHZ_STORAGE_SQLITE_PATH` 覆盖；监听地址可用 `--bind` 或 `MORPHZ_BIND` 设置。新项目的
-非敏感配置放在 `.morphz/config.toml`，Provider、Credential、权限和监听地址属于用户或
+用户配置统一保存在 `~/.morphz/morphz.toml`；项目偏好放在 `.morphz/morphz.toml`。Provider、Credential、权限和监听地址属于用户或
 系统控制面，项目配置不能修改。完整分层设计见
 [CLI 产品化 v1](docs/morphz_cli_productization_v1.md)。
 
@@ -210,12 +210,12 @@ docker build -t morphz .
 docker volume create morphz-config
 docker run --rm -it \
   -e OPENAI_API_KEY \
-  -v morphz-config:/home/morphz/.config/morphz \
+  -v morphz-config:/home/morphz/.morphz \
   morphz setup
 docker run --rm -p 8080:8080 \
   -e OPENAI_API_KEY \
   -e MORPHZ_DASHBOARD_TOKEN="replace-with-a-long-random-token" \
-  -v morphz-config:/home/morphz/.config/morphz \
+  -v morphz-config:/home/morphz/.morphz \
   -v morphz-data:/home/morphz/data \
   morphz
 ```

@@ -7131,7 +7131,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enabled_account_models_join_the_live_inference_catalog_with_capacity_profiles() {
+    async fn enabled_account_models_remain_visible_without_discovery_cache() {
         let tmp = NamedTempFile::new().unwrap();
         let database_path = tmp.path().to_path_buf();
         drop(tmp);
@@ -7183,9 +7183,13 @@ mod tests {
             .contains(&"subscription-model".to_string()));
 
         let before_discovery = runtime.inference_model_options().await.unwrap();
-        assert!(before_discovery
+        let configured = before_discovery
             .iter()
-            .all(|option| option.id != "subscription-model"));
+            .find(|option| option.id == "subscription-model")
+            .expect("explicitly enabled model must not depend on discovery cache");
+        assert_eq!(configured.label, "physical-subscription-model");
+        assert_eq!(configured.physical_models, ["physical-subscription-model"]);
+        assert_eq!(configured.source, "configured");
 
         let projection = SqliteStore::new(database_path.to_str().unwrap())
             .await
@@ -7683,8 +7687,8 @@ mod tests {
             test_state_at_with_workers_and_auth(&database_path, false, Some(registry)).await;
         let managed_path = state.managed_config_path.clone().unwrap();
         let setup = oauth_provider_setup("codex").unwrap();
-        let legacy_model = "gpt-5.6";
-        let legacy_route_id = "gpt-5.6";
+        let legacy_model = "invented-default-model";
+        let legacy_route_id = "invented-default-route";
         let mut provider = ProviderInstanceConfig {
             adapter: setup.provider_adapter.clone(),
             protocol: setup.protocol,

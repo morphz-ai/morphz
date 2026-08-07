@@ -91,8 +91,8 @@ name = "LOCAL_M4_API_KEY"
 2. `--config-file` 显式可信配置
 3. 可信项目配置
 4. `--profile` 选择的用户 Profile
-5. `setup` / `model use` 维护的用户选择状态
-6. 用户配置
+5. 用户配置（`setup`、Dashboard 与 `model use` 原子更新同一文件）
+6. 旧版用户配置兼容层（只读迁移来源）
 7. 系统配置
 8. 内置默认值
 
@@ -100,10 +100,13 @@ name = "LOCAL_M4_API_KEY"
 
 推荐位置：
 
-- 系统：Unix `/etc/morphz/config.toml`；其他平台使用平台约定位置
-- 用户：`$MORPHZ_HOME/config.toml`，默认使用平台用户配置目录
+- 系统：Unix `/etc/morphz/morphz.toml`；旧文件名 `config.toml` 仅兼容读取
+- 用户：`$MORPHZ_HOME/morphz.toml`，默认目录为 `~/.morphz`
 - Profile：`$MORPHZ_HOME/profiles/<name>.toml`
-- 项目：从项目根到当前目录逐层读取 `.morphz/config.toml`
+- 项目：从项目根到当前目录逐层读取 `.morphz/morphz.toml`
+
+旧版 `~/.config/morphz/config.toml` 与 `managed.toml` 会在首次启动时合并迁移到
+`~/.morphz/morphz.toml`；旧文件保留，不再作为写入目标。
 
 `morphz config explain` 必须展示最终值、来源层和被覆盖链。`morphz config check` 必须验证所有已发现层，而不是在解析失败时静默退回默认值。
 
@@ -202,8 +205,8 @@ TUI 使用 Ratatui/Crossterm，只依赖公开 Runtime 事件和命令接口，�
 
 | 能力 | 当前结果 |
 | --- | --- |
-| 配置所有权 | 工作目录 `.env` 不再隐式加载；项目层只能使用 `.morphz/config.toml`，且不能定义 Provider、Credential、权限或监听地址 |
-| 分层配置 | 支持 system、user、managed、profile、逐级 project、explicit、environment 和 CLI；`config explain` 显示最终值、来源与覆盖链 |
+| 配置所有权 | 工作目录 `.env` 不再隐式加载；项目层只能使用 `.morphz/morphz.toml`，且不能定义 Provider、Credential、权限或监听地址 |
+| 分层配置 | 支持 system、user、profile、逐级 project、explicit、environment 和 CLI；旧 managed 文件只作为迁移来源；`config explain` 显示最终值、来源与覆盖链 |
 | 模型协议 | OpenAI Responses、OpenAI Chat Completions、Anthropic Messages、Gemini `generateContent` 均有显式请求/响应适配和 SSE 增量适配 |
 | Setup 与诊断 | 支持 Catalog、自定义端点、Env/Keychain/Helper/无认证、模型目录、流式正文和工具调用握手；`provider test` 分项报告结果 |
 | TUI | 交互式终端默认启用 Ratatui；非 TTY 自动保持纯文本；`--tui` 与 `--plain` 可显式覆盖；人工审批和 `reply` 草稿均已接入 |

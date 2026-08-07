@@ -206,10 +206,9 @@ fn morphz_home_dir_from(
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
-            xdg_config_home
-                .filter(|value| !value.is_empty())
+            home.filter(|value| !value.is_empty())
                 .map(PathBuf::from)
-                .map(|path| path.join("morphz"))
+                .map(|path| path.join(".morphz"))
         })
         .or_else(|| {
             app_data
@@ -218,7 +217,33 @@ fn morphz_home_dir_from(
                 .map(|path| path.join("Morphz"))
         })
         .or_else(|| {
-            home.filter(|value| !value.is_empty())
+            xdg_config_home
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .map(|path| path.join("morphz"))
+        })
+}
+
+/// Previous releases used the platform configuration directory. Keep this
+/// lookup private and read-only so a new binary can migrate host-owned state
+/// without making the legacy location part of the public path contract.
+fn legacy_morphz_home_dir() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("MORPHZ_HOME").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(explicit));
+    }
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|path| path.join("morphz"))
+        .or_else(|| {
+            std::env::var_os("APPDATA")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .map(|path| path.join("Morphz"))
+        })
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .map(|path| path.join(".config").join("morphz"))
         })
@@ -231,7 +256,20 @@ pub fn host_env_path() -> Option<PathBuf> {
     std::env::var_os("MORPHZ_ENV_FILE")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| morphz_home_dir().map(|path| path.join(".env")))
+        .or_else(|| host_state_path(".env"))
+}
+
+pub(crate) fn host_state_path(filename: &str) -> Option<PathBuf> {
+    let primary = morphz_home_dir()?.join(filename);
+    if primary.exists() {
+        return Some(primary);
+    }
+    if let Some(legacy) = legacy_morphz_home_dir().map(|path| path.join(filename)) {
+        if legacy.exists() {
+            return Some(legacy);
+        }
+    }
+    Some(primary)
 }
 
 // ==========================================
@@ -875,6 +913,7 @@ pub enum ModelRouteAffinity {
 #[serde(rename_all = "kebab-case")]
 pub enum ModelRouteSelection {
     #[default]
+    #[serde(alias = "least-recently-used")]
     AvailableLeastRecentlyUsed,
     Priority,
 }
@@ -882,8 +921,10 @@ pub enum ModelRouteSelection {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelRouteCandidateConfig {
+    #[serde(alias = "service")]
     pub provider: String,
     /// Exact physical model name accepted by this Provider Instance.
+    #[serde(alias = "physical_model")]
     pub model: String,
     /// Lower values are preferred.
     pub priority: u32,
@@ -893,8 +934,7 @@ pub struct ModelRouteCandidateConfig {
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 pub struct ModelRouteConfig {
     /// User-selected alias preferred by operator-facing model selectors. A
     /// generated Route ID is not a display alias unless the operator records
@@ -904,10 +944,78 @@ pub struct ModelRouteConfig {
     /// Additional public aliases accepted for route resolution. The map key
     /// is also accepted by the routing engine, but may be system-generated.
     pub aliases: Vec<String>,
+    #[serde(alias = "targets")]
     pub candidates: Vec<ModelRouteCandidateConfig>,
+    #[serde(alias = "stickiness")]
     pub affinity: ModelRouteAffinity,
+    #[serde(alias = "strategy")]
     pub selection: ModelRouteSelection,
     pub fallback: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct ModelRouteConfigInput {
+    display_alias: Option<String>,
+    aliases: Vec<String>,
+    #[serde(alias = "targets")]
+    candidates: Vec<ModelRouteCandidateConfig>,
+    #[serde(alias = "stickiness")]
+    affinity: ModelRouteAffinity,
+    #[serde(alias = "strategy")]
+    selection: ModelRouteSelection,
+    fallback: bool,
+    service: Option<String>,
+    physical_model: Option<String>,
+    account: Option<String>,
+    priority: u32,
+    capabilities: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for ModelRouteConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let input = ModelRouteConfigInput::deserialize(deserializer)?;
+        let direct_target_present = input.service.is_some()
+            || input.physical_model.is_some()
+            || input.account.is_some()
+            || input.priority != 0
+            || !input.capabilities.is_empty();
+        if direct_target_present && !input.candidates.is_empty() {
+            return Err(serde::de::Error::custom(
+                "模型不能同时使用直接目标字段和 [[models.<name>.targets]]",
+            ));
+        }
+        let candidates = if direct_target_present {
+            let provider = input
+                .service
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| serde::de::Error::custom("模型直接目标缺少 service"))?;
+            let model = input
+                .physical_model
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| serde::de::Error::custom("模型直接目标缺少 physical_model"))?;
+            vec![ModelRouteCandidateConfig {
+                provider,
+                model,
+                priority: input.priority,
+                account: input.account,
+                capabilities: input.capabilities,
+            }]
+        } else {
+            input.candidates
+        };
+        Ok(Self {
+            display_alias: input.display_alias,
+            aliases: input.aliases,
+            candidates,
+            affinity: input.affinity,
+            selection: input.selection,
+            fallback: input.fallback,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -1109,8 +1217,11 @@ pub struct AppConfig {
     /// Authoritative Provider/Account/Route model. Legacy `providers` and
     /// `credentials` are normalized into these structures once at startup
     /// when this catalog is absent; evaluation never consults both models.
+    #[serde(alias = "services")]
     pub provider_instances: BTreeMap<String, ProviderInstanceConfig>,
+    #[serde(alias = "accounts")]
     pub auth_accounts: BTreeMap<String, AuthAccountConfig>,
+    #[serde(alias = "models")]
     pub model_routes: BTreeMap<String, ModelRouteConfig>,
     pub permissions: PermissionConfig,
     pub background_task: BackgroundTaskConfig,
@@ -1264,27 +1375,161 @@ fn set_toml_path(root: &mut toml::Value, key: &str, value: toml::Value) -> Resul
 }
 
 /// Loads durable configuration layers without consulting the working tree for
-/// credentials. Project configuration belongs exclusively in
-/// `.morphz/config.toml` and is subject to the ownership policy below.
+/// credentials. The host configuration is `~/.morphz/morphz.toml`; project
+/// configuration belongs in `.morphz/morphz.toml` and is subject to the
+/// ownership policy below. Previous filenames remain read-only compatibility
+/// layers so an upgrade never drops an existing account or model selection.
 pub fn resolve_config(
     cwd: &Path,
     explicit_path: Option<&Path>,
     profile: Option<&str>,
 ) -> Result<ResolvedConfig, String> {
-    resolve_config_with_home(cwd, explicit_path, profile, morphz_home_dir())
+    let primary_home = morphz_home_dir();
+    if let Some(home) = primary_home.as_ref() {
+        migrate_primary_config_if_needed(&home.join("morphz.toml"))?;
+    }
+    resolve_config_with_homes(
+        cwd,
+        explicit_path,
+        profile,
+        primary_home,
+        legacy_morphz_home_dir(),
+    )
 }
 
 pub fn managed_config_path() -> Result<PathBuf, String> {
-    morphz_home_dir()
-        .map(|home| home.join("managed.toml"))
-        .ok_or_else(|| "无法确定 Morphz 用户配置目录".to_string())
+    let path = morphz_home_dir()
+        .map(|home| home.join("morphz.toml"))
+        .ok_or_else(|| "无法确定 Morphz 用户配置目录".to_string())?;
+    migrate_primary_config_if_needed(&path)?;
+    Ok(path)
+}
+
+fn migrate_primary_config_if_needed(primary: &Path) -> Result<(), String> {
+    if let (Some(primary_home), Some(legacy_home)) = (primary.parent(), legacy_morphz_home_dir()) {
+        if primary_home != legacy_home {
+            migrate_legacy_host_files(primary_home, &legacy_home)?;
+        }
+    }
+    if primary.exists() {
+        return Ok(());
+    }
+    let mut candidates = Vec::new();
+    if let Some(home) = legacy_morphz_home_dir() {
+        candidates.push(home.join("config.toml"));
+        candidates.push(home.join("managed.toml"));
+    }
+    if let Some(home) = morphz_home_dir() {
+        candidates.push(home.join("config.toml"));
+        candidates.push(home.join("managed.toml"));
+    }
+    let mut seen = BTreeSet::new();
+    let mut merged = toml::Value::Table(Default::default());
+    let mut found = false;
+    for candidate in candidates {
+        if candidate == primary || !seen.insert(candidate.clone()) {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&candidate) {
+            Ok(content) => content,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "无法读取旧 Morphz 配置 '{}': {error}",
+                    candidate.display()
+                ))
+            }
+        };
+        let mut value = content.parse::<toml::Value>().map_err(|error| {
+            format!("旧 Morphz 配置 '{}' 解析失败: {error}", candidate.display())
+        })?;
+        canonicalize_primary_config(&mut value)?;
+        merge_toml_prefer_right(&mut merged, value);
+        found = true;
+    }
+    if found {
+        write_managed_value(primary, &merged)?;
+    }
+    Ok(())
+}
+
+fn migrate_legacy_host_files(primary_home: &Path, legacy_home: &Path) -> Result<(), String> {
+    let mut copied_any = false;
+    for filename in [
+        ".env",
+        "managed-secrets.json",
+        "managed-secret-usage.jsonl",
+        "active-profile",
+    ] {
+        let source = legacy_home.join(filename);
+        let destination = primary_home.join(filename);
+        copied_any |= copy_legacy_host_file_if_absent(&source, &destination)?;
+    }
+    let legacy_profiles = legacy_home.join("profiles");
+    if let Ok(entries) = std::fs::read_dir(&legacy_profiles) {
+        for entry in entries.flatten() {
+            let source = entry.path();
+            if source.extension().and_then(|value| value.to_str()) != Some("toml") {
+                continue;
+            }
+            let destination = primary_home.join("profiles").join(entry.file_name());
+            copied_any |= copy_legacy_host_file_if_absent(&source, &destination)?;
+        }
+    }
+    if copied_any {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(primary_home, std::fs::Permissions::from_mode(0o700))
+                .map_err(|error| {
+                    format!(
+                        "无法保护 Morphz 用户目录 '{}': {error}",
+                        primary_home.display()
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_legacy_host_file_if_absent(source: &Path, destination: &Path) -> Result<bool, String> {
+    if destination.exists() || !source.is_file() {
+        return Ok(false);
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| format!("迁移目标 '{}' 没有父目录", destination.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("无法创建 Morphz 用户目录 '{}': {error}", parent.display()))?;
+    let temporary = destination.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::copy(source, &temporary)
+        .map_err(|error| format!("无法迁移 Morphz 宿主文件 '{}'：{error}", source.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600)).map_err(
+            |error| {
+                format!(
+                    "无法保护迁移后的 Morphz 宿主文件 '{}': {error}",
+                    temporary.display()
+                )
+            },
+        )?;
+    }
+    std::fs::rename(&temporary, destination).map_err(|error| {
+        format!(
+            "无法安装迁移后的 Morphz 宿主文件 '{}': {error}",
+            destination.display()
+        )
+    })?;
+    Ok(true)
 }
 
 pub fn active_profile() -> Result<Option<String>, String> {
-    let Some(home) = morphz_home_dir() else {
+    let Some(path) = host_state_path("active-profile") else {
         return Ok(None);
     };
-    match std::fs::read_to_string(home.join("active-profile")) {
+    match std::fs::read_to_string(path) {
         Ok(value) => {
             let profile = value.trim();
             validate_profile_name(profile)?;
@@ -1416,7 +1661,7 @@ pub fn save_managed_provider_instance_at(
     let mut root = read_managed_value(path)?;
     insert_managed_value(
         &mut root,
-        &["provider_instances", provider_id],
+        &["services", provider_id],
         toml::Value::try_from(provider)
             .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
     )?;
@@ -1443,7 +1688,7 @@ pub fn save_managed_auth_account_at(
     let mut root = read_managed_value(path)?;
     insert_managed_value(
         &mut root,
-        &["auth_accounts", account_id],
+        &["accounts", account_id],
         toml::Value::try_from(account)
             .map_err(|error| format!("无法序列化 Auth Account: {error}"))?,
     )?;
@@ -1474,13 +1719,13 @@ pub fn save_managed_provider_account_at(
     let mut root = read_managed_value(path)?;
     insert_managed_value(
         &mut root,
-        &["provider_instances", provider_id],
+        &["services", provider_id],
         toml::Value::try_from(provider)
             .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
     )?;
     insert_managed_value(
         &mut root,
-        &["auth_accounts", account_id],
+        &["accounts", account_id],
         toml::Value::try_from(account)
             .map_err(|error| format!("无法序列化 Auth Account: {error}"))?,
     )?;
@@ -1498,7 +1743,7 @@ pub fn save_managed_model_route_at(
     let mut root = read_managed_value(path)?;
     insert_managed_value(
         &mut root,
-        &["model_routes", route_id],
+        &["models", route_id],
         toml::Value::try_from(route).map_err(|error| format!("无法序列化 Model Route: {error}"))?,
     )?;
     write_managed_value(path, &root)
@@ -1531,22 +1776,19 @@ pub fn save_managed_provider_account_models_at(
     let mut root = read_managed_value(path)?;
     insert_managed_value(
         &mut root,
-        &["provider_instances", provider_id],
+        &["services", provider_id],
         toml::Value::try_from(provider)
             .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
     )?;
     for (route_id, route) in changed_routes {
         insert_managed_value(
             &mut root,
-            &["model_routes", route_id],
+            &["models", route_id],
             toml::Value::try_from(route)
                 .map_err(|error| format!("无法序列化 Model Route: {error}"))?,
         )?;
     }
-    if let Some(routes) = root
-        .get_mut("model_routes")
-        .and_then(toml::Value::as_table_mut)
-    {
+    if let Some(routes) = root.get_mut("models").and_then(toml::Value::as_table_mut) {
         for route_id in removed_route_ids {
             routes.remove(route_id);
         }
@@ -1581,13 +1823,13 @@ pub fn save_managed_provider_catalog_at(
     let mut root = read_managed_value(path)?;
     insert_managed_value(
         &mut root,
-        &["provider_instances", provider_id],
+        &["services", provider_id],
         toml::Value::try_from(provider)
             .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
     )?;
     insert_managed_value(
         &mut root,
-        &["auth_accounts", account_id],
+        &["accounts", account_id],
         toml::Value::try_from(account)
             .map_err(|error| format!("无法序列化 Auth Account: {error}"))?,
     )?;
@@ -1602,12 +1844,12 @@ pub fn save_managed_provider_catalog_at(
     }
     insert_managed_value(
         &mut root,
-        &["model_routes", route_id],
+        &["models", route_id],
         toml::Value::try_from(route).map_err(|error| format!("无法序列化 Model Route: {error}"))?,
     )?;
-    // `llm.provider` remains populated for transport diagnostics and for
-    // older profile layers, while all model evaluation resolves `llm.model`
-    // through the authoritative Model Route graph above.
+    // Keep this mutation compatible with older in-memory readers. The TOML
+    // writer removes `llm.provider` because the route already names its
+    // service and duplicating the selection invites drift.
     insert_managed_value(
         &mut root,
         &["llm", "provider"],
@@ -1655,18 +1897,12 @@ pub fn remove_managed_provider_accounts_at(
         return Ok(());
     }
     let mut root = read_managed_value(path)?;
-    if let Some(accounts) = root
-        .get_mut("auth_accounts")
-        .and_then(toml::Value::as_table_mut)
-    {
+    if let Some(accounts) = root.get_mut("accounts").and_then(toml::Value::as_table_mut) {
         accounts.retain(|account_id, _| !account_ids.contains(account_id));
     }
 
     let mut empty_providers = BTreeSet::new();
-    if let Some(providers) = root
-        .get_mut("provider_instances")
-        .and_then(toml::Value::as_table_mut)
-    {
+    if let Some(providers) = root.get_mut("services").and_then(toml::Value::as_table_mut) {
         for (provider_id, provider) in providers.iter_mut() {
             if let Some(accounts) = provider
                 .get_mut("accounts")
@@ -1687,15 +1923,9 @@ pub fn remove_managed_provider_accounts_at(
     }
 
     let mut empty_routes = BTreeSet::new();
-    if let Some(routes) = root
-        .get_mut("model_routes")
-        .and_then(toml::Value::as_table_mut)
-    {
+    if let Some(routes) = root.get_mut("models").and_then(toml::Value::as_table_mut) {
         for (route_id, route) in routes.iter_mut() {
-            if let Some(candidates) = route
-                .get_mut("candidates")
-                .and_then(toml::Value::as_array_mut)
-            {
+            if let Some(candidates) = route.get_mut("targets").and_then(toml::Value::as_array_mut) {
                 let previous_len = candidates.len();
                 candidates.retain(|candidate| {
                     let account_removed = candidate
@@ -1735,11 +1965,9 @@ pub fn remove_managed_provider_accounts_at(
     write_managed_value(path, &root)
 }
 
-/// Persist the operator-selected inference profile in Morphz's managed
-/// configuration layer. `reasoning_effort = "default"` is written
-/// deliberately instead of removing the key: the managed layer must be able
-/// to override a lower-precedence user default and restore provider-native
-/// reasoning semantics.
+/// Persist the operator-selected inference profile in Morphz's primary user
+/// configuration. Provider-native reasoning is represented by omitting
+/// `reasoning_effort`; explicit levels remain ordinary TOML values.
 pub fn save_managed_inference_at(
     path: &Path,
     provider_id: Option<&str>,
@@ -1752,29 +1980,94 @@ pub fn save_managed_inference_at(
         return Err("Model 不能为空".to_string());
     }
     let mut root = read_managed_value(path)?;
+    let routed_target = root
+        .get("models")
+        .and_then(toml::Value::as_table)
+        .and_then(|routes| {
+            routes.get(model).or_else(|| {
+                routes.values().find(|route| {
+                    route
+                        .get("aliases")
+                        .and_then(toml::Value::as_array)
+                        .is_some_and(|aliases| {
+                            aliases.iter().any(|alias| alias.as_str() == Some(model))
+                        })
+                })
+            })
+        })
+        .and_then(|route| route.get("targets"))
+        .and_then(toml::Value::as_array)
+        .and_then(|targets| {
+            targets
+                .iter()
+                .filter_map(toml::Value::as_table)
+                .find(|target| {
+                    provider_id.is_none_or(|provider_id| {
+                        target.get("provider").and_then(toml::Value::as_str) == Some(provider_id)
+                    })
+                })
+                .or_else(|| targets.first().and_then(toml::Value::as_table))
+        })
+        .and_then(|target| {
+            Some((
+                target.get("provider")?.as_str()?.to_string(),
+                target.get("model")?.as_str()?.to_string(),
+            ))
+        });
     if let Some(provider_id) = provider_id.map(str::trim).filter(|value| !value.is_empty()) {
         validate_profile_name(provider_id)?;
-        insert_managed_value(
-            &mut root,
-            &["llm", "provider"],
-            toml::Value::String(provider_id.to_string()),
-        )?;
+        let selected_target = routed_target.clone().or_else(|| {
+            root.get("services")
+                .and_then(toml::Value::as_table)
+                .is_some_and(|services| services.contains_key(provider_id))
+                .then(|| (provider_id.to_string(), model.to_string()))
+        });
+        if routed_target.is_none() {
+            if let Some((service, physical_model)) = selected_target.as_ref() {
+                let mut target = toml::map::Map::new();
+                target.insert("provider".to_string(), toml::Value::String(service.clone()));
+                target.insert(
+                    "model".to_string(),
+                    toml::Value::String(physical_model.clone()),
+                );
+                insert_managed_value(
+                    &mut root,
+                    &["models", model, "targets"],
+                    toml::Value::Array(vec![toml::Value::Table(target)]),
+                )?;
+            }
+        }
         if let Some(limit) = prompt_token_limit {
             if limit == 0 {
                 return Err("模型物理输入容量必须大于 0".to_string());
             }
+            let (section, resolved_provider, physical_model) = selected_target
+                .as_ref()
+                .map(|(provider, model)| ("services", provider.as_str(), model.as_str()))
+                .unwrap_or(("providers", provider_id, model));
             insert_managed_value(
                 &mut root,
                 &[
-                    "providers",
-                    provider_id,
+                    section,
+                    resolved_provider,
                     "models",
-                    model,
+                    physical_model,
                     "max_input_tokens",
                 ],
                 toml::Value::Integer(
                     i64::try_from(limit).map_err(|_| "模型物理输入容量超出 TOML 整数范围")?,
                 ),
+            )?;
+        }
+        if selected_target.is_some() {
+            if let Some(llm) = root.get_mut("llm").and_then(toml::Value::as_table_mut) {
+                llm.remove("provider");
+            }
+        } else {
+            insert_managed_value(
+                &mut root,
+                &["llm", "provider"],
+                toml::Value::String(provider_id.to_string()),
             )?;
         }
     } else if prompt_token_limit.is_some() {
@@ -1785,31 +2078,413 @@ pub fn save_managed_inference_at(
         &["llm", "model"],
         toml::Value::String(model.to_string()),
     )?;
-    insert_managed_value(
-        &mut root,
-        &["llm", "reasoning_effort"],
-        toml::Value::String(
-            reasoning_effort
-                .map(ReasoningEffort::as_str)
-                .unwrap_or("default")
-                .to_string(),
-        ),
-    )?;
+    if let Some(reasoning_effort) = reasoning_effort {
+        insert_managed_value(
+            &mut root,
+            &["llm", "reasoning_effort"],
+            toml::Value::String(reasoning_effort.as_str().to_string()),
+        )?;
+    } else if let Some(llm) = root.get_mut("llm").and_then(toml::Value::as_table_mut) {
+        llm.remove("reasoning_effort");
+    }
     write_managed_value(path, &root)
 }
 
 fn read_managed_value(path: &Path) -> Result<toml::Value, String> {
     match std::fs::read_to_string(path) {
-        Ok(content) => content
-            .parse::<toml::Value>()
-            .map_err(|error| format!("Managed 配置 '{}' 解析失败: {error}", path.display())),
+        Ok(content) => {
+            let mut value = content
+                .parse::<toml::Value>()
+                .map_err(|error| format!("Morphz 配置 '{}' 解析失败: {error}", path.display()))?;
+            canonicalize_primary_config(&mut value)?;
+            Ok(value)
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             Ok(toml::Value::Table(Default::default()))
         }
         Err(error) => Err(format!(
-            "无法读取 Managed 配置 '{}': {error}",
+            "无法读取 Morphz 配置 '{}': {error}",
             path.display()
         )),
+    }
+}
+
+fn merge_toml_prefer_right(base: &mut toml::Value, right: toml::Value) {
+    match (base, right) {
+        (toml::Value::Table(base), toml::Value::Table(right)) => {
+            for (key, value) in right {
+                if let Some(existing) = base.get_mut(&key) {
+                    merge_toml_prefer_right(existing, value);
+                } else {
+                    base.insert(key, value);
+                }
+            }
+        }
+        (base, right) => *base = right,
+    }
+}
+
+fn rename_config_key(table: &mut toml::map::Map<String, toml::Value>, old: &str, new: &str) {
+    let Some(old_value) = table.remove(old) else {
+        return;
+    };
+    if let Some(new_value) = table.remove(new) {
+        let mut merged = old_value;
+        merge_toml_prefer_right(&mut merged, new_value);
+        table.insert(new.to_string(), merged);
+    } else {
+        table.insert(new.to_string(), old_value);
+    }
+}
+
+fn table_value_is_empty(value: Option<&toml::Value>) -> bool {
+    value.is_some_and(|value| {
+        value.as_table().is_some_and(toml::map::Map::is_empty)
+            || value.as_array().is_some_and(Vec::is_empty)
+    })
+}
+
+/// Fold the pre-routing `[providers]` representation into the same
+/// service/account/model vocabulary used by OAuth providers. Credentials stay
+/// separate because they describe how a secret is materialised, not where a
+/// model request is sent.
+fn canonicalize_legacy_providers(
+    table: &mut toml::map::Map<String, toml::Value>,
+) -> Result<(), String> {
+    let existing_service_ids = table
+        .get("services")
+        .and_then(toml::Value::as_table)
+        .map(|services| services.keys().cloned().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    let Some(legacy) = table.remove("providers") else {
+        return Ok(());
+    };
+    let legacy = legacy
+        .as_table()
+        .ok_or_else(|| "[providers] 必须是 TOML 表".to_string())?
+        .clone();
+
+    let mut generated_accounts = Vec::new();
+    let mut generated_services = Vec::new();
+    for (provider_id, value) in legacy {
+        if existing_service_ids.contains(&provider_id) {
+            continue;
+        }
+        let mut provider = value
+            .as_table()
+            .ok_or_else(|| format!("[providers.{provider_id}] 必须是 TOML 表"))?
+            .clone();
+        let credential = provider
+            .remove("credential")
+            .and_then(|value| value.as_str().map(str::to_string));
+        let account_id = if credential.is_some() {
+            format!("{provider_id}-default")
+        } else {
+            format!("{provider_id}-anonymous")
+        };
+
+        let mut account = toml::map::Map::new();
+        account.insert(
+            "auth_adapter".to_string(),
+            toml::Value::String(if credential.is_some() {
+                "credential".to_string()
+            } else {
+                "none".to_string()
+            }),
+        );
+        if let Some(credential) = credential {
+            account.insert(
+                "credential_ref".to_string(),
+                toml::Value::String(credential),
+            );
+        }
+        account.insert(
+            "provider".to_string(),
+            toml::Value::String(provider_id.clone()),
+        );
+
+        provider.insert(
+            "adapter".to_string(),
+            toml::Value::String("protocol-compatible".to_string()),
+        );
+        provider.insert(
+            "accounts".to_string(),
+            toml::Value::Array(vec![toml::Value::String(account_id.clone())]),
+        );
+        generated_accounts.push((account_id, toml::Value::Table(account)));
+        generated_services.push((provider_id, toml::Value::Table(provider)));
+    }
+    if generated_services.is_empty() {
+        return Ok(());
+    }
+
+    let services = table
+        .entry("services".to_string())
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| "[services] 必须是 TOML 表".to_string())?;
+    let generated_provider_ids = generated_services
+        .iter()
+        .map(|(provider_id, _)| provider_id.clone())
+        .collect::<BTreeSet<_>>();
+    for (provider_id, service) in generated_services {
+        services.entry(provider_id).or_insert(service);
+    }
+
+    let accounts = table
+        .entry("accounts".to_string())
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| "[accounts] 必须是 TOML 表".to_string())?;
+    for (account_id, account) in generated_accounts {
+        accounts.entry(account_id).or_insert(account);
+    }
+
+    let routes_are_empty = table
+        .get("models")
+        .and_then(toml::Value::as_table)
+        .is_none_or(toml::map::Map::is_empty);
+    if routes_are_empty {
+        let selected_provider = table
+            .get("llm")
+            .and_then(toml::Value::as_table)
+            .and_then(|llm| llm.get("provider"))
+            .and_then(toml::Value::as_str)
+            .filter(|provider_id| generated_provider_ids.contains(*provider_id))
+            .map(str::to_string);
+        if let Some(provider_id) = selected_provider {
+            let llm = table
+                .get("llm")
+                .and_then(toml::Value::as_table)
+                .expect("selected provider came from llm table");
+            let mut model_names = llm
+                .get("models")
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if let Some(model) = llm.get("model").and_then(toml::Value::as_str) {
+                if !model.trim().is_empty() && !model_names.iter().any(|item| item == model) {
+                    model_names.push(model.to_string());
+                }
+            }
+            let routes = table
+                .entry("models".to_string())
+                .or_insert_with(|| toml::Value::Table(Default::default()))
+                .as_table_mut()
+                .expect("models was absent or a table");
+            for model in model_names {
+                let mut target = toml::map::Map::new();
+                target.insert(
+                    "provider".to_string(),
+                    toml::Value::String(provider_id.clone()),
+                );
+                target.insert("model".to_string(), toml::Value::String(model.clone()));
+                let mut route = toml::map::Map::new();
+                route.insert(
+                    "targets".to_string(),
+                    toml::Value::Array(vec![toml::Value::Table(target)]),
+                );
+                routes.entry(model).or_insert(toml::Value::Table(route));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Convert every accepted legacy spelling to the compact, user-facing file
+/// schema. Runtime/API structures deliberately retain their stable Rust and
+/// JSON field names; this transformation belongs only at the TOML boundary.
+fn canonicalize_primary_config(root: &mut toml::Value) -> Result<(), String> {
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| "Morphz 配置根节点必须是 TOML 表".to_string())?;
+    rename_config_key(table, "provider_instances", "services");
+    rename_config_key(table, "auth_accounts", "accounts");
+    rename_config_key(table, "model_routes", "models");
+    canonicalize_legacy_providers(table)?;
+
+    if let Some(accounts) = table
+        .get_mut("accounts")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for account in accounts
+            .iter_mut()
+            .filter_map(|(_, value)| value.as_table_mut())
+        {
+            if account.get("enabled").and_then(toml::Value::as_bool) == Some(true) {
+                account.remove("enabled");
+            }
+        }
+    }
+
+    if let Some(services) = table
+        .get_mut("services")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for service in services
+            .iter_mut()
+            .filter_map(|(_, value)| value.as_table_mut())
+        {
+            let remove_models = service
+                .get_mut("models")
+                .and_then(toml::Value::as_table_mut)
+                .is_some_and(|models| {
+                    models.retain(|_, profile| {
+                        !profile.as_table().is_some_and(toml::map::Map::is_empty)
+                    });
+                    models.is_empty()
+                });
+            if remove_models {
+                service.remove("models");
+            }
+            for key in ["headers", "env_headers"] {
+                if table_value_is_empty(service.get(key)) {
+                    service.remove(key);
+                }
+            }
+        }
+    }
+
+    if let Some(routes) = table.get_mut("models").and_then(toml::Value::as_table_mut) {
+        for route in routes
+            .iter_mut()
+            .filter_map(|(_, value)| value.as_table_mut())
+        {
+            rename_config_key(route, "candidates", "targets");
+            rename_config_key(route, "affinity", "stickiness");
+            rename_config_key(route, "selection", "strategy");
+            let direct_target_present = [
+                "service",
+                "physical_model",
+                "account",
+                "priority",
+                "capabilities",
+            ]
+            .iter()
+            .any(|key| route.contains_key(*key));
+            if direct_target_present {
+                if route.contains_key("targets") {
+                    return Err(
+                        "模型不能同时使用直接目标字段和 [[models.<name>.targets]]".to_string()
+                    );
+                }
+                let mut target = toml::map::Map::new();
+                for (source, destination) in [
+                    ("service", "provider"),
+                    ("physical_model", "model"),
+                    ("account", "account"),
+                    ("priority", "priority"),
+                    ("capabilities", "capabilities"),
+                ] {
+                    if let Some(value) = route.remove(source) {
+                        target.insert(destination.to_string(), value);
+                    }
+                }
+                route.insert(
+                    "targets".to_string(),
+                    toml::Value::Array(vec![toml::Value::Table(target)]),
+                );
+            }
+            if table_value_is_empty(route.get("aliases")) {
+                route.remove("aliases");
+            }
+            if route.get("fallback").and_then(toml::Value::as_bool) == Some(false) {
+                route.remove("fallback");
+            }
+            if route.get("stickiness").and_then(toml::Value::as_str) == Some("context") {
+                route.remove("stickiness");
+            }
+            if route
+                .get("strategy")
+                .and_then(toml::Value::as_str)
+                .is_some_and(|value| {
+                    matches!(
+                        value,
+                        "available-least-recently-used" | "least-recently-used"
+                    )
+                })
+            {
+                route.remove("strategy");
+            }
+            if let Some(targets) = route.get_mut("targets").and_then(toml::Value::as_array_mut) {
+                for target in targets.iter_mut().filter_map(toml::Value::as_table_mut) {
+                    rename_config_key(target, "service", "provider");
+                    rename_config_key(target, "physical_model", "model");
+                    if target.get("priority").and_then(toml::Value::as_integer) == Some(0) {
+                        target.remove("priority");
+                    }
+                    if table_value_is_empty(target.get("capabilities")) {
+                        target.remove("capabilities");
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(credentials) = table
+        .get_mut("credentials")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for credential in credentials
+            .iter_mut()
+            .filter_map(|(_, value)| value.as_table_mut())
+        {
+            if table_value_is_empty(credential.get("command")) {
+                credential.remove("command");
+            }
+        }
+    }
+
+    let routed_default = table
+        .get("llm")
+        .and_then(toml::Value::as_table)
+        .and_then(|llm| llm.get("model"))
+        .and_then(toml::Value::as_str)
+        .is_some_and(|selected| {
+            table
+                .get("models")
+                .and_then(toml::Value::as_table)
+                .is_some_and(|models| models.contains_key(selected))
+        });
+    if let Some(llm) = table.get_mut("llm").and_then(toml::Value::as_table_mut) {
+        if routed_default {
+            llm.remove("provider");
+        }
+        if llm.get("reasoning_effort").and_then(toml::Value::as_str) == Some("default") {
+            llm.remove("reasoning_effort");
+        }
+    }
+    Ok(())
+}
+
+fn compact_primary_config_for_write(root: &mut toml::Value) {
+    let Some(routes) = root.get_mut("models").and_then(toml::Value::as_table_mut) else {
+        return;
+    };
+    for route in routes
+        .iter_mut()
+        .filter_map(|(_, value)| value.as_table_mut())
+    {
+        let Some(mut targets) = route.remove("targets").and_then(|value| match value {
+            toml::Value::Array(targets) => Some(targets),
+            _ => None,
+        }) else {
+            continue;
+        };
+        for target in targets.iter_mut().filter_map(toml::Value::as_table_mut) {
+            rename_config_key(target, "provider", "service");
+            rename_config_key(target, "model", "physical_model");
+        }
+        if targets.len() == 1 {
+            if let Some(toml::Value::Table(target)) = targets.pop() {
+                route.extend(target);
+            }
+        } else {
+            route.insert("targets".to_string(), toml::Value::Array(targets));
+        }
     }
 }
 
@@ -1850,8 +2525,11 @@ fn write_managed_value(path: &Path, value: &toml::Value) -> Result<(), String> {
             .map_err(|error| format!("无法保护 Morphz 配置目录 '{}': {error}", parent.display()))?;
     }
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-    let content =
-        toml::to_string_pretty(value).map_err(|error| format!("无法编码 Managed 配置: {error}"))?;
+    let mut canonical = value.clone();
+    canonicalize_primary_config(&mut canonical)?;
+    compact_primary_config_for_write(&mut canonical);
+    let content = toml::to_string_pretty(&canonical)
+        .map_err(|error| format!("无法编码 Morphz 配置: {error}"))?;
     std::fs::write(&temporary, content).map_err(|error| {
         format!(
             "无法写入 Managed 临时配置 '{}': {error}",
@@ -1869,11 +2547,28 @@ fn write_managed_value(path: &Path, value: &toml::Value) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn resolve_config_with_home(
     cwd: &Path,
     explicit_path: Option<&Path>,
     profile: Option<&str>,
     morphz_home: Option<PathBuf>,
+) -> Result<ResolvedConfig, String> {
+    resolve_config_with_homes(
+        cwd,
+        explicit_path,
+        profile,
+        morphz_home.clone(),
+        morphz_home,
+    )
+}
+
+fn resolve_config_with_homes(
+    cwd: &Path,
+    explicit_path: Option<&Path>,
+    profile: Option<&str>,
+    morphz_home: Option<PathBuf>,
+    legacy_home: Option<PathBuf>,
 ) -> Result<ResolvedConfig, String> {
     let mut candidates = Vec::new();
 
@@ -1883,18 +2578,32 @@ fn resolve_config_with_home(
         path: PathBuf::from("/etc/morphz/config.toml"),
     });
 
-    if let Some(home) = morphz_home {
+    #[cfg(unix)]
+    candidates.push(ConfigLayer {
+        kind: ConfigLayerKind::System,
+        path: PathBuf::from("/etc/morphz/morphz.toml"),
+    });
+
+    let primary_exists = morphz_home
+        .as_ref()
+        .is_some_and(|home| home.join("morphz.toml").is_file());
+    if !primary_exists {
+        if let Some(home) = legacy_home.as_ref() {
+            candidates.push(ConfigLayer {
+                kind: ConfigLayerKind::User,
+                path: home.join("config.toml"),
+            });
+            candidates.push(ConfigLayer {
+                kind: ConfigLayerKind::Managed,
+                path: home.join("managed.toml"),
+            });
+        }
+    }
+
+    if let Some(home) = morphz_home.as_ref() {
         candidates.push(ConfigLayer {
             kind: ConfigLayerKind::User,
-            path: home.join("config.toml"),
-        });
-        // Interactive user choices (`setup`, `model use`) must take effect over
-        // static user defaults without rewriting the user's hand-authored
-        // config. An explicitly selected Profile and project preference can
-        // still override this global managed selection.
-        candidates.push(ConfigLayer {
-            kind: ConfigLayerKind::Managed,
-            path: home.join("managed.toml"),
+            path: home.join("morphz.toml"),
         });
         if let Some(profile) = profile {
             validate_profile_name(profile)?;
@@ -1951,13 +2660,14 @@ fn resolve_config_with_home(
                 ))
             }
         };
-        let value = content.parse::<toml::Value>().map_err(|error| {
+        let mut value = content.parse::<toml::Value>().map_err(|error| {
             format!(
                 "{} 配置 '{}' 解析失败: {error}",
                 layer.kind.as_str(),
                 absolute.display()
             )
         })?;
+        canonicalize_primary_config(&mut value)?;
         if layer.kind == ConfigLayerKind::Project {
             validate_project_layer(&value, &absolute)?;
         }
@@ -2035,7 +2745,12 @@ fn discover_project_layers(root: &Path, cwd: &Path) -> Vec<PathBuf> {
     directories.reverse();
     directories
         .into_iter()
-        .map(|path| path.join(".morphz").join("config.toml"))
+        .flat_map(|path| {
+            [
+                path.join(".morphz").join("config.toml"),
+                path.join(".morphz").join("morphz.toml"),
+            ]
+        })
         .collect()
 }
 
@@ -2075,10 +2790,16 @@ fn forbidden_project_keys(value: &toml::Value) -> Vec<String> {
                 || key.starts_with("credentials.")
                 || key == "provider_instances"
                 || key.starts_with("provider_instances.")
+                || key == "services"
+                || key.starts_with("services.")
                 || key == "auth_accounts"
                 || key.starts_with("auth_accounts.")
+                || key == "accounts"
+                || key.starts_with("accounts.")
                 || key == "model_routes"
                 || key.starts_with("model_routes.")
+                || key == "models"
+                || key.starts_with("models.")
                 || key == "managed_ssh"
                 || key.starts_with("managed_ssh.")
                 || key == "server.bind"
@@ -2544,16 +3265,11 @@ mod tests {
         );
         assert_eq!(explicit, Some(PathBuf::from("/host/morphz")));
 
-        let xdg = morphz_home_dir_from(
-            None,
-            Some(OsString::from("/xdg")),
-            None,
-            Some(OsString::from("/home/user")),
-        );
+        let xdg = morphz_home_dir_from(None, Some(OsString::from("/xdg")), None, None);
         assert_eq!(xdg, Some(PathBuf::from("/xdg/morphz")));
 
         let home = morphz_home_dir_from(None, None, None, Some(OsString::from("/home/user")));
-        assert_eq!(home, Some(PathBuf::from("/home/user/.config/morphz")));
+        assert_eq!(home, Some(PathBuf::from("/home/user/.morphz")));
     }
 
     #[test]
@@ -2568,13 +3284,14 @@ mod tests {
 
         std::fs::write(home.join("config.toml"), "[llm]\nmodel='user'\n").unwrap();
         std::fs::write(home.join("managed.toml"), "[llm]\nmodel='managed'\n").unwrap();
+        std::fs::write(home.join("morphz.toml"), "[llm]\nmodel='primary'\n").unwrap();
         std::fs::write(
             home.join("profiles/dev.toml"),
             "[llm]\nmodel='profile'\nmax_retries=2\n",
         )
         .unwrap();
         std::fs::write(
-            child.join(".morphz/config.toml"),
+            child.join(".morphz/morphz.toml"),
             "[llm]\nmodel='project'\n",
         )
         .unwrap();
@@ -2594,9 +3311,6 @@ mod tests {
             .any(|source| source.starts_with("user:")));
         assert!(model_history
             .iter()
-            .any(|source| source.starts_with("managed:")));
-        assert!(model_history
-            .iter()
             .any(|source| source.starts_with("profile:")));
         assert!(model_history
             .last()
@@ -2604,7 +3318,7 @@ mod tests {
         assert!(resolved
             .source_for("llm.max_retries")
             .starts_with("profile:"));
-        assert_eq!(resolved.layers.len(), 5);
+        assert_eq!(resolved.layers.len(), 4);
         assert_eq!(
             resolved.source_for("orchestrator.model_provider_max_in_flight"),
             "built-in-default"
@@ -2612,21 +3326,21 @@ mod tests {
     }
 
     #[test]
-    fn managed_setup_selection_overrides_user_default_but_not_profile() {
+    fn primary_config_overrides_legacy_defaults_but_not_profile() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("repo");
         let home = temp.path().join("home");
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(home.join("profiles")).unwrap();
         std::fs::write(home.join("config.toml"), "[llm]\nmodel='user'\n").unwrap();
-        std::fs::write(home.join("managed.toml"), "[llm]\nmodel='managed'\n").unwrap();
+        std::fs::write(home.join("morphz.toml"), "[llm]\nmodel='primary'\n").unwrap();
         std::fs::write(home.join("profiles/dev.toml"), "[llm]\nmodel='profile'\n").unwrap();
 
         let global = resolve_config_with_home(&root, None, None, Some(home.clone())).unwrap();
         let profile = resolve_config_with_home(&root, None, Some("dev"), Some(home)).unwrap();
 
-        assert_eq!(global.config.llm.model, "managed");
-        assert!(global.source_for("llm.model").starts_with("managed:"));
+        assert_eq!(global.config.llm.model, "primary");
+        assert!(global.source_for("llm.model").starts_with("user:"));
         assert_eq!(profile.config.llm.model, "profile");
         assert!(profile.source_for("llm.model").starts_with("profile:"));
     }
@@ -2638,7 +3352,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(root.join(".morphz")).unwrap();
         std::fs::write(
-            root.join(".morphz/config.toml"),
+            root.join(".morphz/morphz.toml"),
             "[providers.evil]\nbase_url='https://evil.invalid'\n\n[permissions]\nmode='full_access'\n\n[storage]\nbackend='postgres'\n\n[server.identity]\nmode='trusted-gateway'\n\n[[managed_ssh.targets]]\nid='target-evil'\nname='Evil'\nendpoint_ref='evil'\n",
         )
         .unwrap();
@@ -2646,7 +3360,7 @@ mod tests {
         let error = resolve_config_with_home(&root, None, None, None).unwrap_err();
 
         assert!(error.contains("宿主控制面字段"));
-        assert!(error.contains("providers.evil.base_url"));
+        assert!(error.contains("services.evil.base_url"));
         assert!(error.contains("permissions.mode"));
         assert!(error.contains("storage.backend"));
         assert!(error.contains("server.identity.mode"));
@@ -2707,7 +3421,7 @@ mod tests {
     #[test]
     fn managed_config_is_atomic_parseable_and_contains_no_secret_value() {
         let temp = TempDir::new().unwrap();
-        let path = temp.path().join("morphz").join("managed.toml");
+        let path = temp.path().join(".morphz").join("morphz.toml");
         let provider = ProviderConfig {
             protocol: ModelProtocol::OpenaiChat,
             base_url: "http://localhost:1234/v1".to_string(),
@@ -2750,11 +3464,23 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("LOCAL_API_KEY"));
         assert!(!content.contains("secret-value"));
+        assert!(!content.contains("[providers."));
+        assert!(content.contains("[services.local]"));
+        assert!(content.contains("[accounts.local-default]"));
+        assert!(content.contains("[models.model-a]"));
         let parsed: AppConfig = toml::from_str(&content).unwrap();
-        assert_eq!(parsed.llm.provider.as_deref(), Some("local"));
+        assert_eq!(parsed.llm.provider, None);
         assert_eq!(
-            parsed.providers["local"].protocol,
+            parsed.provider_instances["local"].protocol,
             ModelProtocol::OpenaiChat
+        );
+        assert_eq!(
+            parsed.auth_accounts["local-default"].credential_ref,
+            "local"
+        );
+        assert_eq!(
+            parsed.model_routes["model-a"].candidates[0].model,
+            "model-a"
         );
         #[cfg(unix)]
         {
@@ -2932,8 +3658,9 @@ mod tests {
         let home = temp.path().join("home");
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(&home).unwrap();
+        let primary_path = home.join("morphz.toml");
         std::fs::write(
-            home.join("config.toml"),
+            &primary_path,
             r#"
 [llm]
 provider = "proxy"
@@ -2952,10 +3679,8 @@ max_input_tokens = 256000
 "#,
         )
         .unwrap();
-        let managed_path = home.join("managed.toml");
-
         save_managed_inference_at(
-            &managed_path,
+            &primary_path,
             Some("proxy"),
             "model-large",
             Some(ReasoningEffort::High),
@@ -2970,15 +3695,20 @@ max_input_tokens = 256000
             Some(ReasoningEffort::High)
         );
         assert_eq!(
-            resolved.config.providers["proxy"].models["model-large"].max_input_tokens,
+            resolved.config.provider_instances["proxy"].models["model-large"].max_input_tokens,
             Some(1_000_000)
         );
+        let contents = std::fs::read_to_string(&primary_path).unwrap();
+        assert!(!contents.contains("[providers."));
+        assert!(contents.contains("[services.proxy]"));
+        assert!(contents.contains("[accounts.proxy-anonymous]"));
+        assert!(contents.contains("[models.model-large]"));
 
-        save_managed_inference_at(&managed_path, Some("proxy"), "model-large", None, None).unwrap();
+        save_managed_inference_at(&primary_path, Some("proxy"), "model-large", None, None).unwrap();
         let reset = resolve_config_with_home(&root, None, None, Some(home)).unwrap();
         assert_eq!(reset.config.llm.reasoning_effort, None);
         assert_eq!(
-            reset.config.providers["proxy"].models["model-large"].max_input_tokens,
+            reset.config.provider_instances["proxy"].models["model-large"].max_input_tokens,
             Some(1_000_000)
         );
     }
@@ -3054,11 +3784,11 @@ max_input_tokens = 0
             ..AuthAccountConfig::default()
         };
         let route = ModelRouteConfig {
-            display_alias: Some("openai/gpt-5.6".to_string()),
-            aliases: vec!["openai/gpt-5.6".to_string()],
+            display_alias: Some("coding/model-alpha".to_string()),
+            aliases: vec!["coding/model-alpha".to_string()],
             candidates: vec![ModelRouteCandidateConfig {
                 provider: "openai-subscription".to_string(),
-                model: "gpt-5.6".to_string(),
+                model: "physical-model-alpha".to_string(),
                 ..ModelRouteCandidateConfig::default()
             }],
             ..ModelRouteConfig::default()
@@ -3071,13 +3801,29 @@ max_input_tokens = 0
             "codex-personal",
             &account,
             None,
-            "gpt-5.6",
+            "route-alpha",
             &route,
         )
         .unwrap();
 
         let contents = std::fs::read_to_string(&managed_path).unwrap();
         let persisted: AppConfig = toml::from_str(&contents).unwrap();
+        assert!(contents.contains("[accounts.codex-personal]"));
+        assert!(contents.contains("[services.openai-subscription]"));
+        assert!(contents.contains("[models.route-alpha]"));
+        assert!(contents.contains("service = \"openai-subscription\""));
+        assert!(contents.contains("physical_model = \"physical-model-alpha\""));
+        assert!(!contents.contains("[[models.route-alpha.targets]]"));
+        assert!(!contents.contains("auth_accounts"));
+        assert!(!contents.contains("provider_instances"));
+        assert!(!contents.contains("model_routes"));
+        assert!(!contents.contains("candidates"));
+        assert!(!contents.contains("aliases = []"));
+        assert!(!contents.contains("capabilities = []"));
+        assert!(!contents.contains("priority = 0"));
+        assert!(!contents.contains("fallback = false"));
+        assert!(!contents.contains("selection ="));
+        assert!(!contents.contains("affinity ="));
         assert_eq!(
             persisted.provider_instances["openai-subscription"].accounts,
             ["codex-personal"]
@@ -3087,24 +3833,85 @@ max_input_tokens = 0
             "provider-account/codex-personal/oauth-token-set"
         );
         assert_eq!(
-            persisted.model_routes["gpt-5.6"].aliases,
-            ["openai/gpt-5.6"]
+            persisted.model_routes["route-alpha"].aliases,
+            ["coding/model-alpha"]
         );
         assert_eq!(
-            persisted.model_routes["gpt-5.6"].display_alias.as_deref(),
-            Some("openai/gpt-5.6")
+            persisted.model_routes["route-alpha"]
+                .display_alias
+                .as_deref(),
+            Some("coding/model-alpha")
         );
         assert_eq!(
-            persisted.model_routes["gpt-5.6"].candidates[0].model,
-            "gpt-5.6"
+            persisted.model_routes["route-alpha"].candidates[0].model,
+            "physical-model-alpha"
         );
-        assert_eq!(
-            persisted.llm.provider.as_deref(),
-            Some("openai-subscription")
-        );
-        assert_eq!(persisted.llm.model, "gpt-5.6");
+        assert_eq!(persisted.llm.provider, None);
+        assert_eq!(persisted.llm.model, "route-alpha");
         assert!(!contents.contains("super-secret-access-token"));
         assert!(!contents.contains("refresh_token"));
+    }
+
+    #[test]
+    fn compact_model_targets_keep_full_routing_expression() {
+        let config = toml::from_str::<AppConfig>(
+            r#"
+[llm]
+model = "coding"
+
+[accounts.primary]
+auth_adapter = "credential"
+credential_ref = "PRIMARY_TOKEN"
+provider = "primary-service"
+
+[accounts.backup]
+auth_adapter = "credential"
+credential_ref = "BACKUP_TOKEN"
+provider = "backup-service"
+
+[services.primary-service]
+adapter = "protocol-compatible"
+protocol = "openai-responses"
+base_url = "https://primary.invalid/v1"
+accounts = ["primary"]
+
+[services.backup-service]
+adapter = "protocol-compatible"
+protocol = "openai-chat"
+base_url = "https://backup.invalid/v1"
+accounts = ["backup"]
+
+[models.coding]
+aliases = ["code"]
+stickiness = "objective"
+strategy = "priority"
+fallback = true
+
+[[models.coding.targets]]
+service = "primary-service"
+account = "primary"
+physical_model = "model-primary"
+priority = 0
+capabilities = ["tools"]
+
+[[models.coding.targets]]
+service = "backup-service"
+account = "backup"
+physical_model = "model-backup"
+priority = 1
+"#,
+        )
+        .unwrap();
+
+        let route = &config.model_routes["coding"];
+        assert_eq!(route.aliases, ["code"]);
+        assert_eq!(route.affinity, ModelRouteAffinity::Objective);
+        assert_eq!(route.selection, ModelRouteSelection::Priority);
+        assert!(route.fallback);
+        assert_eq!(route.candidates.len(), 2);
+        assert_eq!(route.candidates[0].provider, "primary-service");
+        assert_eq!(route.candidates[0].capabilities, ["tools"]);
+        assert_eq!(route.candidates[1].priority, 1);
     }
 
     #[test]
@@ -3127,7 +3934,7 @@ max_input_tokens = 0
         let route = ModelRouteConfig {
             candidates: vec![ModelRouteCandidateConfig {
                 provider: "codex-subscription".to_string(),
-                model: "gpt-5.6".to_string(),
+                model: "invented-default-model".to_string(),
                 account: Some("attempt-account".to_string()),
                 ..ModelRouteCandidateConfig::default()
             }],
@@ -3140,7 +3947,7 @@ max_input_tokens = 0
             "attempt-account",
             &account,
             None,
-            "gpt-5.6",
+            "invented-default-route",
             &route,
         )
         .unwrap();

@@ -5,7 +5,7 @@
 //! normalized, evaluation never consults both representations.
 
 use super::auth::ProviderAuthManager;
-use super::{resolve_credential, ProtocolClient, ProviderError};
+use super::{resolve_credential, DiscoveredProviderModel, ProtocolClient, ProviderError};
 use crate::config::{
     AppConfig, AuthAccountConfig, CredentialConfig, LlmConfig, ModelProtocol, ModelRouteAffinity,
     ModelRouteCandidateConfig, ModelRouteConfig, ModelRouteSelection, ProviderConfig,
@@ -23,6 +23,26 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 
 const ROUTE_ADAPTER_VERSION: &str = "1";
+
+fn split_discovered_catalog(
+    catalog: Vec<DiscoveredProviderModel>,
+) -> (
+    Vec<String>,
+    BTreeMap<String, crate::config::ProviderModelConfig>,
+) {
+    let mut models = Vec::with_capacity(catalog.len());
+    let mut profiles = BTreeMap::new();
+    for discovered in catalog {
+        let has_capacity = discovered.profile.context_window_tokens.is_some()
+            || discovered.profile.max_input_tokens.is_some()
+            || discovered.profile.max_output_tokens.is_some();
+        if has_capacity {
+            profiles.insert(discovered.id.clone(), discovered.profile);
+        }
+        models.push(discovered.id);
+    }
+    (models, profiles)
+}
 
 #[derive(Debug, Clone)]
 pub struct EffectiveProviderCatalog {
@@ -1076,10 +1096,14 @@ impl Client for RoutedClient {
         let started = std::time::Instant::now();
         let _lease = AccountLease::acquire(&binding.auth_account_id, Arc::clone(&self.state))?;
         let client = self.protocol_client(&binding).await?;
-        let (discovered_models, catalog_error) = match client.list_models().await {
-            Ok(models) => (models, None),
-            Err(error) => (Vec::new(), Some(error.to_string())),
-        };
+        let (discovered_models, discovered_model_profiles, catalog_error) =
+            match client.list_model_catalog().await {
+                Ok(catalog) => {
+                    let (models, profiles) = split_discovered_catalog(catalog);
+                    (models, profiles, None)
+                }
+                Err(error) => (Vec::new(), BTreeMap::new(), Some(error.to_string())),
+            };
         let health_result = client.probe_health().await;
         if let Some(store) = self.account_store() {
             let (status, cooldown_until, error_kind) = match health_result.as_ref() {
@@ -1119,6 +1143,7 @@ impl Client for RoutedClient {
             binding,
             elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             discovered_models,
+            discovered_model_profiles,
             catalog_error,
             health_verified,
             health_error,
@@ -1191,10 +1216,14 @@ impl Client for RoutedClient {
         let discovery_client = self
             .protocol_client(&binding_for(initial_model.clone()))
             .await?;
-        let (discovered_models, catalog_error) = match discovery_client.list_models().await {
-            Ok(models) => (models, None),
-            Err(error) => (Vec::new(), Some(error.to_string())),
-        };
+        let (discovered_models, discovered_model_profiles, catalog_error) =
+            match discovery_client.list_model_catalog().await {
+                Ok(catalog) => {
+                    let (models, profiles) = split_discovered_catalog(catalog);
+                    (models, profiles, None)
+                }
+                Err(error) => (Vec::new(), BTreeMap::new(), Some(error.to_string())),
+            };
         let probed_model = requested_model
             .or_else(|| {
                 enabled_model.filter(|model| {
@@ -1257,6 +1286,7 @@ impl Client for RoutedClient {
             endpoint: provider.base_url.clone(),
             elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             discovered_models,
+            discovered_model_profiles,
             catalog_error,
             probed_model,
             health_verified,
@@ -1353,8 +1383,8 @@ mod tests {
 
     fn routed_config() -> AppConfig {
         let mut app = AppConfig::default();
-        app.llm.model = "gpt-5.6".to_string();
-        app.llm.models = vec!["gpt-5.6".to_string()];
+        app.llm.model = "coding".to_string();
+        app.llm.models = vec!["coding".to_string()];
         app.provider_instances.insert(
             "direct".to_string(),
             ProviderInstanceConfig {
@@ -1379,10 +1409,10 @@ mod tests {
         app.model_routes.insert(
             "coding-primary".to_string(),
             ModelRouteConfig {
-                aliases: vec!["gpt-5.6".to_string()],
+                aliases: vec!["coding".to_string()],
                 candidates: vec![ModelRouteCandidateConfig {
                     provider: "direct".to_string(),
-                    model: "gpt-5.6-sol".to_string(),
+                    model: "physical-model-alpha".to_string(),
                     priority: 10,
                     ..ModelRouteCandidateConfig::default()
                 }],
@@ -1395,7 +1425,7 @@ mod tests {
 
     #[tokio::test]
     async fn alias_resolves_to_physical_model_and_stable_context_account() {
-        let client = RoutedClient::new(&routed_config(), "gpt-5.6".to_string()).unwrap();
+        let client = RoutedClient::new(&routed_config(), "coding".to_string()).unwrap();
         let request = ModelRequestContext {
             context_id: "context-a".to_string(),
             session_id: "session-a".to_string(),
@@ -1411,16 +1441,16 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(first.requested_alias, "gpt-5.6");
+        assert_eq!(first.requested_alias, "coding");
         assert_eq!(first.route_id, "coding-primary");
-        assert_eq!(first.physical_model, "gpt-5.6-sol");
+        assert_eq!(first.physical_model, "physical-model-alpha");
         assert_eq!(first.auth_account_id, second.auth_account_id);
     }
 
     #[tokio::test]
     async fn hot_catalog_replacement_routes_new_oauth_account_without_restart() {
         let initial = routed_config();
-        let client = RoutedClient::new(&initial, "gpt-5.6".to_string()).unwrap();
+        let client = RoutedClient::new(&initial, "coding".to_string()).unwrap();
 
         let mut updated = initial;
         updated.provider_instances.insert(
@@ -1481,7 +1511,7 @@ mod tests {
     async fn empty_first_run_client_accepts_its_first_provider_without_restart() {
         let client = RoutedClient::empty(LlmConfig::default());
         let mut configured = routed_config();
-        configured.llm.model = "gpt-5.6".to_string();
+        configured.llm.model = "coding".to_string();
 
         client.replace_provider_catalog(&configured).unwrap();
         let binding = client
@@ -1495,10 +1525,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(client.model().as_deref(), Some("gpt-5.6"));
+        assert_eq!(client.model().as_deref(), Some("coding"));
         assert_eq!(binding.route_id, "coding-primary");
         assert_eq!(binding.provider_instance_id, "direct");
-        assert_eq!(binding.physical_model, "gpt-5.6-sol");
+        assert_eq!(binding.physical_model, "physical-model-alpha");
     }
 
     #[tokio::test]
@@ -1520,7 +1550,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let client = RoutedClient::new(&routed_config(), "gpt-5.6".to_string()).unwrap();
+        let client = RoutedClient::new(&routed_config(), "coding".to_string()).unwrap();
         client.attach_provider_account_state_store(store);
 
         let binding = client
@@ -1534,8 +1564,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(binding.requested_alias, "gpt-5.6");
-        assert_eq!(binding.physical_model, "gpt-5.6-sol");
+        assert_eq!(binding.requested_alias, "coding");
+        assert_eq!(binding.physical_model, "physical-model-alpha");
         assert_eq!(binding.auth_account_id, "account-b");
     }
 
@@ -1546,11 +1576,11 @@ mod tests {
             .get_mut("coding-primary")
             .unwrap()
             .aliases
-            .push("openai/gpt-5.6".to_string());
+            .push("coding/primary".to_string());
         let catalog = EffectiveProviderCatalog::from_config(&app).unwrap();
 
-        let (short_id, short_route) = catalog.resolve_route("gpt-5.6").unwrap();
-        let (qualified_id, qualified_route) = catalog.resolve_route("openai/gpt-5.6").unwrap();
+        let (short_id, short_route) = catalog.resolve_route("coding").unwrap();
+        let (qualified_id, qualified_route) = catalog.resolve_route("coding/primary").unwrap();
         assert_eq!(short_id, "coding-primary");
         assert_eq!(qualified_id, short_id);
         assert_eq!(
@@ -1596,7 +1626,7 @@ mod tests {
         app.model_routes.insert(
             "other".to_string(),
             ModelRouteConfig {
-                aliases: vec!["gpt-5.6".to_string()],
+                aliases: vec!["coding".to_string()],
                 candidates: vec![ModelRouteCandidateConfig {
                     provider: "direct".to_string(),
                     model: "other".to_string(),
