@@ -4,6 +4,7 @@ export type CognitionView = 'mind' | 'attention' | 'encoding' | 'recall'
 
 export interface DashboardRoute {
   view: DashboardView
+  providerSetup?: boolean
   contextId?: string
   sessionId?: string
   threadId?: string
@@ -26,7 +27,11 @@ export function parseDashboardRoute(pathname: string): DashboardRoute {
   if (segments.length === 0) return { view: 'overview' }
   if (segments[0] === 'runtime') return { view: 'runtime' }
   if (segments[0] === 'credentials') return { view: 'credentials' }
-  if (segments[0] === 'providers') return { view: 'providers' }
+  if (segments[0] === 'providers') {
+    return segments[1] === 'setup'
+      ? { view: 'providers', providerSetup: true }
+      : { view: 'providers' }
+  }
   if (segments[0] !== 'contexts' || !segments[1]) return { view: 'overview' }
 
   const contextId = decoded(segments[1])

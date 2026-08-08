@@ -390,6 +390,8 @@ Context 的物理编码顺序与权限域不同。它固定为 `protocol → eva
 
 20. 能力选择遵循 protocol.skill-discovery-contract 的 fallback：优先使用本轮已有且能直接满足 evaluate.root-input 的 Function Calling 工具；如果没有适用的直接能力或直接能力明确失败，并且本轮提供 list_skills，则先调用 list_skills，按当前意图选择最相关的一项，再用 read 读取它返回路径中的 SKILL.md，并依照其中说明调用真实工具。Skill 是操作说明，不是可直接调用的插件；不得因没有看到特定名称的直接工具就断言没有能力，也不得为了发现能力而预读全部 Skill。只有直接能力与按需发现都失败后，才能说明能力不可用。
 
+21. 时间语义以 evaluation-environment.local-time 为准。向用户解释“现在、今天、明天”、日期、截止时间、日志先后或安排任务时，必须按其中的当地时区理解和表达；创建 timer 或 schedule 的 RFC3339 绝对时间必须带明确 offset。UTC 只是 Runtime 内部存储和传输格式，不得把裸 UTC 时间直接当作用户当地时间；外部证据若原本使用其他时区，应保留原文并在需要时明确换算。
+
 Context 的修改是你的元认知行为；read/write/exec/delegate 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
 pub const SYSTEM_PROMPT_MODE_ENV: &str = "MORPHZ_SYSTEM_PROMPT_MODE";

@@ -260,12 +260,7 @@ pub fn morphz_command_for(locale: Locale) -> Command {
             target_command(locale),
             capability_lease_command(locale),
             execution_command(locale),
-            Command::new("setup")
-                .about(locale.text(
-                    "Configure a model provider interactively",
-                    "交互式配置模型服务商",
-                ))
-                .after_help(locale.text("Example:\n  morphz setup", "示例：\n  morphz setup")),
+            setup_command(locale),
             provider_command(locale),
             model_command(locale),
             profile_command(locale),
@@ -673,8 +668,46 @@ fn dashboard_command(locale: Locale) -> Command {
                 "bind",
                 "ADDR",
                 locale.text("Listen address", "监听地址"),
+            ))
+            .arg(local_switch_arg(
+                "no-open",
+                "no-open",
+                locale.text(
+                    "Print the Dashboard URL without opening a browser",
+                    "只输出控制台地址，不打开浏览器",
+                ),
             )),
-        "Examples:\n  morphz dashboard\n  morphz dashboard --bind=0.0.0.0:8080",
+        "Examples:\n  morphz dashboard\n  morphz dashboard --no-open\n  morphz dashboard --bind=0.0.0.0:8080",
+    )
+}
+
+fn setup_command(locale: Locale) -> Command {
+    output_examples(
+        locale,
+        Command::new("setup")
+            .about(locale.text(
+                "Open guided model provider setup",
+                "打开模型服务商配置向导",
+            ))
+            .long_about(locale.text(
+                "Start the embedded Dashboard directly in guided model provider setup. Use --tui for the fullscreen terminal wizard on SSH or systems without a browser.",
+                "启动内置控制台并直接进入模型服务商配置向导。在 SSH 或没有浏览器的环境中，使用 --tui 启动全屏终端向导。",
+            ))
+            .arg(local_value_arg(
+                "bind",
+                "bind",
+                "ADDR",
+                locale.text("Dashboard listen address", "控制台监听地址"),
+            ).conflicts_with("tui"))
+            .arg(local_switch_arg(
+                "no-open",
+                "no-open",
+                locale.text(
+                    "Print the Setup URL without opening a browser",
+                    "只输出配置向导地址，不打开浏览器",
+                ),
+            ).conflicts_with("tui")),
+        "Examples:\n  morphz setup\n  morphz setup --tui\n  morphz setup --no-open --bind=127.0.0.1:9090",
     )
 }
 

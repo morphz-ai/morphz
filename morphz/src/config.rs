@@ -735,7 +735,10 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             provider: None,
-            model: "gpt-4o-mini".to_string(),
+            // An unconfigured Runtime has no model. A product default here
+            // would be indistinguishable from an operator-selected physical
+            // model and would leak into the Dashboard selector.
+            model: String::new(),
             models: Vec::new(),
             max_retries: 5,
             initial_backoff_secs: 1,
@@ -3637,7 +3640,7 @@ mod tests {
         assert_eq!(cfg.llm.max_retries, 1);
         assert_eq!(cfg.llm.max_output_tokens, Some(131_072));
         assert_eq!(cfg.llm.reasoning_effort, Some(ReasoningEffort::High));
-        assert_eq!(cfg.llm.model, "gpt-4o-mini");
+        assert!(cfg.llm.model.is_empty());
     }
 
     #[test]

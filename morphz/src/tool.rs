@@ -1882,12 +1882,12 @@ impl ScheduleTxTool {
 
         let (operation_name, mutation) = match operation {
             ScheduleOperation::Inspect { .. } => {
-                return Ok(serde_json::json!({
+                return Ok(crate::local_time::localized_runtime_json(serde_json::json!({
                     "status": if inspected.is_some() { "ok" } else { "not_found" },
                     "operation": "inspect",
                     "schedule": inspected,
                     "guidance": "后续修改必须提交这里返回的当前 revision；Runtime 会拒绝过期 revision。"
-                })
+                }))
                 .to_string());
             }
             ScheduleOperation::Pause {
@@ -2199,12 +2199,15 @@ impl ScheduleTxTool {
             // direct Store bridge.
             self.sessions.promote_attached_thread(request).await?
         };
-        Ok(thread_promotion_receipt(mutation).to_string())
+        Ok(
+            crate::local_time::localized_runtime_json(thread_promotion_receipt(mutation))
+                .to_string(),
+        )
     }
 }
 
 fn schedule_mutation_receipt(operation: &str, mutation: ScheduleMutation) -> serde_json::Value {
-    match mutation {
+    crate::local_time::localized_runtime_json(match mutation {
         ScheduleMutation::Updated(schedule) => serde_json::json!({
             "status": "updated",
             "operation": operation,
@@ -2227,7 +2230,7 @@ fn schedule_mutation_receipt(operation: &str, mutation: ScheduleMutation) -> ser
             "status": "not_found",
             "operation": operation
         }),
-    }
+    })
 }
 
 fn validate_promotion_objective(
@@ -2514,7 +2517,7 @@ impl Tool for ScheduleTxTool {
                                         "op": {"const": "enqueue"},
                                         "thread_id": {"type": "string", "description": "目标 Thread ID；省略时为当前 Thread"},
                                         "intent": {"type": "string", "description": "Thread 被唤醒后需要执行的自然语言意图"},
-                                        "not_before": {"type": "string", "description": "RFC 3339 绝对时间"},
+                                        "not_before": {"type": "string", "description": "按 evaluation-environment.local-time 表达的 RFC 3339 绝对时间，必须携带明确 offset；相对等待优先使用 delay_seconds"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
                                         "after": {"type": "array", "items": {"type": "string"}, "description": "依赖 Thread ID，或同一事务中 spawn 的 $client_id"}
                                     },
@@ -2527,7 +2530,7 @@ impl Tool for ScheduleTxTool {
                                         "op": {"const": "spawn"},
                                         "client_id": {"type": "string", "description": "本事务局部名称，可被后续 after 用 $client_id 引用"},
                                         "intent": {"type": "string"},
-                                        "not_before": {"type": "string", "description": "RFC 3339 绝对时间"},
+                                        "not_before": {"type": "string", "description": "按 evaluation-environment.local-time 表达的 RFC 3339 绝对时间，必须携带明确 offset；相对等待优先使用 delay_seconds"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
                                         "every_seconds": {"type": "integer", "minimum": 1, "description": "固定间隔周期；每次到期生成独立 occurrence Thread"},
                                         "after": {"type": "array", "items": {"type": "string"}},
@@ -2589,7 +2592,7 @@ impl Tool for ScheduleTxTool {
                                         "op": {"const": "reschedule"},
                                         "schedule_id": {"type": "string"},
                                         "expected_revision": {"type": "integer", "minimum": 1},
-                                        "not_before": {"type": "string", "description": "新的 RFC 3339 绝对时间；与 delay_seconds 二选一"},
+                                        "not_before": {"type": "string", "description": "新的当地 RFC 3339 绝对时间，必须携带明确 offset；与 delay_seconds 二选一"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
                                         "every_seconds": {"type": "integer", "minimum": 1, "description": "新的周期；省略表示改为一次性"}
                                     },
@@ -3291,7 +3294,7 @@ impl Tool for ScheduleTxTool {
                 self.scheduler.arm(record.clone()).await?;
             }
         }
-        Ok(serde_json::json!({
+        Ok(crate::local_time::localized_runtime_json(serde_json::json!({
             "status": "committed",
             "operations": records,
             "created_thread_ids": threads.iter().map(|thread| &thread.id).collect::<Vec<_>>(),
@@ -3308,7 +3311,7 @@ impl Tool for ScheduleTxTool {
             } else {
                 "调度计划与 Thread Group 已原子持久化。Group 达到 all/any 条件后只产生一次 barrier；attached 会重新唤醒父 Thread，durable 会唤醒绑定 Objective。"
             }
-        })
+        }))
         .to_string())
     }
 }
@@ -3431,7 +3434,7 @@ fn prune_background_task_history() {
 
 pub(crate) fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Value {
     let now = chrono::Utc::now();
-    serde_json::json!({
+    crate::local_time::localized_runtime_json(serde_json::json!({
         "task_id": task.id,
         "status": task.status,
         "command": task.cmd_str,
@@ -3458,7 +3461,7 @@ pub(crate) fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Val
             "sandbox_status": task.sandbox_status,
         },
         "artifact_path": task.artifact_path,
-    })
+    }))
 }
 
 fn background_execution_snapshot(
@@ -3480,7 +3483,7 @@ fn background_execution_snapshot(
     } else {
         job.status.as_str()
     };
-    serde_json::json!({
+    crate::local_time::localized_runtime_json(serde_json::json!({
         "task_id": job.id,
         "execution_job_id": job.id,
         "target_id": job.target_id,
@@ -3507,7 +3510,7 @@ fn background_execution_snapshot(
         "artifact_path": job.request.get("artifact_path"),
         "result_refs": job.result_refs,
         "live_owner": live.is_some(),
-    })
+    }))
 }
 
 pub(crate) fn active_background_task_count(session_id: &str, context_id: &str) -> usize {
@@ -6805,7 +6808,7 @@ impl Tool for CheckTaskAfterTool {
             }
         };
         let task = require_visible_task(&args.task_id)?;
-        Ok(serde_json::json!({
+        Ok(crate::local_time::localized_runtime_json(serde_json::json!({
             "kind": "background_task_check",
             "scheduled": true,
             "waiting": true,
@@ -6815,7 +6818,7 @@ impl Tool for CheckTaskAfterTool {
             "wakeup_at": wakeup_at,
             "task": background_task_snapshot(&task),
             "next_action": "若无需立即发送消息，调用 no_reply 结束当前求值；任务结束或检查点到达时 Runtime 会主动唤醒。不要 sleep、ps、轮询日志或立即重复安排检查点。",
-        })
+        }))
         .to_string())
     }
 }
@@ -7169,12 +7172,12 @@ impl Tool for ListSecretsTool {
                 objective_id: objective_id.as_deref(),
                 target_id: execution_job.as_ref().map(|job| job.target_id.as_str()),
             })?;
-        Ok(serde_json::json!({
+        Ok(crate::local_time::localized_runtime_json(serde_json::json!({
             "status": if secrets.is_empty() { "empty" } else { "ok" },
             "secrets": secrets,
             "value_backend": self.secret_store.backend_id(),
             "guidance": "这里只包含别名。不要索要、读取或回显值；将所需别名放入 exec.requested_permissions.secret_env。"
-        })
+        }))
         .to_string())
     }
 }
@@ -8689,6 +8692,12 @@ Body
         let inspect: serde_json::Value = serde_json::from_str(&inspect).unwrap();
         assert_eq!(inspect["status"], "ok");
         assert_eq!(inspect["schedule"]["revision"], 1);
+        let displayed_due_at = inspect["schedule"]["not_before"].as_str().unwrap();
+        assert!(chrono::DateTime::parse_from_rfc3339(displayed_due_at).is_ok());
+        assert!(
+            !displayed_due_at.ends_with('Z'),
+            "model-facing time: {displayed_due_at}"
+        );
 
         let pause = CURRENT_SESSION_ID
             .scope(

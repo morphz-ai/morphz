@@ -57,7 +57,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import { nextDashboardLanguage } from './i18n/language'
+import { nextDashboardLanguage, persistDashboardLanguage } from './i18n/language'
 import {
   createLiveModelState,
   findReasoningSummaryChainForPayload,
@@ -131,6 +131,7 @@ import {
   conversationEventLane,
   delegatedContextIds,
   formatAgo,
+  formatLocalRfc3339,
   formatTime,
   shortId,
   statusLabel,
@@ -2389,6 +2390,8 @@ const Composer = memo(function Composer({
       ) : null}
       <button
         className="send-button"
+        aria-label={t('composer.send')}
+        title={t('composer.send')}
         disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0) || sending}
         type="button"
         onClick={() => void submit()}
@@ -5562,7 +5565,7 @@ export default function App() {
         title: t('work.schedules.reschedule'),
         description: t('dialog.rescheduleAt'),
         inputLabel: t('dialog.rescheduleAt'),
-        defaultValue: schedule.not_before ?? new Date().toISOString(),
+        defaultValue: formatLocalRfc3339(schedule.not_before ?? new Date()),
         confirmLabel: t('dialog.actions.continue'),
         cancelLabel: t('dialog.actions.cancel'),
       })
@@ -5901,7 +5904,9 @@ export default function App() {
               <button
                 className={`identity-chip principal-chip ${activePrincipalId ? '' : 'unset'} ${principalScope ? 'is-observing' : ''}`}
                 type="button"
+                aria-label={t('header.principalDirectory')}
                 aria-expanded={principalMenuOpen}
+                title={t('header.principalDirectory')}
                 onClick={() => setPrincipalMenuOpen(open => !open)}
               >
                 <Globe className="principal-directory-icon" size={14} />
@@ -5989,7 +5994,7 @@ export default function App() {
 
           <div className="runtime-side">
             <div className="theme-selector" ref={themeSelectorRef}>
-              <button className="theme-button" type="button" aria-expanded={themeMenuOpen} onClick={() => setThemeMenuOpen(open => !open)}>
+              <button className="theme-button" type="button" aria-label={t('theme.title')} aria-expanded={themeMenuOpen} title={t('theme.title')} onClick={() => setThemeMenuOpen(open => !open)}>
                 <Palette size={15} />
                 <span>{currentTheme ? t(currentTheme.labelKey) : ''}</span>
                 <ChevronDown size={12} />
@@ -6199,10 +6204,14 @@ export default function App() {
               {attentionCount > 0 && <em>{attentionCount}</em>}
             </button>
             <button
-              className="theme-button"
+              className="theme-button language-toggle"
               type="button"
               title={t('language.toggle')}
-              onClick={() => { void i18n.changeLanguage(nextDashboardLanguage(i18n.language)) }}
+              onClick={() => {
+                const language = nextDashboardLanguage(i18n.language)
+                persistDashboardLanguage(language)
+                void i18n.changeLanguage(language)
+              }}
             >
               <Globe size={15} />
               <span>{currentLangCode}</span>
@@ -6212,33 +6221,34 @@ export default function App() {
 
         <div className="runtime-navigation-row">
           <nav className="runtime-navigation" aria-label={t('navigation.label')}>
-            <button className={view === 'overview' && !route.contextId ? 'is-active' : ''} type="button" onClick={() => navigate('/')} aria-current={view === 'overview' && !route.contextId ? 'page' : undefined}>
+            <button className={view === 'overview' && !route.contextId ? 'is-active' : ''} type="button" aria-label={t('navigation.overview')} title={t('navigation.overview')} onClick={() => navigate('/')} aria-current={view === 'overview' && !route.contextId ? 'page' : undefined}>
               <CircleDot size={14} /><span>{t('navigation.overview')}</span>
             </button>
-            <button className={view === 'dialogue' ? 'is-active' : ''} type="button" disabled={!selectedSessionId} onClick={() => setView('dialogue')} aria-current={view === 'dialogue' ? 'page' : undefined}>
+            <button className={view === 'dialogue' ? 'is-active' : ''} type="button" aria-label={t('navigation.dialogue')} title={t('navigation.dialogue')} disabled={!selectedSessionId} onClick={() => setView('dialogue')} aria-current={view === 'dialogue' ? 'page' : undefined}>
               <MessageSquare size={14} /><span>{t('navigation.dialogue')}</span>
             </button>
-            <button className={view === 'scheduler' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('scheduler')} aria-current={view === 'scheduler' ? 'page' : undefined}>
+            <button className={view === 'scheduler' ? 'is-active' : ''} type="button" aria-label={t('navigation.scheduler')} title={t('navigation.scheduler')} disabled={!selectedContextId} onClick={() => setView('scheduler')} aria-current={view === 'scheduler' ? 'page' : undefined}>
               <GitBranch size={14} /><span>{t('navigation.scheduler')}</span>{attentionCount > 0 && <em>{attentionCount}</em>}
             </button>
-            <button className={view === 'cognition' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('cognition')} aria-current={view === 'cognition' ? 'page' : undefined}>
+            <button className={view === 'cognition' ? 'is-active' : ''} type="button" aria-label={t('navigation.cognition')} title={t('navigation.cognition')} disabled={!selectedContextId} onClick={() => setView('cognition')} aria-current={view === 'cognition' ? 'page' : undefined}>
               <Brain size={14} /><span>{t('navigation.cognition')}</span>
             </button>
-            <button className={view === 'ledger' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('ledger')} aria-current={view === 'ledger' ? 'page' : undefined}>
+            <button className={view === 'ledger' ? 'is-active' : ''} type="button" aria-label={t('navigation.ledger')} title={t('navigation.ledger')} disabled={!selectedContextId} onClick={() => setView('ledger')} aria-current={view === 'ledger' ? 'page' : undefined}>
               <Database size={14} /><span>{t('navigation.ledger')}</span>
             </button>
-            <button className={view === 'runtime' ? 'is-active' : ''} type="button" onClick={() => setView('runtime')} aria-current={view === 'runtime' ? 'page' : undefined}>
+            <button className={view === 'runtime' ? 'is-active' : ''} type="button" aria-label={t('navigation.runtime')} title={t('navigation.runtime')} onClick={() => setView('runtime')} aria-current={view === 'runtime' ? 'page' : undefined}>
               <Radio size={14} /><span>{t('navigation.runtime')}</span>
             </button>
-            <button className={view === 'credentials' ? 'is-active' : ''} type="button" onClick={() => setView('credentials')} aria-current={view === 'credentials' ? 'page' : undefined}>
+            <button className={view === 'credentials' ? 'is-active' : ''} type="button" aria-label={t('navigation.credentials')} title={t('navigation.credentials')} onClick={() => setView('credentials')} aria-current={view === 'credentials' ? 'page' : undefined}>
               <KeyRound size={14} /><span>{t('navigation.credentials')}</span>
             </button>
-            <button className={view === 'providers' ? 'is-active' : ''} type="button" onClick={() => setView('providers')} aria-current={view === 'providers' ? 'page' : undefined}>
+            <button className={view === 'providers' ? 'is-active' : ''} type="button" aria-label={t('navigation.providers')} title={t('navigation.providers')} onClick={() => setView('providers')} aria-current={view === 'providers' ? 'page' : undefined}>
               <Router size={14} /><span>{t('navigation.providers')}</span>
             </button>
           </nav>
-          {view === 'dialogue' && selectedSessionId && (
-            <div className="conversation-toolbar">
+          <div className="navigation-page-toolbar">
+            {view === 'dialogue' && selectedSessionId && (
+              <div className="conversation-toolbar">
               <div className="conversation-toolbar-session" ref={conversationSessionSelectorRef}>
                 <button
                   className="conversation-toolbar-title"
@@ -6366,8 +6376,9 @@ export default function App() {
                   <Columns2 size={13} /> <span>{t('conversation.layout.split')}</span>
                 </button>
               </div>
-            </div>
-          )}
+              </div>
+            )}
+          </div>
           <div className="immersive-controls">
             <button
               className={`immersive-toggle ${immersiveMode ? 'is-active' : ''}`}
@@ -7383,7 +7394,9 @@ export default function App() {
 
           {view === 'credentials' && <CredentialsPage api={DASHBOARD_API} />}
 
-          {view === 'providers' && <ProvidersPage api={DASHBOARD_API} />}
+          {view === 'providers' && (
+            <ProvidersPage api={DASHBOARD_API} startInSetup={route.providerSetup} />
+          )}
 
           {view === 'cognition' && (
             <section className="cognition-view">

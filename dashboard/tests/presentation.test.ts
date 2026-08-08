@@ -10,7 +10,7 @@ import {
   tintIdForLineage,
   toneForSlot,
 } from '../src/app/objectiveLineage.ts'
-import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, newestConversationEventsForLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
+import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, formatLocalRfc3339, newestConversationEventsForLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
 
 const translations: Record<string, string> = {
   'status.running': 'Running',
@@ -38,6 +38,13 @@ test('presentation helpers keep identifiers and token counts compact', () => {
   assert.equal(shortId('thread-1234567890', 10), '…234567890')
   assert.equal(statusLabel('running', t), 'Running')
   assert.equal(statusLabel('provider_specific', t), 'provider_specific')
+})
+
+test('local RFC 3339 values preserve the instant and expose an explicit offset', () => {
+  const instant = new Date('2026-08-08T00:15:00Z')
+  const local = formatLocalRfc3339(instant)
+  assert.match(local, /[+-]\d{2}:\d{2}$/)
+  assert.equal(new Date(local).getTime(), instant.getTime())
 })
 
 test('delegated Contexts are classified from authoritative child Context ids', () => {

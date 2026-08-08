@@ -5,8 +5,11 @@ import i18next from 'i18next'
 import {
   CHINESE_LANGUAGE,
   createLanguageResources,
+  DASHBOARD_LANGUAGE_STORAGE_KEY,
   ENGLISH_LANGUAGE,
   nextDashboardLanguage,
+  persistDashboardLanguage,
+  resolveInitialDashboardLanguage,
   supportedDashboardLanguages,
 } from '../src/i18n/language.ts'
 
@@ -73,4 +76,32 @@ test('the dashboard language toggle resolves both Chinese and English resources'
   await instance.changeLanguage(nextDashboardLanguage(instance.language))
   assert.equal(instance.resolvedLanguage, ENGLISH_LANGUAGE)
   assert.equal(instance.t('marker'), 'English')
+})
+
+test('first-run Dashboard language follows browser locales until the user chooses explicitly', () => {
+  assert.equal(
+    resolveInitialDashboardLanguage(null, ['zh-Hans-CN', 'en-US']),
+    CHINESE_LANGUAGE,
+  )
+  assert.equal(
+    resolveInitialDashboardLanguage(null, ['fr-FR', 'zh_CN']),
+    CHINESE_LANGUAGE,
+  )
+  assert.equal(
+    resolveInitialDashboardLanguage(null, ['fr-FR', 'en-US']),
+    ENGLISH_LANGUAGE,
+  )
+  assert.equal(
+    resolveInitialDashboardLanguage(ENGLISH_LANGUAGE, ['zh-CN']),
+    ENGLISH_LANGUAGE,
+    'an explicit user preference must take precedence over automatic locale detection',
+  )
+})
+
+test('only an explicit language choice is written to the Morphz preference key', () => {
+  const writes: Array<[string, string]> = []
+  persistDashboardLanguage('zh-Hans', {
+    setItem(key, value) { writes.push([key, value]) },
+  })
+  assert.deepEqual(writes, [[DASHBOARD_LANGUAGE_STORAGE_KEY, CHINESE_LANGUAGE]])
 })

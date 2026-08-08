@@ -200,6 +200,7 @@ type OAuthLoginProgress =
 
 interface ProvidersPageProps {
   api: DashboardApiClient
+  startInSetup?: boolean
 }
 
 type CatalogEditorKind = 'provider_instance' | 'auth_account' | 'model_route'
@@ -367,7 +368,7 @@ function stateSuffix(state?: string): string {
   return state ? `…${state.slice(-8)}` : ''
 }
 
-export function ProvidersPage({ api }: ProvidersPageProps) {
+export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps) {
   const { t } = useTranslation()
   const [snapshot, setSnapshot] = useState<ProviderControlSnapshot>(EMPTY_SNAPSHOT)
   const [oauthSetupServices, setOAuthSetupServices] = useState<OAuthSetupServiceDescriptor[]>([])
@@ -393,7 +394,9 @@ export function ProvidersPage({ api }: ProvidersPageProps) {
   const [diagnosticError, setDiagnosticError] = useState('')
   const [modelEditor, setModelEditor] = useState<AccountModelEditorState | null>(null)
   const [savingModels, setSavingModels] = useState(false)
-  const [setup, setSetup] = useState<ProviderSetupState | null>(null)
+  const [setup, setSetup] = useState<ProviderSetupState | null>(() => (
+    startInSetup ? defaultSetup() : null
+  ))
   const [savingSetup, setSavingSetup] = useState(false)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
   const [discoveringModels, setDiscoveringModels] = useState(false)

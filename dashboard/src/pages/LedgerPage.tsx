@@ -106,7 +106,7 @@ export function LedgerPage({ contextTitle, sessionTitle, events, scannedCount, s
             <div>
               <dl>
                 <dt>{t('ledger.eventId')}</dt><dd><code>{event.id}</code></dd>
-                <dt>{t('ledger.timestamp')}</dt><dd title={event.timestamp}>{new Date(event.timestamp).toLocaleString(i18n.language)}</dd>
+                <dt>{t('ledger.timestamp')}</dt><dd title={new Date(event.timestamp).toLocaleString(i18n.language)}>{new Date(event.timestamp).toLocaleString(i18n.language)}</dd>
                 <dt>{t('ledger.actor')}</dt><dd>{event.actor}</dd>
                 <dt>{t('ledger.topic')}</dt><dd>{event.topic}</dd>
               </dl>

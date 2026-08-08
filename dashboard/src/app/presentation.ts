@@ -102,6 +102,19 @@ export function formatTime(value: string | undefined, locale: string) {
   return date.toLocaleTimeString([locale], { hour: '2-digit', minute: '2-digit' })
 }
 
+/** Format an instant as RFC 3339 in the browser's local time zone. */
+export function formatLocalRfc3339(value: Date | string = new Date()) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (part: number) => String(part).padStart(2, '0')
+  const offsetMinutes = -date.getTimezoneOffset()
+  const sign = offsetMinutes >= 0 ? '+' : '-'
+  const absoluteOffset = Math.abs(offsetMinutes)
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+    + `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+    + `${sign}${pad(Math.floor(absoluteOffset / 60))}:${pad(absoluteOffset % 60)}`
+}
+
 export function formatAgo(value: string | undefined, t: TFunction) {
   if (!value) return '—'
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000))

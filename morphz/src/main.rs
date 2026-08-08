@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{Local, SecondsFormat, Utc};
 use morphz::approval::ApprovalDecision;
 use morphz::cli::{morphz_command, morphz_command_line_parser_for, Invocation};
 use morphz::config;
@@ -37,6 +37,22 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 type AppError = Box<dyn std::error::Error + Send + Sync>;
 
+#[derive(Debug, Clone, Copy)]
+struct LocalRfc3339Time;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalRfc3339Time {
+    fn format_time(
+        &self,
+        writer: &mut tracing_subscriber::fmt::format::Writer<'_>,
+    ) -> std::fmt::Result {
+        write!(
+            writer,
+            "{}",
+            Local::now().to_rfc3339_opts(SecondsFormat::Millis, false)
+        )
+    }
+}
+
 fn init_logging(log_level: Option<&str>, tui_mode: bool) -> Result<(), AppError> {
     let filter = match log_level {
         Some(level) => EnvFilter::try_new(level)?,
@@ -48,14 +64,14 @@ fn init_logging(log_level: Option<&str>, tui_mode: bool) -> Result<(), AppError>
         fmt()
             .with_env_filter(filter)
             .with_target(true)
-            .with_timer(fmt::time::UtcTime::rfc_3339())
+            .with_timer(LocalRfc3339Time)
             .with_writer(std::io::sink)
             .try_init()?;
     } else {
         fmt()
             .with_env_filter(filter)
             .with_target(true)
-            .with_timer(fmt::time::UtcTime::rfc_3339())
+            .with_timer(LocalRfc3339Time)
             .try_init()?;
     }
     Ok(())
@@ -127,7 +143,7 @@ async fn main() -> Result<(), AppError> {
     // Setup is a host-side control-plane action. It must be available before
     // database/runtime initialization and, most importantly, before a model
     // credential exists.
-    if invocation.command_path() == ["setup"] {
+    if invocation.command_path() == ["setup"] && tui_mode {
         let result =
             morphz::setup::run_interactive_setup_for(resolved.config.ui.language.resolve()).await?;
         setup_oauth_account = result.oauth_account;
@@ -363,6 +379,14 @@ fn should_use_tui_with_terminal(
         return Err("--tui 与 --plain 不能同时使用".into());
     }
     let command = invocation.command_path().join(" ");
+    if command == "setup" {
+        if force_plain {
+            return Err(
+                "morphz setup 默认使用 Dashboard；终端向导请使用 --tui，不能使用 --plain".into(),
+            );
+        }
+        return Ok(force_tui);
+    }
     let conversational = matches!(command.as_str(), "" | "resume" | "session resume");
     Ok(conversational && !force_plain && (force_tui || interactive_terminal))
 }
@@ -407,7 +431,11 @@ fn should_run_first_time_setup_with_terminal(
     let interactive_conversation = matches!(command.as_str(), "" | "resume" | "session resume");
     interactive_conversation
         && option_value(invocation, "provider").is_none()
+        && option_value(invocation, "model").is_none()
         && app_config.llm.provider.is_none()
+        && app_config.llm.model.trim().is_empty()
+        && app_config.llm.models.is_empty()
+        && app_config.model_routes.is_empty()
 }
 
 fn dispatch_config_command(
@@ -690,6 +718,7 @@ fn command_needs_llm(invocation: &Invocation) -> bool {
             | "resume"
             | "serve"
             | "dashboard"
+            | "setup"
             | "session resume"
             | "objective create"
             | "objective resume"
@@ -711,6 +740,15 @@ fn build_client(
     );
     let (client, selected) = match configured {
         Ok(configured) => configured,
+        Err(error) if invocation.command_path() == ["setup"] => {
+            tracing::warn!(
+                error = %error,
+                "当前模型配置尚不能执行推理；Setup 以可配置控制面启动"
+            );
+            return Ok(Arc::new(morphz::provider::routing::RoutedClient::empty(
+                app_config.llm.clone(),
+            )));
+        }
         Err(error)
             if (invocation.command_path() == ["serve"]
                 || invocation.command_path() == ["dashboard"])
@@ -819,9 +857,15 @@ async fn dispatch_runtime_command(
             shutdown_signal().await;
             Ok(())
         }
-        "dashboard" => {
+        "dashboard" | "setup" => {
+            let setup_mode = command == "setup";
+            let open_browser = !switch_enabled(&invocation, "no-open")?;
             let token = generate_dashboard_token()?;
-            let browser_url = dashboard_browser_url(&app_config.server.bind, &token)?;
+            let browser_url = if setup_mode {
+                dashboard_setup_browser_url(&app_config.server.bind, &token)?
+            } else {
+                dashboard_browser_url(&app_config.server.bind, &token)?
+            };
             let server = Arc::new(Server::new_with_capacity(
                 runtime,
                 ServerDefaults {
@@ -833,11 +877,20 @@ async fn dispatch_runtime_command(
             server
                 .start_with_dashboard_token(&app_config.server.bind, Some(token))
                 .await?;
-            println!("Dashboard: {browser_url}");
-            if let Err(error) = open_dashboard_browser(&browser_url) {
-                tracing::warn!(%error, "无法自动打开默认浏览器；请手动访问上面的 Dashboard 地址");
+            println!(
+                "{}: {browser_url}",
+                if setup_mode { "Setup" } else { "Dashboard" }
+            );
+            if open_browser {
+                if let Err(error) = open_dashboard_browser(&browser_url) {
+                    tracing::warn!(%error, "无法自动打开默认浏览器；请手动访问上面的地址");
+                }
             }
-            tracing::info!(bind = %app_config.server.bind, "Morphz Dashboard 已启动");
+            if setup_mode {
+                tracing::info!(bind = %app_config.server.bind, "Morphz Dashboard Setup 已启动");
+            } else {
+                tracing::info!(bind = %app_config.server.bind, "Morphz Dashboard 已启动");
+            }
             shutdown_signal().await;
             Ok(())
         }
@@ -1094,7 +1147,8 @@ async fn create_edge_pairing_code(
     } else {
         println!(
             "Pairing code: {}\nExpires at: {}",
-            pairing.code, pairing.expires_at
+            pairing.code,
+            morphz::local_time::format_utc_for_local(pairing.expires_at)
         );
     }
     Ok(())
@@ -2951,7 +3005,7 @@ async fn list_sessions(runtime: &MorphzRuntime, invocation: &Invocation) -> Resu
                 record.status.as_str(),
                 record.attention_state.as_str(),
                 record.context_id,
-                record.last_activity_at.to_rfc3339(),
+                morphz::local_time::format_utc_for_local(record.last_activity_at),
                 record.title
             );
         }
@@ -4413,6 +4467,14 @@ fn generate_dashboard_token() -> Result<String, AppError> {
 }
 
 fn dashboard_browser_url(bind: &str, token: &str) -> Result<String, AppError> {
+    dashboard_browser_url_at(bind, token, "/")
+}
+
+fn dashboard_setup_browser_url(bind: &str, token: &str) -> Result<String, AppError> {
+    dashboard_browser_url_at(bind, token, "/providers/setup")
+}
+
+fn dashboard_browser_url_at(bind: &str, token: &str, path: &str) -> Result<String, AppError> {
     let address: std::net::SocketAddr = bind.parse()?;
     let host = match address.ip() {
         std::net::IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_string(),
@@ -4420,7 +4482,10 @@ fn dashboard_browser_url(bind: &str, token: &str) -> Result<String, AppError> {
         std::net::IpAddr::V6(ip) if ip.is_unspecified() => "[::1]".to_string(),
         std::net::IpAddr::V6(ip) => format!("[{ip}]"),
     };
-    Ok(format!("http://{host}:{}/#token={token}", address.port()))
+    Ok(format!(
+        "http://{host}:{}{path}#token={token}",
+        address.port()
+    ))
 }
 
 fn open_dashboard_browser(url: &str) -> std::io::Result<()> {
@@ -4486,10 +4551,11 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_cli_config, bootstrap_config_language, command_needs_llm, console_message_from_event,
-        create_session_command, dashboard_browser_url, ensure_cli_identity_records,
-        format_tool_call_activity, generate_dashboard_token, parse_terminal_approval_input,
-        read_console_input, resolve_resumed_session, select_or_create_console_session,
+        apply_cli_config, bootstrap_config_language, build_client, command_needs_llm,
+        console_message_from_event, create_session_command, dashboard_browser_url,
+        dashboard_setup_browser_url, ensure_cli_identity_records, format_tool_call_activity,
+        generate_dashboard_token, parse_terminal_approval_input, read_console_input,
+        resolve_resumed_session, select_or_create_console_session,
         should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
         wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
     };
@@ -4523,6 +4589,17 @@ mod tests {
             !should_use_tui_with_terminal(&parser.parse(["exec", "hello"]).unwrap(), true).unwrap()
         );
         assert!(parser.parse(["--tui", "--plain"]).is_err());
+
+        let setup = parser.parse(["setup"]).unwrap();
+        assert!(!should_use_tui_with_terminal(&setup, true).unwrap());
+        let setup_tui = parser.parse(["setup", "--tui"]).unwrap();
+        assert!(should_use_tui_with_terminal(&setup_tui, false).unwrap());
+        let setup_plain = parser.parse(["setup", "--plain"]).unwrap();
+        assert!(should_use_tui_with_terminal(&setup_plain, true).is_err());
+        assert!(parser.parse(["setup", "--tui", "--no-open"]).is_err());
+        assert!(parser
+            .parse(["setup", "--tui", "--bind=127.0.0.1:9090"])
+            .is_err());
     }
 
     #[test]
@@ -4551,8 +4628,20 @@ mod tests {
             &bare, &config, true
         ));
 
-        let provider_override = parser.parse(["--provider=custom"]).unwrap();
         config.llm.provider = None;
+        config.llm.model = "configured-route".to_string();
+        assert!(!should_run_first_time_setup_with_terminal(
+            &bare, &config, true
+        ));
+
+        config.llm.model.clear();
+        config.llm.models.push("configured-model".to_string());
+        assert!(!should_run_first_time_setup_with_terminal(
+            &bare, &config, true
+        ));
+
+        let provider_override = parser.parse(["--provider=custom"]).unwrap();
+        config.llm.models.clear();
         assert!(!should_run_first_time_setup_with_terminal(
             &provider_override,
             &config,
@@ -4830,6 +4919,10 @@ mod tests {
             dashboard_browser_url("[::]:9090", &first).unwrap(),
             format!("http://[::1]:9090/#token={first}")
         );
+        assert_eq!(
+            dashboard_setup_browser_url("0.0.0.0:8080", &first).unwrap(),
+            format!("http://127.0.0.1:8080/providers/setup#token={first}")
+        );
 
         let error = morphz_command_line_parser()
             .parse(["dashboard", "--help"])
@@ -4837,6 +4930,15 @@ mod tests {
         let help = error.to_string();
         assert!(help.contains("cryptographically random temporary authentication token"));
         assert!(help.contains("morphz dashboard --bind=0.0.0.0:8080"));
+
+        let setup_help = morphz_command_line_parser()
+            .parse(["setup", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(setup_help.contains("Start the embedded Dashboard directly"));
+        assert!(setup_help.contains("morphz setup --tui"));
+        assert!(setup_help.contains("--bind <ADDR>"));
+        assert!(setup_help.contains("--no-open"));
     }
 
     #[test]
@@ -4848,12 +4950,28 @@ mod tests {
         ));
         assert!(command_needs_llm(&parser.parse(["resume"]).unwrap()));
         assert!(command_needs_llm(&parser.parse(["dashboard"]).unwrap()));
+        assert!(command_needs_llm(&parser.parse(["setup"]).unwrap()));
         assert!(!command_needs_llm(
             &parser.parse(["session", "list"]).unwrap()
         ));
         assert!(!command_needs_llm(
             &parser.parse(["agent", "create", "--id=a1"]).unwrap()
         ));
+    }
+
+    #[test]
+    fn dashboard_setup_can_boot_without_a_complete_model_configuration() {
+        let parser = morphz_command_line_parser();
+        let setup = parser.parse(["setup"]).unwrap();
+        let empty = AppConfig::default();
+        assert!(build_client(&setup, &empty, true).is_ok());
+
+        let mut partial = AppConfig::default();
+        partial.provider_instances.insert(
+            "unfinished-service".to_string(),
+            morphz::config::ProviderInstanceConfig::default(),
+        );
+        assert!(build_client(&setup, &partial, true).is_ok());
     }
 
     #[tokio::test]

@@ -236,7 +236,7 @@ fn remove_accounts_from_catalog(config: &mut AppConfig, account_ids: &BTreeSet<S
         config.llm.provider = None;
     }
     if empty_routes.contains(&config.llm.model) {
-        config.llm.model = AppConfig::default().llm.model;
+        config.llm.model.clear();
     }
 }
 

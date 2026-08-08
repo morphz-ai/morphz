@@ -591,7 +591,7 @@ impl Tool for ObjectiveUpdateTool {
                                 "type": "object",
                                 "properties": {
                                     "kind": { "const": "timer" },
-                                    "deadline": { "type": "string", "format": "date-time" }
+                                    "deadline": { "type": "string", "format": "date-time", "description": "按 evaluation-environment.local-time 表达的 RFC 3339 绝对时间，必须携带明确 offset" }
                                 },
                                 "required": ["kind", "deadline"]
                             },
@@ -708,32 +708,34 @@ impl Tool for ObjectiveUpdateTool {
                         args.evidence_refs.clone(),
                     )
                     .await?;
-                return Ok(serde_json::to_string_pretty(&match mutation {
-                    ObjectiveMutation::Updated(updated) => json!({
-                        "status": "completion_prepared",
-                        "objective_id": updated.id,
-                        "revision": updated.revision,
-                        "objective_status": updated.status,
-                        "objective_phase": "finalizing",
-                        "evidence_refs": args.evidence_refs,
-                        "next_action": "在当前 Activation 中返回完整、无工具的最终报告；最终回复将与 Objective、Activation、Thread 和 ThreadOutcome 原子提交。"
+                return Ok(serde_json::to_string_pretty(
+                    &crate::local_time::localized_runtime_json(match mutation {
+                        ObjectiveMutation::Updated(updated) => json!({
+                            "status": "completion_prepared",
+                            "objective_id": updated.id,
+                            "revision": updated.revision,
+                            "objective_status": updated.status,
+                            "objective_phase": "finalizing",
+                            "evidence_refs": args.evidence_refs,
+                            "next_action": "在当前 Activation 中返回完整、无工具的最终报告；最终回复将与 Objective、Activation、Thread 和 ThreadOutcome 原子提交。"
+                        }),
+                        ObjectiveMutation::Conflict { current } => json!({
+                            "status": "revision_conflict",
+                            "objective_id": current.id,
+                            "expected_revision": args.base_revision,
+                            "current_revision": current.revision,
+                            "current_status": current.status,
+                            "current_status_reason": current.status_reason,
+                            "wait_condition": current.wait_condition,
+                            "completion_intent": current.completion_intent,
+                            "guidance": "以最新 Context Encoding 为准重新判断，禁止用过期 revision 覆盖。"
+                        }),
+                        ObjectiveMutation::NotFound => json!({
+                            "status": "not_found",
+                            "objective_id": args.objective_id
+                        }),
                     }),
-                    ObjectiveMutation::Conflict { current } => json!({
-                        "status": "revision_conflict",
-                        "objective_id": current.id,
-                        "expected_revision": args.base_revision,
-                        "current_revision": current.revision,
-                        "current_status": current.status,
-                        "current_status_reason": current.status_reason,
-                        "wait_condition": current.wait_condition,
-                        "completion_intent": current.completion_intent,
-                        "guidance": "以最新 Context Encoding 为准重新判断，禁止用过期 revision 覆盖。"
-                    }),
-                    ObjectiveMutation::NotFound => json!({
-                        "status": "not_found",
-                        "objective_id": args.objective_id
-                    }),
-                })?);
+                )?);
             }
             AgentObjectiveStatus::Blocked => {
                 if args.wait_condition.is_some() {
@@ -763,37 +765,39 @@ impl Tool for ObjectiveUpdateTool {
                 Some(reason),
             )
             .await?;
-        Ok(serde_json::to_string_pretty(&match mutation {
-            ObjectiveMutation::Updated(updated) => json!({
-                "status": "committed",
-                "objective_id": updated.id,
-                "revision": updated.revision,
-                "objective_status": updated.status,
-                "wait_condition": updated.wait_condition,
-                "evidence_refs": args.evidence_refs,
-                "next_action": if updated.status == ObjectiveStatus::Blocked {
-                    "返回无工具普通文本向使用者说明阻塞原因；Runtime 将停止自动续跑，直到收到显式恢复。"
-                } else if updated.wait_condition.is_some() {
-                    "返回普通文本说明等待状态，或调用 no_reply 明确无需发送消息；Runtime 将在条件满足时唤醒。"
-                } else {
-                    "继续推进 Objective。"
-                }
+        Ok(serde_json::to_string_pretty(
+            &crate::local_time::localized_runtime_json(match mutation {
+                ObjectiveMutation::Updated(updated) => json!({
+                    "status": "committed",
+                    "objective_id": updated.id,
+                    "revision": updated.revision,
+                    "objective_status": updated.status,
+                    "wait_condition": updated.wait_condition,
+                    "evidence_refs": args.evidence_refs,
+                    "next_action": if updated.status == ObjectiveStatus::Blocked {
+                        "返回无工具普通文本向使用者说明阻塞原因；Runtime 将停止自动续跑，直到收到显式恢复。"
+                    } else if updated.wait_condition.is_some() {
+                        "返回普通文本说明等待状态，或调用 no_reply 明确无需发送消息；Runtime 将在条件满足时唤醒。"
+                    } else {
+                        "继续推进 Objective。"
+                    }
+                }),
+                ObjectiveMutation::Conflict { current } => json!({
+                    "status": "revision_conflict",
+                    "objective_id": current.id,
+                    "expected_revision": args.base_revision,
+                    "current_revision": current.revision,
+                    "current_status": current.status,
+                    "current_status_reason": current.status_reason,
+                    "wait_condition": current.wait_condition,
+                    "guidance": "以最新 Context Encoding 为准重新判断，禁止用过期 revision 覆盖。"
+                }),
+                ObjectiveMutation::NotFound => json!({
+                    "status": "not_found",
+                    "objective_id": args.objective_id
+                }),
             }),
-            ObjectiveMutation::Conflict { current } => json!({
-                "status": "revision_conflict",
-                "objective_id": current.id,
-                "expected_revision": args.base_revision,
-                "current_revision": current.revision,
-                "current_status": current.status,
-                "current_status_reason": current.status_reason,
-                "wait_condition": current.wait_condition,
-                "guidance": "以最新 Context Encoding 为准重新判断，禁止用过期 revision 覆盖。"
-            }),
-            ObjectiveMutation::NotFound => json!({
-                "status": "not_found",
-                "objective_id": args.objective_id
-            }),
-        })?)
+        )?)
     }
 }
 

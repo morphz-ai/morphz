@@ -2472,9 +2472,6 @@ impl MorphzRuntime {
                 .iter()
                 .filter_map(|candidate| {
                     let provider = snapshot.provider_instances.get(&candidate.provider)?;
-                    if !provider.models.contains_key(&candidate.model) {
-                        return None;
-                    }
                     let account_available = |account_id: &str| {
                         snapshot
                             .auth_accounts
@@ -7525,6 +7522,70 @@ mod tests {
             .await
             .unwrap();
         assert!(sqlite.get_agent("injected-agent").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn unconfigured_runtime_exposes_no_invented_models() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+
+        assert!(runtime.model().is_empty());
+        assert!(runtime.configured_models().is_empty());
+        assert!(runtime.inference_model_options().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn explicit_routes_are_selectable_without_duplicate_service_model_entries() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.llm.model = "configured-route".to_string();
+        config.provider_instances.insert(
+            "configured-service".to_string(),
+            crate::config::ProviderInstanceConfig {
+                adapter: "protocol-compatible".to_string(),
+                protocol: crate::config::ModelProtocol::OpenaiResponses,
+                base_url: "https://models.example.test/v1".to_string(),
+                accounts: vec!["configured-account".to_string()],
+                ..crate::config::ProviderInstanceConfig::default()
+            },
+        );
+        config.auth_accounts.insert(
+            "configured-account".to_string(),
+            AuthAccountConfig {
+                auth_adapter: "none".to_string(),
+                provider: Some("configured-service".to_string()),
+                ..AuthAccountConfig::default()
+            },
+        );
+        config.model_routes.insert(
+            "configured-route".to_string(),
+            crate::config::ModelRouteConfig {
+                candidates: vec![crate::config::ModelRouteCandidateConfig {
+                    provider: "configured-service".to_string(),
+                    account: Some("configured-account".to_string()),
+                    model: "physical-model".to_string(),
+                    ..crate::config::ModelRouteCandidateConfig::default()
+                }],
+                ..crate::config::ModelRouteConfig::default()
+            },
+        );
+
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let options = runtime.inference_model_options().await.unwrap();
+
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].id, "configured-route");
+        assert_eq!(options[0].label, "physical-model");
+        assert_eq!(options[0].physical_models, ["physical-model"]);
+        assert_eq!(options[0].source, "configured");
     }
 
     #[tokio::test]

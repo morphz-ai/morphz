@@ -35,7 +35,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 26;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 27;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 
@@ -2711,7 +2711,9 @@ impl ContextEngine {
                     command_preview,
                     elapsed_secs: (now - task.started_at).num_seconds().max(0),
                     last_output_age_secs: (now - task.last_output_at).num_seconds().max(0),
-                    next_wakeup_at: task.next_wakeup_at.map(|time| time.to_rfc3339()),
+                    next_wakeup_at: task
+                        .next_wakeup_at
+                        .map(crate::local_time::format_utc_for_local),
                 }
             })
             .collect::<Vec<_>>();
@@ -5929,7 +5931,10 @@ fn render_thread_scheduler(
                 fields.push(pair("intent-truncated", atom("true")));
             }
             if let Some(not_before) = intent.not_before {
-                fields.push(pair("not-before", atom(not_before.to_rfc3339())));
+                fields.push(pair(
+                    "not-before",
+                    atom(crate::local_time::format_utc_for_local(not_before)),
+                ));
             }
             if let Some(interval_seconds) = intent.interval_seconds {
                 fields.push(pair("every-seconds", atom(interval_seconds.to_string())));
@@ -6163,9 +6168,13 @@ fn render_objective_wait(wait: &crate::memory::ObjectiveWaitCondition) -> SExpr 
             "delegation",
             vec![pair("delegation-id", atom(delegation_id))],
         ),
-        ObjectiveWaitCondition::Timer { deadline } => {
-            list("timer", vec![pair("deadline", atom(deadline.to_rfc3339()))])
-        }
+        ObjectiveWaitCondition::Timer { deadline } => list(
+            "timer",
+            vec![pair(
+                "deadline",
+                atom(crate::local_time::format_utc_for_local(*deadline)),
+            )],
+        ),
         ObjectiveWaitCondition::Permission { request_id } => {
             list("permission", vec![pair("request-id", atom(request_id))])
         }
@@ -6542,7 +6551,12 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                         }),
                     ),
                     pair("title", atom(&session.title)),
-                    pair("last-activity", atom(session.last_activity_at.to_rfc3339())),
+                    pair(
+                        "last-activity",
+                        atom(crate::local_time::format_utc_for_local(
+                            session.last_activity_at,
+                        )),
+                    ),
                 ];
                 fields.push(list(
                     "principals",
@@ -6790,7 +6804,12 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
             pair("kind", atom(&observation.kind)),
             pair("topic", atom(&observation.topic)),
             pair("actor", atom(&observation.actor)),
-            pair("timestamp", atom(&observation.timestamp)),
+            pair(
+                "timestamp",
+                atom(crate::local_time::format_rfc3339_for_local(
+                    &observation.timestamp,
+                )),
+            ),
             list(
                 "content",
                 vec![
@@ -6867,6 +6886,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
     // protocol and append-mostly Inbox must precede all ordinary per-request
     // state. Retiring an old observation intentionally changes the Inbox and
     // starts a new cache lineage; ordinary wake/budget/Mind changes do not.
+    let local_clock = crate::local_time::LocalTimeSnapshot::capture();
     let mut context = vec![
         atom("context"),
         render_protocol(),
@@ -6876,7 +6896,22 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         SExpr::List(mind),
         session_directory,
         SExpr::List(kernel),
-        list("evaluation-environment", Vec::new()),
+        list(
+            "evaluation-environment",
+            vec![list(
+                "local-time",
+                vec![
+                    pair("current", atom(local_clock.current_rfc3339())),
+                    pair("time-zone", atom(&local_clock.time_zone)),
+                    pair("utc-offset", atom(local_clock.utc_offset())),
+                    pair("calendar", atom("gregorian")),
+                    pair(
+                        "contract",
+                        atom("面向用户解释日期、今天、明天、截止时间或安排任务时，以此当地时间和时区为准；RFC3339 绝对时间必须携带明确偏移。UTC 只用于 Runtime 内部存储、排序与协议传输"),
+                    ),
+                ],
+            )],
+        ),
     ];
     if let Some(evaluation) = activation {
         context.push(render_evaluation_directive(
@@ -7011,6 +7046,23 @@ fn render_protocol() -> SExpr {
                     pair("shared-evidence", atom("inbox observation 按 session 标记来源，但均属于当前 Context，可跨 Session 推理与复用")),
                     pair("reply-routing", atom("无工具普通 assistant 文本与可见 progress 必须对应 kernel.active-session；其他 Session 使用 send_message")),
                     pair("write-serialization", atom("context_tx 修改共享 Mind；Runtime 按 Context 串行提交并执行 version 检查")),
+                ],
+            ),
+            list(
+                "time-contract",
+                vec![
+                    pair(
+                        "authority",
+                        atom("evaluation-environment.local-time 是面向用户理解和安排日期时间的权威当地时钟"),
+                    ),
+                    pair(
+                        "absolute-time",
+                        atom("解释今天、明天、日期、截止时间与调度时必须使用当地时间；提交 RFC3339 绝对时间必须携带明确 UTC offset"),
+                    ),
+                    pair(
+                        "utc-boundary",
+                        atom("UTC 仅用于 Runtime 内部持久化、排序与协议传输，不得把裸 UTC 时间当作用户当地时间表达"),
+                    ),
                 ],
             ),
             list(
@@ -10563,6 +10615,22 @@ mod tests {
             parsed.get_path(&["protocol", "version"]),
             Some(&SExpr::Atom(CONTEXT_PROTOCOL_VERSION.to_string()))
         );
+        let local_current = match parsed
+            .get_path(&["evaluation-environment", "local-time", "current"])
+            .expect("local current time")
+        {
+            SExpr::Atom(value) => value,
+            other => panic!("unexpected local current time: {other:?}"),
+        };
+        assert!(chrono::DateTime::parse_from_rfc3339(local_current).is_ok());
+        assert!(!local_current.ends_with('Z'));
+        assert!(matches!(
+            parsed.get_path(&["evaluation-environment", "local-time", "time-zone"]),
+            Some(SExpr::Atom(value)) if !value.trim().is_empty()
+        ));
+        assert!(parsed
+            .get_path(&["protocol", "time-contract", "authority"])
+            .is_some());
         assert_eq!(
             parsed.get_path(&["kernel", "version"]),
             Some(&SExpr::Atom("1".to_string()))

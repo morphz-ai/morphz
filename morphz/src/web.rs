@@ -8769,7 +8769,13 @@ mod tests {
             .unwrap();
         let status_json: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
         assert_eq!(status_json["agent_id"], json!("agent-test"));
-        assert_eq!(status_json["model"], json!("gpt-4o-mini"));
+        assert_eq!(status_json["model"], json!(""));
+        assert_eq!(status_json["models"], json!(["fixture-model"]));
+        assert_eq!(
+            status_json["model_options"][0]["id"],
+            json!("fixture-model")
+        );
+        assert_eq!(status_json["model_options"][0]["source"], json!("manual"));
         assert_eq!(status_json["storage_backend"], json!("sqlite"));
         assert!(status_json["git_commit"].is_string());
         assert!(status_json["uptime_seconds"].is_number());

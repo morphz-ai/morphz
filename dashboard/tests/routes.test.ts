@@ -19,6 +19,10 @@ test('dashboard routes expose every stable top-level surface', () => {
   assert.equal(dashboardPath('cognition', 'ctx', undefined, 'encoding'), '/contexts/ctx/cognition/encoding')
   assert.equal(dashboardPath('ledger', 'ctx'), '/contexts/ctx/ledger')
   assert.equal(dashboardPath('runtime'), '/runtime')
+  assert.deepEqual(parseDashboardRoute('/providers/setup'), {
+    view: 'providers',
+    providerSetup: true,
+  })
   assert.equal(threadPath('context/a', 'thread b'), '/contexts/context%2Fa/threads/thread%20b')
   assert.deepEqual(parseDashboardRoute('/contexts/context%2Fa/threads/thread%20b'), {
     view: 'scheduler',

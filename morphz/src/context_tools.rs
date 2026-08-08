@@ -150,8 +150,8 @@ impl Tool for RecallTool {
                     "event_id": { "type": "string", "description": "Context observation 的稳定短 ref（如 @e27），也接受完整 Ledger event ID" },
                     "frame_id": { "type": "string", "description": "已存在或已退役的 frame ID" },
                     "query": { "type": "string", "description": "可选关键词；在当前 Cognitive Context 的 Ledger 中搜索（覆盖其中所有 Session）" },
-                    "start_time": { "type": "string", "format": "date-time", "description": "可选起始时间（RFC 3339，包含）；可不提供 query 直接按时间召回" },
-                    "end_time": { "type": "string", "format": "date-time", "description": "可选结束时间（RFC 3339，不包含）" },
+                    "start_time": { "type": "string", "format": "date-time", "description": "可选起始时间（RFC 3339，包含）；按 evaluation-environment.local-time 理解，必须携带明确 offset；可不提供 query 直接按时间召回" },
+                    "end_time": { "type": "string", "format": "date-time", "description": "可选结束时间（RFC 3339，不包含）；按当地时间理解并携带明确 offset" },
                     "offset": { "type": "integer", "minimum": 0, "description": "读取 event 原文的字符偏移；连续分页时必须使用上次结果的 next_offset" },
                     "limit": { "type": "integer", "minimum": 1, "maximum": max_chunk_chars, "description": format!("单次返回字符数，上限 {max_chunk_chars}") }
                     ,"depth": { "type": "integer", "minimum": 0, "maximum": 4, "description": "frame_id 模式的关系遍历深度；0 只返回目标 Frame" }
@@ -272,7 +272,7 @@ impl Tool for RecallTool {
                     "revision": hit.revision,
                     "retired": hit.retired,
                     "score": hit.score,
-                    "timestamp": hit.occurred_at,
+                    "timestamp": hit.occurred_at.map(crate::local_time::format_utc_for_local),
                     "preview": hit.preview,
                     "suggested_recall": suggested_recall,
                 })
@@ -280,8 +280,8 @@ impl Tool for RecallTool {
             .collect::<Vec<_>>();
         Ok(serde_json::to_string_pretty(&serde_json::json!({
             "query": query,
-            "start_time": page_start_time,
-            "end_time": page_end_time,
+            "start_time": page_start_time.map(crate::local_time::format_utc_for_local),
+            "end_time": page_end_time.map(crate::local_time::format_utc_for_local),
             "matches": matches,
             "next_cursor": next_cursor,
             "paging_instruction": paging_instruction,
@@ -331,7 +331,7 @@ fn event_chunk(
         "kind": event.event_type,
         "topic": event.topic,
         "actor": event.actor,
-        "timestamp": event.timestamp,
+        "timestamp": crate::local_time::format_utc_for_local(event.timestamp),
         "offset": offset,
         "total_chars": total_chars,
         "next_offset": next_offset,
@@ -774,6 +774,14 @@ mod tests {
             .unwrap();
         let first: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(first["matches"][0]["document_id"], "event:time-2");
+        for timestamp in [
+            first["start_time"].as_str().unwrap(),
+            first["end_time"].as_str().unwrap(),
+            first["matches"][0]["timestamp"].as_str().unwrap(),
+        ] {
+            assert!(chrono::DateTime::parse_from_rfc3339(timestamp).is_ok());
+            assert!(!timestamp.ends_with('Z'), "model-facing time: {timestamp}");
+        }
         let cursor = first["next_cursor"].as_str().unwrap();
 
         let second = CURRENT_CONTEXT_ID
