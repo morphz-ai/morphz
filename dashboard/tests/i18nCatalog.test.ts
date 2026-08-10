@@ -55,6 +55,25 @@ test('runtime overview uses Chinese product language consistently', () => {
   }
 })
 
+test('Mind Frame uses the canonical product term in both languages', () => {
+  const zh = JSON.parse(readFileSync(
+    new URL('../src/i18n/locales/zh.json', import.meta.url),
+    'utf8',
+  )) as { ledger: { openFrame: string }, mindView: Record<string, unknown> }
+  const en = JSON.parse(readFileSync(
+    new URL('../src/i18n/locales/en.json', import.meta.url),
+    'utf8',
+  )) as { ledger: { openFrame: string }, mindView: Record<string, unknown> }
+  const zhMindView = strings(zh.mindView).join('\n')
+  const enMindView = strings(en.mindView).join('\n')
+
+  assert.equal(zh.ledger.openFrame, '打开认知帧')
+  assert.equal(zhMindView.includes('认知框架'), false)
+  assert.equal(zhMindView.includes('认知帧'), true)
+  assert.equal(en.ledger.openFrame, 'Open Mind Frame')
+  assert.equal(enMindView.includes('Mind Frame'), true)
+})
+
 test('the dashboard language toggle resolves both Chinese and English resources', async () => {
   const instance = i18next.createInstance()
   await instance.init({

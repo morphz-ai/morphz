@@ -701,7 +701,7 @@ impl UiState {
             .count();
         self.context_status = if self.locale.is_chinese() {
             format!(
-                "{} · {}/{} · {} 个认知框架 · {}+{} 个会话 · {} 项求值 · {} 个线程组 · {} 个目标",
+                "{} · {}/{} · {} 个认知帧 · {}+{} 个会话 · {} 项求值 · {} 个线程组 · {} 个目标",
                 localized_pressure(self.locale, &view.pressure.level),
                 compact_count(view.pressure.estimated_tokens),
                 compact_count(view.pressure.hard_limit),
@@ -1406,9 +1406,9 @@ impl UiState {
                 ),
                 Span::styled(
                     if self.locale.is_chinese() {
-                        format!("{frames} 个认知框架")
+                        format!("{frames} 个认知帧")
                     } else {
-                        format!("{frames} frames")
+                        format!("{frames} Mind Frames")
                     },
                     Style::default()
                         .fg(self.theme.text_primary)
@@ -2066,8 +2066,8 @@ impl UiState {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             self.tr(
-                "Free-form frames appear only in the cognition view; the Runtime never guesses that they are tasks.",
-                "自由认知框架仅在认知视图中呈现；运行时不会猜测它们是任务。",
+                "Free-form Mind Frames appear only in the cognition view; the Runtime never guesses that they are tasks.",
+                "自由认知帧仅在认知视图中呈现；运行时不会猜测它们是任务。",
             ),
             Style::default().fg(self.theme.text_muted),
         )));
@@ -2127,7 +2127,7 @@ impl UiState {
             )),
             Line::from(""),
             section_title(
-                self.tr("FRAMES", "认知框架"),
+                self.tr("MIND FRAMES", "认知帧"),
                 view.state.frames.len(),
                 self.theme.text_secondary,
                 self.theme.text_muted,
@@ -2177,8 +2177,8 @@ impl UiState {
         if view.state.frames.is_empty() {
             lines.push(empty_state_line(
                 self.tr(
-                    "The shared cognition has not formed any frames yet",
-                    "共享认知尚未形成任何认知框架",
+                    "The shared cognition has not formed any Mind Frames yet",
+                    "共享认知尚未形成任何认知帧",
                 ),
                 self.theme.text_muted,
             ));
@@ -2863,7 +2863,7 @@ impl UiState {
         self.render_metric_card(
             frame,
             metrics[0],
-            self.tr("FRAMES", "认知框架"),
+            self.tr("MIND FRAMES", "认知帧"),
             view.state.frames.len().to_string(),
             self.tr("cognitive units", "认知单元").to_string(),
             self.theme.focus,
@@ -2959,7 +2959,7 @@ impl UiState {
         self.render_section_panel(
             frame,
             body[0],
-            self.tr("COGNITIVE FRAMES", "认知框架"),
+            self.tr("MIND FRAMES", "认知帧"),
             view.state.frames.len(),
             frame_lines,
             self.theme.focus,
@@ -3094,7 +3094,7 @@ impl UiState {
         let block = Block::default()
             .title(Line::from(vec![
                 Span::styled(
-                    self.tr(" COGNITIVE FRAMES ", " 认知框架 "),
+                    self.tr(" MIND FRAMES ", " 认知帧 "),
                     Style::default()
                         .fg(self.theme.focus)
                         .add_modifier(Modifier::BOLD),
@@ -3122,8 +3122,8 @@ impl UiState {
             Paragraph::new(vec![
                 Line::from(Span::styled(
                     self.tr(
-                        "○  The shared cognition has not formed any frames yet",
-                        "○  共享认知尚未形成任何认知框架",
+                        "○  The shared cognition has not formed any Mind Frames yet",
+                        "○  共享认知尚未形成任何认知帧",
                     ),
                     Style::default()
                         .fg(self.theme.text_secondary)
@@ -3705,7 +3705,7 @@ impl UiState {
                 Line::from("  Ctrl+J                插入换行（通用备用）"),
                 Line::from("  Ctrl+T                切换任务视图"),
                 Line::from("  Ctrl+W                任务视图兼容快捷键"),
-                Line::from("  Ctrl+K                切换认知框架视图"),
+                Line::from("  Ctrl+K                切换认知帧视图"),
                 Line::from("  Ctrl+P                切换内嵌终端"),
                 Line::from("  Tab                   切换任务概要和诊断"),
                 Line::from("  Esc                   返回对话视图"),
@@ -6841,7 +6841,7 @@ mod tests {
 
     #[test]
     fn empty_mind_uses_one_centered_cognitive_frame_surface() {
-        let state = test_state(Composer::new());
+        let mut state = test_state(Composer::new());
         let mut terminal = Terminal::new(TestBackend::new(120, 16)).unwrap();
         terminal
             .draw(|frame| state.render_mind_empty_state(frame, frame.area(), 7))
@@ -6853,7 +6853,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(screen.contains("COGNITIVE FRAMES"));
+        assert!(screen.contains("MIND FRAMES"));
         assert!(screen.contains("r7"));
         assert!(!screen.contains("CONTEXT INSPECTOR"));
         assert!(!screen.contains("SELF-MAINTAINED"));
@@ -6862,6 +6862,22 @@ mod tests {
             .iter()
             .any(|cell| cell.fg == state.theme.focus));
         assert!(buffer.content().iter().all(|cell| cell.bg == Color::Reset));
+
+        state.locale = Locale::SimplifiedChinese;
+        let mut localized_terminal = Terminal::new(TestBackend::new(120, 16)).unwrap();
+        localized_terminal
+            .draw(|frame| state.render_mind_empty_state(frame, frame.area(), 7))
+            .unwrap();
+        let localized_screen = localized_terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .replace(' ', "");
+        assert!(localized_screen.contains("认知帧"));
+        assert!(!localized_screen.contains("认知框架"));
     }
 
     #[test]

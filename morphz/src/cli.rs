@@ -1515,16 +1515,16 @@ fn context_command(locale: Locale) -> Command {
                 ]),
             Command::new("recall")
                 .about(locale.text(
-                    "Search Context memory or traverse one Frame lineage",
-                    "搜索上下文记忆或遍历一个认知框架的血缘",
+                    "Search Context memory or traverse one Mind Frame lineage",
+                    "搜索上下文记忆或遍历一个认知帧的血缘",
                 ))
                 .subcommands([
                     output_examples(
                         locale,
                         Command::new("search")
                             .about(locale.text(
-                                "Search indexed Event and Frame documents",
-                                "搜索已索引的事件与认知框架文档",
+                                "Search indexed Event and Mind Frame documents",
+                                "搜索已索引的事件与认知帧文档",
                             ))
                             .arg(prompt_arg("QUERY", 0, None).help(locale.text(
                                 "Optional Unicode lexical query",
@@ -1569,12 +1569,12 @@ fn context_command(locale: Locale) -> Command {
                         locale,
                         Command::new("frame")
                             .about(locale.text(
-                                "Traverse Frame sources and relations",
-                                "遍历认知框架的来源与关系",
+                                "Traverse Mind Frame sources and relations",
+                                "遍历认知帧的来源与关系",
                             ))
                             .arg(prompt_arg("FRAME", 1, Some(1)).help(locale.text(
-                                "Frame ID",
-                                "认知框架标识",
+                                "Mind Frame ID",
+                                "认知帧标识",
                             )))
                             .arg(local_value_arg(
                                 "depth",
@@ -1614,7 +1614,7 @@ fn context_command(locale: Locale) -> Command {
                             .arg(local_switch_arg(
                                 "no-bodies",
                                 "no-bodies",
-                                locale.text("Omit Frame bodies", "省略认知框架正文"),
+                                locale.text("Omit Mind Frame bodies", "省略认知帧正文"),
                             )),
                         "Example:\n  morphz context recall frame memory/sandbox --depth=2 --direction=ancestors --format=json",
                     ),

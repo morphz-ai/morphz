@@ -324,7 +324,7 @@
       "sessions": "active Sessions",
       "cognition": "Cognition",
       "mindRevision": "Mind revision",
-      "frames": "{{active}} active · {{retiring}} retiring · {{retired}} retired",
+      "frames": "{{active}} active Mind Frames · {{retiring}} retiring · {{retired}} retired",
       "scheduling": "Scheduling",
       "threads": "open Threads",
       "schedulerDetail": "{{signals}} pending Signals · {{schedules}} active Schedules",
@@ -439,7 +439,7 @@
     "topic": "Topic",
     "openThread": "Open Thread",
     "openSession": "Open Session",
-    "openFrame": "Open Frame",
+    "openFrame": "Open Mind Frame",
     "pagination": {
       "label": "Ledger pagination",
       "newer": "Newer events",
@@ -1015,19 +1015,19 @@
   "mindView": {
     "title": "Cognitive Context",
     "heading": "Shared Cognition",
-    "description": "Frame business structure is autonomously formed by the Agent; Runtime only presents identity, source, version, relations and lifecycle.",
+    "description": "Mind Frame business structure is autonomously formed by the Agent; Runtime only presents identity, source, version, relations and lifecycle.",
     "backToChat": "Back to chat",
     "metrics": {
-      "frames": "Frames",
+      "frames": "Mind Frames",
       "relations": "Relations",
       "observations": "Observations",
       "residentSessions": "Resident Sessions",
       "cognitiveTick": "Cognitive Activity Tick",
       "frameLifecycle": {
-        "summary": "{{active}} active Frames, {{retiring}} retiring Frames, {{retired}} retired Frames",
-        "active": "{{count}} active Frames: still included in the current Mind and Context Encoding",
-        "retiring": "{{count}} retiring Frames: retirement has started, but their lifecycle is not complete",
-        "retired": "{{count}} retired Frames: retained in the historical Ledger and omitted from current cognition by default"
+        "summary": "{{active}} active Mind Frames, {{retiring}} retiring Mind Frames, {{retired}} retired Mind Frames",
+        "active": "{{count}} active Mind Frames: still included in the current Mind and Context Encoding",
+        "retiring": "{{count}} retiring Mind Frames: retirement has started, but their lifecycle is not complete",
+        "retired": "{{count}} retired Mind Frames: retained in the historical Ledger and omitted from current cognition by default"
       }
     },
     "contextInspect": {
@@ -1064,15 +1064,15 @@
       "ephemeralNotice": "This is the latest exact input observed live for this Session. The browser retains it in memory; the Ledger stores only hashes, sizes and causal metadata.",
       "reconstructedNotice": "No exact live request is currently retained. This view is freshly compiled from the current Projection and may differ from an earlier model request."
     },
-    "frameLibrary": "Frame Library",
+    "frameLibrary": "Mind Frame Library",
     "activeFramesOnly": "Active only",
-    "emptyActiveFrames": "No active cognition",
+    "emptyActiveFrames": "No active Mind Frames",
     "sourceCount_one": "{{count}} source",
     "sourceCount_other": "{{count}} sources",
     "retired": "Retired",
     "retiring": "Organizing",
     "active": "Active",
-    "frame": "Frame",
+    "frame": "Mind Frame",
     "revision": "revision {{revision}}",
     "created": "Created",
     "updated": "Updated",
@@ -1093,7 +1093,7 @@
     "yes": "yes",
     "no": "no",
     "relationsTitle": "Relations",
-    "lineage": "Two-hop lineage",
+    "lineage": "Two-hop Mind Frame lineage",
     "lineageTruncated": "Results are truncated; continue through the Recall API",
     "transactions": {
       "title": "Recent Cognitive Transactions",
@@ -1108,7 +1108,7 @@
     "searchPlaceholder": "Search Chinese text, Frame IDs, tool evidence or past experience…",
     "search": "Recall",
     "searching": "Searching",
-    "emptyFrame": "No Frames available to inspect",
+    "emptyFrame": "No Mind Frames available to inspect",
     "sessionWindow": "Session Window",
     "sessionWindowDetail": "Up to {{count}} full Sessions",
     "pressure": "Pressure",

@@ -324,7 +324,7 @@
       "sessions": "活跃会话",
       "cognition": "认知",
       "mindRevision": "心智修订",
-      "frames": "{{active}} 活跃 · {{retiring}} 退役中 · {{retired}} 已退役",
+      "frames": "{{active}} 个活跃认知帧 · {{retiring}} 个退役中认知帧 · {{retired}} 个已退役认知帧",
       "scheduling": "调度",
       "threads": "开放线程",
       "schedulerDetail": "{{signals}} 待处理信号 · {{schedules}} 活跃计划",
@@ -439,7 +439,7 @@
     "topic": "主题",
     "openThread": "打开线程",
     "openSession": "打开会话",
-    "openFrame": "打开认知",
+    "openFrame": "打开认知帧",
     "pagination": {
       "label": "账本分页",
       "newer": "较新的事件",
@@ -1014,19 +1014,19 @@
   "mindView": {
     "title": "认知上下文",
     "heading": "共享认知",
-    "description": "认知内容的业务结构由代理自主形成；运行时只呈现身份、来源、版本、关系与生命周期。",
+    "description": "认知帧的业务结构由代理自主形成；运行时只呈现身份、来源、版本、关系与生命周期。",
     "backToChat": "返回对话",
     "metrics": {
-      "frames": "认知",
+      "frames": "认知帧",
       "relations": "关系",
       "observations": "观察",
       "residentSessions": "驻留会话",
       "cognitiveTick": "认知活动时钟",
       "frameLifecycle": {
-        "summary": "{{active}} 条活跃认知，{{retiring}} 条整理中认知，{{retired}} 条已退役认知",
-        "active": "{{count}} 条活跃认知：仍会进入当前 Mind 和上下文编码",
-        "retiring": "{{count}} 条整理中认知：已进入退役流程，但生命周期尚未完成",
-        "retired": "{{count}} 条已退役认知：保留在历史账本中，默认不再进入当前认知"
+        "summary": "{{active}} 个活跃认知帧，{{retiring}} 个整理中认知帧，{{retired}} 个已退役认知帧",
+        "active": "{{count}} 个活跃认知帧：仍会进入当前 Mind 和上下文编码",
+        "retiring": "{{count}} 个整理中认知帧：已进入退役流程，但生命周期尚未完成",
+        "retired": "{{count}} 个已退役认知帧：保留在历史账本中，默认不再进入当前认知"
       }
     },
     "contextInspect": {
@@ -1063,16 +1063,16 @@
       "ephemeralNotice": "这是当前会话最近一次通过实时事件观察到的精确模型输入。浏览器仅在内存中保留；账本只保存哈希、尺寸和因果元数据。",
       "reconstructedNotice": "当前没有保留实时精确请求；这里展示的是根据最新投影重新编译的结果，可能不同于此前某次模型请求。"
     },
-    "frameLibrary": "认知库",
+    "frameLibrary": "认知帧库",
     "activeFramesOnly": "仅活跃",
-    "emptyActiveFrames": "当前没有活跃认知",
+    "emptyActiveFrames": "当前没有活跃认知帧",
     "sourceCount": "{{count}} 来源",
     "sourceCount_one": "{{count}} 来源",
     "sourceCount_other": "{{count}} 来源",
     "retired": "已退役",
     "retiring": "整理中",
     "active": "活跃",
-    "frame": "认知",
+    "frame": "认知帧",
     "revision": "修订 {{revision}}",
     "created": "创建",
     "updated": "更新",
@@ -1093,7 +1093,7 @@
     "yes": "是",
     "no": "否",
     "relationsTitle": "关系",
-    "lineage": "两层认知血缘",
+    "lineage": "两层认知帧血缘",
     "lineageTruncated": "结果已截断，可通过 Recall API 继续分页",
     "transactions": {
       "title": "最近认知事务",
@@ -1108,7 +1108,7 @@
     "searchPlaceholder": "搜索中文、Frame ID、工具证据或历史经验…",
     "search": "召回",
     "searching": "检索中",
-    "emptyFrame": "还没有可查看的认知",
+    "emptyFrame": "还没有可查看的认知帧",
     "sessionWindow": "会话窗口",
     "sessionWindowDetail": "最多 {{count}} 个完整会话",
     "pressure": "压力",
