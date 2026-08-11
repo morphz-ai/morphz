@@ -8,6 +8,10 @@ const providersSource = readFileSync(
   new URL('../src/pages/ProvidersPage.tsx', import.meta.url),
   'utf8',
 )
+const providerWorkflowSource = readFileSync(
+  new URL('../src/app/providerWorkflow.ts', import.meta.url),
+  'utf8',
+)
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const zhCatalog = readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8')
 
@@ -79,7 +83,8 @@ test('API-key setup is protocol based and does not invent provider brands', () =
   assert.match(protocols, /gemini-content/)
   assert.match(providersSource, /'\/api\/runtime\/providers\/discover-models'/)
   assert.match(providersSource, /response\.models\.map|discoveredModels\.map/)
-  assert.match(providersSource, /display_alias: requestedSetup\.alias\.trim\(\) \|\| undefined/)
+  assert.match(providersSource, /buildProviderCatalogSetupPayload/)
+  assert.match(providerWorkflowSource, /display_alias: explicitAlias \|\| previousRoute\?\.display_alias/)
 })
 
 test('unfinished OAuth attempts are not rendered as accounts', () => {
@@ -88,7 +93,8 @@ test('unfinished OAuth attempts are not rendered as accounts', () => {
 })
 
 test('account tests report progress and results beside the account that started them', () => {
-  assert.match(providersSource, /diagnosticAccountId === accountId/)
+  assert.match(providersSource, /resolveAccountDiagnosticPresentation/)
+  assert.match(providerWorkflowSource, /activeAccountId !== input\.accountId/)
   assert.match(providersSource, /providers\.testingAccount/)
   assert.match(providersSource, /providers\.testSucceeded/)
   assert.match(providersSource, /providers\.testFailed/)
@@ -103,7 +109,8 @@ test('authenticated accounts discover and explicitly enable models outside the l
   assert.match(providersSource, /\/api\/runtime\/providers\/accounts\/\$\{encodeURIComponent\(modelEditor\.accountId\)\}\/models/)
   assert.match(providersSource, /providers\.modelCapacityAdvanced/)
   assert.match(providersSource, /providers\.modelAliasOptional/)
-  assert.match(providersSource, /alias: option\.alias\.trim\(\) \|\| undefined/)
+  assert.match(providersSource, /buildEnabledModelSelections/)
+  assert.match(providerWorkflowSource, /alias: option\.alias\.trim\(\) \|\| undefined/)
   assert.match(providersSource, /placeholder=\{t\('providers\.notProvided'\)\}/)
 })
 

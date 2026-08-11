@@ -274,6 +274,7 @@ struct PutProviderCatalogSetupRequest {
     account: AuthAccountConfig,
     credential_id: Option<String>,
     credential: Option<crate::config::CredentialConfig>,
+    managed_secret: Option<PutManagedSecretRequest>,
     route_id: String,
     route: ModelRouteConfig,
 }
@@ -1560,7 +1561,83 @@ async fn handle_put_provider_catalog_setup(
             )
         }
     };
-    match state
+    if request.managed_secret.is_some() && credential.is_none() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "managed_secret 只能与 credential_id 和 credential 一起提交",
+        );
+    }
+    if let (Some(secret), Some((credential_id, credential_config))) =
+        (request.managed_secret.as_ref(), credential.as_ref())
+    {
+        let secret_name = secret.name.trim();
+        if request.account.credential_ref.trim() != *credential_id
+            || credential_config.source != crate::config::CredentialSource::Env
+            || credential_config.name.as_deref().map(str::trim) != Some(secret_name)
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "managed_secret、credential 与账号 credential_ref 必须引用同一凭证",
+            );
+        }
+        if secret.scope_kind != crate::secret_store::SecretScopeKind::Runtime
+            || secret.scope_id.is_some()
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Provider API Key 必须使用 Runtime scope，且不能设置 scope_id",
+            );
+        }
+        if request.account.secret_backend.as_deref() != secret.value_backend.as_deref() {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "managed_secret 的 value_backend 必须与账号 secret_backend 一致",
+            );
+        }
+    }
+    let created_secret_name = if let Some(secret) = request.managed_secret {
+        let sdk = state.sdk.clone();
+        match tokio::task::spawn_blocking(move || {
+            let name = secret.name.trim().to_string();
+            if sdk
+                .list_managed_secrets()?
+                .iter()
+                .any(|existing| existing.name == name)
+            {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    format!("受管凭证 '{name}' 已存在；首次设置拒绝覆盖已有凭证"),
+                ));
+            }
+            let value = zeroize::Zeroizing::new(secret.value);
+            let scope_id = secret.scope_id.map(|id| id.trim().to_string());
+            match secret.value_backend.as_deref() {
+                Some(value_backend) => sdk.put_managed_secret_with_backend(
+                    &name,
+                    value.as_str(),
+                    secret.scope_kind,
+                    scope_id,
+                    value_backend,
+                ),
+                None => sdk.put_managed_secret(&name, value.as_str(), secret.scope_kind, scope_id),
+            }?;
+            Ok(name)
+        })
+        .await
+        {
+            Ok(Ok(name)) => Some(name),
+            Ok(Err(error)) => return sdk_error_response(error),
+            Err(error) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Secret Store worker 失败：{error}"),
+                )
+            }
+        }
+    } else {
+        None
+    };
+    let result = state
         .sdk
         .put_provider_catalog_config(
             path,
@@ -1572,10 +1649,48 @@ async fn handle_put_provider_catalog_setup(
             request.route_id.trim(),
             request.route,
         )
-        .await
-    {
+        .await;
+    match result {
         Ok(receipt) => Json(receipt).into_response(),
-        Err(error) => sdk_error_response(error),
+        Err(error) => {
+            if let Some(name) = created_secret_name {
+                let sdk = state.sdk.clone();
+                let rollback_name = name.clone();
+                match tokio::task::spawn_blocking(move || sdk.delete_managed_secret(&rollback_name))
+                    .await
+                {
+                    Ok(Ok(true)) => {}
+                    Ok(Ok(false)) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!(
+                                "Provider 设置失败（{}），且新建凭证 '{}' 未能回滚：凭证不存在",
+                                error.message, name
+                            ),
+                        )
+                    }
+                    Ok(Err(rollback_error)) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!(
+                                "Provider 设置失败（{}），且新建凭证 '{}' 回滚失败：{}",
+                                error.message, name, rollback_error
+                            ),
+                        )
+                    }
+                    Err(rollback_error) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!(
+                                "Provider 设置失败（{}），且 Secret Store 回滚 worker 失败：{}",
+                                error.message, rollback_error
+                            ),
+                        )
+                    }
+                }
+            }
+            sdk_error_response(error)
+        }
     }
 }
 
@@ -5978,7 +6093,7 @@ mod tests {
                 }
                 other => panic!("unexpected web OAuth completion: {other:?}"),
             }
-            Ok(AdapterLoginResult::Complete(OAuthTokenSet {
+            Ok(AdapterLoginResult::Complete(Box::new(OAuthTokenSet {
                 adapter_id: self.id().to_string(),
                 adapter_version: self.version().to_string(),
                 access_token: "web-test-access-token".to_string(),
@@ -5992,7 +6107,7 @@ mod tests {
                 email: Some("oauth@example.test".to_string()),
                 device_id: None,
                 metadata: BTreeMap::new(),
-            }))
+            })))
         }
 
         async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
@@ -6097,6 +6212,7 @@ mod tests {
     ) -> (Arc<AppState>, MorphzRuntime) {
         let mut config = AppConfig::default();
         config.llm.provider = Some("fixture-provider".to_string());
+        config.llm.model = "fixture-model".to_string();
         config.llm.models.push("fixture-model".to_string());
         config.providers.insert(
             "fixture-provider".to_string(),
@@ -6106,6 +6222,42 @@ mod tests {
                 ..crate::config::ProviderConfig::default()
             },
         );
+        test_state_at_with_config_auth_and_secrets(
+            path,
+            start_workers,
+            config,
+            auth_registry,
+            secret_store,
+        )
+        .await
+    }
+
+    async fn test_state_at_with_config_auth_and_secrets(
+        path: &std::path::Path,
+        start_workers: bool,
+        config: AppConfig,
+        auth_registry: Option<AuthAdapterRegistry>,
+        secret_store: Option<Arc<SecretStore>>,
+    ) -> (Arc<AppState>, MorphzRuntime) {
+        test_state_at_with_config_client_auth_and_secrets(
+            path,
+            start_workers,
+            config,
+            Arc::new(ReplyClient::default()),
+            auth_registry,
+            secret_store,
+        )
+        .await
+    }
+
+    async fn test_state_at_with_config_client_auth_and_secrets(
+        path: &std::path::Path,
+        start_workers: bool,
+        config: AppConfig,
+        client: Arc<dyn Client>,
+        auth_registry: Option<AuthAdapterRegistry>,
+        secret_store: Option<Arc<SecretStore>>,
+    ) -> (Arc<AppState>, MorphzRuntime) {
         let secret_store = secret_store.unwrap_or_else(|| {
             Arc::new(
                 SecretStore::new(
@@ -6115,7 +6267,7 @@ mod tests {
                 .unwrap(),
             )
         });
-        let mut builder = MorphzRuntime::builder(config, Arc::new(ReplyClient::default()))
+        let mut builder = MorphzRuntime::builder(config, client)
             .database_path(path.to_str().unwrap())
             .identity(RuntimeIdentity {
                 agent_id: "agent-test".to_string(),
@@ -7043,7 +7195,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let managed: AppConfig =
-            toml::from_str(&std::fs::read_to_string(managed_config_path).unwrap()).unwrap();
+            toml::from_str(&std::fs::read_to_string(&managed_config_path).unwrap()).unwrap();
         assert_eq!(
             managed.provider_instances["secondary"].accounts,
             ["secondary-local"]
@@ -7060,14 +7212,20 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_provider_setup_atomically_persists_a_complete_catalog() {
-        let tmp = NamedTempFile::new().unwrap();
-        let database_path = tmp.path().to_path_buf();
-        drop(tmp);
-        let (state, _runtime) = test_state_at_with_workers(&database_path, false).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let (state, _runtime) = test_state_at_with_config_auth_and_secrets(
+            &database_path,
+            false,
+            AppConfig::default(),
+            None,
+            None,
+        )
+        .await;
         let managed_config_path = state.managed_config_path.clone().unwrap();
 
         let response = handle_put_provider_catalog_setup(
-            State(state),
+            State(Arc::clone(&state)),
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(PutProviderCatalogSetupRequest {
@@ -7092,6 +7250,13 @@ mod tests {
                     name: Some("MORPHZ_PROVIDER_DASHBOARD_API_KEY".to_string()),
                     ..crate::config::CredentialConfig::default()
                 }),
+                managed_secret: Some(PutManagedSecretRequest {
+                    name: "MORPHZ_PROVIDER_DASHBOARD_API_KEY".to_string(),
+                    value: "dashboard-secret-value".to_string(),
+                    scope_kind: crate::secret_store::SecretScopeKind::Runtime,
+                    scope_id: None,
+                    value_backend: None,
+                }),
                 route_id: "dashboard-model".to_string(),
                 route: ModelRouteConfig {
                     aliases: vec!["dashboard/model".to_string()],
@@ -7107,10 +7272,19 @@ mod tests {
         )
         .await
         .into_response();
-        assert_eq!(response.status(), StatusCode::OK);
+        let response_status = response.status();
+        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            response_status,
+            StatusCode::OK,
+            "Provider setup failed: {}",
+            String::from_utf8_lossy(&response_body)
+        );
 
         let managed: AppConfig =
-            toml::from_str(&std::fs::read_to_string(managed_config_path).unwrap()).unwrap();
+            toml::from_str(&std::fs::read_to_string(&managed_config_path).unwrap()).unwrap();
         assert_eq!(
             managed.provider_instances["dashboard-provider"].accounts,
             ["dashboard-account"]
@@ -7128,6 +7302,71 @@ mod tests {
             ["dashboard/model"]
         );
         assert_eq!(managed.llm.model, "dashboard-model");
+        assert!(!std::fs::read_to_string(&managed_config_path)
+            .unwrap()
+            .contains("dashboard-secret-value"));
+        let secrets = state.sdk.list_managed_secrets().unwrap();
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].name, "MORPHZ_PROVIDER_DASHBOARD_API_KEY");
+    }
+
+    #[tokio::test]
+    async fn dashboard_provider_setup_rolls_back_new_secret_when_catalog_is_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let (state, _runtime) = test_state_at_with_workers(&database_path, false).await;
+
+        let response = handle_put_provider_catalog_setup(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderCatalogSetupRequest {
+                provider_id: "invalid-provider".to_string(),
+                provider: ProviderInstanceConfig {
+                    adapter: "openai-compatible".to_string(),
+                    protocol: crate::config::ModelProtocol::OpenaiResponses,
+                    base_url: "http://localhost:9912/v1".to_string(),
+                    accounts: vec!["invalid-account".to_string()],
+                    ..ProviderInstanceConfig::default()
+                },
+                account_id: "invalid-account".to_string(),
+                account: AuthAccountConfig {
+                    auth_adapter: "credential".to_string(),
+                    credential_ref: "invalid-credential".to_string(),
+                    provider: Some("invalid-provider".to_string()),
+                    ..AuthAccountConfig::default()
+                },
+                credential_id: Some("invalid-credential".to_string()),
+                credential: Some(crate::config::CredentialConfig {
+                    source: crate::config::CredentialSource::Env,
+                    name: Some("MORPHZ_PROVIDER_ROLLBACK_API_KEY".to_string()),
+                    ..crate::config::CredentialConfig::default()
+                }),
+                managed_secret: Some(PutManagedSecretRequest {
+                    name: "MORPHZ_PROVIDER_ROLLBACK_API_KEY".to_string(),
+                    value: "must-not-remain".to_string(),
+                    scope_kind: crate::secret_store::SecretScopeKind::Runtime,
+                    scope_id: None,
+                    value_backend: None,
+                }),
+                route_id: "invalid-route".to_string(),
+                route: ModelRouteConfig {
+                    candidates: vec![crate::config::ModelRouteCandidateConfig {
+                        provider: "missing-provider".to_string(),
+                        account: Some("invalid-account".to_string()),
+                        model: "physical-model".to_string(),
+                        ..crate::config::ModelRouteCandidateConfig::default()
+                    }],
+                    ..ModelRouteConfig::default()
+                },
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state.sdk.list_managed_secrets().unwrap().is_empty());
+        assert!(!state.managed_config_path.as_ref().unwrap().exists());
     }
 
     #[tokio::test]
@@ -7163,6 +7402,7 @@ mod tests {
                 },
                 credential_id: None,
                 credential: None,
+                managed_secret: None,
                 route_id: "subscription-model".to_string(),
                 route: ModelRouteConfig {
                     candidates: vec![crate::config::ModelRouteCandidateConfig {
@@ -7264,6 +7504,57 @@ mod tests {
             .unwrap();
         assert_eq!(alias.label, "fast-subscription");
         assert_eq!(alias.physical_models, ["physical-subscription-model"]);
+
+        let managed_before_rejection =
+            std::fs::read_to_string(state.managed_config_path.as_deref().unwrap()).unwrap();
+        let rejected = handle_put_provider_account_models(
+            State(Arc::clone(&state)),
+            Path("subscription-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderAccountModelsRequest { models: Vec::new() }),
+        )
+        .await
+        .into_response();
+        let rejected_status = rejected.status();
+        let rejected_body = axum::body::to_bytes(rejected.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(rejected_status, StatusCode::BAD_REQUEST);
+        assert!(String::from_utf8_lossy(&rejected_body).contains("至少需要选择一个模型"));
+        assert_eq!(
+            std::fs::read_to_string(state.managed_config_path.as_deref().unwrap()).unwrap(),
+            managed_before_rejection
+        );
+        let zero_capacity = handle_put_provider_account_models(
+            State(Arc::clone(&state)),
+            Path("subscription-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderAccountModelsRequest {
+                models: vec![ProviderAccountModelSelection {
+                    id: "physical-subscription-model".to_string(),
+                    alias: None,
+                    context_window_tokens: Some(0),
+                    max_input_tokens: None,
+                    max_output_tokens: None,
+                }],
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(zero_capacity.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::fs::read_to_string(state.managed_config_path.as_deref().unwrap()).unwrap(),
+            managed_before_rejection
+        );
+        let options_after_rejection = runtime.inference_model_options().await.unwrap();
+        assert!(
+            options_after_rejection
+                .iter()
+                .any(|option| option.id == "subscription-model"
+                    && option.label == "fast-subscription")
+        );
 
         let status_response = handle_status(
             State(Arc::clone(&state)),
@@ -7814,6 +8105,7 @@ mod tests {
                 },
                 credential_id: None,
                 credential: None,
+                managed_secret: None,
                 route_id: "oauth-model".to_string(),
                 route: ModelRouteConfig {
                     aliases: vec!["oauth/model".to_string()],
@@ -7953,6 +8245,7 @@ mod tests {
                 },
                 credential_id: None,
                 credential: None,
+                managed_secret: None,
                 route_id: "oauth-model".to_string(),
                 route: ModelRouteConfig {
                     aliases: vec!["oauth/model".to_string()],
@@ -8047,6 +8340,388 @@ mod tests {
         assert_eq!(budget.physical_prompt_token_limit, 1_000_000);
         let managed = std::fs::read_to_string(managed_config_path).unwrap();
         assert!(managed.contains("max_input_tokens = 1000000"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_model_capacity_follows_modern_route_without_legacy_provider() {
+        let tmp = NamedTempFile::new().unwrap();
+        let database_path = tmp.path().to_path_buf();
+        drop(tmp);
+        let managed_config_path = database_path.with_extension("managed").join("managed.toml");
+        std::fs::create_dir_all(managed_config_path.parent().unwrap()).unwrap();
+        let managed = r#"
+[llm]
+model = "grok-route"
+
+[services.xai-subscription]
+adapter = "xai-grok"
+protocol = "openai-responses"
+base_url = "https://api.x.ai/v1"
+accounts = ["xai-account"]
+
+[services.xai-subscription.models."grok-4.5"]
+max_input_tokens = 262144
+
+[accounts.xai-account]
+auth_adapter = "none"
+provider = "xai-subscription"
+
+[models.grok-route]
+service = "xai-subscription"
+physical_model = "grok-4.5"
+account = "xai-account"
+"#;
+        std::fs::write(&managed_config_path, managed).unwrap();
+        let config: AppConfig = toml::from_str(managed).unwrap();
+        assert_eq!(config.llm.provider, None);
+        let (state, runtime) =
+            test_state_at_with_config_auth_and_secrets(&database_path, true, config, None, None)
+                .await;
+
+        let response = handle_update_inference(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateInferenceRequest {
+                model: None,
+                reasoning_effort: None,
+                prompt_token_limit: Some(1_000_000),
+            }),
+        )
+        .await
+        .into_response();
+
+        if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            panic!(
+                "unexpected routed capacity response {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        assert_eq!(
+            runtime.model_context_capacity().prompt_token_limit,
+            1_000_000
+        );
+        let budget = runtime.context_token_budget("context-test").await.unwrap();
+        assert_eq!(budget.physical_prompt_token_limit, 1_000_000);
+
+        let persisted: AppConfig =
+            toml::from_str(&std::fs::read_to_string(managed_config_path).unwrap()).unwrap();
+        assert_eq!(persisted.llm.provider, None);
+        assert_eq!(persisted.llm.model, "grok-route");
+        assert_eq!(
+            persisted.provider_instances["xai-subscription"].models["grok-4.5"].max_input_tokens,
+            Some(1_000_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn local_provider_setup_discovery_enablement_switch_probe_capacity_and_restart() {
+        let provider_app = axum::Router::new()
+            .route(
+                "/models",
+                get(|| async {
+                    Json(json!({
+                        "data": [
+                            {
+                                "id": "model-a",
+                                "context_window_tokens": 200_000,
+                                "max_input_tokens": 190_000,
+                                "max_output_tokens": 10_000
+                            },
+                            { "id": "model-b" }
+                        ]
+                    }))
+                }),
+            )
+            .route(
+                "/responses",
+                post(|| async {
+                    Json(json!({
+                        "status": "completed",
+                        "output": [{
+                            "type": "message",
+                            "content": [{ "type": "output_text", "text": "E2E_OK" }]
+                        }]
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, provider_app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+
+        let temp = tempfile::tempdir().unwrap();
+        let database_path = temp.path().join("morphz.db");
+        let initial_config = AppConfig::default();
+        let routed_client = Arc::new(crate::provider::routing::RoutedClient::empty(
+            initial_config.llm.clone(),
+        ));
+        let (state, runtime) = test_state_at_with_config_client_auth_and_secrets(
+            &database_path,
+            true,
+            initial_config,
+            routed_client.clone(),
+            None,
+            None,
+        )
+        .await;
+
+        let discovered = handle_discover_provider_models(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(DiscoverProviderModelsRequest {
+                protocol: crate::config::ModelProtocol::OpenaiResponses,
+                base_url: base_url.clone(),
+                api_key: "ephemeral-test-key".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(discovered.status(), StatusCode::OK);
+        let discovered_body = axum::body::to_bytes(discovered.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let discovered: Value = serde_json::from_slice(&discovered_body).unwrap();
+        assert_eq!(discovered["models"], json!(["model-a", "model-b"]));
+
+        let setup = handle_put_provider_catalog_setup(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderCatalogSetupRequest {
+                provider_id: "local-provider".to_string(),
+                provider: ProviderInstanceConfig {
+                    adapter: "openai-compatible".to_string(),
+                    protocol: crate::config::ModelProtocol::OpenaiResponses,
+                    base_url: base_url.clone(),
+                    accounts: vec!["local-account".to_string()],
+                    models: BTreeMap::from([(
+                        "model-a".to_string(),
+                        crate::config::ProviderModelConfig::default(),
+                    )]),
+                    ..ProviderInstanceConfig::default()
+                },
+                account_id: "local-account".to_string(),
+                account: AuthAccountConfig {
+                    auth_adapter: "none".to_string(),
+                    provider: Some("local-provider".to_string()),
+                    label: Some("Local test".to_string()),
+                    ..AuthAccountConfig::default()
+                },
+                credential_id: None,
+                credential: None,
+                managed_secret: None,
+                route_id: "route-a".to_string(),
+                route: ModelRouteConfig {
+                    candidates: vec![crate::config::ModelRouteCandidateConfig {
+                        provider: "local-provider".to_string(),
+                        model: "model-a".to_string(),
+                        account: Some("local-account".to_string()),
+                        ..crate::config::ModelRouteCandidateConfig::default()
+                    }],
+                    ..ModelRouteConfig::default()
+                },
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(setup.status(), StatusCode::OK);
+        assert_eq!(runtime.model(), "route-a");
+        assert_eq!(
+            runtime.provider_catalog_config().unwrap().llm.model,
+            "route-a"
+        );
+
+        let second_setup = handle_put_provider_catalog_setup(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderCatalogSetupRequest {
+                provider_id: "second-provider".to_string(),
+                provider: ProviderInstanceConfig {
+                    adapter: "openai-compatible".to_string(),
+                    protocol: crate::config::ModelProtocol::OpenaiResponses,
+                    base_url: base_url.clone(),
+                    accounts: vec!["second-account".to_string()],
+                    models: BTreeMap::from([(
+                        "model-a".to_string(),
+                        crate::config::ProviderModelConfig::default(),
+                    )]),
+                    ..ProviderInstanceConfig::default()
+                },
+                account_id: "second-account".to_string(),
+                account: AuthAccountConfig {
+                    auth_adapter: "none".to_string(),
+                    provider: Some("second-provider".to_string()),
+                    ..AuthAccountConfig::default()
+                },
+                credential_id: None,
+                credential: None,
+                managed_secret: None,
+                route_id: "route-z".to_string(),
+                route: ModelRouteConfig {
+                    candidates: vec![crate::config::ModelRouteCandidateConfig {
+                        provider: "second-provider".to_string(),
+                        model: "model-a".to_string(),
+                        account: Some("second-account".to_string()),
+                        ..crate::config::ModelRouteCandidateConfig::default()
+                    }],
+                    ..ModelRouteConfig::default()
+                },
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(second_setup.status(), StatusCode::OK);
+        assert_eq!(runtime.model(), "route-a");
+        assert_eq!(
+            runtime.provider_catalog_config().unwrap().llm.model,
+            "route-a"
+        );
+        let after_second_setup: AppConfig = toml::from_str(
+            &std::fs::read_to_string(state.managed_config_path.as_deref().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after_second_setup.llm.model, "route-a");
+
+        let refreshed = handle_refresh_provider_account_catalog(
+            State(Arc::clone(&state)),
+            Path("local-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(ProviderAccountDiagnosticRequest { model: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(refreshed.status(), StatusCode::OK);
+        let refreshed_body = axum::body::to_bytes(refreshed.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refreshed: Value = serde_json::from_slice(&refreshed_body).unwrap();
+        assert_eq!(
+            refreshed["discovered_models"],
+            json!(["model-a", "model-b"])
+        );
+        assert_eq!(
+            refreshed["discovered_model_profiles"]["model-a"]["max_input_tokens"],
+            190_000
+        );
+        assert_eq!(refreshed["health_verified"], true);
+
+        let enabled = handle_put_provider_account_models(
+            State(Arc::clone(&state)),
+            Path("local-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutProviderAccountModelsRequest {
+                models: vec![
+                    ProviderAccountModelSelection {
+                        id: "model-a".to_string(),
+                        alias: Some("primary-local".to_string()),
+                        context_window_tokens: Some(200_000),
+                        max_input_tokens: Some(190_000),
+                        max_output_tokens: Some(10_000),
+                    },
+                    ProviderAccountModelSelection {
+                        id: "model-b".to_string(),
+                        alias: None,
+                        context_window_tokens: None,
+                        max_input_tokens: None,
+                        max_output_tokens: None,
+                    },
+                ],
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(enabled.status(), StatusCode::OK);
+        let options = runtime.inference_model_options().await.unwrap();
+        assert!(options
+            .iter()
+            .any(|option| option.id == "route-a" && option.label == "primary-local"));
+        assert!(options
+            .iter()
+            .any(|option| option.id == "model-b" && option.label == "model-b"));
+
+        let switched = handle_update_inference(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateInferenceRequest {
+                model: Some("model-b".to_string()),
+                reasoning_effort: None,
+                prompt_token_limit: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(switched.status(), StatusCode::OK);
+        assert_eq!(runtime.model(), "model-b");
+
+        let completion = routed_client
+            .create_completion(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "health".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(completion.content, "E2E_OK");
+
+        let capacity = handle_update_inference(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateInferenceRequest {
+                model: None,
+                reasoning_effort: None,
+                prompt_token_limit: Some(300_000),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(capacity.status(), StatusCode::OK);
+        assert_eq!(runtime.model_context_capacity().prompt_token_limit, 300_000);
+
+        let managed_config_path = state.managed_config_path.as_deref().unwrap();
+        let persisted: AppConfig =
+            toml::from_str(&std::fs::read_to_string(managed_config_path).unwrap()).unwrap();
+        assert_eq!(persisted.llm.provider, None);
+        assert_eq!(persisted.llm.model, "model-b");
+        assert_eq!(
+            persisted.provider_instances["local-provider"].models["model-b"].max_input_tokens,
+            Some(300_000)
+        );
+
+        let restarted =
+            crate::provider::routing::RoutedClient::new(&persisted, persisted.llm.model.clone())
+                .unwrap();
+        let restarted_completion = restarted
+            .create_completion(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "after restart".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(restarted_completion.content, "E2E_OK");
     }
 
     #[tokio::test]
@@ -8769,13 +9444,16 @@ mod tests {
             .unwrap();
         let status_json: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
         assert_eq!(status_json["agent_id"], json!("agent-test"));
-        assert_eq!(status_json["model"], json!(""));
+        assert_eq!(status_json["model"], json!("fixture-model"));
         assert_eq!(status_json["models"], json!(["fixture-model"]));
         assert_eq!(
             status_json["model_options"][0]["id"],
             json!("fixture-model")
         );
-        assert_eq!(status_json["model_options"][0]["source"], json!("manual"));
+        assert_eq!(
+            status_json["model_options"][0]["source"],
+            json!("configured")
+        );
         assert_eq!(status_json["storage_backend"], json!("sqlite"));
         assert!(status_json["git_commit"].is_string());
         assert!(status_json["uptime_seconds"].is_number());

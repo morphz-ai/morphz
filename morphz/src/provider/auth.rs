@@ -505,7 +505,7 @@ pub struct AdapterLoginStart {
 
 pub enum AdapterLoginResult {
     Pending { retry_after_secs: u64, state: Value },
-    Complete(OAuthTokenSet),
+    Complete(Box<OAuthTokenSet>),
 }
 
 #[async_trait::async_trait]
@@ -1357,11 +1357,11 @@ impl AuthAdapter for CodexOAuthAdapter {
             &BTreeMap::new(),
         )
         .await?;
-        Ok(AdapterLoginResult::Complete(codex_token_set(
+        Ok(AdapterLoginResult::Complete(Box::new(codex_token_set(
             self.id(),
             self.version(),
             response,
-        )?))
+        )?)))
     }
 
     async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
@@ -1626,11 +1626,11 @@ impl AuthAdapter for CodexDeviceOAuthAdapter {
             &BTreeMap::new(),
         )
         .await?;
-        Ok(AdapterLoginResult::Complete(codex_token_set(
+        Ok(AdapterLoginResult::Complete(Box::new(codex_token_set(
             self.id(),
             self.version(),
             response,
-        )?))
+        )?)))
     }
 
     async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
@@ -1851,7 +1851,7 @@ impl AuthAdapter for KimiOAuthAdapter {
             return Err("Kimi Device Authorization 缺少 device_code 或 user_code".to_string());
         }
         let interval = payload.interval.max(5) as u64;
-        let expires_at = Utc::now() + ChronoDuration::seconds(payload.expires_in.min(900).max(1));
+        let expires_at = Utc::now() + ChronoDuration::seconds(payload.expires_in.clamp(1, 900));
         Ok(AdapterLoginStart {
             flow: OAuthFlowKind::DeviceCode,
             callback_mode: OAuthCallbackMode::None,
@@ -1913,11 +1913,11 @@ impl AuthAdapter for KimiOAuthAdapter {
                 "Kimi OAuth 错误 '{}': {}",
                 response.error, response.error_description
             )),
-            Ok(response) => Ok(AdapterLoginResult::Complete(kimi_token_set(
+            Ok(response) => Ok(AdapterLoginResult::Complete(Box::new(kimi_token_set(
                 self.version(),
                 response,
                 Some(pending.device_id),
-            )?)),
+            )?))),
             Err(error) => Err(error),
         }
     }
@@ -2277,9 +2277,9 @@ impl AuthAdapter for ClaudeOAuthAdapter {
                 "code_verifier": pending.verifier,
             }))
             .await?;
-        Ok(AdapterLoginResult::Complete(
+        Ok(AdapterLoginResult::Complete(Box::new(
             self.token_set(response, None)?,
-        ))
+        )))
     }
 
     async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
@@ -2666,9 +2666,9 @@ impl AuthAdapter for AntigravityOAuthAdapter {
             &BTreeMap::new(),
         )
         .await?;
-        Ok(AdapterLoginResult::Complete(
+        Ok(AdapterLoginResult::Complete(Box::new(
             self.token_set(response, None).await?,
-        ))
+        )))
     }
 
     async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
@@ -2958,11 +2958,11 @@ impl AuthAdapter for XaiOAuthAdapter {
                 "xAI OAuth 错误 '{}': {}",
                 error, response.error_description
             )),
-            _ => Ok(AdapterLoginResult::Complete(xai_token_set(
+            _ => Ok(AdapterLoginResult::Complete(Box::new(xai_token_set(
                 self.version(),
                 response,
                 pending.token_endpoint,
-            )?)),
+            )?))),
         }
     }
 
@@ -3508,7 +3508,7 @@ mod tests {
             test_manager(oauth_account(CODEX_ADAPTER_ID), registry).await;
         let expired = OAuthTokenSet {
             expires_at: Some(Utc::now() - ChronoDuration::seconds(1)),
-            ..token
+            ..*token
         };
         manager
             .store_token(&manager.account("oauth-account").unwrap(), &expired)

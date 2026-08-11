@@ -85,6 +85,7 @@ import {
   retryableDialogueThread,
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
+import { resolveSelectedModelOption } from './app/modelSelection'
 import type {
   ApprovalRecord,
   ScheduleRecord,
@@ -5806,14 +5807,12 @@ export default function App() {
   }
 
   const modelOptions = status?.model_options ?? []
-  const selectedModelOption = modelOptions.find(option => (
-    option.id === status?.model || option.aliases?.includes(status?.model ?? '')
-  ))
+  const selectedModelOption = resolveSelectedModelOption(modelOptions, status?.model)
   const selectedModelLabel = selectedModelOption?.label ?? t('model.unavailable')
-  const contextBudgetModelLabel = modelOptions.find(option => (
-    option.id === contextTokenBudget?.model
-      || option.aliases?.includes(contextTokenBudget?.model ?? '')
-  ))?.label ?? t('model.unavailable')
+  const contextBudgetModelLabel = resolveSelectedModelOption(
+    modelOptions,
+    contextTokenBudget?.model,
+  )?.label ?? t('model.unavailable')
 
   return (
     <main className="page-shell" data-accent={accentTheme} data-color-mode={resolvedAppearanceMode}>

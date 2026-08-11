@@ -135,14 +135,16 @@ pub struct OAuthProviderSetup {
 }
 
 fn validate_provider_catalog_snapshot(snapshot: &ProviderControlSnapshot) -> SdkResult<()> {
-    let mut app = AppConfig::default();
-    app.provider_instances = snapshot.provider_instances.clone();
-    app.auth_accounts = snapshot
-        .auth_accounts
-        .iter()
-        .map(|(id, record)| (id.clone(), record.config.clone()))
-        .collect();
-    app.model_routes = snapshot.model_routes.clone();
+    let app = AppConfig {
+        provider_instances: snapshot.provider_instances.clone(),
+        auth_accounts: snapshot
+            .auth_accounts
+            .iter()
+            .map(|(id, record)| (id.clone(), record.config.clone()))
+            .collect(),
+        model_routes: snapshot.model_routes.clone(),
+        ..AppConfig::default()
+    };
     EffectiveProviderCatalog::from_config(&app)
         .map(|_| ())
         .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error))
@@ -816,6 +818,19 @@ impl MorphzSdk {
             .model_routes
             .insert(route_id.to_string(), route.clone());
         validate_provider_catalog_snapshot(&snapshot)?;
+        let selected_model = snapshot
+            .model_routes
+            .iter()
+            .any(|(candidate_route_id, candidate_route)| {
+                candidate_route_id == &snapshot.selected_model_alias
+                    || candidate_route
+                        .aliases
+                        .iter()
+                        .any(|alias| alias == &snapshot.selected_model_alias)
+            })
+            .then(|| snapshot.selected_model_alias.clone())
+            .filter(|selected| !selected.trim().is_empty())
+            .unwrap_or_else(|| route_id.to_string());
 
         let credential_ref = credential.as_ref().map(|(id, config)| (*id, config));
         save_managed_provider_catalog_at(
@@ -827,6 +842,7 @@ impl MorphzSdk {
             credential_ref,
             route_id,
             &route,
+            &selected_model,
         )
         .map_err(SdkError::internal)?;
         if account.auth_adapter.ends_with("-oauth") {
@@ -846,6 +862,7 @@ impl MorphzSdk {
                 .insert(credential_id.to_string(), credential);
         }
         live.model_routes.insert(route_id.to_string(), route);
+        live.llm.model = selected_model;
         self.runtime
             .replace_provider_catalog(live)
             .map_err(SdkError::internal)?;
@@ -945,18 +962,18 @@ impl MorphzSdk {
         let account_ids = snapshot
             .auth_accounts
             .iter()
-            .filter_map(|(account_id, record)| {
+            .filter(|(account_id, record)| {
                 // Legacy setup attempts were written before authentication
                 // and never received a durable account-state row. Preserve a
                 // completed account if its Secret Backend is temporarily
                 // unavailable; absence of token metadata alone is not safe
                 // deletion evidence.
-                (managed_account_ids.contains(account_id)
+                managed_account_ids.contains(*account_id)
                     && record.oauth
                     && !record.authenticated
-                    && record.state.is_none())
-                .then(|| account_id.clone())
+                    && record.state.is_none()
             })
+            .map(|(account_id, _)| account_id.clone())
             .collect::<BTreeSet<_>>();
         if account_ids.is_empty() {
             return Ok(0);
@@ -1139,6 +1156,20 @@ impl MorphzSdk {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
                     "模型 ID 不能为空或包含首尾空白",
+                ));
+            }
+            if [
+                profile.context_window_tokens,
+                profile.max_input_tokens,
+                profile.max_output_tokens,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|value| value == 0)
+            {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    format!("模型 '{model}' 的容量必须大于 0"),
                 ));
             }
             if profile

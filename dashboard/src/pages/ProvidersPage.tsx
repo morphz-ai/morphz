@@ -31,13 +31,16 @@ import {
   type ModelAttemptBinding,
   type ModelUsageRecord,
 } from '../app/providerEvaluations'
+import {
+  buildAccountModelOptions,
+  buildEnabledModelSelections,
+  buildProviderCatalogSetupPayload,
+  ProviderWorkflowValidationError,
+  resolveAccountDiagnosticPresentation,
+  type AccountModelOption,
+  type ProviderModelProfile as ProviderModelConfig,
+} from '../app/providerWorkflow'
 import { copyTextToClipboard, readTextFromClipboard } from '../utils/clipboard'
-
-interface ProviderModelConfig {
-  context_window_tokens?: number
-  max_input_tokens?: number
-  max_output_tokens?: number
-}
 
 interface ProviderInstanceConfig {
   adapter: string
@@ -217,15 +220,6 @@ interface CatalogMutationReceipt {
   id: string
   managed_config_path: string
   restart_required: boolean
-}
-
-interface AccountModelOption {
-  id: string
-  enabled: boolean
-  alias: string
-  contextWindowTokens: string
-  maxInputTokens: string
-  maxOutputTokens: string
 }
 
 interface AccountModelEditorState {
@@ -547,7 +541,6 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
     const providerId = requestedSetup.providerId.trim()
     const accountId = requestedSetup.accountId.trim()
     const routeId = requestedSetup.routeId.trim()
-    const alias = requestedSetup.alias.trim() || routeId
     const physicalModel = requestedSetup.physicalModel.trim()
     if (!providerId || !accountId || !routeId || !physicalModel
       || !requestedSetup.baseUrl.trim() || !requestedSetup.apiKey.trim()) {
@@ -561,14 +554,20 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
       let credential: Record<string, unknown> | undefined
       let credentialRef = ''
       let secretBackend: string | undefined
+      let managedSecret: {
+        name: string
+        value: string
+        scope_kind: 'runtime'
+        value_backend: string
+      } | undefined
       if (requestedSetup.mode === 'api_key' && requestedSetup.apiKey) {
         const envName = `MORPHZ_PROVIDER_${providerId.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}_API_KEY`
-        await api.command('/api/runtime/secrets', 'POST', {
+        managedSecret = {
           name: envName,
           value: requestedSetup.apiKey,
           scope_kind: 'runtime',
           value_backend: 'morphz_env_file',
-        })
+        }
         credentialId = `${providerId}-api-key`
         credentialRef = credentialId
         secretBackend = 'morphz_env_file'
@@ -576,34 +575,20 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
       }
       const previousProvider = snapshot.provider_instances[providerId]
       const previousRoute = snapshot.model_routes[routeId]
-      const candidates = previousRoute?.candidates.filter(candidate => candidate.account !== accountId) ?? []
-      const receipt = await api.command<CatalogMutationReceipt>('/api/runtime/providers/setup', 'PUT', {
-        provider_id: providerId,
-        provider: {
-          adapter: requestedSetup.adapter.trim(), protocol: requestedSetup.protocol, base_url: requestedSetup.baseUrl.trim(),
-          accounts: Array.from(new Set([...(previousProvider?.accounts ?? []), accountId])),
-          models: { ...(previousProvider?.models ?? {}), [physicalModel]: {} },
-          headers: previousProvider?.headers ?? {}, env_headers: previousProvider?.env_headers ?? {},
-        },
-        account_id: accountId,
-        account: {
-          auth_adapter: credentialRef ? 'credential' : 'none',
-          credential_ref: credentialRef,
-          secret_backend: secretBackend,
-          provider: providerId,
-          label: t('providers.defaultAccount'),
-          enabled: true,
-        },
-        credential_id: credentialId,
-        credential,
-        route_id: routeId,
-        route: {
-          display_alias: requestedSetup.alias.trim() || undefined,
-          aliases: alias === routeId ? [] : [alias],
-          candidates: [...candidates, { provider: providerId, model: physicalModel, priority: candidates.length, account: accountId, capabilities: [] }],
-          affinity: 'context', selection: 'available-least-recently-used', fallback: false,
-        },
-      })
+      const payload = buildProviderCatalogSetupPayload(
+        requestedSetup,
+        t('providers.defaultAccount'),
+        previousProvider,
+        previousRoute,
+        credentialId && credential && managedSecret
+          ? { credentialId, credentialRef, secretBackend, credential, managedSecret }
+          : undefined,
+      )
+      const receipt = await api.command<CatalogMutationReceipt>(
+        '/api/runtime/providers/setup',
+        'PUT',
+        payload,
+      )
       setCatalogNotice(t('providers.setupSaved', { path: receipt.managed_config_path }))
       setSetup(null)
       await refresh()
@@ -1009,40 +994,15 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
     providerId: string,
     additionallyDiscovered: string[] = [],
     discoveredProfiles: Record<string, ProviderModelConfig> = {},
-  ): AccountModelOption[] => {
-    const enabled = new Set<string>()
-    const aliases = new Map<string, string>()
-    for (const route of Object.values(snapshot.model_routes)) {
-      for (const candidate of route.candidates) {
-        if (candidate.provider === providerId && candidate.account === accountId) {
-          enabled.add(candidate.model)
-          const alias = route.display_alias?.trim() || route.aliases[0]?.trim() || ''
-          if (alias && !aliases.has(candidate.model)) aliases.set(candidate.model, alias)
-        }
-      }
-    }
-    const authoritativeDiscovery = additionallyDiscovered.length > 0
-    const discovered = new Set([
-      ...snapshot.discovered_models
-        .filter(model => model.provider_instance_id === providerId && model.auth_account_id === accountId)
-        .map(model => model.physical_model),
-      ...additionallyDiscovered,
-      ...(authoritativeDiscovery ? [] : enabled),
-    ])
-    const profiles = snapshot.provider_instances[providerId]?.models ?? {}
-    return Array.from(discovered).sort().map(id => {
-      const configured = profiles[id]
-      const provider = discoveredProfiles[id]
-      return {
-        id,
-        enabled: enabled.has(id),
-        alias: aliases.get(id) ?? '',
-        contextWindowTokens: (configured?.context_window_tokens ?? provider?.context_window_tokens)?.toString() ?? '',
-        maxInputTokens: (configured?.max_input_tokens ?? provider?.max_input_tokens)?.toString() ?? '',
-        maxOutputTokens: (configured?.max_output_tokens ?? provider?.max_output_tokens)?.toString() ?? '',
-      }
-    })
-  }
+  ): AccountModelOption[] => buildAccountModelOptions({
+    accountId,
+    providerId,
+    routes: snapshot.model_routes,
+    catalog: snapshot.discovered_models,
+    configuredProfiles: snapshot.provider_instances[providerId]?.models ?? {},
+    additionallyDiscovered,
+    discoveredProfiles,
+  })
 
   const openAccountModels = async (accountId: string, label: string) => {
     const record = snapshot.auth_accounts[accountId]
@@ -1100,19 +1060,17 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
 
   const saveAccountModels = async () => {
     if (!modelEditor || savingModels) return
-    const selected = modelEditor.options.filter(option => option.enabled)
-    if (selected.length === 0) {
-      setModelEditor(current => current ? { ...current, error: t('providers.selectAtLeastOneModel'), errorKind: 'validation' } : current)
-      return
-    }
-    const optionalTokens = (value: string): number | undefined => value.trim() ? Number(value) : undefined
-    const invalid = selected.some(option => [
-      option.contextWindowTokens,
-      option.maxInputTokens,
-      option.maxOutputTokens,
-    ].some(value => value.trim() && (!Number.isSafeInteger(Number(value)) || Number(value) <= 0)))
-    if (invalid) {
-      setModelEditor(current => current ? { ...current, error: t('providers.invalidModelCapacity'), errorKind: 'validation' } : current)
+    let selections: ReturnType<typeof buildEnabledModelSelections>
+    try {
+      selections = buildEnabledModelSelections(modelEditor.options)
+    } catch (reason) {
+      if (!(reason instanceof ProviderWorkflowValidationError)) throw reason
+      const message = reason.code === 'select-at-least-one'
+        ? t('providers.selectAtLeastOneModel')
+        : t('providers.invalidModelCapacity')
+      setModelEditor(current => current
+        ? { ...current, error: message, errorKind: 'validation' }
+        : current)
       return
     }
     setSavingModels(true)
@@ -1122,13 +1080,7 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
         `/api/runtime/providers/accounts/${encodeURIComponent(modelEditor.accountId)}/models`,
         'PUT',
         {
-          models: selected.map(option => ({
-            id: option.id,
-            alias: option.alias.trim() || undefined,
-            context_window_tokens: optionalTokens(option.contextWindowTokens),
-            max_input_tokens: optionalTokens(option.maxInputTokens),
-            max_output_tokens: optionalTokens(option.maxOutputTokens),
-          })),
+          models: selections,
         },
       )
       setCatalogNotice(t('providers.modelsSaved', { path: receipt.managed_config_path }))
@@ -1257,8 +1209,22 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
               || record.oauth_metadata?.subject
               || record.oauth_metadata?.provider_account_id
             const accountLabel = identity || record.config.label || serviceName
-            const currentAccountDiagnostic = diagnosticAccountId === accountId ? accountDiagnostic : null
-            const isTesting = diagnosing === `account:${accountId}`
+            const diagnosticPresentation = resolveAccountDiagnosticPresentation({
+              accountId,
+              activeAccountId: diagnosticAccountId,
+              diagnosing,
+              diagnostic: accountDiagnostic,
+              error: diagnosticError,
+            })
+            const isTesting = diagnosticPresentation.state === 'pending'
+            const currentAccountDiagnostic = diagnosticPresentation.visible
+              && 'diagnostic' in diagnosticPresentation
+              ? diagnosticPresentation.diagnostic
+              : null
+            const currentDiagnosticError = diagnosticPresentation.visible
+              && 'error' in diagnosticPresentation
+              ? diagnosticPresentation.error
+              : ''
             return (
               <article className={!record.effective_enabled ? 'is-disabled' : ''} key={accountId}>
                 <span className={`provider-account-presence ${record.effective_enabled ? 'is-enabled' : ''}`}>
@@ -1315,8 +1281,8 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
                     {record.effective_enabled ? t('providers.disable') : t('providers.enable')}
                   </button>
                 </nav>
-                {diagnosticAccountId === accountId && (isTesting || currentAccountDiagnostic || diagnosticError) && (
-                  <section className={`provider-account-test-result ${currentAccountDiagnostic?.health_verified ? 'is-success' : diagnosticError || (currentAccountDiagnostic && !currentAccountDiagnostic.health_verified) ? 'is-failure' : 'is-pending'}`} aria-live="polite">
+                {diagnosticPresentation.visible && (
+                  <section className={`provider-account-test-result is-${diagnosticPresentation.state}`} aria-live="polite">
                     {isTesting ? (
                       <><RefreshCw className="is-spinning" size={14} /><span><strong>{t('providers.testingAccount')}</strong><small>{t('providers.testingAccountHint')}</small></span></>
                     ) : currentAccountDiagnostic ? (
@@ -1333,7 +1299,7 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
                         </span>
                       </>
                     ) : (
-                      <><CircleOff size={14} /><span><strong>{t('providers.testFailed')}</strong><code>{diagnosticError}</code></span></>
+                      <><CircleOff size={14} /><span><strong>{t('providers.testFailed')}</strong><code>{currentDiagnosticError}</code></span></>
                     )}
                   </section>
                 )}

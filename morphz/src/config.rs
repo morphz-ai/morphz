@@ -1810,6 +1810,7 @@ pub fn save_managed_provider_account_models_at(
 /// setup. A partially written Provider/Account/Route graph is unusable and
 /// must never become visible merely because the process stopped between
 /// several independent managed-config mutations.
+#[allow(clippy::too_many_arguments)]
 pub fn save_managed_provider_catalog_at(
     path: &Path,
     provider_id: &str,
@@ -1819,6 +1820,7 @@ pub fn save_managed_provider_catalog_at(
     credential: Option<(&str, &CredentialConfig)>,
     route_id: &str,
     route: &ModelRouteConfig,
+    selected_model: &str,
 ) -> Result<(), String> {
     validate_catalog_key("Provider Instance", provider_id)?;
     validate_catalog_key("Auth Account", account_id)?;
@@ -1861,7 +1863,7 @@ pub fn save_managed_provider_catalog_at(
     insert_managed_value(
         &mut root,
         &["llm", "model"],
-        toml::Value::String(route_id.to_string()),
+        toml::Value::String(selected_model.to_string()),
     )?;
     write_managed_value(path, &root)
 }
@@ -1885,6 +1887,7 @@ pub fn save_managed_provider_catalog(
         credential,
         route_id,
         route,
+        route_id,
     )?;
     Ok(path)
 }
@@ -1982,8 +1985,12 @@ pub fn save_managed_inference_at(
     if model.is_empty() {
         return Err("Model 不能为空".to_string());
     }
+    let provider_id = provider_id.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(provider_id) = provider_id {
+        validate_profile_name(provider_id)?;
+    }
     let mut root = read_managed_value(path)?;
-    let routed_target = root
+    let mut routed_targets = root
         .get("models")
         .and_then(toml::Value::as_table)
         .and_then(|routes| {
@@ -2000,81 +2007,86 @@ pub fn save_managed_inference_at(
         })
         .and_then(|route| route.get("targets"))
         .and_then(toml::Value::as_array)
-        .and_then(|targets| {
+        .map(|targets| {
             targets
                 .iter()
                 .filter_map(toml::Value::as_table)
-                .find(|target| {
-                    provider_id.is_none_or(|provider_id| {
-                        target.get("provider").and_then(toml::Value::as_str) == Some(provider_id)
-                    })
+                .filter_map(|target| {
+                    Some((
+                        target.get("provider")?.as_str()?.to_string(),
+                        target.get("model")?.as_str()?.to_string(),
+                    ))
                 })
-                .or_else(|| targets.first().and_then(toml::Value::as_table))
+                .collect::<Vec<_>>()
         })
-        .and_then(|target| {
-            Some((
-                target.get("provider")?.as_str()?.to_string(),
-                target.get("model")?.as_str()?.to_string(),
-            ))
+        .unwrap_or_default();
+    routed_targets.sort();
+    routed_targets.dedup();
+    let selected_target = (routed_targets.len() == 1)
+        .then(|| routed_targets[0].clone())
+        .or_else(|| {
+            provider_id.and_then(|provider_id| {
+                root.get("services")
+                    .and_then(toml::Value::as_table)
+                    .is_some_and(|services| services.contains_key(provider_id))
+                    .then(|| (provider_id.to_string(), model.to_string()))
+            })
         });
-    if let Some(provider_id) = provider_id.map(str::trim).filter(|value| !value.is_empty()) {
-        validate_profile_name(provider_id)?;
-        let selected_target = routed_target.clone().or_else(|| {
-            root.get("services")
-                .and_then(toml::Value::as_table)
-                .is_some_and(|services| services.contains_key(provider_id))
-                .then(|| (provider_id.to_string(), model.to_string()))
-        });
-        if routed_target.is_none() {
-            if let Some((service, physical_model)) = selected_target.as_ref() {
-                let mut target = toml::map::Map::new();
-                target.insert("provider".to_string(), toml::Value::String(service.clone()));
-                target.insert(
-                    "model".to_string(),
-                    toml::Value::String(physical_model.clone()),
-                );
-                insert_managed_value(
-                    &mut root,
-                    &["models", model, "targets"],
-                    toml::Value::Array(vec![toml::Value::Table(target)]),
-                )?;
-            }
+    let missing_route_target = (provider_id.is_some() && routed_targets.is_empty())
+        .then_some(())
+        .and(selected_target.as_ref());
+    if let Some((service, physical_model)) = missing_route_target {
+        let mut target = toml::map::Map::new();
+        target.insert("provider".to_string(), toml::Value::String(service.clone()));
+        target.insert(
+            "model".to_string(),
+            toml::Value::String(physical_model.clone()),
+        );
+        insert_managed_value(
+            &mut root,
+            &["models", model, "targets"],
+            toml::Value::Array(vec![toml::Value::Table(target)]),
+        )?;
+    }
+    if let Some(limit) = prompt_token_limit {
+        if limit == 0 {
+            return Err("模型物理输入容量必须大于 0".to_string());
         }
-        if let Some(limit) = prompt_token_limit {
-            if limit == 0 {
-                return Err("模型物理输入容量必须大于 0".to_string());
-            }
-            let (section, resolved_provider, physical_model) = selected_target
-                .as_ref()
-                .map(|(provider, model)| ("services", provider.as_str(), model.as_str()))
-                .unwrap_or(("providers", provider_id, model));
-            insert_managed_value(
-                &mut root,
-                &[
-                    section,
-                    resolved_provider,
-                    "models",
-                    physical_model,
-                    "max_input_tokens",
-                ],
-                toml::Value::Integer(
-                    i64::try_from(limit).map_err(|_| "模型物理输入容量超出 TOML 整数范围")?,
-                ),
-            )?;
+        if routed_targets.len() > 1 {
+            return Err(
+                "当前模型路由包含多个物理目标；请在身份与模型页面分别配置每个物理模型的容量"
+                    .to_string(),
+            );
         }
-        if selected_target.is_some() {
-            if let Some(llm) = root.get_mut("llm").and_then(toml::Value::as_table_mut) {
-                llm.remove("provider");
-            }
-        } else {
-            insert_managed_value(
-                &mut root,
-                &["llm", "provider"],
-                toml::Value::String(provider_id.to_string()),
-            )?;
+        let (section, resolved_provider, physical_model) = selected_target
+            .as_ref()
+            .map(|(provider, model)| ("services", provider.as_str(), model.as_str()))
+            .or_else(|| provider_id.map(|provider| ("providers", provider, model)))
+            .ok_or_else(|| "当前模型没有可解析的服务目标，不能保存模型物理输入容量".to_string())?;
+        insert_managed_value(
+            &mut root,
+            &[
+                section,
+                resolved_provider,
+                "models",
+                physical_model,
+                "max_input_tokens",
+            ],
+            toml::Value::Integer(
+                i64::try_from(limit).map_err(|_| "模型物理输入容量超出 TOML 整数范围")?,
+            ),
+        )?;
+    }
+    if selected_target.is_some() {
+        if let Some(llm) = root.get_mut("llm").and_then(toml::Value::as_table_mut) {
+            llm.remove("provider");
         }
-    } else if prompt_token_limit.is_some() {
-        return Err("当前未配置 Provider，不能保存模型物理输入容量".to_string());
+    } else if let Some(provider_id) = provider_id {
+        insert_managed_value(
+            &mut root,
+            &["llm", "provider"],
+            toml::Value::String(provider_id.to_string()),
+        )?;
     }
     insert_managed_value(
         &mut root,
@@ -3717,6 +3729,143 @@ max_input_tokens = 256000
     }
 
     #[test]
+    fn managed_inference_capacity_follows_routed_service_without_legacy_provider() {
+        let temp = TempDir::new().unwrap();
+        let primary_path = temp.path().join("morphz.toml");
+        std::fs::write(
+            &primary_path,
+            r#"
+[llm]
+model = "grok-route"
+
+[services.xai-subscription]
+adapter = "xai-grok"
+protocol = "openai-responses"
+base_url = "https://api.x.ai/v1"
+
+[services.xai-subscription.models."grok-4.5"]
+max_input_tokens = 262144
+
+[models.grok-route]
+service = "xai-subscription"
+physical_model = "grok-4.5"
+"#,
+        )
+        .unwrap();
+
+        save_managed_inference_at(&primary_path, None, "grok-route", None, Some(1_000_000))
+            .unwrap();
+
+        let contents = std::fs::read_to_string(&primary_path).unwrap();
+        let persisted: AppConfig = toml::from_str(&contents).unwrap();
+        assert_eq!(persisted.llm.provider, None);
+        assert_eq!(persisted.llm.model, "grok-route");
+        assert_eq!(
+            persisted.provider_instances["xai-subscription"].models["grok-4.5"].max_input_tokens,
+            Some(1_000_000)
+        );
+        assert!(!persisted.provider_instances["xai-subscription"]
+            .models
+            .contains_key("grok-route"));
+    }
+
+    #[test]
+    fn managed_inference_capacity_rejects_ambiguous_physical_targets() {
+        let temp = TempDir::new().unwrap();
+        let primary_path = temp.path().join("morphz.toml");
+        std::fs::write(
+            &primary_path,
+            r#"
+[llm]
+model = "fallback-route"
+
+[services.primary]
+adapter = "openai-compatible"
+protocol = "openai-responses"
+base_url = "https://primary.example/v1"
+
+[services.primary.models."model-a"]
+max_input_tokens = 100000
+
+[services.backup]
+adapter = "openai-compatible"
+protocol = "openai-responses"
+base_url = "https://backup.example/v1"
+
+[services.backup.models."model-b"]
+max_input_tokens = 200000
+
+[[models.fallback-route.candidates]]
+service = "primary"
+physical_model = "model-a"
+
+[[models.fallback-route.candidates]]
+service = "backup"
+physical_model = "model-b"
+"#,
+        )
+        .unwrap();
+
+        let error =
+            save_managed_inference_at(&primary_path, None, "fallback-route", None, Some(300_000))
+                .unwrap_err();
+
+        assert!(error.contains("多个物理目标"));
+        let persisted: AppConfig =
+            toml::from_str(&std::fs::read_to_string(&primary_path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.provider_instances["primary"].models["model-a"].max_input_tokens,
+            Some(100_000)
+        );
+        assert_eq!(
+            persisted.provider_instances["backup"].models["model-b"].max_input_tokens,
+            Some(200_000)
+        );
+    }
+
+    #[test]
+    fn managed_inference_capacity_accepts_one_physical_target_with_multiple_accounts() {
+        let temp = TempDir::new().unwrap();
+        let primary_path = temp.path().join("morphz.toml");
+        std::fs::write(
+            &primary_path,
+            r#"
+[llm]
+model = "shared-route"
+
+[services.shared]
+adapter = "openai-compatible"
+protocol = "openai-responses"
+base_url = "https://shared.example/v1"
+
+[services.shared.models."model-a"]
+max_input_tokens = 100000
+
+[[models.shared-route.candidates]]
+service = "shared"
+physical_model = "model-a"
+account = "account-a"
+
+[[models.shared-route.candidates]]
+service = "shared"
+physical_model = "model-a"
+account = "account-b"
+"#,
+        )
+        .unwrap();
+
+        save_managed_inference_at(&primary_path, None, "shared-route", None, Some(300_000))
+            .unwrap();
+
+        let persisted: AppConfig =
+            toml::from_str(&std::fs::read_to_string(&primary_path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.provider_instances["shared"].models["model-a"].max_input_tokens,
+            Some(300_000)
+        );
+    }
+
+    #[test]
     fn provider_model_context_capacity_is_keyed_by_exact_model_name() {
         let config = toml::from_str::<AppConfig>(
             r#"
@@ -3806,6 +3955,7 @@ max_input_tokens = 0
             None,
             "route-alpha",
             &route,
+            "route-alpha",
         )
         .unwrap();
 
@@ -3952,6 +4102,7 @@ priority = 1
             None,
             "invented-default-route",
             &route,
+            "invented-default-route",
         )
         .unwrap();
 
