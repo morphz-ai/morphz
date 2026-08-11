@@ -6,6 +6,8 @@
 >
 > 当时主测模型：`gemini-3-flash-agent`；`glm-5.2`、`deepseek-v4-pro`、`gpt-5.6-sol` 作为对照模型。本文的 Protocol v8–v16 结果继续作为历史可比基线；当前生产协议与实现边界见 [Runtime 核心实现状态总览](./morphz_runtime_core_implementation_status_v1.md)。
 
+论文确认性实验已迁移到独立的[论文实验中心](./research/paper_evaluation/README.md)。本文保留历史工程评测事实，不作为新论文实验的进度总账。
+
 ## 1. 一页结论
 
 当前不能表述为“所有测试都已经完整通过”。更准确的状态是：
