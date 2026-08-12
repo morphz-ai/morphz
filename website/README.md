@@ -23,3 +23,13 @@ npm run lint
 ```
 
 Every public page must keep its Chinese and English slug in parity. Update both languages when a product contract changes.
+
+## Generated CLI reference
+
+The bilingual CLI reference is generated from the same Clap command tree used by the Morphz binary. Refresh it from the repository root after changing CLI commands, options, or localized help:
+
+```bash
+cargo run -q -p morphz-cli-docs -- website/content/docs
+```
+
+Do not edit `content/docs/{zh,en}/cli-reference.md` by hand. The generator tests assert that every registered command path is present and that both locales render deterministically.

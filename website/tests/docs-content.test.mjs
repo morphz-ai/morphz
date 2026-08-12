@@ -36,3 +36,23 @@ test("all absolute documentation links point to existing pages", async () => {
     }
   }
 });
+
+test("publishes the generated bilingual CLI reference", async () => {
+  const requiredCommands = [
+    "morphz setup",
+    "morphz serve",
+    "morphz context recall search",
+    "morphz objective create",
+    "morphz scheduler thread resume",
+    "morphz provider account login",
+  ];
+
+  for (const locale of ["zh", "en"]) {
+    const source = await readFile(new URL(`${locale}/cli-reference.md`, contentRoot), "utf8");
+    assert.match(source, /^source:\s*generated-cli-schema$/m);
+    assert.match(source, /generated from|自动生成/i);
+    for (const command of requiredCommands) {
+      assert.ok(source.includes(`\`${command}\``), `${locale}/cli-reference.md missing ${command}`);
+    }
+  }
+});

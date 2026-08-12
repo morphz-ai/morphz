@@ -2519,6 +2519,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "morphz-cli-docs"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+]
+
+[[package]]
 name = "morphz-evals"
 version = "0.1.0"
 dependencies = [

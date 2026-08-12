@@ -5,6 +5,7 @@ members = [
     "extensions/morphz-memory-vector",
     "morphz",
     "morphz-evals",
+    "tools/morphz-cli-docs",
 ]
 default-members = ["morphz"]
 
