@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+async function render(path = "/") {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-${path}`);
+  const { default: worker } = await import(workerUrl.href);
+  return worker.fetch(
+    new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+}
+
+test("renders the finished Chinese and English home pages", async () => {
+  const [zhResponse, enResponse] = await Promise.all([render("/"), render("/en")]);
+  assert.equal(zhResponse.status, 200);
+  assert.equal(enResponse.status, 200);
+  const [zh, en] = await Promise.all([zhResponse.text(), enResponse.text()]);
+  assert.match(zh, /让 Agent 拥有/);
+  assert.match(en, /Durable cognition/);
+  for (const html of [zh, en]) {
+    assert.match(html, /Morphz/);
+    assert.match(html, /github\.com\/yaowenai\/morphz/);
+    assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
+  }
+});
+
+test("renders documentation indexes and bilingual article routes", async () => {
+  const routes = ["/docs", "/en/docs", "/docs/core-concepts", "/en/docs/core-concepts"];
+  const responses = await Promise.all(routes.map(render));
+  for (const response of responses) assert.equal(response.status, 200);
+  const html = await Promise.all(responses.map((response) => response.text()));
+  assert.match(html[0], /从真实任务开始理解 Morphz/);
+  assert.match(html[1], /Learn Morphz through real tasks/);
+  assert.match(html[2], /认知帧/);
+  assert.match(html[3], /Cognitive frame/);
+  assert.match(html[2], /当前实现/);
+  assert.match(html[3], /Current behavior/);
+});
+
+test("returns not found for an unknown documentation slug", async () => {
+  const response = await render("/docs/not-a-real-page");
+  assert.equal(response.status, 404);
+});
