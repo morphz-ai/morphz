@@ -75,6 +75,9 @@ use crate::provider::control::{
     ProviderAccountControlAction, ProviderAccountControlRecord, ProviderControlSnapshot,
 };
 use crate::provider::routing::EffectiveProviderCatalog;
+use crate::provider::{
+    normalize_reasoning_effort_for_model, supported_reasoning_efforts_for_model,
+};
 use crate::scheduler::{
     audit_scheduler_invariants, derive_objective_readiness, KernelResult,
     SchedulerDependencyFilter, SchedulerDependencyOwnerKind, SchedulerInvariantInput,
@@ -789,10 +792,41 @@ pub struct InferenceModelOption {
     pub physical_models: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+    /// Exact native levels accepted by every currently eligible physical
+    /// candidate. `None` means the adapter has not declared an exact
+    /// vocabulary; an empty list means the model exposes no effort dial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_reasoning_efforts: Option<Vec<String>>,
     /// `configured` means the physical model was explicitly enabled in the
     /// managed Provider catalog. `manual` is a direct operator-supplied LLM
     /// model that does not resolve through a managed Model Route.
     pub source: String,
+}
+
+fn common_supported_reasoning_efforts(
+    capabilities: &[Option<&'static [ReasoningEffort]>],
+) -> Option<Vec<String>> {
+    if capabilities.is_empty() || capabilities.iter().any(Option::is_none) {
+        return None;
+    }
+    let canonical = [
+        ReasoningEffort::Off,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::Max,
+    ];
+    Some(
+        canonical
+            .into_iter()
+            .filter(|effort| {
+                capabilities
+                    .iter()
+                    .all(|supported| supported.is_some_and(|levels| levels.contains(effort)))
+            })
+            .map(|effort| effort.as_str().to_string())
+            .collect(),
+    )
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -2418,6 +2452,34 @@ impl MorphzRuntime {
         self.inner.client.reasoning_effort()
     }
 
+    /// Effective level sent to the selected route after applying the native
+    /// vocabulary of every physical candidate. This keeps old provider-neutral
+    /// settings readable without presenting a compatibility alias as a second
+    /// model capability in the Dashboard.
+    pub fn effective_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        let configured = self.reasoning_effort()?;
+        let config = self.provider_catalog_config().ok()?;
+        let catalog = EffectiveProviderCatalog::from_config(&config).ok()?;
+        let model = self.model();
+        let Ok((_, route)) = catalog.resolve_route(&model) else {
+            return Some(configured);
+        };
+        let mut effective = route.candidates.iter().filter_map(|candidate| {
+            let provider = catalog.provider_instances.get(&candidate.provider)?;
+            Some(normalize_reasoning_effort_for_model(
+                provider.adapter.as_str(),
+                candidate.model.as_str(),
+                Some(configured),
+            ))
+        });
+        let first = effective.next().unwrap_or(Some(configured));
+        if effective.all(|candidate| candidate == first) {
+            first
+        } else {
+            None
+        }
+    }
+
     pub fn model(&self) -> String {
         self.inner
             .client
@@ -2467,7 +2529,7 @@ impl MorphzRuntime {
         let mut options = Vec::new();
 
         for (route_id, route) in &snapshot.model_routes {
-            let mut physical_models = route
+            let available_candidates = route
                 .candidates
                 .iter()
                 .filter_map(|candidate| {
@@ -2488,14 +2550,27 @@ impl MorphzRuntime {
                             .iter()
                             .any(|account_id| account_available(account_id)),
                     };
-                    available.then(|| candidate.model.clone())
+                    available.then_some((candidate, provider))
                 })
+                .collect::<Vec<_>>();
+            let mut physical_models = available_candidates
+                .iter()
+                .map(|(candidate, _)| candidate.model.clone())
                 .collect::<Vec<_>>();
             physical_models.sort();
             physical_models.dedup();
             if physical_models.is_empty() {
                 continue;
             }
+            let reasoning_capabilities = available_candidates
+                .iter()
+                .map(|(candidate, provider)| {
+                    supported_reasoning_efforts_for_model(
+                        provider.adapter.as_str(),
+                        candidate.model.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>();
             let label = route
                 .display_alias
                 .as_deref()
@@ -2510,6 +2585,9 @@ impl MorphzRuntime {
                 label,
                 physical_models,
                 aliases: route.aliases.clone(),
+                supported_reasoning_efforts: common_supported_reasoning_efforts(
+                    &reasoning_capabilities,
+                ),
                 source: "configured".to_string(),
             });
         }
@@ -2533,6 +2611,7 @@ impl MorphzRuntime {
                 label: model.to_string(),
                 physical_models: vec![model.to_string()],
                 aliases: Vec::new(),
+                supported_reasoning_efforts: None,
                 source: "manual".to_string(),
             });
         }
@@ -6403,7 +6482,7 @@ impl MorphzRuntime {
             model_catalog_error: None,
             provider: self.inner.config.llm.provider.clone(),
             reasoning_effort: self
-                .reasoning_effort()
+                .effective_reasoning_effort()
                 .map(|effort| effort.as_str().to_string()),
             tool_count: self.tool_names().len(),
             storage: self.inner.storage_label.clone(),

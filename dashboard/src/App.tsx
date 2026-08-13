@@ -832,6 +832,7 @@ interface InferenceModelOption {
   label: string
   physical_models: string[]
   aliases?: string[]
+  supported_reasoning_efforts?: ReasoningEffortSetting[]
   source: 'configured' | 'manual'
 }
 
@@ -924,11 +925,6 @@ interface MindProjectionAudit {
   incremental_replay_micros?: number
   projection_validation_micros: number
   matches: boolean
-}
-
-function inferredProviderReasoningEffort(model?: string): ReasoningEffortSetting | 'default' {
-  const normalized = model?.trim().toLowerCase() ?? ''
-  return normalized === 'glm-5.2' || normalized.endsWith('/glm-5.2') ? 'max' : 'default'
 }
 
 interface EventPayload {
@@ -5233,9 +5229,9 @@ export default function App() {
         'PUT',
         {
           model,
-          // Preserve the current inference profile while changing only the
-          // model. The backend deliberately applies both fields atomically.
-          reasoning_effort: status?.reasoning_effort ?? 'default',
+          // Reasoning vocabularies belong to physical models. Do not carry a
+          // level across a model switch when the new route may not accept it.
+          reasoning_effort: 'default',
         },
       )
       setStatus(current => current
@@ -5809,6 +5805,12 @@ export default function App() {
   const modelOptions = status?.model_options ?? []
   const selectedModelOption = resolveSelectedModelOption(modelOptions, status?.model)
   const selectedModelLabel = selectedModelOption?.label ?? t('model.unavailable')
+  const reasoningEffortOptions = selectedModelOption?.supported_reasoning_efforts
+    ?? (['none', 'low', 'medium', 'high', 'max'] satisfies ReasoningEffortSetting[])
+  const selectedReasoningEffort = status?.reasoning_effort
+    && reasoningEffortOptions.includes(status.reasoning_effort)
+    ? status.reasoning_effort
+    : 'default'
   const contextBudgetModelLabel = resolveSelectedModelOption(
     modelOptions,
     contextTokenBudget?.model,
@@ -6171,15 +6173,15 @@ export default function App() {
               <select
                 aria-label={t('reasoning.label')}
                 disabled={changingReasoning}
-                value={status?.reasoning_effort ?? inferredProviderReasoningEffort(status?.model)}
+                value={selectedReasoningEffort}
                 onChange={event => void changeReasoningEffort(event.target.value)}
               >
                 <option value="default">{t('reasoning.defaultUnknown')}</option>
-                <option value="none">{t('reasoning.off')}</option>
-                <option value="low">{t('reasoning.low')}</option>
-                <option value="medium">{t('reasoning.medium')}</option>
-                <option value="high">{t('reasoning.high')}</option>
-                <option value="max">{status?.reasoning_effort == null && inferredProviderReasoningEffort(status?.model) === 'max' ? t('reasoning.maxDefault') : t('reasoning.max')}</option>
+                {reasoningEffortOptions.includes('none') && <option value="none">{t('reasoning.off')}</option>}
+                {reasoningEffortOptions.includes('low') && <option value="low">{t('reasoning.low')}</option>}
+                {reasoningEffortOptions.includes('medium') && <option value="medium">{t('reasoning.medium')}</option>}
+                {reasoningEffortOptions.includes('high') && <option value="high">{t('reasoning.high')}</option>}
+                {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
               </select>
             </label>
             <button
@@ -7354,7 +7356,7 @@ export default function App() {
               model={status?.model ?? t('model.unavailable')}
               provider={status?.provider ?? t('runtime.providerUnknown')}
               toolCount={status?.tool_count ?? 0}
-              reasoning={String(status?.reasoning_effort ?? inferredProviderReasoningEffort(status?.model))}
+              reasoning={String(status?.reasoning_effort ?? 'default')}
               pressure={statusLabel(contextView?.pressure.level ?? contextOverview?.pressure?.level ?? 'normal', t)}
               estimatedTokens={compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens)}
               softLimit={compactTokens(contextView?.pressure.soft_limit ?? contextOverview?.pressure?.soft_limit)}

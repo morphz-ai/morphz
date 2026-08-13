@@ -632,14 +632,13 @@
 
   "reasoning": {
     "label": "推理",
-    "title": "只影响后续模型请求；关闭后不启用推理强度。GLM-5.2 的默认档位是最高，低和中会映射为高",
-    "defaultUnknown": "服务默认（未声明）",
+    "title": "只影响后续模型请求；可选档位由当前物理模型的原生能力决定",
+    "defaultUnknown": "服务默认",
     "off": "关闭",
     "low": "低",
     "medium": "中",
     "high": "高",
-    "max": "最高",
-    "maxDefault": "最高（模型默认）"
+    "max": "最高"
   },
   "reasoningSummary": {
     "toggle": "推理摘要",

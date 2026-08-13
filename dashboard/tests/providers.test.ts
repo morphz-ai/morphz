@@ -133,6 +133,14 @@ test('conversation selector renders the catalog display label, never the route c
   assert.match(appSource, /setView\('providers'\)/)
 })
 
+test('reasoning selector follows the selected model native capability list', () => {
+  assert.match(appSource, /selectedModelOption\?\.supported_reasoning_efforts/)
+  assert.match(appSource, /reasoningEffortOptions\.includes\('high'\)/)
+  assert.match(appSource, /reasoning_effort: 'default'/)
+  assert.doesNotMatch(appSource, /function inferredProviderReasoningEffort/)
+  assert.doesNotMatch(appSource, /inferredProviderReasoningEffort\(/)
+})
+
 test('provider setup only presents OAuth services whose complete Runtime bootstrap is published', () => {
   assert.match(
     providersSource,

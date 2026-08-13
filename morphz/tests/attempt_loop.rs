@@ -54,6 +54,11 @@ struct BudgetProbeClient {
 
 struct FailingClient;
 
+struct InvalidRequestClient {
+    calls: AtomicUsize,
+    health_probe_calls: AtomicUsize,
+}
+
 struct HangingClient;
 
 struct BlockingClient;
@@ -301,6 +306,30 @@ impl Client for FailingClient {
         _tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         Err("simulated LLM transport timeout".into())
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for InvalidRequestClient {
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(Box::new(
+            ModelFailure::new(
+                ModelFailureKind::InvalidModelOrRequest,
+                "Provider returned HTTP 400: Invalid reasoning effort.",
+            )
+            .with_http_status(400)
+            .with_provider_code(Some("invalid-argument".to_string())),
+        ))
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -2250,6 +2279,67 @@ async fn test_llm_failure_is_audited_and_persists_provider_wait() {
         .await
         .unwrap();
     assert_eq!(dependencies.len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_model_request_stops_turn_without_false_provider_recovery() {
+    let session_id = "invalid-model-request";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("invalid-model-request.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(InvalidRequestClient {
+        calls: AtomicUsize::new(0),
+        health_probe_calls: AtomicUsize::new(0),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "use unsupported reasoning effort").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(client.health_probe_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(replies.len(), 1);
+    assert!(replies[0]
+        .payload
+        .get("text")
+        .and_then(|value| value.as_str())
+        .is_some_and(|text| text.contains("Invalid reasoning effort")));
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("runtime_failure_kind")
+            .and_then(|value| value.as_str()),
+        Some("invalid_model_or_request")
+    );
+    let events = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(events.iter().all(|event| {
+        event
+            .payload
+            .get("disposition")
+            .and_then(|value| value.as_str())
+            != Some("provider_wait")
+    }));
 }
 
 #[tokio::test]

@@ -75,16 +75,15 @@ impl ModelFailureKind {
     /// Whether a failed physical request should enter the durable Provider
     /// recovery loop for an Objective.
     ///
-    /// Authentication and request/model configuration failures are not
-    /// transient in the narrow HTTP sense, but they are still recoverable
-    /// Runtime conditions: credentials, routing and the selected model can be
-    /// repaired while the Objective remains valid.  They therefore use a
-    /// slower/capped retry loop instead of turning the Objective into a
-    /// terminal or manually-resumed state.  ContextLimit is deliberately
-    /// excluded because it is handled by Context maintenance rather than by
-    /// reconnecting to the same Provider with the same request.
+    /// Authentication remains recoverable because refreshing the credential
+    /// preserves the immutable physical request binding. A malformed request
+    /// or unsupported model does not: a small health probe can succeed while
+    /// the original request keeps returning HTTP 400, and a newly selected
+    /// model must acquire a new binding on a new Attempt. Such failures must
+    /// therefore stop the current turn instead of entering Provider recovery.
+    /// ContextLimit is handled separately by Context maintenance.
     pub const fn uses_provider_recovery(self) -> bool {
-        !matches!(self, Self::ContextLimit)
+        !matches!(self, Self::ContextLimit | Self::InvalidModelOrRequest)
     }
 
     pub const fn requires_configuration(self) -> bool {
@@ -409,7 +408,7 @@ impl ModelUsage {
 
 #[cfg(test)]
 mod tests {
-    use super::ModelUsage;
+    use super::{ModelFailureKind, ModelUsage};
 
     #[test]
     fn split_provider_usage_merges_into_an_exact_total() {
@@ -425,6 +424,15 @@ mod tests {
         });
         assert_eq!(usage.total_tokens, Some(14));
         assert_eq!(usage.raw.len(), 2);
+    }
+
+    #[test]
+    fn deterministic_invalid_requests_do_not_enter_provider_health_recovery() {
+        assert!(!ModelFailureKind::InvalidModelOrRequest.uses_provider_recovery());
+        assert!(!ModelFailureKind::ContextLimit.uses_provider_recovery());
+        assert!(ModelFailureKind::Authentication.uses_provider_recovery());
+        assert!(ModelFailureKind::TransientNetwork.uses_provider_recovery());
+        assert!(ModelFailureKind::ServerUnavailable.uses_provider_recovery());
     }
 }
 

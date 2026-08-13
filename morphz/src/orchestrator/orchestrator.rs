@@ -9636,25 +9636,30 @@ impl Orchestrator {
             ModelFailureKind::ContextLimit
                 if stage == "critical_maintenance_minimum_projection" =>
             {
-                "即使只保留最小维护投影，模型接口仍拒绝当前 Context 大小。Runtime 已停止自动维护循环；请扩大模型 Context，或人工检查不可裁剪的系统契约与受保护 Mind。"
+                "即使只保留最小维护投影，模型接口仍拒绝当前 Context 大小。Runtime 已停止自动维护循环；请扩大模型 Context，或人工检查不可裁剪的系统契约与受保护 Mind。".to_string()
             }
             ModelFailureKind::ContextLimit => {
-                "模型接口拒绝了当前 Context 大小。Runtime 已停止本次物理请求并进入 Context 维护协调；任务状态与已提交修改均已保留。"
+                "模型接口拒绝了当前 Context 大小。Runtime 已停止本次物理请求并进入 Context 维护协调；任务状态与已提交修改均已保留。".to_string()
             }
             kind if kind.is_provider_transient() => {
-                "模型服务暂时不可用。Runtime 已保留当前任务并转入 Provider 退避等待；服务恢复后将继续。"
+                "模型服务暂时不可用。Runtime 已保留当前任务并转入 Provider 退避等待；服务恢复后将继续。".to_string()
             }
-            kind if kind.requires_configuration() => {
-                "模型 Provider 配置或认证无效。Runtime 已保留当前任务并进入低频 Provider 重试；修复模型、端点或凭证后将自动继续。"
+            ModelFailureKind::Authentication => {
+                "模型 Provider 认证无效。Runtime 已保留当前任务并进入低频 Provider 重试；修复凭证后将自动继续。".to_string()
+            }
+            ModelFailureKind::InvalidModelOrRequest => {
+                format!(
+                    "模型或请求参数无效。Runtime 已停止本回合并保留 Session；修正模型或推理设置后重试。\n\n原始错误：{error_text}"
+                )
             }
             kind if kind.uses_provider_recovery() => {
-                "模型请求失败。Runtime 已保留当前任务并进入 Provider 退避重试；Provider 可用后将自动继续。"
+                "模型请求失败。Runtime 已保留当前任务并进入 Provider 退避重试；Provider 可用后将自动继续。".to_string()
             }
             _ if stage == "llm_completion" => {
-                "模型请求失败，Runtime 已停止本回合，未继续执行任何工具。当前 Session、Mind 与已提交文件修改均已保留。"
+                "模型请求失败，Runtime 已停止本回合，未继续执行任何工具。当前 Session、Mind 与已提交文件修改均已保留。".to_string()
             }
             _ => {
-                "Runtime 的完整 Attempt 超过执行期限，已取消本回合以避免用户一直等待。当前 Session、Mind 与已提交文件修改均已保留。"
+                "Runtime 的完整 Attempt 超过执行期限，已取消本回合以避免用户一直等待。当前 Session、Mind 与已提交文件修改均已保留。".to_string()
             }
         };
         if ordinary_provider_wait {
@@ -9668,7 +9673,7 @@ impl Orchestrator {
                 &provider_resource,
                 &error_text,
                 &incident,
-                user_message,
+                &user_message,
             ))
             .await?;
             return Ok(());
@@ -9700,7 +9705,7 @@ impl Orchestrator {
                 session_id,
                 attempt_id,
                 Some(attempt_id),
-                user_message.to_string(),
+                user_message,
                 parent_session_id,
                 attributes,
             )

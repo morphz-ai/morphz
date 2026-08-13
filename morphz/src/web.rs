@@ -2446,7 +2446,7 @@ async fn handle_get_inference(
         "model": state.runtime.model(),
         "models": options.iter().map(|option| option.id.clone()).collect::<Vec<_>>(),
         "model_options": options,
-        "reasoning_effort": state.runtime.reasoning_effort().map(ReasoningEffort::as_str),
+        "reasoning_effort": state.runtime.effective_reasoning_effort().map(ReasoningEffort::as_str),
         "prompt_token_limit": state.runtime.model_context_capacity().prompt_token_limit,
     }))
     .into_response()
@@ -2491,6 +2491,33 @@ async fn handle_update_inference(
             }
         },
     };
+    if let Some(effort) = effort {
+        if let Some(option) = model_options.iter().find(|option| option.id == model) {
+            if option
+                .supported_reasoning_efforts
+                .as_ref()
+                .is_some_and(|supported| !supported.iter().any(|level| level == effort.as_str()))
+            {
+                let supported = option
+                    .supported_reasoning_efforts
+                    .as_ref()
+                    .map(|levels| levels.join("、"))
+                    .unwrap_or_default();
+                let detail = if supported.is_empty() {
+                    "该模型不提供推理强度选择".to_string()
+                } else {
+                    format!("该模型只支持：{supported}")
+                };
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "模型 '{model}' 不支持推理强度 '{}'；{detail}",
+                        effort.as_str()
+                    ),
+                );
+            }
+        }
+    }
     let prompt_token_limit = match request.prompt_token_limit {
         Some(0) => return error_response(StatusCode::BAD_REQUEST, "prompt_token_limit 必须大于 0"),
         Some(value) => match usize::try_from(value) {
@@ -2536,7 +2563,7 @@ async fn handle_update_inference(
         "model": state.runtime.model(),
         "models": model_options.iter().map(|option| option.id.clone()).collect::<Vec<_>>(),
         "model_options": model_options,
-        "reasoning_effort": effort.map(ReasoningEffort::as_str),
+        "reasoning_effort": state.runtime.effective_reasoning_effort().map(ReasoningEffort::as_str),
         "prompt_token_limit": state.runtime.model_context_capacity().prompt_token_limit,
         "scope": "subsequent_requests",
         "persistent": true,
@@ -7100,6 +7127,74 @@ mod tests {
         assert_eq!(runtime.config().llm.reasoning_effort, None);
         let managed = std::fs::read_to_string(managed_config_path).unwrap();
         assert!(managed.contains("reasoning_effort = \"none\""));
+    }
+
+    #[tokio::test]
+    async fn dashboard_exposes_only_native_grok_45_effort_levels_and_rejects_max() {
+        let tmp = NamedTempFile::new().unwrap();
+        let database_path = tmp.path().to_path_buf();
+        drop(tmp);
+        let mut config = AppConfig::default();
+        config.llm.model = "grok-route".to_string();
+        config.provider_instances.insert(
+            "xai-subscription".to_string(),
+            ProviderInstanceConfig {
+                adapter: "xai-subscription".to_string(),
+                protocol: crate::config::ModelProtocol::OpenaiResponses,
+                base_url: "https://cli-chat-proxy.grok.com/v1".to_string(),
+                accounts: vec!["xai-account".to_string()],
+                ..ProviderInstanceConfig::default()
+            },
+        );
+        config.auth_accounts.insert(
+            "xai-account".to_string(),
+            AuthAccountConfig {
+                auth_adapter: "none".to_string(),
+                provider: Some("xai-subscription".to_string()),
+                ..AuthAccountConfig::default()
+            },
+        );
+        config.model_routes.insert(
+            "grok-route".to_string(),
+            crate::config::ModelRouteConfig {
+                candidates: vec![crate::config::ModelRouteCandidateConfig {
+                    provider: "xai-subscription".to_string(),
+                    account: Some("xai-account".to_string()),
+                    model: "grok-4.5".to_string(),
+                    ..crate::config::ModelRouteCandidateConfig::default()
+                }],
+                ..crate::config::ModelRouteConfig::default()
+            },
+        );
+        let (state, runtime) =
+            test_state_at_with_config_auth_and_secrets(&database_path, false, config, None, None)
+                .await;
+
+        let options = runtime.inference_model_options().await.unwrap();
+        assert_eq!(
+            options[0].supported_reasoning_efforts.as_deref(),
+            Some(["low".to_string(), "medium".to_string(), "high".to_string()].as_slice())
+        );
+
+        let response = handle_update_inference(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateInferenceRequest {
+                model: Some("grok-route".to_string()),
+                reasoning_effort: Some("max".to_string()),
+                prompt_token_limit: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("只支持：low、medium、high"));
+        assert_eq!(runtime.reasoning_effort(), None);
     }
 
     #[tokio::test]

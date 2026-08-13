@@ -632,14 +632,13 @@
 
   "reasoning": {
     "label": "Reasoning",
-    "title": "Only affects future model requests; Off sends none. GLM-5.2 defaults to Max and maps Low/Medium to High.",
-    "defaultUnknown": "Provider default (unresolved)",
+    "title": "Only affects future model requests; choices follow the current physical model's native capabilities.",
+    "defaultUnknown": "Provider default",
     "off": "Off",
     "low": "Low",
     "medium": "Medium",
     "high": "High",
-    "max": "Max",
-    "maxDefault": "Max (model default)"
+    "max": "Max"
   },
   "reasoningSummary": {
     "toggle": "Reasoning summary",

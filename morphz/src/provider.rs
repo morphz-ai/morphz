@@ -368,6 +368,72 @@ struct PromptUsageAnchor {
     actual_prompt_tokens: usize,
 }
 
+pub(crate) fn supported_reasoning_efforts_for_model(
+    adapter: &str,
+    model: &str,
+) -> Option<&'static [ReasoningEffort]> {
+    if adapter != "xai-subscription" {
+        return None;
+    }
+
+    let normalized = model.trim().to_ascii_lowercase();
+    if normalized == "grok-4.5" || normalized.starts_with("grok-4.5-") {
+        return Some(&[
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+        ]);
+    }
+    if normalized == "grok-4.3" || normalized.starts_with("grok-4.3-") {
+        return Some(&[
+            ReasoningEffort::Off,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+        ]);
+    }
+    None
+}
+
+pub(crate) fn normalize_reasoning_effort_for_model(
+    adapter: &str,
+    model: &str,
+    effort: Option<ReasoningEffort>,
+) -> Option<ReasoningEffort> {
+    if adapter != "xai-subscription" {
+        return effort;
+    }
+
+    // xAI's OAuth catalog currently reports only whether an effort dial is
+    // supported; it does not publish the accepted vocabulary for every
+    // physical model. Keep this compatibility rule model-scoped. Native
+    // reasoning models outside this allowlist must receive no `effort` field:
+    // several Grok models reason by default but reject the dial with HTTP 400.
+    let normalized = model.trim().to_ascii_lowercase();
+    let configurable = normalized == "grok-latest"
+        || normalized == "grok-4.3"
+        || normalized.starts_with("grok-4.3-")
+        || normalized == "grok-4.5"
+        || normalized.starts_with("grok-4.5-");
+    if !configurable {
+        return None;
+    }
+
+    match effort {
+        // Morphz's provider-neutral `max` means the strongest level available
+        // on the selected physical model. Grok 4.3/4.5 call that level `high`.
+        Some(ReasoningEffort::Max) => Some(ReasoningEffort::High),
+        // Grok 4.5 cannot disable reasoning. Omitting the field preserves its
+        // declared provider default instead of sending an invalid `none`.
+        Some(ReasoningEffort::Off)
+            if normalized == "grok-4.5" || normalized.starts_with("grok-4.5-") =>
+        {
+            None
+        }
+        other => other,
+    }
+}
+
 impl ProtocolClient {
     pub(crate) fn new(
         provider: &ProviderConfig,
@@ -478,14 +544,18 @@ impl ProtocolClient {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Value {
+        let reasoning_effort = self
+            .reasoning_effort
+            .read()
+            .map(|effort| *effort)
+            .unwrap_or(None);
+        let reasoning_effort =
+            normalize_reasoning_effort_for_model(self.adapter.as_str(), model, reasoning_effort);
         let request = build_request(
             self.protocol,
             model,
             self.max_output_tokens,
-            self.reasoning_effort
-                .read()
-                .map(|effort| *effort)
-                .unwrap_or(None),
+            reasoning_effort,
             messages,
             tools,
         );
@@ -3157,6 +3227,65 @@ mod tests {
             &tools,
         );
         assert!(provider_default.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn xai_subscription_maps_abstract_max_for_grok_45_only() {
+        assert_eq!(
+            supported_reasoning_efforts_for_model("xai-subscription", "grok-4.5"),
+            Some(
+                [
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                ]
+                .as_slice()
+            )
+        );
+        assert_eq!(
+            supported_reasoning_efforts_for_model("xai-subscription", "grok-4"),
+            None
+        );
+        let client = ProtocolClient::new_with_adapter(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: "https://cli-chat-proxy.grok.com/v1".to_string(),
+                ..ProviderConfig::default()
+            },
+            "xai-subscription",
+            "grok-4.5".to_string(),
+            None,
+            &LlmConfig {
+                reasoning_effort: Some(ReasoningEffort::Max),
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+
+        let request = client.request_for_model("grok-4.5", &messages(), &tools());
+
+        assert_eq!(request["reasoning"]["effort"], "high");
+
+        let unsupported = client.request_for_model("grok-4", &messages(), &tools());
+        assert!(unsupported.get("reasoning").is_none());
+
+        let off_client = ProtocolClient::new_with_adapter(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: "https://cli-chat-proxy.grok.com/v1".to_string(),
+                ..ProviderConfig::default()
+            },
+            "xai-subscription",
+            "grok-4.5".to_string(),
+            None,
+            &LlmConfig {
+                reasoning_effort: Some(ReasoningEffort::Off),
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+        let off_request = off_client.request_for_model("grok-4.5", &messages(), &tools());
+        assert!(off_request.get("reasoning").is_none());
     }
 
     #[test]
