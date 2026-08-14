@@ -24,6 +24,26 @@ impl fmt::Display for KernelError {
 
 impl std::error::Error for KernelError {}
 
+impl KernelError {
+    fn is_transient_storage_contention(&self) -> bool {
+        let Self::Store(message) = self else {
+            return false;
+        };
+        let message = message.to_ascii_lowercase();
+        message.contains("database is locked")
+            || message.contains("database table is locked")
+            || message.contains("sqlite_busy")
+            || message.contains("sqlite_locked")
+            || message.contains("(code: 5)")
+            || message.contains("(code: 6)")
+            || message.contains("sqlstate 40001")
+            || message.contains("sqlstate 40p01")
+            || message.contains("could not serialize access")
+            || message.contains("serialization failure")
+            || message.contains("deadlock detected")
+    }
+}
+
 /// The sole deterministic facade for scheduler state mutations.
 ///
 /// Backends still own the physical transaction implementation. The Kernel
@@ -47,6 +67,34 @@ impl SchedulerKernel {
     }
 
     pub async fn execute(&self, command: KernelCommand) -> Result<KernelResult, KernelError> {
+        validate_header(&command.header)?;
+        const MAX_CONTENTION_RETRIES: u64 = 4;
+        let mut contention_retries = 0u64;
+        let mut delay = std::time::Duration::from_millis(25);
+        loop {
+            match self.execute_once(command.clone()).await {
+                Err(error)
+                    if error.is_transient_storage_contention()
+                        && contention_retries < MAX_CONTENTION_RETRIES =>
+                {
+                    contention_retries = contention_retries.saturating_add(1);
+                    tracing::warn!(
+                        command_id = %command.header.command_id,
+                        correlation_id = %command.header.correlation_id,
+                        contention_retries,
+                        delay_ms = delay.as_millis(),
+                        error = %error,
+                        "Scheduler Kernel 等待持久存储写槽；保留同一 fenced command 并重试"
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(std::time::Duration::from_millis(400));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn execute_once(&self, command: KernelCommand) -> Result<KernelResult, KernelError> {
         validate_header(&command.header)?;
         match command.payload {
             KernelCommandPayload::SpawnSupervisedGroup(payload) => {
@@ -450,6 +498,25 @@ mod tests {
     };
     use chrono::Utc;
     use serde_json::json;
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+    use sqlx::{Connection, Executor, SqliteConnection};
+    use std::time::Duration;
+
+    #[test]
+    fn classifies_only_retryable_store_contention() {
+        assert!(KernelError::Store(
+            "error returned from database: (code: 5) database is locked".into()
+        )
+        .is_transient_storage_contention());
+        assert!(
+            KernelError::Store("SQLSTATE 40001 serialization failure".into())
+                .is_transient_storage_contention()
+        );
+        assert!(!KernelError::Store("UNIQUE constraint failed".into())
+            .is_transient_storage_contention());
+        assert!(!KernelError::InvalidCommand("database is locked".into())
+            .is_transient_storage_contention());
+    }
 
     #[test]
     fn rejects_missing_command_identity_before_store_access() {
@@ -523,6 +590,59 @@ mod tests {
         assert!(matches!(
             second,
             KernelResult::DependencyRegistered(SchedulerDependencyMutation::Existing(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn retries_same_fenced_command_after_sqlite_writer_contention() {
+        let database = tempfile::NamedTempFile::new().unwrap();
+        let path = database.path().to_path_buf();
+        let store = Arc::new(
+            SqliteStore::new(path.to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let kernel = SchedulerKernel::new(store as Arc<dyn RuntimeStore>);
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::ZERO);
+        let mut writer = SqliteConnection::connect_with(&options).await.unwrap();
+        writer.execute("BEGIN IMMEDIATE").await.unwrap();
+        let release_writer = tokio::spawn(async move {
+            // The Runtime store waits up to five seconds per write. Hold the
+            // slot just beyond that boundary so the first attempt receives
+            // SQLITE_BUSY and the Kernel retry is required for success.
+            tokio::time::sleep(Duration::from_millis(5_200)).await;
+            writer.execute("COMMIT").await.unwrap();
+        });
+        let command = KernelCommand {
+            header: KernelCommandHeader::new(
+                "command-register-after-contention",
+                "test-cause",
+                "test-correlation",
+                "Kernel-Test",
+            ),
+            payload: KernelCommandPayload::RegisterDependency(RegisterDependencyCommand {
+                dependency: NewSchedulerDependency {
+                    id: "dependency-after-contention".into(),
+                    owner_kind: SchedulerDependencyOwnerKind::Objective,
+                    owner_id: "objective-after-contention".into(),
+                    owner_generation: 1,
+                    dependency_kind: SchedulerDependencyKind::Resource,
+                    dependency_id: "provider:test".into(),
+                    dependency_generation: 1,
+                    required: true,
+                    metadata: json!({"test": true}),
+                },
+            }),
+        };
+
+        let result = kernel.execute(command).await.unwrap();
+        release_writer.await.unwrap();
+        assert!(matches!(
+            result,
+            KernelResult::DependencyRegistered(SchedulerDependencyMutation::Updated(_))
         ));
     }
 }

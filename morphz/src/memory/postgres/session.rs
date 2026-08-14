@@ -180,7 +180,7 @@ impl SessionDirectoryStore for PostgresStore {
             .replace('\\', r"\\")
             .replace('%', r"\%")
             .replace('_', r"\_");
-        let prefix = format!("{escaped}%");
+        let pattern = format!("%{escaped}%");
         let fetch_limit = limit.clamp(1, 100).saturating_add(1);
         let rows = sqlx::query(
             r#"WITH matched AS (
@@ -210,7 +210,7 @@ impl SessionDirectoryStore for PostgresStore {
                ORDER BY m.id"#,
         )
         .bind(&normalized)
-        .bind(&prefix)
+        .bind(&pattern)
         .bind(cursor)
         .bind(i64::try_from(fetch_limit)?)
         .fetch_all(&self.pool)

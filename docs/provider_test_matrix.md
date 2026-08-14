@@ -96,7 +96,7 @@ npm --prefix dashboard run build
 - Dashboard：109 通过；TypeScript 构建与 lint 通过。
 - Provider Web 功能与本地假 Provider 端到端：全部通过。
 - Clippy 编译检查通过；严格 `-D warnings` 中 Provider 与本轮 SDK 变更已无告警，仓库其他模块仍有 19 个既有告警，未借本轮改动跨模块清理。
-- 完整 `web::tests`：38 通过，3 个既有 Dialogue Lane/调度器测试超时。失败用例分别是 `session_message_endpoint_is_idempotent_and_routes_to_session`、`model_stream_precedes_durable_reply_and_carries_stable_route`、`reasoning_summary_survives_runtime_rebuild_and_remains_queryable`；它们不经过本轮修改的 Provider setup、目录、路由或容量路径，作为 Runtime 基线缺陷单独跟踪，不能通过扩大超时掩盖。
+- 完整 `web::tests`：41 通过，0 失败。此前 3 个 Dialogue Lane 超时已定位为 Context Overlay 对非空 `evaluation-environment` 的错误字符串匹配；结构化合并修复后全部通过。
 
 ## 历史回归登记
 
@@ -112,3 +112,4 @@ npm --prefix dashboard run build
 | 路由 ID 恰好等于另一条路由别名时选择器可能选错 | 旧选择器把 ID 与别名放在同一次、依赖数组顺序的查找中 | UI-03 |
 | 增加第二个 Provider 后重启默认模型与当前 Runtime 不一致 | setup 无条件把新路由写成磁盘默认值，但热更新保留旧选择 | ROUTE-03、E2E-01 |
 | 给既有路由增加账户时丢失路由属性或产生重复候选优先级 | UI 重建路由而不是在原路由上追加候选，并用候选数量代替最大优先级 | ROUTE-04、UI-01 |
+| 消息已写入但模型完全不执行 | Context Overlay 硬编码只接受空的 `evaluation-environment`；加入当地时钟后所有 Activation 在 Provider 调用前失败 | `context_encoding_preserves_authoritative_local_time_when_mounting_overlay`、完整 `web::tests` |

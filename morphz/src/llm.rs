@@ -14,6 +14,10 @@ use std::sync::Arc;
 pub enum ModelFailureKind {
     ContextLimit,
     RateLimited,
+    /// The account or subscription has exhausted its included usage. Unlike
+    /// a short provider throttle, there is no useful near-term retry schedule
+    /// for the current turn, so it must not occupy a durable Provider wait.
+    QuotaExhausted,
     TransientNetwork,
     ServerUnavailable,
     Authentication,
@@ -37,6 +41,7 @@ impl ModelFailureKind {
         match self {
             Self::ContextLimit => "context_limit",
             Self::RateLimited => "rate_limited",
+            Self::QuotaExhausted => "quota_exhausted",
             Self::TransientNetwork => "transient_network",
             Self::ServerUnavailable => "server_unavailable",
             Self::Authentication => "authentication",
@@ -83,7 +88,10 @@ impl ModelFailureKind {
     /// therefore stop the current turn instead of entering Provider recovery.
     /// ContextLimit is handled separately by Context maintenance.
     pub const fn uses_provider_recovery(self) -> bool {
-        !matches!(self, Self::ContextLimit | Self::InvalidModelOrRequest)
+        !matches!(
+            self,
+            Self::ContextLimit | Self::InvalidModelOrRequest | Self::QuotaExhausted
+        )
     }
 
     pub const fn requires_configuration(self) -> bool {
@@ -154,6 +162,18 @@ impl ModelFailure {
             ],
         ) {
             ModelFailureKind::ContextLimit
+        } else if contains_any(
+            &normalized,
+            &[
+                "subscription:free-usage-exhausted",
+                "free-usage-exhausted",
+                "insufficient_quota",
+                "quota exceeded",
+                "usage limit reached",
+                "used all the included free usage",
+            ],
+        ) {
+            ModelFailureKind::QuotaExhausted
         } else if contains_any(&normalized, &["429", "rate limit", "too many requests"]) {
             ModelFailureKind::RateLimited
         } else if contains_any(
@@ -429,6 +449,7 @@ mod tests {
     #[test]
     fn deterministic_invalid_requests_do_not_enter_provider_health_recovery() {
         assert!(!ModelFailureKind::InvalidModelOrRequest.uses_provider_recovery());
+        assert!(!ModelFailureKind::QuotaExhausted.uses_provider_recovery());
         assert!(!ModelFailureKind::ContextLimit.uses_provider_recovery());
         assert!(ModelFailureKind::Authentication.uses_provider_recovery());
         assert!(ModelFailureKind::TransientNetwork.uses_provider_recovery());

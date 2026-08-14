@@ -288,14 +288,20 @@ fn retry_after_seconds(headers: &HeaderMap) -> Option<u64> {
 
 fn provider_error_code(body: &str) -> Option<String> {
     let value = serde_json::from_str::<Value>(body).ok()?;
-    let error = value.get("error").unwrap_or(&value);
-    ["code", "type", "status"]
-        .into_iter()
-        .find_map(|key| match error.get(key) {
-            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
-            Some(Value::Number(value)) => Some(value.to_string()),
-            _ => None,
-        })
+    let code_from = |object: &Value| {
+        ["code", "type", "status"]
+            .into_iter()
+            .find_map(|key| match object.get(key) {
+                Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
+                Some(Value::Number(value)) => Some(value.to_string()),
+                _ => None,
+            })
+    };
+    value
+        .get("error")
+        .filter(|error| error.is_object())
+        .and_then(code_from)
+        .or_else(|| code_from(&value))
 }
 
 fn http_model_failure(
@@ -305,8 +311,22 @@ fn http_model_failure(
 ) -> ModelFailure {
     let message = format!("Provider returned HTTP {status}: {body}");
     let semantic = ModelFailure::classify_message(message.clone());
+    let provider_code = provider_error_code(&body);
     let kind = if semantic.kind == ModelFailureKind::ContextLimit {
         ModelFailureKind::ContextLimit
+    } else if semantic.kind == ModelFailureKind::QuotaExhausted
+        || provider_code.as_deref().is_some_and(|code| {
+            matches!(
+                code,
+                "subscription:free-usage-exhausted"
+                    | "free-usage-exhausted"
+                    | "insufficient_quota"
+                    | "quota_exceeded"
+                    | "usage_limit_reached"
+            )
+        })
+    {
+        ModelFailureKind::QuotaExhausted
     } else if status.as_u16() == 429 {
         ModelFailureKind::RateLimited
     } else if matches!(status.as_u16(), 401 | 403) {
@@ -320,7 +340,7 @@ fn http_model_failure(
     };
     ModelFailure::new(kind, message)
         .with_http_status(status.as_u16())
-        .with_provider_code(provider_error_code(&body))
+        .with_provider_code(provider_code)
         .with_retry_after(retry_after)
 }
 
@@ -2967,6 +2987,63 @@ mod tests {
         let error = client.send("test-model", &json!({})).await.unwrap_err();
         let failure = error.downcast_ref::<ModelFailure>().unwrap();
         assert_eq!(failure.kind, ModelFailureKind::ContextLimit);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn subscription_quota_exhaustion_is_terminal_and_not_retried() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(json!({
+                            "code": "subscription:free-usage-exhausted",
+                            "error": "You've used all the included free usage for model grok-4.5 for now."
+                        })),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "grok-4.5".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 5,
+                initial_backoff_secs: 0,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+
+        let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
+        let error = client
+            .send_stream("grok-4.5", &json!({}), None, &stream)
+            .await
+            .unwrap_err();
+        let failure = error.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::QuotaExhausted);
+        assert_eq!(failure.http_status, Some(429));
+        assert_eq!(
+            failure.provider_code.as_deref(),
+            Some("subscription:free-usage-exhausted")
+        );
+        assert!(!failure.kind.uses_provider_recovery());
         assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 

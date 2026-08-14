@@ -852,6 +852,8 @@ interface RuntimeStatus {
   agent_id: string
   context_id: string
   principal_id: string
+  identity_mode?: 'default' | 'trusted-gateway'
+  identity_provider_id?: string
   model: string
   models: string[]
   model_options: InferenceModelOption[]
@@ -2568,6 +2570,7 @@ export default function App() {
   const contextTokenBudgetRef = useRef<HTMLDivElement>(null)
   const appDialogRef = useRef<AppDialogRequest | null>(null)
   const appDialogSequence = useRef(0)
+  const principalSearchRequestSequence = useRef(0)
   const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
   const principalScopeRef = useRef<PrincipalDirectoryEntry | null>(null)
   const activeViewRef = useRef(view)
@@ -2759,6 +2762,7 @@ export default function App() {
     cursor = '',
     append = false,
   ) => {
+    const requestSequence = ++principalSearchRequestSequence.current
     setPrincipalSearchBusy(true)
     try {
       const params = new URLSearchParams({ query, limit: '20' })
@@ -2766,13 +2770,17 @@ export default function App() {
       const page = await DASHBOARD_API.get<PrincipalDirectoryPage>(
         `/api/operator/principals?${params.toString()}`,
       )
+      if (requestSequence !== principalSearchRequestSequence.current) return
       setPrincipalSearchEntries(current => append ? [...current, ...page.entries] : page.entries)
       setPrincipalSearchCursor(page.next_cursor ?? '')
       setError('')
     } catch (reason) {
+      if (requestSequence !== principalSearchRequestSequence.current) return
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
-      setPrincipalSearchBusy(false)
+      if (requestSequence === principalSearchRequestSequence.current) {
+        setPrincipalSearchBusy(false)
+      }
     }
   }, [])
 
@@ -2851,10 +2859,9 @@ export default function App() {
   useEffect(() => {
     if (!principalMenuOpen) return
     const query = principalSearchQuery.trim()
-    if (!query) return
     const timer = window.setTimeout(() => {
       void searchPrincipalDirectory(query)
-    }, 220)
+    }, query ? 220 : 0)
     return () => window.clearTimeout(timer)
   }, [principalMenuOpen, principalSearchQuery, searchPrincipalDirectory])
 
@@ -5954,23 +5961,15 @@ export default function App() {
                       value={principalSearchQuery}
                       placeholder={t('header.searchPrincipalPlaceholder')}
                       aria-label={t('header.searchPrincipals')}
-                      onChange={event => {
-                        const value = event.target.value
-                        setPrincipalSearchQuery(value)
-                        if (!value.trim()) {
-                          setPrincipalSearchEntries([])
-                          setPrincipalSearchCursor('')
-                        }
-                      }}
+                      onChange={event => setPrincipalSearchQuery(event.target.value)}
                     />
                     {principalSearchBusy && <LoaderCircle size={13} className="spin" />}
                   </div>
                   <div className="principal-results">
-                    {!principalSearchQuery.trim() && (
-                      <p>{t('header.principalSearchHint')}</p>
-                    )}
-                    {principalSearchQuery.trim() && !principalSearchBusy && principalSearchEntries.length === 0 && (
-                      <p>{t('header.noPrincipalMatches')}</p>
+                    {!principalSearchBusy && principalSearchEntries.length === 0 && (
+                      <p>{t(principalSearchQuery.trim()
+                        ? 'header.noPrincipalMatches'
+                        : 'header.noKnownPrincipals')}</p>
                     )}
                     {principalSearchEntries.map(entry => (
                       <button
@@ -5982,7 +5981,7 @@ export default function App() {
                         <i className="presence active" />
                         <span>
                           <strong>{entry.principal.display_name || entry.principal.id}</strong>
-                          <small>{entry.principal.display_name ? entry.principal.id : entry.principal.provider_id}</small>
+                          <small>{entry.principal.id} · {entry.principal.provider_id}</small>
                         </span>
                         <em>
                           {t('header.principalSessionSummary', {
@@ -6007,7 +6006,13 @@ export default function App() {
                       </button>
                     )}
                   </div>
-                  <footer>{t('header.operatorReadOnlyHint')}</footer>
+                  <footer>
+                    {t(status?.identity_mode === 'default'
+                      ? 'header.defaultIdentityModeHint'
+                      : status?.identity_mode === 'trusted-gateway'
+                        ? 'header.trustedGatewayIdentityModeHint'
+                        : 'header.operatorReadOnlyHint')}
+                  </footer>
                 </div>
               )}
             </div>

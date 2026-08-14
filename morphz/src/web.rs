@@ -1173,6 +1173,14 @@ async fn handle_dashboard_icons() -> Response {
     embedded_asset("image/svg+xml", DASHBOARD_ICONS)
 }
 
+#[derive(serde::Serialize)]
+struct DashboardStatusResponse {
+    #[serde(flatten)]
+    runtime: crate::runtime::RuntimeStatus,
+    identity_mode: ServerIdentityMode,
+    identity_provider_id: String,
+}
+
 async fn handle_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1192,7 +1200,12 @@ async fn handle_status(
             status.model_catalog_error = Some(error.to_string());
         }
     }
-    Json(status).into_response()
+    Json(DashboardStatusResponse {
+        runtime: status,
+        identity_mode: state.identity.mode,
+        identity_provider_id: state.identity.provider_id.clone(),
+    })
+    .into_response()
 }
 
 async fn handle_list_managed_secrets(
@@ -6978,6 +6991,44 @@ mod tests {
             .iter()
             .any(|entry| entry["principal"]["id"] == "site-user-1"));
 
+        let external_principal_search = handle_search_operator_principals(
+            State(Arc::clone(&state)),
+            dashboard_headers(),
+            Query(PrincipalDirectoryQuery {
+                token: None,
+                query: "wechat".to_string(),
+                cursor: None,
+                limit: Some(20),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(external_principal_search.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(external_principal_search.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| { entry["principal"]["id"] == "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat" }));
+
+        let status_response = handle_status(
+            State(Arc::clone(&state)),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(status_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["identity_mode"], "trusted-gateway");
+        assert_eq!(body["identity_provider_id"], "morphz-site");
+
         let observed_sessions = handle_list_operator_principal_sessions(
             State(Arc::clone(&state)),
             Path("site-user-1".to_string()),
@@ -7662,7 +7713,10 @@ mod tests {
         let status_body = axum::body::to_bytes(status_response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let status: crate::runtime::RuntimeStatus = serde_json::from_slice(&status_body).unwrap();
+        let status_json: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
+        assert_eq!(status_json["identity_mode"], "default");
+        assert_eq!(status_json["identity_provider_id"], "morphz-site");
+        let status: crate::runtime::RuntimeStatus = serde_json::from_value(status_json).unwrap();
         assert!(status.models.contains(&"subscription-model".to_string()));
         assert!(status
             .model_options

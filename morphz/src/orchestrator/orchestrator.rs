@@ -682,23 +682,56 @@ fn compose_context_encoding(
     base: &str,
     overlay: EvaluationContextOverlay<'_>,
 ) -> Result<String, DynError> {
-    const PROFILE_SLOT: &str = " (evaluation-profile none)";
-    const ENVIRONMENT_SLOT: &str = " (evaluation-environment)";
-    if !base.starts_with("(context ")
-        || !base.contains(PROFILE_SLOT)
-        || !base.contains(ENVIRONMENT_SLOT)
-    {
-        return Err("基础 Context Encoding 缺少固定的 profile/environment 插槽".into());
-    }
-    let profile = match overlay.evaluation_profile {
-        Some(profile) => crate::sexpr::parse(profile)
-            .map_err(|error| format!("Evaluation Profile 不是合法 S 表达式：{error}"))?
-            .to_string(),
-        None => "(evaluation-profile none)".to_string(),
+    let mut composed = crate::sexpr::parse(base)
+        .map_err(|error| format!("基础 Context Encoding 不是合法 S 表达式：{error}"))?;
+    let SExpr::List(context) = &composed else {
+        return Err("基础 Context Encoding 不是 context List".into());
     };
-    let mut composed = base.replacen(PROFILE_SLOT, &format!(" {profile}"), 1);
+    if !matches!(context.first(), Some(SExpr::Atom(name)) if name == "context") {
+        return Err("基础 Context Encoding 的根节点不是 context".into());
+    }
 
-    let mut environment = vec![SExpr::Atom("evaluation-environment".to_string())];
+    let profile_slot = composed
+        .get_path_mut(&["evaluation-profile"])
+        .ok_or("基础 Context Encoding 缺少固定的 evaluation-profile 插槽")?;
+    if !matches!(
+        profile_slot,
+        SExpr::List(values)
+            if matches!(values.as_slice(), [SExpr::Atom(name), SExpr::Atom(value)] if name == "evaluation-profile" && value == "none")
+    ) {
+        return Err("基础 Context Encoding 的 evaluation-profile 插槽已被占用".into());
+    }
+    if let Some(profile) = overlay.evaluation_profile {
+        let parsed = crate::sexpr::parse(profile)
+            .map_err(|error| format!("Evaluation Profile 不是合法 S 表达式：{error}"))?;
+        if !matches!(
+            &parsed,
+            SExpr::List(values)
+                if matches!(values.first(), Some(SExpr::Atom(name)) if name == "evaluation-profile")
+        ) {
+            return Err("Evaluation Profile 的根节点必须是 evaluation-profile".into());
+        }
+        *profile_slot = parsed;
+    }
+
+    let environment_slot = composed
+        .get_path_mut(&["evaluation-environment"])
+        .ok_or("基础 Context Encoding 缺少固定的 evaluation-environment 插槽")?;
+    let SExpr::List(environment) = environment_slot else {
+        return Err("基础 Context Encoding 的 evaluation-environment 不是 List".into());
+    };
+    if !matches!(environment.first(), Some(SExpr::Atom(name)) if name == "evaluation-environment") {
+        return Err("基础 Context Encoding 的 evaluation-environment 插槽无效".into());
+    }
+    if environment.iter().skip(1).any(|value| {
+        matches!(
+            value,
+            SExpr::List(values)
+                if matches!(values.first(), Some(SExpr::Atom(name)) if name == "runtime-directive" || name == "harness-binding")
+        )
+    }) {
+        return Err("基础 Context Encoding 不得预置本轮 Runtime 或 Harness 绑定".into());
+    }
     if let Some((kind, description)) = overlay.runtime_directive {
         environment.push(SExpr::List(vec![
             SExpr::Atom("runtime-directive".to_string()),
@@ -713,19 +746,18 @@ fn compose_context_encoding(
         ]));
     }
     if let Some(binding) = overlay.harness_binding {
-        environment.push(
-            crate::sexpr::parse(binding)
-                .map_err(|error| format!("Harness binding 不是合法 S 表达式：{error}"))?,
-        );
+        let parsed = crate::sexpr::parse(binding)
+            .map_err(|error| format!("Harness binding 不是合法 S 表达式：{error}"))?;
+        if !matches!(
+            &parsed,
+            SExpr::List(values)
+                if matches!(values.first(), Some(SExpr::Atom(name)) if name == "harness-binding")
+        ) {
+            return Err("Harness binding 的根节点必须是 harness-binding".into());
+        }
+        environment.push(parsed);
     }
-    if environment.len() > 1 {
-        composed = composed.replacen(
-            ENVIRONMENT_SLOT,
-            &format!(" {}", SExpr::List(environment)),
-            1,
-        );
-    }
-    Ok(composed)
+    Ok(composed.to_string())
 }
 
 fn compose_context_message(
@@ -2693,10 +2725,12 @@ impl Orchestrator {
             {
                 ThreadActivationMutation::Updated(renewed) => {
                     self.arm_activation_lease(&renewed).await?;
+                    let renewed_expires_at_local =
+                        crate::local_time::format_utc_for_local(renewed_expires_at);
                     tracing::debug!(
                         activation_id = %renewed.id,
                         revision = renewed.revision,
-                        lease_expires_at = %renewed_expires_at,
+                        lease_expires_at = %renewed_expires_at_local,
                         "本地 Activation 仍在执行；心跳续租并保留恢复时钟"
                     );
                     return Ok(TimerDisposition::Complete);
@@ -4653,6 +4687,39 @@ impl Orchestrator {
                 (result, ThreadActivationStatus::Cancelled)
             }
         };
+        if let Err(error) = &result {
+            tracing::error!(
+                session_id,
+                activation_id = %activation.id,
+                root_turn_id = %activation.root_turn_id,
+                error = %error,
+                "Thread Activation 求值失败"
+            );
+            if self.activation_route(&activation.id).is_some() {
+                let storage_contention = is_transient_storage_contention(error.as_ref());
+                if let Err(outcome_error) = self
+                    .publish_activation_evaluation_failure(
+                        &session_id,
+                        &activation.id,
+                        storage_contention,
+                    )
+                    .await
+                {
+                    tracing::error!(
+                        session_id,
+                        activation_id = %activation.id,
+                        original_error = %error,
+                        error = %outcome_error,
+                        "Activation 求值失败后无法提交用户可见的 Thread 终态"
+                    );
+                }
+            }
+            #[cfg(test)]
+            eprintln!(
+                "Thread Activation '{}' evaluation failed: {error}",
+                activation.id
+            );
+        }
         if matches!(
             final_status,
             ThreadActivationStatus::Cancelled | ThreadActivationStatus::Failed
@@ -4702,6 +4769,41 @@ impl Orchestrator {
                 .await?;
         }
         result
+    }
+
+    async fn publish_activation_evaluation_failure(
+        &self,
+        session_id: &str,
+        activation_id: &str,
+        storage_contention: bool,
+    ) -> Result<(), DynError> {
+        let failure_kind = if storage_contention {
+            "storage_contention"
+        } else {
+            "runtime_internal"
+        };
+        let message = if storage_contention {
+            "Runtime 内部存储持续繁忙，本次请求未能开始执行。该回合已经结束，不会遗留为运行中；请重新发送这条消息。"
+        } else {
+            "Runtime 在执行本次请求时发生内部错误。该回合已经结束，不会遗留为运行中；请重试或查看服务日志。"
+        };
+        self.publish_reply_with_attributes(
+            session_id,
+            activation_id,
+            None,
+            message.to_string(),
+            None,
+            vec![
+                ("runtime_failure_kind".to_string(), json!(failure_kind)),
+                (
+                    "runtime_failure_stage".to_string(),
+                    json!("activation_evaluation"),
+                ),
+                ("terminal_kind".to_string(), json!("failed")),
+                ("unresolved_failures".to_string(), json!([failure_kind])),
+            ],
+        )
+        .await
     }
 
     async fn dispatch_next_pending_thread_signal(
@@ -9566,13 +9668,21 @@ impl Orchestrator {
         };
         let incident =
             self.register_runtime_failure_incident(&context_id, stage, failure, &wait_resource);
+        // Incident coalescing may suppress repeated infrastructure notices,
+        // but each user turn that terminates on a deterministic request or
+        // quota error still needs its own visible outcome.
+        let should_notify_user = incident.should_notify_user
+            || matches!(
+                failure.kind,
+                ModelFailureKind::InvalidModelOrRequest | ModelFailureKind::QuotaExhausted
+            );
         let ordinary_provider_wait = failure.kind.uses_provider_recovery()
             && self.activation_route(attempt_id).is_some_and(|route| {
                 self.objective_evaluations
                     .get_for_activation(&route.activation_id)
                     .is_none()
             });
-        if incident.should_notify_user && ordinary_provider_wait {
+        if should_notify_user && ordinary_provider_wait {
             tracing::warn!(
                 session_id,
                 attempt_id,
@@ -9581,7 +9691,7 @@ impl Orchestrator {
                 failure_kind = failure.kind.as_str(),
                 "LLM 请求在重试后失败；Thread 转入持久 Provider 等待"
             );
-        } else if incident.should_notify_user {
+        } else if should_notify_user {
             tracing::error!(
                 session_id,
                 attempt_id,
@@ -9626,7 +9736,7 @@ impl Orchestrator {
         if let Some(seconds) = failure.retry_after_secs {
             payload.push(("retry_after_secs".to_string(), json!(seconds)));
         }
-        if incident.should_notify_user && !ordinary_provider_wait {
+        if should_notify_user && !ordinary_provider_wait {
             self.append_activation_route(attempt_id, &mut payload);
             self.bus
                 .publish(Event::new(
@@ -9660,6 +9770,11 @@ impl Orchestrator {
             ModelFailureKind::InvalidModelOrRequest => {
                 format!(
                     "模型或请求参数无效。Runtime 已停止本回合并保留 Session；修正模型或推理设置后重试。\n\n原始错误：{error_text}"
+                )
+            }
+            ModelFailureKind::QuotaExhausted => {
+                format!(
+                    "模型服务额度已耗尽。本次请求已经结束，不会进入等待队列；请等待额度恢复、升级订阅或切换模型。\n\n服务返回：{error_text}"
                 )
             }
             kind if kind.uses_provider_recovery() => {
@@ -9710,7 +9825,7 @@ impl Orchestrator {
         if let Some(seconds) = failure.retry_after_secs {
             attributes.push(("retry_after_secs".to_string(), json!(seconds)));
         }
-        if incident.should_notify_user {
+        if should_notify_user {
             self.publish_reply_with_attributes(
                 session_id,
                 attempt_id,
@@ -15287,6 +15402,35 @@ mod tests {
         assert!(
             context.find("(evaluation-environment").unwrap() < context.find("(evaluate ").unwrap()
         );
+    }
+
+    #[test]
+    fn context_encoding_preserves_authoritative_local_time_when_mounting_overlay() {
+        let base = "(context (protocol (version 1)) (evaluation-profile none) (inbox) (mind) (evaluation-environment (local-time (current 2026-08-11T12:00:00+08:00) (time-zone Asia/Shanghai) (utc-offset +08:00))) (evaluate (root-input test)))";
+        assert_eq!(
+            compose_context_encoding(base, EvaluationContextOverlay::default()).unwrap(),
+            base
+        );
+
+        let context = compose_context_encoding(
+            base,
+            EvaluationContextOverlay {
+                runtime_directive: Some(("work", "继续执行")),
+                ..EvaluationContextOverlay::default()
+            },
+        )
+        .unwrap();
+        let parsed = crate::sexpr::parse(&context).expect("composed context must remain valid");
+        assert_eq!(
+            parsed
+                .get_path(&["evaluation-environment", "local-time", "time-zone"])
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("Asia/Shanghai")
+        );
+        assert!(context.contains("(runtime-directive (kind work)"));
+        assert!(context.find("(local-time").unwrap() < context.find("(runtime-directive").unwrap());
+        assert!(context.find("(runtime-directive").unwrap() < context.find("(evaluate ").unwrap());
     }
 
     #[test]

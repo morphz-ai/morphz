@@ -1873,11 +1873,13 @@ impl ObjectiveSupervisor {
                 .await?
             {
                 ObjectiveMutation::Updated(_) => {
+                    let lease_expires_at_local =
+                        crate::local_time::format_utc_for_local(lease_expires_at);
                     tracing::debug!(
                         objective_id = %binding.objective_id,
                         evaluation_id = %binding.evaluation_id,
                         activation_id,
-                        lease_expires_at = %lease_expires_at,
+                        lease_expires_at = %lease_expires_at_local,
                         "Objective Evaluation 运行中续租"
                     );
                 }

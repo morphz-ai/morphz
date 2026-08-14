@@ -25,14 +25,15 @@ use morphz::memory::{
     MindProjectionStore, NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
     NewCapabilityLease, NewCognitiveContext, NewDelegation, NewEdgeCommand, NewExecutionJob,
     NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
-    NewNodePairingCode, NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation,
-    NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    PairExecutionNode, QueryFilter, RecallDocument, RecallDocumentKind, RecallProjectionStore,
-    RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation,
-    SessionProjectionStore, SessionStatus, SessionUpdate, SignalOutboxStatus,
-    ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction, ThreadGroupStore,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore, TimerStore,
+    NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer, NewSession, NewThread,
+    NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallDocument, RecallDocumentKind,
+    RecallProjectionStore, RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus,
+    ScheduleStore, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
+    SessionProjectionMutation, SessionProjectionStore, SessionStatus, SessionUpdate,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction,
+    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore,
+    TimerStore,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
@@ -207,6 +208,32 @@ async fn assert_session_directory_conformance<S>(store: Arc<S>)
 where
     S: SessionDirectoryStore + Send + Sync + 'static,
 {
+    store
+        .ensure_principal(NewPrincipal {
+            id: "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat".to_string(),
+            provider_id: "gateway-conformance".to_string(),
+            assurance: "trusted-gateway".to_string(),
+            display_name: Some("微信用户".to_string()),
+        })
+        .await
+        .unwrap();
+    store
+        .bind_session_principal(
+            "conformance-session",
+            "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+        )
+        .await
+        .unwrap();
+    let external_id = store.search_principals("wechat", None, 20).await.unwrap();
+    assert_eq!(external_id.entries.len(), 1);
+    assert_eq!(
+        external_id.entries[0].principal.id,
+        "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat"
+    );
+    assert_eq!(external_id.entries[0].active_session_count, 1);
+    let external_name = store.search_principals("微信", None, 20).await.unwrap();
+    assert_eq!(external_name.entries.len(), 1);
+
     let agent = store.get_agent("conformance-agent").await.unwrap().unwrap();
     assert_eq!(agent.root_context_id, "conformance-context");
     assert!(store

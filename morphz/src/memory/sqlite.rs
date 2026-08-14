@@ -4615,28 +4615,54 @@ async fn upsert_recall_document_in_transaction(
     .execute(&mut **tx)
     .await?;
     if result.rows_affected() > 0 {
-        sqlx::query(
-            r#"DELETE FROM recall_document_chunks
-               WHERE context_id = ? AND document_kind = ? AND document_id = ?"#,
+        // `recall_documents_ai`/`recall_documents_au` already maintain the
+        // common one-chunk case. Replacing those same rows again fires the FTS
+        // DELETE trigger, whose predicate must scan a large virtual table. On
+        // a multi-gigabyte Recall index that redundant rewrite held SQLite's
+        // single writer for 8-11 seconds and could starve Scheduler Kernel
+        // state transitions. Compare the desired physical chunks first and
+        // rebuild only when the segmentation actually differs.
+        let existing_chunks = sqlx::query(
+            r#"SELECT chunk_index, searchable_text FROM recall_document_chunks
+               WHERE context_id = ? AND document_kind = ? AND document_id = ?
+               ORDER BY chunk_index"#,
         )
         .bind(&document.context_id)
         .bind(document.document_kind.as_str())
         .bind(&document.document_id)
-        .execute(&mut **tx)
+        .fetch_all(&mut **tx)
         .await?;
-        for (chunk_index, searchable_text) in chunks.iter().enumerate() {
+        let chunks_match = existing_chunks.len() == chunks.len()
+            && existing_chunks.iter().zip(chunks.iter()).enumerate().all(
+                |(expected_index, (row, expected_text))| {
+                    usize::try_from(row.get::<i64, _>("chunk_index")).ok() == Some(expected_index)
+                        && row.get::<String, _>("searchable_text") == *expected_text
+                },
+            );
+        if !chunks_match {
             sqlx::query(
-                r#"INSERT INTO recall_document_chunks
-                   (context_id, document_kind, document_id, chunk_index, searchable_text)
-                   VALUES (?, ?, ?, ?, ?)"#,
+                r#"DELETE FROM recall_document_chunks
+                   WHERE context_id = ? AND document_kind = ? AND document_id = ?"#,
             )
             .bind(&document.context_id)
             .bind(document.document_kind.as_str())
             .bind(&document.document_id)
-            .bind(i64::try_from(chunk_index)?)
-            .bind(searchable_text)
             .execute(&mut **tx)
             .await?;
+            for (chunk_index, searchable_text) in chunks.iter().enumerate() {
+                sqlx::query(
+                    r#"INSERT INTO recall_document_chunks
+                       (context_id, document_kind, document_id, chunk_index, searchable_text)
+                       VALUES (?, ?, ?, ?, ?)"#,
+                )
+                .bind(&document.context_id)
+                .bind(document.document_kind.as_str())
+                .bind(&document.document_id)
+                .bind(i64::try_from(chunk_index)?)
+                .bind(searchable_text)
+                .execute(&mut **tx)
+                .await?;
+            }
         }
     }
     let elapsed = started.elapsed();
@@ -5570,7 +5596,7 @@ impl SessionDirectoryStore for SqliteStore {
             .replace('\\', r"\\")
             .replace('%', r"\%")
             .replace('_', r"\_");
-        let prefix = format!("{escaped}%");
+        let pattern = format!("%{escaped}%");
         let fetch_limit = limit.clamp(1, 100).saturating_add(1);
         let rows = sqlx::query(
             r#"WITH matched AS (
@@ -5600,9 +5626,9 @@ impl SessionDirectoryStore for SqliteStore {
                ORDER BY m.id"#,
         )
         .bind(&normalized)
-        .bind(&prefix)
-        .bind(&prefix)
-        .bind(&prefix)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
         .bind(cursor)
         .bind(cursor)
         .bind(i64::try_from(fetch_limit)?)
@@ -18326,7 +18352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn principal_directory_search_is_prefix_scoped_and_paginated() {
+    async fn principal_directory_search_matches_identity_fragments_and_is_paginated() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
@@ -18336,6 +18362,11 @@ mod tests {
             ("principal:alice", "Alice Example", "github"),
             ("principal:alina", "Alina Example", "google"),
             ("principal:bob", "Bob Example", "github"),
+            (
+                "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+                "微信用户",
+                "yuanbao",
+            ),
         ] {
             store
                 .ensure_principal(NewPrincipal {
@@ -18389,6 +18420,17 @@ mod tests {
             .entries
             .iter()
             .all(|entry| entry.principal.provider_id == "github"));
+
+        let external_id = store.search_principals("wechat", None, 20).await.unwrap();
+        assert_eq!(external_id.entries.len(), 1);
+        assert_eq!(
+            external_id.entries[0].principal.id,
+            "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat"
+        );
+
+        let display_name = store.search_principals("微信", None, 20).await.unwrap();
+        assert_eq!(display_name.entries.len(), 1);
+        assert_eq!(display_name.entries[0].principal.provider_id, "yuanbao");
     }
 
     #[tokio::test]
@@ -18520,6 +18562,65 @@ mod tests {
                 .principal_id
                 .as_deref(),
             Some("principal:a")
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_projection_does_not_rewrite_a_matching_single_chunk() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "recall-no-rewrite-context".to_string(),
+                agent_id: "recall-agent".to_string(),
+                title: "Recall no rewrite".to_string(),
+            })
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE recall_chunk_delete_audit (document_id TEXT NOT NULL);
+               CREATE TRIGGER recall_chunk_delete_audit_trigger
+               AFTER DELETE ON recall_document_chunks BEGIN
+                 INSERT INTO recall_chunk_delete_audit(document_id) VALUES (old.document_id);
+               END"#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        store
+            .append(Event::new(
+                "recall-no-rewrite-event".to_string(),
+                "User".to_string(),
+                crate::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "recall-no-rewrite-context",
+                    "session_id": "recall-no-rewrite-session",
+                    "text": "短消息不应重复删除并重建相同的 Recall 分块"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+
+        let batch = store
+            .project_recall_outbox_batch("recall-no-rewrite-worker", 8)
+            .await
+            .unwrap();
+        assert_eq!(batch.projected, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM recall_chunk_delete_audit WHERE document_id = 'recall-no-rewrite-event'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            0,
+            "the document trigger already produced the desired chunk; projection must not rebuild it"
         );
     }
 

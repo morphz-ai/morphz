@@ -54,7 +54,14 @@ struct BudgetProbeClient {
 
 struct FailingClient;
 
+struct BindingFailureClient;
+
 struct InvalidRequestClient {
+    calls: AtomicUsize,
+    health_probe_calls: AtomicUsize,
+}
+
+struct QuotaExhaustedClient {
     calls: AtomicUsize,
     health_probe_calls: AtomicUsize,
 }
@@ -310,6 +317,24 @@ impl Client for FailingClient {
 }
 
 #[async_trait::async_trait]
+impl Client for BindingFailureClient {
+    async fn bind_model_attempt(
+        &self,
+        _request: &morphz::llm::ModelRequestContext,
+    ) -> Result<morphz::llm::ModelAttemptBinding, String> {
+        Err("simulated Runtime binding persistence failure".to_string())
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        panic!("binding failure must prevent the Provider request")
+    }
+}
+
+#[async_trait::async_trait]
 impl Client for InvalidRequestClient {
     async fn create_completion(
         &self,
@@ -324,6 +349,32 @@ impl Client for InvalidRequestClient {
             )
             .with_http_status(400)
             .with_provider_code(Some("invalid-argument".to_string())),
+        ))
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for QuotaExhaustedClient {
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(Box::new(
+            ModelFailure::new(
+                ModelFailureKind::QuotaExhausted,
+                "Provider returned HTTP 429: You've used all the included free usage for model grok-4.5 for now.",
+            )
+            .with_http_status(429)
+            .with_provider_code(Some(
+                "subscription:free-usage-exhausted".to_string(),
+            )),
         ))
     }
 
@@ -2282,6 +2333,65 @@ async fn test_llm_failure_is_audited_and_persists_provider_wait() {
 }
 
 #[tokio::test]
+async fn runtime_activation_failure_is_visible_and_does_not_leave_open_thread() {
+    let session_id = "runtime-activation-failure";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("runtime-activation-failure.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator_with_runtime_store(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::new(BindingFailureClient) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(
+        &bus,
+        session_id,
+        "this turn must terminate after an internal failure",
+    )
+    .await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+
+    assert_eq!(replies.len(), 1);
+    assert!(replies[0]
+        .payload
+        .get("text")
+        .and_then(|value| value.as_str())
+        .is_some_and(|text| text.contains("内部错误") && text.contains("该回合已经结束")));
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("runtime_failure_kind")
+            .and_then(|value| value.as_str()),
+        Some("runtime_internal")
+    );
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("terminal_kind")
+            .and_then(|value| value.as_str()),
+        Some("failed")
+    );
+    let threads = store.list_context_threads(session_id, true).await.unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].lifecycle, ThreadLifecycle::Failed);
+    assert!(threads
+        .iter()
+        .all(|thread| thread.lifecycle != ThreadLifecycle::Open));
+}
+
+#[tokio::test]
 async fn invalid_model_request_stops_turn_without_false_provider_recovery() {
     let session_id = "invalid-model-request";
     let tmp = TempDir::new().unwrap();
@@ -2340,6 +2450,78 @@ async fn invalid_model_request_stops_turn_without_false_provider_recovery() {
             .and_then(|value| value.as_str())
             != Some("provider_wait")
     }));
+}
+
+#[tokio::test]
+async fn subscription_quota_exhaustion_stops_turn_without_provider_wait() {
+    let session_id = "subscription-quota-exhausted";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("subscription-quota-exhausted.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(QuotaExhaustedClient {
+        calls: AtomicUsize::new(0),
+        health_probe_calls: AtomicUsize::new(0),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "ping grok").await;
+    assert_eq!(
+        wait_for_topic_count(&store, "chat/reply", session_id, 1)
+            .await
+            .len(),
+        1
+    );
+    publish_user(&bus, session_id, "ping grok again").await;
+    let replies = wait_for_topic_count(&store, "chat/reply", session_id, 2).await;
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(client.health_probe_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(replies.len(), 2);
+    assert!(replies.iter().all(|reply| {
+        reply
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str())
+            .is_some_and(|text| text.contains("额度已耗尽") && text.contains("不会进入等待队列"))
+            && reply
+                .payload
+                .get("runtime_failure_kind")
+                .and_then(|value| value.as_str())
+                == Some("quota_exhausted")
+    }));
+    let events = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(events.iter().all(|event| {
+        event
+            .payload
+            .get("disposition")
+            .and_then(|value| value.as_str())
+            != Some("provider_wait")
+    }));
+    let threads = store.list_context_threads(session_id, true).await.unwrap();
+    assert!(threads
+        .iter()
+        .all(|thread| thread.lifecycle != ThreadLifecycle::Open));
 }
 
 #[tokio::test]
