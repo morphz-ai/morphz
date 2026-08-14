@@ -44,12 +44,12 @@ export function DocsIndex({ locale }: { locale: Locale }) {
   return (
     <DocsShell locale={locale}>
       <div className="docs-index">
-        <p className="eyebrow">DOCUMENTATION · CURRENT</p><h1>{title}</h1><p className="docs-index__lead">{lead}</p>
-        <div className="docs-index__start"><div><span>01</span><h2>{locale === "zh" ? "第一次运行" : "First run"}</h2><p>{locale === "zh" ? "构建 Morphz、完成 Setup，并验证模型真的可以响应。" : "Build Morphz, complete Setup, and verify that a model can actually respond."}</p></div><Link className="button button--primary" href={docHref(locale, "getting-started")}>{locale === "zh" ? "开始" : "Start"} →</Link></div>
+        <p className="eyebrow">{locale === "zh" ? "产品文档 · 当前实现" : "DOCUMENTATION · CURRENT"}</p><h1>{title}</h1><p className="docs-index__lead">{lead}</p>
+        <div className="docs-index__start"><div><span>01</span><h2>{locale === "zh" ? "第一次运行" : "First run"}</h2><p>{locale === "zh" ? "构建 Morphz、完成设置向导，并验证模型真的可以响应。" : "Build Morphz, complete Setup, and verify that a model can actually respond."}</p></div><Link className="button button--primary" href={docHref(locale, "getting-started")}>{locale === "zh" ? "开始" : "Start"} →</Link></div>
         {sections.map((section) => {
           const sectionDocs = docs.filter((doc) => doc.section === section);
           if (!sectionDocs.length) return null;
-          return <section className="docs-index__section" key={section}><h2>{sectionLabels[locale][section]}</h2><div className="docs-index__grid">{sectionDocs.map((doc) => <Link href={docHref(locale, doc.slug)} key={doc.slug}><span>{doc.status === "current" ? (locale === "zh" ? "当前" : "Current") : "Preview"}</span><h3>{doc.title}</h3><p>{doc.description}</p></Link>)}</div></section>;
+          return <section className="docs-index__section" key={section}><h2>{sectionLabels[locale][section]}</h2><div className="docs-index__grid">{sectionDocs.map((doc) => <Link href={docHref(locale, doc.slug)} key={doc.slug}><span>{doc.status === "current" ? (locale === "zh" ? "当前" : "Current") : (locale === "zh" ? "预览" : "Preview")}</span><h3>{doc.title}</h3><p>{doc.description}</p></Link>)}</div></section>;
         })}
       </div>
     </DocsShell>
@@ -61,7 +61,7 @@ export function DocArticle({ locale, doc }: { locale: Locale; doc: DocRecord }) 
   return (
     <DocsShell locale={locale} activeSlug={doc.slug} toc={headings}>
       <article className="doc-article">
-        <div className="doc-article__meta"><span>{sectionLabels[locale][doc.section]}</span><span className="status-badge">{doc.status === "current" ? (locale === "zh" ? "当前实现" : "Current behavior") : "Preview"}</span></div>
+        <div className="doc-article__meta"><span>{sectionLabels[locale][doc.section]}</span><span className="status-badge">{doc.status === "current" ? (locale === "zh" ? "当前实现" : "Current behavior") : (locale === "zh" ? "预览" : "Preview")}</span></div>
         <h1>{doc.title}</h1><p className="doc-article__description">{doc.description}</p>
         <div className="doc-prose" dangerouslySetInnerHTML={{ __html: html }} />
         <div className="doc-article__footer"><strong>{locale === "zh" ? "发现文档与实际行为不一致？" : "Found a mismatch between docs and behavior?"}</strong><a href="https://github.com/yaowenai/morphz/issues">{locale === "zh" ? "提交问题" : "Open an issue"} →</a></div>

@@ -25,6 +25,23 @@ test("requires publication metadata and avoids legacy terminology", async () => 
   }
 });
 
+test("keeps product-domain prose in the page language", async () => {
+  const englishDomainTerms = /\b(?:Agent|Context|Session|Thread|Activation|Objective|Recall|Runtime|Provider|Dashboard|Setup|Sandbox|Principal|Gateway|Ledger|Prompt|Token|Execution Target|Harness)\b/;
+  for (const filename of await files("zh")) {
+    const source = await readFile(new URL(`zh/${filename}`, contentRoot), "utf8");
+    const prose = source
+      .replace(/```[\s\S]*?```/g, "")
+      .replace(/`[^`]*`/g, "")
+      .replace(/^source:\s*.+$/gm, "");
+    assert.doesNotMatch(prose, englishDomainTerms, `zh/${filename} mixes English product terminology into Chinese prose`);
+  }
+
+  for (const filename of await files("en")) {
+    const source = await readFile(new URL(`en/${filename}`, contentRoot), "utf8");
+    assert.doesNotMatch(source, /[\u3400-\u9fff]/, `en/${filename} contains Chinese prose`);
+  }
+});
+
 test("all absolute documentation links point to existing pages", async () => {
   const known = new Set(await files("zh").then((items) => items.map((file) => file.replace(/\.md$/, ""))));
   for (const locale of ["zh", "en"]) {

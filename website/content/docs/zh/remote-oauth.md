@@ -1,6 +1,6 @@
 ---
 title: 远程 OAuth 登录
-description: 在 SSH、无头服务器或远程 Dashboard 中完成账号授权。
+description: 在 SSH、无头服务器或远程控制台中完成账号授权。
 section: guides
 order: 210
 status: current
@@ -10,7 +10,7 @@ status: current
 
 ## 优先使用设备码
 
-如果服务支持设备码，Dashboard 会显示验证网址和短期用户码：
+如果服务支持设备码，控制台会显示验证网址和短期用户码：
 
 1. 在任意已登录浏览器中打开验证网址；
 2. 输入用户码并批准；
@@ -23,7 +23,7 @@ status: current
 
 某些服务只提供 Authorization Code + PKCE，并把浏览器重定向到本机回调地址。远程场景下可以：
 
-1. 在 Dashboard 中开始一次登录；
+1. 在控制台中开始一次登录；
 2. 在访问端浏览器完成授权；
 3. 浏览器跳到 `http://localhost:.../callback?code=...&state=...` 时，即使页面拒绝连接也不要重新登录；
 4. 复制地址栏中的完整 URL；
@@ -44,4 +44,4 @@ ssh -L 1455:127.0.0.1:1455 user@server
 - 不要把包含 `code` 和 `state` 的回调 URL发送给其他人；
 - 登录成功前不写入长期账号记录；
 - 登录失败或过期后丢弃本次临时状态；
-- Token 只进入 Secret Store，不进入 Session、Context 或普通日志。
+- 令牌只进入密钥存储，不进入会话、认知上下文或普通日志。

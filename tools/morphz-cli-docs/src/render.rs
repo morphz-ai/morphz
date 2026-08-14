@@ -72,9 +72,9 @@ pub fn render_cli_reference(locale: Locale) -> String {
         discovery_body,
     ) = if locale.is_chinese() {
         (
-            "CLI 参考",
-            "从 Morphz 当前 Clap Schema 自动生成的完整命令索引与顶层帮助。",
-            "本页由 Morphz 当前 CLI Schema 自动生成。请不要直接编辑；运行生成命令刷新。",
+            "命令行参考",
+            "从 Morphz 当前命令结构自动生成的完整命令索引与顶层帮助。",
+            "本页由 Morphz 当前命令行结构自动生成。请不要直接编辑；运行生成命令刷新。",
             "命令索引",
             "顶层命令帮助",
             "查看更深层帮助",
@@ -103,7 +103,11 @@ pub fn render_cli_reference(locale: Locale) -> String {
     writeln!(output, "---\n").unwrap();
     writeln!(output, "> {generated_notice}\n").unwrap();
     writeln!(output, "## {index_title}\n").unwrap();
-    writeln!(output, "| Command | Description |").unwrap();
+    if locale.is_chinese() {
+        writeln!(output, "| 命令 | 说明 |").unwrap();
+    } else {
+        writeln!(output, "| Command | Description |").unwrap();
+    }
     writeln!(output, "|---|---|").unwrap();
     for entry in &entries {
         let path = format!("morphz {}", entry.path.join(" "));

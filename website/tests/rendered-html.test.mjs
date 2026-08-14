@@ -17,7 +17,9 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.equal(zhResponse.status, 200);
   assert.equal(enResponse.status, 200);
   const [zh, en] = await Promise.all([zhResponse.text(), enResponse.text()]);
-  assert.match(zh, /让 Agent 拥有/);
+  assert.match(zh, /让代理拥有/);
+  assert.match(zh, /认知上下文持有认知/);
+  assert.doesNotMatch(zh, /Context-owned cognition|让 Agent 拥有/);
   assert.match(en, /Durable cognition/);
   for (const html of [zh, en]) {
     assert.match(html, /Morphz/);
@@ -27,7 +29,7 @@ test("renders the finished Chinese and English home pages", async () => {
 });
 
 test("renders documentation indexes and bilingual article routes", async () => {
-  const routes = ["/docs", "/en/docs", "/docs/core-concepts", "/en/docs/core-concepts"];
+  const routes = ["/docs", "/en/docs", "/docs/core-concepts", "/en/docs/core-concepts", "/docs/contexts-and-recall"];
   const responses = await Promise.all(routes.map(render));
   for (const response of responses) assert.equal(response.status, 200);
   const html = await Promise.all(responses.map((response) => response.text()));
@@ -35,6 +37,8 @@ test("renders documentation indexes and bilingual article routes", async () => {
   assert.match(html[1], /Learn Morphz through real tasks/);
   assert.match(html[2], /认知帧/);
   assert.match(html[3], /Cognitive frame/);
+  assert.match(html[4], /认知上下文、认知帧与召回/);
+  assert.doesNotMatch(html[4], /Context、认知帧与 Recall/);
   assert.match(html[2], /当前实现/);
   assert.match(html[3], /Current behavior/);
 });

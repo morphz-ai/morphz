@@ -1,17 +1,17 @@
 ---
-title: CLI 参考
-description: 从 Morphz 当前 Clap Schema 自动生成的完整命令索引与顶层帮助。
+title: 命令行参考
+description: 从 Morphz 当前命令结构自动生成的完整命令索引与顶层帮助。
 section: reference
 order: 400
 status: current
 source: generated-cli-schema
 ---
 
-> 本页由 Morphz 当前 CLI Schema 自动生成。请不要直接编辑；运行生成命令刷新。
+> 本页由 Morphz 当前命令行结构自动生成。请不要直接编辑；运行生成命令刷新。
 
 ## 命令索引
 
-| Command | Description |
+| 命令 | 说明 |
 |---|---|
 | `morphz exec` | 执行一次提示并输出最终回复 |
 | `morphz resume` | 重新连接现有或最近活跃的会话 |
@@ -47,8 +47,8 @@ source: generated-cli-schema
 | `morphz provider` | 检查并验证模型服务商 |
 | `morphz provider list` | 列出目录和已配置的模型服务商 |
 | `morphz provider test` | 验证模型服务商的目录、流式响应和工具调用 |
-| `morphz provider show` | 查看一个有效 Provider Instance |
-| `morphz provider set` | 校验并保存 Provider Instance TOML 文件 |
+| `morphz provider show` | 查看一个有效模型服务实例 |
+| `morphz provider set` | 校验并保存模型服务实例 TOML 文件 |
 | `morphz provider account` | 管理模型服务认证账号 |
 | `morphz provider account list` | 列出账号配置和运行时状态 |
 | `morphz provider account login` | 开始 OAuth 登录 |
@@ -84,11 +84,11 @@ source: generated-cli-schema
 | `morphz context recall frame` | 遍历认知帧的来源与关系 |
 | `morphz scheduler` | 检查权威调度器状态 |
 | `morphz scheduler show` | 显示线程、求值、作业、审批和调度计划 |
-| `morphz scheduler thread` | 检查和控制一条持久 Thread |
-| `morphz scheduler thread show` | 显示一条 Thread 的因果链和结构化 Outcome |
-| `morphz scheduler thread pause` | 暂停 Thread |
-| `morphz scheduler thread resume` | 继续 Thread |
-| `morphz scheduler thread close` | 关闭 Thread |
+| `morphz scheduler thread` | 检查和控制一条持久线程 |
+| `morphz scheduler thread show` | 显示一条线程的因果链和结构化结果 |
+| `morphz scheduler thread pause` | 暂停线程 |
+| `morphz scheduler thread resume` | 继续线程 |
+| `morphz scheduler thread close` | 关闭线程 |
 | `morphz session` | 管理会话身份和上下文挂载 |
 | `morphz session list` | 列出会话 |
 | `morphz session show` | 显示一个会话 |
@@ -98,9 +98,9 @@ source: generated-cli-schema
 | `morphz agent list` | 列出代理 |
 | `morphz agent show` | 显示一个代理 |
 | `morphz agent create` | 创建带根上下文和初始会话的代理 |
-| `morphz harness` | 安装和查看版本化 Harness 包 |
-| `morphz harness list` | 列出已安装的 Harness 版本 |
-| `morphz harness show` | 显示一个已安装的精确 Harness 版本 |
+| `morphz harness` | 安装和查看版本化领域程序包 |
+| `morphz harness list` | 列出已安装的领域程序包版本 |
+| `morphz harness show` | 显示一个已安装领域程序包的精确版本 |
 | `morphz harness install` | 校验并安装 .hns 文件或目录 |
 | `morphz objective` | 管理长期目标 |
 | `morphz objective list` | 列出上下文中的目标 |
@@ -165,7 +165,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
   agent
           管理持久代理
   harness
-          安装和查看版本化 Harness 包
+          安装和查看版本化领域程序包
   objective
           管理长期目标
   job
@@ -210,7 +210,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
           重新连接现有会话
 
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
 
   -s, --sandbox <MODE>
           设置命令沙箱模式
@@ -293,7 +293,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -371,7 +371,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
           重新连接现有会话
 
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
 
   -s, --sandbox <MODE>
           设置命令沙箱模式
@@ -460,7 +460,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
           重新连接现有会话
 
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
 
   -s, --sandbox <MODE>
           设置命令沙箱模式
@@ -551,7 +551,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
           重新连接现有会话
 
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
 
   -s, --sandbox <MODE>
           设置命令沙箱模式
@@ -645,7 +645,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
   -h, --help
           显示帮助
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -718,7 +718,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -781,7 +781,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -848,7 +848,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -922,7 +922,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
           重新连接现有会话
 
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
 
   -s, --sandbox <MODE>
           设置命令沙箱模式
@@ -981,9 +981,9 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
   test
           验证模型服务商的目录、流式响应和工具调用
   show
-          查看一个有效 Provider Instance
+          查看一个有效模型服务实例
   set
-          校验并保存 Provider Instance TOML 文件
+          校验并保存模型服务实例 TOML 文件
   account
           管理模型服务认证账号
 选项：
@@ -1008,7 +1008,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1077,7 +1077,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1144,7 +1144,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1217,7 +1217,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1259,7 +1259,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
   show
           显示线程、求值、作业、审批和调度计划
   thread
-          检查和控制一条持久 Thread
+          检查和控制一条持久线程
 选项：
   -C, --cwd <DIR>
           在加载配置前更改工作目录
@@ -1282,7 +1282,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1351,7 +1351,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1418,7 +1418,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1449,18 +1449,18 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
 
 ### `morphz harness`
 
-安装和查看版本化 Harness 包
+安装和查看版本化领域程序包
 
 ```text
-安装和查看版本化 Harness 包
+安装和查看版本化领域程序包
 
 用法：morphz harness [OPTIONS] [COMMAND]
 
 命令：
   list
-          列出已安装的 Harness 版本
+          列出已安装的领域程序包版本
   show
-          显示一个已安装的精确 Harness 版本
+          显示一个已安装领域程序包的精确版本
   install
           校验并安装 .hns 文件或目录
 选项：
@@ -1485,7 +1485,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1560,7 +1560,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1625,7 +1625,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1694,7 +1694,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1754,7 +1754,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1818,7 +1818,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>
@@ -1879,7 +1879,7 @@ Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理�
       --session <ID>
           重新连接现有会话
       --harness <ID@VERSION>
-          为首次求值选择已安装 Harness 的精确版本
+          为首次求值选择已安装领域程序包的精确版本
   -s, --sandbox <MODE>
           设置命令沙箱模式
   -a, --approval <MODE>

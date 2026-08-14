@@ -436,7 +436,7 @@ fn global_args(locale: Locale) -> Vec<Arg> {
             "ID@VERSION",
             locale.text(
                 "Select an exact installed Harness for the initial Evaluation",
-                "为首次求值选择已安装 Harness 的精确版本",
+                "为首次求值选择已安装领域程序包的精确版本",
             ),
         ),
         value_arg(
@@ -1178,20 +1178,20 @@ fn provider_command(locale: Locale) -> Command {
             Command::new("show")
                 .about(locale.text(
                     "Show one effective Provider Instance",
-                    "查看一个有效 Provider Instance",
+                    "查看一个有效模型服务实例",
                 ))
                 .arg(
                     prompt_arg("PROVIDER", 1, Some(1))
-                        .help(locale.text("Provider Instance ID", "Provider Instance 标识")),
+                        .help(locale.text("Provider Instance ID", "模型服务实例标识")),
                 ),
             Command::new("set")
                 .about(locale.text(
                     "Validate and persist a Provider Instance TOML file",
-                    "校验并保存 Provider Instance TOML 文件",
+                    "校验并保存模型服务实例 TOML 文件",
                 ))
                 .arg(prompt_arg("PROVIDER FILE", 2, Some(2)).help(locale.text(
                     "Provider Instance ID followed by its TOML object file",
-                    "Provider Instance 标识及其 TOML 对象文件",
+                    "模型服务实例标识及其 TOML 对象文件",
                 ))),
             Command::new("account")
                 .about(locale.text(
@@ -1693,7 +1693,7 @@ fn scheduler_thread_command(locale: Locale) -> Command {
                     "N",
                     locale.text(
                         "Require one exact Thread revision (defaults to the current revision)",
-                        "要求匹配精确 Thread 修订号（默认读取当前修订号）",
+                        "要求匹配精确线程修订号（默认读取当前修订号）",
                     ),
                 ))
                 .arg(local_value_arg(
@@ -1707,7 +1707,7 @@ fn scheduler_thread_command(locale: Locale) -> Command {
                 ))
                 .arg(
                     prompt_arg("THREAD_ID [REASON]", 1, None)
-                        .help(locale.text("Thread ID and optional reason", "Thread 标识和可选原因")),
+                        .help(locale.text("Thread ID and optional reason", "线程标识和可选原因")),
                 ),
             match name {
                 "pause" => {
@@ -1723,7 +1723,7 @@ fn scheduler_thread_command(locale: Locale) -> Command {
     Command::new("thread")
         .about(locale.text(
             "Inspect and control one durable Thread",
-            "检查和控制一条持久 Thread",
+            "检查和控制一条持久线程",
         ))
         .subcommands([
             output_examples(
@@ -1731,21 +1731,21 @@ fn scheduler_thread_command(locale: Locale) -> Command {
                 Command::new("show")
                     .about(locale.text(
                         "Show one Thread causal chain and structured Outcome",
-                        "显示一条 Thread 的因果链和结构化 Outcome",
+                        "显示一条线程的因果链和结构化结果",
                     ))
                     .arg(
                         prompt_arg("THREAD_ID", 1, Some(1))
-                            .help(locale.text("Thread identity", "Thread 标识")),
+                            .help(locale.text("Thread identity", "线程标识")),
                     ),
                 "Example:\n  morphz scheduler thread show thread_123 --context=context-default",
             ),
-            lifecycle_command("pause", "Pause a Thread", "暂停 Thread"),
-            lifecycle_command("resume", "Resume a Thread", "继续 Thread"),
-            lifecycle_command("close", "Close a Thread", "关闭 Thread"),
+            lifecycle_command("pause", "Pause a Thread", "暂停线程"),
+            lifecycle_command("resume", "Resume a Thread", "继续线程"),
+            lifecycle_command("close", "Close a Thread", "关闭线程"),
         ])
         .after_help(locale.text(
             "Thread controls are revision-checked and use the same Runtime contract as the SDK and HTTP API.",
-            "Thread 控制会校验修订号，并与 SDK、HTTP API 使用同一 Runtime 契约。",
+            "线程控制会校验修订号，并与 SDK、HTTP API 使用同一运行时契约。",
         ))
 }
 
@@ -1967,14 +1967,14 @@ fn harness_command(locale: Locale) -> Command {
     Command::new("harness")
         .about(locale.text(
             "Install and inspect versioned Harness packages",
-            "安装和查看版本化 Harness 包",
+            "安装和查看版本化领域程序包",
         ))
         .subcommands([
             output_examples(
                 locale,
                 Command::new("list").about(locale.text(
                     "List installed Harness versions",
-                    "列出已安装的 Harness 版本",
+                    "列出已安装的领域程序包版本",
                 )),
                 "Example:\n  morphz harness list --format=json",
             ),
@@ -1983,11 +1983,11 @@ fn harness_command(locale: Locale) -> Command {
                 Command::new("show")
                     .about(locale.text(
                         "Show one exact installed Harness version",
-                        "显示一个已安装的精确 Harness 版本",
+                        "显示一个已安装领域程序包的精确版本",
                     ))
                     .arg(
                         prompt_arg("ID@VERSION", 1, Some(1))
-                            .help(locale.text("Exact Harness identity", "Harness 精确标识")),
+                            .help(locale.text("Exact Harness identity", "领域程序包精确标识")),
                     ),
                 "Example:\n  morphz harness show coding@1.0.0",
             ),

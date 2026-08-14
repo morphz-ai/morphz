@@ -11,7 +11,7 @@ export function SiteFooter({ locale }: { locale: Locale }) {
         </span>
         <p>
           {locale === "zh"
-            ? "让模型负责认知，让 Runtime 负责事实、权限与执行。"
+            ? "让模型负责认知，让运行时负责事实、权限与执行。"
             : "Let models handle cognition while the runtime owns facts, permissions, and execution."}
         </p>
       </div>
