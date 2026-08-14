@@ -1731,6 +1731,12 @@ pub struct Orchestrator {
     activation_cancellations: ActivationCancellationRegistry,
     active_session_turns: DashMap<String, Arc<AtomicUsize>>,
     activation_routes: DashMap<String, ActivationRoute>,
+    /// The newest physical Model Attempt owned by each live Activation.
+    /// Activation cancellation drops the evaluation future, so the ordinary
+    /// completion path cannot publish that Attempt's terminal transition.
+    /// Keeping this process-local pointer lets the cancellation owner close
+    /// the exact transient stream before observers wait for a snapshot.
+    active_model_attempts: DashMap<String, String>,
     cancelled_at: DashMap<String, chrono::DateTime<Utc>>,
     /// Runtime routing identity: a Session is an IO connection inside one
     /// Cognitive Context. This cache is populated from every incoming routed
@@ -2488,6 +2494,7 @@ impl Orchestrator {
             activation_cancellations: ActivationCancellationRegistry::default(),
             active_session_turns: DashMap::new(),
             activation_routes: DashMap::new(),
+            active_model_attempts: DashMap::new(),
             cancelled_at: DashMap::new(),
             session_contexts: DashMap::new(),
             delegation_start_lock: Mutex::new(()),
@@ -4629,6 +4636,10 @@ impl Orchestrator {
                 (result, status)
             }
             (None, Some(cancelled), _) => {
+                let reason = format!(
+                    "Objective '{}' Evaluation '{}' 已被暂停或取消",
+                    cancelled.objective_id, cancelled.evaluation_id
+                );
                 tracing::info!(
                     session_id,
                     objective_id = %cancelled.objective_id,
@@ -4636,14 +4647,10 @@ impl Orchestrator {
                     activation_id = %activation.id,
                     "当前 Objective Evaluation 已取消；Session 与其他 Evaluation 继续运行"
                 );
+                self.close_cancelled_model_attempt(&session_id, &activation.id, &reason)
+                    .await;
                 let result = self
-                    .request_cancel_execution_jobs_for_activation(
-                        &activation.id,
-                        &format!(
-                            "Objective '{}' Evaluation '{}' 已被暂停或取消",
-                            cancelled.objective_id, cancelled.evaluation_id
-                        ),
-                    )
+                    .request_cancel_execution_jobs_for_activation(&activation.id, &reason)
                     .await
                     .map(|_| ());
                 (result, ThreadActivationStatus::Cancelled)
@@ -4655,6 +4662,8 @@ impl Orchestrator {
                     %reason,
                     "当前 Thread Activation 已由 Runtime 控制取消"
                 );
+                self.close_cancelled_model_attempt(&session_id, &activation.id, &reason)
+                    .await;
                 let result = self
                     .request_cancel_execution_jobs_for_activation(&activation.id, &reason)
                     .await
@@ -4662,12 +4671,12 @@ impl Orchestrator {
                 (result, ThreadActivationStatus::Cancelled)
             }
             (None, None, None) => {
+                let reason = format!("Session '{session_id}' 已由用户取消");
                 tracing::info!(session_id, "当前 Session 执行已由用户取消");
+                self.close_cancelled_model_attempt(&session_id, &activation.id, &reason)
+                    .await;
                 let result = self
-                    .request_cancel_execution_jobs_for_activation(
-                        &activation.id,
-                        &format!("Session '{session_id}' 已由用户取消"),
-                    )
+                    .request_cancel_execution_jobs_for_activation(&activation.id, &reason)
                     .await
                     .map(|_| ());
                 (result, ThreadActivationStatus::Cancelled)
@@ -4745,6 +4754,7 @@ impl Orchestrator {
             );
         }
         self.activation_cancellations.clear(&activation.id);
+        self.active_model_attempts.remove(&activation.id);
         self.activation_routes.remove(&activation.id);
         self.objective_evaluations.remove_activation(&activation.id);
         if matches!(
@@ -7430,6 +7440,11 @@ impl Orchestrator {
                 &inspect_delivered_output_ids,
             )
             .await?;
+            // Register ownership before publishing the first non-terminal
+            // state. Cancellation may race this await; the cancellation owner
+            // must already know which physical Attempt to close.
+            self.active_model_attempts
+                .insert(activation.id.clone(), model_attempt_id.clone());
             self.record_model_attempt_started(
                 session_id,
                 &model_attempt_id,
@@ -9896,7 +9911,41 @@ impl Orchestrator {
             detail,
             &[],
         )
-        .await
+        .await?;
+        if let Some(route) = self.activation_route(attempt_id) {
+            self.active_model_attempts
+                .remove_if(&route.activation_id, |_, active_attempt_id| {
+                    active_attempt_id == attempt_id
+                });
+        }
+        Ok(())
+    }
+
+    /// Close the physical stream whose evaluation future was dropped by an
+    /// authoritative Activation cancellation. This transition is best-effort:
+    /// the Scheduler tables already contain the durable cancellation, and a
+    /// telemetry write failure must not resurrect or fail that cancellation.
+    async fn close_cancelled_model_attempt(
+        &self,
+        session_id: &str,
+        activation_id: &str,
+        reason: &str,
+    ) {
+        let Some((_, attempt_id)) = self.active_model_attempts.remove(activation_id) else {
+            return;
+        };
+        if let Err(error) = self
+            .record_model_attempt_terminal_state(session_id, &attempt_id, "cancelled", Some(reason))
+            .await
+        {
+            tracing::warn!(
+                session_id,
+                activation_id,
+                attempt_id,
+                %error,
+                "Activation 已取消，但无法持久化 Model Attempt cancelled 终态"
+            );
+        }
     }
 
     async fn plan_execution_job(

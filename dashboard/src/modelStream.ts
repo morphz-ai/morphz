@@ -43,6 +43,11 @@ export interface LiveModelAttempt {
 export interface LiveModelState {
   sessionId: string
   attempts: Record<string, LiveModelAttempt>
+  /**
+   * Activation tombstones received on this WebSocket connection. They keep a
+   * late buffered stream chunk from recreating a draft after interruption.
+   */
+  cancelledActivationIds: Record<string, true>
 }
 
 export interface ModelStreamBatchItem {
@@ -105,7 +110,7 @@ export function readReasoningSummaryPreference(storage?: PreferenceStorage): boo
 }
 
 export function createLiveModelState(sessionId = ''): LiveModelState {
-  return { sessionId, attempts: {} }
+  return { sessionId, attempts: {}, cancelledActivationIds: {} }
 }
 
 export function isModelStreamEvent(value: unknown): value is ModelStreamEvent {
@@ -302,7 +307,8 @@ export function modelStreamReducer(state: LiveModelState, action: ModelStreamAct
   if (action.sessionId !== state.sessionId) return state
 
   if (action.type === 'stream_batch') {
-    const attempts = action.items.reduce(
+    const items = action.items.filter(item => !state.cancelledActivationIds[item.activationId])
+    const attempts = items.reduce(
       (next, item) => reduceAttempt(next, item, action.nowMs),
       state.attempts,
     )
@@ -317,6 +323,22 @@ export function modelStreamReducer(state: LiveModelState, action: ModelStreamAct
     return attempts === state.attempts ? state : { ...state, attempts }
   }
   if (action.type === 'attempt_state') {
+    if (action.item.terminal && action.item.state === 'cancelled') {
+      const attempts = Object.fromEntries(
+        Object.entries(state.attempts).filter(([, attempt]) => (
+          attempt.attemptId !== action.item.attemptId
+          && attempt.activationId !== action.item.activationId
+        )),
+      )
+      return {
+        ...state,
+        attempts,
+        cancelledActivationIds: {
+          ...state.cancelledActivationIds,
+          [action.item.activationId]: true,
+        },
+      }
+    }
     const attempts = reduceAttemptState(state.attempts, action.item, action.nowMs)
     return attempts === state.attempts ? state : { ...state, attempts }
   }
@@ -325,7 +347,10 @@ export function modelStreamReducer(state: LiveModelState, action: ModelStreamAct
       (next, item) => reduceAttemptState(next, item, action.nowMs),
       {} as Record<string, LiveModelAttempt>,
     )
-    return { ...state, attempts }
+    // A snapshot is the authoritative state at reconnect time. Buffered
+    // events from the preceding connection cannot arrive after it, so old
+    // cancellation tombstones are no longer needed.
+    return { ...state, attempts, cancelledActivationIds: {} }
   }
 
   const activeActivationIds = new Set(action.activeActivationIds)

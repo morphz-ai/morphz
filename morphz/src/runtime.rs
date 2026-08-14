@@ -7926,6 +7926,21 @@ mod tests {
         assert_eq!(reply.payload["text"], "combined-dialogue-reply");
         assert!(observed_combined_input.load(Ordering::SeqCst));
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+
+        let attempt_states = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id.clone()),
+                topic: Some("runtime/model_attempt_state".to_string()),
+                top_k: Some(100),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert!(attempt_states.iter().any(|event| {
+            event.payload["state"] == "cancelled"
+                && event.payload["terminal"] == true
+                && event.payload["thread_kind"] == "dialogue_turn"
+        }));
     }
 
     #[tokio::test]

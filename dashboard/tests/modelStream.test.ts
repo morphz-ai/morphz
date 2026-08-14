@@ -171,6 +171,49 @@ test('authoritative reconciliation removes a terminal physical attempt once its 
   assert.equal(state.attempts['attempt-a'], undefined)
 })
 
+test('cancelled Activation immediately removes its draft and rejects late stream chunks', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 100,
+    items: [
+      stream('attempt-old', 'dialogue-old', { kind: 'started' }),
+      stream('attempt-new', 'dialogue-new', { kind: 'started' }),
+    ],
+  })
+  state = modelStreamReducer(state, {
+    type: 'attempt_state',
+    sessionId: 'session-a',
+    nowMs: 110,
+    item: {
+      attemptId: 'attempt-old',
+      activationId: 'dialogue-old',
+      threadKind: 'dialogue_turn',
+      state: 'cancelled',
+      terminal: true,
+      timestamp: '2026-07-17T00:00:01Z',
+      detail: 'superseded by a newer user message',
+    },
+  })
+
+  assert.deepEqual(Object.keys(state.attempts), ['attempt-new'])
+
+  // The Provider stream and its WebSocket batch are independent async paths.
+  // A chunk already buffered before cancellation must not resurrect the old
+  // "generating" card after the terminal state has removed it.
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 120,
+    items: [
+      stream('attempt-old', 'dialogue-old', { kind: 'started' }),
+      stream('attempt-old', 'dialogue-old', { kind: 'text_delta', text: 'late' }),
+    ],
+  })
+  assert.deepEqual(Object.keys(state.attempts), ['attempt-new'])
+})
+
 test('resolve before persistence keeps a summary-only shell, then persistence clears it', () => {
   let state = createLiveModelState('session-a')
   state = modelStreamReducer(state, {
