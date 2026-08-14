@@ -112,77 +112,77 @@ const CONTEXT_OPERATIONS: &[ContextOperationSpec] = &[
     ContextOperationSpec {
         name: "create",
         syntax: "(create ID BODY...)",
-        meaning: "创建具有稳定 ID 的自由格式 frame；一个或多个 BODY 均可，多项由 Runtime 规范化为 context-body；不接受 from",
+        meaning: "create a free-form frame with a stable ID; one or more BODY values are allowed and the Runtime normalizes multiple values into context-body; from is not accepted",
     },
     ContextOperationSpec {
         name: "derive",
         syntax: "(derive ID (from SOURCE_ID...) BODY...)",
-        meaning: "基于 observation/frame 创建带血缘的新 frame；from 固定在 ID 后，随后可写一个或多个 BODY",
+        meaning: "create a lineage-aware frame from observations or frames; from immediately follows ID and one or more BODY values follow it",
     },
     ContextOperationSpec {
         name: "revise",
         syntax: "(revise ID BODY...) | (revise ID (from SOURCE_ID...) BODY...)",
-        meaning: "用新 BODY 完整替换既有 frame body 并递增 revision；不是局部 merge，仍需保留的旧字段必须在新 BODY 中重述；可选 from 固定在 ID 后",
+        meaning: "replace the complete existing frame body with new BODY values and increment revision; this is not a partial merge, so restate old fields that must remain; optional from immediately follows ID",
     },
     ContextOperationSpec {
         name: "retire",
         syntax: "(retire ID...)",
-        meaning: "Observation 立即移出 Context；容量压力下优先清理已消化且不再需要的 Observation。普通 Frame 进入认知活动时钟驱动的整理期，当前 Token 释放量为 0；Frame 必须按语义价值、有效性和 successor 关系判断，不能仅按体积退休；已有安全 successor 的 Frame 可在同一事务立即收口；原因只能写在事务级 reason 中",
+        meaning: "remove an Observation from Context immediately; under capacity pressure, first clean up consumed Observations no longer needed. An ordinary Frame enters a cognitive-clock organizing window and releases zero tokens now. Judge Frames by semantic value, validity, and successor relations rather than size alone. A Frame with a safe successor may close immediately in the same transaction. Put rationale only in transaction-level reason",
     },
     ContextOperationSpec {
         name: "restore",
         syntax: "(restore ID...)",
-        meaning: "恢复已 retire 的 frame/observation",
+        meaning: "restore a retired frame or observation",
     },
     ContextOperationSpec {
         name: "retire-session",
         syntax: "(retire-session SESSION-ID...)",
-        meaning: "把 Session mount 移出自动认知工作集；不归档、不删除 Ledger 或 Shared Mind；必须提供事务级 reason，当前或有活跃工作的 Session 会被拒绝",
+        meaning: "remove a Session mount from the automatic cognitive working set without archiving it or deleting Ledger or Shared Mind; transaction-level reason is required, and a current or actively working Session is rejected",
     },
     ContextOperationSpec {
         name: "restore-session",
         syntax: "(restore-session SESSION-ID...)",
-        meaning: "恢复 Session mount 的自动认知候选状态；新定向事件也会由 Runtime 确定性自动恢复",
+        meaning: "restore a Session mount as an automatic cognitive candidate; a new directed event also restores it deterministically",
     },
     ContextOperationSpec {
         name: "protect",
         syntax: "(protect ID...)",
-        meaning: "保护关键内容，阻止直接 retire",
+        meaning: "protect important content from direct retirement",
     },
     ContextOperationSpec {
         name: "unprotect",
         syntax: "(unprotect ID...)",
-        meaning: "解除保护；原因只能写在事务级 reason 中",
+        meaning: "remove protection; rationale belongs only in transaction-level reason",
     },
     ContextOperationSpec {
         name: "place",
         syntax: "(place FRAME first|last|(before FRAME)|(after FRAME))",
-        meaning: "调整 frame 的注意力顺序",
+        meaning: "change a frame's attention order",
     },
     ContextOperationSpec {
         name: "relate",
         syntax: "(relate SUBJECT RELATION OBJECT)",
-        meaning: "由 Agent 声明两个稳定 Context ID 的语义关系；supersedes 表示新信息取代旧信息",
+        meaning: "declare an Agent-defined semantic relation between two stable Context IDs; supersedes means newer information replaces older information",
     },
     ContextOperationSpec {
         name: "unrelate",
         syntax: "(unrelate SUBJECT RELATION OBJECT)",
-        meaning: "撤销错误关系；必须在事务级提供 reason",
+        meaning: "remove an incorrect relation; transaction-level reason is required",
     },
     ContextOperationSpec {
         name: "checkpoint",
         syntax: "(checkpoint ID)",
-        meaning: "保存当前 Mind 的完整可回滚快照；Runtime 只显示快照元数据，不把快照内容重复注入 Context",
+        meaning: "save a complete rollback snapshot of the current Mind; the Runtime displays only snapshot metadata and does not duplicate snapshot content into Context",
     },
     ContextOperationSpec {
         name: "rollback",
         syntax: "(rollback CHECKPOINT_ID)",
-        meaning: "显式恢复 checkpoint 中的 frames、relations、retired 与 protected；必须在事务级提供 reason",
+        meaning: "explicitly restore frames, relations, retired, and protected from a checkpoint; transaction-level reason is required",
     },
     ContextOperationSpec {
         name: "drop-checkpoint",
         syntax: "(drop-checkpoint ID...)",
-        meaning: "删除不再需要的恢复点；必须在事务级提供 reason",
+        meaning: "delete recovery points no longer needed; transaction-level reason is required",
     },
 ];
 
@@ -191,15 +191,15 @@ pub fn context_tx_tool_description() -> String {
         .iter()
         .map(|operation| operation.syntax)
         .collect::<Vec<_>>()
-        .join("；");
+        .join("; ");
     format!(
-        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。Mind version 是全局物理提交序列，Frame revision 是认知修改的 MVCC 边界；并发事务只修改不同 Frame 时 Runtime 可安全自动 rebase，目标或来源 Frame 已在 base-version 后变化时才要求重新读取并做语义合并。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Observation 的 retire 会立即释放其活动编码；容量压力下优先清理已消化且不再需要的 Observation。当前 Activation 尚未交付的根请求受 Runtime 因果保护，不得 retire；已经被当前 Attempt 消费的独立 trigger observation 可以在同一事务中总结并 retire。普通 Frame 的 retire 只进入整理期，当前释放量为 0；Frame 必须按语义价值、有效性、使用和关系判断，不能仅因体积较大而退休。整理期应优先 revise、derive 或建立 sources + supersedes 的 successor；安全 successor 可让来源 Frame 在同一事务立即退休。Frame 数量本身不是退休理由；被退休内容没有删除，可按关键词、ID 和关系链 recall。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
+        "Atomically modify your Mind Context and Session attention. transaction is a versioned S-expression: (context-tx (base-version N) (reason \"...\") OP...). Mind version is the global physical commit sequence and Frame revision is the MVCC boundary for cognitive changes. The Runtime safely rebases concurrent transactions that touch different Frames; reread and semantic merge are required only when a target or source Frame changed after base-version. Supported operations: {operations}. Context observations use deterministic short refs such as @eN. Pass refs unchanged in from/retire/restore/protect/unprotect/relate/unrelate and the Runtime resolves full Ledger IDs before commit. A Session ID is not an observation ref; use the original ID from session-directory. create/derive/revise accept one or more BODY values; multiple values normalize to (context-body BODY...). revise completely replaces the frame body and never partially merges it, so restate every field that must remain. create does not accept from; evidence-backed creation uses (derive ID (from SOURCE...) BODY...). Before high-risk restructuring use (checkpoint ID), restore with reason-bearing (rollback ID), and remove obsolete snapshots with (drop-checkpoint ID...). One transaction may sequence different operations and atomically includes Mind changes with retire-session/restore-session. Do not issue parallel context_tx calls to express multiple changes. reason is transaction-level and is required for retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint; never place it inside operation arguments. Retiring an Observation releases its active encoding immediately; under pressure clean up consumed Observations no longer needed first. An undelivered root request of the current Activation is causally protected and cannot be retired; an independent trigger already consumed by the current Attempt may be summarized and retired in the same transaction. Retiring an ordinary Frame only enters the organizing window and releases zero tokens now. Judge by semantic value, validity, use, and relations rather than size. Prefer revise, derive, or a sources + supersedes successor; a safe successor may retire its source Frame immediately in the same transaction. Frame count alone is not a retirement reason. Retired content is not deleted and remains recallable by keyword, ID, and relation chain. Context changes are not user replies. BODY values must also follow the canonical epistemic contract: {}",
         render_context_tx_epistemic_guidance()
     )
 }
 
 pub fn context_tx_parameter_description() -> &'static str {
-    "完整的单个 SExpr 心智事务；可在一个 transaction 内顺序组合多个 operation 并原子提交。create/derive/revise 接受一个或多个 BODY，revise 完整替换旧 BODY；from 紧跟 ID。具体语法、来源纪律与全部认识契约以本工具 description 和 Context protocol 为准。"
+    "One complete S-expression Mind transaction. Sequence multiple operations in one transaction for atomic commit. create/derive/revise accept one or more BODY values; revise completely replaces the old BODY and from immediately follows ID. Follow this tool description and Context protocol for exact syntax, source discipline, and the full epistemic contract."
 }
 
 #[derive(Debug, Clone)]
@@ -3073,7 +3073,9 @@ impl ContextEngine {
                 list("base-version", vec![atom(state.version.to_string())]),
                 list(
                     "reason",
-                    vec![atom("认知活动整理窗口到期，Runtime 执行 fencing 后收口")],
+                    vec![atom(
+                        "the cognitive-organizing window expired and the Runtime finalized it after fencing",
+                    )],
                 ),
             ];
             items.extend(due.iter().map(|retirement| {
@@ -5626,15 +5628,15 @@ fn render_current_activation(
     fields.extend([
         pair(
             "responsibility",
-            atom("本次模型请求只推进 root-turn 表达的任务，并只为这条因果链选择工具动作或提交终态输出"),
+            atom("this model request advances only the task expressed by root-turn and chooses tool actions or terminal output only for this causal chain"),
         ),
         pair(
             "shared-state-boundary",
-            atom("Mind、Objective、其他 Session 与 concurrent-activations 是可读取的共享背景，不会自动变成本次任务；除非 root-turn 明确要求，不得接管、重复或继续它们的动作"),
+            atom("Mind, Objectives, other Sessions, and concurrent-activations are readable shared background and do not automatically become this task; do not take over, repeat, or continue their actions unless root-turn explicitly requires it"),
         ),
         pair(
             "progress-query",
-            atom("若 root-turn 询问另一分支的进度，只根据 concurrent-activations 与 background-tasks 的物理状态回答；不得为推进被询问分支而重复调用其工具"),
+            atom("if root-turn asks about another branch's progress, answer only from physical concurrent-activations and background-tasks state; do not repeat its tools to advance the branch being asked about"),
         ),
     ]);
     list("current-activation", fields)
@@ -5746,22 +5748,22 @@ fn render_evaluation_directive(
             pair(
                 "instruction",
                 atom(if thread_kind == "delivery" {
-                    "这是完成交付求值。只读取本次 completion snapshot 在 kernel.thread-scheduler 中呈现的 delivery=pending/deferred 结果，并结合最新并发状态；可把本批结果合并为一条普通文本。本次求值开始后新完成的结果属于下一批。不要调用物理工具，不要重复 delivery=delivered 的结果；确实无需通知时独占调用 no_reply"
+                    "This is completion delivery. Read only delivery=pending/deferred results in kernel.thread-scheduler for this completion snapshot and combine them with latest concurrent state. You may merge this batch into one ordinary message. Results completed after this evaluation began belong to the next batch. Do not call physical tools or repeat delivery=delivered results; call no_reply exclusively only when notification is truly unnecessary"
                 } else {
-                    "现在只求值 root-input。DialogueTurn Thread 处理当前对话；工具结果只延续其所属 Execution Thread。共享 Mind、历史、其他 Thread 与未绑定的 Objective 只提供背景，不得取代 root-input 成为行动目标"
+                    "Evaluate only root-input now. The DialogueTurn Thread handles current dialogue, while a tool result continues only its owning Execution Thread. Shared Mind, history, other Threads, and unbound Objectives are background and must not replace root-input as the action target"
                 }),
             ),
             pair(
                 "tool-gate",
                 atom(if thread_kind == "delivery" {
-                    "delivery composer 只做复杂结果的语义编排与交付，不得调用物理工具；普通文本会原子覆盖本次可见的 pending completion"
+                    "delivery composer performs only semantic composition and delivery of complex results and cannot call physical tools; ordinary text atomically covers visible pending completions in this snapshot"
                 } else {
-                    "仅当完成 root-input 确实需要尚不存在的新外部结果时调用工具；可由当前 Encoding 直接回答时必须立即返回普通文本，不得为未绑定 Objective 调用工具"
+                    "call a tool only when root-input truly requires a new external result that does not yet exist; when the current Encoding can answer directly, return ordinary text immediately and never call tools for an unbound Objective"
                 }),
             ),
             pair(
                 "terminal",
-                atom("每个 DialogueTurn input batch 都必须产生一条面向当前 Session、覆盖其中全部连续输入的连贯普通文本回复，除非语义上确实应静默并显式调用 no_reply"),
+                atom("every DialogueTurn input batch must produce one coherent ordinary-text reply to the current Session that covers all consecutive inputs, unless silence is semantically intentional and no_reply is called explicitly"),
             ),
         ];
     if !objective_context.is_empty() {
@@ -6907,7 +6909,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                     pair("calendar", atom("gregorian")),
                     pair(
                         "contract",
-                        atom("面向用户解释日期、今天、明天、截止时间或安排任务时，以此当地时间和时区为准；RFC3339 绝对时间必须携带明确偏移。UTC 只用于 Runtime 内部存储、排序与协议传输"),
+                        atom("use this local time and timezone for user-facing dates, today, tomorrow, deadlines, and scheduling; RFC3339 absolute times require an explicit offset. UTC is only for internal Runtime storage, ordering, and protocol transport"),
                     ),
                 ],
             )],
@@ -7020,32 +7022,32 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "prefix",
-                        atom("protocol 与 evaluation-profile 是当前协议/能力谱系；inbox 是按 Ledger 顺序投影的追加式证据前缀"),
+                        atom("protocol and evaluation-profile define the current protocol and capability lineage; inbox is an append-only evidence prefix projected in Ledger order"),
                     ),
                     pair(
                         "dynamic-tail",
-                        atom("observation-state、mind、session-directory、kernel、evaluation-environment 与 evaluate 是当前求值状态；evaluate 始终是最后且唯一的执行入口"),
+                        atom("observation-state, mind, session-directory, kernel, evaluation-environment, and evaluate are current evaluation state; evaluate is always the final and sole execution entry"),
                     ),
                     pair(
                         "retirement",
-                        atom("retire 旧 observation 会重写 inbox 投影并有意开启新的缓存谱系；普通 wake、预算或 active-session 变化不得改写此前的稳定证据字节"),
+                        atom("retiring an old observation rewrites the inbox projection and intentionally starts a new cache lineage; ordinary wakes, budget changes, and active-session changes must not rewrite prior stable evidence bytes"),
                     ),
                     pair(
                         "profile",
-                        atom("evaluation-profile 是内容寻址的稳定 Harness 定义；本轮绑定只允许出现在 evaluation-environment"),
+                        atom("evaluation-profile is the content-addressed stable Harness definition; evaluation-specific bindings may appear only in evaluation-environment"),
                     ),
                 ],
             ),
             list(
                 "routing-contract",
                 vec![
-                    pair("ownership", atom("一个 Cognitive Context 持有一个共享 Mind 与多个 Session")),
-                    pair("session-role", atom("Session 是输入输出连接与进展边界，不拥有独立 Mind")),
-                    pair("active-session", atom("本次求值唯一的输入来源与普通文本回复目标；不是 Context 的全局唯一活动 Session")),
-                    pair("concurrency", atom("同一 Context 可有多个 Session 同时进行各自求值与回复")),
-                    pair("shared-evidence", atom("inbox observation 按 session 标记来源，但均属于当前 Context，可跨 Session 推理与复用")),
-                    pair("reply-routing", atom("无工具普通 assistant 文本与可见 progress 必须对应 kernel.active-session；其他 Session 使用 send_message")),
-                    pair("write-serialization", atom("context_tx 修改共享 Mind；Runtime 按 Context 串行提交并执行 version 检查")),
+                    pair("ownership", atom("one Cognitive Context owns one shared Mind and multiple Sessions")),
+                    pair("session-role", atom("a Session is an IO connection and progress boundary; it does not own a separate Mind")),
+                    pair("active-session", atom("the sole input source and ordinary-text reply target for this evaluation, not the only globally active Session in the Context")),
+                    pair("concurrency", atom("multiple Sessions in one Context may evaluate and reply concurrently")),
+                    pair("shared-evidence", atom("inbox observations record a source session but belong to the current Context and may be reasoned over and reused across Sessions")),
+                    pair("reply-routing", atom("ordinary assistant text without tools and visible progress must correspond to kernel.active-session; use send_message for another Session")),
+                    pair("write-serialization", atom("context_tx modifies the shared Mind; the Runtime serializes commits per Context and checks version")),
                 ],
             ),
             list(
@@ -7053,15 +7055,15 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "authority",
-                        atom("evaluation-environment.local-time 是面向用户理解和安排日期时间的权威当地时钟"),
+                        atom("evaluation-environment.local-time is the authoritative local clock for user-facing date and time interpretation and scheduling"),
                     ),
                     pair(
                         "absolute-time",
-                        atom("解释今天、明天、日期、截止时间与调度时必须使用当地时间；提交 RFC3339 绝对时间必须携带明确 UTC offset"),
+                        atom("use local time for today, tomorrow, dates, deadlines, and schedules; submitted RFC3339 absolute times require an explicit UTC offset"),
                     ),
                     pair(
                         "utc-boundary",
-                        atom("UTC 仅用于 Runtime 内部持久化、排序与协议传输，不得把裸 UTC 时间当作用户当地时间表达"),
+                        atom("UTC is only for internal Runtime persistence, ordering, and protocol transport; never present bare UTC as the user's local time"),
                     ),
                 ],
             ),
@@ -7070,35 +7072,35 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "current",
-                        atom("Context 最后的 evaluate 是本次模型请求唯一的执行入口；kernel.current-activation 提供同一事实的详细机器状态"),
+                        atom("the final evaluate is the sole execution entry for this model request; kernel.current-activation provides detailed machine state for the same fact"),
                     ),
                     pair(
                         "thread-model",
-                        atom("Session 的 Dialogue Lane 只排序普通对话的首次求值；每条用户输入创建有限的 DialogueTurn Thread；从该 turn 发起并由工具结果延续的工作属于 Execution Thread；Objective 是持久控制面，Supervisor 通过主 Execution Thread 推进它"),
+                        atom("a Session Dialogue Lane orders only initial evaluation of ordinary dialogue; each input creates a bounded DialogueTurn Thread, work initiated there and continued by tool results belongs to an Execution Thread, and an Objective is durable control state advanced by the Supervisor through its main Execution Thread"),
                     ),
                     pair(
                         "root-turn",
-                        atom("root-turn 是一个 Thread 的稳定因果根；它不是整个 Session 的对话历史"),
+                        atom("root-turn is a Thread's stable causal root, not the entire Session dialogue history"),
                     ),
                     pair(
                         "trigger",
-                        atom("trigger 是唤醒本次 Activation 的最新 Signal；用户消息进入新的 DialogueTurn Thread，工具结果只延续其所属 Execution Thread，不会把其他 Thread 合并进来"),
+                        atom("trigger is the latest Signal that woke this Activation; a user message enters a new DialogueTurn Thread while a tool result continues only its owning Execution Thread and never merges other Threads"),
                     ),
                     pair(
                         "concurrent",
-                        atom("kernel.concurrent-activations 是同一 Context 中其他 Execution / Delivery Thread 的只读运行状态，不是当前 DialogueTurn Thread 的待办列表"),
+                        atom("kernel.concurrent-activations is read-only state for other Execution and Delivery Threads in this Context, not a todo list for the current DialogueTurn"),
                     ),
                     pair(
                         "pending-tool",
-                        atom("pending-tools 表示其他分支已经发起且尚未收到结果的工具调用；不得从本次 Activation 重复发起"),
+                        atom("pending-tools are calls already started by another branch whose results have not arrived; do not repeat them from this Activation"),
                     ),
                     pair(
                         "progress",
-                        atom("进度询问应直接依据 Thread、Activation、pending-tools 与 background-tasks 的物理状态作答；未知就明确说未知，不得虚构结果"),
+                        atom("answer progress questions directly from physical Thread, Activation, pending-tools, and background-tasks state; state unknown when unknown and never fabricate a result"),
                     ),
                     pair(
                         "objective-binding",
-                        atom("evaluate.objective-binding=none 时，Objective 状态只用于理解背景和回答进度，不得推进 Objective 或为它调用工具；只有显式 bound 的 Objective Evaluation 才能通过其 Execution Thread 推进目标"),
+                        atom("when evaluate.objective-binding=none, Objective state is background for understanding and progress replies only; do not advance it or call tools for it. Only an explicitly bound Objective Evaluation may advance it through its Execution Thread"),
                     ),
                 ],
             ),
@@ -7107,23 +7109,23 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "identity",
-                        atom("Agent 可同时运行多个 Thread Activation；Session 只是 IO 路由和局部连续性边界"),
+                        atom("an Agent may run multiple Thread Activations concurrently; a Session is only an IO route and local continuity boundary"),
                     ),
                     pair(
                         "ordering",
-                        atom("Ledger seq 表示物理写入顺序；thread/activation/caused-by 表示计算与工具因果链"),
+                        atom("Ledger seq records physical write order; thread, activation, and caused-by record computation and tool causality"),
                     ),
                     pair(
                         "tool-wait",
-                        atom("等待某个 Tool 不会阻塞同一或其他 Session 的新用户消息求值"),
+                        atom("waiting for a Tool does not block evaluation of a new user message in the same or another Session"),
                     ),
                     pair(
                         "late-result",
-                        atom("迟到结果必须结合后续 Ledger 与最新 Shared Mind 重新判断，不得静默恢复已被取代的旧计划"),
+                        atom("a late result must be reconsidered against later Ledger facts and the latest Shared Mind; never silently resume a superseded plan"),
                     ),
                     pair(
                         "reply-uniqueness",
-                        atom("每个 session + root-turn 最多提交一次终态 Reply；重复提交由 Runtime 抑制"),
+                        atom("at most one terminal Reply may commit per session + root-turn; the Runtime suppresses duplicates"),
                     ),
                 ],
             ),
@@ -7132,19 +7134,19 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "working-set",
-                        atom("时间窗口、数量与 token budget 只控制本轮投影；未出现不等于 Session 不存在"),
+                        atom("time windows, count, and token budget control only the current projection; absence does not mean a Session does not exist"),
                     ),
                     pair(
                         "retire-session",
-                        atom("Agent 主动移出自动认知候选；不删除 Session、Ledger 或 Shared Mind Frame"),
+                        atom("the Agent removes a Session from automatic cognitive candidates without deleting the Session, Ledger, or Shared Mind Frames"),
                     ),
                     pair(
                         "restore-session",
-                        atom("重新允许 Session 进入自动 Working Set 候选"),
+                        atom("allow the Session to become an automatic Working Set candidate again"),
                     ),
                     pair(
                         "auto-restore",
-                        atom("retired Session 收到新定向事件时 Runtime 确定性恢复，并强制作为 current full projection"),
+                        atom("the Runtime deterministically restores a retired Session on a new directed event and forces it into the current full projection"),
                     ),
                 ],
             ),
@@ -7163,31 +7165,31 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "ref",
-                        atom("@eN 是由 Ledger sequence 派生的稳定短引用；recall 与 context_tx 原样使用，Runtime 提交前解析为完整 ID"),
+                        atom("@eN is a stable short reference derived from Ledger sequence; pass it unchanged to recall and context_tx and the Runtime resolves it to the full ID before commit"),
                     ),
-                    pair("seq", atom("全局稳定顺序号；越大表示越晚写入 Ledger")),
-                    pair("turn", atom("所属用户回合；用于区分近期与历史")),
-                    pair("attempt", atom("所属模型执行尝试")),
-                    pair("caused-by", atom("产生本 observation 的调用或事件")),
+                    pair("seq", atom("globally stable order; a larger value means written later to the Ledger")),
+                    pair("turn", atom("the owning user turn, used to distinguish recent from historical input")),
+                    pair("attempt", atom("the owning model evaluation attempt")),
+                    pair("caused-by", atom("the call or event that produced this observation")),
                     pair(
                         "residency",
-                        atom("observation-state 中的当前投影状态；content.representation 表示 full 全文、preview 预览或 recalled-chunk 召回片段"),
+                        atom("current projection state in observation-state; content.representation is full, preview, or recalled-chunk"),
                     ),
                     pair(
                         "freshness",
-                        atom("新旧关系；latest 只表示较新，不自动代表更正确"),
+                        atom("version recency; latest means newer, not automatically more correct"),
                     ),
                     pair(
                         "usage",
-                        atom("只统计主动 recall 与 from 语义引用；被动展示不算有效使用"),
+                        atom("counts only active recall and semantic from references; passive display is not use"),
                     ),
                     pair(
                         "resource",
-                        atom("工具可选提供的通用资源 kind/key/version；不限定为代码文件"),
+                        atom("optional generic resource kind/key/version supplied by a tool, not restricted to source files"),
                     ),
                     pair(
                         "observation-state",
-                        atom("按 ref 覆盖 Inbox observation 的可变保护、驻留、新旧关系与使用统计；Inbox 中的因果身份和 content 是 Ledger 投影事实"),
+                        atom("overlays mutable protection, residency, freshness, and usage by ref; causal identity and content in Inbox are Ledger projection facts"),
                     ),
                 ],
             ),
@@ -7196,43 +7198,43 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "identity",
-                        atom("Objective 是属于 Cognitive Context 的持久 Runtime 控制对象；Mind 仍由 Agent 自由表达目标的计划、经验与认识"),
+                        atom("an Objective is durable Runtime control state owned by a Cognitive Context; the Agent still expresses plans, experience, and knowledge freely in Mind"),
                     ),
                     pair(
                         "creation",
-                        atom("Agent 可用 objective_create 把当前 Session 中真正需要跨 Evaluation、异步等待或重启恢复的工作升级为 First-Class Objective；Runtime 生成 ID 并绑定当前 Agent/Context/Session，普通问答或一次求值可完成的动作不得创建，existing 回执后不得重复创建"),
+                        atom("objective_create upgrades work that genuinely spans Evaluations, asynchronous waits, or restart recovery into a First-Class Objective; the Runtime creates its ID and binds current Agent/Context/Session. Do not create one for ordinary dialogue or work one evaluation can finish, and never duplicate an existing receipt"),
                     ),
                     pair(
                         "evaluation",
-                        atom("一次 Thread Activation 只是 Objective 的一个执行切片；普通文本或 no_reply 只结束本次 Activation，不表示长期 Objective 已完成"),
+                        atom("one Thread Activation is only an execution slice of an Objective; ordinary text or no_reply ends that Activation, not the durable Objective"),
                     ),
                     pair(
                         "completion",
-                        atom("objective_update(status=completed) 通过 revision 与证据引用校验后只持久化 finalizing 意图；同一 Activation 随后生成完整最终回复，回复与 Objective、Activation、Thread、ThreadOutcome 在一个事务中提交完成；不得从普通回复文本猜测完成"),
+                        atom("after revision and evidence validation, objective_update(status=completed) persists only finalizing intent; the same Activation then generates a complete final reply, and reply, Objective, Activation, Thread, and ThreadOutcome complete in one transaction. Completion is never inferred from ordinary reply text"),
                     ),
                     pair(
                         "continuation",
-                        atom("active 且 wait=none 时，ObjectiveSupervisor 会在当前 Activation 终态后产生下一次 Signal；软检查点、Context 压力或单次错误都不能冒充完成"),
+                        atom("when active with wait=none, ObjectiveSupervisor produces the next Signal after the current Activation becomes terminal; a soft checkpoint, Context pressure, or one error cannot masquerade as completion"),
                     ),
                     pair(
                         "waiting",
-                        atom("等待工具任务、Delegation、审批、定时器、用户输入或外部事件时，用 objective_update(status=active, wait_condition=...) 登记精确条件；Runtime 事件驱动唤醒，禁止轮询"),
+                        atom("while waiting for a tool task, Delegation, approval, timer, user input, or external event, register an exact objective_update(status=active, wait_condition=...); the Runtime wakes from events and polling is forbidden"),
                     ),
                     pair(
                         "blocked",
-                        atom("blocked 只表示没有确定可等待事件且当前确实没有可靠进展路径；存在 wait_condition 时必须保持 active"),
+                        atom("blocked means there is no definite event to await and no reliable current path; an Objective with a wait_condition must remain active"),
                     ),
                     pair(
                         "control-authority",
-                        atom("Agent 可创建当前路由内的 Objective，并提交 active-wait、blocked、completed；pause、resume、cancel 属于用户或 Runtime 控制面"),
+                        atom("the Agent may create an Objective in the current route and submit active-wait, blocked, or completed; pause, resume, and cancel belong to the user or Runtime control plane"),
                     ),
                     pair(
                         "revision",
-                        atom("每次 objective_update 必须使用 kernel.objectives 中最新 base_revision；冲突时重新读取，不得覆盖并发控制状态"),
+                        atom("each objective_update must use the latest base_revision from kernel.objectives; on conflict reread rather than overwrite concurrent control state"),
                     ),
                     pair(
                         "evidence",
-                        atom("evidence_refs 必须引用当前 Context 中真实 Ledger 事件；Runtime 验证存在性与时序，业务充分性仍由 Agent 判断"),
+                        atom("evidence_refs must name real Ledger events in the current Context; the Runtime verifies existence and ordering while the Agent judges semantic sufficiency"),
                     ),
                 ],
             ),
@@ -7241,55 +7243,55 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "authority",
-                        atom("Runtime 提供持久化、单飞、顺序、依赖和定时机制；Agent 负责判断串行、并行、依赖与何时交付"),
+                        atom("the Runtime provides persistence, single-flight, ordering, dependency, and timing mechanisms; the Agent decides serial, parallel, dependent, and delivery semantics"),
                     ),
                     pair(
                         "current-thread",
-                        atom("直接物理工具调用继承 kernel.current-activation 的 Thread；任意数量工具结果都回到同一 mailbox，不创建新 Thread"),
+                        atom("direct physical tool calls inherit the Thread in kernel.current-activation; any number of tool results return to that mailbox without creating a new Thread"),
                     ),
                     pair(
                         "enqueue",
-                        atom("schedule_tx enqueue 把 intent 串行加入 thread_id；省略 thread_id 时延续当前 Thread"),
+                        atom("schedule_tx enqueue serially adds intent to thread_id; omitting thread_id continues the current Thread"),
                     ),
                     pair(
                         "spawn",
-                        atom("schedule_tx spawn 创建可与当前工作并行的独立 Thread；client_id 可被同一事务的 after 以 $client_id 引用"),
+                        atom("schedule_tx spawn creates an independent Thread that can run in parallel; after in the same transaction may reference its client_id as $client_id"),
                     ),
                     pair(
                         "dependency",
-                        atom("after 中所有 Thread 进入终态后才投递 intent；依赖状态作为物理 observation 返回，由 Agent 判断成功、失败或取消的后续语义"),
+                        atom("intent is delivered only after every Thread in after becomes terminal; dependency state returns as a physical observation and the Agent decides the semantics of success, failure, or cancellation"),
                     ),
                     pair(
                         "timer",
-                        atom("not_before 使用 RFC3339 绝对时间；delay_seconds 使用相对延迟；spawn.every_seconds 创建固定间隔 occurrence Thread"),
+                        atom("not_before uses RFC3339 absolute time, delay_seconds uses relative delay, and spawn.every_seconds creates fixed-interval occurrence Threads"),
                     ),
                     pair(
                         "timer-semantics",
-                        atom("到期只向目标 Thread mailbox 投递 schedule_due observation；不会直接执行工具、生成结论或绕开唯一终态"),
+                        atom("a due time only delivers a schedule_due observation to the target Thread mailbox; it does not run a tool, form a conclusion, or bypass the unique terminal boundary"),
                     ),
                     pair(
                         "inspect",
-                        atom("schedule_tx inspect 返回持久化调度的当前状态、时间和 revision；控制前必须先观测最新事实"),
+                        atom("schedule_tx inspect returns durable current state, time, and revision; observe the latest facts before control"),
                     ),
                     pair(
                         "control",
-                        atom("pause/resume/reschedule/cancel 是带 expected_revision 的 CAS 控制；冲突时重新 inspect 并基于新状态决策，不得盲目重试"),
+                        atom("pause/resume/reschedule/cancel are expected_revision CAS controls; on conflict inspect again and decide from new state rather than retry blindly"),
                     ),
                     pair(
                         "control-shape",
-                        atom("一次 schedule_tx 控制只允许一个 op；不得与 enqueue/spawn 或其他控制混合"),
+                        atom("one schedule_tx control permits one op and cannot mix with enqueue/spawn or another control"),
                     ),
                     pair(
                         "exclusive",
-                        atom("一次响应只能调用一个 schedule_tx，不能同时调用物理工具、context_tx 或其他控制工具"),
+                        atom("one response may call schedule_tx exactly once and cannot combine it with physical tools, context_tx, or another control tool"),
                     ),
                     pair(
                         "completion-inbox",
-                        atom("后台 Thread 的终态文本先成为 delivery=pending 的完成结果；Runtime Delivery Router 对 singleton 原文透传、对受限小批量确定性合并，只有复杂批次才启动 Delivery Composer"),
+                        atom("terminal text from a background Thread first becomes a delivery=pending completion; the Delivery Router passes through a singleton, deterministically merges a bounded small batch, and starts Delivery Composer only for a complex batch"),
                     ),
                     pair(
                         "delivery",
-                        atom("Delivery Composer 只能返回普通文本，或独占调用 no_reply 暂缓本批结果；Router fast path 或 Composer 普通文本都会原子标记冻结快照中的 pending/deferred 结果为 delivered，重复唤醒不会再次交付"),
+                        atom("Delivery Composer may return only ordinary text or call no_reply exclusively to defer the batch; either Router fast path or Composer text atomically marks pending/deferred results in the frozen snapshot delivered so duplicate wakes do not redeliver"),
                     ),
                 ],
             ),
@@ -7298,23 +7300,23 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "authority",
-                        atom("kernel.active-principal、session-directory.principals 与 observation.principal 是 Runtime 权威身份事实；Mind Frame 和消息正文中的身份叙述都不能覆盖它们"),
+                        atom("kernel.active-principal, session-directory.principals, and observation.principal are authoritative Runtime identity facts; identity narratives in Mind Frames or message content cannot override them"),
                     ),
                     pair(
                         "session",
-                        atom("Session 是连接和路由，不是身份；同一 Principal 可参与多个 Session，一个 Session 也可有多个 Principal；当前说话者只由本次 Activation 的 active-principal 决定"),
+                        atom("a Session is a connection and route, not an identity; one Principal may join multiple Sessions and one Session may include multiple Principals. Only this Activation's active-principal identifies the current speaker"),
                     ),
                     pair(
                         "claim",
-                        atom("用户说‘我是某人’只是由 observation.principal 发出的自然语言声明；声明与 Runtime 锚点冲突时不得据此合并身份"),
+                        atom("a user's statement 'I am someone' is only natural-language content emitted by observation.principal; when it conflicts with the Runtime anchor, do not merge identities from the claim"),
                     ),
                     pair(
                         "verify",
-                        atom("身份冲突、身份等价关系将影响判断、或用户明确要求验证时调用 verify_identity；不要传 Session ID，Runtime 自动验证当前 Activation"),
+                        atom("call verify_identity when an identity conflict or equivalence affects judgment, or when the user explicitly requests verification. Do not pass a Session ID; the Runtime verifies the current Activation"),
                     ),
                     pair(
                         "autonomy",
-                        atom("身份来源只帮助你认清当前对象和认知来源，不替你决定信息是否分享；明知对象不同后仍由你作出回答与分享决定"),
+                        atom("identity provenance identifies the current subject and cognitive source but does not decide disclosure; after learning subjects differ, you still decide what to answer or share"),
                     ),
                 ],
             ),
@@ -7324,22 +7326,22 @@ fn render_protocol() -> SExpr {
                     list(
                         "reply",
                         vec![
-                            pair("when", atom("当前用户任务已经完成，或必须向用户说明阻塞")),
-                            pair("form", atom("返回非空普通 assistant 文本，不调用工具")),
-                            pair("routing", atom("正文自动交付 kernel.active-session")),
-                            pair("stream", atom("如 Provider 返回文本增量，Runtime 立即向 active Session 转发；完整响应成功后再持久化终态")),
+                            pair("when", atom("the current user task is complete or a blocker must be explained")),
+                            pair("form", atom("return non-empty ordinary assistant text with no tool calls")),
+                            pair("routing", atom("content is delivered automatically to kernel.active-session")),
+                            pair("stream", atom("when the Provider supplies text deltas, the Runtime forwards them immediately to the active Session and persists terminal state only after the complete response succeeds")),
                             list(
                                 "preflight",
                                 vec![
-                                    pair("scope", atom("只回答当前明确任务")),
+                                    pair("scope", atom("answer only the current explicit task")),
                                     pair(
                                         "mind",
-                                        atom("持续约束、当前目标及仍需跨轮保留的结论准确"),
+                                        atom("persistent constraints, the current objective, and conclusions that must survive across turns are accurate"),
                                     ),
                                     pair(
                                         "evidence",
                                         atom(
-                                            "已处理的大段 observation 应先 derive/revise 后 retire",
+                                            "derive or revise processed large observations before retiring them",
                                         ),
                                     ),
                                 ],
@@ -7349,27 +7351,27 @@ fn render_protocol() -> SExpr {
                     list(
                         "no-reply",
                         vec![
-                            pair("when", atom("确认当前 Activation 无需向 active Session 发送任何消息")),
+                            pair("when", atom("the current Activation intentionally needs to send no message to the active Session")),
                             pair("tool", atom("no_reply")),
-                            pair("exclusive", atom("no_reply 必须独占响应、携带唯一 mode 参数且不带正文")),
-                            pair("silent", atom("mode=silent 表示有意不向 Session 发送消息并结束当前求值")),
-                            pair("wait", atom("mode=wait 只在 Runtime 可验证仍有后台任务、调度或待处理事件时 yield；终态事件到达后必须处理结果")),
-                            pair("scope", atom("不完成 Objective，不取消后台任务")),
+                            pair("exclusive", atom("no_reply must be the only call, carry exactly one mode, and include no content")),
+                            pair("silent", atom("mode=silent intentionally ends the evaluation without sending a Session message")),
+                            pair("wait", atom("mode=wait yields only while the Runtime can verify a background task, schedule, or pending event; process its result after a terminal event arrives")),
+                            pair("scope", atom("does not complete an Objective or cancel background work")),
                         ],
                     ),
                     list(
                         "act",
                         vec![
-                            pair("when", atom("完成当前用户任务确实还需要新的外部结果")),
+                            pair("when", atom("new external results are truly required to complete the current user task")),
                             pair(
                                 "tool-calls",
                                 atom("physical-tools + optional independent context_tx"),
                             ),
-                            pair("content", atom("可见进度，不是最终答复")),
-                            pair("after-tools", atom("Runtime 必定再次调用模型")),
+                            pair("content", atom("visible progress, not a final reply")),
+                            pair("after-tools", atom("the Runtime always calls the model again")),
                             pair(
                                 "scope",
-                                atom("只执行当前明确任务所必需的动作，不自行扩张探索"),
+                                atom("perform only actions required by the current explicit task; do not expand exploration autonomously"),
                             ),
                         ],
                     ),
@@ -7378,13 +7380,13 @@ fn render_protocol() -> SExpr {
                         vec![
                             pair(
                                 "when",
-                                atom("需要先修改 Mind；normal/notice 不得仅为降低体积而维护"),
+                                atom("Mind must be changed first; at normal/notice pressure do not maintain merely to reduce size"),
                             ),
                             pair("tool", atom("context_tx")),
-                            pair("content", atom("empty | visible progress; 不是最终答复")),
+                            pair("content", atom("empty or visible progress, never a final reply")),
                             pair(
                                 "after-commit",
-                                atom("Runtime 必定再次调用；非 critical 时冷却 context_tx，必须返回普通文本、调用 no_reply 或执行 act"),
+                                atom("the Runtime always calls again; outside critical pressure, context_tx cools down and the next response must return ordinary text, call no_reply, or act"),
                             ),
                         ],
                     ),
@@ -7393,16 +7395,16 @@ fn render_protocol() -> SExpr {
                         vec![
                             pair(
                                 "when",
-                                atom("需要显式决定串行、并行、依赖或定时执行"),
+                                atom("serial, parallel, dependent, or timed execution must be chosen explicitly"),
                             ),
                             pair("tool", atom("schedule_tx")),
                             pair(
                                 "exclusive",
-                                atom("schedule_tx 必须是响应中唯一的一次工具调用"),
+                                atom("schedule_tx must be the response's only tool call"),
                             ),
                             pair(
                                 "after-commit",
-                                atom("Runtime 返回持久化调度回执并再次调用模型；再向 active Session 说明安排"),
+                                atom("the Runtime returns a durable schedule receipt and calls the model again; then explain the arrangement to the active Session"),
                             ),
                         ],
                     ),
@@ -7411,19 +7413,19 @@ fn render_protocol() -> SExpr {
                         vec![
                             pair(
                                 "when",
-                                atom("current-activation.thread.kind=delivery；一个或多个 Execution Thread 已完成并等待面向 Session 交付"),
+                                atom("current-activation.thread.kind=delivery and one or more Execution Threads completed and await Session-facing delivery"),
                             ),
                             pair(
                                 "input",
-                                atom("只读取本次 completion snapshot 在 kernel.thread-scheduler 中可见的 delivery=pending/deferred result，并结合当前 Session 与其他并发 Thread 的物理状态；新完成结果留给下一次 Delivery"),
+                                atom("read only delivery=pending/deferred results visible in kernel.thread-scheduler for this completion snapshot and combine them with physical current Session and concurrent Thread state; newly completed results remain for the next Delivery"),
                             ),
                             pair(
                                 "form",
-                                atom("返回一条可合并多个完成结果的普通 assistant 文本；不得调用物理工具"),
+                                atom("return one ordinary assistant message that may merge multiple completion results; do not call physical tools"),
                             ),
                             pair(
                                 "defer",
-                                atom("确实暂不应通知时独占调用 no_reply，结果保留为 deferred，可由后续完成事件再次编排"),
+                                atom("when notification is truly inappropriate now, call no_reply exclusively; results remain deferred for later completion events to compose again"),
                             ),
                         ],
                     ),
@@ -7432,11 +7434,11 @@ fn render_protocol() -> SExpr {
             list(
                 "session-output-contract",
                 vec![
-                    pair("current", atom("无工具的普通文本只回复 kernel.active-session")),
+                    pair("current", atom("ordinary text without tools replies only to kernel.active-session")),
                     pair("other-session-tool", atom("send_message {session_id,content}")),
-                    pair("other-session", atom("send_message 只向同一 Agent 的其他 Session 主动投递，不结束当前 Activation，不触发目标 Session 求值")),
-                    pair("current-session-guard", atom("不得用 send_message 回复 active Session；Runtime 会拒绝")),
-                    pair("context-boundary", atom("context_tx 只修改共享 Mind，不能向用户发送消息")),
+                    pair("other-session", atom("send_message proactively delivers only to another Session of the same Agent; it neither ends the current Activation nor starts target Session evaluation")),
+                    pair("current-session-guard", atom("never use send_message to reply to active-session; the Runtime rejects it")),
+                    pair("context-boundary", atom("context_tx changes only the shared Mind and cannot send a user message")),
                 ],
             ),
             list(
@@ -7444,23 +7446,23 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "immediate-delivery",
-                        atom("当前用户回合内按标准 assistant.tool_calls → role=tool/tool_call_id 返回"),
+                        atom("returned within the current user turn through standard assistant.tool_calls → role=tool/tool_call_id"),
                     ),
                     pair(
                         "persistence",
-                        atom("物理工具结果在返回前已写入 Ledger，并在 tool result 中提供 observation_ref"),
+                        atom("physical tool results are written to the Ledger before return and include observation_ref in the tool result"),
                     ),
                     pair(
                         "no-duplicate",
-                        atom("同一模型请求中，经 role=tool 交付的结果正文不会同时重复出现在 inbox"),
+                        atom("a result body delivered through role=tool is not duplicated in inbox in the same model request"),
                     ),
                     pair(
                         "later-context",
-                        atom("下一独立 Context 快照会按 active/retired 状态重新展示历史工具 observation"),
+                        atom("the next independent Context snapshot shows historical tool observations according to active or retired state"),
                     ),
                     pair(
                         "empty-output",
-                        atom("status=success 且 output_state=empty 表示工具已完成但无文本；不得仅因空输出重复调用"),
+                        atom("status=success with output_state=empty means the tool completed without text; do not repeat it merely because output was empty"),
                     ),
                 ],
             ),
@@ -7469,32 +7471,32 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "scope",
-                        atom("仅当本轮 Function Calling 提供 list_skills 时适用；Skill 是按需读取的能力说明，不是自动执行的工具"),
+                        atom("applies only when list_skills is available in this Function Calling request; a Skill is on-demand capability guidance, not an automatically executed tool"),
                     ),
                     pair(
                         "intent",
-                        atom("以 evaluate.root-input 表达的当前意图为检索条件，不绑定平台、领域或具体 Skill 名称"),
+                        atom("discover by the current intent expressed in evaluate.root-input, without binding to a platform, domain, or specific Skill name"),
                     ),
                     list(
                         "fallback",
                         vec![
                             pair(
                                 "primary",
-                                atom("优先使用本轮已有且能直接满足当前意图的 Function Calling 工具"),
+                                atom("prefer an available Function Calling tool that directly satisfies the current intent"),
                             ),
                             pair(
                                 "backup",
-                                atom("primary 没有适用能力或明确失败时，调用 list_skills 取得紧凑目录；只选择最相关的 Skill，用 read 读取其 SKILL.md，再按说明调用真实工具"),
+                                atom("when primary has no applicable capability or explicitly fails, call list_skills for a compact catalog, select only the most relevant Skill, read its SKILL.md, and follow it to invoke real tools"),
                             ),
                         ],
                     ),
                     pair(
                         "failure-boundary",
-                        atom("只有直接能力与按需 Skill 发现都不能满足当前意图后，才能向 Session 声明能力不可用"),
+                        atom("declare capability unavailable to the Session only after direct capability and on-demand Skill discovery both fail for the current intent"),
                     ),
                     pair(
                         "token-policy",
-                        atom("不得预读全部 SKILL.md；目录只用于选择，选择后只读取完成当前意图所需的最少 Skill"),
+                        atom("do not preload every SKILL.md; use the catalog only for selection and then read the minimum Skill content needed for the current intent"),
                     ),
                 ],
             ),
@@ -7511,15 +7513,15 @@ fn render_protocol() -> SExpr {
                     pair("body-arity", atom("create derive revise one-or-more")),
                     pair(
                         "body-normalization",
-                        atom("多个 BODY 由 Runtime 确定性保存为 (context-body BODY...)；单 BODY 保持原样"),
+                        atom("the Runtime deterministically stores multiple BODY values as (context-body BODY...); one BODY remains unchanged"),
                     ),
                     pair(
                         "revise-semantics",
-                        atom("完整替换 frame body，不是局部 merge；所有仍需保留的字段必须重述"),
+                        atom("completely replace the frame body rather than partially merge it; restate every field that must remain"),
                     ),
                     pair(
                         "source-placement",
-                        atom("create 不接受 from；derive/revise 的可选 (from SOURCE...) 必须紧跟 ID，且 from 之后至少有一个 BODY"),
+                        atom("create does not accept from; optional (from SOURCE...) for derive/revise must immediately follow ID and be followed by at least one BODY"),
                     ),
                     pair(
                         "body-example",
@@ -7527,7 +7529,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "compound-example",
-                        atom("(context-tx (base-version 3) (reason \"完成收口\") (revise task (status completed) (next none)) (derive result (from @e27) (tests passed) (confidence high)) (protect task result) (retire @e21 @e22))"),
+                        atom("(context-tx (base-version 3) (reason \"close out completed work\") (revise task (status completed) (next none)) (derive result (from @e27) (tests passed) (confidence high)) (protect task result) (retire @e21 @e22))"),
                     ),
                     pair(
                         "reason-required-for",
@@ -7535,42 +7537,42 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "checkpoint-policy",
-                        atom("由 Agent 在高风险重组前显式建立；Runtime 不自动回滚或修补语义"),
+                        atom("created explicitly by the Agent before high-risk restructuring; the Runtime never rolls back or repairs semantics automatically"),
                     ),
                     pair(
                         "relation-policy",
-                        atom("Runtime 只解释 supersedes 的新旧关系；其他 relation 保持 Agent 语义"),
+                        atom("the Runtime interprets only the freshness relation supersedes; every other relation retains Agent-defined semantics"),
                     ),
                     list(
                         "frame-retirement-policy",
                         vec![
                             pair(
                                 "observation",
-                                atom("retire 立即生效并在下一次编码释放其活动块 Token"),
+                                atom("retire takes effect immediately and releases the observation's active-block tokens in the next encoding"),
                             ),
                             pair(
                                 "ordinary-frame",
-                                atom("retire 只进入整理期；正文仍在活动 Context，当前 Token 释放量为 0"),
+                                atom("retire only enters the organizing window; content remains active in Context and releases zero tokens now"),
                             ),
                             pair(
                                 "organizing-window",
-                                atom("优先 revise 精简，或 derive/relate 形成更高阶 successor；revise、restore、protect 会取消旧退休意图"),
+                                atom("prefer concise revise or derive/relate to form a higher-level successor; revise, restore, or protect cancels prior retirement intent"),
                             ),
                             pair(
                                 "successor",
-                                atom("活跃 successor 同时以 sources 引用旧 Frame 并声明 supersedes 后，旧 Frame 可在同一事务立即退休"),
+                                atom("when an active successor both references the old Frame in sources and declares supersedes, the old Frame may retire immediately in the same transaction"),
                             ),
                             pair(
                                 "selection",
-                                atom("Frame 数量本身不是退休理由；重复、失效、已被取代或已形成更高抽象才是整理理由"),
+                                atom("Frame count alone is not a retirement reason; duplication, invalidation, supersession, or a higher abstraction is"),
                             ),
                             pair(
                                 "critical-pressure",
-                                atom("先清理已消化 observation；若仍不足，应精简 Frame 或建立 successor，不要依赖批量普通 Frame retire 立即释放容量"),
+                                atom("first clean up consumed observations; if still insufficient, simplify Frames or establish successors rather than relying on bulk ordinary-Frame retirement for immediate capacity"),
                             ),
                             pair(
                                 "retrieval",
-                                atom("retired 不等于删除；可通过关键词、Frame ID、sources 与 relation 链 recall 和 restore"),
+                                atom("retired is not deleted; recall and restore remain available through keywords, Frame ID, sources, and relation chains"),
                             ),
                         ],
                     ),
@@ -8789,7 +8791,7 @@ fn preview_text(text: &str, max_chars: usize) -> (String, bool) {
         .collect::<String>();
     (
         format!(
-            "{}\n...[原文共 {} 字符，使用 recall 按 ref 分段读取]...\n{}",
+            "{}\n...[original text has {} characters; use recall with this ref to read it in segments]...\n{}",
             head, total, tail
         ),
         true,
@@ -8808,7 +8810,8 @@ fn bounded_maintenance_preview(text: &str, max_chars: usize) -> (String, bool) {
     if max_chars == 0 {
         return (String::new(), true);
     }
-    let marker = format!("\n...[原文共 {total} 字符，可按 ref 使用 recall]...\n");
+    let marker =
+        format!("\n...[original text has {total} characters; use recall with this ref]...\n");
     let marker_chars = marker.chars().count();
     if marker_chars >= max_chars {
         return (text.chars().take(max_chars).collect(), true);
@@ -9314,6 +9317,23 @@ mod tests {
         SessionDirectoryStore as _, SessionMountKind, SessionStore, ThreadKind, ThreadStore as _,
     };
     use tempfile::TempDir;
+
+    fn contains_cjk(text: &str) -> bool {
+        text.chars().any(|character| {
+            matches!(
+                character,
+                '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
+            )
+        })
+    }
+
+    #[test]
+    fn runtime_context_protocol_and_context_tx_contract_are_english_only() {
+        let protocol = render_protocol().to_string();
+        assert!(!contains_cjk(&protocol), "protocol: {protocol}");
+        let context_tx = context_tx_tool_description();
+        assert!(!contains_cjk(&context_tx), "context_tx: {context_tx}");
+    }
 
     #[test]
     fn attribution_weight_is_additive_across_ascii_and_non_ascii_text() {
@@ -10647,7 +10667,7 @@ mod tests {
             parsed.get_path(&["kernel", "current-activation", "root-turn", "input"]),
             Some(&SExpr::Atom("先回答我".to_string()))
         );
-        assert!(rendered.contains("只推进 root-turn 表达的任务"));
+        assert!(rendered.contains("advances only the task expressed by root-turn"));
         assert!(rendered.contains(
             "(signal-batch (signal (event user:1) (kind chat/user_message) (sequence 7)))"
         ));
@@ -10658,7 +10678,9 @@ mod tests {
         assert!(rendered.contains("(pending-tools exec)"));
         assert!(rendered.contains("(thread-kind execution)"));
         assert!(rendered.contains("(thread-id user:old)"));
-        assert!(rendered.contains("其他 Execution / Delivery Thread 的只读运行状态"));
+        assert!(rendered.contains(
+            "kernel.concurrent-activations is read-only state for other Execution and Delivery Threads"
+        ));
         assert!(rendered.contains("(evaluate"));
         assert!(rendered.contains("(thread (kind dialogue-turn) (id s1) (turn user:1))"));
         assert!(rendered.contains("(objective-binding none)"));
@@ -10667,8 +10689,9 @@ mod tests {
         assert!(rendered.contains("(response-contract"));
         assert!(rendered.contains("(skill-discovery-contract"));
         assert!(rendered.contains("(fallback"));
-        assert!(rendered.contains("不绑定平台、领域或具体 Skill 名称"));
-        assert!(rendered.contains("只有直接能力与按需 Skill 发现都不能满足当前意图后"));
+        assert!(rendered.contains("without binding to a platform, domain, or specific Skill name"));
+        assert!(rendered
+            .contains("only after direct capability and on-demand Skill discovery both fail"));
         assert!(rendered.contains("(reality-contract"));
         assert!(rendered.contains("(name reality-contract-v1)"));
         assert!(rendered.contains("(epistemic-contract"));
@@ -10680,7 +10703,7 @@ mod tests {
         assert!(rendered.contains("(context-tx-contract"));
         assert!(rendered.contains("(objective-contract"));
         assert!(rendered.contains("objective_create"));
-        assert!(rendered.contains("Runtime 生成 ID 并绑定当前 Agent/Context/Session"));
+        assert!(rendered.contains("Runtime creates its ID and binds current Agent/Context/Session"));
         assert!(rendered.contains("(body-arity \"create derive revise one-or-more\")"));
         assert!(rendered.contains("(body-normalization"));
         assert!(rendered.contains("(revise-semantics"));
@@ -12455,11 +12478,11 @@ mod tests {
             .collect(),
         );
         store
-            .claim_message("session-b", "client-restore-1", &message)
+            .claim_message("session-b", "client-restore-1", &message, false)
             .await
             .unwrap();
         store
-            .claim_message("session-b", "client-restore-1", &message)
+            .claim_message("session-b", "client-restore-1", &message, false)
             .await
             .unwrap();
         let restored = store.get_session("session-b").await.unwrap().unwrap();

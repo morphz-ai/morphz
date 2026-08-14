@@ -330,6 +330,10 @@ pub struct OrchestratorConfig {
     pub reasoning_continuation_safety_limit: Option<usize>,
     /// 连续多少次收到完全相同的 reasoning 摘要后判定停滞；0 表示关闭停滞检测。
     pub max_stalled_reasoning_continuations: usize,
+    /// A new message from the same Principal replaces an in-flight
+    /// DialogueTurn until that turn crosses the durable Execution boundary.
+    /// Disable this to preserve strict FIFO dialogue behavior.
+    pub interrupt_dialogue_on_new_message: bool,
     /// Agent-Owned Context 的 warning 软阈值（估算 Token）
     pub context_soft_token_limit: usize,
     /// Agent-Owned Context 的物理硬阈值（估算 Token）
@@ -379,6 +383,7 @@ impl Default for OrchestratorConfig {
             model_attempt_hard_timeout_secs: None,
             reasoning_continuation_safety_limit: Some(64),
             max_stalled_reasoning_continuations: 3,
+            interrupt_dialogue_on_new_message: true,
             context_soft_token_limit: 196_608,
             context_hard_token_limit: 262_144,
             context_maintenance_reserve_tokens: 32_768,
@@ -2105,6 +2110,27 @@ pub fn save_managed_inference_at(
     write_managed_value(path, &root)
 }
 
+/// Persist the optional logical Model Route used exclusively by the built-in
+/// automatic permission reviewer. Removing the value restores main-model
+/// fallback without disturbing the remaining permission profile.
+pub fn save_managed_auto_review_model_at(path: &Path, model: Option<&str>) -> Result<(), String> {
+    let model = model.map(str::trim).filter(|value| !value.is_empty());
+    let mut root = read_managed_value(path)?;
+    if let Some(model) = model {
+        insert_managed_value(
+            &mut root,
+            &["permissions", "auto_review_model"],
+            toml::Value::String(model.to_string()),
+        )?;
+    } else if let Some(permissions) = root
+        .get_mut("permissions")
+        .and_then(toml::Value::as_table_mut)
+    {
+        permissions.remove("auto_review_model");
+    }
+    write_managed_value(path, &root)
+}
+
 fn read_managed_value(path: &Path) -> Result<toml::Value, String> {
     match std::fs::read_to_string(path) {
         Ok(content) => {
@@ -2967,6 +2993,19 @@ impl AppConfig {
                 _ => return Err(format!("MORPHZ_PERMISSION_MODE 不是合法模式: {value}")),
             };
         }
+        if let Ok(value) = std::env::var("MORPHZ_AUTO_REVIEW_MODEL") {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err("MORPHZ_AUTO_REVIEW_MODEL 不能为空".to_string());
+            }
+            self.permissions.auto_review_model = Some(value.to_string());
+        }
+        if let Ok(value) = std::env::var("MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE") {
+            self.orchestrator.interrupt_dialogue_on_new_message = parse_env_bool(&value)
+                .ok_or_else(|| {
+                    format!("MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE 不是合法布尔值: {value}")
+                })?;
+        }
         if let Ok(value) = std::env::var("MORPHZ_EVAL_CALLABLE_TOOLS") {
             let mut tools = Vec::new();
             for name in value
@@ -3140,6 +3179,47 @@ mod tests {
     use std::ffi::OsString;
     use std::io::Write;
     use tempfile::{NamedTempFile, TempDir};
+
+    #[test]
+    fn reviewer_route_and_dialogue_interruption_are_explicit_toml_controls() {
+        let config: AppConfig = toml::from_str(
+            r#"
+                [permissions]
+                auto_review_model = "reviewer-luna"
+
+                [orchestrator]
+                interrupt_dialogue_on_new_message = false
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.permissions.auto_review_model.as_deref(),
+            Some("reviewer-luna")
+        );
+        assert!(!config.orchestrator.interrupt_dialogue_on_new_message);
+    }
+
+    #[test]
+    fn managed_auto_review_model_can_be_set_and_removed_without_touching_permission_mode() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("morphz.toml");
+        std::fs::write(&path, "[permissions]\nmode = 'auto_review'\n").unwrap();
+
+        save_managed_auto_review_model_at(&path, Some("reviewer-luna")).unwrap();
+        let configured: AppConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(configured.permissions.mode, PermissionMode::AutoReview);
+        assert_eq!(
+            configured.permissions.auto_review_model.as_deref(),
+            Some("reviewer-luna")
+        );
+
+        save_managed_auto_review_model_at(&path, None).unwrap();
+        let restored: AppConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(restored.permissions.mode, PermissionMode::AutoReview);
+        assert_eq!(restored.permissions.auto_review_model, None);
+    }
 
     #[test]
     fn app_config_parses_runtime_managed_ssh_targets_without_connection_secrets() {

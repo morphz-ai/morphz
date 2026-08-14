@@ -1,8 +1,8 @@
 use super::{append_event_in_tx, now_text, PostgresStore, StoreError};
 use crate::event::Event;
 use crate::memory::{
-    stable_thread_id, stable_thread_signal_id, DeliveryIngressStore, MessageClaim,
-    DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    stable_thread_id, stable_thread_signal_id, DeliveryIngressStore, InterruptedDialogueTurn,
+    MessageClaim, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use serde_json::{json, Value as JsonValue};
 use sqlx::{PgPool, Postgres, Row};
@@ -180,6 +180,135 @@ async fn append_dialogue_signal_in_tx(
     Ok(())
 }
 
+async fn interrupt_dialogue_turn_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    agent_id: &str,
+    context_id: &str,
+    session_id: &str,
+    event: &Event,
+) -> Result<Option<InterruptedDialogueTurn>, StoreError> {
+    let principal_id = event
+        .payload
+        .get("principal_id")
+        .and_then(JsonValue::as_str);
+    let Some(row) = sqlx::query(
+        r#"SELECT activation.id AS activation_id,
+                  activation.root_turn_id AS root_turn_id,
+                  thread.id AS thread_id,
+                  thread.generation AS thread_generation
+           FROM thread_activations activation
+           JOIN threads thread
+             ON thread.root_turn_id = activation.root_turn_id
+            AND thread.generation = activation.generation
+           WHERE activation.session_id = $1
+             AND activation.status = 'running'
+             AND activation.trigger_kind = 'chat/user_message'
+             AND activation.dialogue_lane_released_at IS NULL
+             AND thread.kind = 'dialogue_turn'
+             AND thread.status = 'open'
+             AND thread.control_state = 'active'
+             AND activation.initiating_principal_id IS NOT DISTINCT FROM $2
+           ORDER BY activation.trigger_sequence, activation.id
+           LIMIT 1
+           FOR UPDATE OF activation, thread"#,
+    )
+    .bind(session_id)
+    .bind(principal_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let interrupted = InterruptedDialogueTurn {
+        activation_id: row.get("activation_id"),
+        root_turn_id: row.get("root_turn_id"),
+        thread_id: row.get("thread_id"),
+    };
+    let thread_generation = row.get::<i64, _>("thread_generation");
+    let replacement_thread_id = stable_thread_id(&event.id);
+    let now = now_text();
+    sqlx::query(
+        r#"INSERT INTO threads
+           (id, revision, generation, agent_id, context_id, session_id,
+            initiating_principal_id, root_turn_id, kind, status, control_state,
+            executor_kind, lifetime, supervisor_kind, supervisor_id,
+            supervision_generation, completion_contract_json, delivery_status,
+            created_at, updated_at)
+           VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'dialogue_turn', 'open',
+                   'active', 'self', 'durable', 'runtime', 'dialogue-router', 1,
+                   '{}'::jsonb, 'none', $7, $7)"#,
+    )
+    .bind(&replacement_thread_id)
+    .bind(agent_id)
+    .bind(context_id)
+    .bind(session_id)
+    .bind(principal_id)
+    .bind(&event.id)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+
+    let activation = sqlx::query(
+        r#"UPDATE thread_activations
+           SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
+               lease_expires_at = NULL, updated_at = $1
+           WHERE id = $2 AND status = 'running'
+             AND dialogue_lane_released_at IS NULL"#,
+    )
+    .bind(&now)
+    .bind(&interrupted.activation_id)
+    .execute(&mut **tx)
+    .await?;
+    if activation.rows_affected() != 1 {
+        return Err("DialogueTurn crossed the Execution boundary while being interrupted".into());
+    }
+    let thread = sqlx::query(
+        r#"UPDATE threads
+           SET revision = revision + 1, status = 'cancelled', updated_at = $1
+           WHERE id = $2 AND generation = $3 AND kind = 'dialogue_turn'
+             AND status = 'open'"#,
+    )
+    .bind(&now)
+    .bind(&interrupted.thread_id)
+    .bind(thread_generation)
+    .execute(&mut **tx)
+    .await?;
+    if thread.rows_affected() != 1 {
+        return Err("DialogueTurn terminated while being interrupted".into());
+    }
+
+    sqlx::query(
+        r#"DELETE FROM activation_signals
+           WHERE activation_id = $1
+             AND signal_id IN (
+               SELECT id FROM thread_signals
+               WHERE thread_id = $2 AND thread_generation = $3
+                 AND kind = 'chat/user_message'
+             )"#,
+    )
+    .bind(&interrupted.activation_id)
+    .bind(&interrupted.thread_id)
+    .bind(thread_generation)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"UPDATE thread_signals
+           SET thread_id = $1, thread_generation = 1, status = 'pending',
+               claimed_at = NULL, acknowledged_at = NULL,
+               parent_activation_id = NULL
+           WHERE thread_id = $2 AND thread_generation = $3
+             AND kind = 'chat/user_message' AND status = 'claimed'"#,
+    )
+    .bind(&replacement_thread_id)
+    .bind(&interrupted.thread_id)
+    .bind(thread_generation)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(Some(interrupted))
+}
+
 #[async_trait::async_trait]
 impl DeliveryIngressStore for PostgresStore {
     async fn commit_thread_delivery(
@@ -226,6 +355,7 @@ impl DeliveryIngressStore for PostgresStore {
         session_id: &str,
         client_message_id: &str,
         event: &Event,
+        interrupt_dialogue: bool,
     ) -> Result<MessageClaim, StoreError> {
         let event_session_id = event
             .payload
@@ -280,15 +410,22 @@ impl DeliveryIngressStore for PostgresStore {
             return Ok(MessageClaim::Existing { event_id: existing });
         }
 
+        let agent_id = session.get::<String, _>("agent_id");
+        let interrupted = if interrupt_dialogue {
+            interrupt_dialogue_turn_in_tx(
+                &mut tx,
+                &agent_id,
+                &registry_context_id,
+                session_id,
+                event,
+            )
+            .await?
+        } else {
+            None
+        };
         append_event_in_tx(&mut tx, event).await?;
-        append_dialogue_signal_in_tx(
-            &mut tx,
-            &session.get::<String, _>("agent_id"),
-            &registry_context_id,
-            session_id,
-            event,
-        )
-        .await?;
+        append_dialogue_signal_in_tx(&mut tx, &agent_id, &registry_context_id, session_id, event)
+            .await?;
         let timestamp = event
             .timestamp
             .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
@@ -335,6 +472,9 @@ impl DeliveryIngressStore for PostgresStore {
             append_event_in_tx(&mut tx, &restore).await?;
         }
         tx.commit().await?;
-        Ok(MessageClaim::Accepted)
+        Ok(MessageClaim::Accepted {
+            event: event.clone(),
+            interrupted,
+        })
     }
 }

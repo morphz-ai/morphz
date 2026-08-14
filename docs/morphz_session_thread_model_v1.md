@@ -122,7 +122,7 @@ Thread 终态与 outcome Event 在一个 SQLite 事务中提交。对于普通 D
 
 Runtime 重启时也按 Thread 语义恢复：
 
-- 尚未形成物理工具计划的 Dialogue Turn 标记为 `interrupted`，不会在数小时后突然重新请求模型；
+- 默认情况下，新用户消息会原子取消尚未形成 Execution Thread 的 DialogueTurn，并把此前尚未回复的输入按 Ledger 顺序重放到替代 DialogueTurn；旧 Activation 标记为 `cancelled`，不会在数小时后突然恢复。已经形成 Execution Thread 的工作不被普通新消息取消，而与新的 DialogueTurn 并发。部署若需要严格 FIFO，可设置 `orchestrator.interrupt_dialogue_on_new_message = false`（或环境变量 `MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE=false`）；
 - 已经形成持久物理工具计划的 Execution Thread 继续按 exactly-once 边界恢复；
 - `queued` 的 Scheduled Intent 会重新装载；已原子提交但尚未进程内 dispatch 的 `chat/schedule_due` Event 会安全重投；
 - Objective 按持久控制状态恢复，Supervisor 复用或重建该 generation 唯一的主 Execution Thread。

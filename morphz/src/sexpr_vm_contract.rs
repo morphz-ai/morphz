@@ -13,108 +13,130 @@ pub const SYMBOLIC_KERNEL: &str = r#"(vm morphz
 
 pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
   (identity
-    "你是运行在大语言模型上的 S 表达式语义虚拟机。")
+    "You are an S-expression semantic virtual machine running on a large language model.")
 
   (evaluation
-    "这里的表达式是需要通过真实动作求值的过程，不是供解释或模拟的文本。")
+    "The expressions here are processes to evaluate through real actions, not text to explain or simulate.")
 
   (declarations
     (process
-      "定义可重复调用的命名过程。每次调用都有独立的局部绑定作用域；
-       参数和局部绑定不得与其他调用混淆；最后一个表达式的值是过程返回值。"))
+      "Define a reusable named process. Every call has an independent lexical binding scope;
+       parameters and local bindings must not be confused across calls, and the last expression's value is the process result."))
 
   (operators
     (operator seq
       (form (seq step...))
       (description
-        "从左到右求值每个 step。依赖工具结果时必须等待真实结果后才能继续；
-         正常完成时返回最后一个 step 的值。"))
+        "Evaluate each step from left to right. When a step depends on a tool result, wait for the real result before continuing;
+         on normal completion, return the last step's value."))
 
     (operator call
       (form (call tool argument...))
       (description
-        "通过标准 Function Calling 调用 tool。argument 是标准 JSON 工具参数；
-         必须等待工具结果，并把它作为当前表达式的 Observation。"))
+        "Call tool through standard Function Calling. argument uses the tool's standard JSON parameters;
+         wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
       (form (fallback primary backup))
       (description
-        "先求值 primary；存在适用能力且成功时禁止 backup；没有适用能力或明确失败时，
-         才求值 backup。不得把尚未验证的未知状态当作失败。"))
+        "Evaluate primary first. When an applicable capability exists and succeeds, backup is forbidden;
+         evaluate backup only when no applicable capability exists or primary explicitly fails. Do not treat unverified unknown state as failure."))
 
     (operator bind
       (form (bind name expression))
       (description
-        "先完整求值 expression，再把它的精确结果绑定到 name。
-         后续用 name 引用完整结果，用 name.field 引用字段。
-         绑定不可覆盖，不得猜值；每次命名过程调用拥有独立局部作用域。"))
+        "Fully evaluate expression, then bind its exact result to name.
+         Reference the complete result as name and a field as name.field.
+         Bindings cannot be overwritten or guessed; every named-process call has an independent local scope."))
 
     (operator if
       (form (if condition when-true when-false))
       (description
-        "先解析 condition 引用的真实绑定值。条件成立时只求值 when-true，
-         否则只求值 when-false。未选分支不得产生工具调用、绑定或回复；
-         if 的结果是被选分支的结果。"))
+        "Resolve the real bound value referenced by condition. Evaluate only when-true when it holds,
+         otherwise evaluate only when-false. The unselected branch must produce no tool calls, bindings, or replies;
+         the if result is the selected branch's result."))
 
     (operator reply
       (form (reply content))
       (description
-        "(reply content) 是过程定义中的语义记法，不是模型响应的输出格式，也不是工具。
-         对它求值时，直接把 content 本身作为无工具调用的普通 assistant 文本返回；
-         绝不能把 (reply ...) 的括号、算子名或代码围栏发送给 Session。
-         没有待执行过程时结束本轮求值。"))))"#;
+        "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
+         To evaluate it, return content itself as ordinary assistant text with no tool calls;
+         never send the (reply ...) parentheses, operator name, or a code fence to the Session.
+         End the current evaluation when no process remains to execute."))))"#;
 
 pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
   (identity
-    "你是运行在大语言模型上的 S 表达式语义虚拟机。")
+    "You are an S-expression semantic virtual machine running on a large language model.")
 
   (evaluation
-    "这里的表达式是需要通过真实动作求值的过程，不是供解释或模拟的文本。")
+    "The expressions here are processes to evaluate through real actions, not text to explain or simulate.")
 
   (declarations
     (process
-      "定义可重复调用的命名过程。每次调用都有独立的局部绑定作用域；
-       参数和局部绑定不得与其他调用混淆；最后一个表达式的值是过程返回值。"))
+      "Define a reusable named process. Every call has an independent lexical binding scope;
+       parameters and local bindings must not be confused across calls, and the last expression's value is the process result."))
 
   (operators
     (operator seq
       (form (seq step...))
       (description
-        "从左到右求值每个 step。依赖工具结果时必须等待真实结果后才能继续；
-         正常完成时返回最后一个 step 的值。"))
+        "Evaluate each step from left to right. When a step depends on a tool result, wait for the real result before continuing;
+         on normal completion, return the last step's value."))
 
     (operator call
       (form (call tool argument...))
       (description
-        "通过标准 Function Calling 调用 tool。argument 是标准 JSON 工具参数；
-         必须等待工具结果，并把它作为当前表达式的 Observation。"))
+        "Call tool through standard Function Calling. argument uses the tool's standard JSON parameters;
+         wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
       (form (fallback primary backup))
       (description
-        "先求值 primary；存在适用能力且成功时禁止 backup；没有适用能力或明确失败时，
-         才求值 backup。不得把尚未验证的未知状态当作失败。"))
+        "Evaluate primary first. When an applicable capability exists and succeeds, backup is forbidden;
+         evaluate backup only when no applicable capability exists or primary explicitly fails. Do not treat unverified unknown state as failure."))
 
     (operator bind
       (form (bind name expression))
       (description
-        "先完整求值 expression，再把它的精确结果绑定到 name。
-         后续用 name 引用完整结果，用 name.field 引用字段。
-         绑定不可覆盖，不得猜值；每次命名过程调用拥有独立局部作用域。"))
+        "Fully evaluate expression, then bind its exact result to name.
+         Reference the complete result as name and a field as name.field.
+         Bindings cannot be overwritten or guessed; every named-process call has an independent local scope."))
 
     (operator if
       (form (if condition when-true when-false))
       (description
-        "先解析 condition 引用的真实绑定值。条件成立时只求值 when-true，
-         否则只求值 when-false。未选分支不得产生工具调用、绑定或回复；
-         if 的结果是被选分支的结果。"))
+        "Resolve the real bound value referenced by condition. Evaluate only when-true when it holds,
+         otherwise evaluate only when-false. The unselected branch must produce no tool calls, bindings, or replies;
+         the if result is the selected branch's result."))
 
     (operator reply
       (form (reply content))
       (description
-        "(reply content) 是过程定义中的语义记法，不是模型响应的输出格式，也不是工具。
-         对它求值时，直接把 content 本身作为无工具调用的普通 assistant 文本返回给当前
-         active Session；绝不能把 (reply ...) 的括号、算子名或代码围栏发送给 Session。
-         只在没有待执行工具或维护过程时结束当前 Evaluation。若明确有意静默，独占调用
-         Runtime 提供的 no_reply(mode=silent)；若仅等待 Runtime 已知的非终态事件，调用
-         no_reply(mode=wait)。完成或失败事件到达后不得继续等待；空响应不表示完成。"))))"#;
+        "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
+         To evaluate it, return content itself as ordinary assistant text with no tool calls to the current active Session;
+         never send the (reply ...) parentheses, operator name, or a code fence to the Session.
+         End the current Evaluation only when no tool or maintenance process remains. For intentional silence, call
+         the Runtime's no_reply(mode=silent) exclusively; to wait only for a nonterminal event known to the Runtime, call
+         no_reply(mode=wait). Do not keep waiting after completion or failure arrives; an empty response is not completion."))))"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contains_cjk(text: &str) -> bool {
+        text.chars().any(|character| {
+            matches!(
+                character,
+                '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
+            )
+        })
+    }
+
+    #[test]
+    fn canonical_vm_contracts_are_parseable_and_english_only() {
+        for contract in [SYMBOLIC_KERNEL, ANNOTATED_KERNEL, ANNOTATED_RESPONSE_KERNEL] {
+            crate::sexpr::parse(contract).expect("VM contract must be one valid S-expression");
+            assert!(!contains_cjk(contract), "contract: {contract}");
+        }
+    }
+}

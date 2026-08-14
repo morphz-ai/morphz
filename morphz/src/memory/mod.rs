@@ -3959,9 +3959,21 @@ pub enum ObjectiveMutation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptedDialogueTurn {
+    pub thread_id: String,
+    pub root_turn_id: String,
+    pub activation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum MessageClaim {
-    Accepted,
-    Existing { event_id: String },
+    Accepted {
+        event: crate::event::Event,
+        interrupted: Option<InterruptedDialogueTurn>,
+    },
+    Existing {
+        event_id: String,
+    },
 }
 
 #[derive(Default, Debug, Clone)]
@@ -5155,6 +5167,7 @@ pub trait DeliveryIngressStore: Send + Sync {
         session_id: &str,
         client_message_id: &str,
         event: &crate::event::Event,
+        interrupt_dialogue: bool,
     ) -> Result<MessageClaim, Box<dyn std::error::Error + Send + Sync>>;
 }
 

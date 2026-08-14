@@ -4312,7 +4312,7 @@ impl Tool for ListTargetsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "列出当前身份可使用的 Execution Target 紧凑索引。物理工具的 target 参数应使用这里返回的稳定 ID。注意：Runtime 托管 SSH 是按命令拨号，不维护常驻 SSH 租约；其 offline 只可能表示当前 Runtime 路由待重建，不等于远端主机物理离线，应按 recommended_action 调用 resolve_target 恢复。".to_string(),
+            description: "List a compact index of Execution Targets available to the current identity. Use the stable IDs returned here in physical-tool target parameters. Runtime-managed SSH dials per command and holds no persistent SSH lease: offline may mean only that the current Runtime route needs rehydration, not that the remote host is physically offline. Follow recommended_action and call resolve_target to restore it.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -4672,18 +4672,18 @@ impl Tool for ResolveTargetTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "按稳定 ID或按能力、平台和 Backend 确定性选择当前身份可用的 Execution Target。Runtime 托管 SSH 没有常驻连接租约：若 list_targets 显示 route_needs_rehydration，传入 target_id 即可重建路由；这不是对远端主机离线的判断。Managed SSH 也可直接传入宿主机已有的 OpenSSH alias 按需注册。返回的稳定 target_id 必须显式用于随后的非本地物理工具调用。".to_string(),
+            description: "Deterministically resolve an Execution Target available to the current identity by stable ID or by capabilities, platform, and backend. Runtime-managed SSH has no persistent connection lease: when list_targets reports route_needs_rehydration, pass target_id to rebuild the route; that report does not mean the remote host is offline. Managed SSH may also register an existing host OpenSSH alias on demand. Explicitly use the returned stable target_id in subsequent non-local physical tool calls.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "target_id": {
                         "type": "string",
-                        "description": "可选的稳定 Target ID。Runtime Managed SSH 路由待恢复时，传入该 ID 可原地重建；不要同时传 host/user/port"
+                        "description": "Optional stable Target ID. Pass it to rebuild a Runtime Managed SSH route in place; do not combine it with host, user, or port"
                     },
                     "capabilities": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Target 必须同时具备的全部物理工具名；Managed SSH v1 请求 exec，不请求 ssh"
+                        "description": "All physical tool names the Target must provide; Managed SSH v1 requires exec, not ssh"
                     },
                     "platform": {"type": "string"},
                     "kind": {
@@ -4692,25 +4692,25 @@ impl Tool for ResolveTargetTool {
                     },
                     "host": {
                         "type": "string",
-                        "description": "SSH config 的 Host、DNS hostname 或 IPv4 地址。仅用于 managed_ssh；找不到现有 Target 时 Runtime 会按需创建"
+                        "description": "An SSH config Host, DNS hostname, or IPv4 address. Used only for managed_ssh; the Runtime creates a Target on demand when none exists"
                     },
                     "user": {
                         "type": "string",
-                        "description": "可选 SSH 用户名；省略时使用 OpenSSH config 或宿主默认用户名"
+                        "description": "Optional SSH username; omission uses OpenSSH config or the host default"
                     },
                     "port": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 65535,
-                        "description": "可选 SSH 端口；省略时使用 OpenSSH config 或默认端口 22"
+                        "description": "Optional SSH port; omission uses OpenSSH config or port 22"
                     },
                     "workspace_root": {
                         "type": "string",
-                        "description": "可选的远端 Workspace 提示；按需创建 managed_ssh Target 时记录"
+                        "description": "Optional remote Workspace hint recorded when a managed_ssh Target is created on demand"
                     },
                     "allow_offline_queue": {
                         "type": "boolean",
-                        "description": "是否允许选择支持持久离线排队的 Edge 或由 Edge Provider 承接的 Managed SSH Target"
+                        "description": "Whether to allow an Edge Target with durable offline queueing or a Managed SSH Target backed by an Edge Provider"
                     }
                 },
                 "additionalProperties": false
@@ -4902,7 +4902,7 @@ impl Tool for InspectTargetTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "按稳定 ID 查看一个 Execution Target 的能力、平台、Workspace、Provider 与策略摘要；不返回凭证。".to_string(),
+            description: "Inspect an Execution Target's capabilities, platform, Workspace, Provider, and policy summary by stable ID. Credentials are never returned.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

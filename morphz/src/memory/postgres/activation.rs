@@ -645,16 +645,25 @@ impl ActivationStore for PostgresStore {
             return Ok(None);
         }
         let primary = signal_from_row(&pending[0])?;
+        // Keep replayed user input in Ledger order, but let the newly arrived
+        // Signal remain the unique cause of an interruption replacement.
+        let trigger = pending
+            .iter()
+            .map(signal_from_row)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .find(|pending_signal| pending_signal.event_id == activation.trigger_event_id)
+            .unwrap_or_else(|| primary.clone());
         let activation_principal = activation
             .initiating_principal_id
             .as_ref()
-            .or(primary.principal_id.as_ref());
+            .or(trigger.principal_id.as_ref());
         if activation.initiating_principal_id.is_some()
-            && primary.principal_id.is_some()
-            && activation.initiating_principal_id != primary.principal_id
+            && trigger.principal_id.is_some()
+            && activation.initiating_principal_id != trigger.principal_id
         {
             return Err(format!(
-                "Activation '{}' 与其首个 Signal Principal 不一致",
+                "Activation '{}' 与其 Trigger Signal Principal 不一致",
                 activation.id
             )
             .into());
@@ -682,10 +691,10 @@ impl ActivationStore for PostgresStore {
         .bind(&activation.context_id)
         .bind(&activation.session_id)
         .bind(activation_principal)
-        .bind(&primary.event_id)
-        .bind(i64::try_from(primary.sequence)?)
-        .bind(&primary.kind)
-        .bind(&primary.parent_activation_id)
+        .bind(&trigger.event_id)
+        .bind(i64::try_from(trigger.sequence)?)
+        .bind(&trigger.kind)
+        .bind(&trigger.parent_activation_id)
         .bind(&activation.root_turn_id)
         .bind(&now)
         .execute(&mut *tx)

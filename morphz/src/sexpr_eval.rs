@@ -76,55 +76,55 @@ pub const OPERATORS: [OperatorSpec; 9] = [
     OperatorSpec {
         name: "seq",
         form: "(seq step...)",
-        description: "从左到右求值每个 step，返回最后一个 step 的值。要让程序产出某个绑定，把 $名字 放在最后一个 step。",
+        description: "Evaluate each step from left to right and return the last step's value. To return a binding, place $name as the final step.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "bind",
         form: "(bind name expression)",
-        description: "先完整求值 expression，再绑定到 name。name 不带 $，引用时才写 $name；取字段写 $name.field。绑定不可覆盖。",
+        description: "Fully evaluate expression, then bind it to name. Define name without $, reference it as $name, and access fields as $name.field. Bindings cannot be overwritten.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "call",
         form: "(call tool argument...)",
-        description: "调用 tool。argument 是标准 JSON 工具参数；在程序文本中以 (参数名 值...) 列表书写，例如 (call read (path \"src/a.rs\"))。一个参数给多个值即数组；值只能是字面量或 $引用。Runtime 按工具 schema 换算类型。",
+        description: "Call a tool. Arguments are standard JSON tool parameters written as (parameter value...) lists, for example (call read (path \"src/a.rs\")). Multiple values for one parameter form an array. Values must be literals or $references; the Runtime converts types according to the tool schema.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "if",
         form: "(if condition when-true when-false)",
-        description: "condition 只能是字面量或 $引用。只求值被选中的一支，未选分支不产生任何工具调用；分支内的绑定不流出该分支。",
+        description: "condition must be a literal or $reference. Evaluate only the selected branch; the unselected branch makes no tool calls. Branch-local bindings do not escape the branch.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "map",
         form: "(map $collection element body)",
-        description: "对 $collection 逐个元素求值 body，返回结果数组。$collection 必须已绑定且是数组；element 是元素名，不带 $，在 body 中用 $element 引用。",
+        description: "Evaluate body for each item in $collection and return an array. $collection must be a bound array. Define element without $ and reference it as $element inside body.",
         available: Availability::RuntimeEval,
     },
     OperatorSpec {
         name: "infer",
-        form: "(infer (task \"要判断什么\") (tools TOOL...) (returns text|json) argument...)",
-        description: "把判断交回非确定性求值器（你自己）：(task ...) 必填，其余 (参数名 值) 是给它看的证据；(tools ...) 可选并收窄本节点工具，空 (tools) 表示纯推断；(returns ...) 可选，默认 text。returns=json 时最终正文必须是一个完整 JSON 值，Runtime 解析成功后才绑定并继续求值。",
+        form: "(infer (task \"what to determine\") (tools TOOL...) (returns text|json) argument...)",
+        description: "Delegate a judgment to the nondeterministic evaluator (yourself). (task ...) is required; other (parameter value) entries are evidence. Optional (tools ...) narrows tools for this node, and empty (tools) means pure inference. Optional (returns ...) defaults to text. With returns=json, the final content must be one complete JSON value; the Runtime binds it only after successful parsing.",
         available: Availability::RuntimeEval,
     },
     OperatorSpec {
         name: "reply",
         form: "(reply content)",
-        description: "交付用户可见回复。只存在于你自己的求值中；提交给 Runtime 的程序产出值，不产出回复。",
+        description: "Deliver a user-visible reply. This exists only in your own evaluation; a program submitted to the Runtime produces a value, not a reply.",
         available: Availability::LlmOnly,
     },
     OperatorSpec {
         name: "fallback",
         form: "(fallback primary backup)",
-        description: "先求值 primary；只有 primary 返回已分类失败时才求值 backup。primary 成功时 backup 不产生任何调用；任一分支内的绑定不流出该分支。",
+        description: "Evaluate primary first and evaluate backup only when primary returns a classified failure. A successful primary prevents all backup calls. Bindings in either branch do not escape it.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "process",
         form: "(process ...)",
-        description: "定义命名过程。只存在于你自己的求值中。",
+        description: "Define a named process. This exists only in your own evaluation.",
         available: Availability::LlmOnly,
     },
 ];
@@ -1716,30 +1716,29 @@ impl EvalTool {
     /// it may write cannot drift from what the validator will accept.
     pub fn description(callable: &[String]) -> String {
         let tools = if callable.is_empty() {
-            "（本部署未开放树内工具调用；程序只能使用结构与 infer）".to_string()
+            "(this deployment exposes no tools inside the tree; the program may use only structural operators and infer)".to_string()
         } else {
             format!(
-                "{}（其余工具请用普通 Function Calling）",
+                "{} (use ordinary Function Calling for all other tools)",
                 callable.join(" ")
             )
         };
         format!(
-            "把一棵可求值的 S 表达式程序交给 Runtime 确定性执行，一次完成多个有数据依赖的步骤。\
-             适用于步骤提前已知、且后一步要用到前一步结果的场合；单步或需要看到结果再决定时，\
-             继续使用普通 Function Calling 即可，本工具不替代它。\n\
-             本工具只接受显式 (eval ...) 根；模型主导的 (infer ...) 由 Runtime 创建正式 Evaluation，不提交给本工具。\n\
-             (eval ...) 内可先放 (requires (tools NAME...)) 收窄能力，随后必须恰好有一个程序体；多个步骤用 (seq ...) 组合。\n\
-             声明不能超出下方工具清单，声明后 call 与 infer 取证都只限声明过的工具。\n\
-             可调用工具：{tools}\n\
-             `reply` 与 `process` 属于你自身的求值，本程序中不可用。\n\
-             算子契约：\n{contract}\n\
-             示例：\n\
+            "Submit an evaluable S-expression program for deterministic Runtime execution of multiple data-dependent steps in one call.\
+             Use it when the steps are known in advance and later steps consume earlier results. For a single step, or when you must inspect a result before deciding what to do next, continue using ordinary Function Calling; this tool does not replace it.\n\
+             This tool accepts only an explicit (eval ...) root. Model-directed (infer ...) roots are turned into formal Evaluations by the Runtime and are not submitted to this tool.\n\
+             An (eval ...) may begin with (requires (tools NAME...)) to narrow its capabilities and must then contain exactly one program body; combine multiple steps with (seq ...).\n\
+             The declaration cannot exceed the tool list below. Once declared, both call and infer evidence gathering are restricted to those tools.\n\
+             Callable tools: {tools}\n\
+             `reply` and `process` belong to your own evaluation and are unavailable inside this program.\n\
+             Operator contract:\n{contract}\n\
+             Example:\n\
              (eval\n\
                (requires (tools list_files read))\n\
                (seq\n\
                  (bind files (call list_files (path \"src\")))\n\
                  (bind bodies (map $files f (call read (path $f))))\n\
-                 (infer (task \"哪些文件含 TODO\") (evidence $bodies))))",
+                 (infer (task \"Which files contain TODO?\") (evidence $bodies))))",
             contract = operator_contract(),
         )
     }
@@ -1773,7 +1772,7 @@ impl crate::tool::Tool for EvalTool {
                 "properties": {
                     "program": {
                         "type": "string",
-                        "description": "带显式 eval 根的 canonical Yao 程序，例如 (eval (seq (bind files (call list_files (path \"src\"))) (map $files f (call read (path $f)))))"
+                        "description": "A canonical Yao program with an explicit eval root, for example (eval (seq (bind files (call list_files (path \"src\"))) (map $files f (call read (path $f)))))"
                     }
                 },
                 "required": ["program"]
@@ -1809,6 +1808,28 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         Mutex,
     };
+
+    fn contains_cjk(text: &str) -> bool {
+        text.chars().any(|character| {
+            matches!(
+                character,
+                '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
+            )
+        })
+    }
+
+    #[test]
+    fn model_visible_eval_language_contract_is_english_only() {
+        let contract = operator_contract();
+        assert!(!contains_cjk(&contract), "operator contract: {contract}");
+        let description = EvalTool::description(
+            &DEFAULT_CALLABLE_TOOLS
+                .iter()
+                .map(|tool| (*tool).to_string())
+                .collect::<Vec<_>>(),
+        );
+        assert!(!contains_cjk(&description), "eval tool: {description}");
+    }
 
     /// Records every invocation so a test can assert on what physically ran,
     /// not merely on the value that came back.
@@ -2371,7 +2392,10 @@ mod tests {
         let tool = EvalTool::new(Arc::clone(&registry), vec!["search".to_string()]);
         // The gate line lists only what is callable; operator forms elsewhere
         // in the contract may legitimately mention other names.
-        assert!(tool.definition().description.contains("可调用工具：search"));
+        assert!(tool
+            .definition()
+            .description
+            .contains("Callable tools: search"));
 
         let arguments =
             serde_json::json!({"program": r#"(eval (call read (path "a")))"#}).to_string();
@@ -2396,7 +2420,7 @@ mod tests {
     fn an_empty_configuration_closes_the_gate_and_says_so() {
         let description = EvalTool::description(&[]);
         assert!(
-            description.contains("未开放树内工具调用"),
+            description.contains("this deployment exposes no tools inside the tree"),
             "an empty gate must be described, not left looking like the default: {description}"
         );
     }

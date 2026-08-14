@@ -1728,6 +1728,33 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .provider-selected-alias small { color: var(--muted); font: 700 9px/1 var(--mono); }
 .provider-selected-alias strong { overflow: hidden; color: var(--text); font-size: 15px; text-overflow: ellipsis; }
 .provider-selected-alias code { color: var(--faint); font: 9px var(--mono); }
+.provider-auto-review-model {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) minmax(240px, 360px) auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  color: var(--accent);
+  background: var(--surface-soft);
+  box-shadow: var(--shadow-sm);
+}
+.provider-auto-review-model > span { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.provider-auto-review-model strong { color: var(--text); font-size: 12px; }
+.provider-auto-review-model small { color: var(--muted); font-size: 10px; }
+.provider-auto-review-model select,
+.provider-auto-review-model button {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  background: var(--surface);
+}
+.provider-auto-review-model select { min-width: 0; padding: 0 10px; }
+.provider-auto-review-model button { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; white-space: nowrap; }
+.provider-auto-review-model button:not(:disabled):hover { border-color: var(--accent); color: var(--accent-strong); }
 .provider-diagnostic {
   overflow: hidden;
   margin-top: 12px;
@@ -3105,6 +3132,9 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
   .provider-control-section > header small { flex-basis: calc(100% - 30px); }
   .provider-selected-alias { grid-template-columns: auto minmax(0, 1fr); }
   .provider-selected-alias code { display: none; }
+  .provider-auto-review-model { grid-template-columns: auto minmax(0, 1fr); }
+  .provider-auto-review-model select,
+  .provider-auto-review-model button { grid-column: 2; }
   .provider-attempt-list article > div { grid-template-columns: 1fr; }
   .message-thread-capsules { justify-items: stretch; }
   .message-thread-reference { width: 100%; }

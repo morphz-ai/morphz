@@ -76,7 +76,8 @@ use crate::provider::control::{
 };
 use crate::provider::routing::EffectiveProviderCatalog;
 use crate::provider::{
-    normalize_reasoning_effort_for_model, supported_reasoning_efforts_for_model,
+    build_configured_client, normalize_reasoning_effort_for_model,
+    supported_reasoning_efforts_for_model,
 };
 use crate::scheduler::{
     audit_scheduler_invariants, derive_objective_readiness, KernelResult,
@@ -873,6 +874,7 @@ pub struct MorphzRuntimeBuilder {
     identity: RuntimeIdentity,
     tool_policy: RuntimeToolPolicy,
     approval_provider: Option<Arc<dyn ApprovalProvider>>,
+    reviewer_client: Option<Arc<dyn Client>>,
     identity_provider: Option<Arc<dyn IdentityProvider>>,
     secret_store: Option<Arc<SecretStore>>,
     provider_auth_registry: Option<crate::provider::auth::AuthAdapterRegistry>,
@@ -889,6 +891,7 @@ impl MorphzRuntimeBuilder {
             identity: RuntimeIdentity::default(),
             tool_policy: RuntimeToolPolicy::from_environment(),
             approval_provider: None,
+            reviewer_client: None,
             identity_provider: None,
             secret_store: None,
             provider_auth_registry: None,
@@ -924,6 +927,15 @@ impl MorphzRuntimeBuilder {
 
     pub fn approval_provider(mut self, provider: Arc<dyn ApprovalProvider>) -> Self {
         self.approval_provider = Some(provider);
+        self
+    }
+
+    /// Injects the model client used exclusively by the built-in automatic
+    /// permission reviewer. Normal hosts use
+    /// `permissions.auto_review_model`; this hook is for embedded runtimes and
+    /// deterministic tests.
+    pub fn reviewer_client(mut self, client: Arc<dyn Client>) -> Self {
+        self.reviewer_client = Some(client);
         self
     }
 
@@ -1106,6 +1118,49 @@ impl MorphzRuntimeBuilder {
         if permission_profile.sandbox_mode == SandboxMode::DangerFullAccess {
             tracing::warn!("完全访问权限已启用：文件工具与 Shell 均不受工作区或操作系统沙箱限制");
         }
+        let separate_reviewer_client = if self.approval_provider.is_none()
+            && permission_profile.reviewer == ReviewerKind::AutoReview
+        {
+            match self.reviewer_client {
+                Some(client) => Some(client),
+                None => match permission_profile.auto_review_model.as_deref() {
+                    Some(model) => {
+                        let (client, selected) =
+                            build_configured_client(&self.config, None, Some(model))?;
+                        tracing::info!(
+                            route = model,
+                            provider = %selected.id,
+                            physical_model = %selected.model,
+                            "自动审批使用独立 Model Route"
+                        );
+                        Some(client)
+                    }
+                    None => None,
+                },
+            }
+        } else {
+            None
+        };
+        if let Some(client) = separate_reviewer_client.as_ref() {
+            client.attach_provider_account_state_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>
+            );
+            client.attach_provider_auth_manager(Arc::clone(&provider_auth_manager));
+        }
+        let auto_review_client = separate_reviewer_client
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Arc::clone(&self.client));
+        let built_in_auto_review_provider = if self.approval_provider.is_none()
+            && permission_profile.reviewer == ReviewerKind::AutoReview
+        {
+            Some(Arc::new(AiAutoReviewProvider::new(
+                auto_review_client,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+            )))
+        } else {
+            None
+        };
         let approval_provider = match self.approval_provider {
             Some(provider) => provider,
             None => {
@@ -1115,10 +1170,10 @@ impl MorphzRuntimeBuilder {
                 ));
                 match permission_profile.reviewer {
                     ReviewerKind::AutoReview => Arc::new(EscalatingApprovalProvider::new(
-                        Arc::new(AiAutoReviewProvider::new(
-                            Arc::clone(&self.client),
-                            Arc::clone(&store) as Arc<dyn EventStore>,
-                        )),
+                        built_in_auto_review_provider
+                            .as_ref()
+                            .cloned()
+                            .expect("built-in auto reviewer must exist"),
                         human_review,
                     )) as Arc<dyn ApprovalProvider>,
                     ReviewerKind::User => human_review,
@@ -1408,6 +1463,8 @@ impl MorphzRuntimeBuilder {
                 sqlite_database_path,
                 storage_label,
                 client: runtime_client,
+                reviewer_client: RwLock::new(separate_reviewer_client),
+                auto_review_provider: built_in_auto_review_provider,
                 bus,
                 store,
                 registry,
@@ -1582,6 +1639,12 @@ struct RuntimeInner {
     sqlite_database_path: Option<String>,
     storage_label: String,
     client: Arc<dyn Client>,
+    /// Independent automatic-review route, retained so Provider catalog hot
+    /// replacement updates both the main and reviewer routers.
+    reviewer_client: RwLock<Option<Arc<dyn Client>>>,
+    /// Built-in reviewer handle used to atomically switch the review route
+    /// from the operator control plane without rebuilding the Runtime.
+    auto_review_provider: Option<Arc<AiAutoReviewProvider>>,
     bus: Arc<InMemoryEventBus>,
     store: Arc<dyn RuntimeStore>,
     registry: Arc<Registry>,
@@ -1628,10 +1691,20 @@ impl MorphzRuntime {
             .map_err(|_| std::io::Error::other("Provider catalog lock poisoned").into())
     }
 
-    pub fn replace_provider_catalog(&self, config: AppConfig) -> Result<(), RuntimeError> {
+    pub fn replace_provider_catalog(&self, mut config: AppConfig) -> Result<(), RuntimeError> {
         // Replace the actual request router before publishing the control-plane
         // snapshot. A failed catalog never becomes visible as active state.
+        let reviewer_client = self
+            .inner
+            .reviewer_client
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(reviewer) = reviewer_client.as_ref() {
+            reviewer.replace_provider_catalog(&config)?;
+        }
         self.inner.client.replace_provider_catalog(&config)?;
+        config.permissions.auto_review_model = self.inner.permissions.auto_review_model();
         let mut current = self
             .inner
             .provider_catalog_config
@@ -1644,6 +1717,57 @@ impl MorphzRuntime {
             .model_context_capacity
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
+        Ok(())
+    }
+
+    pub fn auto_review_model(&self) -> Option<String> {
+        self.inner.permissions.auto_review_model()
+    }
+
+    /// Change the built-in permission reviewer route without affecting the
+    /// conversation model. `None` restores the live main-model client.
+    pub fn set_auto_review_model(&self, model: Option<&str>) -> Result<(), RuntimeError> {
+        let reviewer = self
+            .inner
+            .auto_review_provider
+            .as_ref()
+            .ok_or("当前 Runtime 未使用内置自动审核器，不能切换审核模型")?;
+        let model = model.map(str::trim).filter(|value| !value.is_empty());
+        let separate_client = if let Some(model) = model {
+            let config = self.provider_catalog_config()?;
+            let (client, selected) = build_configured_client(&config, None, Some(model))?;
+            client
+                .attach_provider_account_state_store(Arc::clone(&self.inner.store)
+                    as Arc<dyn crate::memory::ProviderAccountStateStore>);
+            client.attach_provider_auth_manager(Arc::clone(&self.inner.provider_auth_manager));
+            tracing::info!(
+                route = model,
+                provider = %selected.id,
+                physical_model = %selected.model,
+                "自动审批已热切换独立 Model Route"
+            );
+            Some(client)
+        } else {
+            None
+        };
+        let active_client = separate_client
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Arc::clone(&self.inner.client));
+        reviewer.replace_client(active_client)?;
+        *self
+            .inner
+            .reviewer_client
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = separate_client;
+        let model = model.map(str::to_string);
+        self.inner.permissions.set_auto_review_model(model.clone());
+        self.inner
+            .provider_catalog_config
+            .write()
+            .map_err(|_| std::io::Error::other("Provider catalog lock poisoned"))?
+            .permissions
+            .auto_review_model = model;
         Ok(())
     }
 
@@ -2137,6 +2261,9 @@ impl MorphzRuntime {
         Ok(ProviderControlSnapshot {
             generated_at: chrono::Utc::now(),
             selected_model_alias: self.model(),
+            permission_mode: self.inner.permissions.profile().mode,
+            reviewer: self.inner.permissions.profile().reviewer,
+            auto_review_model: self.auto_review_model(),
             auth_adapters: self.inner.provider_auth_manager.adapter_descriptors(),
             provider_instances: catalog.provider_instances,
             auth_accounts,
@@ -6781,6 +6908,11 @@ pub struct MessageReceipt {
     pub event_id: String,
     pub client_message_id: String,
     pub duplicate: bool,
+    /// True when this message atomically replaced a still-thinking
+    /// DialogueTurn. Once a turn has produced an Execution Thread, new input
+    /// is concurrent and this remains false.
+    #[serde(default)]
+    pub interrupted: bool,
 }
 
 /// Result of restarting one failed logical DialogueTurn in place. The user
@@ -6959,24 +7091,42 @@ impl SessionHandle {
             .runtime
             .inner
             .store
-            .claim_message(&self.id, &client_message_id, &event)
+            .claim_message(
+                &self.id,
+                &client_message_id,
+                &event,
+                self.runtime
+                    .inner
+                    .config
+                    .orchestrator
+                    .interrupt_dialogue_on_new_message,
+            )
             .await?
         {
             MessageClaim::Existing { event_id } => Ok(MessageReceipt {
                 event_id,
                 client_message_id,
                 duplicate: true,
+                interrupted: false,
             }),
-            MessageClaim::Accepted => {
+            MessageClaim::Accepted { event, interrupted } => {
                 // claim_message committed the immutable Event and its
                 // Dialogue Thread Signal atomically.  Dispatch only the
                 // already-durable fact; routing it through publish() would
                 // re-enter the legacy Event -> Signal Outbox bridge.
+                if let Some(interrupted) = interrupted.as_ref() {
+                    self.runtime
+                        .inner
+                        .orchestrator
+                        .notify_dialogue_interruption(&interrupted.activation_id);
+                }
+                let event_id = event.id.clone();
                 self.runtime.inner.bus.dispatch_persisted(event).await?;
                 Ok(MessageReceipt {
                     event_id,
                     client_message_id,
                     duplicate: false,
+                    interrupted: interrupted.is_some(),
                 })
             }
         }
@@ -7268,6 +7418,37 @@ mod tests {
 
     struct ReplyClient;
 
+    struct ReviewerDecisionClient {
+        calls: AtomicU64,
+    }
+
+    #[async_trait::async_trait]
+    impl Client for ReviewerDecisionClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert!(tools.is_empty());
+            assert!(messages.first().is_some_and(|message| message
+                .content
+                .contains("independent permission reviewer")));
+            Ok(text_response(
+                r#"{"decision":"allow_once","rationale":"narrow test boundary","risk_tags":["test"]}"#,
+            ))
+        }
+    }
+
+    fn contains_cjk(text: &str) -> bool {
+        text.chars().any(|character| {
+            matches!(
+                character,
+                '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
+            )
+        })
+    }
+
     #[test]
     fn model_context_capacity_uses_exact_provider_model_profile_and_falls_back() {
         let mut config = AppConfig::default();
@@ -7426,6 +7607,12 @@ mod tests {
     struct BlockingReplyClient {
         entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
+    }
+
+    struct InterruptibleDialogueClient {
+        calls: AtomicU64,
+        first_entered: Arc<tokio::sync::Notify>,
+        observed_combined_input: Arc<AtomicBool>,
     }
 
     struct PhysicalBatchClient {
@@ -7601,6 +7788,144 @@ mod tests {
             .await
             .unwrap();
         assert!(sqlite.get_agent("injected-agent").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn production_tool_contracts_are_english_only() {
+        let database = NamedTempFile::new().unwrap();
+        let sqlite = Arc::new(
+            SqliteStore::new(database.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .store(
+                "sqlite:english-tool-contract-test",
+                sqlite as Arc<dyn RuntimeStore>,
+            )
+            .build()
+            .await
+            .unwrap();
+
+        let mut violations = Vec::new();
+        for definition in runtime.inner.registry.definitions() {
+            if contains_cjk(&definition.description) {
+                violations.push(format!(
+                    "tool '{}' description: {}",
+                    definition.name, definition.description
+                ));
+            }
+            let schema = definition.parameters.to_string();
+            if contains_cjk(&schema) {
+                violations.push(format!("tool '{}' schema: {}", definition.name, schema));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    #[tokio::test]
+    async fn automatic_review_uses_the_independent_reviewer_client() {
+        let database = NamedTempFile::new().unwrap();
+        let reviewer = Arc::new(ReviewerDecisionClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .reviewer_client(reviewer.clone())
+            .build()
+            .await
+            .unwrap();
+        let decision = runtime
+            .review_edge_tool_permission(&ApprovalRequest {
+                approval_id: "approval-independent-reviewer".to_string(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-independent-reviewer".to_string(),
+                attempt_id: "attempt-independent-reviewer".to_string(),
+                thread_id: "thread-independent-reviewer".to_string(),
+                root_turn_id: "turn-independent-reviewer".to_string(),
+                trigger_event_id: "event-independent-reviewer".to_string(),
+                trigger_sequence: 1,
+                action: crate::approval::ApprovalAction::ToolOperation {
+                    tool: "read".to_string(),
+                    operation: "read".to_string(),
+                    target: Some(PathBuf::from("/outside/workspace")),
+                },
+                requested: crate::approval::CapabilityDelta {
+                    read_roots: vec![PathBuf::from("/outside")],
+                    ..Default::default()
+                },
+                justification: "verify the independent reviewer route".to_string(),
+                lease_offer: None,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(decision, ApprovalDecision::AllowOnce { .. }));
+        assert_eq!(reviewer.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn new_message_interrupts_a_thinking_dialogue_and_replays_both_inputs() {
+        let database = NamedTempFile::new().unwrap();
+        let first_entered = Arc::new(tokio::sync::Notify::new());
+        let observed_combined_input = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(InterruptibleDialogueClient {
+            calls: AtomicU64::new(0),
+            first_entered: first_entered.clone(),
+            observed_combined_input: observed_combined_input.clone(),
+        });
+        let mut config = AppConfig::default();
+        config.orchestrator.interrupt_dialogue_on_new_message = true;
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-dialogue-interruption-e2e".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Dialogue interruption E2E".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        let first = session
+            .send(
+                "first unfinished message",
+                "User-Test",
+                Some("client-dialogue-interruption-a".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(!first.interrupted);
+        tokio::time::timeout(std::time::Duration::from_secs(2), first_entered.notified())
+            .await
+            .expect("first model request did not start");
+
+        let second = session
+            .send(
+                "second clarifying message",
+                "User-Test",
+                Some("client-dialogue-interruption-b".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(second.interrupted);
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .expect("replacement DialogueTurn did not reply")
+            .unwrap();
+        assert_eq!(reply.payload["text"], "combined-dialogue-reply");
+        assert!(observed_combined_input.load(Ordering::SeqCst));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -7874,6 +8199,34 @@ mod tests {
             self.entered.notify_one();
             self.release.notified().await;
             Ok(text_response("lease-complete"))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for InterruptibleDialogueClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                self.first_entered.notify_one();
+                return std::future::pending().await;
+            }
+            let prompt = messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.observed_combined_input.store(
+                prompt.contains("first unfinished message")
+                    && prompt.contains("second clarifying message")
+                    && prompt.find("first unfinished message")
+                        < prompt.find("second clarifying message"),
+                Ordering::SeqCst,
+            );
+            Ok(text_response("combined-dialogue-reply"))
         }
     }
 
@@ -12514,7 +12867,7 @@ mod tests {
             .into_iter()
             .collect(),
         );
-        assert_eq!(
+        assert!(matches!(
             crashed_runtime
                 .inner
                 .store
@@ -12522,11 +12875,12 @@ mod tests {
                     "session-runtime-outbox-recovery",
                     "client-runtime-outbox-recovery",
                     &event,
+                    false,
                 )
                 .await
                 .unwrap(),
-            MessageClaim::Accepted
-        );
+            MessageClaim::Accepted { .. }
+        ));
         assert_eq!(
             crashed_runtime
                 .inner

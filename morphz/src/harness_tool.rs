@@ -39,7 +39,7 @@ impl Tool for HarnessListTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "按需列出 Runtime 已安装的 Harness（精确版本、标题与紧凑能力索引）。当当前工作可能受益于领域 Harness，但 Context 中尚未挂载合适 Harness 时使用；不要为了普通聊天调用。详细 Contract 只会在选定后的后续 Evaluation 挂载。".to_string(),
+            description: "List installed Runtime Harnesses on demand, including exact versions, titles, and compact capability indexes. Use this when the current work may benefit from a domain Harness but no suitable Harness is mounted in Context. Do not call it for ordinary conversation. The detailed Contract is mounted only in a subsequent Evaluation after selection.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {},
@@ -59,7 +59,7 @@ impl Tool for HarnessListTool {
         }
         Ok(serde_json::to_string_pretty(&json!({
             "harnesses": self.registry.descriptors(),
-            "selection": "使用 harness_select 选择精确 id + version；每个 Evaluation 只能有一个 Primary Harness。"
+            "selection": "Use harness_select with an exact id and version. Each Evaluation may have only one Primary Harness."
         }))?)
     }
 }
@@ -101,24 +101,24 @@ impl Tool for HarnessSelectTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "为当前 Runtime Evaluation 选择一个已安装的 Primary Harness。选择按精确 id/version 持久化且不可改绑；工具结果会启动后续 Evaluation，届时 Runtime 挂载该 Harness 的 Contract、Mind 与 eval/infer 入口。普通聊天或当前已有合适 Harness 时不要调用。".to_string(),
+            description: "Select one installed Primary Harness for the current Runtime Evaluation. Selection is persisted by exact id and version and cannot be rebound. The result starts a subsequent Evaluation in which the Runtime mounts that Harness's Contract, Mind, and eval or infer entry. Do not call this for ordinary conversation or when a suitable Harness is already mounted.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "harness_list 返回的精确 Harness ID"
+                        "description": "The exact Harness ID returned by harness_list"
                     },
                     "version": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "harness_list 返回的精确版本；Runtime 不做 latest 猜测"
+                        "description": "The exact version returned by harness_list; the Runtime does not guess latest"
                     },
                     "reason": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "该 Harness 为什么适合当前 Evaluation 的简短理由"
+                        "description": "A short reason why this Harness fits the current Evaluation"
                     }
                 },
                 "required": ["id", "version", "reason"],
@@ -177,7 +177,7 @@ impl Tool for HarnessSelectTool {
             return Ok(serde_json::to_string_pretty(&json!({
                 "status": "already_selected",
                 "binding": existing,
-                "guidance": "当前 Evaluation 已使用该 Harness；不要重复选择，继续工作。"
+                "guidance": "The current Evaluation already uses this Harness. Do not select it again; continue the work."
             }))?);
         }
 
@@ -198,7 +198,7 @@ impl Tool for HarnessSelectTool {
             "status": "selected",
             "binding": binding,
             "reason": reason,
-            "guidance": "选择已持久化。当前工具结果会触发后续 Evaluation；Runtime 将在那里挂载 Harness。不要再次调用 harness_select。"
+            "guidance": "The selection is durable. This tool result triggers a subsequent Evaluation where the Runtime mounts the Harness. Do not call harness_select again."
         }))?)
     }
 }

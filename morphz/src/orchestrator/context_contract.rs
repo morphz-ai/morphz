@@ -19,83 +19,83 @@ pub(crate) const EPISTEMIC_CONTRACT_NAME: &str = "epistemic-contract-v1";
 pub(crate) const REALITY_CONTRACT: &[ContractClause] = &[
     ContractClause {
         key: "sequence",
-        meaning: "seq 是 Ledger 的稳定物理写入顺序；较晚只表示后写入，不表示语义更正确或更权威",
+        meaning: "seq is the Ledger's stable physical write order; later means written later, not semantically more correct or authoritative",
     },
     ContractClause {
         key: "timestamp",
-        meaning: "timestamp 是 Runtime 的观察或记录时间；它不等于来源声明时间或业务有效时间",
+        meaning: "timestamp is when the Runtime observed or recorded a fact; it is not the source-declared time or business-effective time",
     },
     ContractClause {
         key: "direct-causality",
-        meaning: "caused-by 只证明 Runtime 可观察的直接来源；先后或直接来源不自动证明完整业务因果",
+        meaning: "caused-by proves only a direct source observable by the Runtime; ordering or direct origin does not prove complete business causality",
     },
     ContractClause {
         key: "identity-routing",
-        meaning: "session、turn、attempt、tool-call、Event 与 Frame 身份由 Runtime 维护；模型不得伪造或混淆路由",
+        meaning: "session, turn, attempt, tool-call, Event, and Frame identities are maintained by the Runtime; the model must not fabricate or conflate routes",
     },
     ContractClause {
         key: "source-lineage",
-        meaning: "from 来源必须真实存在且先于 transaction，Runtime 保存血缘；Runtime 不认证来源在语义上蕴含 BODY",
+        meaning: "from sources must exist and precede the transaction; the Runtime preserves lineage but does not certify that a source semantically entails the BODY",
     },
     ContractClause {
         key: "resource-version",
-        meaning: "resource identity、version、hash 与 latest 描述物理资源状态；latest 不表示内容更可信或业务上应采纳",
+        meaning: "resource identity, version, hash, and latest describe physical resource state; latest does not mean more trustworthy or preferable",
     },
     ContractClause {
         key: "tool-status",
-        meaning: "工具状态区分 success、empty success、failed、rejected、timeout 与未知副作用；空输出成功不等于未执行",
+        meaning: "tool status distinguishes success, empty success, failed, rejected, timeout, and unknown side effects; successful empty output does not mean the tool did not run",
     },
     ContractClause {
         key: "transaction",
-        meaning: "Context transaction 原子且版本化；Mind version 是物理提交序列，Frame revision 是认知修改的 MVCC 边界。Runtime 可自动 rebase 未触碰同一 Frame 的 create/derive/revise，同一 Frame 已变化时拒绝静默覆盖并由 Agent 决定语义合并",
+        meaning: "Context transactions are atomic and versioned; Mind version is the physical commit sequence and Frame revision is the MVCC boundary for cognitive changes. The Runtime may rebase create/derive/revise operations that do not touch the same Frame, but rejects silent overwrite when that Frame changed and leaves semantic merging to the Agent",
     },
     ContractClause {
         key: "resource-limits",
-        meaning: "Token、Attempt、事务、时间、权限与并发边界是 Runtime 的物理约束，模型不能绕过",
+        meaning: "Token, Attempt, transaction, time, permission, and concurrency limits are physical Runtime constraints that the model cannot bypass",
     },
 ];
 
 pub(crate) const EPISTEMIC_CONTRACT: &[ContractClause] = &[
     ContractClause {
         key: "observation-not-truth",
-        meaning: "Observation 只证明 Runtime 观察到了该内容或结果，不自动证明其为外部世界真理",
+        meaning: "An Observation proves only that the Runtime observed the content or result; it does not automatically establish external-world truth",
     },
     ContractClause {
         key: "no-future-evidence",
-        meaning: "证据实际出现之前，不得把未来实体、版本、身份、角色、阶段或状态写成当前事实",
+        meaning: "Before evidence actually appears, future entities, versions, identities, roles, phases, or states must not be written as current facts",
     },
     ContractClause {
         key: "claims-no-stronger-than-sources",
-        meaning: "derive/revise 的关键主张不得无理由强于 from 来源；来源存在不等于来源支持任意 BODY",
+        meaning: "Key claims in derive/revise must not be stronger than their from sources without justification; source existence does not support an arbitrary BODY",
     },
     ContractClause {
         key: "unsupported-change-remains-uncertain",
-        meaning: "来源只改变部分属性时，不得无证据连带改变实体身份、版本、角色、阶段或状态；额外变化应保持未知或显式作为推断",
+        meaning: "When a source changes only some properties, do not change identity, version, role, phase, or state without evidence; additional changes must remain unknown or be marked as inference",
     },
     ContractClause {
         key: "recency-usage-not-authority",
-        meaning: "较新、latest、常被 recall 或常被引用都不自动代表更真实、更重要或更权威",
+        meaning: "Newer, latest, frequently recalled, or frequently referenced does not automatically mean truer, more important, or more authoritative",
     },
     ContractClause {
         key: "direct-causality-only",
-        meaning: "不得把物理先后或 caused-by 扩张为未经证据支持的业务因果关系",
+        meaning: "Do not expand physical ordering or caused-by into business causality unsupported by evidence",
     },
     ContractClause {
         key: "revise-on-counterevidence",
-        meaning: "新证据反驳旧认识时，应保留来源与修订理由并 revise、retract、supersede 或恢复不确定性",
+        meaning: "When new evidence contradicts prior knowledge, retain sources and revision rationale, then revise, retract, supersede, or restore uncertainty",
     },
     ContractClause {
         key: "final-source-check",
-        meaning: "最终回复前检查关键事实、Mind 结论和来源边界；证据不足时如实表达未知、假设或阻塞",
+        meaning: "Before the final reply, check key facts, Mind conclusions, and source boundaries; when evidence is insufficient, state uncertainty, assumptions, or blockers honestly",
     },
 ];
 
 pub(crate) fn render_system_contract() -> String {
     let mut rendered = String::from(
-        "以下契约由 Runtime 的单一协议定义生成，并与 Context protocol、context_tx 工具说明保持一致。它约束证据使用，但不规定 Mind BODY 的结构。\n\nRuntime Reality Contract（现实契约）：",
+        "The following contracts are generated from one Runtime protocol definition and shared by the Context protocol and context_tx tool guidance. They constrain evidence use without prescribing Mind BODY structure.\n\nRuntime Reality Contract:",
     );
     append_numbered_clauses(&mut rendered, REALITY_CONTRACT);
-    rendered.push_str("\n\nAgent Epistemic Contract（认识契约）：");
+    rendered.push_str("\n\nAgent Epistemic Contract:");
     append_numbered_clauses(&mut rendered, EPISTEMIC_CONTRACT);
     rendered
 }
@@ -114,7 +114,7 @@ pub(crate) fn render_system_contract_sexpr() -> String {
         atom("runtime-contracts"),
         field(
             "description",
-            "以下契约由 Runtime 的单一协议定义生成，并与 Context protocol、context_tx 工具说明保持一致。它约束证据使用，但不规定 Mind BODY 的结构。",
+            "These contracts are generated from one Runtime protocol definition and shared by the Context protocol and context_tx guidance. They constrain evidence use without prescribing Mind BODY structure.",
         ),
         reality,
         epistemic,
@@ -125,15 +125,15 @@ pub(crate) fn render_system_contract_sexpr() -> String {
 pub(crate) fn render_context_tx_epistemic_guidance() -> String {
     EPISTEMIC_CONTRACT
         .iter()
-        .map(|clause| format!("{}：{}", clause.key, clause.meaning))
+        .map(|clause| format!("{}: {}", clause.key, clause.meaning))
         .collect::<Vec<_>>()
-        .join("；")
+        .join("; ")
 }
 
 fn append_numbered_clauses(rendered: &mut String, clauses: &[ContractClause]) {
     for (index, clause) in clauses.iter().enumerate() {
         rendered.push_str(&format!(
-            "\n{}. `{}`：{}",
+            "\n{}. `{}`: {}",
             index + 1,
             clause.key,
             clause.meaning

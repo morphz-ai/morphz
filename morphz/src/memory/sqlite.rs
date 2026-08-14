@@ -25,15 +25,16 @@ use crate::memory::{
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
-    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
-    MindProjectionCommit, MindProjectionHead, MindProjectionRecord, MindProjectionStore,
-    MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
-    NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext, NewDelegation,
-    NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
-    NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
-    NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
-    NewThreadGroupPlan, NewThreadSignal, ObjectiveCompletionIntent, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
+    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore,
+    InterruptedDialogueTurn, MessageClaim, MindProjectionCommit, MindProjectionHead,
+    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewActionGroup,
+    NewActionGroupMember, NewAgent, NewApprovalRequest, NewArtifactTransferExecution,
+    NewCapabilityLease, NewCognitiveContext, NewDelegation, NewEdgeCommand, NewExecutionJob,
+    NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
+    NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer, NewSchedule,
+    NewScheduledObjective, NewSession, NewThread, NewThreadActivation, NewThreadGroupPlan,
+    NewThreadSignal, ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveRecord,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
     PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
     ProviderAccountAffinityRecord, ProviderAccountStateRecord, ProviderAccountStateStore,
     ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
@@ -4579,6 +4580,148 @@ async fn append_dialogue_signal_in_transaction(
     Ok(())
 }
 
+/// Replace one exact in-flight DialogueTurn before it crosses the durable
+/// Execution boundary. The already-claimed user Signals are moved back to a
+/// fresh DialogueTurn so the replacement evaluation receives the complete
+/// ordered input batch instead of losing the messages that were being read by
+/// the cancelled model attempt.
+async fn interrupt_dialogue_turn_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    session: &SessionRecord,
+    event: &Event,
+) -> Result<Option<InterruptedDialogueTurn>, Box<dyn std::error::Error + Send + Sync>> {
+    let principal_id = event
+        .payload
+        .get("principal_id")
+        .and_then(JsonValue::as_str);
+    let Some(row) = sqlx::query(
+        r#"SELECT activation.id AS activation_id,
+                  activation.root_turn_id AS root_turn_id,
+                  thread.id AS thread_id,
+                  thread.generation AS thread_generation
+           FROM thread_activations activation
+           JOIN threads thread
+             ON thread.root_turn_id = activation.root_turn_id
+            AND thread.generation = activation.generation
+           WHERE activation.session_id = ?
+             AND activation.status = 'running'
+             AND activation.trigger_kind = 'chat/user_message'
+             AND activation.dialogue_lane_released_at IS NULL
+             AND thread.kind = 'dialogue_turn'
+             AND thread.status = 'open'
+             AND thread.control_state = 'active'
+             AND (
+               activation.initiating_principal_id = ?
+               OR (activation.initiating_principal_id IS NULL AND ? IS NULL)
+             )
+           ORDER BY activation.trigger_sequence, activation.id
+           LIMIT 1"#,
+    )
+    .bind(&session.id)
+    .bind(principal_id)
+    .bind(principal_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let interrupted = InterruptedDialogueTurn {
+        activation_id: row.get("activation_id"),
+        root_turn_id: row.get("root_turn_id"),
+        thread_id: row.get("thread_id"),
+    };
+    let thread_generation = row.get::<i64, _>("thread_generation");
+    let replacement_thread_id = stable_thread_id(&event.id);
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+
+    // The replacement Thread must exist before its replayed Signals are
+    // rerouted because thread_signals.thread_id is a foreign key.
+    sqlx::query(
+        r#"INSERT INTO threads
+           (id, revision, generation, agent_id, context_id, session_id,
+            initiating_principal_id, root_turn_id, kind, status, control_state,
+            executor_kind, lifetime, supervisor_kind, supervisor_id,
+            supervision_generation, completion_contract_json, delivery_status,
+            created_at, updated_at)
+           VALUES (?, 1, 1, ?, ?, ?, ?, ?, 'dialogue_turn', 'open', 'active',
+                   'self', 'durable', 'runtime', 'dialogue-router', 1, '{}',
+                   'none', ?, ?)"#,
+    )
+    .bind(&replacement_thread_id)
+    .bind(&session.agent_id)
+    .bind(&session.context_id)
+    .bind(&session.id)
+    .bind(principal_id)
+    .bind(&event.id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+
+    let activation = sqlx::query(
+        r#"UPDATE thread_activations
+           SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
+               lease_expires_at = NULL, updated_at = ?
+           WHERE id = ? AND status = 'running'
+             AND dialogue_lane_released_at IS NULL"#,
+    )
+    .bind(&now)
+    .bind(&interrupted.activation_id)
+    .execute(&mut **tx)
+    .await?;
+    if activation.rows_affected() != 1 {
+        return Err("DialogueTurn 在原子打断期间越过了 Execution 边界".into());
+    }
+    let thread = sqlx::query(
+        r#"UPDATE threads
+           SET revision = revision + 1, status = 'cancelled', updated_at = ?
+           WHERE id = ? AND generation = ? AND kind = 'dialogue_turn'
+             AND status = 'open'"#,
+    )
+    .bind(&now)
+    .bind(&interrupted.thread_id)
+    .bind(thread_generation)
+    .execute(&mut **tx)
+    .await?;
+    if thread.rows_affected() != 1 {
+        return Err("DialogueTurn 在原子打断期间已经终结".into());
+    }
+
+    // activation_signals.signal_id is globally unique. Remove the obsolete
+    // claim before replaying the same durable Signals into the replacement
+    // Thread; the old Activation remains auditable through its trigger Event.
+    sqlx::query(
+        r#"DELETE FROM activation_signals
+           WHERE activation_id = ?
+             AND signal_id IN (
+               SELECT id FROM thread_signals
+               WHERE thread_id = ? AND thread_generation = ?
+                 AND kind = 'chat/user_message'
+             )"#,
+    )
+    .bind(&interrupted.activation_id)
+    .bind(&interrupted.thread_id)
+    .bind(thread_generation)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"UPDATE thread_signals
+           SET thread_id = ?, thread_generation = 1, status = 'pending',
+               claimed_at = NULL, acknowledged_at = NULL,
+               parent_activation_id = NULL
+           WHERE thread_id = ? AND thread_generation = ?
+             AND kind = 'chat/user_message' AND status = 'claimed'"#,
+    )
+    .bind(&replacement_thread_id)
+    .bind(&interrupted.thread_id)
+    .bind(thread_generation)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(Some(interrupted))
+}
+
 async fn upsert_recall_document_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     document: &RecallDocument,
@@ -7105,16 +7248,28 @@ impl ActivationStore for SqliteStore {
             return Ok(None);
         }
         let primary = thread_signal_from_row(&pending[0])?;
+        // Normally the first pending Signal is also the Activation trigger.
+        // Dialogue interruption is the intentional exception: older user
+        // Signals are replayed ahead of the newly arrived Signal so the model
+        // sees the original order, while the new Signal remains the unique
+        // event that caused this replacement Activation to exist.
+        let trigger = pending
+            .iter()
+            .map(thread_signal_from_row)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .find(|pending_signal| pending_signal.event_id == activation.trigger_event_id)
+            .unwrap_or_else(|| primary.clone());
         let activation_principal = activation
             .initiating_principal_id
             .as_ref()
-            .or(primary.principal_id.as_ref());
+            .or(trigger.principal_id.as_ref());
         if activation.initiating_principal_id.is_some()
-            && primary.principal_id.is_some()
-            && activation.initiating_principal_id != primary.principal_id
+            && trigger.principal_id.is_some()
+            && activation.initiating_principal_id != trigger.principal_id
         {
             return Err(format!(
-                "Activation '{}' 与其首个 Signal Principal 不一致",
+                "Activation '{}' 与其 Trigger Signal Principal 不一致",
                 activation.id
             )
             .into());
@@ -7129,7 +7284,7 @@ impl ActivationStore for SqliteStore {
             )
             .into());
         }
-        let trigger_sequence = i64::try_from(primary.sequence)
+        let trigger_sequence = i64::try_from(trigger.sequence)
             .map_err(|_| "Activation trigger sequence 超出 SQLite INTEGER 范围")?;
         sqlx::query(
             r#"INSERT INTO thread_activations
@@ -7144,10 +7299,10 @@ impl ActivationStore for SqliteStore {
         .bind(&activation.context_id)
         .bind(&activation.session_id)
         .bind(activation_principal)
-        .bind(&primary.event_id)
+        .bind(&trigger.event_id)
         .bind(trigger_sequence)
-        .bind(&primary.kind)
-        .bind(&primary.parent_activation_id)
+        .bind(&trigger.kind)
+        .bind(&trigger.parent_activation_id)
         .bind(&activation.root_turn_id)
         .bind(&now)
         .bind(&now)
@@ -11894,6 +12049,7 @@ impl DeliveryIngressStore for SqliteStore {
         session_id: &str,
         client_message_id: &str,
         event: &Event,
+        interrupt_dialogue: bool,
     ) -> Result<MessageClaim, Box<dyn std::error::Error + Send + Sync>> {
         let session = self
             .get_session(session_id)
@@ -11928,6 +12084,11 @@ impl DeliveryIngressStore for SqliteStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
+            let interrupted = if interrupt_dialogue {
+                interrupt_dialogue_turn_in_transaction(&mut tx, &session, event).await?
+            } else {
+                None
+            };
             let timestamp = event
                 .timestamp
                 .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
@@ -11991,7 +12152,10 @@ impl DeliveryIngressStore for SqliteStore {
                 append_event_in_transaction(&mut tx, &restore).await?;
             }
             tx.commit().await?;
-            return Ok(MessageClaim::Accepted);
+            return Ok(MessageClaim::Accepted {
+                event: event.clone(),
+                interrupted,
+            });
         }
         let existing = sqlx::query(
             "SELECT event_id FROM session_message_requests WHERE session_id = ? AND client_message_id = ?",
@@ -23361,13 +23525,13 @@ mod tests {
             .into_iter()
             .collect(),
         );
-        assert_eq!(
+        assert!(matches!(
             store
-                .claim_message("outbox-session", "outbox-client-message", &event)
+                .claim_message("outbox-session", "outbox-client-message", &event, false)
                 .await
                 .unwrap(),
-            MessageClaim::Accepted
-        );
+            MessageClaim::Accepted { .. }
+        ));
         assert!(store
             .list_signal_outbox(SignalOutboxStatus::Pending, 16)
             .await
@@ -25274,6 +25438,340 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_message_interrupts_only_pre_execution_dialogue_and_replays_its_input_batch() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "interrupt-context".to_string(),
+                agent_id: "interrupt-agent".to_string(),
+                title: "Interrupt Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "interrupt-session".to_string(),
+                agent_id: "interrupt-agent".to_string(),
+                context_id: "interrupt-context".to_string(),
+                parent_session_id: None,
+                title: "Interrupt Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let message = |id: &str, text: &str| {
+            Event::new(
+                id.to_string(),
+                "user".to_string(),
+                crate::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "interrupt-context",
+                    "session_id": "interrupt-session",
+                    "text": text
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            )
+        };
+        let first = message("interrupt-event-a", "first thought");
+        assert!(matches!(
+            store
+                .claim_message("interrupt-session", "interrupt-client-a", &first, false)
+                .await
+                .unwrap(),
+            MessageClaim::Accepted {
+                interrupted: None,
+                ..
+            }
+        ));
+        let first_thread = store.get_thread_by_root(&first.id).await.unwrap().unwrap();
+        let first_signal = store
+            .next_pending_thread_signal(&first_thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: stable_thread_signal_id(&first.id),
+                    thread_id: first_thread.id.clone(),
+                    thread_generation: first_thread.generation,
+                    event_id: first.id.clone(),
+                    principal_id: None,
+                    sequence: first_signal.sequence,
+                    kind: first.topic.clone(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "interrupt-activation-a".to_string(),
+                    agent_id: "interrupt-agent".to_string(),
+                    context_id: "interrupt-context".to_string(),
+                    session_id: "interrupt-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: first.id.clone(),
+                    trigger_sequence: first_signal.sequence,
+                    trigger_kind: first.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: first.id.clone(),
+                },
+                DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let running = match store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Running,
+                Some("interrupt-test-worker"),
+                Some(Utc::now() + chrono::Duration::seconds(30)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(record) => record,
+            other => panic!("unexpected activation mutation: {other:?}"),
+        };
+
+        let second = message("interrupt-event-b", "additional constraint");
+        let interrupted = store
+            .claim_message("interrupt-session", "interrupt-client-b", &second, true)
+            .await
+            .unwrap();
+        assert!(matches!(
+            interrupted,
+            MessageClaim::Accepted {
+                interrupted: Some(InterruptedDialogueTurn {
+                    ref activation_id,
+                    ref thread_id,
+                    ..
+                }),
+                ..
+            } if activation_id == &running.id && thread_id == &first_thread.id
+        ));
+        assert_eq!(
+            store
+                .get_thread_activation(&running.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ThreadActivationStatus::Cancelled
+        );
+        assert_eq!(
+            store
+                .get_thread(&first_thread.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .lifecycle,
+            ThreadLifecycle::Cancelled
+        );
+
+        let replacement = store.get_thread_by_root(&second.id).await.unwrap().unwrap();
+        let pending = store
+            .list_context_thread_signals("interrupt-context", Some(ThreadSignalStatus::Pending))
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|signal| signal.thread_id == replacement.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|signal| signal.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.id.as_str(), second.id.as_str()]
+        );
+
+        let replacement_activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: stable_thread_signal_id(&second.id),
+                    thread_id: replacement.id.clone(),
+                    thread_generation: replacement.generation,
+                    event_id: second.id.clone(),
+                    principal_id: None,
+                    sequence: pending[1].sequence,
+                    kind: second.topic.clone(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "interrupt-activation-b".to_string(),
+                    agent_id: "interrupt-agent".to_string(),
+                    context_id: "interrupt-context".to_string(),
+                    session_id: "interrupt-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: second.id.clone(),
+                    trigger_sequence: pending[1].sequence,
+                    trigger_kind: second.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: second.id.clone(),
+                },
+                DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let claimed = store
+            .list_activation_signals(&replacement_activation.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            claimed
+                .iter()
+                .map(|signal| signal.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.id.as_str(), second.id.as_str()]
+        );
+    }
+
+    #[tokio::test]
+    async fn dialogue_interruption_can_be_disabled() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "fifo-context".to_string(),
+                agent_id: "fifo-agent".to_string(),
+                title: "FIFO Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "fifo-session".to_string(),
+                agent_id: "fifo-agent".to_string(),
+                context_id: "fifo-context".to_string(),
+                parent_session_id: None,
+                title: "FIFO Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let first = Event::new(
+            "fifo-event-a".to_string(),
+            "user".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "fifo-context",
+                "session_id": "fifo-session",
+                "text": "first"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store
+            .claim_message("fifo-session", "fifo-client-a", &first, false)
+            .await
+            .unwrap();
+        let thread = store.get_thread_by_root(&first.id).await.unwrap().unwrap();
+        let signal = store
+            .next_pending_thread_signal(&thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: stable_thread_signal_id(&first.id),
+                    thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
+                    event_id: first.id.clone(),
+                    principal_id: None,
+                    sequence: signal.sequence,
+                    kind: first.topic.clone(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "fifo-activation-a".to_string(),
+                    agent_id: "fifo-agent".to_string(),
+                    context_id: "fifo-context".to_string(),
+                    session_id: "fifo-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: first.id.clone(),
+                    trigger_sequence: signal.sequence,
+                    trigger_kind: first.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: first.id.clone(),
+                },
+                DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let running = match store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Running,
+                Some("fifo-test-worker"),
+                Some(Utc::now() + chrono::Duration::seconds(30)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(record) => record,
+            other => panic!("unexpected activation mutation: {other:?}"),
+        };
+        let second = Event::new(
+            "fifo-event-b".to_string(),
+            "user".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "fifo-context",
+                "session_id": "fifo-session",
+                "text": "second"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert!(matches!(
+            store
+                .claim_message("fifo-session", "fifo-client-b", &second, false)
+                .await
+                .unwrap(),
+            MessageClaim::Accepted {
+                interrupted: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            store
+                .get_thread_activation(&running.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ThreadActivationStatus::Running
+        );
+        assert_eq!(
+            store
+                .get_thread(&thread.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .lifecycle,
+            ThreadLifecycle::Open
+        );
+    }
+
+    #[tokio::test]
     async fn session_registry_persists_lifecycle_and_message_idempotency() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
@@ -25329,14 +25827,14 @@ mod tests {
             .collect(),
         );
         let first = store
-            .claim_message("session-api-1", "client-1", &event_1)
+            .claim_message("session-api-1", "client-1", &event_1, false)
             .await
             .unwrap();
         let duplicate = store
-            .claim_message("session-api-1", "client-1", &event_2)
+            .claim_message("session-api-1", "client-1", &event_2, false)
             .await
             .unwrap();
-        assert_eq!(first, MessageClaim::Accepted);
+        assert!(matches!(first, MessageClaim::Accepted { .. }));
         assert_eq!(
             duplicate,
             MessageClaim::Existing {

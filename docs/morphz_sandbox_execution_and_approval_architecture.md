@@ -645,6 +645,11 @@ full_access       关闭文件边界、网络限制和 OS 沙箱；不产生边�
 custom            分别配置 sandbox_mode、approval_policy、reviewer 和环境策略
 ```
 
+自动审核默认沿用主 Model Route 以兼容旧配置。生产配置应通过
+`permissions.auto_review_model` 指定独立的审核 Route；环境变量
+`MORPHZ_AUTO_REVIEW_MODEL` 可在部署时覆盖。该 Route 只接收冻结在审批因果边界内的
+用户意图、精确能力差量与动作描述，不取得主 Agent 的工具能力，也不会替换主推理模型。
+
 人工审批没有 Runtime 超时。CLI 在当前任务中显示准确动作、能力差量和理由，并读取一次 `y/N`；Web 客户端可查询 `GET /api/approvals`，再提交：
 
 ```json

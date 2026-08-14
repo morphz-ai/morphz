@@ -139,6 +139,10 @@ pub struct PermissionConfig {
     pub sandbox_mode: SandboxMode,
     pub approval_policy: ApprovalPolicy,
     pub reviewer: ReviewerKind,
+    /// Optional Model Route used only by the automatic permission reviewer.
+    /// When absent, the reviewer reuses the main inference model for backward
+    /// compatibility.
+    pub auto_review_model: Option<String>,
     pub shell_environment_policy: ShellEnvironmentPolicy,
 }
 
@@ -163,6 +167,7 @@ impl Default for PermissionConfig {
             sandbox_mode: SandboxMode::WorkspaceWrite,
             approval_policy: ApprovalPolicy::OnRequest,
             reviewer: ReviewerKind::AutoReview,
+            auto_review_model: None,
             shell_environment_policy: ShellEnvironmentPolicy::RemoveSensitive,
         }
     }
@@ -197,6 +202,7 @@ pub struct PermissionProfile {
     pub sandbox_mode: SandboxMode,
     pub approval_policy: ApprovalPolicy,
     pub reviewer: ReviewerKind,
+    pub auto_review_model: Option<String>,
     pub workspace_root: PathBuf,
     pub read_roots: Vec<PathBuf>,
     pub write_roots: Vec<PathBuf>,
@@ -207,6 +213,15 @@ pub struct PermissionProfile {
 
 impl PermissionProfile {
     pub fn from_config(config: &PermissionConfig) -> Result<Self, PermissionError> {
+        let auto_review_model = config
+            .auto_review_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned);
+        if config.auto_review_model.is_some() && auto_review_model.is_none() {
+            return Err("permissions.auto_review_model 不能为空".into());
+        }
         let workspace_root = canonicalize_existing(Path::new(&config.workspace_root), "workspace")?;
         if !workspace_root.is_dir() {
             return Err(format!(
@@ -238,6 +253,7 @@ impl PermissionProfile {
             sandbox_mode,
             approval_policy,
             reviewer,
+            auto_review_model,
             workspace_root,
             read_roots,
             write_roots,
@@ -409,11 +425,17 @@ pub struct ApprovalContext {
 pub struct PermissionBroker {
     profile: Arc<PermissionProfile>,
     approval: Arc<dyn ApprovalProvider>,
+    auto_review_model: std::sync::RwLock<Option<String>>,
 }
 
 impl PermissionBroker {
     pub fn new(profile: Arc<PermissionProfile>, approval: Arc<dyn ApprovalProvider>) -> Self {
-        Self { profile, approval }
+        let auto_review_model = std::sync::RwLock::new(profile.auto_review_model.clone());
+        Self {
+            profile,
+            approval,
+            auto_review_model,
+        }
     }
 
     pub fn profile(&self) -> &Arc<PermissionProfile> {
@@ -421,11 +443,17 @@ impl PermissionBroker {
     }
 
     pub fn policy_digest(&self) -> String {
+        let auto_review_model = self
+            .auto_review_model
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let material = serde_json::json!({
             "mode": self.profile.mode,
             "sandbox_mode": self.profile.sandbox_mode,
             "approval_policy": self.profile.approval_policy,
             "reviewer": self.profile.reviewer,
+            "auto_review_model": auto_review_model,
             "workspace_root": self.profile.workspace_root,
             "read_roots": self.profile.read_roots,
             "write_roots": self.profile.write_roots,
@@ -435,6 +463,20 @@ impl PermissionBroker {
         });
         let bytes = serde_json::to_vec(&material).unwrap_or_default();
         format!("policy_{:x}", Sha256::digest(bytes))
+    }
+
+    pub fn auto_review_model(&self) -> Option<String> {
+        self.auto_review_model
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn set_auto_review_model(&self, model: Option<String>) {
+        *self
+            .auto_review_model
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = model;
     }
 
     pub fn pending_approval_status(&self) -> ApprovalStatus {
@@ -788,6 +830,52 @@ mod tests {
                 ReviewerKind::Deny,
             )
         );
+    }
+
+    #[test]
+    fn automatic_reviewer_model_route_is_optional_but_never_ambiguous() {
+        let root = TempDir::new().unwrap();
+        let configured = PermissionConfig {
+            workspace_root: root.path().to_string_lossy().into_owned(),
+            auto_review_model: Some("  reviewer-luna  ".to_string()),
+            ..PermissionConfig::default()
+        };
+        assert_eq!(
+            PermissionProfile::from_config(&configured)
+                .unwrap()
+                .auto_review_model
+                .as_deref(),
+            Some("reviewer-luna")
+        );
+
+        let invalid = PermissionConfig {
+            workspace_root: root.path().to_string_lossy().into_owned(),
+            auto_review_model: Some("   ".to_string()),
+            ..PermissionConfig::default()
+        };
+        assert!(PermissionProfile::from_config(&invalid).is_err());
+    }
+
+    #[test]
+    fn changing_the_automatic_reviewer_route_invalidates_permission_policy_digest() {
+        let root = TempDir::new().unwrap();
+        let profile = Arc::new(
+            PermissionProfile::from_config(&PermissionConfig {
+                workspace_root: root.path().to_string_lossy().into_owned(),
+                ..PermissionConfig::default()
+            })
+            .unwrap(),
+        );
+        let broker = PermissionBroker::new(
+            profile,
+            Arc::new(DenyAllApprovalProvider::new("test reviewer")),
+        );
+        let before = broker.policy_digest();
+        broker.set_auto_review_model(Some("reviewer-luna".to_string()));
+        let after = broker.policy_digest();
+
+        assert_ne!(before, after);
+        assert_eq!(broker.auto_review_model().as_deref(), Some("reviewer-luna"));
     }
 
     #[test]

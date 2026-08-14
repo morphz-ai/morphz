@@ -145,35 +145,35 @@ impl Tool for ObjectiveCreateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "objective_create".to_string(),
-            description: "把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作创建为持久 First-Class Objective。普通问答、一次求值内可完成的动作、仅为记录 Todo 或延长执行时间时不得使用。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功后继续当前工作，不要为同一目标重复创建。可在当前 Objective 内显式创建子 Objective，但 parent_objective_id 必须是当前正在求值的 Objective。".to_string(),
+            description: "Create a durable first-class Objective for work in the current Session that genuinely must span multiple Evaluations, asynchronous waits, or Runtime restarts. Do not use it for ordinary questions, work that fits in one Evaluation, recording a todo, or merely extending execution time. The Runtime binds the current Agent, Context, and Session and generates the ID. Continue the current work after creation and do not duplicate the same Objective. A child Objective may be created explicitly, but parent_objective_id must be the Objective currently being evaluated.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "stated_objective": {
                         "type": "string",
-                        "description": "稳定、完整、可审计的长期目标陈述；保留用户要求、范围和完成条件，不要只写下一步动作"
+                        "description": "A stable, complete, auditable long-term objective statement preserving the user's requirements, scope, and completion criteria rather than only the next action"
                     },
                     "reason": {
                         "type": "string",
-                        "description": "为什么该工作需要 First-Class Objective，而不是在当前普通 Evaluation 内直接完成"
+                        "description": "Why this work needs a first-class Objective instead of completion in the current ordinary Evaluation"
                     },
                     "source_refs": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "当前 Context Ledger 引用，如用户要求或形成目标的证据 @e27；Runtime 验证引用存在，没有合适引用时传空数组"
+                        "description": "Current Context Ledger refs, such as @e27 for the user request or evidence forming the objective. The Runtime verifies existence; pass an empty array when no suitable ref exists"
                     },
                     "parent_objective_id": {
                         "type": "string",
-                        "description": "仅创建子 Objective 时填写，且必须等于当前正在求值的 Objective ID；独立 Objective 省略"
+                        "description": "Set only for a child Objective, and exactly to the Objective ID currently being evaluated; omit for an independent Objective"
                     },
                     "token_budget": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "可选 Prompt Token 预算；省略表示继承 Runtime 的无显式 Objective 预算策略"
+                        "description": "Optional Prompt Token budget; omission uses the Runtime policy with no explicit Objective budget"
                     },
                     "harness": {
                         "type": "object",
-                        "description": "可选的 Objective Harness 默认值。只有确定该长期目标需要某个已安装 Harness 时填写；先用 harness_list 发现精确版本。每次 Evaluation 会把它物化为自己的不可变 binding。",
+                        "description": "Optional default Objective Harness. Set it only when this long-term objective clearly requires an installed Harness; use harness_list to discover the exact version first. Every Evaluation materializes its own immutable binding.",
                         "properties": {
                             "id": { "type": "string", "minLength": 1 },
                             "version": { "type": "string", "minLength": 1 }
@@ -365,7 +365,7 @@ impl Tool for ObjectiveCreateTool {
                 "objective_status": current.status,
                 "revision": current.revision,
                 "activation_adoption": if adopted.is_some() { "current-activation" } else { "already-routed-or-independent-continuation" },
-                "guidance": "相同的非终态 Objective 已存在；不要重复创建。继续执行它，或在有权限时更新其状态。"
+                "guidance": "An equivalent nonterminal Objective already exists. Do not create a duplicate; continue it or update its state when authorized."
             }))?);
         }
 
@@ -472,7 +472,7 @@ impl Tool for ObjectiveCreateTool {
             "parent_objective_id": current.parent_objective_id,
             "harness_default": harness_binding,
             "activation_adoption": if adopted.is_some() { "current-activation" } else { "independent-continuation" },
-            "guidance": "Objective 已持久化。不要重复创建；继续当前工作。普通文本或 no_reply 只结束当前 Activation，Objective 未完成时 Supervisor 会自动续跑。"
+            "guidance": "The Objective is durable. Do not create it again; continue the current work. Ordinary text or no_reply ends only the current Activation, and the Supervisor continues an unfinished Objective automatically."
         }))?)
     }
 }
@@ -528,18 +528,18 @@ impl Tool for ObjectiveUpdateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "objective_update".to_string(),
-            description: "显式提交当前长期 Objective 的 Runtime 控制状态。completed 会先持久化 finalizing 意图，随后 Runtime 在同一 Activation 中要求你生成完整最终回复；只有该回复成功落库时 Objective、Activation 与 Thread 才原子完成。completed 必须给出真实原因并引用已有证据；需要等待确定事件时保持 active 并提交 wait_condition；只有确实无法自动等待或继续推进时才用 blocked。Agent 无权通过此工具 pause/cancel。".to_string(),
+            description: "Explicitly submit Runtime control state for the current long-term Objective. completed first persists finalizing intent, then the Runtime asks you for a complete final reply in the same Activation; the Objective, Activation, and Thread complete atomically only when that reply is committed. completed requires a truthful reason and existing evidence refs. Keep status active with wait_condition when waiting for a definite event. Use blocked only when the Runtime cannot wait automatically and no reliable path remains. The Agent cannot pause or cancel through this tool.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "objective_id": {
                         "type": "string",
-                        "description": "kernel.objectives 中当前 Objective 的稳定 ID"
+                        "description": "The stable ID of the current Objective from kernel.objectives"
                     },
                     "base_revision": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "本次 Context Encoding 中看到的 Objective revision；冲突时必须重新读取最新状态"
+                        "description": "The Objective revision visible in this Context Encoding; reread current state after a conflict"
                     },
                     "status": {
                         "type": "string",
@@ -547,15 +547,15 @@ impl Tool for ObjectiveUpdateTool {
                     },
                     "reason": {
                         "type": "string",
-                        "description": "为什么该状态符合当前客观证据；不能把 Context 压力、预算接近耗尽或想结束响应当作完成原因"
+                        "description": "Why this state matches current objective evidence; Context pressure, an almost exhausted budget, or a desire to end the response are not completion reasons"
                     },
                     "evidence_refs": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "支持判断的当前 Context Ledger 引用，如 @e27；Runtime 只验证引用存在，不判断业务证据是否充分"
+                        "description": "Current Context Ledger refs such as @e27 supporting the decision. The Runtime verifies existence, not business sufficiency"
                     },
                     "wait_condition": {
-                        "description": "仅 status=active 时使用的确定性唤醒条件。提交后 Runtime 不轮询，事件满足时自动恢复。",
+                        "description": "A deterministic wake condition used only with status=active. The Runtime does not poll after submission and resumes automatically when the event is satisfied.",
                         "oneOf": [
                             {
                                 "type": "object",
@@ -563,7 +563,7 @@ impl Tool for ObjectiveUpdateTool {
                                     "kind": { "const": "tool_task" },
                                     "task_id": {
                                         "type": "string",
-                                        "description": "只能原样使用 exec 返回 execution=background 时明确给出的 task_id。同步 execution=completed 没有可等待任务；禁止使用 artifact_path 文件名、execution_job_id 或自行推测的 ID。"
+                                        "description": "Use only the exact task_id returned by exec with execution=background. Synchronous execution=completed has no waitable task; do not use an artifact_path filename, execution_job_id, or a guessed ID."
                                     }
                                 },
                                 "required": ["kind", "task_id"]
@@ -582,7 +582,7 @@ impl Tool for ObjectiveUpdateTool {
                                     "kind": { "const": "thread_group" },
                                     "group_id": {
                                         "type": "string",
-                                        "description": "schedule_tx 返回的、由当前 Objective 监督的 Thread Group ID"
+                                        "description": "A Thread Group ID returned by schedule_tx and supervised by the current Objective"
                                     }
                                 },
                                 "required": ["kind", "group_id"]
@@ -591,7 +591,7 @@ impl Tool for ObjectiveUpdateTool {
                                 "type": "object",
                                 "properties": {
                                     "kind": { "const": "timer" },
-                                    "deadline": { "type": "string", "format": "date-time", "description": "按 evaluation-environment.local-time 表达的 RFC 3339 绝对时间，必须携带明确 offset" }
+                                    "deadline": { "type": "string", "format": "date-time", "description": "An absolute RFC 3339 time expressed in evaluation-environment.local-time with an explicit offset" }
                                 },
                                 "required": ["kind", "deadline"]
                             },
@@ -717,7 +717,7 @@ impl Tool for ObjectiveUpdateTool {
                             "objective_status": updated.status,
                             "objective_phase": "finalizing",
                             "evidence_refs": args.evidence_refs,
-                            "next_action": "在当前 Activation 中返回完整、无工具的最终报告；最终回复将与 Objective、Activation、Thread 和 ThreadOutcome 原子提交。"
+                            "next_action": "Return a complete final report with no tools in the current Activation. The final reply is committed atomically with the Objective, Activation, Thread, and ThreadOutcome."
                         }),
                         ObjectiveMutation::Conflict { current } => json!({
                             "status": "revision_conflict",
@@ -728,7 +728,7 @@ impl Tool for ObjectiveUpdateTool {
                             "current_status_reason": current.status_reason,
                             "wait_condition": current.wait_condition,
                             "completion_intent": current.completion_intent,
-                            "guidance": "以最新 Context Encoding 为准重新判断，禁止用过期 revision 覆盖。"
+                            "guidance": "Re-evaluate from the latest Context Encoding; never overwrite with a stale revision."
                         }),
                         ObjectiveMutation::NotFound => json!({
                             "status": "not_found",
@@ -775,11 +775,11 @@ impl Tool for ObjectiveUpdateTool {
                     "wait_condition": updated.wait_condition,
                     "evidence_refs": args.evidence_refs,
                     "next_action": if updated.status == ObjectiveStatus::Blocked {
-                        "返回无工具普通文本向使用者说明阻塞原因；Runtime 将停止自动续跑，直到收到显式恢复。"
+                        "Return ordinary text with no tools explaining the blocker. The Runtime stops automatic continuation until explicitly resumed."
                     } else if updated.wait_condition.is_some() {
-                        "返回普通文本说明等待状态，或调用 no_reply 明确无需发送消息；Runtime 将在条件满足时唤醒。"
+                        "Return ordinary text explaining the wait, or call no_reply when no message is needed. The Runtime wakes the Objective when the condition is satisfied."
                     } else {
-                        "继续推进 Objective。"
+                        "Continue advancing the Objective."
                     }
                 }),
                 ObjectiveMutation::Conflict { current } => json!({
@@ -790,7 +790,7 @@ impl Tool for ObjectiveUpdateTool {
                     "current_status": current.status,
                     "current_status_reason": current.status_reason,
                     "wait_condition": current.wait_condition,
-                    "guidance": "以最新 Context Encoding 为准重新判断，禁止用过期 revision 覆盖。"
+                    "guidance": "Re-evaluate from the latest Context Encoding; never overwrite with a stale revision."
                 }),
                 ObjectiveMutation::NotFound => json!({
                     "status": "not_found",

@@ -590,27 +590,27 @@ impl Tool for TransferTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "在两个 Execution Target 之间可靠传输文件。只声明源、目的和覆盖策略；不要调用 ssh/scp/sftp，不要提供凭证或选择 Backend。Runtime 会冻结双 Route、复用当前权限审批，并校验摘要后原子交付。用户文件、外部文件和 Agent/Tool 产物都可以传输。".to_string(),
+            description: "Reliably transfer a file between two Execution Targets. Declare only the source, destination, and overwrite policy; do not call ssh/scp/sftp, provide credentials, or select a backend. The Runtime freezes both routes, reuses the current permission review, verifies digests, and delivers atomically. User files, external files, and Agent or tool artifacts are all supported.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "source": artifact_location_schema("源文件所在 Execution Target 与 Target-local 路径"),
-                    "destination": artifact_location_schema("目的文件所在 Execution Target 与 Target-local 路径"),
+                    "source": artifact_location_schema("The source Execution Target and Target-local path"),
+                    "destination": artifact_location_schema("The destination Execution Target and Target-local path"),
                     "overwrite": {
                         "type": "string",
                         "enum": ["deny", "replace"],
                         "default": "deny",
-                        "description": "deny 在目的已存在时失败；replace 在摘要校验后原子替换"
+                        "description": "deny fails when the destination exists; replace atomically replaces it after digest verification"
                     },
                     "expected_source_digest": {
                         "type": "string",
                         "pattern": "^sha256:[0-9a-f]{64}$",
-                        "description": "可选源内容前置条件，防止传输期间源文件被替换"
+                        "description": "Optional source-content precondition that prevents replacement during transfer"
                     },
                     "media_type": { "type": "string" },
                     "origin": {
                         "type": "object",
-                        "description": "可选来源证据；不决定所有权或披露策略",
+                        "description": "Optional provenance evidence; it does not determine ownership or disclosure policy",
                         "properties": {
                             "kind": { "type": "string", "enum": ["user", "agent", "tool", "external", "runtime", "unknown"] },
                             "principal_id": { "type": "string" },
@@ -667,16 +667,16 @@ fn artifact_location_schema(description: &str) -> serde_json::Value {
             "target_id": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Execution Target ID；本机为 target-default"
+                "description": "Execution Target ID; the local machine is target-default"
             },
             "workspace_identity": {
                 "type": "string",
-                "description": "可选 Target Workspace 稳定身份，用于诊断陈旧路由"
+                "description": "Optional stable Target Workspace identity used to diagnose stale routes"
             },
             "path": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Target-local 路径；是否允许绝对路径或 Workspace 外路径由当前权限 Profile 决定"
+                "description": "Target-local path; the current permission Profile decides whether absolute or outside-Workspace paths are allowed"
             }
         },
         "required": ["target_id", "path"],

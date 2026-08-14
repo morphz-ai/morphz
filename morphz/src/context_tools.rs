@@ -143,23 +143,23 @@ impl Tool for RecallTool {
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
         ToolDefinition {
             name: "recall".to_string(),
-            description: format!("按稳定短引用、查询词或时间范围主动读取 Event Ledger 原文及已退役 frame。Context 中 observation 的 ref 形如 @e27，由 Ledger sequence 确定性派生；event_id 参数优先使用该 ref，Runtime 会解析为完整 ID。用于验证摘要、恢复遗忘内容或分段读取被 preview 截断的大型输出；结果只进入 inbox，不会自动写入 Mind。event_id 模式单次最多返回 {max_chunk_chars} 个字符；如果 next_offset 非空，下一次必须把它原样作为 offset 继续读取。搜索模式可单独使用时间范围，也可与 query 组合；结果带 next_cursor 时应原样继续分页。"),
+            description: format!("Read original Event Ledger content and retired Frames by stable short reference, query, or time range. An observation ref such as @e27 is deterministically derived from its Ledger sequence; prefer that ref in event_id and the Runtime will resolve the full ID. Use this to verify summaries, recover forgotten content, or page through large preview-truncated output. Results enter only inbox and are not written to Mind automatically. event_id mode returns at most {max_chunk_chars} characters per call; when next_offset is present, pass it back unchanged as offset. Search mode accepts a time range alone or together with query; when next_cursor is present, pass it back unchanged to continue."),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "event_id": { "type": "string", "description": "Context observation 的稳定短 ref（如 @e27），也接受完整 Ledger event ID" },
-                    "frame_id": { "type": "string", "description": "已存在或已退役的 frame ID" },
-                    "query": { "type": "string", "description": "可选关键词；在当前 Cognitive Context 的 Ledger 中搜索（覆盖其中所有 Session）" },
-                    "start_time": { "type": "string", "format": "date-time", "description": "可选起始时间（RFC 3339，包含）；按 evaluation-environment.local-time 理解，必须携带明确 offset；可不提供 query 直接按时间召回" },
-                    "end_time": { "type": "string", "format": "date-time", "description": "可选结束时间（RFC 3339，不包含）；按当地时间理解并携带明确 offset" },
-                    "offset": { "type": "integer", "minimum": 0, "description": "读取 event 原文的字符偏移；连续分页时必须使用上次结果的 next_offset" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": max_chunk_chars, "description": format!("单次返回字符数，上限 {max_chunk_chars}") }
-                    ,"depth": { "type": "integer", "minimum": 0, "maximum": 4, "description": "frame_id 模式的关系遍历深度；0 只返回目标 Frame" }
-                    ,"direction": { "type": "string", "enum": ["ancestors", "descendants", "both"], "description": "frame_id 模式的关系遍历方向" }
-                    ,"include_bodies": { "type": "boolean", "description": "是否返回 Frame body，默认 true" }
-                    ,"include_events": { "type": "boolean", "description": "是否展开 Event source 原文；false 时仍返回 preview" }
-                    ,"max_nodes": { "type": "integer", "minimum": 1, "maximum": 128, "description": "frame_id 模式单页最多节点数，默认 32" }
-                    ,"cursor": { "type": "string", "description": "继续 Frame 图或时间搜索时原样使用上页 next_cursor；不得修改" }
+                    "event_id": { "type": "string", "description": "A stable short Context observation ref such as @e27; a full Ledger Event ID is also accepted" },
+                    "frame_id": { "type": "string", "description": "An existing or retired Frame ID" },
+                    "query": { "type": "string", "description": "Optional keywords to search across every Session in the current Cognitive Context Ledger" },
+                    "start_time": { "type": "string", "format": "date-time", "description": "Optional inclusive RFC 3339 start time interpreted using evaluation-environment.local-time; an explicit offset is required. A time-only recall does not require query" },
+                    "end_time": { "type": "string", "format": "date-time", "description": "Optional exclusive RFC 3339 end time interpreted in local time with an explicit offset" },
+                    "offset": { "type": "integer", "minimum": 0, "description": "Character offset into original Event content; for sequential paging, use the previous next_offset unchanged" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": max_chunk_chars, "description": format!("Characters returned per call, at most {max_chunk_chars}") }
+                    ,"depth": { "type": "integer", "minimum": 0, "maximum": 4, "description": "Relationship traversal depth in frame_id mode; 0 returns only the target Frame" }
+                    ,"direction": { "type": "string", "enum": ["ancestors", "descendants", "both"], "description": "Relationship traversal direction in frame_id mode" }
+                    ,"include_bodies": { "type": "boolean", "description": "Whether to return Frame bodies; defaults to true" }
+                    ,"include_events": { "type": "boolean", "description": "Whether to expand original Event sources; false still returns previews" }
+                    ,"max_nodes": { "type": "integer", "minimum": 1, "maximum": 128, "description": "Maximum Frame-graph nodes per page in frame_id mode; defaults to 32" }
+                    ,"cursor": { "type": "string", "description": "Pass the previous next_cursor unchanged to continue a Frame graph or time search" }
                 }
             }),
         }

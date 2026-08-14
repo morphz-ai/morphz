@@ -141,6 +141,15 @@ test('reasoning selector follows the selected model native capability list', () 
   assert.doesNotMatch(appSource, /inferredProviderReasoningEffort\(/)
 })
 
+test('automatic review model is selected from configured routes and hot-saved independently', () => {
+  assert.match(providersSource, /snapshot\.reviewer === 'auto_review'/)
+  assert.match(providersSource, /routes\.map\(\(\[routeId, route\]\)/)
+  assert.match(providersSource, /\/api\/runtime\/permissions\/auto-review-model/)
+  assert.match(providersSource, /\{ model: reviewerModel \|\| null \}/)
+  assert.match(providersSource, /providers\.autoReviewUseMainModel/)
+  assert.match(zhCatalog, /仅用于权限审核；切换后不会改变对话模型/)
+})
+
 test('provider setup only presents OAuth services whose complete Runtime bootstrap is published', () => {
   assert.match(
     providersSource,

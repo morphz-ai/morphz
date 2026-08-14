@@ -18,6 +18,10 @@ use std::path::Path;
 pub struct ProviderControlSnapshot {
     pub generated_at: DateTime<Utc>,
     pub selected_model_alias: String,
+    pub permission_mode: crate::permission::PermissionMode,
+    pub reviewer: crate::permission::ReviewerKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_review_model: Option<String>,
     pub auth_adapters: Vec<AuthAdapterDescriptor>,
     pub provider_instances: BTreeMap<String, ProviderInstanceConfig>,
     pub auth_accounts: BTreeMap<String, ProviderAccountControlRecord>,
@@ -56,6 +60,7 @@ pub enum ProviderCatalogObjectKind {
     ProviderInstance,
     AuthAccount,
     ModelRoute,
+    PermissionSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

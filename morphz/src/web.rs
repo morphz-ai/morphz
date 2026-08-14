@@ -119,6 +119,11 @@ struct ProviderAccountDiagnosticRequest {
 }
 
 #[derive(Default, serde::Deserialize)]
+struct UpdateAutoReviewModelRequest {
+    model: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
 struct SessionListQuery {
     #[serde(default)]
     include_archived: bool,
@@ -844,6 +849,10 @@ impl Server {
             .route(
                 "/api/runtime/providers/routes/:route_id/refresh-models",
                 post(handle_refresh_model_catalog),
+            )
+            .route(
+                "/api/runtime/permissions/auto-review-model",
+                axum::routing::put(handle_update_auto_review_model),
             )
             .route(
                 "/api/runtime/providers/accounts/:account_id/oauth/start",
@@ -1800,6 +1809,27 @@ async fn handle_put_model_route_config(
         .put_model_route_config(path, &route_id, route)
         .await
     {
+        Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_update_auto_review_model(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<UpdateAutoReviewModelRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "无法确定 Morphz 受管配置路径",
+        );
+    };
+    match state.sdk.put_auto_review_model(path, request.model) {
         Ok(receipt) => Json(receipt).into_response(),
         Err(error) => sdk_error_response(error),
     }
@@ -5034,6 +5064,7 @@ async fn handle_send_message(
                 Json(json!({
                     "accepted": true,
                     "duplicate": receipt.duplicate,
+                    "interrupted": receipt.interrupted,
                     "event_id": receipt.event_id,
                     "client_message_id": receipt.client_message_id,
                 })),
@@ -7357,6 +7388,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_auto_review_model_is_hot_applied_persisted_and_removable() {
+        let (state, runtime) = test_state().await;
+        let snapshot = runtime.provider_control_snapshot().await.unwrap();
+        assert_eq!(
+            snapshot.reviewer,
+            crate::permission::ReviewerKind::AutoReview
+        );
+        assert_eq!(snapshot.auto_review_model, None);
+        let route_id = snapshot
+            .model_routes
+            .keys()
+            .next()
+            .cloned()
+            .expect("fixture provider must expose one route");
+
+        let response = handle_update_auto_review_model(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateAutoReviewModelRequest {
+                model: Some(route_id.clone()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            runtime.auto_review_model().as_deref(),
+            Some(route_id.as_str())
+        );
+        assert_eq!(
+            runtime
+                .provider_control_snapshot()
+                .await
+                .unwrap()
+                .auto_review_model
+                .as_deref(),
+            Some(route_id.as_str())
+        );
+        let managed_path = state.managed_config_path.as_deref().unwrap();
+        let persisted: AppConfig =
+            toml::from_str(&std::fs::read_to_string(managed_path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.permissions.auto_review_model.as_deref(),
+            Some(route_id.as_str())
+        );
+
+        let response = handle_update_auto_review_model(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateAutoReviewModelRequest { model: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(runtime.auto_review_model(), None);
+        let restored: AppConfig =
+            toml::from_str(&std::fs::read_to_string(managed_path).unwrap()).unwrap();
+        assert_eq!(restored.permissions.auto_review_model, None);
+    }
+
+    #[tokio::test]
     async fn dashboard_provider_setup_atomically_persists_a_complete_catalog() {
         let tmp = tempfile::tempdir().unwrap();
         let database_path = tmp.path().join("morphz.db");
@@ -9043,6 +9137,11 @@ account = "xai-account"
             .await
             .into_response();
             assert_eq!(response.status(), expected_status);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let receipt: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(receipt["interrupted"], json!(false));
         }
 
         // Wait for the reply itself rather than for a fixed span. The suite

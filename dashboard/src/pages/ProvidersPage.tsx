@@ -111,6 +111,9 @@ interface ModelRouteConfig {
 interface ProviderControlSnapshot {
   generated_at: string
   selected_model_alias: string
+  permission_mode: string
+  reviewer: string
+  auto_review_model?: string
   auth_adapters: AuthAdapterDescriptor[]
   provider_instances: Record<string, ProviderInstanceConfig>
   auth_accounts: Record<string, ProviderAccountRecord>
@@ -216,7 +219,7 @@ interface CatalogEditorState {
 }
 
 interface CatalogMutationReceipt {
-  kind: CatalogEditorKind | 'provider_catalog'
+  kind: CatalogEditorKind | 'provider_catalog' | 'permission_settings'
   id: string
   managed_config_path: string
   restart_required: boolean
@@ -292,6 +295,8 @@ const API_PROTOCOLS = [
 const EMPTY_SNAPSHOT: ProviderControlSnapshot = {
   generated_at: '',
   selected_model_alias: '',
+  permission_mode: '',
+  reviewer: '',
   auth_adapters: [],
   provider_instances: {},
   auth_accounts: {},
@@ -339,6 +344,16 @@ function modelRouteDisplayLabel(route: ModelRouteConfig): string {
   return route.display_alias?.trim()
     || route.aliases[0]?.trim()
     || Array.from(new Set(route.candidates.map(candidate => candidate.model))).join(' / ')
+}
+
+function resolvedRouteId(
+  routes: Record<string, ModelRouteConfig>,
+  routeOrAlias?: string,
+): string {
+  if (!routeOrAlias) return ''
+  return Object.entries(routes).find(([routeId, route]) => (
+    routeId === routeOrAlias || route.aliases.includes(routeOrAlias)
+  ))?.[0] ?? routeOrAlias
 }
 
 function presetForAccount(accountId: string, record: ProviderAccountRecord): OAuthSetupPreset | undefined {
@@ -395,6 +410,8 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
   const [discoveringModels, setDiscoveringModels] = useState(false)
   const [modelDiscoveryError, setModelDiscoveryError] = useState('')
+  const [reviewerModel, setReviewerModel] = useState('')
+  const [savingReviewerModel, setSavingReviewerModel] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -411,6 +428,7 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
         oauthServicesRequest,
       ])
       setSnapshot(nextSnapshot)
+      setReviewerModel(resolvedRouteId(nextSnapshot.model_routes, nextSnapshot.auto_review_model))
       setAttempts(nextAttempts)
       setOAuthSetupServices(nextOAuthServices.data?.services ?? [])
       setOAuthServicesError(nextOAuthServices.error)
@@ -1106,6 +1124,26 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
   const selectedModelLabel = selectedRoute
     ? modelRouteDisplayLabel(selectedRoute[1])
     : snapshot.selected_model_alias
+  const effectiveReviewerModel = resolvedRouteId(snapshot.model_routes, snapshot.auto_review_model)
+
+  const saveReviewerModel = async () => {
+    if (savingReviewerModel) return
+    setSavingReviewerModel(true)
+    setError('')
+    try {
+      const receipt = await api.command<CatalogMutationReceipt>(
+        '/api/runtime/permissions/auto-review-model',
+        'PUT',
+        { model: reviewerModel || null },
+      )
+      setCatalogNotice(t('providers.autoReviewModelSaved', { path: receipt.managed_config_path }))
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setSavingReviewerModel(false)
+    }
+  }
 
   return (
     <section className="providers-view">
@@ -1130,6 +1168,36 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
         <span><small>{t('providers.selectedAlias')}</small><strong>{selectedModelLabel || '—'}</strong></span>
         <code>{localDate(snapshot.generated_at)}</code>
       </section>
+
+      {snapshot.reviewer === 'auto_review' && (
+        <section className="provider-auto-review-model">
+          <ShieldCheck size={17} />
+          <span>
+            <strong>{t('providers.autoReviewModel')}</strong>
+            <small>{t('providers.autoReviewModelHint')}</small>
+          </span>
+          <select
+            aria-label={t('providers.autoReviewModel')}
+            disabled={savingReviewerModel}
+            value={reviewerModel}
+            onChange={event => setReviewerModel(event.target.value)}
+          >
+            <option value="">{t('providers.autoReviewUseMainModel')}</option>
+            {routes.map(([routeId, route]) => (
+              <option value={routeId} key={routeId}>
+                {modelRouteDisplayLabel(route) || routeId} · {routeId}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={savingReviewerModel || reviewerModel === effectiveReviewerModel}
+            onClick={() => void saveReviewerModel()}
+          >
+            <Save size={13} /> {savingReviewerModel ? t('providers.busy') : t('providers.saveAutoReviewModel')}
+          </button>
+        </section>
+      )}
 
       {diagnostic && !diagnosticAccountId && (
         <section className={`provider-diagnostic ${diagnostic.health_verified ? 'is-success' : 'is-failure'}`}>

@@ -91,14 +91,14 @@ impl Tool for VerifyIdentityTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "验证消息正文中声称的 Principal 是否就是当前 Activation 的 Runtime 权威身份。不要传 session_id；Runtime 自动使用当前求值路由。身份声明与 kernel.active-principal 冲突、身份等价关系会影响判断、或用户明确要求验证时使用。它只验证身份事实，不替你决定是否分享信息。".to_string(),
+            description: "Verify whether a Principal claimed in message content is the authoritative Runtime identity for the current Activation. Do not pass session_id; the Runtime uses the current evaluation route. Use when a claim conflicts with kernel.active-principal, identity equivalence affects judgment, or the user explicitly requests verification. This verifies identity facts but does not decide disclosure.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "claimed_principal_id": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "需要验证的稳定 Principal ID，不是显示名称或 Session ID"
+                        "description": "Stable Principal ID to verify, not a display name or Session ID"
                     }
                 },
                 "required": ["claimed_principal_id"],
@@ -372,7 +372,7 @@ impl Registry {
                             "target".to_string(),
                             serde_json::json!({
                                 "type": "string",
-                                "description": "可选 Execution Target ID。未绑定 Thread 首次省略时绑定 target-default；已绑定 Thread 省略时继承其 Target。显式值若与 Thread 绑定不同会被拒绝，跨 Target 请用 schedule_tx.spawn 新建 Execution Thread。"
+                                "description": "Optional Execution Target ID. Omitting it on the first action of an unbound Thread binds target-default; an already bound Thread inherits its Target. An explicit conflicting value is rejected. Use schedule_tx.spawn for work on another Target."
                             }),
                         );
                     }
@@ -429,17 +429,17 @@ impl Tool for SendMessageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "向同一 Agent 的另一个 Session 主动发送消息。它不是当前 active Session 的回复，不结束当前 Evaluation，也不触发目标 Session 的新求值。当前 active Session 必须使用普通 assistant 文本回复。".to_string(),
+            description: "Proactively send a message to another Session of the same Agent. This is not a reply to the active Session, does not end the current Evaluation, and does not trigger evaluation in the target Session. Reply to the active Session with ordinary assistant text.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "session_id": {
                         "type": "string",
-                        "description": "目标 Session ID；必须属于当前 Agent 且不能是当前 active Session"
+                        "description": "Target Session ID; it must belong to the current Agent and cannot be the active Session"
                     },
                     "content": {
                         "type": "string",
-                        "description": "发送给目标 Session 的非空消息"
+                        "description": "Non-empty message to send to the target Session"
                     }
                 },
                 "required": ["session_id", "content"],
@@ -533,7 +533,7 @@ impl Tool for SendMessageTool {
             "status": "sent",
             "session_id": target_session_id,
             "event_id": event_id,
-            "guidance": "消息已投递给目标 Session；当前 Evaluation 尚未结束。如果当前 active Session 需要回复，请最终返回普通 assistant 文本。"
+            "guidance": "The message was delivered to the target Session; the current Evaluation has not ended. If the current active Session needs a reply, eventually return ordinary assistant text."
         })
         .to_string())
     }
@@ -1169,7 +1169,7 @@ impl BackgroundTaskScheduler {
                 "status": "cancel_requested",
                 "process_group_id": task_pgid,
                 "killed": true,
-                "guidance": "取消意图已持久化；只有进程退出观察提交后，ExecutionJob 才会进入 cancelled 终态。"
+                "guidance": "Cancellation intent is durable. The ExecutionJob reaches terminal cancelled only after the observed process exit is committed."
             })),
             Err(nix::errno::Errno::ESRCH) => Ok(serde_json::json!({
                 "kind": "background_task_kill",
@@ -1179,7 +1179,7 @@ impl BackgroundTaskScheduler {
                 "process_group_id": task_pgid,
                 "killed": false,
                 "reason": "process_group_not_found",
-                "guidance": "取消意图已持久化；等待进程 watcher 提交真实终态，Runtime 不把 ESRCH 猜成 cancelled。"
+                "guidance": "Cancellation intent is durable. Wait for the process watcher to commit the real terminal state; the Runtime does not guess cancelled from ESRCH."
             })),
             Err(error) => Err(format!(
                 "强杀进程组 {} 遭遇系统级错误: {:?}；取消请求仍保持持久化",
@@ -1886,7 +1886,7 @@ impl ScheduleTxTool {
                     "status": if inspected.is_some() { "ok" } else { "not_found" },
                     "operation": "inspect",
                     "schedule": inspected,
-                    "guidance": "后续修改必须提交这里返回的当前 revision；Runtime 会拒绝过期 revision。"
+                    "guidance": "Subsequent mutations must submit the current revision returned here; the Runtime rejects stale revisions."
                 }))
                 .to_string());
             }
@@ -2212,13 +2212,13 @@ fn schedule_mutation_receipt(operation: &str, mutation: ScheduleMutation) -> ser
             "status": "updated",
             "operation": operation,
             "schedule": schedule,
-            "guidance": "Schedule 与对应 Timer generation 已按同一个 revision 收口。"
+            "guidance": "The Schedule and its matching Timer generation were finalized under the same revision."
         }),
         ScheduleMutation::Conflict { current } => serde_json::json!({
             "status": "conflict",
             "operation": operation,
             "schedule": current,
-            "guidance": "提交的 expected_revision 已过期；请依据返回的当前状态重新决策，不要盲目重试旧请求。"
+            "guidance": "The submitted expected_revision is stale. Re-decide from the returned current state instead of blindly retrying the old request."
         }),
         ScheduleMutation::Rejected { current, reason } => serde_json::json!({
             "status": "rejected",
@@ -2267,7 +2267,7 @@ fn thread_promotion_receipt(mutation: ThreadPromotionMutation) -> serde_json::Va
             "objective": record.objective,
             "source_group": record.source_group,
             "target_group": record.target_group,
-            "guidance": "同一 Thread 已转为 durable；原 Evaluation barrier 已释放，后续终态由 Objective Group 验收。不要为同一工作再创建重复 Thread。"
+            "guidance": "The same Thread is now durable. The original Evaluation barrier is released and the Objective Group verifies its eventual terminal state. Do not create a duplicate Thread for the same work."
         }),
         ThreadPromotionMutation::Conflict {
             current_thread,
@@ -2277,7 +2277,7 @@ fn thread_promotion_receipt(mutation: ThreadPromotionMutation) -> serde_json::Va
             "operation": "promote",
             "thread": current_thread,
             "objective": current_objective,
-            "guidance": "Thread 或 Objective revision 已变化；请依据当前状态重新决策，不要盲目重试旧升格请求。"
+            "guidance": "The Thread or Objective revision changed. Re-decide from current state instead of blindly retrying the stale promotion request."
         }),
         ThreadPromotionMutation::Rejected {
             current_thread,
@@ -2460,8 +2460,8 @@ fn schedule_objective_binding_schema() -> serde_json::Value {
                 "type": "object",
                 "properties": {
                     "mode": {"const": "create"},
-                    "stated_objective": {"type": "string", "description": "拥有独立暂停、恢复、取消和验收生命周期的新目标"},
-                    "completion_criteria": {"type": "string", "description": "新 Objective 的明确完成标准"},
+                    "stated_objective": {"type": "string", "description": "New objective with an independent pause, resume, cancellation, and acceptance lifecycle"},
+                    "completion_criteria": {"type": "string", "description": "Explicit completion criteria for the new Objective"},
                     "token_budget": {"type": "integer", "minimum": 1}
                 },
                 "required": ["mode", "stated_objective", "completion_criteria"],
@@ -2476,8 +2476,8 @@ fn schedule_promote_operation_schema() -> serde_json::Value {
         "type": "object",
         "properties": {
             "op": {"const": "promote"},
-            "thread_id": {"type": "string", "description": "当前父 Thread generation 拥有的 open attached Thread"},
-            "expected_revision": {"type": "integer", "minimum": 1, "description": "创建/检查 Thread 时返回的 revision；过期值会返回 conflict"},
+            "thread_id": {"type": "string", "description": "Open attached Thread owned by the current parent Thread generation"},
+            "expected_revision": {"type": "integer", "minimum": 1, "description": "Revision returned when the Thread was created or inspected; a stale value returns conflict"},
             "objective": schedule_objective_binding_schema()
         },
         "required": ["op", "thread_id", "expected_revision", "objective"],
@@ -2500,7 +2500,7 @@ impl Tool for ScheduleTxTool {
         let promote_operation_schema = schedule_promote_operation_schema();
         ToolDefinition {
             name: self.name().to_string(),
-            description: "创建或控制受监督 Thread 调度计划。spawn 必须声明 lifetime：attached 由当前父 Thread generation 检查，durable 必须绑定 current/existing/create Objective，disposable 是不保证恢复或交付的尽力执行；多个 sibling 可用 group(all|any) 形成一次权威 barrier。promote 可把当前父 Thread 已启动的 attached Thread 原子移交给 current/existing/create Objective，不会重复启动工作。objective.mode=create 会把独立 Objective、初始等待、Thread、Group 与 Schedule 原子提交。enqueue/spawn 可原子批量创建；promote 与 inspect/pause/resume/reschedule/cancel 必须单独提交，并使用 expected_revision 防止过期写。not_before 或 delay_seconds 设置时间，every_seconds 设置周期；after 指定依赖 Thread。schedule_tx 必须是本次响应中唯一的工具调用。".to_string(),
+            description: "Create or control supervised Thread schedules. spawn requires a lifetime: attached is checked by the current parent Thread generation; durable must bind a current, existing, or newly created Objective; disposable is best effort with no recovery or delivery guarantee. Multiple siblings may form one authoritative group(all|any) barrier. promote atomically transfers an already started attached Thread from the current parent to a current/existing/create Objective without restarting work. objective.mode=create atomically commits an independent Objective, initial wait, Thread, Group, and Schedule. enqueue/spawn support atomic batches. promote and inspect/pause/resume/reschedule/cancel must be submitted alone and use expected_revision to prevent stale writes. not_before or delay_seconds sets timing, every_seconds sets recurrence, and after declares Thread dependencies. schedule_tx must be the only tool call in the response.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2508,18 +2508,18 @@ impl Tool for ScheduleTxTool {
                         "type": "array",
                         "minItems": 1,
                         "maxItems": MAX_SCHEDULE_OPERATIONS,
-                        "description": "按数组顺序原子提交的调度操作",
+                        "description": "Schedule operations committed atomically in array order",
                         "items": {
                             "oneOf": [
                                 {
                                     "type": "object",
                                     "properties": {
                                         "op": {"const": "enqueue"},
-                                        "thread_id": {"type": "string", "description": "目标 Thread ID；省略时为当前 Thread"},
-                                        "intent": {"type": "string", "description": "Thread 被唤醒后需要执行的自然语言意图"},
-                                        "not_before": {"type": "string", "description": "按 evaluation-environment.local-time 表达的 RFC 3339 绝对时间，必须携带明确 offset；相对等待优先使用 delay_seconds"},
+                                        "thread_id": {"type": "string", "description": "Target Thread ID; omit for the current Thread"},
+                                        "intent": {"type": "string", "description": "Natural-language intent to execute when the Thread wakes"},
+                                        "not_before": {"type": "string", "description": "RFC3339 absolute time expressed in evaluation-environment.local-time with an explicit offset; prefer delay_seconds for a relative wait"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
-                                        "after": {"type": "array", "items": {"type": "string"}, "description": "依赖 Thread ID，或同一事务中 spawn 的 $client_id"}
+                                        "after": {"type": "array", "items": {"type": "string"}, "description": "Dependency Thread IDs or $client_id references to spawns in this transaction"}
                                     },
                                     "required": ["op", "intent"],
                                     "additionalProperties": false
@@ -2528,27 +2528,27 @@ impl Tool for ScheduleTxTool {
                                     "type": "object",
                                     "properties": {
                                         "op": {"const": "spawn"},
-                                        "client_id": {"type": "string", "description": "本事务局部名称，可被后续 after 用 $client_id 引用"},
+                                        "client_id": {"type": "string", "description": "Transaction-local name referenced by later after entries as $client_id"},
                                         "intent": {"type": "string"},
-                                        "not_before": {"type": "string", "description": "按 evaluation-environment.local-time 表达的 RFC 3339 绝对时间，必须携带明确 offset；相对等待优先使用 delay_seconds"},
+                                        "not_before": {"type": "string", "description": "RFC3339 absolute time expressed in evaluation-environment.local-time with an explicit offset; prefer delay_seconds for a relative wait"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
-                                        "every_seconds": {"type": "integer", "minimum": 1, "description": "固定间隔周期；每次到期生成独立 occurrence Thread"},
+                                        "every_seconds": {"type": "integer", "minimum": 1, "description": "Fixed recurrence interval; each due time creates an independent occurrence Thread"},
                                         "after": {"type": "array", "items": {"type": "string"}},
-                                        "target": {"type": "string", "description": "新 Execution Thread 绑定的稳定 Execution Target ID；省略时保持未绑定，首个物理动作决定"},
+                                        "target": {"type": "string", "description": "Stable Execution Target ID for the new Execution Thread; omit to remain unbound until its first physical action"},
                                         "lifetime": {
                                             "type": "string",
                                             "enum": ["attached", "durable", "disposable"],
-                                            "description": "attached 必须由本轮消费结果；durable 必须绑定 Objective；disposable 不得成为 required 依赖"
+                                            "description": "attached results must be consumed by this parent lifecycle; durable must bind an Objective; disposable cannot be a required dependency"
                                         },
                                         "objective": {
                                             "oneOf": objective_binding_schema["oneOf"].clone(),
-                                            "description": "仅 lifetime=durable 使用；current 指向当前绑定 Objective；create 仅用于真正独立的持久生命周期"
+                                            "description": "Used only with lifetime=durable. current names the bound Objective; create is only for a genuinely independent durable lifecycle"
                                         },
                                         "completion": {
                                             "type": "object",
                                             "properties": {
                                                 "required": {"type": "boolean", "default": true},
-                                                "contract": {"type": "object", "description": "Runtime/Harness 可验证的有界完成契约"}
+                                                "contract": {"type": "object", "description": "Bounded completion contract verifiable by the Runtime or Harness"}
                                             },
                                             "additionalProperties": false
                                         }
@@ -2571,7 +2571,7 @@ impl Tool for ScheduleTxTool {
                                     "properties": {
                                         "op": {"const": "pause"},
                                         "schedule_id": {"type": "string"},
-                                        "expected_revision": {"type": "integer", "minimum": 1, "description": "inspect 返回的当前 revision；过期值会返回 conflict"}
+                                        "expected_revision": {"type": "integer", "minimum": 1, "description": "Current revision returned by inspect; a stale value returns conflict"}
                                     },
                                     "required": ["op", "schedule_id", "expected_revision"],
                                     "additionalProperties": false
@@ -2592,9 +2592,9 @@ impl Tool for ScheduleTxTool {
                                         "op": {"const": "reschedule"},
                                         "schedule_id": {"type": "string"},
                                         "expected_revision": {"type": "integer", "minimum": 1},
-                                        "not_before": {"type": "string", "description": "新的当地 RFC 3339 绝对时间，必须携带明确 offset；与 delay_seconds 二选一"},
+                                        "not_before": {"type": "string", "description": "New local RFC3339 absolute time with an explicit offset; mutually exclusive with delay_seconds"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
-                                        "every_seconds": {"type": "integer", "minimum": 1, "description": "新的周期；省略表示改为一次性"}
+                                        "every_seconds": {"type": "integer", "minimum": 1, "description": "New recurrence interval; omit to make the schedule one-shot"}
                                     },
                                     "required": ["op", "schedule_id", "expected_revision"],
                                     "additionalProperties": false
@@ -2619,7 +2619,7 @@ impl Tool for ScheduleTxTool {
                             "completion_contract": {"type": "object"}
                         },
                         "additionalProperties": false,
-                        "description": "为本事务创建的 sibling Thread 建立一个持久 join barrier；attached spawn 会自动建立 all Group"
+                        "description": "Create a durable join barrier for sibling Threads in this transaction; attached spawns automatically create an all Group"
                     }
                 },
                 "required": ["operations"],
@@ -4171,20 +4171,20 @@ impl Tool for WriteFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "要写入的文件路径，例如: test.txt"
+                    "description": "Path of the file to write, for example test.txt"
                 },
                 "content": {
                     "type": "string",
-                    "description": "要写入文件的文本内容"
+                    "description": "Text content to write"
                 },
                 "mode": {
                     "type": "string",
                     "enum": ["create", "overwrite"],
-                    "description": "create 只允许新文件；overwrite 只允许已存在文件且必须提供 expected_sha256"
+                    "description": "create permits only a new file; overwrite permits only an existing file and requires expected_sha256"
                 },
                 "expected_sha256": {
                     "type": "string",
-                    "description": "overwrite 必填，必须等于最近一次 read 返回的 SHA-256；不一致时拒绝覆盖"
+                    "description": "Required for overwrite and must equal the SHA-256 from the latest read; mismatch rejects the write"
                 }
             },
             "required": ["path", "content", "mode"]
@@ -4192,7 +4192,7 @@ impl Tool for WriteFileTool {
 
         ToolDefinition {
             name: "write".to_string(),
-            description: "原子创建或显式覆盖 UTF-8 文本文件。修改既有代码优先使用 edit；overwrite 必须携带 read 返回的 expected_sha256，防止覆盖并发变化。成功后返回 diff/hash 并产生 file_change observation。".to_string(),
+            description: "Atomically create or explicitly overwrite a UTF-8 text file. Prefer edit for existing code. overwrite requires expected_sha256 from read to prevent clobbering concurrent changes. Success returns diff/hash and creates a file_change observation.".to_string(),
             parameters: params_json,
         }
     }
@@ -4369,33 +4369,33 @@ impl Tool for ReadFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "要读取的文件路径，例如: test.txt"
+                    "description": "Path of the file to read, for example test.txt"
                 },
                 "start_line": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "可选，1-based 起始行；与 end_line 配合精确读取"
+                    "description": "Optional 1-based start line; combine with end_line for an exact range"
                 },
                 "end_line": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "可选，1-based 包含式结束行"
+                    "description": "Optional 1-based inclusive end line"
                 },
                 "query": {
                     "type": "string",
-                    "description": "可选，在文件中进行大小写不敏感的字面文本查询，并返回带行号的匹配上下文；查证具体实现时优先使用，避免重复读取整文件或调用 grep"
+                    "description": "Optional case-insensitive literal query that returns line-numbered matching context; prefer it for implementation verification to avoid rereading the whole file or calling grep"
                 },
                 "context_lines": {
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 20,
-                    "description": "query 每个匹配前后的上下文行数，默认 3"
+                    "description": "Context lines before and after each query match; default 3"
                 },
                 "max_matches": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 100,
-                    "description": "query 最多展示的匹配数，默认 20"
+                    "description": "Maximum query matches to show; default 20"
                 }
             },
             "required": ["path"]
@@ -4403,7 +4403,7 @@ impl Tool for ReadFileTool {
 
         ToolDefinition {
             name: "read".to_string(),
-            description: "读取指定路径的 UTF-8 文件，并始终返回 bytes 与 SHA-256 版本标识，供后续 edit/overwrite 使用。短文件可只传 path；长文件应使用 query 查找带行号的窄证据，或使用 start_line/end_line 精确分页。"
+            description: "Read a UTF-8 file and always return byte count and SHA-256 version for later edit/overwrite. For a short file pass only path. For a long file use query for narrow line-numbered evidence or start_line/end_line for exact paging."
                 .to_string(),
             parameters: params_json,
         }
@@ -4609,21 +4609,21 @@ impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "edit".to_string(),
-            description: "对已读取的 UTF-8 文件执行带 SHA-256 版本前提的精确文本替换。默认要求 old_text 在原文件中唯一匹配；需要替换全部匹配时显式设置 replace_all=true。全部编辑先校验、再原子提交，成功后返回 diff/hash 并产生 file_change observation。".to_string(),
+            description: "Perform exact text replacements in a previously read UTF-8 file under a SHA-256 version precondition. By default old_text must match exactly once; set replace_all=true explicitly to replace every match. All edits are validated before one atomic commit. Success returns diff/hash and creates a file_change observation.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "工作区内已存在的文本文件" },
-                    "expected_sha256": { "type": "string", "description": "最近一次 read 返回的完整 SHA-256" },
+                    "path": { "type": "string", "description": "Existing text file in the workspace" },
+                    "expected_sha256": { "type": "string", "description": "Complete SHA-256 returned by the latest read" },
                     "edits": {
                         "type": "array",
                         "minItems": 1,
                         "items": {
                             "type": "object",
                             "properties": {
-                                "old_text": { "type": "string", "minLength": 1, "description": "必须在原文件中精确出现的文本" },
-                                "new_text": { "type": "string", "description": "替换后的文本；空字符串表示删除" },
-                                "replace_all": { "type": "boolean", "default": false, "description": "false 时 old_text 必须唯一；true 时替换全部匹配" }
+                                "old_text": { "type": "string", "minLength": 1, "description": "Text that must occur exactly in the original file" },
+                                "new_text": { "type": "string", "description": "Replacement text; an empty string deletes the match" },
+                                "replace_all": { "type": "boolean", "default": false, "description": "When false old_text must be unique; when true replace every match" }
                             },
                             "required": ["old_text", "new_text"]
                         }
@@ -4879,12 +4879,12 @@ impl Tool for ListFilesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_files".to_string(),
-            description: "在当前 Permission Profile 允许的目录内递归发现文件。支持 glob、结果上限和隐藏文件控制；用于代码导航，避免通过 exec/ls/find 产生不受控输出。".to_string(),
+            description: "Recursively discover files inside directories allowed by the current Permission Profile. Supports glob, result limits, and hidden-file control. Use for code navigation instead of uncontrolled exec/ls/find output.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "default": ".", "description": "搜索根目录" },
-                    "glob": { "type": "string", "default": "**/*", "description": "相对于 path 的 glob，例如 **/*.rs" },
+                    "path": { "type": "string", "default": ".", "description": "Search root directory" },
+                    "glob": { "type": "string", "default": "**/*", "description": "Glob relative to path, for example **/*.rs" },
                     "max_results": { "type": "integer", "minimum": 1, "maximum": 2000, "default": 500 },
                     "include_hidden": { "type": "boolean", "default": false },
                     "include_directories": { "type": "boolean", "default": false }
@@ -5019,13 +5019,13 @@ impl Tool for SearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "search".to_string(),
-            description: "在当前 Permission Profile 允许的目录内对 UTF-8 源文件执行大小受限的字面文本搜索，返回路径、行号和上下文。用于定位代码，避免使用 exec/rg/grep。".to_string(),
+            description: "Run a size-bounded literal text search over UTF-8 source files inside directories allowed by the current Permission Profile. Returns paths, line numbers, and context. Use for code location instead of exec/rg/grep.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "minLength": 1, "description": "字面搜索文本，不是正则表达式" },
-                    "paths": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "文件或目录列表" },
-                    "glob": { "type": "string", "default": "**/*", "description": "目录内文件过滤，例如 **/*.rs" },
+                    "query": { "type": "string", "minLength": 1, "description": "Literal search text, not a regular expression" },
+                    "paths": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "List of files or directories" },
+                    "glob": { "type": "string", "default": "**/*", "description": "File filter within directories, for example **/*.rs" },
                     "max_matches": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 },
                     "context_lines": { "type": "integer", "minimum": 0, "maximum": 20, "default": 2 },
                     "case_sensitive": { "type": "boolean", "default": false },
@@ -5659,54 +5659,54 @@ impl Tool for ExecuteCommandTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "要在本地终端执行的前台 Shell 命令，例如 'cargo test' 或 'ls'。秘密应通过 requested_permissions.secret_env 按环境变量名注入；禁止用 '&' 自行后台化。"
+                    "description": "Foreground Shell command to run in the terminal, for example 'cargo test' or 'ls'. Inject secrets by environment-variable name through requested_permissions.secret_env. Do not background a command with '&'."
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "可选，命令工作目录；默认 workspace_root。边界外目录必须配合 require_escalated 申请最小权限。"
+                    "description": "Optional command working directory; defaults to workspace_root. An out-of-bound directory requires minimal permissions through require_escalated."
                 },
                 "wait_ms": {
                     "type": "integer",
-                    "description": "同步等待输出的最长超时毫秒数。默认 10000 毫秒；测试/编译超过该时长后自动转入后台异步运行。"
+                    "description": "Maximum milliseconds to wait synchronously for output. Default 10000; a longer test or build automatically transitions to managed background execution."
                 },
                 "keep_running": {
                     "type": "boolean",
-                    "description": "默认 false。设为 true 表示这个进程是要一直留着的常驻服务（dev server、watcher、后端进程），本回合不等它结束；Runtime 因此不会把它当作未完成的工作而阻止回合收口。编译、测试、脚本这类最终会退出、且结果本回合需要的命令必须保持 false。"
+                    "description": "Default false. Set true only for a persistent service such as a dev server, watcher, or backend that should outlive this turn; the Runtime then does not block turn completion on it. Keep false for builds, tests, and scripts that eventually exit and whose result is needed in this turn."
                 },
                 "sandbox_permissions": {
                     "type": "string",
                     "enum": ["use_default", "require_escalated"],
-                    "description": "默认 use_default，在当前原生沙箱内运行。若回执和 stderr 明确证明失败源于缺少网络、边界外目录或秘密环境变量，且能力确为当前任务所必需，可用同一条必要命令和 require_escalated 重试一次；普通命令失败、protected_paths 或审批拒绝不得盲目重试。"
+                    "description": "Default use_default runs in the current native sandbox. If the receipt and stderr explicitly prove failure due to missing network, out-of-bound path, or secret environment access, and that capability is required, retry the same necessary command once with require_escalated. Do not retry ordinary errors, protected_paths, or approval denials blindly."
                 },
                 "requested_permissions": {
                     "type": "object",
-                    "description": "require_escalated 时申请的最小额外能力。审批只对本次准确命令有效，不能申请关闭沙箱。",
+                    "description": "Minimal additional capabilities requested with require_escalated. Approval applies only to this exact command and cannot disable the sandbox.",
                     "properties": {
                         "network": {
                             "type": "boolean",
-                            "description": "是否申请本次命令访问网络。"
+                            "description": "Whether this command requests network access."
                         },
                         "read_paths": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "额外只读目录；相对路径按 workspace_root 解析。"
+                            "description": "Additional read-only directories; relative paths resolve from workspace_root."
                         },
                         "write_paths": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "额外可写目录；相对路径按 workspace_root 解析。"
+                            "description": "Additional writable directories; relative paths resolve from workspace_root."
                         },
                         "secret_env": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "需要注入本次子进程的敏感环境变量名。只传名称，不得把值写入 command；必须经过一次性审批。"
+                            "description": "Names of sensitive environment variables to inject into this child process. Pass names only, never values in command; one-time approval is required."
                         }
                     },
                     "additionalProperties": false
                 },
                 "justification": {
                     "type": "string",
-                    "description": "require_escalated 时必填：说明额外能力与当前用户任务的直接关系。"
+                    "description": "Required with require_escalated: explain the direct relationship between the additional capability and the current user task."
                 }
             },
             "required": ["command"]
@@ -5714,7 +5714,7 @@ impl Tool for ExecuteCommandTool {
 
         ToolDefinition {
             name: "exec".to_string(),
-            description: "在当前操作系统的原生沙箱中执行 Shell 命令，默认仅允许配置的工作区路径且禁止网络。适合运行测试、编译和格式化；文件发现优先使用 list_files/search，修改优先使用 edit/write。禁止在本地 Target 直接调用 ssh/scp/sftp；远程命令必须先解析 managed_ssh Target，再把目标 ID 作为 target 参数传给 exec，由 Runtime 受管连接。确需其他网络、目录或秘密环境变量时，使用 require_escalated 申请最小能力，由独立审批者决定；若默认执行因明确的边界拒绝失败，回执会说明申请方式。命令等待超时后由 Runtime 转为后台托管；禁止通过 '&' 自行创建非托管后台进程。".to_string(),
+            description: "Run a Shell command in the operating system's native sandbox, which by default permits configured workspace paths and denies network. Suitable for tests, builds, and formatting. Prefer list_files/search for discovery and edit/write for changes. Do not call ssh/scp/sftp directly on a local Target; resolve a managed_ssh Target and pass its ID as target so the Runtime manages the connection. When other network, path, or secret environment capabilities are truly needed, request the minimum through require_escalated for independent review. A boundary rejection receipt explains how to request it. After the wait timeout the Runtime manages the command in the background. Never create an unmanaged background process with '&'.".to_string(),
             parameters: params_json,
         }
     }
@@ -6444,7 +6444,7 @@ impl Tool for ExecuteCommandTool {
                     "artifact_path": buffer.archive_path,
                     "output_empty": output_str.is_empty(),
                     "output": output_str,
-                    "guidance": "任务完成会通过 Inbox 主动唤醒；普通等待直接 no_reply，不要调用等待工具。只有存在明确截止时间或停滞监督需求时，才用 check_task_after 安排一次检查点；不应继续时调用 kill_task。不要 sleep、ps 或重复读取空日志轮询。",
+                    "guidance": "Task completion wakes the Runtime through Inbox. For ordinary waiting, call no_reply instead of a waiting tool. Use check_task_after for one checkpoint only when there is a real deadline or stall-monitoring need; call kill_task when work should not continue. Do not poll with sleep, ps, or repeated empty-log reads.",
                 })
                 .to_string())
             }
@@ -6567,17 +6567,17 @@ impl Tool for ListTasksTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "列出当前认知 Context 内由 Runtime 托管的后台 Shell 任务。返回真实运行状态、有效网络/沙箱边界、最后输出时间和归档路径；不要使用 ps 猜测任务状态。".to_string(),
+            description: "List Runtime-managed background Shell tasks in the current Cognitive Context. Returns authoritative run state, effective network/sandbox boundary, last output time, and archive path. Do not infer task state with ps.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "include_finished": {
                         "type": "boolean",
-                        "description": "是否包含 Runtime 最近保留的已完成任务；默认 false。"
+                        "description": "Whether to include recently retained terminal tasks; default false."
                     },
                     "session_id": {
                         "type": "string",
-                        "description": "可选，仅查看某个 Session 发起的任务。"
+                        "description": "Optional: include only tasks started by one Session."
                     }
                 },
                 "additionalProperties": false
@@ -6660,13 +6660,13 @@ impl Tool for TaskStatusTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "读取一个 Runtime 托管后台任务的权威状态。用它确认任务是否真正运行、是否具有所需网络边界、是否无输出停滞以及最终退出码。".to_string(),
+            description: "Read authoritative state for one Runtime-managed background task. Use it to confirm whether the task is actually running, has the required network boundary, has stalled without output, and what terminal exit code it produced.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "string",
-                        "description": "exec 返回的后台任务 ID。"
+                        "description": "Background task ID returned by exec."
                     }
                 },
                 "required": ["task_id"],
@@ -6717,19 +6717,19 @@ impl Tool for CheckTaskAfterTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "仅在确实需要截止时间或停滞监督时，为后台任务安排一次未来检查点。任务完成本来就会主动唤醒，因此普通后台等待不要调用本工具。该调用不轮询、不占用 LLM，也不终止任务；检查点到达后可按事实继续等待或调用 kill_task。".to_string(),
+            description: "Schedule one future checkpoint for a background task only when a real deadline or stall supervision is needed. Task completion already wakes the Runtime, so do not use this for ordinary waiting. It does not poll, consume an LLM call, or terminate the task. At the checkpoint, continue waiting from facts or call kill_task.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "string",
-                        "description": "要等待的后台任务 ID。"
+                        "description": "Background task ID to supervise."
                     },
                     "check_after_secs": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": MAX_TASK_WAIT_SECS,
-                        "description": "多久后重新唤醒 Agent 检查该任务。省略时使用 Runtime 配置的监督间隔。"
+                        "description": "Seconds before waking the Agent to inspect the task; omit to use the configured supervision interval."
                     }
                 },
                 "required": ["task_id"],
@@ -6762,7 +6762,7 @@ impl Tool for CheckTaskAfterTool {
                     "scheduled": false,
                     "waiting": false,
                     "task": background_execution_snapshot(&job, live.as_deref()),
-                    "next_action": "任务已经结束，直接根据持久 ExecutionJob 的退出码和结果继续处理。",
+                    "next_action": "The task has ended. Continue directly from the durable ExecutionJob exit code and result.",
                 })
                 .to_string());
             }
@@ -6777,7 +6777,7 @@ impl Tool for CheckTaskAfterTool {
                 "scheduled": false,
                 "waiting": false,
                 "task": background_task_snapshot(&task),
-                "next_action": "任务已经结束，直接根据退出码和输出继续处理。",
+                "next_action": "The task has ended. Continue directly from its exit code and output.",
             })
             .to_string());
         }
@@ -6799,7 +6799,7 @@ impl Tool for CheckTaskAfterTool {
                             "scheduled": false,
                             "waiting": false,
                             "task": background_task_snapshot(&task),
-                            "next_action": "任务在安排等待时已经结束，直接根据退出码和输出继续处理。",
+                            "next_action": "The task ended while the checkpoint was being scheduled. Continue directly from its exit code and output.",
                         })
                         .to_string());
                     }
@@ -6817,7 +6817,7 @@ impl Tool for CheckTaskAfterTool {
             "check_at": wakeup_at,
             "wakeup_at": wakeup_at,
             "task": background_task_snapshot(&task),
-            "next_action": "若无需立即发送消息，调用 no_reply 结束当前求值；任务结束或检查点到达时 Runtime 会主动唤醒。不要 sleep、ps、轮询日志或立即重复安排检查点。",
+            "next_action": "If no immediate message is needed, call no_reply to end the current evaluation. Task completion or the checkpoint wakes the Runtime. Do not use sleep, ps, log polling, or immediately schedule another checkpoint.",
         }))
         .to_string())
     }
@@ -6844,7 +6844,7 @@ impl Tool for KillTaskTool {
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "要强杀的后台任务 ID，例如 task_1719234560"
+                    "description": "Background task ID to force-kill, for example task_1719234560"
                 }
             },
             "required": ["task_id"]
@@ -6853,7 +6853,7 @@ impl Tool for KillTaskTool {
         ToolDefinition {
             name: "kill_task".to_string(),
             description:
-                "强行终止失控或已无用处的后台托管 Shell 任务，释放其占用的全部进程树及物理资源。"
+                "Force-terminate an out-of-control or no-longer-needed managed background shell task, including its process tree and physical resources."
                     .to_string(),
             parameters: params_json,
         }
@@ -6906,7 +6906,7 @@ impl Tool for KillTaskTool {
                     "status": "kill_requested",
                     "process_group_id": task_pgid,
                     "killed": true,
-                    "guidance": "进程退出事件会携带最终 killed 状态和退出码。"
+                    "guidance": "The process-exit event carries the final killed state and exit code."
                 })
                 .to_string()),
                 Err(e) => {
@@ -6989,28 +6989,28 @@ impl Tool for DelegateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "delegate".to_string(),
-            description: "把一项较重任务委派给认知隔离的 Sub Agent。注意：它不是新容器、新进程或新的物理沙箱；父子共享同一个 Runtime workspace、文件系统和权限边界，不能通过修改 Runtime 配置来制造隔离。默认 attached：Runtime 挂起当前求值，不把 queued 回执当作新 Observation 唤醒你；Sub Agent 完成后才用 delegate 结果恢复当前 Session，因此不要轮询 recall。只有任务明确应脱离当前回合继续后台运行时才用 detached。Sub Agent 继承共享 Mind 与可选的当前 Session 证据，但不能直接修改父 Mind；结果由你验证、回复或整合。".to_string(),
+            description: "Delegate a substantial task to a cognitively isolated Sub Agent. This does not create a new container, process, or physical sandbox: parent and child share the Runtime workspace, filesystem, and permission boundary, and Runtime configuration changes cannot create isolation. The default mode is attached: the Runtime suspends the current evaluation, does not wake it with the queued receipt as a new Observation, and resumes the current Session with the delegate result only after the Sub Agent finishes; do not poll recall. Use detached only when the task should explicitly continue in the background beyond the current turn. The Sub Agent inherits the shared Mind and, optionally, evidence from the current Session, but cannot directly modify the parent Mind; verify, report, or integrate its result yourself.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "交给 Sub Agent 的完整任务"
+                        "description": "The complete task for the Sub Agent"
                     },
                     "success_when": {
                         "type": "string",
-                        "description": "可验证的完成条件"
+                        "description": "A verifiable completion condition"
                     },
                     "context_scope": {
                         "type": "string",
                         "enum": ["current_session", "mind_only"],
-                        "description": "current_session 继承 Mind 与当前 Session；mind_only 只继承 Mind",
+                        "description": "current_session inherits the Mind and current Session; mind_only inherits only the Mind",
                         "default": "current_session"
                     },
                     "mode": {
                         "type": "string",
                         "enum": ["attached", "detached"],
-                        "description": "attached 等待 Sub Agent 结果后再恢复当前求值；detached 立即返回 queued 回执并允许当前回合继续",
+                        "description": "attached waits for the Sub Agent result before resuming the current evaluation; detached returns a queued receipt immediately and lets the current turn continue",
                         "default": "attached"
                     }
                 },
@@ -7110,9 +7110,9 @@ impl Tool for DelegateTool {
             "child_context_id": child_context_id,
             "child_session_id": child_session_id,
             "guidance": if args.mode == "attached" {
-                "Sub Agent 已排队；Runtime 将等待完成结果后恢复当前 Session，请勿轮询。"
+                "The Sub Agent is queued. The Runtime waits for its result before resuming the current Session; do not poll."
             } else {
-                "Sub Agent 已在后台排队；当前回合可以继续或回复，完成结果稍后返回当前 Session。"
+                "The Sub Agent is queued in the background. The current turn may continue or reply; its completed result will return to the current Session later."
             }
         })
         .to_string())
@@ -7147,7 +7147,7 @@ impl Tool for ListSecretsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "列出当前 Context/Session 可引用的受管凭证别名和作用域元数据。此工具永远不返回凭证值；需要执行命令时，只把别名放入 exec.requested_permissions.secret_env，由 Runtime 审批并向单个子进程注入。".to_string(),
+            description: "List managed-secret aliases and scope metadata available to the current Context and Session. This tool never returns secret values. To run a command with a secret, put only its alias in exec.requested_permissions.secret_env; the Runtime will review the request and inject the value into that one child process.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -7176,7 +7176,7 @@ impl Tool for ListSecretsTool {
             "status": if secrets.is_empty() { "empty" } else { "ok" },
             "secrets": secrets,
             "value_backend": self.secret_store.backend_id(),
-            "guidance": "这里只包含别名。不要索要、读取或回显值；将所需别名放入 exec.requested_permissions.secret_env。"
+            "guidance": "This contains aliases only. Do not request, read, or echo values; put the required aliases in exec.requested_permissions.secret_env."
         }))
         .to_string())
     }
@@ -7203,7 +7203,7 @@ fn unquote_frontmatter_value(value: &str) -> String {
 
 fn parse_skill_frontmatter(default_name: &str, content: &str) -> (String, String) {
     let mut name = default_name.to_string();
-    let mut description = "无详细描述".to_string();
+    let mut description = "No detailed description".to_string();
     let Some(stripped) = content.strip_prefix("---") else {
         return (name, description);
     };
@@ -7323,7 +7323,7 @@ impl Tool for ListSkillsTool {
 
         ToolDefinition {
             name: "list_skills".to_string(),
-            description: "按需发现当前安装的 Skill 能力目录。当本轮已有 Function Calling 工具不能直接满足当前意图，或直接能力明确失败时，在断言能力不可用之前调用。返回紧凑的 name/description/path 索引；选择最相关的一项后用 read 读取其 SKILL.md，并按说明调用真实工具。不要预读全部 Skill。".to_string(),
+            description: "Discover the installed Skill capability catalog on demand. Call this before claiming that a capability is unavailable when the Function Calling tools offered in this turn do not directly satisfy the intent or a direct capability has clearly failed. It returns a compact name/description/path index. Select the most relevant item, use read to open its SKILL.md, and follow it to invoke the actual tool. Do not preload every Skill.".to_string(),
             parameters: params_json,
         }
     }
@@ -7343,11 +7343,11 @@ impl Tool for ListSkillsTool {
             "status": if skills.is_empty() { "empty" } else { "ok" },
             "skills": skills,
             "guidance": if paths_to_scan.is_empty() {
-                "HOME 未配置，无法定位 Skill 目录。"
+                "HOME is not configured, so Skill directories cannot be located."
             } else if skills.is_empty() {
-                "当前 Skill 目录为空；如果本轮直接工具也不能满足意图，才可说明缺少对应能力。"
+                "The current Skill directories are empty. Claim that a capability is missing only if the direct tools in this turn also cannot satisfy the intent."
             } else {
-                "按当前意图选择最相关的一项，用 read 读取其 path 指向的 SKILL.md；不要预读全部 Skill。"
+                "Select the item most relevant to the current intent and use read on its SKILL.md path. Do not preload every Skill."
             }
         })
         .to_string())
@@ -7833,7 +7833,10 @@ Body
             .unwrap();
         let receipt: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(receipt["status"], "sent");
-        assert!(receipt["guidance"].as_str().unwrap().contains("尚未结束"));
+        assert!(receipt["guidance"]
+            .as_str()
+            .unwrap()
+            .contains("current Evaluation has not ended"));
 
         let event = receiver.recv().await.unwrap();
         assert_eq!(event.payload["session_id"], "session-b");

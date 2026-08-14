@@ -1113,6 +1113,220 @@ where
     assert!(race_activation.lease_expires_at.is_none());
 }
 
+async fn assert_dialogue_interruption_conformance<S>(store: Arc<S>)
+where
+    S: morphz::memory::RuntimeStore + 'static,
+{
+    let session_id = "conformance-dialogue-interruption";
+    store
+        .create_session(NewSession {
+            id: session_id.to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            parent_session_id: Some("conformance-session".to_string()),
+            title: "Dialogue interruption conformance".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let message = |id: &str, text: &str| {
+        Event::new(
+            id.to_string(),
+            "Store-Conformance".to_string(),
+            morphz::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": "conformance-context",
+                "session_id": session_id,
+                "text": text
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    };
+    let first = message("conformance-interrupt-event-a", "first input");
+    assert!(matches!(
+        store
+            .claim_message(session_id, "conformance-interrupt-client-a", &first, false)
+            .await
+            .unwrap(),
+        MessageClaim::Accepted {
+            interrupted: None,
+            ..
+        }
+    ));
+    let first_thread = store.get_thread_by_root(&first.id).await.unwrap().unwrap();
+    let first_signal = store
+        .next_pending_thread_signal(&first_thread.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let activation = store
+        .claim_thread_signal_batch(
+            NewThreadSignal {
+                id: stable_thread_signal_id(&first.id),
+                thread_id: first_thread.id.clone(),
+                thread_generation: first_thread.generation,
+                event_id: first.id.clone(),
+                principal_id: None,
+                sequence: first_signal.sequence,
+                kind: first.topic.clone(),
+                parent_activation_id: None,
+            },
+            NewThreadActivation {
+                id: "conformance-interrupt-activation-a".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: first.id.clone(),
+                trigger_sequence: first_signal.sequence,
+                trigger_kind: first.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: first.id.clone(),
+            },
+            32,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let running = match store
+        .update_thread_activation(
+            &activation.id,
+            activation.revision,
+            ThreadActivationStatus::Running,
+            Some("conformance-interrupt-worker"),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadActivationMutation::Updated(record) => record,
+        other => panic!("unexpected Activation mutation: {other:?}"),
+    };
+
+    let second = message("conformance-interrupt-event-b", "second input");
+    assert!(matches!(
+        store
+            .claim_message(session_id, "conformance-interrupt-client-b", &second, true)
+            .await
+            .unwrap(),
+        MessageClaim::Accepted {
+            interrupted: Some(_),
+            ..
+        }
+    ));
+    assert_eq!(
+        store
+            .get_thread_activation(&running.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ThreadActivationStatus::Cancelled
+    );
+
+    let replacement = store.get_thread_by_root(&second.id).await.unwrap().unwrap();
+    let pending = store
+        .list_context_thread_signals("conformance-context", Some(ThreadSignalStatus::Pending))
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|signal| signal.thread_id == replacement.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pending
+            .iter()
+            .map(|signal| signal.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![first.id.as_str(), second.id.as_str()]
+    );
+    let replacement_activation = store
+        .claim_thread_signal_batch(
+            NewThreadSignal {
+                id: stable_thread_signal_id(&second.id),
+                thread_id: replacement.id.clone(),
+                thread_generation: replacement.generation,
+                event_id: second.id.clone(),
+                principal_id: None,
+                sequence: pending[1].sequence,
+                kind: second.topic.clone(),
+                parent_activation_id: None,
+            },
+            NewThreadActivation {
+                id: "conformance-interrupt-activation-b".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: second.id.clone(),
+                trigger_sequence: pending[1].sequence,
+                trigger_kind: second.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: second.id.clone(),
+            },
+            32,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement_activation.trigger_event_id, second.id);
+    assert_eq!(
+        store
+            .list_activation_signals(&replacement_activation.id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|signal| signal.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![first.id.as_str(), second.id.as_str()]
+    );
+
+    let replacement_running = match store
+        .update_thread_activation(
+            &replacement_activation.id,
+            replacement_activation.revision,
+            ThreadActivationStatus::Running,
+            Some("conformance-interrupt-worker-b"),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadActivationMutation::Updated(record) => record,
+        other => panic!("unexpected replacement Activation mutation: {other:?}"),
+    };
+    assert!(store
+        .release_dialogue_turn_activation(&replacement_running.id, chrono::Utc::now())
+        .await
+        .unwrap());
+
+    let third = message("conformance-interrupt-event-c", "third input");
+    assert!(matches!(
+        store
+            .claim_message(session_id, "conformance-interrupt-client-c", &third, true)
+            .await
+            .unwrap(),
+        MessageClaim::Accepted {
+            interrupted: None,
+            ..
+        }
+    ));
+    assert_eq!(
+        store
+            .get_thread_activation(&replacement_running.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ThreadActivationStatus::Running,
+        "once execution has released the dialogue lane, a follow-up message must not cancel it"
+    );
+}
+
 async fn assert_scheduler_dependency_conformance<S>(store: Arc<S>)
 where
     S: EventStore + SchedulerDependencyStore + Send + Sync + 'static,
@@ -1539,7 +1753,7 @@ where
         let event = message.clone();
         tokio::spawn(async move {
             store
-                .claim_message("conformance-session", "client-message-a", &event)
+                .claim_message("conformance-session", "client-message-a", &event, false)
                 .await
         })
     };
@@ -1548,7 +1762,7 @@ where
         let event = message.clone();
         tokio::spawn(async move {
             store
-                .claim_message("conformance-session", "client-message-a", &event)
+                .claim_message("conformance-session", "client-message-a", &event, false)
                 .await
         })
     };
@@ -1559,7 +1773,7 @@ where
     assert_eq!(
         claims
             .iter()
-            .filter(|claim| matches!(claim, MessageClaim::Accepted))
+            .filter(|claim| matches!(claim, MessageClaim::Accepted { .. }))
             .count(),
         1
     );
@@ -4583,6 +4797,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_recall_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
+    assert_dialogue_interruption_conformance(Arc::clone(&store)).await;
     assert_scheduler_dependency_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_delivery_ingress_conformance(Arc::clone(&store)).await;
@@ -4717,6 +4932,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_recall_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
+    assert_dialogue_interruption_conformance(Arc::clone(&store)).await;
     assert_scheduler_dependency_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_delivery_ingress_conformance(Arc::clone(&store)).await;

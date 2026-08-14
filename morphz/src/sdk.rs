@@ -7,7 +7,8 @@
 
 use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::config::{
-    remove_managed_provider_accounts_at, save_managed_auth_account_at, save_managed_model_route_at,
+    remove_managed_provider_accounts_at, save_managed_auth_account_at,
+    save_managed_auto_review_model_at, save_managed_model_route_at,
     save_managed_provider_account_at, save_managed_provider_account_models_at,
     save_managed_provider_catalog_at, save_managed_provider_instance_at, AppConfig,
     AuthAccountConfig, CredentialConfig, ModelProtocol, ModelRouteAffinity,
@@ -1131,6 +1132,38 @@ impl MorphzSdk {
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ModelRoute,
             route_id,
+            managed_config_path,
+        ))
+    }
+
+    pub fn put_auto_review_model(
+        &self,
+        managed_config_path: &Path,
+        model: Option<String>,
+    ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let model = model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let previous = self.runtime.auto_review_model();
+        self.runtime
+            .set_auto_review_model(model.as_deref())
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
+        if let Err(error) = save_managed_auto_review_model_at(managed_config_path, model.as_deref())
+        {
+            let rollback = self.runtime.set_auto_review_model(previous.as_deref());
+            let message = match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => format!(
+                    "{error}; automatic reviewer runtime rollback also failed: {rollback_error}"
+                ),
+            };
+            return Err(SdkError::internal(message));
+        }
+        Ok(ProviderCatalogMutationReceipt::new(
+            ProviderCatalogObjectKind::PermissionSettings,
+            "auto-review-model",
             managed_config_path,
         ))
     }

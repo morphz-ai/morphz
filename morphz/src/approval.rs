@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::oneshot;
 
 const AUTO_REVIEW_SYSTEM_PROMPT: &str = r#"You are Morphz's independent permission reviewer.
@@ -514,7 +514,7 @@ impl ApprovalProvider for EscalatingApprovalProvider {
 }
 
 pub struct AiAutoReviewProvider {
-    client: Arc<dyn Client>,
+    client: RwLock<Arc<dyn Client>>,
     store: Arc<dyn EventStore>,
     max_user_intent_chars: usize,
 }
@@ -522,10 +522,20 @@ pub struct AiAutoReviewProvider {
 impl AiAutoReviewProvider {
     pub fn new(client: Arc<dyn Client>, store: Arc<dyn EventStore>) -> Self {
         Self {
-            client,
+            client: RwLock::new(client),
             store,
             max_user_intent_chars: 4_000,
         }
+    }
+
+    /// Atomically switch subsequent reviews to another model client. A review
+    /// already in flight keeps the client snapshot it started with.
+    pub fn replace_client(&self, client: Arc<dyn Client>) -> Result<(), String> {
+        *self
+            .client
+            .write()
+            .map_err(|_| "Auto-review client lock poisoned".to_string())? = client;
+        Ok(())
     }
 
     async fn evidence(
@@ -613,8 +623,12 @@ impl ApprovalProvider for AiAutoReviewProvider {
             "approval_request": request,
             "evidence": evidence,
         }))?;
-        let response = self
+        let client = self
             .client
+            .read()
+            .map_err(|_| "Auto-review client lock poisoned")?
+            .clone();
+        let response = client
             .create_completion(
                 vec![
                     Message {
