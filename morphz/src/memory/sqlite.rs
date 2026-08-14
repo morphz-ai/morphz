@@ -97,6 +97,24 @@ fn sqlite_has_wal_reset_fix(version: &str) -> bool {
         || (*major == 3 && *minor == 44 && *patch >= 6)
 }
 
+fn is_transient_sqlite_contention(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        let message = error.to_string().to_ascii_lowercase();
+        if message.contains("database is locked")
+            || message.contains("database table is locked")
+            || message.contains("sqlite_busy")
+            || message.contains("sqlite_locked")
+            || message.contains("(code: 5)")
+            || message.contains("(code: 6)")
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 impl SqliteStore {
     pub async fn new(db_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Self::new_with_config(db_path, &SqliteStorageConfig::default()).await
@@ -16971,11 +16989,37 @@ impl EventStore for SqliteStore {
         ev: Event,
         thread_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut tx = self.pool.begin().await?;
-        append_event_idempotent_in_transaction(&mut tx, &ev).await?;
-        append_direct_thread_signal_in_transaction(&mut tx, &ev, thread_id).await?;
-        tx.commit().await?;
-        Ok(())
+        let mut contention_retries = 0u64;
+        let mut retry_delay = std::time::Duration::from_millis(25);
+        loop {
+            let result = async {
+                let mut tx = self.pool.begin().await?;
+                append_event_idempotent_in_transaction(&mut tx, &ev).await?;
+                append_direct_thread_signal_in_transaction(&mut tx, &ev, thread_id).await?;
+                tx.commit().await?;
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            }
+            .await;
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error) if is_transient_sqlite_contention(error.as_ref()) => {
+                    contention_retries = contention_retries.saturating_add(1);
+                    if contention_retries == 1 || contention_retries.is_power_of_two() {
+                        tracing::warn!(
+                            event_id = %ev.id,
+                            thread_id,
+                            contention_retries,
+                            delay_ms = retry_delay.as_millis(),
+                            error = %error,
+                            "Direct Thread Signal 等待 SQLite 写槽；保留同一 Event 与 Signal 并重试"
+                        );
+                    }
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(std::time::Duration::from_secs(1));
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     async fn append_batch(
@@ -18064,8 +18108,11 @@ mod tests {
     use super::*;
     use crate::approval_authority::stable_approval_identity;
     use crate::memory::QueryFilter;
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+    use sqlx::{Connection, Executor, SqliteConnection};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::time::Duration;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -24305,6 +24352,139 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn direct_thread_signal_waits_out_sqlite_writer_contention() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_path_buf();
+        let store = Arc::new(
+            SqliteStore::new(path.to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_context(NewCognitiveContext {
+                id: "contention-context".to_string(),
+                agent_id: "contention-agent".to_string(),
+                title: "Contention Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "contention-session".to_string(),
+                agent_id: "contention-agent".to_string(),
+                context_id: "contention-context".to_string(),
+                parent_session_id: None,
+                title: "Contention Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "contention-thread".to_string(),
+                agent_id: "contention-agent".to_string(),
+                context_id: "contention-context".to_string(),
+                session_id: "contention-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "contention-root".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::runtime("contention-test"),
+            })
+            .await
+            .unwrap();
+        let event = Event::new(
+            "contention-event".to_string(),
+            "fixture".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    serde_json::json!("contention-context"),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!("contention-session"),
+                ),
+                (
+                    "root_turn_id".to_string(),
+                    serde_json::json!("contention-root"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::ZERO);
+        let mut writer = SqliteConnection::connect_with(&options).await.unwrap();
+        writer.execute("BEGIN IMMEDIATE").await.unwrap();
+
+        let append_store = Arc::clone(&store);
+        let append_event = event.clone();
+        let append_thread_id = thread.id.clone();
+        let append = tokio::spawn(async move {
+            append_store
+                .append_to_thread(append_event, &append_thread_id)
+                .await
+        });
+
+        // SqliteStore's ordinary busy timeout is five seconds. Holding the
+        // external Writer beyond that boundary proves append_to_thread does
+        // not turn the first SQLITE_BUSY into a terminal Thread failure.
+        tokio::time::sleep(Duration::from_millis(5_100)).await;
+        assert!(
+            !append.is_finished(),
+            "Direct Thread Signal must remain pending while contention is transient"
+        );
+        writer.execute("COMMIT").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), append)
+            .await
+            .expect("Direct Thread Signal should finish after the Writer is released")
+            .unwrap()
+            .unwrap();
+
+        store
+            .append_to_thread(event, &thread.id)
+            .await
+            .expect("retry/replay must preserve the same immutable Event and Signal");
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some("contention-event".to_string()),
+                    context_id: Some("contention-context".to_string()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .list_context_thread_signals("contention-context", None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_thread(&thread.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .lifecycle,
+            ThreadLifecycle::Open
+        );
     }
 
     #[tokio::test]
