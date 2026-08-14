@@ -3557,10 +3557,7 @@ async fn execute_managed_ssh_file_tool(
         "arguments": arguments,
         "workspace_root": workspace_root,
     }))?;
-    let script = shell_quote(MANAGED_SSH_FILE_TOOL_SCRIPT);
-    let command = format!(
-        "if command -v python3 >/dev/null 2>&1; then exec python3 -c {script}; elif command -v python >/dev/null 2>&1; then exec python -c {script}; else echo 'Managed SSH Target 缺少 Python 3，不能执行核心文件工具' >&2; exit 127; fi"
-    );
+    let command = managed_ssh_file_tool_command();
     let output = run_managed_ssh_output_with_input(endpoint, &command, &request).await?;
     if !output.status.success() {
         return Err(format!(
@@ -3594,6 +3591,18 @@ async fn execute_managed_ssh_file_tool(
             .unwrap_or("未知错误")
     )
     .into())
+}
+
+fn managed_ssh_file_tool_command() -> String {
+    let script = shell_quote(MANAGED_SSH_FILE_TOOL_SCRIPT);
+    let bootstrap = format!(
+        "if command -v python3 >/dev/null 2>&1; then exec python3 -c {script}; elif command -v python >/dev/null 2>&1; then exec python -c {script}; else echo 'Managed SSH Target 缺少 Python 3，不能执行核心文件工具' >&2; exit 127; fi"
+    );
+    // OpenSSH gives the remote command to the account's login shell.  The
+    // account may use fish, csh, or another non-POSIX shell, while the
+    // bootstrap above deliberately uses portable POSIX syntax.  Enter an
+    // explicit sh before evaluating it instead of assuming the user's shell.
+    format!("sh -lc {}", shell_quote(&bootstrap))
 }
 
 async fn run_managed_ssh_output_with_input(
@@ -5439,6 +5448,53 @@ mod tests {
         publish_spooled_local_directory(&request, &first_archive, &destination)
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn managed_ssh_file_tool_bootstrap_does_not_depend_on_the_login_shell() {
+        let command = managed_ssh_file_tool_command();
+        assert!(command.starts_with("sh -lc "));
+        assert!(!command.starts_with("if "));
+
+        if std::process::Command::new("fish")
+            .arg("--version")
+            .output()
+            .is_err()
+            || std::process::Command::new("python3")
+                .arg("--version")
+                .output()
+                .is_err()
+        {
+            return;
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let request = serde_json::json!({
+            "operation": "list_files",
+            "workspace_root": temp.path().display().to_string(),
+            "arguments": {"path": ".", "max_depth": 1}
+        });
+        let mut child = std::process::Command::new("fish")
+            .arg("-c")
+            .arg(&command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(
+            child.stdin.as_mut().unwrap(),
+            serde_json::to_string(&request).unwrap().as_bytes(),
+        )
+        .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "fish must be able to hand the bootstrap to sh: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["ok"], true);
     }
 
     #[test]

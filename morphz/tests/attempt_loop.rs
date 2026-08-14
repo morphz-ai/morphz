@@ -4754,6 +4754,16 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
         }),
         "maintenance continuations and the next user turn must remain DialogueTurns: {replies:#?}"
     );
+    let activations = store
+        .list_context_thread_activations("context-maintenance-dialogue", true)
+        .await
+        .unwrap();
+    assert!(
+        activations
+            .iter()
+            .all(|activation| activation.status != ThreadActivationStatus::Failed),
+        "a committed context_tx must hand off after its current Activation becomes terminal, not time out while waiting for its own successor: {activations:#?}"
+    );
 }
 
 #[tokio::test]

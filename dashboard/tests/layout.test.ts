@@ -95,6 +95,24 @@ test('runtime overview follows the dashboard card typography hierarchy', () => {
   )
 })
 
+test('execution targets share the tool heading row instead of competing with command text', () => {
+  assert.match(
+    appSource,
+    /<span className="execution-tool-heading">[\s\S]*?<strong>\{summary\.title\}<\/strong>[\s\S]*?className="execution-tool-target"[\s\S]*?<small>\s*<span>\{summary\.target/s,
+    'the physical execution target must sit beside the tool title, above the command summary',
+  )
+  assert.match(
+    appCss,
+    /\.execution-tool-target\s*\{[^}]*max-width:\s*100%/s,
+    'the target badge must be allowed to use the heading row rather than an arbitrary 48% cap',
+  )
+  assert.match(
+    appCss,
+    /\.execution-tool-target > span\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s,
+    'a target that still exceeds the viewport must truncate predictably while its title exposes the full value',
+  )
+})
+
 test('runtime overview reveals regular Sessions and only collapses managed delegation Contexts', () => {
   assert.match(
     runtimeOverviewSource,

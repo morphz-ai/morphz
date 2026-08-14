@@ -1140,6 +1140,7 @@
   "composer": {
     "placeholder": "输入消息…",
     "noSessionPlaceholder": "输入消息，将自动创建会话…",
+    "readOnlyPlaceholder": "只读查看其他身份",
     "send": "发送",
     "inputAriaLabel": "消息输入",
     "cancelTitle": "取消当前会话执行",

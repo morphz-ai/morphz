@@ -8123,19 +8123,29 @@ impl Orchestrator {
                         "Context maintenance owner 已提交事务；等待者将从新 Projection 重新求值"
                     );
                 }
-                // A maintenance-only response is an intermediate DialogueTurn
-                // boundary. Its tool receipt must materialize the same-root
-                // continuation before this Activation becomes terminal;
-                // otherwise a later user turn can win durable admission while
-                // the process-local lane is still owned by the maintenance
-                // root, leaving both roots waiting on each other.
-                for continuation_id in &context_maintenance_continuations {
-                    self.wait_for_continuation_activation(continuation_id)
+                if context_maintenance_only {
+                    // The context_tx receipt was appended as a durable Signal
+                    // while this Activation still owned Thread single-flight.
+                    // A successor therefore cannot be claimed until the
+                    // current Activation is terminal. Complete it first, then
+                    // redispatch that exact pending Signal and verify the
+                    // successor row exists before surrendering this task. The
+                    // outer completion path is intentionally idempotent.
+                    self.finish_thread_activation(activation, ThreadActivationStatus::Succeeded)
                         .await?;
+                    self.dispatch_next_pending_thread_signal(&activation.root_turn_id)
+                        .await?;
+                    for continuation_id in &context_maintenance_continuations {
+                        self.wait_for_continuation_activation(continuation_id)
+                            .await?;
+                    }
                 }
             }
             if context_maintenance_only {
                 if let Some(lease) = dialogue_lease.as_mut() {
+                    // The successor has been made durable above. Keep the
+                    // process-local lane for that same root so a later user
+                    // turn cannot overtake its final reply.
                     lease.retain_for_continuation();
                 }
             }

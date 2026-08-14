@@ -1140,6 +1140,7 @@
   "composer": {
     "placeholder": "Type a message…",
     "noSessionPlaceholder": "Type a message to create a Session automatically…",
+    "readOnlyPlaceholder": "Read-only Principal view",
     "send": "Send",
     "inputAriaLabel": "Message input",
     "cancelTitle": "Cancel current Session execution",

@@ -1422,17 +1422,20 @@ const ExecutionToolCalls = memo(function ExecutionToolCalls({
                       : <X size={12} />}
                 </span>
                 <span className="execution-tool-copy">
-                  <strong>{summary.title}</strong>
-                  <small>
-                    <span>{summary.target || shortId(call.id, 18)}</span>
+                  <span className="execution-tool-heading">
+                    <strong>{summary.title}</strong>
                     {targetLabel && (
                       <span
                         className="execution-tool-target"
-                        title={`${t('conversation.toolCalls.target')}: ${targetIds.join(' → ')}`}
+                        title={`${t('conversation.toolCalls.target')}: ${targetLabel} (${targetIds.join(' → ')})`}
                       >
-                        <Server size={10} />{targetLabel}
+                        <Server size={10} />
+                        <span>{targetLabel}</span>
                       </span>
                     )}
+                  </span>
+                  <small>
+                    <span>{summary.target || shortId(call.id, 18)}</span>
                   </small>
                 </span>
                 <time
@@ -2163,6 +2166,7 @@ const Composer = memo(function Composer({
   inputRef,
   selectedSessionId,
   sending,
+  readOnly,
   activeWorkCount,
   quotes,
   activeQuoteId,
@@ -2177,6 +2181,7 @@ const Composer = memo(function Composer({
   inputRef: RefObject<HTMLTextAreaElement | null>
   selectedSessionId: string
   sending: boolean
+  readOnly: boolean
   activeWorkCount: number
   quotes: QuoteItem[]
   activeQuoteId: string
@@ -2195,6 +2200,7 @@ const Composer = memo(function Composer({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const submit = useCallback(async () => {
+    if (readOnly) return
     if (await onSend(message, attachments)) {
       setMessage('')
       setAttachments(current => {
@@ -2202,9 +2208,10 @@ const Composer = memo(function Composer({
         return []
       })
     }
-  }, [attachments, message, onSend])
+  }, [attachments, message, onSend, readOnly])
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
+    if (readOnly) return
     const incoming = Array.from(files)
     if (!incoming.length) return
     if (attachments.length + incoming.length > 8) {
@@ -2242,11 +2249,11 @@ const Composer = memo(function Composer({
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [attachments, onError, t])
+  }, [attachments, onError, readOnly, t])
 
   return (
     <div
-      className={`composer ${draggingFiles ? 'dragging-files' : ''}`}
+      className={`composer ${draggingFiles ? 'dragging-files' : ''} ${readOnly ? 'read-only' : ''}`}
       onDragEnter={event => {
         if (event.dataTransfer.types.includes('Files')) {
           event.preventDefault()
@@ -2347,7 +2354,7 @@ const Composer = memo(function Composer({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          disabled={sending}
+          disabled={sending || readOnly}
           onChange={event => setMessage(event.target.value)}
           onCompositionStart={() => { composingInput.current = true }}
           onCompositionEnd={() => { composingInput.current = false }}
@@ -2358,7 +2365,11 @@ const Composer = memo(function Composer({
               void submit()
             }
           }}
-          placeholder={selectedSessionId ? t('composer.placeholder') : t('composer.noSessionPlaceholder')}
+          placeholder={readOnly
+            ? t('composer.readOnlyPlaceholder')
+            : selectedSessionId
+              ? t('composer.placeholder')
+              : t('composer.noSessionPlaceholder')}
           rows={1}
           value={message}
         />
@@ -2368,6 +2379,7 @@ const Composer = memo(function Composer({
         className="composer-file-input"
         type="file"
         multiple
+        disabled={sending || readOnly}
         onChange={event => {
           if (event.target.files) void addFiles(event.target.files)
           event.target.value = ''
@@ -2377,19 +2389,19 @@ const Composer = memo(function Composer({
         className="attachment-button"
         type="button"
         title={t('composer.attachments.add')}
-        disabled={sending}
+        disabled={sending || readOnly}
         onClick={() => fileInputRef.current?.click()}
       >
         <Paperclip size={15} />
       </button>
       {activeWorkCount > 0 ? (
-        <button className="cancel-button" type="button" title={t('composer.cancelTitle')} onClick={onCancel}><Square size={14} /></button>
+        <button className="cancel-button" type="button" title={readOnly ? t('header.principalScopeReadOnly') : t('composer.cancelTitle')} disabled={readOnly} onClick={onCancel}><Square size={14} /></button>
       ) : null}
       <button
         className="send-button"
         aria-label={t('composer.send')}
         title={t('composer.send')}
-        disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0) || sending}
+        disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0) || sending || readOnly}
         type="button"
         onClick={() => void submit()}
       >
@@ -5151,6 +5163,10 @@ export default function App() {
     snapshot: SchedulerThreadSnapshot,
   ) => {
     if (!selectedSessionId || retryingTurnEventId) return
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return
+    }
     const thread = snapshot.thread
     setRetryingTurnEventId(failureEvent.id)
     conversationPinnedToEnd.current = true
@@ -5181,10 +5197,14 @@ export default function App() {
     } finally {
       setRetryingTurnEventId('')
     }
-  }, [loadOverview, loadSession, retryingTurnEventId, selectedContextId, selectedSessionId])
+  }, [loadOverview, loadSession, retryingTurnEventId, selectedContextId, selectedSessionId, t])
 
   const cancelCurrentSession = useCallback(async () => {
     if (!selectedSessionId) return
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return
+    }
     try {
       await DASHBOARD_API.command(
         `/api/sessions/${encodeURIComponent(selectedSessionId)}/cancel`,
@@ -5194,7 +5214,7 @@ export default function App() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [selectedSessionId])
+  }, [selectedSessionId, t])
 
   const changeReasoningEffort = async (value: string) => {
     if (changingReasoning) return
@@ -6667,7 +6687,8 @@ export default function App() {
                           </span>
                           <button
                             type="button"
-                            disabled={Boolean(retryingTurnEventId)}
+                            disabled={observingForeignPrincipal || Boolean(retryingTurnEventId)}
+                            title={observingForeignPrincipal ? t('header.principalScopeReadOnly') : undefined}
                             onClick={() => void retryDialogueTurn(event, retryableTurn)}
                           >
                             <RefreshCw size={13} className={retryingTurnEventId === event.id ? 'is-spinning' : ''} />
@@ -7713,7 +7734,8 @@ export default function App() {
           <Composer
             inputRef={composerInputRef}
             selectedSessionId={selectedSessionId}
-            sending={sending || observingForeignPrincipal}
+            sending={sending}
+            readOnly={observingForeignPrincipal}
             activeWorkCount={activeWorkCount}
             quotes={quotes}
             activeQuoteId={activeQuoteId}
