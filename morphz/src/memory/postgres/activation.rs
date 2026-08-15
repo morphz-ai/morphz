@@ -30,6 +30,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON thread_activations(session_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_context_status
            ON thread_activations(context_id, status, updated_at DESC)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_context_updated
+           ON thread_activations(context_id, updated_at DESC, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_lease
            ON thread_activations(status, lease_expires_at)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_root_turn
@@ -1116,6 +1118,44 @@ impl ActivationStore for PostgresStore {
             .fetch_all(&self.pool)
             .await?
         };
+        rows.iter().map(activation_from_row).collect()
+    }
+
+    async fn list_recent_terminal_thread_activations(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT * FROM thread_activations
+               WHERE context_id = $1 AND status IN ('completed', 'cancelled', 'failed')
+               ORDER BY updated_at DESC, id
+               LIMIT $2"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(limit).map_err(|_| "Activation 查询上限超出 BIGINT 范围")?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(activation_from_row).collect()
+    }
+
+    async fn list_thread_activations_by_root(
+        &self,
+        context_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Vec<ThreadActivationRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT * FROM thread_activations
+               WHERE context_id = $1 AND root_turn_id = $2
+               ORDER BY created_at, id"#,
+        )
+        .bind(context_id)
+        .bind(root_turn_id)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(activation_from_row).collect()
     }
 

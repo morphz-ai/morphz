@@ -651,6 +651,8 @@ impl SqliteStore {
             ON thread_activations(session_id, status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_thread_activations_context_status
             ON thread_activations(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_thread_activations_context_updated
+            ON thread_activations(context_id, updated_at DESC, id);
         CREATE INDEX IF NOT EXISTS idx_thread_activations_lease
             ON thread_activations(status, lease_expires_at);
         CREATE INDEX IF NOT EXISTS idx_thread_activations_root_turn
@@ -702,6 +704,8 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_threads_context_status
             ON threads(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_threads_context_updated
+            ON threads(context_id, updated_at DESC, id);
         CREATE INDEX IF NOT EXISTS idx_threads_session_delivery
             ON threads(session_id, delivery_status, updated_at);
         CREATE INDEX IF NOT EXISTS idx_threads_session_status
@@ -7705,6 +7709,46 @@ impl ActivationStore for SqliteStore {
         rows.iter().map(thread_activation_from_row).collect()
     }
 
+    async fn list_recent_terminal_thread_activations(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit =
+            i64::try_from(limit).map_err(|_| "Activation 查询上限超出 SQLite INTEGER 范围")?;
+        let rows = sqlx::query(
+            r#"SELECT * FROM thread_activations
+               WHERE context_id = ? AND status IN ('completed', 'cancelled', 'failed')
+               ORDER BY updated_at DESC, id
+               LIMIT ?"#,
+        )
+        .bind(context_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(thread_activation_from_row).collect()
+    }
+
+    async fn list_thread_activations_by_root(
+        &self,
+        context_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT * FROM thread_activations
+               WHERE context_id = ? AND root_turn_id = ?
+               ORDER BY created_at, id"#,
+        )
+        .bind(context_id)
+        .bind(root_turn_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(thread_activation_from_row).collect()
+    }
+
     async fn list_active_thread_activations(
         &self,
         limit: usize,
@@ -9619,6 +9663,28 @@ impl ThreadStore for SqliteStore {
                 .fetch_all(&self.pool)
                 .await?
         };
+        rows.iter().map(thread_from_row).collect()
+    }
+
+    async fn list_recent_terminal_threads(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| "Thread 查询上限超出 SQLite INTEGER 范围")?;
+        let rows = sqlx::query(
+            r#"SELECT * FROM threads
+               WHERE context_id = ? AND status IN ('completed', 'failed', 'cancelled')
+               ORDER BY updated_at DESC, id
+               LIMIT ?"#,
+        )
+        .bind(context_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(thread_from_row).collect()
     }
 
@@ -19529,6 +19595,48 @@ mod tests {
             plan.contains("idx_events_context_topic_time"),
             "unexpected query plan: {plan}"
         );
+    }
+
+    #[tokio::test]
+    async fn bounded_scheduler_history_queries_use_context_updated_indexes() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        for (table, index, terminal_statuses) in [
+            (
+                "threads",
+                "idx_threads_context_updated",
+                "'completed', 'failed', 'cancelled'",
+            ),
+            (
+                "thread_activations",
+                "idx_thread_activations_context_updated",
+                "'completed', 'cancelled', 'failed'",
+            ),
+        ] {
+            let statement = format!(
+                "EXPLAIN QUERY PLAN SELECT * FROM {table} \
+                 WHERE context_id = ? AND status IN ({terminal_statuses}) \
+                 ORDER BY updated_at DESC, id LIMIT ?"
+            );
+            let rows = sqlx::query(&statement)
+                .bind("index-context")
+                .bind(20_i64)
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+            let plan = rows
+                .iter()
+                .map(|row| row.get::<String, _>("detail"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(plan.contains(index), "unexpected query plan: {plan}");
+            assert!(
+                !plan.contains("USE TEMP B-TREE"),
+                "bounded history must not sort the complete Context: {plan}"
+            );
+        }
     }
 
     #[tokio::test]

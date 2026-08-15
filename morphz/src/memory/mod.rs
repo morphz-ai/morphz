@@ -4739,6 +4739,45 @@ pub trait ActivationStore: Send + Sync {
         context_id: &str,
         include_terminal: bool,
     ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Newest terminal Activation history for one Context. Operator and
+    /// Context projections must use this bounded read instead of materializing
+    /// the Context's complete durable history and truncating it in memory.
+    async fn list_recent_terminal_thread_activations(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut records = self
+            .list_context_thread_activations(context_id, true)
+            .await?
+            .into_iter()
+            .filter(|activation| activation.status.is_terminal())
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        records.truncate(limit);
+        Ok(records)
+    }
+    /// Exact indexed aggregate read used by Thread detail pages.
+    async fn list_thread_activations_by_root(
+        &self,
+        context_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_context_thread_activations(context_id, true)
+            .await?
+            .into_iter()
+            .filter(|activation| activation.root_turn_id == root_turn_id)
+            .collect())
+    }
     /// Bounded global scheduler projection used by Runtime-level operator
     /// surfaces. It never scans the Event Ledger.
     async fn list_active_thread_activations(
@@ -4989,6 +5028,32 @@ pub trait ThreadStore: Send + Sync {
         context_id: &str,
         include_terminal: bool,
     ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Newest terminal Thread history for one Context. This is deliberately
+    /// separate from the live projection so idle Contexts do not repeatedly
+    /// deserialize their entire lifetime.
+    async fn list_recent_terminal_threads(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut records = self
+            .list_context_threads(context_id, true)
+            .await?
+            .into_iter()
+            .filter(|thread| thread.lifecycle.is_terminal())
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        records.truncate(limit);
+        Ok(records)
+    }
     /// Bounded global Thread projection used by Runtime-level operator
     /// surfaces. Terminal history belongs to the Context detail page.
     async fn list_open_threads(

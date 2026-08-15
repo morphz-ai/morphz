@@ -4962,7 +4962,7 @@ impl MorphzRuntime {
         let mut authority_objectives = self
             .inner
             .store
-            .list_context_objectives(context_id, true)
+            .list_context_objectives(context_id, include_terminal)
             .await?;
         authority_objectives.sort_by(|left, right| {
             left.created_at
@@ -4972,8 +4972,22 @@ impl MorphzRuntime {
         let mut context_threads = self
             .inner
             .store
-            .list_context_threads(context_id, true)
+            .list_context_threads(context_id, false)
             .await?;
+        if include_terminal {
+            let active_ids = context_threads
+                .iter()
+                .map(|thread| thread.id.clone())
+                .collect::<HashSet<_>>();
+            context_threads.extend(
+                self.inner
+                    .store
+                    .list_recent_terminal_threads(context_id, limit)
+                    .await?
+                    .into_iter()
+                    .filter(|thread| !active_ids.contains(&thread.id)),
+            );
+        }
         context_threads.sort_by(|left, right| {
             right
                 .updated_at
@@ -4985,24 +4999,7 @@ impl MorphzRuntime {
             .iter()
             .map(|thread| thread.id.clone())
             .collect::<HashSet<_>>();
-        let all_context_thread_roots = context_threads
-            .iter()
-            .map(|thread| thread.root_turn_id.clone())
-            .collect::<HashSet<_>>();
-        let mut all_threads = context_threads
-            .iter()
-            .filter(|thread| !thread.lifecycle.is_terminal())
-            .cloned()
-            .collect::<Vec<_>>();
-        if include_terminal {
-            let terminal_budget = limit.saturating_sub(all_threads.len());
-            all_threads.extend(
-                context_threads
-                    .into_iter()
-                    .filter(|thread| thread.lifecycle.is_terminal())
-                    .take(terminal_budget),
-            );
-        }
+        let mut all_threads = context_threads;
         all_threads.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
@@ -5018,15 +5015,28 @@ impl MorphzRuntime {
             .map(|thread| (thread.root_turn_id.clone(), thread.id.clone()))
             .collect::<HashMap<_, _>>();
 
-        let all_context_activations = self
+        let mut all_context_activations = self
             .inner
             .store
-            .list_context_thread_activations(context_id, true)
+            .list_context_thread_activations(context_id, false)
             .await?;
-        let all_context_activation_ids = all_context_activations
-            .iter()
-            .map(|activation| activation.id.clone())
-            .collect::<HashSet<_>>();
+        if include_terminal {
+            let active_ids = all_context_activations
+                .iter()
+                .map(|activation| activation.id.clone())
+                .collect::<HashSet<_>>();
+            all_context_activations.extend(
+                self.inner
+                    .store
+                    .list_recent_terminal_thread_activations(
+                        context_id,
+                        limit.saturating_mul(4).min(8_000),
+                    )
+                    .await?
+                    .into_iter()
+                    .filter(|activation| !active_ids.contains(&activation.id)),
+            );
+        }
         let durable_queued_ids = all_context_activations
             .iter()
             .filter(|activation| activation.status == ThreadActivationStatus::Queued)
@@ -5044,23 +5054,7 @@ impl MorphzRuntime {
                 .cmp(&left.updated_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
-        let mut activations = sorted_activations
-            .iter()
-            .filter(|activation| !activation.status.is_terminal())
-            .cloned()
-            .collect::<Vec<_>>();
-        if include_terminal {
-            let terminal_budget = limit
-                .saturating_mul(4)
-                .min(8_000)
-                .saturating_sub(activations.len());
-            activations.extend(
-                sorted_activations
-                    .into_iter()
-                    .filter(|activation| activation.status.is_terminal())
-                    .take(terminal_budget),
-            );
-        }
+        let mut activations = sorted_activations;
         activations.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
@@ -5142,7 +5136,13 @@ impl MorphzRuntime {
                     .entry(snapshot.job.activation_id.clone())
                     .or_default()
                     .push(snapshot);
-            } else if !all_context_activation_ids.contains(&snapshot.job.activation_id) {
+            } else if self
+                .inner
+                .store
+                .get_thread_activation(&snapshot.job.activation_id)
+                .await?
+                .is_none()
+            {
                 // A bounded Scheduler query may omit an older terminal
                 // Activation while still selecting one of its Jobs through
                 // the independently bounded Job history. That is pagination,
@@ -5172,7 +5172,13 @@ impl MorphzRuntime {
                     .entry(thread_id.clone())
                     .or_default()
                     .push(snapshot);
-            } else if !all_context_thread_roots.contains(&snapshot.activation.root_turn_id) {
+            } else if self
+                .inner
+                .store
+                .get_thread_by_root(&snapshot.activation.root_turn_id)
+                .await?
+                .is_none_or(|owner| owner.context_id != context_id)
+            {
                 // As above, an Activation whose owning Thread lies outside
                 // this history page is not an orphan. Calling it one makes
                 // operator attention depend on the page size.
@@ -5206,17 +5212,42 @@ impl MorphzRuntime {
             }
         }
 
-        let authority_groups = self
+        let mut authority_groups = self
             .inner
             .store
             .list_thread_groups(ThreadGroupFilter {
                 context_id: Some(context_id.to_string()),
-                include_terminal: true,
+                include_terminal: false,
                 newest_first: false,
                 limit: None,
                 ..ThreadGroupFilter::default()
             })
             .await?;
+        if include_terminal {
+            let active_ids = authority_groups
+                .iter()
+                .map(|group| group.id.clone())
+                .collect::<HashSet<_>>();
+            authority_groups.extend(
+                self.inner
+                    .store
+                    .list_thread_groups(ThreadGroupFilter {
+                        context_id: Some(context_id.to_string()),
+                        include_terminal: true,
+                        newest_first: true,
+                        limit: Some(limit),
+                        ..ThreadGroupFilter::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .filter(|group| !active_ids.contains(&group.id)),
+            );
+            authority_groups.sort_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+        }
         let mut authority_group_members = Vec::new();
         let mut thread_groups = Vec::new();
         for group in &authority_groups {
@@ -6172,11 +6203,8 @@ impl MorphzRuntime {
         let mut activations = self
             .inner
             .store
-            .list_context_thread_activations(context_id, true)
-            .await?
-            .into_iter()
-            .filter(|activation| activation.root_turn_id == thread.root_turn_id)
-            .collect::<Vec<_>>();
+            .list_thread_activations_by_root(context_id, &thread.root_turn_id)
+            .await?;
         activations.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)

@@ -337,6 +337,25 @@ const PLAN_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_s
 const PLAN_RECONCILE_BATCH: usize = 128;
 const SUPERVISION_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+fn scheduler_audit_event(event: &Event) -> bool {
+    if !event.payload.contains_key("context_id") {
+        return false;
+    }
+    // These events only expose transient model/UI telemetry. They cannot
+    // mutate Thread, Activation, Objective, Group or dependency authority and
+    // would otherwise turn token streaming back into a two-second DB poll.
+    !matches!(
+        event.topic.as_str(),
+        "chat/progress"
+            | "chat/context_inspect"
+            | "runtime/model_stream"
+            | "runtime/model_request_snapshot"
+            | "runtime/model_attempt_snapshot"
+            | "runtime/model_attempt_state"
+            | "runtime/model_usage"
+    )
+}
+
 const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"Morphz is an S-Expression Cognitive Machine running on a large language model. You are its nondeterministic semantic processor and manage the machine's working Context. When identifying the integrated system to a Session, identify it as Morphz, an S-Expression Cognitive Machine; "semantic processor" names this model call's internal execution role, not the product's public identity.
 
 The Runtime supplies a self-describing Context on every evaluation. `protocol` is the authoritative contract for response modes and the Context DSL. Read it before deciding what to do.
@@ -1796,6 +1815,10 @@ pub struct Orchestrator {
     /// Cognitive Context. This cache is populated from every incoming routed
     /// event and is deliberately separate from the shared Mind state.
     session_contexts: DashMap<String, String>,
+    /// Contexts whose scheduler authority changed since the last online
+    /// invariant audit. The Event Bus coalesces an arbitrary burst into one
+    /// indexed live-state read; an idle Runtime performs no audit query.
+    supervision_audit_dirty_contexts: Arc<DashMap<String, ()>>,
     delegation_start_lock: Mutex<()>,
     objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
     objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
@@ -2606,6 +2629,7 @@ impl Orchestrator {
             active_model_attempts: DashMap::new(),
             cancelled_at: DashMap::new(),
             session_contexts: DashMap::new(),
+            supervision_audit_dirty_contexts: Arc::new(DashMap::new()),
             delegation_start_lock: Mutex::new(()),
             objective_evaluations,
             objective_supervisor,
@@ -3001,6 +3025,30 @@ impl Orchestrator {
             }),
         );
 
+        // Scheduler mutations are already represented by durable causal
+        // Events. Use them as an invalidation signal instead of polling every
+        // Context's lifetime every two seconds. This listener is deliberately
+        // process-local and writes no business state.
+        let dirty_contexts = Arc::clone(&self.supervision_audit_dirty_contexts);
+        self.bus.subscribe(
+            "*".to_string(),
+            Arc::new(move |event| {
+                let dirty_contexts = Arc::clone(&dirty_contexts);
+                Box::pin(async move {
+                    if scheduler_audit_event(&event) {
+                        if let Some(context_id) = event
+                            .payload
+                            .get("context_id")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            dirty_contexts.insert(context_id.to_string(), ());
+                        }
+                    }
+                    Ok(())
+                })
+            }),
+        );
+
         let orchestrator = Arc::clone(&self);
         self.bus.subscribe(
             "chat/delegate".to_string(),
@@ -3053,7 +3101,7 @@ impl Orchestrator {
         // the same SQLite writer and can make an otherwise healthy restart
         // fail with SQLITE_BUSY.
         self.rebuild_activation_admission_queue().await?;
-        self.audit_supervision_invariants().await?;
+        self.audit_active_supervision_invariants().await?;
         self.recover_thread_provider_waits().await?;
         self.reconcile_durable_plans().await?;
         self.recover_delegations().await?;
@@ -3131,51 +3179,89 @@ impl Orchestrator {
     fn start_supervision_invariant_auditor(self: &Arc<Self>) {
         let orchestrator = Arc::downgrade(self);
         tokio::spawn(async move {
-            let mut previous_violations = Vec::new();
-            let mut previous_error: Option<String> = None;
+            let mut previous_violations =
+                HashMap::<String, Vec<SchedulerInvariantViolation>>::new();
+            let mut previous_errors = HashMap::<String, String>::new();
             loop {
                 tokio::time::sleep(SUPERVISION_RECONCILE_INTERVAL).await;
                 let Some(orchestrator) = orchestrator.upgrade() else {
                     break;
                 };
-                match orchestrator.audit_supervision_invariants().await {
-                    Ok(violations) => {
-                        if previous_error.take().is_some() {
-                            tracing::info!(
-                                event_code = "orchestrator.thread_supervision.audit_recovered",
-                                "Thread Supervision invariant audit recovered"
-                            );
-                        }
-                        if violations != previous_violations {
-                            if violations.is_empty() {
-                                if !previous_violations.is_empty() {
-                                    tracing::info!(
-                                        previous_invariant_violations = previous_violations.len(),
-                                        event_code =
-                                            "orchestrator.thread_supervision.invariants_restored",
-                                        "Thread Supervision invariants restored"
-                                    );
-                                }
-                            } else {
-                                tracing::warn!(
-                                    invariant_violations = violations.len(),
-                                    previous_invariant_violations = previous_violations.len(),
-                                    event_code = "orchestrator.thread_supervision.invariant_violation_detected",
-                                    "Thread Supervision detected invariant violations"
+                let context_ids = orchestrator
+                    .supervision_audit_dirty_contexts
+                    .iter()
+                    .map(|entry| entry.key().clone())
+                    .collect::<Vec<_>>();
+                for context_id in context_ids {
+                    // Remove before the read. A mutation arriving during the
+                    // audit inserts a fresh marker and therefore cannot be
+                    // lost behind this cycle.
+                    if orchestrator
+                        .supervision_audit_dirty_contexts
+                        .remove(&context_id)
+                        .is_none()
+                    {
+                        continue;
+                    }
+                    match orchestrator
+                        .audit_supervision_context(&context_id, false)
+                        .await
+                    {
+                        Ok(violations) => {
+                            if previous_errors.remove(&context_id).is_some() {
+                                tracing::info!(
+                                    context_id = %context_id,
+                                    event_code = "orchestrator.thread_supervision.audit_recovered",
+                                    "Thread Supervision invariant audit recovered"
                                 );
                             }
-                            previous_violations = violations;
+                            let previous = previous_violations
+                                .get(&context_id)
+                                .cloned()
+                                .unwrap_or_default();
+                            if violations != previous {
+                                if violations.is_empty() {
+                                    if !previous.is_empty() {
+                                        tracing::info!(
+                                            context_id = %context_id,
+                                            previous_invariant_violations = previous.len(),
+                                            event_code =
+                                                "orchestrator.thread_supervision.invariants_restored",
+                                            "Thread Supervision invariants restored"
+                                        );
+                                    }
+                                } else {
+                                    tracing::warn!(
+                                        context_id = %context_id,
+                                        invariant_violations = violations.len(),
+                                        previous_invariant_violations = previous.len(),
+                                        event_code = "orchestrator.thread_supervision.invariant_violation_detected",
+                                        "Thread Supervision detected invariant violations"
+                                    );
+                                }
+                                if violations.is_empty() {
+                                    previous_violations.remove(&context_id);
+                                } else {
+                                    previous_violations.insert(context_id.clone(), violations);
+                                }
+                            }
                         }
-                    }
-                    Err(error) => {
-                        let error = error.to_string();
-                        if previous_error.as_deref() != Some(error.as_str()) {
-                            tracing::error!(
-                                %error,
-                                event_code = "orchestrator.thread_supervision.audit_failed",
-                                "Thread Supervision invariant audit failed; business facts remain unchanged until the next audit"
-                            );
-                            previous_error = Some(error);
+                        Err(error) => {
+                            let error = error.to_string();
+                            if previous_errors.get(&context_id) != Some(&error) {
+                                tracing::error!(
+                                    context_id = %context_id,
+                                    %error,
+                                    event_code = "orchestrator.thread_supervision.audit_failed",
+                                    "Thread Supervision invariant audit failed; business facts remain unchanged until the next audit"
+                                );
+                                previous_errors.insert(context_id.clone(), error);
+                            }
+                            // A transient Store failure must not clear the causal
+                            // invalidation; retry this Context next cycle.
+                            orchestrator
+                                .supervision_audit_dirty_contexts
+                                .insert(context_id, ());
                         }
                     }
                 }
@@ -3183,12 +3269,11 @@ impl Orchestrator {
         });
     }
 
-    /// Audits durable supervision invariants without inventing missing
-    /// business facts. Terminal barriers and dependency satisfaction belong
-    /// to the Kernel outcome transaction; a periodic task may report a broken
-    /// invariant or quarantine live work, but must never manufacture the
-    /// missing terminal Event after the fact.
-    async fn audit_supervision_invariants(
+    /// Startup checks every live authority row, not every historical row.
+    /// Terminal history is immutable after its Kernel transaction. A deep
+    /// historical verification can advance a resumable offline checkpoint,
+    /// but it must never block Runtime startup or make restart O(lifetime).
+    async fn audit_active_supervision_invariants(
         &self,
     ) -> Result<Vec<SchedulerInvariantViolation>, DynError> {
         let Some(store) = self.plan_store.as_ref() else {
@@ -3200,15 +3285,15 @@ impl Orchestrator {
         };
         let mut all_violations = Vec::new();
         for context in store.list_contexts(false).await? {
-            let objectives = store.list_context_objectives(&context.id, true).await?;
-            let threads = store.list_context_threads(&context.id, true).await?;
+            let objectives = store.list_context_objectives(&context.id, false).await?;
+            let threads = store.list_context_threads(&context.id, false).await?;
             let activations = store
-                .list_context_thread_activations(&context.id, true)
+                .list_context_thread_activations(&context.id, false)
                 .await?;
             let groups = store
                 .list_thread_groups(ThreadGroupFilter {
                     context_id: Some(context.id.clone()),
-                    include_terminal: true,
+                    include_terminal: false,
                     newest_first: false,
                     limit: None,
                     ..Default::default()
@@ -3351,6 +3436,277 @@ impl Orchestrator {
         }
         all_violations.sort();
         Ok(all_violations)
+    }
+
+    /// Audit only live scheduler authority for one Context, plus exact parent
+    /// rows required to validate those live records. Historical terminal rows
+    /// are immutable after their Kernel transaction; repeatedly deserializing
+    /// them cannot make an idle Runtime safer.
+    async fn audit_supervision_context(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<SchedulerInvariantViolation>, DynError> {
+        let Some(store) = self.plan_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let Some(kernel) = self.scheduler_kernel.as_ref() else {
+            tracing::warn!(event_code = "orchestrator.scheduler_kernel.unavailable", "Scheduler Kernel is unavailable; skipping invariant quarantine for this cycle without writing directly to the Store");
+            return Ok(Vec::new());
+        };
+
+        let mut objectives = store
+            .list_context_objectives(context_id, include_terminal)
+            .await?;
+        let mut threads = store
+            .list_context_threads(context_id, include_terminal)
+            .await?;
+        let mut activations = store
+            .list_context_thread_activations(context_id, include_terminal)
+            .await?;
+        let mut groups = store
+            .list_thread_groups(ThreadGroupFilter {
+                context_id: Some(context_id.to_string()),
+                include_terminal,
+                newest_first: false,
+                limit: None,
+                ..Default::default()
+            })
+            .await?;
+
+        let mut dependencies = Vec::new();
+        for objective in &objectives {
+            dependencies.extend(
+                store
+                    .list_scheduler_dependencies(SchedulerDependencyFilter {
+                        owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+                        owner_id: Some(objective.id.clone()),
+                        ..Default::default()
+                    })
+                    .await?,
+            );
+        }
+        for thread in &threads {
+            dependencies.extend(
+                store
+                    .list_scheduler_dependencies(SchedulerDependencyFilter {
+                        owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                        owner_id: Some(thread.id.clone()),
+                        ..Default::default()
+                    })
+                    .await?,
+            );
+        }
+        dependencies.sort_by(|left, right| left.id.cmp(&right.id));
+        dependencies.dedup_by(|left, right| left.id == right.id);
+
+        // A live Activation can expose the exact terminal Thread invariant
+        // without requiring every unrelated terminal Thread in the Context.
+        for root_turn_id in activations
+            .iter()
+            .map(|activation| activation.root_turn_id.clone())
+            .collect::<HashSet<_>>()
+        {
+            if !threads
+                .iter()
+                .any(|thread| thread.root_turn_id == root_turn_id)
+            {
+                if let Some(thread) = store.get_thread_by_root(&root_turn_id).await? {
+                    if thread.context_id == context_id {
+                        threads.push(thread);
+                    }
+                }
+            }
+        }
+
+        // A pending dependency targeting a newly terminal Group is an online
+        // violation. Retrieve that exact Group rather than all closed Groups.
+        for group_id in dependencies
+            .iter()
+            .filter(|dependency| {
+                dependency.status == SchedulerDependencyStatus::Pending
+                    && dependency.dependency_kind == SchedulerDependencyKind::ThreadGroup
+            })
+            .map(|dependency| dependency.dependency_id.clone())
+            .collect::<HashSet<_>>()
+        {
+            if !groups.iter().any(|group| group.id == group_id) {
+                if let Some(group) = store.get_thread_group(&group_id).await? {
+                    if group.context_id == context_id {
+                        groups.push(group);
+                    }
+                }
+            }
+        }
+
+        // Open Groups may be owned by an exact terminal/missing authority.
+        // Include existing owners so the pure audit can distinguish a valid
+        // live generation from an orphan without a Context-wide history scan.
+        for group in groups.clone() {
+            match group.supervisor_kind {
+                ThreadSupervisorKind::Thread => {
+                    if !threads
+                        .iter()
+                        .any(|thread| thread.id == group.supervisor_id)
+                    {
+                        if let Some(thread) = store.get_thread(&group.supervisor_id).await? {
+                            if thread.context_id == context_id {
+                                threads.push(thread);
+                            }
+                        }
+                    }
+                }
+                ThreadSupervisorKind::Evaluation => {
+                    if !activations
+                        .iter()
+                        .any(|activation| activation.id == group.supervisor_id)
+                    {
+                        if let Some(activation) =
+                            store.get_thread_activation(&group.supervisor_id).await?
+                        {
+                            if activation.context_id == context_id {
+                                activations.push(activation);
+                            }
+                        }
+                    }
+                }
+                ThreadSupervisorKind::Objective => {
+                    if !objectives
+                        .iter()
+                        .any(|objective| objective.id == group.supervisor_id)
+                    {
+                        if let Some(objective) = store.get_objective(&group.supervisor_id).await? {
+                            if objective.context_id == context_id {
+                                objectives.push(objective);
+                            }
+                        }
+                    }
+                }
+                ThreadSupervisorKind::Runtime
+                | ThreadSupervisorKind::None
+                | ThreadSupervisorKind::Legacy => {}
+            }
+        }
+
+        let mut members = Vec::new();
+        let mut thread_ids_by_entity = HashMap::new();
+        for group in &groups {
+            let group_members = store.list_thread_group_members(&group.id).await?;
+            for member in &group_members {
+                if !threads.iter().any(|thread| thread.id == member.thread_id) {
+                    if let Some(thread) = store.get_thread(&member.thread_id).await? {
+                        if thread.context_id == context_id {
+                            threads.push(thread);
+                        }
+                    }
+                }
+            }
+            thread_ids_by_entity.insert(
+                ("thread_group".to_string(), group.id.clone()),
+                group_members
+                    .iter()
+                    .map(|member| member.thread_id.clone())
+                    .collect(),
+            );
+            members.extend(group_members);
+        }
+
+        let thread_by_root = threads
+            .iter()
+            .map(|thread| (thread.root_turn_id.as_str(), thread.id.clone()))
+            .collect::<HashMap<_, _>>();
+        for activation in &activations {
+            if let Some(thread_id) = thread_by_root.get(activation.root_turn_id.as_str()) {
+                thread_ids_by_entity.insert(
+                    ("activation".to_string(), activation.id.clone()),
+                    vec![thread_id.clone()],
+                );
+            }
+        }
+
+        let mut outcomes = Vec::new();
+        for thread in &threads {
+            if let Some(outcome) = store.get_thread_outcome(&thread.id).await? {
+                outcomes.push(outcome);
+            }
+        }
+        let mut barrier_event_ids = HashSet::new();
+        for event_id in groups
+            .iter()
+            .filter_map(|group| group.barrier_event_id.as_ref())
+        {
+            if self
+                .store
+                .query(QueryFilter {
+                    event_id: Some(event_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .any(|event| event.id == *event_id)
+            {
+                barrier_event_ids.insert(event_id.clone());
+            }
+        }
+
+        let mut violations = crate::scheduler::audit_scheduler_invariants(
+            crate::scheduler::SchedulerInvariantInput {
+                objectives: &objectives,
+                threads: &threads,
+                activations: &activations,
+                outcomes: &outcomes,
+                groups: &groups,
+                group_members: &members,
+                dependencies: &dependencies,
+            },
+        );
+        violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
+            &objectives,
+            &threads,
+            &activations,
+            &groups,
+            &barrier_event_ids,
+        ));
+        let plan = crate::recovery::SchedulerReconciler::plan(
+            &violations,
+            &threads,
+            &thread_ids_by_entity,
+        );
+        for action in plan.actions {
+            let crate::recovery::ReconcilerAction::QuarantineThread { thread_id, reason } = action;
+            let Some(thread) = threads.iter().find(|thread| thread.id == thread_id) else {
+                continue;
+            };
+            let command = crate::controllers::DialogueController::control_thread(
+                thread,
+                context_id,
+                ThreadControlAction::Pause,
+                reason.clone(),
+                "Runtime-Reconciler",
+            );
+            match kernel.execute(command).await {
+                Ok(crate::scheduler::KernelResult::ThreadControlled(ThreadMutation::Updated(
+                    _,
+                ))) => tracing::warn!(
+                    thread_id = %thread.id,
+                    reason = %reason,
+                    event_code = "orchestrator.scheduler_reconciler.thread_quarantined",
+                    "Scheduler Reconciler quarantined a Thread violating invariants without inferring a business terminal state"
+                ),
+                Ok(crate::scheduler::KernelResult::ThreadControlled(
+                    ThreadMutation::Conflict { .. } | ThreadMutation::NotFound,
+                )) => {}
+                Ok(_) => unreachable!("ControlThread must return ThreadControlled"),
+                Err(error) => tracing::warn!(
+                    thread_id = %thread.id,
+                    %error,
+                    event_code = "orchestrator.scheduler_reconciler.quarantine_failed",
+                    "Scheduler Reconciler quarantine command failed; retaining authoritative state for the next cycle"
+                ),
+            }
+        }
+        violations.sort();
+        Ok(violations)
     }
 
     async fn reconcile_durable_plans(&self) -> Result<(), DynError> {
@@ -3812,11 +4168,10 @@ impl Orchestrator {
                 .map(|signal| signal.thread_id)
                 .collect::<HashSet<_>>();
             let activations = session_store
-                .list_context_thread_activations(&context.id, true)
+                .list_context_thread_activations(&context.id, false)
                 .await?;
             let active_roots = activations
                 .iter()
-                .filter(|item| !item.status.is_terminal())
                 .map(|item| item.root_turn_id.clone())
                 .collect::<HashSet<_>>();
             let threads = session_store
@@ -15182,14 +15537,14 @@ mod tests {
         production_system_prompt_inspection, recovery_owns_activation, render_harness_context,
         render_system_contract, restrict_tools_to_scope, retain_context_maintenance_tools,
         retain_final_reply_control_tools, retain_pending_continuation_calls, runtime_claimant_id,
-        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
-        should_force_final_for_maintenance, tool_call_activity_preview,
-        validate_final_reply_response, validate_objective_closure_review_response,
-        validate_objective_completion_call, DialogueThreadGate, DialogueThreadLease,
-        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
-        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
-        ModelVisibleAttachmentReference, NoReplyMode, TerminalDecision,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        scheduler_audit_event, semantic_sexpr_vm_system_prompt,
+        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
+        tool_call_activity_preview, validate_final_reply_response,
+        validate_objective_closure_review_response, validate_objective_completion_call,
+        DialogueThreadGate, DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics,
+        DynError, EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
+        ModelReasoningSummaryAccumulator, ModelVisibleAttachmentReference, NoReplyMode,
+        TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -15218,6 +15573,30 @@ mod tests {
                 '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
             )
         })
+    }
+
+    #[test]
+    fn scheduler_audit_invalidation_ignores_model_telemetry_but_keeps_causal_events() {
+        let event = |topic: &str| {
+            Event::new(
+                format!("event-{topic}"),
+                "Runtime".to_string(),
+                "runtime_control".to_string(),
+                topic.to_string(),
+                json!({ "context_id": "context-a" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        };
+        assert!(!scheduler_audit_event(&event("runtime/model_stream")));
+        assert!(!scheduler_audit_event(&event("chat/progress")));
+        assert!(scheduler_audit_event(&event("chat/user_message")));
+        assert!(scheduler_audit_event(&event("runtime/thread_terminal")));
+
+        let mut missing_context = event("runtime/thread_terminal");
+        missing_context.payload.remove("context_id");
+        assert!(!scheduler_audit_event(&missing_context));
     }
 
     #[derive(Default)]

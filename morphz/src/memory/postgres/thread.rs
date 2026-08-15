@@ -30,6 +30,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"UPDATE threads SET kind = 'execution' WHERE kind = 'objective'"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_context_status
            ON threads(context_id, status, updated_at DESC)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_context_updated
+           ON threads(context_id, updated_at DESC, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_session_delivery
            ON threads(session_id, delivery_status, updated_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_session_status
@@ -321,6 +323,27 @@ impl ThreadStore for PostgresStore {
             .fetch_all(&self.pool)
             .await?
         };
+        rows.iter().map(thread_from_row).collect()
+    }
+
+    async fn list_recent_terminal_threads(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT * FROM threads
+               WHERE context_id = $1 AND status IN ('completed', 'failed', 'cancelled')
+               ORDER BY updated_at DESC, id
+               LIMIT $2"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(limit).map_err(|_| "Thread 查询上限超出 BIGINT 范围")?)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(thread_from_row).collect()
     }
 

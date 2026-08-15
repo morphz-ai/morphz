@@ -2604,8 +2604,8 @@ impl ContextEngine {
             thread_signals,
         ) = match &self.session_store {
             Some(store) => {
-                let all_threads = store.list_context_threads(context_id, true).await?;
-                let context_thread_ids = all_threads
+                let active_threads = store.list_context_threads(context_id, false).await?;
+                let context_thread_ids = active_threads
                     .iter()
                     .map(|thread| thread.id.as_str())
                     .collect::<HashSet<_>>();
@@ -2615,34 +2615,38 @@ impl ContextEngine {
                     .into_iter()
                     .filter(|intent| context_thread_ids.contains(intent.thread_id.as_str()))
                     .collect::<Vec<_>>();
-                let mut projected = all_threads
-                    .iter()
-                    .filter(|thread| {
-                        if matches!(
-                            thread.delivery_status,
-                            DeliveryStatus::Pending | DeliveryStatus::Deferred
-                        ) {
-                            delivery_snapshot_ids
-                                .as_ref()
-                                .is_none_or(|ids| ids.contains(&thread.id))
-                        } else {
-                            !thread.lifecycle.is_terminal()
+                let mut projected = active_threads;
+                // Delivery snapshots name their terminal Threads exactly, so
+                // retrieve those rows by primary key rather than scanning all
+                // terminal history to rediscover a handful of IDs.
+                if let Some(ids) = delivery_snapshot_ids.as_ref() {
+                    for thread_id in ids {
+                        if let Some(thread) = store.get_thread(thread_id).await? {
+                            if thread.context_id == context_id
+                                && matches!(
+                                    thread.delivery_status,
+                                    DeliveryStatus::Pending | DeliveryStatus::Deferred
+                                )
+                                && !projected.iter().any(|current| current.id == thread.id)
+                            {
+                                projected.push(thread);
+                            }
                         }
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let mut recent_terminal = all_threads
+                    }
+                }
+                let mut recent_terminal = store
+                    .list_recent_terminal_threads(context_id, 20)
+                    .await?
                     .into_iter()
                     .filter(|thread| {
-                        thread.lifecycle.is_terminal()
-                            && !matches!(
-                                thread.delivery_status,
-                                DeliveryStatus::Pending | DeliveryStatus::Deferred
-                            )
+                        !matches!(
+                            thread.delivery_status,
+                            DeliveryStatus::Pending | DeliveryStatus::Deferred
+                        ) && !projected.iter().any(|current| current.id == thread.id)
                     })
-                    .rev()
-                    .take(20)
                     .collect::<Vec<_>>();
+                // The Store returns newest first; the Context projection uses
+                // chronological order for deterministic encoding.
                 recent_terminal.reverse();
                 projected.extend(recent_terminal);
                 let pending_signals = store
