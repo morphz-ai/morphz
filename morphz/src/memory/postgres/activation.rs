@@ -395,7 +395,8 @@ impl ActivationStore for PostgresStore {
                 signal_id = %stored_signal.id,
                 signal_generation = stored_signal.thread_generation,
                 thread_generation = routed_generation,
-                "隔离过期 generation 的 Thread Signal"
+                event_code = "memory.postgres.thread_signal.stale_generation_quarantined",
+                "Quarantined a Thread Signal from a stale generation"
             );
             return Ok(None);
         }
@@ -518,7 +519,8 @@ impl ActivationStore for PostgresStore {
                 session_id = %activation.session_id,
                 activation_id = %existing.id,
                 signal_id = %stored_signal.id,
-                "连续用户输入已加入下一批 DialogueTurn"
+                event_code = "memory.postgres.dialogue_turn.input_batched",
+                "Added consecutive user input to the next DialogueTurn batch"
             );
             return Ok(Some(existing));
         }
@@ -765,7 +767,8 @@ impl ActivationStore for PostgresStore {
                 context_id = %thread.context_id,
                 activation_id = %activation.id,
                 signal_count = pending.len(),
-                "认知活动时钟已随唯一 Signal batch 推进"
+            event_code = "memory.postgres.cognitive_clock.advanced",
+            "Advanced the cognitive-activity clock with the unique Signal batch"
             );
         }
         Ok(Some(created))

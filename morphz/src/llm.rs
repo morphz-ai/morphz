@@ -360,27 +360,27 @@ pub struct Response {
     pub tool_calls: Vec<ToolCallRepr>,
 }
 
-/// Provider 返回的一次模型请求真实用量的规范化表示。
+/// Normalized representation of actual usage reported by a Provider for one model request.
 ///
-/// 这些值是计费与审计事实，不参与伪装成精确值的本地 Prompt 估算。
-/// `raw` 保留 Provider 原始 usage 对象，以免规范化暂未覆盖的新字段丢失。
+/// These values are billing and audit facts, not local Prompt estimates presented as exact.
+/// `raw` retains the original Provider usage object so normalization cannot lose new fields.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ModelUsage {
-    /// Provider 计入本次请求的全部输入 Token，包含缓存命中部分。
+    /// All input tokens counted by the Provider, including cache hits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
-    /// 未从 Provider 缓存读取的输入 Token（若协议可区分）。
+    /// Input tokens not read from the Provider cache, when the protocol distinguishes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncached_input_tokens: Option<u64>,
-    /// 从 Provider 缓存读取的输入 Token（若协议可区分）。
+    /// Input tokens read from the Provider cache, when the protocol distinguishes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_input_tokens: Option<u64>,
-    /// 本次写入 Provider 缓存的输入 Token（若协议可区分）。
+    /// Input tokens written to the Provider cache, when the protocol distinguishes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
-    /// 输出 Token 中用于推理的子集（若协议可区分）。
+    /// Subset of output tokens used for reasoning, when the protocol distinguishes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -401,8 +401,9 @@ impl ModelUsage {
             || !self.raw.is_empty()
     }
 
-    /// 合并流式协议分多次返回的 usage。标量字段采用最新非空值，原始
-    /// Provider 对象全部保留，保证 Anthropic 等分段 usage 可被完整审计。
+    /// Merges usage returned in multiple streaming segments. Scalar fields take the latest present
+    /// value, while all raw Provider objects are retained for complete audit of segmented usage such
+    /// as Anthropic's.
     pub fn merge_from(&mut self, newer: &Self) {
         self.input_tokens = newer.input_tokens.or(self.input_tokens);
         self.uncached_input_tokens = newer.uncached_input_tokens.or(self.uncached_input_tokens);
@@ -414,9 +415,9 @@ impl ModelUsage {
         self.reasoning_tokens = newer.reasoning_tokens.or(self.reasoning_tokens);
         self.total_tokens = newer.total_tokens.or(self.total_tokens);
         self.raw.extend(newer.raw.iter().cloned());
-        // Anthropic 等协议会把输入与输出 usage 分别放在流首、流尾，且不
-        // 一定提供 total。两部分都是 Provider 原始事实时，其算术和仍是
-        // 精确值，不能在统计层错误地显示为 0。
+        // Protocols such as Anthropic may report input and output usage at opposite ends of a stream
+        // without a total. When both parts are original Provider facts, their arithmetic sum remains
+        // exact and must not appear as zero in statistics.
         if self.total_tokens.is_none() {
             self.total_tokens = self
                 .input_tokens
@@ -496,10 +497,10 @@ pub enum ModelStreamEvent {
 
 pub type ModelStreamSender = tokio::sync::mpsc::UnboundedSender<ModelStreamEvent>;
 
-/// Prompt Token 计量的可信度，与具体 Provider 名称解耦。
+/// Confidence of Prompt-token measurement, independent of specific Provider names.
 ///
-/// 即使使用真实 tokenizer，如果缺少 Provider 实际使用的 chat template，
-/// 它仍然只是 tokenizer estimate，不能标记为 exact。
+/// Even a real tokenizer remains an estimate when the Provider's actual chat template is unknown and
+/// therefore cannot be marked exact.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PromptTokenAccuracy {
@@ -521,11 +522,11 @@ impl PromptTokenAccuracy {
     }
 }
 
-/// 对一次即将发送给模型的完整 Prompt 的 Token 计量结果。
+/// Token measurement for one complete Prompt about to be sent to a model.
 ///
-/// `source` 说明计量值的来源，`accuracy` 明确区分精确计数与各类估算，
-/// 避免 Runtime 把近似值伪装成精确值。`tokens` 覆盖消息、System Prompt
-/// 与工具定义构成的完整请求。
+/// `source` identifies provenance and `accuracy` separates exact counts from estimates so the runtime
+/// never presents an approximation as exact. `tokens` covers the full request: messages, System
+/// Prompt, and tool definitions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PromptTokenCount {
     pub tokens: usize,
@@ -537,8 +538,9 @@ pub struct PromptTokenCount {
     pub base_estimate_tokens: usize,
     #[serde(default)]
     pub calibration_key: Option<u64>,
-    /// Provider protocol、model 与工具定义构成的校准形状。Client 在收到
-    /// completion usage 时用它确认实际发送请求仍属于预请求计量的同一锚点。
+    /// Calibration shape formed by Provider protocol, model, and tool definitions. On completion
+    /// usage, the client uses it to verify that the sent request still matches the pre-request
+    /// measurement anchor.
     #[serde(default)]
     pub calibration_shape: Option<u64>,
 }
@@ -791,7 +793,8 @@ pub trait Client: Send + Sync {
         Err("当前模型客户端不支持 Provider Account 诊断".into())
     }
 
-    /// 在 completion 之前本地计量完整 Prompt。实现不得为核心求值增加远程请求。
+    /// Measures a complete Prompt locally before completion. Implementations must not add remote
+    /// requests to core evaluation.
     async fn count_prompt_tokens(
         &self,
         _scope: &str,
@@ -807,7 +810,8 @@ pub trait Client: Send + Sync {
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>>;
 
-    /// 携带本轮预请求计量，供协议适配器将 usage 反馈到后续本地估算。
+    /// Carries this turn's pre-request measurement so protocol adapters can feed usage back into
+    /// subsequent local estimates.
     async fn create_completion_measured(
         &self,
         messages: Vec<Message>,
@@ -817,8 +821,8 @@ pub trait Client: Send + Sync {
         self.create_completion(messages, tools).await
     }
 
-    /// 统一流式入口。具有原生流协议的适配器应覆盖此方法；其他实现获得
-    /// 无损原子降级，但上层始终只消费规范化事件。
+    /// Unified streaming entry point. Adapters with native streaming should override this method;
+    /// other implementations get lossless atomic fallback while callers consume normalized Events.
     async fn create_completion_measured_stream(
         &self,
         messages: Vec<Message>,

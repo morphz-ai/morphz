@@ -619,7 +619,7 @@ mod tests {
             .starts_with("(vm morphz"));
         assert!(Arm::AnnotatedKernel
             .system_prompt()
-            .contains("先完整求值 expression"));
+            .contains("Fully evaluate expression"));
         assert_eq!(Arm::BareReadable.task_prompt(&tasks()[0]), tasks()[0].sexpr);
     }
 

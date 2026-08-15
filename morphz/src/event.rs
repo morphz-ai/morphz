@@ -25,11 +25,12 @@ pub const TYPE_INFER_REQUEST: &str = "infer_request";
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-// Event 对应情境记忆中的不可变事件
+// An Event is an immutable occurrence in episodic memory.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Event {
     pub id: String,
-    /// Event Store 中稳定、单调递增的物理插入顺序。内存中新建但尚未落盘时为空。
+    /// Stable, monotonically increasing physical insertion order in the Event Store. It is absent
+    /// while a newly created in-memory Event has not yet been persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequence: Option<u64>,
     pub timestamp: DateTime<Utc>,
@@ -209,7 +210,7 @@ impl InMemoryEventBus {
             subscriptions: DashMap::new(),
             sub_counter: AtomicU64::new(0),
             error_handler: Arc::new(|err, ev| {
-                tracing::error!(event_id = %ev.id, error = ?err, "事件总线错误");
+                tracing::error!(event_code = "event_bus.dispatch_failed", event_id = %ev.id, error = ?err, "EventBus dispatch failed");
             }),
             semaphore: Arc::new(tokio::sync::Semaphore::new(limit)),
             async_in_flight: Arc::new(DashMap::new()),
@@ -326,7 +327,8 @@ impl InMemoryEventBus {
             }
         }
 
-        // 1. 先通过可靠、串行的持久化边界。失败时不得继续派发业务事件。
+        // 1. Cross the reliable serialized persistence boundary first. Do not dispatch business
+        // Events after a persistence failure.
         if durable && !durable_subs.is_empty() {
             let _durable_guard = self.durable_lock.lock().await;
             for sub in durable_subs {
@@ -339,7 +341,7 @@ impl InMemoryEventBus {
             }
         }
 
-        // 2. 同步执行 best-effort 全局审计监听器。它们不能承担持久化职责。
+        // 2. Run best-effort global audit listeners synchronously. They cannot own persistence.
         for sub in sync_subs {
             let handler = Arc::clone(&sub.handler);
             let ev_clone = ev.clone();
@@ -362,7 +364,7 @@ impl InMemoryEventBus {
             }
         }
 
-        // 3. 异步派发其他业务监听器
+        // 3. Dispatch remaining business listeners asynchronously.
         for sub in async_subs {
             let dispatch_key = AsyncDispatchKey {
                 subscription_id: sub.id.clone(),
@@ -398,7 +400,7 @@ impl InMemoryEventBus {
     }
 }
 
-// match_topic 评估 topic 是否符合 pattern
+// Evaluates whether a topic matches a pattern.
 fn match_topic(pattern: &str, topic: &str) -> bool {
     if pattern == "*" {
         return true;
@@ -406,7 +408,7 @@ fn match_topic(pattern: &str, topic: &str) -> bool {
     if pattern == topic {
         return true;
     }
-    // 支持 prefix/* 前缀通配符匹配
+    // Supports `prefix/*` prefix wildcards.
     if let Some(prefix) = pattern.strip_suffix("/*") {
         return topic.starts_with(prefix) && topic[prefix.len()..].starts_with('/');
     }
@@ -466,18 +468,18 @@ mod tests {
 
         bus.publish(ev).await.unwrap();
 
-        // 稍微等待下异步任务执行完毕
+        // Allow asynchronous tasks to finish.
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let recs = records.lock().unwrap();
-        // 应该包含 audit:chat/msg (同步) 和 chat/msg (异步)
+        // Should contain `audit:chat/msg` (synchronous) and `chat/msg` (asynchronous).
         assert!(recs.contains(&"audit:chat/msg".to_string()));
         assert!(recs.contains(&"chat/msg".to_string()));
     }
 
     #[tokio::test]
     async fn test_event_bus_backpressure() {
-        // 创建限流为 2 的事件总线
+        // Create an EventBus with concurrency limited to 2.
         let bus = Arc::new(InMemoryEventBus::with_concurrency_limit(2));
         let active_count = Arc::new(Mutex::new(0));
         let max_concurrent = Arc::new(Mutex::new(0));
@@ -499,7 +501,7 @@ mod tests {
                             *mc = *act;
                         }
                     }
-                    // 模拟耗时处理以维持并发
+                    // Simulate slow processing so concurrency remains observable.
                     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                     {
                         let mut act = active.lock().unwrap();
@@ -510,7 +512,7 @@ mod tests {
             }),
         );
 
-        // 并发发布 5 个事件
+        // Publish five Events concurrently.
         for i in 0..5 {
             let ev = Event::new(
                 i.to_string(),
@@ -522,11 +524,11 @@ mod tests {
             bus.publish(ev).await.unwrap();
         }
 
-        // 等待所有事件处理完
+        // Wait for every Event to finish processing.
         tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
         let mc = *max_concurrent.lock().unwrap();
-        // 因为信号量限制为 2，所以同一时间最大并发数量不应超过 2
+        // The semaphore limit is 2, so observed concurrency must never exceed 2.
         assert!(
             mc <= 2 && mc > 0,
             "最大并发数量 {} 应该不超过 2 且大于 0",

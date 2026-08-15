@@ -2,9 +2,9 @@
 //!
 //! SQLite FTS5 ships no CJK-aware tokenizer. Its `trigram` tokenizer holds no
 //! index entry for any term shorter than three characters, which silently
-//! removes the most common Chinese word form — `权限`, `阈值`, `回滚` — from
-//! Recall entirely. Segmentation therefore happens in the Runtime, and the
-//! physical index only has to split the result on whitespace.
+//! removes the most common Chinese word form — `权限`, `阈值`, `回滚` — from Recall entirely (`source-language: allow-non-english-example`).
+//! Segmentation therefore happens in the
+//! Runtime, and the physical index only has to split the result on whitespace.
 //!
 //! Indexing and querying must observe the same term boundaries, so both go
 //! through [`segment_recall_terms`]. Anything that segments text by another

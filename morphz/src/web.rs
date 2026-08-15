@@ -685,11 +685,15 @@ impl Server {
                 .adopt_sessions_for_default_principal(sdk.default_principal(), true)
                 .await?;
             if adopted > 0 {
-                tracing::info!(adopted, "默认身份已接管旧 Session");
+                tracing::info!(
+                    event_code = "web.default_identity.sessions_adopted",
+                    adopted,
+                    "Default identity adopted legacy Sessions"
+                );
             }
         }
 
-        // 通过 Runtime 事件流将所有事件分发给各 WebSocket 客户端。
+        // Distribute all Events to WebSocket clients through the runtime Event stream.
         let mut events = self.runtime.subscribe("*", 1024);
         tokio::spawn(async move {
             while let Some(ev) = events.recv().await {
@@ -733,7 +737,7 @@ impl Server {
                 }
                 .await;
                 if let Err(error) = result {
-                    tracing::warn!(error = %error, "WebSocket 事件镜像失败");
+                    tracing::warn!(event_code = "web.websocket.event_mirror_failed", error = %error, "WebSocket Event mirroring failed");
                 }
             }
         });
@@ -750,7 +754,7 @@ impl Server {
             managed_config_path: crate::config::managed_config_path().ok(),
         });
 
-        // 跨域支持 (CORS)
+        // Cross-origin resource sharing (CORS).
         let cors = CorsLayer::new()
             .allow_origin(tower_http::cors::Any)
             .allow_methods(vec![
@@ -1147,12 +1151,13 @@ impl Server {
         tracing::info!(
             addr = %addr,
             dashboard_body_limit_bytes = dashboard_body_limit,
-            "Dashboard API Server 启动成功"
+            event_code = "web.dashboard_api.started",
+            "Dashboard API Server started"
         );
 
         tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, app).await {
-                tracing::error!(error = ?e, "Web Server: Axum 运行出错");
+                tracing::error!(event_code = "web.axum.run_failed", error = ?e, "Web Server Axum runtime failed");
             }
         });
 
@@ -4038,6 +4043,8 @@ async fn handle_upload_edge_artifact(
     .into_response()
 }
 
+// Axum handlers use `Response` directly as their rejection type throughout this boundary.
+#[allow(clippy::result_large_err)]
 fn required_u64_header(headers: &HeaderMap, name: &'static str) -> Result<u64, Response> {
     headers
         .get(name)
@@ -4255,6 +4262,8 @@ fn node_device_token(headers: &HeaderMap) -> Result<&str, Response> {
     Ok(token)
 }
 
+// Axum handlers use `Response` directly as their rejection type throughout this boundary.
+#[allow(clippy::result_large_err)]
 fn edge_claim_token(headers: &HeaderMap) -> Result<&str, Response> {
     headers
         .get("x-morphz-claim-token")
@@ -5959,15 +5968,15 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
                 }
             }
             Err(error) => {
-                tracing::warn!(session_id, %error, "重建 Model Attempt WebSocket 快照失败");
+                tracing::warn!(event_code = "web.model_attempt_snapshot.rebuild_failed", session_id, %error, "Failed to rebuild the Model Attempt WebSocket snapshot");
             }
         }
     }
 
-    // 将 EventBus 的广播转发至 WebSocket；同时保持连接心跳。
+    // Forward EventBus broadcasts to WebSocket while maintaining the connection heartbeat.
     loop {
         tokio::select! {
-            // 从广播信道接收新事件，实时推回浏览器
+            // Receive new Events from the broadcast channel and push them to the browser in real time.
             broadcast_msg = rx.recv() => {
                 match broadcast_msg {
                     Ok(ev) => {
@@ -5990,7 +5999,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
                         // Continuing would render a syntactically valid but incomplete
                         // model draft. Drop the connection so the client discards all
                         // transient text and reconnects to the durable snapshot.
-                        tracing::warn!(skipped, "Dashboard WebSocket 已丢失事件，关闭连接以重新同步");
+                    tracing::warn!(event_code = "web.websocket.events_lagged", skipped, "Dashboard WebSocket lost Events; closing the connection for resynchronization");
                         break;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -5998,7 +6007,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
                     }
                 }
             }
-            // 接收浏览器发来的信息（仅为保持连接或排查日志）
+            // Receive browser messages only for keepalive or diagnostics.
             incoming = socket.recv() => {
                 match incoming {
                     Some(Ok(WsMessage::Close(_))) | None => break,

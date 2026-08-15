@@ -92,7 +92,7 @@ impl TimerEngine {
                     break;
                 };
                 if let Err(error) = current.dispatch_due_once().await {
-                    tracing::error!(%error, "Runtime Timer dispatcher 失败；保留持久 Timer 等待重试");
+                    tracing::error!(event_code = "timer.dispatcher.failed", %error, "Runtime Timer dispatcher failed; retaining the durable Timer for retry");
                 }
                 let delay = current.next_sleep_duration().await;
                 let wakeup = Arc::clone(&current.wakeup);
@@ -163,7 +163,7 @@ impl TimerEngine {
                 }
                 Err(error) => {
                     let message = error.to_string();
-                    tracing::error!(timer_id = %timer.id, timer_kind = timer.kind.as_str(), %error, "Runtime Timer handler 失败");
+                    tracing::error!(event_code = "timer.handler.failed", timer_id = %timer.id, timer_kind = timer.kind.as_str(), %error, "Runtime Timer handler failed");
                     self.store
                         .retry_runtime_timer(
                             &timer.id,

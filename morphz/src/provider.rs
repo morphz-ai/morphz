@@ -713,7 +713,8 @@ impl ProtocolClient {
                             failure_kind = failure.kind.as_str(),
                             attempt,
                             max = self.max_retries,
-                            "Provider 请求失败，准备重试"
+                        event_code = "provider.request.retrying_status",
+                        "Provider request failed; preparing to retry"
                         );
                     } else {
                         return Err(boxed_model_failure(failure));
@@ -728,7 +729,8 @@ impl ProtocolClient {
                         failure_kind = failure.kind.as_str(),
                         attempt,
                         max = self.max_retries,
-                        "Provider 网络错误，准备重试"
+                        event_code = "provider.request.retrying_network",
+                        "Provider network error; preparing to retry"
                     );
                 }
                 Err(failure) => return Err(boxed_model_failure(failure)),
@@ -739,7 +741,8 @@ impl ProtocolClient {
                 attempt,
                 delay_ms = delay.as_millis(),
                 retry_after_secs = retry_after,
-                "Provider 本地重试退避"
+                event_code = "provider.request.local_backoff",
+                "Applying local Provider request retry backoff"
             );
             tokio::time::sleep(delay).await;
             backoff = backoff.saturating_mul(2);
@@ -805,7 +808,8 @@ impl ProtocolClient {
                         failure_kind = failure.kind.as_str(),
                         attempt,
                         max = self.max_retries,
-                        "Provider 流建立失败，准备重试"
+                        event_code = "provider.stream_open.retrying_status",
+                        "Provider stream establishment failed; preparing to retry"
                     );
                 }
                 Err(failure)
@@ -817,7 +821,8 @@ impl ProtocolClient {
                         failure_kind = failure.kind.as_str(),
                         attempt,
                         max = self.max_retries,
-                        "Provider 流建立发生网络错误，准备重试"
+                        event_code = "provider.stream_open.retrying_network",
+                        "Provider stream establishment encountered a network error; preparing to retry"
                     );
                 }
                 Err(failure) => return Err(boxed_model_failure(failure)),
@@ -828,7 +833,8 @@ impl ProtocolClient {
                 attempt,
                 delay_ms = delay.as_millis(),
                 retry_after_secs = retry_after,
-                "Provider 流建立本地重试退避"
+                event_code = "provider.stream_open.local_backoff",
+                "Applying local Provider stream-establishment retry backoff"
             );
             tokio::time::sleep(delay).await;
             backoff = backoff.saturating_mul(2);
@@ -945,7 +951,8 @@ impl ProtocolClient {
             actual_prompt_tokens,
             base_estimate_tokens,
             absolute_error = measurement.tokens.abs_diff(actual_prompt_tokens),
-            "已将 completion usage 反馈给 Prompt Token 校准器"
+            event_code = "provider.prompt_calibration.usage_recorded",
+            "Recorded completion usage in the Prompt-token calibrator"
         );
     }
 

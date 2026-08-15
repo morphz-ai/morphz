@@ -122,7 +122,7 @@ fn parse_human_duration(value: &str) -> Result<HumanDuration, String> {
     )
 }
 
-/// 零依赖的极简 .env 环境变量加载器，读取文件并注入到系统环境变量中
+/// Minimal dependency-free `.env` loader that injects file entries into the process environment.
 pub fn load_env(filepath: &str) -> io::Result<()> {
     let file = File::open(filepath)?;
     let reader = BufReader::new(file);
@@ -137,7 +137,8 @@ pub fn load_env(filepath: &str) -> io::Result<()> {
         if let Some((key, val)) = trimmed.split_once('=') {
             let key = key.trim();
             let val_cleaned = parse_env_value(val)?;
-            // 显式进程环境变量优先于 .env，避免部署注入值或测试隔离值被本地文件覆盖。
+            // Explicit process variables take precedence so local files cannot override deployment
+            // injection or test isolation.
             if std::env::var_os(key).is_none() {
                 std::env::set_var(key, val_cleaned);
             }
@@ -273,95 +274,99 @@ pub(crate) fn host_state_path(filename: &str) -> Option<PathBuf> {
 }
 
 // ==========================================
-// 工业化集中配置 (Industrial Centralized Config)
+// Centralized production configuration.
 // ==========================================
 
-/// Orchestrator 运行时配置 — 消除散落的魔法数字
+/// Orchestrator runtime configuration that centralizes operational constants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OrchestratorConfig {
-    /// 同时占用模型 Provider 的物理请求上限。
+    /// Maximum number of concurrent physical model-provider requests.
     ///
-    /// 这只约束模型调用，不约束等待工具、定时器或审批的 Activation。
+    /// This constrains model calls, not activations waiting on tools, timers, or approval.
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub model_provider_max_in_flight: usize,
-    /// EventBus 异步业务 handler 的进程内并发窗口。
+    /// In-process concurrency window for asynchronous EventBus business handlers.
     pub event_bus: EventBusConfig,
-    /// Durable Session/Event Ledger 的单机有界写入与 group commit 策略。
+    /// Bounded single-node write and group-commit policy for the durable Session/Event Ledger.
     pub event_writer: EventWriterConfig,
-    /// Runtime 通用调度策略。这里只定义物理调度窗口，不承载任务语义。
+    /// General runtime scheduling policy. It defines physical windows, not task semantics.
     pub scheduler: SchedulerConfig,
-    /// 持久 Thread Activation 从 queued 进入 running 前的单机准入策略。
+    /// Single-node admission policy for durable Thread Activations moving from queued to running.
     pub activation_admission: ActivationAdmissionConfig,
-    /// 单条 Delegation 链允许的最大嵌套深度。根 Agent 派生第一个 Sub Agent 计为 1。
+    /// Maximum delegation-chain depth. The first sub-agent spawned by the root agent has depth 1.
     pub max_delegation_depth: usize,
-    /// 同一 Agent 同时处于 queued/running 的 Delegation 总数上限。
+    /// Maximum number of queued or running delegations owned by one agent.
     pub max_active_delegations_per_agent: usize,
-    /// 等待最终回复期间的进度提示间隔（秒）；0 表示不提示。
+    /// Progress-notification interval while awaiting a final reply, in seconds; 0 disables it.
     ///
-    /// 这不是任务超时：交互端会持续等待，直到 Agent 回复或用户主动中断。
+    /// This is not a task timeout: the client waits until the agent replies or the user interrupts.
     pub reply_wait_notice_secs: u64,
-    /// 工具执行超时（秒）
+    /// Tool execution timeout, in seconds.
     pub tool_timeout_secs: u64,
-    /// 等待模型 Provider 并发槽位的最长时间。它只限制排队，不限制
-    /// 已经持续产生流式数据的物理请求。
+    /// Maximum wait for a model-provider concurrency slot. This limits only queueing, not a
+    /// physical request that continues to produce stream data.
     pub model_provider_queue_timeout_secs: u64,
-    /// Thread Activation 的可续租 lease 时长（秒）。
+    /// Renewable lease duration for a Thread Activation, in seconds.
     ///
-    /// 这是故障检测窗口，不是模型或工具执行超时。持有进程内执行权的
-    /// Runtime 会在 lease 到期前续租；进程退出后，其他 Runtime 最多等待
-    /// 该窗口即可安全接管，避免把一次模型请求的完整时限误当成故障检测时限。
+    /// This is a failure-detection window, not a model or tool timeout. The runtime holding local
+    /// execution authority renews the lease before expiry. After that process exits, another
+    /// runtime waits at most this long before taking over safely, rather than treating a complete
+    /// model-request deadline as the failure-detection interval.
     #[serde(deserialize_with = "deserialize_positive_u64")]
     pub activation_lease_secs: u64,
-    /// Objective Evaluation 的可续租故障检测窗口（秒）。
+    /// Renewable failure-detection window for an Objective Evaluation, in seconds.
     ///
-    /// 这不是 Objective 或模型请求的最大执行时间。运行中的 Activation
-    /// 会持续续租；Runtime/Worker 消失后，其他节点最多等待该窗口即可用新
-    /// fencing token 接管，不能再由模型 hard deadline 推导成长达数分钟。
+    /// This is not a maximum duration for the Objective or model request. A running Activation
+    /// keeps renewing its lease. If its runtime or worker disappears, another node waits at most
+    /// this long before taking over with a new fencing token; the interval must not be derived from
+    /// a model hard deadline that may span several minutes.
     #[serde(deserialize_with = "deserialize_positive_u64")]
     pub objective_evaluation_lease_secs: u64,
-    /// 单次物理模型请求的可选绝对墙钟上限。None 表示不设置 hard
-    /// deadline；流式停滞仍由 Provider 的 idle timeout 检测。
+    /// Optional absolute wall-clock limit for one physical model request. `None` disables the hard
+    /// deadline; provider idle-timeout detection still catches stalled streams.
     pub model_attempt_hard_timeout_secs: Option<u64>,
-    /// reasoning-only continuation 的安全熔断上限。
+    /// Safety circuit-breaker limit for reasoning-only continuations.
     ///
-    /// 这不是正常调度预算：只用于阻止 Provider 或模型异常时无限消耗。
-    /// None 表示完全不按次数熔断；正常且持续产生新进展的 reasoning 不退避。
+    /// This is not a normal scheduling budget. It only prevents unbounded consumption when a
+    /// provider or model misbehaves. `None` disables count-based breaking; healthy reasoning that
+    /// continues to make progress is not throttled.
     pub reasoning_continuation_safety_limit: Option<usize>,
-    /// 连续多少次收到完全相同的 reasoning 摘要后判定停滞；0 表示关闭停滞检测。
+    /// Number of identical consecutive reasoning summaries that constitutes a stall; 0 disables it.
     pub max_stalled_reasoning_continuations: usize,
     /// A new message from the same Principal replaces an in-flight
     /// DialogueTurn until that turn crosses the durable Execution boundary.
     /// Disable this to preserve strict FIFO dialogue behavior.
     pub interrupt_dialogue_on_new_message: bool,
-    /// Agent-Owned Context 的 warning 软阈值（估算 Token）
+    /// Warning threshold for agent-owned context, in estimated tokens.
     pub context_soft_token_limit: usize,
-    /// Agent-Owned Context 的物理硬阈值（估算 Token）
+    /// Physical hard limit for agent-owned context, in estimated tokens.
     pub context_hard_token_limit: usize,
-    /// 预留给 Agent 执行 Context 自维护的 Token 空间
+    /// Token capacity reserved for agent-driven context maintenance.
     pub context_maintenance_reserve_tokens: usize,
-    /// 单条原始 Observation 在 Context 中展示的最大字符数；原文仍保留在 Ledger
+    /// Maximum characters shown for one raw Observation; the Ledger retains the full text.
     pub observation_preview_chars: usize,
-    /// 单条用户消息的模型求值软检查点间隔；只提示复盘，不限制任务继续执行。
+    /// Soft model-evaluation checkpoint interval for one user message. It prompts reflection but
+    /// does not stop the task.
     pub attempt_soft_checkpoint_interval: usize,
-    /// 单个用户回合允许提交的 Context transaction 次数；不限制物理工具或回复
+    /// Maximum Context transactions per user turn; does not limit physical tools or replies.
     pub max_context_transactions_per_turn: usize,
-    /// 当前 Context Encoding 自动包含哪些 Session 历史。
+    /// Session history automatically included in the current Context Encoding.
     pub session_working_set: SessionWorkingSetConfig,
-    /// Frame 从显式 retire 请求进入真正 retired 前经历的认知活动窗口。
+    /// Cognitive-activity window between an explicit frame-retirement request and actual retirement.
     pub frame_retirement: FrameRetirementConfig,
-    /// 是否在 Ledger 中保留完整 Context Encoding 与模型消息。
-    /// 默认仅保存内容哈希和尺寸；实时事件订阅仍能看到完整内容。
+    /// Whether the Ledger retains full Context Encodings and model messages.
+    /// By default it stores only hashes and sizes; live event subscribers still see full content.
     pub persist_full_context_inspect: bool,
-    /// `eval` 程序中 `call` 可以调用、以及 `infer` 取证时可以使用的工具。
+    /// Tools available to `call` in `eval` programs and to evidence collection in `infer`.
     ///
-    /// 两条路径共用这一份名单：程序整体被准入时还看不到 `map` 之后会碰到哪些
-    /// 参数，所以求值中途发现的越界一律拒绝而不升级审批；若两处各有一份名单，
-    /// 这个不变量会随配置漂移而失效。
+    /// Both paths share this list. Admission of the whole program cannot foresee every argument
+    /// produced after `map`, so out-of-scope tools discovered during evaluation are rejected rather
+    /// than escalated for approval. Separate lists would let this invariant drift with configuration.
     ///
-    /// 未配置时使用默认的只读集合；显式配成空则表示彻底关闭树内工具调用，
-    /// 此时 `eval` 只剩结构与 `infer`。名单之外的工具仍可通过普通 Function
-    /// Calling 使用，各工具自身的 jail 与路径检查也不受此影响。
+    /// If omitted, a default read-only set is used. An explicit empty list disables all in-tree
+    /// tool calls, leaving only structure and `infer` in `eval`. Tools outside this list remain
+    /// available through ordinary Function Calling, and their own jail and path checks still apply.
     pub eval_callable_tools: Vec<String>,
 }
 
@@ -401,14 +406,14 @@ impl Default for OrchestratorConfig {
     }
 }
 
-/// EventBus 异步业务派发的单机背压策略。
+/// Single-node backpressure policy for asynchronous EventBus business dispatch.
 ///
-/// 该窗口位于 Activation 和模型 Provider 准入之前，只约束同时执行的
-/// business handler；同一订阅者对同一 Event 的持久重派会在此窗口前去重。
+/// This window precedes Activation and model-provider admission and constrains only concurrent
+/// business handlers. Durable redelivery of the same Event to one subscriber is deduplicated first.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct EventBusConfig {
-    /// 同时执行的异步 business handler 上限。
+    /// Maximum number of concurrent asynchronous business handlers.
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub max_in_flight: usize,
 }
@@ -422,7 +427,7 @@ impl Default for EventBusConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct FrameRetirementConfig {
-    /// 只在当前 Cognitive Context 接收新外部事实时推进；不是墙钟时间。
+    /// Advances only when the current Cognitive Context receives new external facts; not wall time.
     #[serde(deserialize_with = "deserialize_positive_u64")]
     pub cooling_ticks: u64,
 }
@@ -433,16 +438,16 @@ impl Default for FrameRetirementConfig {
     }
 }
 
-/// SQLite WAL 的单写者批量提交窗口。所有生产者在事件真正提交前都会
-/// 等待确认；队列满时施加背压，绝不静默丢弃 durable Event。
+/// Single-writer batch-commit window for SQLite WAL. Every producer waits for confirmation of the
+/// actual commit; a full queue applies backpressure and never silently drops a durable Event.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct EventWriterConfig {
-    /// 等待 durable commit 的最大进程内请求数。
+    /// Maximum in-process requests waiting for a durable commit.
     pub queue_capacity: usize,
-    /// 一个 SQLite transaction 最多提交的 Event 数。
+    /// Maximum Events committed by one SQLite transaction.
     pub max_batch_size: usize,
-    /// 首条 Event 到达后允许聚合相邻写入的微小时间窗口。
+    /// Small window for coalescing adjacent writes after the first Event arrives.
     pub flush_interval_ms: u64,
 }
 
@@ -456,23 +461,23 @@ impl Default for EventWriterConfig {
     }
 }
 
-/// Runtime 的通用持久调度策略。
+/// General durable scheduling policy for the runtime.
 ///
-/// Delivery 窗口只合并同一 Session 内相邻的完成通知；它不会延迟或合并
-/// Thread 本身的物理执行结果。
+/// The delivery window coalesces only adjacent completion notices in one Session. It neither delays
+/// nor combines the underlying physical Thread results.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulerConfig {
-    /// 第一个后台结果完成后，等待相邻结果一起进入一次 Delivery Router 决策。
+    /// Wait after the first background result so adjacent results share one Delivery Router decision.
     pub delivery_merge_window: HumanDuration,
-    /// 无论后续结果如何到达，第一个 pending 结果允许等待的最长时间。
+    /// Maximum time the first pending result may wait, regardless of later arrivals.
     pub delivery_max_wait: HumanDuration,
-    /// Runtime 可以不请求模型而确定性合并的最大完成结果数。单条结果始终
-    /// 原文透传；超过此数量时交给 Delivery Composer 做语义合成。
+    /// Maximum completed results the runtime may combine deterministically without a model call.
+    /// A single result is always passed through verbatim; larger batches use the Delivery Composer.
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub delivery_deterministic_batch_max_items: usize,
-    /// 确定性批量交付允许包含的最大总字符数。较长批次交给模型压缩，避免
-    /// Runtime 把多段已经很长的终态文本机械堆叠给用户。
+    /// Maximum total characters in deterministic batch delivery. Larger batches are compressed by
+    /// the model so the runtime does not mechanically concatenate multiple long terminal reports.
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub delivery_deterministic_batch_max_chars: usize,
 }
@@ -488,26 +493,26 @@ impl Default for SchedulerConfig {
     }
 }
 
-/// 单机持久 Activation 准入配置。
+/// Single-node admission configuration for durable Activations.
 ///
-/// `max_in_flight` 是完整 Activation 的单机运行上限，与模型 Provider
-/// 请求配额相互独立。其余字段定义排队、保留容量和 aging。所有值都是
-/// Runtime policy，不接受模型提供任意数字优先级。
+/// `max_in_flight` limits complete Activations on one node independently of model-provider request
+/// quotas. Remaining fields define queueing, reserved capacity, and aging. All values are runtime
+/// policy; arbitrary numeric priorities supplied by a model are never accepted.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActivationAdmissionConfig {
-    /// 同时处于 running 的完整 Activation 上限。Activation 等待工具、
-    /// 定时器或审批时仍属于该执行单元，但不会占用模型 Provider 槽位。
+    /// Maximum complete Activations in `running`. An Activation waiting on a tool, timer, or approval
+    /// remains part of the execution unit but does not consume a model-provider slot.
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub max_in_flight: usize,
-    /// Runtime 内存中允许等待的 durable queued Activation 总数。
+    /// Maximum durable queued Activations waiting in runtime memory.
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub max_queued: usize,
-    /// 为交互对话与完成结果交付共同保留的运行槽位。
+    /// Running slots reserved for interactive dialogue and completion delivery.
     pub dialogue_delivery_reserved_slots: usize,
-    /// 队列末端仅允许交互对话与完成结果交付使用的等待位置。
+    /// Tail queue positions reserved for interactive dialogue and completion delivery.
     pub dialogue_delivery_reserved_queue_slots: usize,
-    /// 每等待一个完整间隔，固定 class 向上提升一级以避免永久饥饿。
+    /// Promote a fixed class after each complete waiting interval to prevent starvation.
     pub aging_promotion_interval: HumanDuration,
 }
 
@@ -526,9 +531,9 @@ impl Default for ActivationAdmissionConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SessionWorkingSetConfig {
-    /// 最近一次有认知意义的活动距本次求值不得超过该窗口。
+    /// Maximum age of the latest cognitively meaningful activity at evaluation time.
     pub active_window: HumanDuration,
-    /// Full Projection Session 总数上限，包含当前 Session。
+    /// Maximum Full Projection Sessions, including the current Session.
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub max_sessions: usize,
 }
@@ -653,7 +658,7 @@ pub struct StorageConfig {
     pub postgres: PostgresStorageConfig,
 }
 
-/// 服务器与网络配置
+/// Server and network configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServerIdentityMode {
@@ -684,13 +689,13 @@ impl Default for ServerIdentityConfig {
     }
 }
 
-/// 服务器与网络配置
+/// Server and network configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
-    /// Web 服务器绑定地址
+    /// Web server bind address.
     pub bind: String,
-    /// WebSocket 广播通道容量
+    /// WebSocket broadcast-channel capacity.
     pub broadcast_capacity: usize,
     /// HTTP ingress identity policy. It is a host control-plane setting.
     pub identity: ServerIdentityConfig,
@@ -706,32 +711,33 @@ impl Default for ServerConfig {
     }
 }
 
-/// LLM 客户端配置
+/// LLM client configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LlmConfig {
-    /// 选择 `[providers.<id>]` 中的 Provider 实例；首次启动前可以为空。
+    /// Selects a Provider instance from `[providers.<id>]`; may be empty before initial setup.
     pub provider: Option<String>,
-    /// 主要模型名称
+    /// Primary model name.
     pub model: String,
-    /// 当前 Provider 允许在运行期切换的模型目录。`model` 会自动并入该目录，
-    /// 因此旧配置无需迁移；Dashboard 只能选择这里声明过的模型。
+    /// Models the current Provider permits at runtime. `model` is merged into this catalog
+    /// automatically for backward compatibility; the Dashboard can select only declared models.
     pub models: Vec<String>,
-    /// 重试最大次数
+    /// Maximum retry count.
     pub max_retries: u32,
-    /// 初始重试退避秒数
+    /// Initial retry backoff, in seconds.
     pub initial_backoff_secs: u64,
-    /// 建立 TCP/TLS 连接的超时秒数。
+    /// TCP/TLS connection timeout, in seconds.
     pub connect_timeout_secs: u64,
-    /// 收到首个响应体字节后，相邻两个流式数据块的最长静默时间。每收到一个
-    /// chunk 都会重新计时，因此持续输出 reasoning 不会被误杀。
+    /// Maximum silence between adjacent stream chunks after the first response-body byte. Each
+    /// chunk resets the timer so continuously emitted reasoning is not terminated accidentally.
     pub stream_idle_timeout_secs: u64,
-    /// 等待响应头、以及收到成功响应头后等待第一个响应体字节的最长时间。
-    /// 大 Context 的首字节延迟通常显著长于流中相邻 chunk，因此必须独立配置。
+    /// Maximum wait for response headers and, after successful headers, the first response-body
+    /// byte. Large contexts often have much higher first-byte latency than inter-chunk latency, so
+    /// this must be configured independently.
     pub first_byte_timeout_secs: u64,
-    /// 单次 completion 最大输出 Token；None 表示由模型服务决定默认值
+    /// Maximum output tokens for one completion; `None` delegates the default to the model service.
     pub max_output_tokens: Option<u32>,
-    /// 模型原生推理深度；None 表示不发送控制字段，保留模型默认行为。
+    /// Native model reasoning depth; `None` omits the control field and preserves model defaults.
     #[serde(default, deserialize_with = "deserialize_optional_reasoning_effort")]
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -887,11 +893,11 @@ pub enum CredentialSource {
 #[serde(default, deny_unknown_fields)]
 pub struct CredentialConfig {
     pub source: CredentialSource,
-    /// 环境变量名，或 Keychain account。
+    /// Environment-variable name or Keychain account.
     pub name: Option<String>,
-    /// Keychain service；未设置时使用 `morphz`。
+    /// Keychain service; defaults to `morphz` when omitted.
     pub service: Option<String>,
-    /// 无 stdin 的凭证 helper 命令及参数。首项是可执行文件。
+    /// Credential-helper command and arguments with no stdin; the first item is the executable.
     pub command: Vec<String>,
 }
 
@@ -906,9 +912,9 @@ pub struct ProviderConfig {
     /// in the request path; an absent entry falls back to the global Runtime
     /// context limit.
     pub models: BTreeMap<String, ProviderModelConfig>,
-    /// 非敏感静态 Header。
+    /// Non-sensitive static headers.
     pub headers: BTreeMap<String, String>,
-    /// Header 名到环境变量名的映射，用于额外敏感 Header。
+    /// Header-name to environment-variable mapping for additional sensitive headers.
     pub env_headers: BTreeMap<String, String>,
 }
 
@@ -1137,18 +1143,20 @@ impl ProviderModelConfig {
     }
 }
 
-/// 后台任务配置：Runtime 只负责超时通知，不自动 kill。
+/// Background-task configuration: the runtime reports timeouts but does not kill automatically.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BackgroundTaskConfig {
     pub timeout_notify_enabled: bool,
     pub timeout_notify_secs: u64,
     pub max_output_buffer_bytes: usize,
-    /// 后台 stdout/stderr 合并后再发布事件的窗口，避免逐行放大 Ledger。
+    /// Window for combining background stdout/stderr before publishing Events, avoiding line-by-line
+    /// Ledger amplification.
     pub output_event_coalesce_ms: u64,
-    /// 单条后台输出事件的最大字符数；完整内容始终保留在 artifact。
+    /// Maximum characters in one background-output Event; artifacts always retain full content.
     pub max_output_event_chars: usize,
-    /// exec 完整原始输出归档目录；Context 中只放受控 preview 和此稳定文件引用
+    /// Archive directory for full raw `exec` output. Context contains only a bounded preview and a
+    /// stable reference to this file.
     pub artifact_dir: String,
 }
 
@@ -1295,7 +1303,7 @@ impl Default for UiConfig {
     }
 }
 
-/// 工业化全局配置（聚合所有子配置）
+/// Production global configuration aggregating all sub-configurations.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
@@ -3050,7 +3058,8 @@ impl AppConfig {
         if let Ok(root) = std::env::var("MORPHZ_WORKSPACE_ROOT") {
             if !root.trim().is_empty() {
                 self.permissions.workspace_root = root;
-                // 严格评测模式下不继承默认 /tmp extra roots，避免文件工具逃逸。
+                // Strict evaluation mode does not inherit default `/tmp` extra roots, preventing
+                // file tools from escaping the evaluation workspace.
                 self.permissions.read_roots.clear();
                 self.permissions.write_roots.clear();
             }
@@ -3765,7 +3774,7 @@ mod tests {
             .unwrap();
         assert_eq!(cfg.server.bind, "0.0.0.0:9000");
         assert_eq!(cfg.storage.sqlite.path, "test.db");
-        // 未指定的部分应使用默认值
+        // Unspecified sections should retain their defaults.
         assert_eq!(cfg.orchestrator.model_provider_max_in_flight, 4);
     }
 

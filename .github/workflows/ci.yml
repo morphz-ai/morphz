@@ -25,6 +25,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Format check
         run: cargo fmt --all -- --check
+      - name: Source language check
+        run: bash scripts/check-source-language.sh
+      - name: Diagnostic log contract check
+        run: perl scripts/check-diagnostic-logs.pl
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 

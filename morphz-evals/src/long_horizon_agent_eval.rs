@@ -38,10 +38,10 @@ pub struct FileInjection {
     pub content: String,
 }
 
-/// 声明一个“事实必须晚于证据出现”的通用评测门。
+/// Declares a generic evaluation gate requiring a fact to appear only after its evidence.
 ///
-/// 场景只描述事实标记与什么事件构成证据；评测器负责按 Ledger 顺序检查，
-/// 不把任何业务事实或版本命名写入 Runtime。
+/// A scenario describes only the fact marker and the Events that constitute evidence. The evaluator
+/// checks Ledger order without embedding business facts or version names in the runtime.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceGate {
     pub id: String,

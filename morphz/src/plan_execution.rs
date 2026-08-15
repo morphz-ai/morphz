@@ -382,11 +382,12 @@ impl PlanExecutionCoordinator {
                 {
                     Ok(PlanExecutionMutation::Updated(requeued)) => {
                         tracing::warn!(
-                            plan_execution_id = %requeued.id,
-                            revision = requeued.revision,
-                            %error,
-                            "PlanExecution 推进失败；已按 claim fence 回滚为 queued"
-                        );
+                                plan_execution_id = %requeued.id,
+                                revision = requeued.revision,
+                                %error,
+                        event_code = "plan_execution.advance_failed_requeued",
+                        "PlanExecution advance failed and was returned to queued under the claim fence"
+                            );
                         break;
                     }
                     Ok(PlanExecutionMutation::Conflict { current })
@@ -412,10 +413,11 @@ impl PlanExecutionCoordinator {
                     Err(release_error) => {
                         if Utc::now() >= release_deadline {
                             tracing::error!(
-                                plan_execution_id = %running.id,
-                                %release_error,
-                                "PlanExecution 错误后的 claim 释放持续失败；等待 lease recovery 接管"
-                            );
+                                    plan_execution_id = %running.id,
+                                    %release_error,
+                            event_code = "plan_execution.claim_release_failed",
+                            "PlanExecution claim release kept failing after an error; waiting for lease recovery"
+                                );
                             break;
                         }
                     }

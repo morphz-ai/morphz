@@ -125,8 +125,8 @@ pub enum ShellEnvironmentPolicy {
     InheritAll,
 }
 
-/// 用户可配置的权限输入。非 custom 模式会使用对应预设覆盖
-/// sandbox/approval/reviewer 三项，路径和环境策略仍可配置。
+/// User-configurable permission input. Non-custom modes override sandbox, approval, and reviewer
+/// with the selected preset while path and environment policies remain configurable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PermissionConfig {
@@ -632,7 +632,7 @@ impl PermissionBroker {
             .await?;
         match decision {
             ApprovalDecision::AllowOnce { rationale, .. } => {
-                tracing::info!(%rationale, "权限代理允许一次性能力扩张");
+                tracing::info!(event_code = "permission.review.allow_once", %rationale, "Permission reviewer allowed a one-time capability expansion");
                 Ok(())
             }
             ApprovalDecision::AllowLease { .. } => {

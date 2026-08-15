@@ -8,7 +8,8 @@ impl std::fmt::Display for SExpr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SExpr::Atom(s) => {
-                // 如果包含空格、括号、双引号、换行等，则使用双引号包裹并转义
+                // Quote and escape values containing whitespace, parentheses, double quotes, newlines,
+                // or other syntax-sensitive characters.
                 if s.contains(' ')
                     || s.contains('(')
                     || s.contains(')')
@@ -33,7 +34,7 @@ impl std::fmt::Display for SExpr {
 }
 
 impl SExpr {
-    // 根据路径（例如 ["variables", "current_file"]）查找子节点的值
+    // Finds a child value by path, e.g. `["variables", "current_file"]`.
     pub fn get_path(&self, path: &[&str]) -> Option<&SExpr> {
         if path.is_empty() {
             return Some(self);
@@ -60,7 +61,7 @@ impl SExpr {
         }
     }
 
-    // 根据路径（例如 ["variables", "current_file"]）可变借用查找子节点。
+    // Finds and mutably borrows a child by path, e.g. `["variables", "current_file"]`.
     pub fn get_path_mut(&mut self, path: &[&str]) -> Option<&mut SExpr> {
         if path.is_empty() {
             return Some(self);
@@ -81,7 +82,7 @@ impl SExpr {
         }
     }
 
-    // 根据路径设置或覆盖子节点，如果路径不存在则自动创建
+    // Sets or replaces a child by path, creating missing path segments automatically.
     pub fn set_path(&mut self, path: &[&str], value: SExpr) -> Result<(), String> {
         if path.is_empty() {
             return Err("路径不能为空".to_string());
@@ -116,7 +117,7 @@ impl SExpr {
     }
 }
 
-// 在列表（从 index 1 开始）中定位 key 所对应的子 SExpr 索引
+// Locates the child SExpr for a key in a list starting at index 1.
 pub fn find_sub_idx_in_list(list: &[SExpr], key: &str) -> Option<usize> {
     if list.is_empty() {
         return None;
@@ -133,7 +134,7 @@ pub fn find_sub_idx_in_list(list: &[SExpr], key: &str) -> Option<usize> {
     None
 }
 
-// 工业级结构化解析异常报告
+// Production-grade structured parse error reporting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParserError {
     pub line: usize,
@@ -154,7 +155,7 @@ impl std::fmt::Display for ParserError {
 
 impl std::error::Error for ParserError {}
 
-// 零拷贝流式解析状态机
+// Zero-copy streaming parser state machine.
 struct Parser<'a> {
     input: &'a str,
     chars: std::str::CharIndices<'a>,
@@ -241,9 +242,10 @@ impl<'a> Parser<'a> {
             return Err(self.make_error("Unexpected EOF".to_string()));
         };
 
-        // 支持 Lisp 家族常用的 Quote 语法糖：'(...) 是字面量列表，'atom 是字面量 Atom。
-        // Yao-lang 中列表默认就是数据，无需 quote 防求值，因此直接剥离前缀 ' 并继续解析。
-        // 这避免 LLM 误用 quote 时把整个表达式解析为 [Atom("'"), List(...)] 进而破坏 (set path value) 的 3 段语法。
+        // Support conventional Lisp quote sugar: `'(...)` is a literal list and `'atom` a literal
+        // Atom. Yao-lang lists are data by default and need no quote to suppress evaluation, so strip
+        // the leading quote and continue. This prevents an LLM's unnecessary quote from producing
+        // `[Atom("'"), List(...)]` and breaking the three-part `(set path value)` syntax.
         if c == '\'' {
             self.advance(); // consume '
             return self.parse_value();
@@ -255,7 +257,7 @@ impl<'a> Parser<'a> {
             loop {
                 self.skip_whitespace();
                 let Some(next_c) = self.peek_char() else {
-                    // Auto-balancing 括号自动配平机制
+                    // Automatic parenthesis balancing.
                     break;
                 };
                 if next_c == ')' {
@@ -297,10 +299,10 @@ impl<'a> Parser<'a> {
                     self.advance();
                 }
             }
-            // 字符串未正常闭合做兜底
+            // Graceful fallback for an unterminated string.
             Ok(SExpr::Atom(s))
         } else {
-            // 解析普通的 Atom 标识符
+            // Parse an ordinary Atom identifier.
             let mut s = String::new();
             while let Some(next_c) = self.peek_char() {
                 if next_c.is_whitespace()
@@ -322,8 +324,8 @@ impl<'a> Parser<'a> {
     }
 }
 
-// 解析输入中的全部顶层表达式。爻程序（无论来自 eval 工具参数还是 .yao 文件）
-// 允许在程序体之前放置声明形式，因此顶层不止一个表达式。
+// Parses all top-level expressions. A Yao program, whether supplied to `eval` or loaded from a
+// `.yao` file, may place declaration forms before its body and therefore contain multiple roots.
 pub fn parse_all(input: &str) -> Result<Vec<SExpr>, ParserError> {
     let mut parser = Parser::new(input);
     let mut forms = Vec::new();
@@ -340,7 +342,7 @@ pub fn parse_all(input: &str) -> Result<Vec<SExpr>, ParserError> {
     Ok(forms)
 }
 
-// 自动括号配平的 S-Expression 解析器入口
+// S-Expression parser entry point with automatic parenthesis balancing.
 pub fn parse(input: &str) -> Result<SExpr, ParserError> {
     let mut parser = Parser::new(input);
     parser.skip_whitespace();
@@ -400,13 +402,13 @@ mod tests {
 
     #[test]
     fn test_quote_syntactic_sugar_list() {
-        // Lisp 风格 '(...) 应该被剥离 quote，直接当作普通列表解析
+        // Lisp-style `'(...)` should lose its quote and parse as an ordinary list.
         let input = "(create tasks '(items \"task1\" \"task2\"))";
         let parsed = parse(input).unwrap();
-        // 期望：(create, tasks, (items task1 task2)) —— 长度为 3
+        // Expected: `(create, tasks, (items task1 task2))`, with length 3.
         if let SExpr::List(top) = &parsed {
             assert_eq!(top.len(), 3, "顶层 create 表达式应为 3 段");
-            // 第 3 段应是 list（即被 quote 的内容），不应是孤立 Atom("'")
+            // The third part should be the quoted list, not a standalone `Atom("'")`.
             assert!(matches!(top[2], SExpr::List(_)));
         } else {
             panic!("解析结果应是 List");
@@ -415,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_quote_syntactic_sugar_atom() {
-        // 'atom 应解析为 Atom("atom")
+        // `'atom` should parse as `Atom("atom")`.
         let input = "(create x 'hello)";
         let parsed = parse(input).unwrap();
         if let SExpr::List(top) = &parsed {
@@ -428,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_quote_inside_context_transaction() {
-        // 真实 LLM 场景复现：context-tx 中含 quote 列表
+        // Reproduces a real LLM case: a quoted list inside `context-tx`.
         let input = r#"(context-tx
   (base-version 0)
   (create current (activity "读取项目"))
@@ -436,7 +438,7 @@ mod tests {
 )"#;
         let parsed = parse(input).unwrap();
         if let SExpr::List(top) = &parsed {
-            // 期望 4 段：context-tx + base-version + 2 个 create
+            // Expect four parts: `context-tx`, `base-version`, and two `create` forms.
             assert_eq!(top.len(), 4);
             if let SExpr::List(create2) = &top[3] {
                 assert_eq!(create2.len(), 3, "create 指令必须 3 段");

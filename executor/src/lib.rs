@@ -26,15 +26,15 @@ pub fn load_model() -> Result<ModelStore, ExecutorError> {
         .into());
     }
 
-    // 1. 读取并解析 Config
+    // 1. Read and parse the configuration.
     let config_str = std::fs::read_to_string(&config_path)?;
     let config: Config = serde_json::from_str(&config_str)?;
 
-    // 2. 读取 Tokenizer
+    // 2. Load the tokenizer.
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| format!("加载 tokenizer.json 失败: {e}"))?;
 
-    // 3. 寻找权重文件 (safetensors 优先，bin 兜底)
+    // 3. Locate model weights, preferring safetensors with a `.bin` fallback.
     let device = Device::Cpu;
     let safetensors_path = model_dir.join("model.safetensors");
     let bin_path = model_dir.join("pytorch_model.bin");
@@ -51,7 +51,7 @@ pub fn load_model() -> Result<ModelStore, ExecutorError> {
         );
     };
 
-    // 4. 加载 BertModel
+    // 4. Load BertModel.
     let model = BertModel::load(vb, &config)?;
 
     Ok(ModelStore {
@@ -62,7 +62,7 @@ pub fn load_model() -> Result<ModelStore, ExecutorError> {
 }
 
 pub fn compute_embedding(store: &ModelStore, text: &str) -> Result<Vec<f32>, ExecutorError> {
-    // 1. 词例化
+    // 1. Tokenize.
     let tokens = store
         .tokenizer
         .encode(text, true)
@@ -74,27 +74,27 @@ pub fn compute_embedding(store: &ModelStore, text: &str) -> Result<Vec<f32>, Exe
         return Err("输入文本分词后为空".into());
     }
 
-    // 2. 将数据转为 Tensor [batch=1, seq_len]
+    // 2. Convert data to a tensor shaped `[batch=1, seq_len]`.
     let input_ids = Tensor::new(ids, &store.device)?.unsqueeze(0)?;
 
-    // token_type_ids: 单句全是 0
+    // `token_type_ids` is all zeros for a single sentence.
     let token_type_ids = Tensor::zeros((1, token_len), DType::U32, &store.device)?;
 
-    // 3. BERT 前向传递
+    // 3. Run the BERT forward pass.
     let sequence_output = store.model.forward(&input_ids, &token_type_ids, None)?;
 
-    // sequence_output 形状: [1, seq_len, hidden_size]
-    // 4. Mean Pooling (对维度 1 沿着 Token 长度方向求平均)
+    // `sequence_output` is shaped `[1, seq_len, hidden_size]`.
+    // 4. Mean-pool dimension 1 across the token sequence.
     let mean_embedding = sequence_output.mean(1)?.squeeze(0)?; // 形状变回 [hidden_size]
 
-    // 5. L2 归一化 (使得向量点积直接等于余弦相似度)
-    // 归一化公式: v / sqrt(sum(v_i^2))
+    // 5. L2-normalize so a vector dot product equals cosine similarity.
+    // Formula: `v / sqrt(sum(v_i^2))`.
     let sqr = mean_embedding.sqr()?;
     let sum = sqr.sum(0)?;
     let norm = sum.sqrt()?;
     let normalized = mean_embedding.broadcast_div(&norm)?;
 
-    // 6. 转为 Vec 并返回
+    // 6. Convert to `Vec` and return.
     let res = normalized.to_vec1::<f32>()?;
     Ok(res)
 }

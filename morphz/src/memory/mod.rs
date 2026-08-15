@@ -3725,6 +3725,9 @@ pub struct ThreadPromotionRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+// Mutation payloads mirror persistent aggregate snapshots; boxing would move allocation cost into
+// every backend and obscure the authoritative result shape.
+#[allow(clippy::large_enum_variant)]
 pub enum ThreadPromotionMutation {
     Updated(ThreadPromotionRecord),
     Conflict {
@@ -4044,7 +4047,7 @@ pub(crate) fn causal_payload_string<'a>(
         })
 }
 
-// EventStore 定义事件历史物理存储的接口
+// EventStore defines the physical persistence interface for Event history.
 #[derive(Debug, Clone)]
 pub struct EventAppend {
     pub event: crate::event::Event,
@@ -5325,8 +5328,8 @@ pub trait ObjectiveStore: Send + Sync {
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
-    /// 记录一次已准备提交给模型的完整 Prompt 成本。该记账不改变
-    /// Objective 的语义 revision，并以 Evaluation ID 防止串账。
+    /// Records the cost of a complete Prompt prepared for model submission. This accounting does not
+    /// alter the Objective's semantic revision and uses Evaluation ID to prevent cross-attribution.
     async fn record_objective_evaluation_usage(
         &self,
         id: &str,
@@ -5449,6 +5452,9 @@ pub struct ProviderModelCatalogRecord {
 
 #[async_trait::async_trait]
 pub trait ProviderModelCatalogStore: Send + Sync {
+    // Catalog replacement is an atomic persistence boundary whose provenance fields must remain
+    // explicit rather than being partially defaulted by callers.
+    #[allow(clippy::too_many_arguments)]
     async fn replace_provider_model_catalog(
         &self,
         provider_instance_id: &str,

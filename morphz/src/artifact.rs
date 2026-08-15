@@ -642,14 +642,14 @@ impl Tool for TransferTool {
         let request = self.request(arguments)?;
         let (_, destination, requested) =
             local_transfer_paths_and_delta(&self.permissions, &request)?;
-        Ok(self.permissions.approval_requirement_for_delta(
+        self.permissions.approval_requirement_for_delta(
             artifact_transfer_approval_action(&destination),
             requested,
             format!(
                 "Artifact Transfer 需要读取 '{}' 并写入 '{}'",
                 request.source.path, request.destination.path
             ),
-        )?)
+        )
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, ArtifactTransferError> {
@@ -1427,9 +1427,11 @@ mod tests {
         decision: ApprovalDecision,
         calls: Arc<AtomicUsize>,
     ) -> Arc<PermissionBroker> {
-        let mut config = PermissionConfig::default();
-        config.workspace_root = workspace.to_string_lossy().into_owned();
-        config.mode = mode;
+        let config = PermissionConfig {
+            workspace_root: workspace.to_string_lossy().into_owned(),
+            mode,
+            ..PermissionConfig::default()
+        };
         Arc::new(PermissionBroker::new(
             Arc::new(PermissionProfile::from_config(&config).unwrap()),
             Arc::new(CountingApprovalProvider { decision, calls }),

@@ -202,6 +202,8 @@ pub struct SatisfyThreadResourceDependencyCommand {
 }
 
 #[derive(Debug, Clone)]
+// Command variants intentionally carry complete fenced aggregates across the single Kernel boundary.
+#[allow(clippy::large_enum_variant)]
 pub enum KernelCommandPayload {
     SpawnSupervisedGroup(SpawnSupervisedGroupCommand),
     PromoteThread(PromoteThreadCommand),
@@ -233,6 +235,9 @@ pub struct KernelCommand {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+// Results return authoritative aggregate snapshots; boxing would spread allocation and unboxing
+// through every controller without changing the protocol.
+#[allow(clippy::large_enum_variant)]
 pub enum KernelResult {
     SupervisedGroupSpawned { schedules: Vec<ScheduleRecord> },
     ThreadPromoted(ThreadPromotionMutation),

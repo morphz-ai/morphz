@@ -1022,7 +1022,7 @@ impl MorphzRuntimeBuilder {
         let human_approval_hub = HumanApprovalHub::default();
         let permission_profile = Arc::new(PermissionProfile::from_config(&permission_config)?);
         if permission_profile.sandbox_mode == SandboxMode::DangerFullAccess {
-            tracing::warn!("完全访问权限已启用：文件工具与 Shell 均不受工作区或操作系统沙箱限制");
+            tracing::warn!(event_code = "runtime.permissions.full_access_enabled", "Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries");
         }
         let separate_reviewer_client = if self.approval_provider.is_none()
             && permission_profile.reviewer == ReviewerKind::AutoReview
@@ -1037,7 +1037,8 @@ impl MorphzRuntimeBuilder {
                             route = model,
                             provider = %selected.id,
                             physical_model = %selected.model,
-                            "自动审批使用独立 Model Route"
+                            event_code = "runtime.auto_review.route_selected",
+                            "Auto-review is using an independent Model Route"
                         );
                         Some(client)
                     }
@@ -1252,7 +1253,8 @@ impl MorphzRuntimeBuilder {
                     tracing::debug!(
                         target_id = %target.id,
                         host = ?target.metadata.get("host"),
-                        "Runtime Managed SSH 按需路由已从持久 Target 重建"
+                        event_code = "runtime.managed_ssh.route_rebuilt",
+                        "Rebuilt the on-demand Runtime Managed SSH route from its persistent Target"
                     );
                 }
                 Err(error) => {
@@ -1268,7 +1270,8 @@ impl MorphzRuntimeBuilder {
                     tracing::warn!(
                         target_id = %durable_target.id,
                         error = %error,
-                        "Runtime Managed SSH 路由暂未重建；远端主机在线状态未知，可稍后通过 resolve_target(target_id) 重试"
+                        event_code = "runtime.managed_ssh.route_rebuild_deferred",
+                        "Runtime Managed SSH route was not rebuilt; remote availability remains unknown and can be retried with resolve_target(target_id)"
                     );
                 }
             }
@@ -1652,7 +1655,8 @@ impl MorphzRuntime {
                 route = model,
                 provider = %selected.id,
                 physical_model = %selected.model,
-                "自动审批已热切换独立 Model Route"
+                event_code = "runtime.auto_review.route_hot_switched",
+                "Auto-review hot-switched to an independent Model Route"
             );
             Some(client)
         } else {
@@ -1749,7 +1753,8 @@ impl MorphzRuntime {
             requeued = execution_recovery.requeue_receipts.len(),
             lost = execution_recovery.lost_receipts.len(),
             recovered_background_outboxes,
-            "Execution Job 启动恢复完成"
+            event_code = "runtime.execution_jobs.startup_recovery_completed",
+            "Execution Job startup recovery completed"
         );
         let artifact_transfer_records = self
             .inner
@@ -1790,10 +1795,16 @@ impl MorphzRuntime {
             .await
         {
             Ok(removed) if removed > 0 => {
-                tracing::info!(removed, "Artifact Transfer 终态 stage 清理完成")
+                tracing::info!(
+                    event_code = "runtime.artifact_transfer.stage_cleanup_completed",
+                    removed,
+                    "Artifact Transfer terminal-stage cleanup completed"
+                )
             }
             Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "Artifact Transfer stage 启动清理失败"),
+            Err(error) => {
+                tracing::warn!(event_code = "runtime.artifact_transfer.stage_cleanup_failed", %error, "Artifact Transfer startup stage cleanup failed")
+            }
         }
         let artifact_transfer_jobs = artifact_transfer_records
             .into_iter()
@@ -1832,7 +1843,7 @@ impl MorphzRuntime {
                     }
                     Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
                     Err(error) => {
-                        tracing::warn!(%error, "Recall Projection background batch failed");
+                        tracing::warn!(event_code = "runtime.recall_projection.background_batch_failed", %error, "Recall Projection background batch failed");
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -1873,11 +1884,14 @@ impl MorphzRuntime {
                             targets_offline = report.targets_marked_offline,
                             commands_requeued = report.commands_requeued,
                             commands_lost = report.commands_marked_lost,
+                            event_code = "runtime.edge_execution.reconciliation_completed",
                             "Edge execution reconciliation completed"
                         );
                     }
                     Ok(_) => {}
-                    Err(error) => tracing::warn!(%error, "Edge execution reconciliation failed"),
+                    Err(error) => {
+                        tracing::warn!(event_code = "runtime.edge_execution.reconciliation_failed", %error, "Edge execution reconciliation failed")
+                    }
                 }
             }
         });
@@ -3607,11 +3621,13 @@ impl MorphzRuntime {
         let runtime = self.clone();
         tokio::spawn(async move {
             if let Err(error) = runtime.run_artifact_transfer_job(&job_id).await {
-                tracing::error!(job_id, %error, "Artifact Transfer worker 失败");
+                tracing::error!(event_code = "runtime.artifact_transfer.worker_failed", job_id, %error, "Artifact Transfer worker failed");
             }
         });
     }
 
+    // The transition command keeps every fenced lifecycle coordinate explicit at the Kernel edge.
+    #[allow(clippy::too_many_arguments)]
     async fn transition_thread_activation(
         &self,
         activation: &crate::memory::ThreadActivationRecord,
@@ -3821,7 +3837,7 @@ impl MorphzRuntime {
                         if latest_progress != persisted_progress {
                             if let Some(progress) = latest_progress.clone() {
                                 if let Err(error) = self.persist_artifact_transfer_progress(&job, &request, &progress).await {
-                                    tracing::warn!(job_id = %job.id, %error, "Artifact Transfer 最终进度持久化失败");
+                                    tracing::warn!(event_code = "runtime.artifact_transfer.final_progress_persist_failed", job_id = %job.id, %error, "Failed to persist final Artifact Transfer progress");
                                 }
                             }
                         }
@@ -3912,7 +3928,7 @@ impl MorphzRuntime {
                         if latest_progress != persisted_progress {
                             if let Some(progress) = latest_progress.clone() {
                                 if let Err(error) = self.persist_artifact_transfer_progress(&job, &request, &progress).await {
-                                    tracing::warn!(job_id = %job.id, %error, "Artifact Transfer progress 持久化失败");
+                                    tracing::warn!(event_code = "runtime.artifact_transfer.progress_persist_failed", job_id = %job.id, %error, "Failed to persist Artifact Transfer progress");
                                 } else {
                                     persisted_progress = latest_progress.clone();
                                 }
@@ -4104,7 +4120,7 @@ impl MorphzRuntime {
                 )
                 .await
             {
-                tracing::warn!(job_id = %job.id, %error, "Artifact Transfer Activation 投影收口失败");
+                tracing::warn!(event_code = "runtime.artifact_transfer.activation_projection_finalize_failed", job_id = %job.id, %error, "Failed to finalize the Artifact Transfer Activation projection");
             }
         }
         if let Ok(Some(thread)) = self.inner.store.get_thread(&job.thread_id).await {
@@ -4123,7 +4139,7 @@ impl MorphzRuntime {
                 )
                 .await
             {
-                tracing::warn!(job_id = %job.id, %error, "Artifact Transfer Thread 投影收口失败");
+                tracing::warn!(event_code = "runtime.artifact_transfer.thread_projection_finalize_failed", job_id = %job.id, %error, "Failed to finalize the Artifact Transfer Thread projection");
             }
         }
     }
@@ -4633,7 +4649,7 @@ impl MorphzRuntime {
         {
             Ok(records) => records,
             Err(error) => {
-                tracing::error!(%error, "读取持久化待审批列表失败；退回进程内视图");
+                tracing::error!(event_code = "runtime.approvals.list_persistent_failed", %error, "Failed to read persistent pending approvals; falling back to the in-process view");
                 return pending;
             }
         };
@@ -4653,20 +4669,21 @@ impl MorphzRuntime {
                 tracing::error!(
                     approval_id = %record.id,
                     activation_id = %job.activation_id,
-                    "待审批请求缺少因果 Activation"
+                    event_code = "runtime.approval.activation_missing",
+                    "Pending approval request is missing its causal Activation"
                 );
                 continue;
             };
             let Ok(action) =
                 serde_json::from_value::<crate::approval::ApprovalAction>(record.action.clone())
             else {
-                tracing::error!(approval_id = %record.id, "待审批 action 无法解码");
+                tracing::error!(event_code = "runtime.approval.action_decode_failed", approval_id = %record.id, "Failed to decode the pending approval action");
                 continue;
             };
             let Ok(requested) = serde_json::from_value::<crate::approval::CapabilityDelta>(
                 record.requested.clone(),
             ) else {
-                tracing::error!(approval_id = %record.id, "待审批 capability delta 无法解码");
+                tracing::error!(event_code = "runtime.approval.capability_delta_decode_failed", approval_id = %record.id, "Failed to decode the pending approval capability delta");
                 continue;
             };
             let lease_offer = if self.inner.config.edge_execution.capability_leases_enabled
@@ -4836,7 +4853,7 @@ impl MorphzRuntime {
             .human_approval_hub
             .notify_decision(approval_id, decision)
         {
-            tracing::warn!(approval_id, %error, "审批已持久化，但进程内 waiter 已结束");
+            tracing::warn!(event_code = "runtime.approval.waiter_closed", approval_id, %error, "Approval was persisted after its in-process waiter had closed");
         }
         Ok(())
     }
@@ -6682,15 +6699,9 @@ fn runtime_overview_session(
             .filter(|activation| activation.root_turn_id == thread.root_turn_id)
             .map(|activation| activation.status)
             .collect::<Vec<_>>();
-        let phase = if activation_statuses
-            .iter()
-            .any(|status| *status == ThreadActivationStatus::Running)
-        {
+        let phase = if activation_statuses.contains(&ThreadActivationStatus::Running) {
             ThreadPhase::Running
-        } else if activation_statuses
-            .iter()
-            .any(|status| *status == ThreadActivationStatus::Queued)
-        {
+        } else if activation_statuses.contains(&ThreadActivationStatus::Queued) {
             ThreadPhase::Runnable
         } else if thread.control_state == ThreadControlState::Paused {
             ThreadPhase::Waiting
@@ -9235,15 +9246,27 @@ mod tests {
                 return Err("completion recovery produced an extra model evaluation".into());
             }
             let transcript = serde_json::to_string(&messages)?;
-            let observed = transcript.contains("completion_prepared")
-                && transcript.contains("Runtime 已持久化你的 Objective 完成决定")
-                && tools.iter().all(|tool| tool.name == "no_reply");
+            let observed_prepared_status = transcript.contains("completion_prepared");
+            let observed_receipt =
+                transcript.contains("The Runtime persisted your Objective completion decision");
+            let observed_finalization_tools =
+                !tools.is_empty() && tools.iter().all(|tool| tool.name == "no_reply");
+            let observed =
+                observed_prepared_status && observed_receipt && observed_finalization_tools;
             self.observed_repaired_receipt
                 .store(observed, Ordering::SeqCst);
             if !observed {
-                return Err(
-                    "completion recovery did not reconstruct the finalization protocol".into(),
+                let diagnostic = format!(
+                    "completion recovery did not reconstruct the finalization protocol: \
+                     prepared_status={observed_prepared_status}, receipt={observed_receipt}, \
+                     finalization_tools={observed_finalization_tools}, tools={:?}",
+                    tools
+                        .iter()
+                        .map(|tool| tool.name.as_str())
+                        .collect::<Vec<_>>()
                 );
+                eprintln!("{diagnostic}");
+                return Err(diagnostic.into());
             }
             Ok(text_response("recovered-completion-final-report"))
         }

@@ -143,7 +143,8 @@ pub async fn persist_model_input_attachments(
                     tracing::debug!(
                         path = %final_path.display(),
                         error = %error,
-                        "模型输入附件已由并发写入复用"
+                    event_code = "model_input.concurrent_write_reused",
+                    "Model-input attachment was reused from a concurrent write"
                     );
                 }
                 Err(error) => {
@@ -234,7 +235,7 @@ pub async fn attachment_message_from_metadata(
 
 pub(crate) fn decoded_base64_len(value: &str) -> Result<usize, ModelInputError> {
     let bytes = value.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err("模型输入附件 Base64 长度无效".into());
     }
     let padding = if bytes.ends_with(b"==") {

@@ -248,9 +248,10 @@ impl ContextReferences {
     }
 }
 
-/// LLM 自己创建的一个认知单元。
+/// A cognitive unit created by the LLM itself.
 ///
-/// Runtime 不解释 body 的业务语义，只维护稳定 ID、来源、版本和生命周期。
+/// The runtime does not interpret the business semantics of `body`; it maintains only stable IDs,
+/// provenance, versions, and lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextFrame {
     pub id: String,
@@ -286,8 +287,8 @@ pub struct FrameIdentityProvenance {
     pub state: FrameProvenanceState,
 }
 
-/// Agent 主动声明的语义关系。Runtime 只特别解释 `supersedes` 的新旧含义，
-/// 其他 relation 名称保持开放，不擅自做业务推理。
+/// A semantic relation declared by the agent. The runtime interprets only the old/new meaning of
+/// `supersedes`; other relation names remain open and receive no implicit business inference.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextRelation {
     pub subject: String,
@@ -309,8 +310,8 @@ pub struct FrameRetirement {
     pub reason: String,
 }
 
-/// Agent 显式建立的 Mind 恢复点。快照不包含其他 checkpoint，
-/// 避免递归复制；Runtime 只在 Context 中展示元数据。
+/// A Mind restore point explicitly created by the agent. Snapshots exclude other checkpoints to
+/// prevent recursive copying; the runtime exposes only metadata in Context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MindCheckpoint {
     pub id: String,
@@ -323,10 +324,10 @@ pub struct MindCheckpoint {
     pub created_version: u64,
 }
 
-/// Agent 拥有的 Mind 持久状态。
+/// Persistent Mind state owned by the agent.
 ///
-/// `retired` 同时可以包含 frame ID 和 Event Ledger 中的 observation ID。
-/// 退役只影响当前 Context 视口，不删除底层事实。
+/// `retired` may contain both frame IDs and observation IDs from the Event Ledger. Retirement affects
+/// only the current Context viewport and never deletes underlying facts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MindState {
     pub version: u64,
@@ -533,7 +534,7 @@ struct SnapshotMindRecovery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextObservation {
     pub id: String,
-    /// 当前 Context 内由 Ledger sequence 派生的确定性短引用，例如 @e27。
+    /// Deterministic short reference derived from Ledger sequence in the current Context, e.g. `@e27`.
     pub reference: String,
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -592,14 +593,16 @@ pub struct ContextUsage {
 pub struct ContextPressure {
     pub level: String,
     pub estimated_tokens: usize,
-    /// `context-components-heuristic`、`openai-compatible-request-estimate` 等计量来源。
+    /// Measurement source such as `context-components-heuristic` or
+    /// `openai-compatible-request-estimate`.
     #[serde(default = "default_context_token_source")]
     pub token_source: String,
-    /// `exact`、`local-tokenizer-estimate`、`usage-calibrated-estimate`
-    /// 或 `heuristic-estimate`。
+    /// `exact`, `local-tokenizer-estimate`, `usage-calibrated-estimate`, or
+    /// `heuristic-estimate`.
     #[serde(default = "default_context_token_accuracy")]
     pub token_accuracy: String,
-    /// `context-components` 表示早期回退；`full-work-prompt` 表示已覆盖完整工作消息与工具定义。
+    /// `context-components` denotes an early fallback; `full-work-prompt` covers the complete work
+    /// messages and tool definitions.
     #[serde(default = "default_context_token_scope")]
     pub token_scope: String,
     #[serde(default)]
@@ -642,8 +645,8 @@ pub struct ContextTokenBudget {
     pub capacity_source: String,
 }
 
-/// 完整 Prompt 的可解释占用归因。`estimated_tokens` 是按本地稳定权重将
-/// 本轮 Prompt 总量分摊到组件后的估算，绝不是 Provider 返回的计费事实。
+/// Explainable attribution of a complete Prompt. `estimated_tokens` distributes the current Prompt
+/// total across components using stable local weights; it is never provider-reported billing data.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ContextAttribution {
     pub estimated_total_tokens: usize,
@@ -684,7 +687,7 @@ pub struct TurnBudget {
     pub context_transactions_used: usize,
     pub context_transactions_limit: usize,
     pub context_tx_available: bool,
-    /// `work` 或 `soft-checkpoint`。检查点不会限制工具，也不会强制结束任务。
+    /// `work` or `soft-checkpoint`. A checkpoint neither restricts tools nor forces task termination.
     pub phase: String,
 }
 
@@ -1096,10 +1099,10 @@ fn select_session_working_set(
     )
 }
 
-/// Agent-Owned Context v1 的唯一状态入口。
+/// Sole state entry point for Agent-Owned Context v1.
 ///
-/// Context transaction 在每个 Cognitive Context 的互斥锁内校验、提交并写入 Event Ledger。
-/// Orchestrator 与 context_tx 工具共享同一个实例。
+/// Context transactions are validated, committed, and written to the Event Ledger under each
+/// Cognitive Context's mutex. The Orchestrator and `context_tx` tool share the same instance.
 pub struct ContextEngine {
     store: Arc<dyn EventStore>,
     session_store: Option<Arc<dyn SessionStore>>,
@@ -1868,7 +1871,8 @@ impl ContextEngine {
                 requested_base_version,
                 effective_base_version = current.version,
                 after_version = next.version,
-                "Context transaction 按 Frame MVCC 自动 rebase"
+                event_code = "context.transaction.rebased",
+                "Context transaction automatically rebased by Frame MVCC"
             );
         }
         for change in &changes {
@@ -1877,18 +1881,21 @@ impl ContextEngine {
                     context_id,
                     frame_id = %change.target,
                     detail = ?change.detail,
+                    event_code = "context.frame_retirement.window_entered",
                     "Frame retirement entered its cognitive organizing window"
                 ),
                 "retire-frame-finalized" => tracing::info!(
                     context_id,
                     frame_id = %change.target,
                     detail = ?change.detail,
+                    event_code = "context.frame_retirement.effective",
                     "Frame retirement became effective"
                 ),
                 "finalize-retirement-stale" => tracing::warn!(
                     context_id,
                     frame_id = %change.target,
                     detail = ?change.detail,
+                    event_code = "context.frame_retirement.stale_fenced",
                     "Stale Frame retirement was fenced as a no-op"
                 ),
                 "revise" | "restore" | "protect"
@@ -1901,6 +1908,7 @@ impl ContextEngine {
                         context_id,
                         frame_id = %change.target,
                         operation = %change.operation,
+                        event_code = "context.frame_retirement.cancelled",
                         "Frame retirement intent was cancelled"
                     )
                 }
@@ -1917,6 +1925,7 @@ impl ContextEngine {
             estimated_immediate_relief = token_effect.estimated_immediate_relief,
             estimated_eventual_relief = token_effect.estimated_eventual_relief,
             commit_micros,
+            event_code = "context.transaction.committed",
             "Context transaction committed with estimated Token effect"
         );
 
@@ -3107,6 +3116,7 @@ impl ContextEngine {
                         cognitive_tick = clock.tick,
                         transaction_id = %commit.transaction_id,
                         finalized = due.len(),
+                        event_code = "context.frame_retirement.window_effective",
                         "Frame retirement cognitive window became effective"
                     );
                     return Ok(());
@@ -3122,8 +3132,8 @@ impl ContextEngine {
         .into())
     }
 
-    /// 用模型客户端对“完整 Prompt”的计量结果替换 Context 局部字符估算，并重新
-    /// 编码 Context，使 Agent 在本轮就能看到真实压力等级。
+    /// Replaces the Context-local character estimate with the model client's complete-Prompt
+    /// measurement and re-encodes Context so the agent sees the actual pressure level this turn.
     pub async fn apply_prompt_token_count(
         &self,
         view: &mut ContextView,
@@ -3568,6 +3578,7 @@ impl ContextEngine {
             returned_edges = page.edges.len(),
             truncated = page.truncated,
             latency_micros = started.elapsed().as_micros() as u64,
+            event_code = "context.frame_recall.completed",
             "Frame Recall traversal completed"
         );
         Ok(page)
@@ -3779,6 +3790,7 @@ impl ContextEngine {
                 returned_count = matches.len(),
                 requested_limit = limit,
                 latency_micros = started.elapsed().as_micros() as u64,
+                event_code = "context.lexical_recall.completed",
                 "Lexical Recall query completed"
             );
             return Ok(matches);
@@ -3811,6 +3823,7 @@ impl ContextEngine {
             returned_count = matches.len(),
             requested_limit = limit,
             latency_micros = started.elapsed().as_micros() as u64,
+            event_code = "context.lexical_recall.compatibility_fallback_completed",
             "Lexical Recall query completed through compatibility fallback"
         );
         Ok(matches)
@@ -5834,6 +5847,9 @@ fn render_background_tasks(tasks: &[BackgroundTaskView], references: &ContextRef
     )
 }
 
+// Each slice is an independently authoritative Projection and must not be hidden in an ambient
+// context object during deterministic rendering.
+#[allow(clippy::too_many_arguments)]
 fn render_thread_scheduler(
     threads: &[ThreadRecord],
     thread_groups: &[ThreadGroupRecord],
@@ -7677,10 +7693,10 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
                 })
         })
         .count();
-    // Attempt 表示本用户回合或 Objective continuation cycle 内的模型求值次数，
-    // 而不是工具调用数量；一次响应中
-    // 并行发起多个工具仍只算一次。检查点仅在整倍数的求值上出现一次，下一次
-    // 求值自动恢复 work，不会形成需要额外状态解除的硬门槛。
+    // An Attempt counts model evaluations in the current user turn or Objective continuation cycle,
+    // not tool calls. Multiple tools launched in parallel by one response still count once. A
+    // checkpoint appears only on exact evaluation multiples; the next evaluation automatically
+    // returns to `work`, so no extra state transition is required to clear a hard gate.
     let attempt = assistant_calls.len().saturating_add(1);
     let checkpoint_due = attempt % checkpoint_interval == 0;
     let next_checkpoint_at = if checkpoint_due {
@@ -8936,9 +8952,10 @@ pub fn attribute_prompt_components(
         });
     }
     for projected in &view.sessions {
-        // Session 的对话事实通常已作为 observation 单独归因；这里衡量的是
-        // Runtime 投影进 Context Encoding 的 Session 目录、身份、状态与调度
-        // 元数据。使用稳定序列化只作为相对权重，不声称复刻 Provider 模板。
+        // Dialogue facts from a Session are normally attributed as individual observations. This
+        // measures Session catalog, identity, state, and scheduling metadata projected by the
+        // runtime into Context Encoding. Stable serialization provides only relative weights and
+        // does not claim to reproduce a provider template.
         let weight = serde_json::to_string(projected)
             .ok()
             .map(|text| text_weight_units(&text))

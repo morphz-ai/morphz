@@ -3013,6 +3013,8 @@ impl Drop for LocalTransferStagingGuard {
     }
 }
 
+// The explicit transfer invariants are deliberately kept visible at this protocol boundary.
+#[allow(clippy::too_many_arguments)]
 async fn upload_managed_ssh_artifact(
     endpoint: &ManagedSshEndpoint,
     spool: &std::path::Path,
@@ -3869,6 +3871,9 @@ impl ExecutionTargetDispatcher {
         Ok(receipt)
     }
 
+    // Identity and causal coordinates remain separate so authorization cannot accidentally reuse
+    // an ambient route.
+    #[allow(clippy::too_many_arguments)]
     pub async fn validate_for_tool(
         &self,
         target_id: &str,

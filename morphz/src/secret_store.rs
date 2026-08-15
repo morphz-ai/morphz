@@ -534,7 +534,8 @@ impl SecretStore {
                     alias = name,
                     previous_backend = previous.value_backend,
                     error,
-                    "受管凭证已切换值后端，但旧后端中的值无法自动清理"
+                event_code = "secret_store.backend_switch.cleanup_failed",
+                "Managed secret changed value backend but the old backend value could not be removed automatically"
                 );
             }
         }

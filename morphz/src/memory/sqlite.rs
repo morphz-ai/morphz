@@ -131,7 +131,7 @@ impl SqliteStore {
             .foreign_keys(true)
             .busy_timeout(std::time::Duration::from_secs(5)); // 5秒锁重试
 
-        // 启用连接池并发，利用 WAL 模式的单写多读优势。
+        // Enable connection-pool concurrency to use WAL's single-writer, multiple-reader model.
         let pool = SqlitePoolOptions::new()
             .max_connections(config.max_connections.max(1))
             .connect_with(options)
@@ -150,10 +150,11 @@ impl SqliteStore {
         tracing::info!(
             sqlite_version = %sqlite_version,
             max_connections = config.max_connections.max(1),
-            "SQLite WAL Storage 已启用"
+            event_code = "memory.sqlite.wal_storage.enabled",
+            "SQLite WAL Storage enabled"
         );
 
-        // 启用外键约束，以支持 ON DELETE CASCADE 级联删除
+        // Enable foreign keys for `ON DELETE CASCADE`.
         sqlx::query("PRAGMA foreign_keys = ON;")
             .execute(&pool)
             .await?;
@@ -285,7 +286,7 @@ impl SqliteStore {
         }
         migrate_threads_to_canonical_domain(&pool).await?;
 
-        // 初始化建表 DDL
+        // Initialize schema DDL.
         let ddl = r#"
         CREATE TABLE IF NOT EXISTS events (
             id TEXT PRIMARY KEY,
@@ -1672,7 +1673,7 @@ async fn rebuild_frame_recall_documents(
         ) {
             Ok(state) => state,
             Err(error) => {
-                tracing::warn!(%context_id, error = %error, "旧 Mind Projection 无法还原为认知帧；保留已折叠的 Recall Frame 投影");
+                tracing::warn!(event_code = "memory.sqlite.legacy_mind_projection_decode_failed", %context_id, error = %error, "Legacy Mind Projection could not be reconstructed as a cognitive frame; retaining the collapsed Recall Frame projection");
                 continue;
             }
         };
@@ -1848,7 +1849,7 @@ async fn migrate_recall_projection(
         .execute(&mut *tx)
         .await;
         if let Err(error) = fts {
-            tracing::warn!(error = %error, "SQLite 不支持 FTS5，Recall 仅允许精确文档 ID 查询");
+            tracing::warn!(event_code = "memory.sqlite.fts5_unavailable", error = %error, "SQLite does not support FTS5; Recall is limited to exact document-ID queries");
             tx.rollback().await?;
             return Ok(());
         }
@@ -4768,7 +4769,8 @@ async fn upsert_recall_document_in_transaction(
             document_id = %document.document_id,
             searchable_chars,
             elapsed_ms = elapsed.as_millis(),
-            "Recall whole-document UPSERT（含同步 FTS trigger）耗时过长"
+                event_code = "memory.sqlite.recall_upsert.slow",
+                "Recall whole-document UPSERT with synchronous FTS trigger took too long"
         );
     } else {
         tracing::debug!(
@@ -4777,7 +4779,8 @@ async fn upsert_recall_document_in_transaction(
             document_id = %document.document_id,
             searchable_chars,
             elapsed_ms = elapsed.as_millis(),
-            "Recall whole-document UPSERT 完成"
+                event_code = "memory.sqlite.recall_upsert.completed",
+                "Recall whole-document UPSERT completed"
         );
     }
     Ok(())
@@ -6910,7 +6913,8 @@ impl ActivationStore for SqliteStore {
                 signal_id = %stored_signal.id,
                 signal_generation = stored_signal.thread_generation,
                 thread_generation = routed_generation,
-                "隔离过期 generation 的 Thread Signal"
+                event_code = "memory.sqlite.thread_signal.stale_generation_quarantined",
+                "Quarantined a Thread Signal from a stale generation"
             );
             return Ok(None);
         }
@@ -7036,7 +7040,8 @@ impl ActivationStore for SqliteStore {
                 session_id = %activation.session_id,
                 activation_id = %existing.id,
                 signal_id = %stored_signal.id,
-                "连续用户输入已加入下一批 DialogueTurn"
+                event_code = "memory.sqlite.dialogue_turn.input_batched",
+                "Added consecutive user input to the next DialogueTurn batch"
             );
             return Ok(Some(existing));
         }
@@ -7319,7 +7324,8 @@ impl ActivationStore for SqliteStore {
                 context_id = %thread.context_id,
                 activation_id = %activation.id,
                 signal_count = pending.len(),
-                "认知活动时钟已随唯一 Signal batch 推进"
+            event_code = "memory.sqlite.cognitive_clock.advanced",
+            "Advanced the cognitive-activity clock with the unique Signal batch"
             );
         }
         self.get_thread_activation(&activation.id).await
@@ -16939,7 +16945,8 @@ impl EventStore for SqliteStore {
                             contention_retries,
                             delay_ms = retry_delay.as_millis(),
                             error = %error,
-                            "Direct Thread Signal 等待 SQLite 写槽；保留同一 Event 与 Signal 并重试"
+                        event_code = "memory.sqlite.direct_thread_signal.store_slot_waiting",
+                        "Direct Thread Signal is waiting for a SQLite write slot; retaining and retrying the same Event and Signal"
                         );
                     }
                     tokio::time::sleep(retry_delay).await;
@@ -17120,7 +17127,7 @@ impl EventStore for SqliteStore {
             // below.
             builder.push(" ORDER BY rowid DESC");
         } else {
-            // 强制按时间戳升序排序，并在时间戳相同时按 rowid 物理插入顺序升序
+            // Sort by ascending timestamp, then by physical rowid insertion order for ties.
             builder.push(" ORDER BY timestamp ASC, rowid ASC");
         }
 
@@ -17264,7 +17271,8 @@ impl EventStore for SqliteStore {
                 topic,
                 rows = updated.rows_affected(),
                 complete,
-                "有界回填 Event causal projection"
+                event_code = "memory.sqlite.event_causal_projection.backfilled",
+                "Backfilled the bounded Event causal projection"
             );
         }
         Ok(())
@@ -17528,7 +17536,8 @@ async fn finish_sqlite_recall_claim(
             document_id = %claim.document_id,
             generation = claim.generation,
             writer_wait_ms = writer_wait.as_millis(),
-            "Recall Projection 等待 SQLite Writer 过久"
+                event_code = "memory.sqlite.recall_projection.writer_wait_slow",
+                "Recall Projection waited too long for the SQLite Writer"
         );
     } else {
         tracing::debug!(
@@ -17537,7 +17546,8 @@ async fn finish_sqlite_recall_claim(
             document_id = %claim.document_id,
             generation = claim.generation,
             writer_wait_ms = writer_wait.as_millis(),
-            "Recall Projection 已取得 SQLite Writer"
+                event_code = "memory.sqlite.recall_projection.writer_acquired",
+                "Recall Projection acquired the SQLite Writer"
         );
     }
     if !current {
@@ -17902,24 +17912,26 @@ impl RecallProjectionStore for SqliteStore {
                         || commit_elapsed >= std::time::Duration::from_millis(500)
                     {
                         tracing::warn!(
-                            context_id = %claim.context_id,
-                            document_kind = %claim.document_kind.as_str(),
-                            document_id = %claim.document_id,
-                            generation = claim.generation,
-                            transaction_open_ms = transaction_open_elapsed.as_millis(),
-                            commit_ms = commit_elapsed.as_millis(),
-                            "Recall Projection 事务阶段耗时过长"
-                        );
+                                    context_id = %claim.context_id,
+                                    document_kind = %claim.document_kind.as_str(),
+                                    document_id = %claim.document_id,
+                                    generation = claim.generation,
+                                    transaction_open_ms = transaction_open_elapsed.as_millis(),
+                                    commit_ms = commit_elapsed.as_millis(),
+                        event_code = "memory.sqlite.recall_projection.transaction_slow",
+                        "Recall Projection transaction stage took too long"
+                                );
                     } else {
                         tracing::debug!(
-                            context_id = %claim.context_id,
-                            document_kind = %claim.document_kind.as_str(),
-                            document_id = %claim.document_id,
-                            generation = claim.generation,
-                            transaction_open_ms = transaction_open_elapsed.as_millis(),
-                            commit_ms = commit_elapsed.as_millis(),
-                            "Recall Projection 事务提交完成"
-                        );
+                                    context_id = %claim.context_id,
+                                    document_kind = %claim.document_kind.as_str(),
+                                    document_id = %claim.document_id,
+                                    generation = claim.generation,
+                                    transaction_open_ms = transaction_open_elapsed.as_millis(),
+                                    commit_ms = commit_elapsed.as_millis(),
+                        event_code = "memory.sqlite.recall_projection.transaction_committed",
+                        "Recall Projection transaction committed"
+                                );
                     }
                 }
                 Err(error) => {
@@ -18923,8 +18935,8 @@ mod tests {
             .unwrap();
         assert_eq!(exact_id[0].document_id, "memory/rust-sandbox");
 
-        // A quoted query narrows to an adjacent phrase. `沙箱` is adjacent in
-        // the Frame, while these two terms never neighbour each other.
+        // A quoted query narrows to an adjacent phrase. `沙箱` is adjacent in the Frame (`source-language: allow-non-english-example`),
+        // while these terms never neighbour each other.
         let phrase_hit = store
             .search_recall_documents("recall-context", "\"沙箱\"", 10)
             .await

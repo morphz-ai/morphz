@@ -2,7 +2,8 @@ use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-// 采用 Arc<Option<ModelStore>>，即使模型未就绪，服务也可以正常启动监听，并在请求时返回友好提示
+// Use `Arc<Option<ModelStore>>` so the service can listen before the model is ready and return a
+// helpful response when requests arrive.
 type AppState = Arc<Option<executor::ModelStore>>;
 
 #[derive(Deserialize)]
@@ -18,7 +19,7 @@ struct EmbedResponse {
 
 #[tokio::main]
 async fn main() {
-    // 1. 初始化并加载 BERT 模型
+    // 1. Initialize and load the BERT model.
     let model_store = match executor::load_model() {
         Ok(store) => {
             println!("⚙️ [Rust Executor] BGE 语义模型加载成功，处于就绪状态。");
@@ -40,12 +41,12 @@ async fn main() {
 
     let state: AppState = Arc::new(model_store);
 
-    // 2. 构建 Axum 路由
+    // 2. Build the Axum router.
     let app = Router::new()
         .route("/embed", post(handle_embed))
         .with_state(state);
 
-    // 3. 绑定 TCP Loopback 监听 (127.0.0.1:8085)
+    // 3. Bind the TCP loopback listener (`127.0.0.1:8085`).
     let addr = "127.0.0.1:8085";
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,

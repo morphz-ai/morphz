@@ -696,7 +696,7 @@ impl PostgresStore {
             ) {
                 Ok(state) => state,
                 Err(error) => {
-                    tracing::warn!(%context_id, error = %error, "旧 Mind Projection 无法还原为认知帧；保留已折叠的 Recall Frame 投影");
+                    tracing::warn!(event_code = "memory.postgres.legacy_mind_projection_decode_failed", %context_id, error = %error, "Legacy Mind Projection could not be reconstructed as a cognitive frame; retaining the collapsed Recall Frame projection");
                     continue;
                 }
             };
@@ -947,7 +947,8 @@ impl PostgresStore {
         {
             tracing::warn!(
                 error = %error,
-                "PostgreSQL 无法创建 Recall 全文索引，Recall 仅允许精确文档 ID 查询"
+                event_code = "memory.postgres.recall_index_create_failed",
+                "PostgreSQL could not create the Recall full-text index; Recall is limited to exact document-ID queries"
             );
             return Ok(());
         }
@@ -962,7 +963,7 @@ impl PostgresStore {
                 .execute(&self.pool)
                 .await
             {
-                tracing::warn!(%index, error = %error, "PostgreSQL 无法回收旧的 Recall 索引");
+                tracing::warn!(event_code = "memory.postgres.legacy_recall_index_drop_failed", %index, error = %error, "PostgreSQL could not remove a legacy Recall index");
             }
         }
         Ok(())

@@ -116,10 +116,10 @@ async fn main() -> Result<(), AppError> {
     if let Some(path) = host_env_path {
         if let Err(error) = config::load_env(&path.to_string_lossy()) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(%error, path = %path.display(), "无法加载用户级 Morphz 环境文件");
+                tracing::warn!(event_code = "app.user_env.load_failed", %error, path = %path.display(), "Failed to load the user-level Morphz environment file");
             }
         } else {
-            tracing::debug!(path = %path.display(), "已加载用户级 Morphz 环境文件");
+            tracing::debug!(event_code = "app.user_env.loaded", path = %path.display(), "Loaded the user-level Morphz environment file");
         }
     }
 
@@ -405,7 +405,11 @@ fn resolve_invocation_config(
 ) -> Result<config::ResolvedConfig, AppError> {
     let mut resolved = config::resolve_config(cwd, explicit_config_path, selected_profile)?;
     for warning in &resolved.warnings {
-        tracing::warn!("{warning}");
+        tracing::warn!(
+            event_code = "app.startup.warning",
+            warning,
+            "Morphz startup warning"
+        );
     }
     resolved.config.apply_runtime_env_overrides()?;
     mark_environment_config_sources(&mut resolved);
@@ -743,7 +747,8 @@ fn build_client(
         Err(error) if invocation.command_path() == ["setup"] => {
             tracing::warn!(
                 error = %error,
-                "当前模型配置尚不能执行推理；Setup 以可配置控制面启动"
+            event_code = "app.setup.inference_unavailable",
+            "Current model configuration cannot run inference; Setup is starting as a configurable control plane"
             );
             return Ok(Arc::new(morphz::provider::routing::RoutedClient::empty(
                 app_config.llm.clone(),
@@ -759,7 +764,8 @@ fn build_client(
         {
             tracing::warn!(
                 error = %error,
-                "尚未配置模型服务；Runtime 以可配置控制面启动，可在 Dashboard 直接添加模型服务"
+            event_code = "app.runtime.model_service_unconfigured",
+            "No model service is configured; Runtime is starting as a configurable control plane"
             );
             return Ok(Arc::new(morphz::provider::routing::RoutedClient::empty(
                 app_config.llm.clone(),
@@ -772,7 +778,8 @@ fn build_client(
         protocol = selected.protocol.as_str(),
         model = %selected.model,
         base_url = %selected.base_url,
-        "当前使用已配置 Provider"
+            event_code = "app.provider.selected",
+            "Using the configured Provider"
     );
     Ok(client)
 }
@@ -853,7 +860,7 @@ async fn dispatch_runtime_command(
                 .with_identity(app_config.server.identity.clone()),
             );
             server.start(&app_config.server.bind).await?;
-            tracing::info!(bind = %app_config.server.bind, "Morphz Server 已启动");
+            tracing::info!(event_code = "app.server.started", bind = %app_config.server.bind, "Morphz Server started");
             shutdown_signal().await;
             Ok(())
         }
@@ -883,13 +890,13 @@ async fn dispatch_runtime_command(
             );
             if open_browser {
                 if let Err(error) = open_dashboard_browser(&browser_url) {
-                    tracing::warn!(%error, "无法自动打开默认浏览器；请手动访问上面的地址");
+                    tracing::warn!(event_code = "app.browser.open_failed", %error, "Failed to open the default browser automatically; open the displayed address manually");
                 }
             }
             if setup_mode {
-                tracing::info!(bind = %app_config.server.bind, "Morphz Dashboard Setup 已启动");
+                tracing::info!(event_code = "app.dashboard_setup.started", bind = %app_config.server.bind, "Morphz Dashboard Setup started");
             } else {
-                tracing::info!(bind = %app_config.server.bind, "Morphz Dashboard 已启动");
+                tracing::info!(event_code = "app.dashboard.started", bind = %app_config.server.bind, "Morphz Dashboard started");
             }
             shutdown_signal().await;
             Ok(())
@@ -1989,7 +1996,7 @@ async fn start_provider_account_login_for(
                 .ok_or("OAuth Adapter 未返回授权地址")?;
             println!("请在浏览器完成授权：\n{url}");
             if let Err(error) = open_dashboard_browser(url) {
-                tracing::warn!(%error, "无法自动打开 OAuth 授权地址");
+                tracing::warn!(event_code = "app.oauth.browser_open_failed", %error, "Failed to open the OAuth authorization URL automatically");
             }
             println!(
                 "授权后运行：morphz provider account complete {} --code CODE --state STATE",
@@ -2007,7 +2014,7 @@ async fn start_provider_account_login_for(
                 println!("设备码：{code}");
             }
             if let Err(error) = open_dashboard_browser(url) {
-                tracing::warn!(%error, "无法自动打开 OAuth 设备授权地址");
+                tracing::warn!(event_code = "app.oauth.device_browser_open_failed", %error, "Failed to open the OAuth device-authorization URL automatically");
             }
             println!(
                 "完成授权后运行：morphz provider account complete {} --poll",
@@ -3796,9 +3803,16 @@ async fn run_interactive(
     initial_harness: Option<ExactHarnessRef>,
     reply_wait_notice_secs: u64,
 ) -> Result<(), AppError> {
-    tracing::info!(session_id = session.id(), "Morphz 交互终端已启动");
-    tracing::info!(tools = %runtime.tool_names().join(", "), "已注册工具");
-    tracing::info!("多行输入：/multi 开始，/send 发送，/cancel 取消；exit 退出");
+    tracing::info!(
+        event_code = "app.terminal.started",
+        session_id = session.id(),
+        "Morphz interactive terminal started"
+    );
+    tracing::info!(event_code = "app.tools.registered", tools = %runtime.tool_names().join(", "), "Tools registered");
+    tracing::info!(
+        event_code = "app.terminal.multiline_help",
+        "Multiline input: /multi starts, /send submits, /cancel cancels, and exit quits"
+    );
 
     let session_id = session.id().to_string();
     let session_id_clone = session_id.clone();
@@ -3829,7 +3843,7 @@ async fn run_interactive(
         }
     });
 
-    // 在阻塞线程中同步监听 stdin
+    // Listen to stdin synchronously on a blocking thread.
     let console_runtime = runtime.clone();
     let console_session = session;
     tokio::task::spawn_blocking(move || {
@@ -3991,8 +4005,8 @@ async fn run_interactive(
                 continue;
             }
 
-            // 等待回复完成再继续下一次循环。进度提示只是提示，不是任务超时；
-            // 用户可随时用 Ctrl+C 主动中断整个进程。
+            // Wait for the reply before continuing the loop. Progress notifications are not task
+            // timeouts; the user may interrupt the entire process with Ctrl+C at any time.
             let sess_id_to_wait = session_id_clone.clone();
             let notice_interval = (reply_wait_notice_secs > 0)
                 .then(|| std::time::Duration::from_secs(reply_wait_notice_secs));
@@ -4049,9 +4063,9 @@ async fn run_interactive(
 
     tokio::select! {
         _ = shutdown_signal() => {
-            tracing::info!("收到关闭信号，强制退出 Morphz");
-            // 重要：因为 stdin 阻塞读取线程是 uninterruptible 系统调用，
-            // tokio runtime drop 会卡住等待该线程，必须用 process::exit 直接终结进程。
+            tracing::info!(event_code = "app.shutdown.signal_received", "Shutdown signal received; forcing Morphz to exit");
+            // Important: the blocking stdin thread is in an uninterruptible system call, so dropping
+            // the Tokio runtime would hang while joining it. Exit the process directly instead.
             std::process::exit(0);
         }
     }
@@ -4453,7 +4467,7 @@ fn trim_line_ending(line: &str) -> &str {
         .unwrap_or(line)
 }
 
-/// 等待 Ctrl+C 或 SIGTERM 信号
+/// Waits for Ctrl+C or SIGTERM.
 fn generate_dashboard_token() -> Result<String, AppError> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|error| format!("操作系统随机数生成失败: {error}"))?;

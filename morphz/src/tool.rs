@@ -1084,19 +1084,21 @@ impl BackgroundTaskScheduler {
             if let Some(sessions) = self.sessions.as_ref() {
                 let Some(thread) = sessions.get_thread(&job.thread_id).await? else {
                     tracing::warn!(
-                        execution_job_id = %job.id,
-                        thread_id = %job.thread_id,
-                        "跳过失去 Thread Owner 的终态后台结果恢复；Ledger 与 Execution Job 保持可审计"
-                    );
+                            execution_job_id = %job.id,
+                            thread_id = %job.thread_id,
+                    event_code = "tool.background_result.owner_missing",
+                    "Skipped recovery of a terminal background result whose Thread owner is missing"
+                        );
                     continue;
                 };
                 if thread.lifecycle.is_terminal() {
                     tracing::debug!(
-                        execution_job_id = %job.id,
-                        thread_id = %thread.id,
-                        thread_lifecycle = thread.lifecycle.as_str(),
-                        "终态后台结果所属 Thread 已终结，无需重新投递 Signal"
-                    );
+                            execution_job_id = %job.id,
+                            thread_id = %thread.id,
+                            thread_lifecycle = thread.lifecycle.as_str(),
+                    event_code = "tool.background_result.thread_terminal",
+                    "Background result belongs to a terminal Thread; Signal redelivery is unnecessary"
+                        );
                     continue;
                 }
             }
@@ -1434,7 +1436,7 @@ impl BackgroundTaskScheduler {
 
     pub async fn cancel(&self, task_id: &str) {
         if let Err(error) = self.timers.cancel(&background_wake_timer_id(task_id)).await {
-            tracing::warn!(task_id, %error, "取消后台任务唤醒 Timer 失败");
+            tracing::warn!(event_code = "tool.background_timer.cancel_failed", task_id, %error, "Failed to cancel the background-task wake Timer");
         }
     }
 
@@ -3442,7 +3444,7 @@ fn scheduled_occurrence_root(intent_id: &str, revision: u64) -> String {
 }
 
 // ==========================================
-// 工业级后台长任务托管机制
+// Production-grade background long-running task supervision.
 // ==========================================
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -3735,7 +3737,7 @@ fn background_check_due_payload(
     payload
 }
 
-// 共享的实时输出管道缓冲
+// Shared live output-pipeline buffer.
 struct ExecutionBuffer {
     output: std::sync::Mutex<String>,
     archive: std::sync::Mutex<std::fs::File>,
@@ -3765,13 +3767,16 @@ impl ExecutionBuffer {
             Err(poisoned) => poisoned.into_inner().write_all(safe_text.as_bytes()),
         };
         if let Err(error) = archive_result {
-            tracing::error!(archive = %self.archive_path, %error, "写入 exec 原始输出归档失败");
+            tracing::error!(event_code = "tool.exec_archive.write_failed", archive = %self.archive_path, %error, "Failed to write the raw exec-output archive");
         }
         {
             let mut guard = match self.output.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
-                    tracing::error!("ExecutionBuffer Mutex poisoned, recovering");
+                    tracing::error!(
+                        event_code = "tool.execution_buffer.mutex_poisoned",
+                        "ExecutionBuffer Mutex poisoned, recovering"
+                    );
                     poisoned.into_inner()
                 }
             };
@@ -3903,7 +3908,10 @@ impl ExecutionBuffer {
         let guard = match self.output.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
-                tracing::error!("ExecutionBuffer Mutex poisoned in get_all, recovering");
+                tracing::error!(
+                    event_code = "tool.execution_buffer.get_all_mutex_poisoned",
+                    "ExecutionBuffer Mutex poisoned in get_all, recovering"
+                );
                 poisoned.into_inner()
             }
         };
@@ -4196,7 +4204,7 @@ async fn publish_file_change(
 }
 
 // ==========================================
-// 1. WriteFileTool 工业级路径与权限容错
+// 1. WriteFileTool: production-grade path and permission handling.
 // ==========================================
 pub struct WriteFileTool {
     permissions: Arc<PermissionBroker>,
@@ -4413,7 +4421,7 @@ impl Tool for WriteFileTool {
 }
 
 // ==========================================
-// 2. ReadFileTool 工业级路径与权限容错
+// 2. ReadFileTool: production-grade path and permission handling.
 // ==========================================
 pub struct ReadFileTool {
     permissions: Arc<PermissionBroker>,
@@ -4759,7 +4767,7 @@ fn select_file_lines(
 }
 
 // ==========================================
-// 3. EditFileTool — 带版本前提的精确局部编辑
+// 3. EditFileTool: precise local edits with version preconditions.
 // ==========================================
 pub struct EditFileTool {
     permissions: Arc<PermissionBroker>,
@@ -5002,7 +5010,7 @@ impl Tool for EditFileTool {
 }
 
 // ==========================================
-// 4. ListFilesTool / SearchTool — 结构化代码发现
+// 4. ListFilesTool / SearchTool: structured code discovery.
 // ==========================================
 pub struct ListFilesTool {
     permissions: Arc<PermissionBroker>,
@@ -5430,7 +5438,7 @@ impl Tool for SearchTool {
 }
 
 // ==========================================
-// 5. ExecuteCommandTool 异步 Detach + 进程组级销毁
+// 5. ExecuteCommandTool: asynchronous detach and process-group termination.
 // ==========================================
 
 pub struct ExecuteCommandTool {
@@ -6192,7 +6200,8 @@ impl Tool for ExecuteCommandTool {
             backend = prepared.report.backend.as_str(),
             status = ?prepared.report.status,
             network_enabled = effective_network,
-            "已为 exec 准备操作系统执行边界"
+            event_code = "tool.exec_boundary.prepared",
+            "Prepared the operating-system execution boundary for exec"
         );
         let sandbox_backend = prepared.report.backend.as_str().to_string();
         let sandbox_status = match prepared.report.status {
@@ -6368,7 +6377,7 @@ impl Tool for ExecuteCommandTool {
         let context_id_clone = context_id.clone();
         let task_id_clone = task_id.clone();
 
-        // 共享缓冲区
+        // Shared buffer.
         let buffer = Arc::new(ExecutionBuffer {
             output: std::sync::Mutex::new(String::new()),
             archive: std::sync::Mutex::new(archive),
@@ -6388,7 +6397,8 @@ impl Tool for ExecuteCommandTool {
             causal_route: causal_route.clone(),
         });
 
-        // 共享的“是否开启事件发布”标志 (前 N 秒同步时不发布，转入后台时才发布)
+        // Shared event-publication flag. Output remains synchronous and unpublished for the first N
+        // seconds; publication starts only after the process detaches.
         let publish_flag = Arc::new(AtomicBool::new(false));
         let output_sink = CURRENT_TOOL_OUTPUT_SINK
             .try_with(Clone::clone)
@@ -6422,7 +6432,7 @@ impl Tool for ExecuteCommandTool {
             .await;
         });
 
-        // 同步等待设定时间
+        // Wait synchronously for the configured interval.
         let requested_wait = tokio::time::Duration::from_millis(args.wait_ms.unwrap_or(10_000));
         let remaining_sync_budget = self
             .max_sync_wait
@@ -6432,15 +6442,16 @@ impl Tool for ExecuteCommandTool {
 
         match wait_result {
             Ok(exit_status_res) => {
-                // 命令在同步时间内直接执行完成
+                // The command completed within the synchronous interval.
                 tasks.remove(&task_id);
                 process_group_guard.disarm();
                 // `/bin/sh -c 'command &'` can exit while descendants keep running. The lexical
                 // guard above catches normal cases; this process-group check is the fail-closed
                 // backstop for dynamically constructed shell commands.
                 let residual_processes_terminated = terminate_residual_process_group(pid)?;
-                // 进程退出不代表异步 pipe reader 已经消费完内核管道；必须等待两条 reader
-                // 完成后再读取 preview，才能保证归档文件和返回结果包含尾部输出。
+                // Process exit does not imply asynchronous pipe readers have drained their kernel
+                // pipes. Wait for both readers before loading the preview so artifacts and returned
+                // results include trailing output.
                 let _ = stdout_task.await;
                 let _ = stderr_task.await;
                 let code = exit_status_res
@@ -6475,7 +6486,7 @@ impl Tool for ExecuteCommandTool {
                 .to_string())
             }
             Err(_) => {
-                // 运行超时，正式脱离 (Detach) 为后台长任务
+                // The synchronous interval elapsed; detach as a background long-running task.
                 if let (Some(scheduler), Some(parent)) =
                     (&self.background_scheduler, execution_job_context.as_ref())
                 {
@@ -6501,9 +6512,10 @@ impl Tool for ExecuteCommandTool {
                     task.status = BackgroundTaskStatus::Running;
                 }
 
-                // 可选 watchdog 检查点只唤醒 LLM，不自动 kill。默认关闭；正常路径
-                // 只依赖任务完成事件。Agent 有明确监督期限时可用 check_task_after
-                // 覆盖下一次检查时间，或调用 kill_task。
+                // An optional watchdog checkpoint wakes the LLM but never kills automatically. It is
+                // disabled by default; the normal path relies only on task-completion Events. When
+                // the agent has an explicit supervision deadline, `check_task_after` can override
+                // the next check time, or `kill_task` can terminate the task.
                 if self.background_config.timeout_notify_enabled {
                     if let Some(scheduler) = &self.background_scheduler {
                         let _ = scheduler
@@ -6516,7 +6528,8 @@ impl Tool for ExecuteCommandTool {
                     }
                 }
 
-                // 启动一个后台协程，在进程最终退出时清理 map 并发送完成事件通知大模型
+                // Start a background coroutine that removes the map entry on final process exit and
+                // publishes a completion Event for the model.
                 let bus_cleanup = Arc::clone(&self.bus);
                 let task_id_cleanup = task_id.clone();
                 let session_id_cleanup = session_id.clone();
@@ -6552,10 +6565,11 @@ impl Tool for ExecuteCommandTool {
                             {
                                 Ok(_) => scheduler.cancel(&task_id_cleanup).await,
                                 Err(error) => tracing::error!(
-                                    task_id = %task_id_cleanup,
-                                    %error,
-                                    "后台进程已退出，但持久 ExecutionJob 终态提交失败"
-                                ),
+                                        task_id = %task_id_cleanup,
+                                        %error,
+                                event_code = "tool.background_job.terminal_commit_failed",
+                                "Background process exited but the durable ExecutionJob terminal state could not be committed"
+                                    ),
                             }
                             prune_background_task_history();
                             return;
@@ -7169,7 +7183,7 @@ impl Tool for KillTaskTool {
 }
 
 // ==========================================
-// 6. DelegateTool 并发子智能体派生
+// 6. DelegateTool: concurrent sub-agent spawning.
 // ==========================================
 pub struct DelegateTool {
     bus: Arc<InMemoryEventBus>,
@@ -7344,7 +7358,7 @@ impl Tool for DelegateTool {
 }
 
 // ==========================================
-// 7. ListSkillsTool 传统技能自动发现工具
+// 7. ListSkillsTool: conventional automatic skill discovery.
 // ==========================================
 pub struct ListSkillsTool;
 
@@ -8548,13 +8562,13 @@ Body
         let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         let tool = ScheduleTxTool::new(Arc::clone(&scheduler), sessions)
             .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>);
-        let spawn_route = Some(ToolCausalRoute {
+        let spawn_route = ToolCausalRoute {
             thread_id: "thread-thread-promotion-parent".to_string(),
             activation_id: "evaluation-thread-promotion".to_string(),
             root_turn_id: "root-thread-promotion".to_string(),
             trigger_event_id: "user-thread-promotion".to_string(),
             trigger_sequence: 3,
-        });
+        };
         let spawn = serde_json::json!({
             "operations": [{
                 "op": "spawn",
@@ -8572,7 +8586,7 @@ Body
                     "context-thread-promotion".to_string(),
                     CURRENT_ATTEMPT_ID.scope(
                         "attempt-thread-promotion".to_string(),
-                        CURRENT_CAUSAL_ROUTE.scope(spawn_route.clone(), tool.execute(&spawn)),
+                        CURRENT_CAUSAL_ROUTE.scope(Some(spawn_route.clone()), tool.execute(&spawn)),
                     ),
                 ),
             )
@@ -8621,7 +8635,7 @@ Body
             }]
         })
         .to_string();
-        let mut promote_route = spawn_route.expect("spawn route");
+        let mut promote_route = spawn_route;
         promote_route.activation_id = "evaluation-thread-promotion-successor".to_string();
         promote_route.trigger_event_id = "tool-output-thread-promotion".to_string();
         promote_route.trigger_sequence += 1;
@@ -9536,7 +9550,7 @@ Body
         }
     }
 
-    /// 测试用：显式选择完全访问预设。
+    /// Test helper: explicitly selects the full-access preset.
     fn permissive_security() -> Arc<PermissionConfig> {
         Arc::new(PermissionConfig {
             mode: PermissionMode::FullAccess,
@@ -10145,7 +10159,7 @@ Body
     #[tokio::test]
     async fn test_tool_path_permission_fallback() {
         let read_tool = ReadFileTool::new(permissive_security());
-        // 读取一个显然不存在的文件目录，校验是否返回了优雅的容错字符串而不是 panic
+        // Read an obviously missing directory and verify a graceful error string instead of panic.
         let bad_args = serde_json::json!({
             "path": "/obviously_not_exist_dir/no_file.txt"
         });
@@ -10155,7 +10169,8 @@ Body
 
     #[tokio::test]
     async fn default_profile_requires_approval_for_path_outside_allowed_roots() {
-        // 绝对路径语法本身合法；/etc/passwd 因最终路径不在允许根中而进入审批。
+        // Absolute-path syntax is valid; `/etc/passwd` requires approval because its resolved path is
+        // outside allowed roots.
         let read_tool = ReadFileTool::new(Arc::new(PermissionConfig::default()));
         let bad_args = serde_json::json!({
             "path": "/etc/passwd"
@@ -10580,7 +10595,7 @@ Body
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
         let tool = exec_tool_for_tests(Arc::clone(&bus));
 
-        // 启动一个长耗时命令并缩短同步等待超时
+        // Start a long-running command with a short synchronous wait interval.
         let args = serde_json::json!({
             "command": "sleep 10 && echo 'finished'",
             "wait_ms": 1000

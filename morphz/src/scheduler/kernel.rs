@@ -84,7 +84,8 @@ impl SchedulerKernel {
                         contention_retries,
                         delay_ms = delay.as_millis(),
                         error = %error,
-                        "Scheduler Kernel 等待持久存储写槽；保留同一 fenced command 并重试"
+                    event_code = "scheduler_kernel.store_slot.waiting",
+                    "Scheduler Kernel is waiting for a persistent-store write slot; retaining and retrying the same fenced command"
                     );
                     tokio::time::sleep(delay).await;
                     delay = (delay * 2).min(std::time::Duration::from_millis(400));

@@ -1317,7 +1317,7 @@ impl EdgeNodeWorker {
             .await?;
         match decision {
             ApprovalDecision::AllowOnce { rationale, .. } => {
-                tracing::info!(%rationale, target_id = %command.target_id, "Edge 本地审批允许一次执行");
+                tracing::info!(event_code = "edge.approval.allow_once", %rationale, target_id = %command.target_id, "Edge-local approval allowed one execution");
                 Ok(true)
             }
             ApprovalDecision::AllowLease { rationale, .. } => {
@@ -1346,7 +1346,7 @@ impl EdgeNodeWorker {
                     revoked_at: None,
                 };
                 self.local_leases.grant(lease)?;
-                tracing::info!(%rationale, target_id = %command.target_id, "Edge 本地审批签发受限 Capability Lease");
+                tracing::info!(event_code = "edge.approval.capability_lease_issued", %rationale, target_id = %command.target_id, "Edge-local approval issued a restricted Capability Lease");
                 Ok(true)
             }
             ApprovalDecision::Deny { rationale, .. } => {
@@ -1388,7 +1388,7 @@ impl EdgeNodeWorker {
                 Err(error) => {
                     failures = failures.saturating_add(1);
                     let delay = 1_u64.checked_shl(failures.min(6)).unwrap_or(60).min(60);
-                    tracing::warn!(%error, delay_seconds = delay, "Edge Node 连接或执行失败，将退避重试");
+                    tracing::warn!(event_code = "edge.connection_or_execution.retrying", %error, delay_seconds = delay, "Edge Node connection or execution failed; retrying with backoff");
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
                         changed = shutdown.changed() => {

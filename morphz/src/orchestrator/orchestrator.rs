@@ -262,7 +262,8 @@ impl DurableEventWriter {
                                     retry,
                                     delay_ms = retry_delay.as_millis(),
                                     error = %error,
-                                    "Durable Event Writer 等待持久存储写槽；保留批次并退避重试"
+                                    event_code = "orchestrator.durable_event_writer.store_slot_waiting",
+                                    "Durable Event Writer is waiting for a persistent-store write slot; retaining the batch and retrying with backoff"
                                 );
                             }
                             tokio::time::sleep(retry_delay).await;
@@ -288,14 +289,20 @@ impl DurableEventWriter {
                         tracing::debug!(
                             batch_size,
                             contention_retries = retry,
-                            "Durable Event group commit 完成"
+                            event_code = "orchestrator.durable_event_group_commit.completed",
+                            "Durable Event group commit completed"
                         );
                     }
                     Err(error) => {
                         writer_metrics
                             .failed_batches
                             .fetch_add(1, Ordering::Relaxed);
-                        tracing::error!(batch_size, error, "Durable Event group commit 失败");
+                        tracing::error!(
+                            event_code = "orchestrator.durable_event_group_commit.failed",
+                            batch_size,
+                            error,
+                            "Durable Event group commit failed"
+                        );
                     }
                 }
                 for committed in completions {
@@ -1205,7 +1212,7 @@ async fn publish_provider_probe_available(
             .collect(),
         );
         if let Err(error) = bus.publish(event).await {
-            tracing::error!(%error, provider_resource = %resource, "发布 Provider 半开恢复事件失败");
+            tracing::error!(event_code = "orchestrator.provider.half_open_event_publish_failed", %error, provider_resource = %resource, "Failed to publish the Provider half-open recovery Event");
         }
     }
 }
@@ -1841,7 +1848,8 @@ async fn persist_model_attempt_state(
         state,
         terminal,
         detail = detail.unwrap_or_default(),
-        "Model Attempt 状态迁移"
+        event_code = "orchestrator.model_attempt.state_transition",
+        "Model Attempt state transition"
     );
     Ok(())
 }
@@ -2127,7 +2135,8 @@ impl Orchestrator {
             provider_resource = %resource,
             failure_kind = failure.kind.as_str(),
             generation,
-            "Provider 故障待独立健康探针确认；共享熔断尚未打开"
+            event_code = "orchestrator.provider.failure_awaiting_probe",
+            "Provider failure is awaiting an independent health probe; the shared circuit remains closed"
         );
         let bus = Arc::clone(&self.bus);
         let client = Arc::clone(&self.client);
@@ -2158,7 +2167,7 @@ impl Orchestrator {
                             state.health_probe_in_flight = false;
                             state.waiting_contexts.drain().collect::<Vec<_>>()
                         };
-                        tracing::info!(provider_resource = %resource, generation, "独立小型健康探针成功；Provider 共享熔断保持/恢复关闭");
+                        tracing::info!(event_code = "orchestrator.provider.probe_succeeded", provider_resource = %resource, generation, "Independent health probe succeeded; the shared Provider circuit remains or returns closed");
                         publish_provider_probe_available(
                             &bus,
                             &resource,
@@ -2172,7 +2181,7 @@ impl Orchestrator {
                     }
                     Err(error) => {
                         independent_failures = independent_failures.saturating_add(1);
-                        tracing::warn!(provider_resource = %resource, generation, independent_failures, error = %error, "Provider 独立小型健康探针失败");
+                        tracing::warn!(event_code = "orchestrator.provider.probe_failed", provider_resource = %resource, generation, independent_failures, error = %error, "Independent Provider health probe failed");
                     }
                 }
 
@@ -2202,7 +2211,7 @@ impl Orchestrator {
                     state.retry_at = tokio::time::Instant::now() + delay;
                     delay
                 };
-                tracing::warn!(provider_resource = %resource, generation, delay_secs = delay.as_secs(), probe_failures = independent_failures, "多个独立小型健康探针失败；Provider 共享熔断已打开");
+                tracing::warn!(event_code = "orchestrator.provider.shared_circuit_opened", provider_resource = %resource, generation, delay_secs = delay.as_secs(), probe_failures = independent_failures, "Multiple independent health probes failed; the shared Provider circuit opened");
                 tokio::time::sleep(delay).await;
                 independent_failures = 0;
             }
@@ -2222,7 +2231,7 @@ impl Orchestrator {
             state.generation = state.generation.saturating_add(1);
             state.waiting_contexts.iter().cloned().collect::<Vec<_>>()
         };
-        tracing::info!(provider_resource = %resource, "Provider 恢复探测成功；共享熔断已关闭");
+        tracing::info!(event_code = "orchestrator.provider.recovery_probe_succeeded", provider_resource = %resource, "Provider recovery probe succeeded; the shared circuit closed");
         for context_id in contexts {
             let event = Event::new(
                 format!(
@@ -2241,7 +2250,7 @@ impl Orchestrator {
                 .collect(),
             );
             if let Err(error) = self.bus.publish(event).await {
-                tracing::error!(%error, provider_resource = %resource, "发布 Provider 恢复事件失败");
+                tracing::error!(event_code = "orchestrator.provider.recovery_event_publish_failed", %error, provider_resource = %resource, "Failed to publish the Provider recovery Event");
             }
         }
     }
@@ -2284,7 +2293,8 @@ impl Orchestrator {
                 tracing::warn!(
                     dependency_id = %dependency.id,
                     thread_id = %dependency.owner_id,
-                    "Provider 恢复依赖的 Thread 不存在；保留依赖供不变量审计"
+                    event_code = "orchestrator.provider_recovery.thread_missing",
+                    "Thread referenced by a Provider recovery dependency is missing; retaining the dependency for invariant audit"
                 );
                 continue;
             };
@@ -2365,7 +2375,8 @@ impl Orchestrator {
                         thread_id = %dependency.owner_id,
                         recovery_event_id = %event.id,
                         %error,
-                        "Provider 恢复与 Thread 状态发生竞争；跳过该依赖并继续处理其他等待者"
+                        event_code = "orchestrator.provider_recovery.thread_state_race",
+                        "Provider recovery raced with Thread state; skipping this dependency and continuing with other waiters"
                     );
                     continue;
                 }
@@ -2375,7 +2386,8 @@ impl Orchestrator {
                 thread_id = %commit.dependency.owner_id,
                 recovery_event_id = %event.id,
                 replay = commit.existing,
-                "Provider 恢复已原子满足 Thread 依赖并写入唤醒 Signal"
+                event_code = "orchestrator.provider_recovery.dependency_satisfied",
+                "Provider recovery atomically satisfied the Thread dependency and wrote a wake Signal"
             );
             // The Event and its direct Signal are already durable. This only
             // wakes the live executor; replay is safe because Signal claim is
@@ -2420,7 +2432,8 @@ impl Orchestrator {
         tracing::info!(
             provider_resource = %resource,
             waiting_contexts = contexts.len(),
-            "Runtime 重启后恢复 Provider 等待探针"
+            event_code = "orchestrator.provider_probe.recovered_after_restart",
+            "Recovered Provider waiting probes after Runtime restart"
         );
         let failure = ModelFailure::new(
             ModelFailureKind::ServerUnavailable,
@@ -2674,6 +2687,8 @@ impl Orchestrator {
     /// Scheduler Kernel. The Store fallback is intentionally limited to
     /// narrow unit fixtures which assemble an Orchestrator without a Kernel;
     /// production Runtime construction always injects one.
+    // The transition command keeps every fenced lifecycle coordinate explicit at the Kernel edge.
+    #[allow(clippy::too_many_arguments)]
     async fn transition_thread_activation(
         &self,
         activation: &ThreadActivationRecord,
@@ -2763,7 +2778,8 @@ impl Orchestrator {
                         activation_id = %renewed.id,
                         revision = renewed.revision,
                         lease_expires_at = %renewed_expires_at_local,
-                        "本地 Activation 仍在执行；心跳续租并保留恢复时钟"
+                        event_code = "orchestrator.activation.lease_renewed",
+                        "Local Activation is still running; heartbeat renewed its lease and recovery clock"
                     );
                     return Ok(TimerDisposition::Complete);
                 }
@@ -2820,7 +2836,8 @@ impl Orchestrator {
                         thread_id = %thread.id,
                         thread_generation = thread.generation,
                         thread_lifecycle = thread.lifecycle.as_str(),
-                        "取消已被逻辑 Thread fencing 的过期 Activation"
+                        event_code = "orchestrator.activation.stale_generation_cancelled",
+                        "Cancelled an Activation fenced out by its logical Thread generation"
                     );
                 }
                 ThreadActivationMutation::Conflict { .. } | ThreadActivationMutation::NotFound => {}
@@ -2879,7 +2896,8 @@ impl Orchestrator {
                             activation_id = %queued.id,
                             thread_id = %thread.id,
                             generation = queued.generation,
-                            "运行期回收 lease 已过期的僵尸 Activation"
+                            event_code = "orchestrator.activation.expired_lease_reclaimed",
+                            "Reclaimed a zombie Activation with an expired lease at runtime"
                         );
                         self.bus.dispatch_persisted(trigger).await?;
                     }
@@ -3030,7 +3048,7 @@ impl Orchestrator {
                     break;
                 };
                 if let Err(error) = current.refill_activation_admission_queue().await {
-                    tracing::error!(%error, "Activation admission 持久队列重扫失败；保留 queued 等待下一次唤醒");
+                    tracing::error!(event_code = "orchestrator.activation_admission.rescan_failed", %error, "Persistent Activation admission queue rescan failed; retaining queued state until the next wakeup");
                 }
             }
         });
@@ -3050,7 +3068,8 @@ impl Orchestrator {
                 if let Err(error) = orchestrator.reconcile_durable_plans().await {
                     tracing::error!(
                         %error,
-                        "PlanExecution 周期恢复失败；持久状态保留，等待下一轮重试"
+                        event_code = "orchestrator.plan_execution.recovery_cycle_failed",
+                        "PlanExecution recovery cycle failed; retaining persistent state for the next retry"
                     );
                 }
             }
@@ -3070,21 +3089,27 @@ impl Orchestrator {
                 match orchestrator.audit_supervision_invariants().await {
                     Ok(violations) => {
                         if previous_error.take().is_some() {
-                            tracing::info!("Thread Supervision 不变量审计已恢复");
+                            tracing::info!(
+                                event_code = "orchestrator.thread_supervision.audit_recovered",
+                                "Thread Supervision invariant audit recovered"
+                            );
                         }
                         if violations != previous_violations {
                             if violations.is_empty() {
                                 if !previous_violations.is_empty() {
                                     tracing::info!(
                                         previous_invariant_violations = previous_violations.len(),
-                                        "Thread Supervision 不变量已恢复"
+                                        event_code =
+                                            "orchestrator.thread_supervision.invariants_restored",
+                                        "Thread Supervision invariants restored"
                                     );
                                 }
                             } else {
                                 tracing::warn!(
                                     invariant_violations = violations.len(),
                                     previous_invariant_violations = previous_violations.len(),
-                                    "Thread Supervision 检测到不变量异常"
+                                    event_code = "orchestrator.thread_supervision.invariant_violation_detected",
+                                    "Thread Supervision detected invariant violations"
                                 );
                             }
                             previous_violations = violations;
@@ -3095,7 +3120,8 @@ impl Orchestrator {
                         if previous_error.as_deref() != Some(error.as_str()) {
                             tracing::error!(
                                 %error,
-                                "Thread Supervision 不变量审计失败；未改写业务事实，等待下一轮审计"
+                                event_code = "orchestrator.thread_supervision.audit_failed",
+                                "Thread Supervision invariant audit failed; business facts remain unchanged until the next audit"
                             );
                             previous_error = Some(error);
                         }
@@ -3117,7 +3143,7 @@ impl Orchestrator {
             return Ok(Vec::new());
         };
         let Some(kernel) = self.scheduler_kernel.as_ref() else {
-            tracing::warn!("Scheduler Kernel 不可用；本轮只跳过不变量隔离，不直接写 Store");
+            tracing::warn!(event_code = "orchestrator.scheduler_kernel.unavailable", "Scheduler Kernel is unavailable; skipping invariant quarantine for this cycle without writing directly to the Store");
             return Ok(Vec::new());
         };
         let mut all_violations = Vec::new();
@@ -3254,7 +3280,8 @@ impl Orchestrator {
                     )) => tracing::warn!(
                         thread_id = %thread.id,
                         reason = %reason,
-                        "Scheduler Reconciler 已隔离违反不变量的 Thread；未猜测业务终态"
+                        event_code = "orchestrator.scheduler_reconciler.thread_quarantined",
+                        "Scheduler Reconciler quarantined a Thread violating invariants without inferring a business terminal state"
                     ),
                     Ok(crate::scheduler::KernelResult::ThreadControlled(
                         ThreadMutation::Conflict { .. } | ThreadMutation::NotFound,
@@ -3263,7 +3290,8 @@ impl Orchestrator {
                     Err(error) => tracing::warn!(
                         thread_id = %thread.id,
                         %error,
-                        "Scheduler Reconciler 隔离命令失败；保留权威状态等待下一轮"
+                        event_code = "orchestrator.scheduler_reconciler.quarantine_failed",
+                        "Scheduler Reconciler quarantine command failed; retaining authoritative state for the next cycle"
                     ),
                 }
             }
@@ -3299,7 +3327,8 @@ impl Orchestrator {
                 execution_jobs_resumed = jobs.resumed.len(),
                 evaluations_resumed = evaluations.resumed.len(),
                 conflicts = jobs.conflicts.len() + evaluations.conflicts.len(),
-                "PlanExecution 周期恢复完成"
+                event_code = "orchestrator.plan_execution.recovery_cycle_completed",
+                "PlanExecution recovery cycle completed"
             );
         }
         Ok(())
@@ -3355,7 +3384,8 @@ impl Orchestrator {
                     event_id = %event.id,
                     event_type = %event.event_type,
                     topic = %event.topic,
-                "一次性迁移时丢弃不可路由的历史 Signal Outbox 条目；Ledger Event 保持不变"
+                    event_code = "orchestrator.signal_outbox.unroutable_legacy_entry_dropped",
+                    "One-time migration dropped an unroutable legacy Signal Outbox entry while preserving the Ledger Event"
                 );
                 session_store.discard_signal_outbox(&event.id).await?;
                 continue;
@@ -3431,7 +3461,8 @@ impl Orchestrator {
                 plan_execution_id = %plan.id,
                 plan_effect_sequence = sequence,
                 tool_call_id,
-                "识别并丢弃旧版本误入 Signal Outbox 的 Plan 内部工具输出"
+                event_code = "orchestrator.signal_outbox.legacy_plan_output_dropped",
+                "Detected and dropped legacy Plan-internal tool output that entered the Signal Outbox"
             );
             return Ok(true);
         }
@@ -3468,7 +3499,8 @@ impl Orchestrator {
                     tracing::error!(
                         signal_id = %signal.id,
                         event_id = %signal.event_id,
-                        "无法恢复 pending Thread Signal：Ledger 中不存在 Event"
+                        event_code = "orchestrator.thread_signal.recovery_event_missing",
+                        "Cannot recover pending Thread Signal because its Event is absent from the Ledger"
                     );
                     continue;
                 };
@@ -3501,7 +3533,8 @@ impl Orchestrator {
             if outcome == RestoreQueuedOutcome::DeferredWindowFull {
                 tracing::debug!(
                     activation_id = %activation.id,
-                    "Activation 保留在 SQLite queued；等待进入有界内存准入窗口"
+                    event_code = "orchestrator.activation.queued_waiting_for_admission",
+                    "Activation remains queued in SQLite while waiting for bounded in-memory admission"
                 );
             }
         }
@@ -3545,7 +3578,8 @@ impl Orchestrator {
                 tracing::error!(
                     activation_id = %activation.id,
                     trigger_event_id = %activation.trigger_event_id,
-                    "无法重扫 queued Activation：Ledger 中不存在 Trigger Event"
+                    event_code = "orchestrator.activation.rescan_trigger_missing",
+                    "Cannot rescan queued Activation because its Trigger Event is absent from the Ledger"
                 );
                 continue;
             };
@@ -3592,7 +3626,8 @@ impl Orchestrator {
                     tracing::error!(
                         activation_id = %activation.id,
                         trigger_event_id = %activation.trigger_event_id,
-                        "无法恢复 Thread Activation：Ledger 中不存在 Trigger Event"
+                        event_code = "orchestrator.activation.recovery_trigger_missing",
+                        "Cannot recover Thread Activation because its Trigger Event is absent from the Ledger"
                     );
                     continue;
                 };
@@ -3638,7 +3673,8 @@ impl Orchestrator {
                             tracing::warn!(
                                 activation_id = %activation.id,
                                 claimed_by = ?activation.claimed_by,
-                                "恢复由已退出 Runtime 持有的 Thread Activation"
+                                event_code = "orchestrator.activation.recovered_from_exited_runtime",
+                                "Recovering a Thread Activation held by an exited Runtime"
                             );
                             match self
                                 .transition_thread_activation(
@@ -3802,7 +3838,8 @@ impl Orchestrator {
                         tracing::warn!(
                             thread_id = %thread.id,
                             root_turn_id = %thread.root_turn_id,
-                            "Runtime 启动时已收口孤儿 Thread"
+                            event_code = "orchestrator.startup.orphan_thread_closed",
+                            "Closed an orphan Thread during Runtime startup"
                         );
                         self.bus
                             .publish(Event::new(
@@ -3896,7 +3933,8 @@ impl Orchestrator {
                 thread_id = %job.thread_id,
                 cancelled_jobs = cancelled,
                 reason,
-                "Runtime 启动时已收口失去因果 Owner 的 Execution Job"
+                event_code = "orchestrator.startup.ownerless_execution_job_closed",
+                "Closed an Execution Job whose causal owner was missing during Runtime startup"
             );
         }
         Ok(())
@@ -4230,7 +4268,8 @@ impl Orchestrator {
                 tracing::warn!(
                     delegation_id = %delegation_id,
                     principal_id,
-                    "Delegation 发起 Principal 不在身份目录中；保留因果身份但不猜测 Session 绑定"
+                    event_code = "orchestrator.delegation.principal_not_in_directory",
+                    "Delegation principal is absent from the identity directory; preserving causal identity without inferring a Session binding"
                 );
             }
         }
@@ -4248,7 +4287,8 @@ impl Orchestrator {
                 imported,
                 source_estimated_tokens,
                 target_estimated_tokens,
-                "Sub Agent 已从父 Session active Projection 创建有界认知快照"
+                event_code = "orchestrator.sub_agent.snapshot_created",
+                "Created a bounded cognitive snapshot for the Sub Agent from the parent Session active Projection"
             );
         }
         session_store
@@ -4508,7 +4548,8 @@ impl Orchestrator {
                 tracing::info!(
                     session_id,
                     event_id = %event.id,
-                    "忽略 Session 取消前已排队的事件或取消后的后台工具唤醒"
+                    event_code = "orchestrator.session.cancelled_event_ignored",
+                    "Ignored an Event queued before Session cancellation or a background-tool wake after cancellation"
                 );
                 return Ok(());
             }
@@ -4531,7 +4572,8 @@ impl Orchestrator {
             tracing::debug!(
                 session_id,
                 event_id = %event.id,
-                "Thread Activation 已由其他 worker claim 或已经终止"
+                event_code = "orchestrator.activation.claim_unavailable",
+                "Thread Activation was claimed by another worker or is already terminal"
             );
             return Ok(());
         };
@@ -4567,7 +4609,8 @@ impl Orchestrator {
                     objective_id,
                     evaluation_id,
                     activation_id = %activation.id,
-                    "抑制已被暂停、取消或取代的 Objective Evaluation"
+                    event_code = "orchestrator.objective_evaluation.suppressed",
+                    "Suppressed an Objective Evaluation that was paused, cancelled, or superseded"
                 );
                 self.finish_thread_activation(&activation, ThreadActivationStatus::Cancelled)
                     .await?;
@@ -4630,7 +4673,8 @@ impl Orchestrator {
                     tracing::debug!(
                         root_turn_id = %activation.root_turn_id,
                         event_id = %event.id,
-                        "Thread 已终止，抑制迟到的 mailbox wake"
+                        event_code = "orchestrator.mailbox_wake.thread_terminal",
+                        "Suppressed a late mailbox wake for a terminal Thread"
                     );
                     return Ok(());
                 }
@@ -4655,7 +4699,8 @@ impl Orchestrator {
                 tracing::debug!(
                     session_id,
                     event_id = %event.id,
-                    "跳过已被更新 Context view 覆盖的排队 tool wakeup"
+                    event_code = "orchestrator.tool_wakeup.context_view_superseded",
+                    "Skipped a queued tool wakeup superseded by an updated Context view"
                 );
                 self.release_dialogue_thread(&session_id, &activation.root_turn_id)
                     .await;
@@ -4684,7 +4729,8 @@ impl Orchestrator {
                     objective_id = %cancelled.objective_id,
                     evaluation_id = %cancelled.evaluation_id,
                     activation_id = %activation.id,
-                    "当前 Objective Evaluation 已取消；Session 与其他 Evaluation 继续运行"
+                    event_code = "orchestrator.objective_evaluation.cancelled",
+                    "Current Objective Evaluation was cancelled; the Session and other Evaluations continue"
                 );
                 self.close_cancelled_model_attempt(&session_id, &activation.id, &reason)
                     .await;
@@ -4699,7 +4745,8 @@ impl Orchestrator {
                     session_id,
                     activation_id = %activation.id,
                     %reason,
-                    "当前 Thread Activation 已由 Runtime 控制取消"
+                    event_code = "orchestrator.activation.runtime_cancelled",
+                    "Current Thread Activation was cancelled by Runtime control"
                 );
                 self.close_cancelled_model_attempt(&session_id, &activation.id, &reason)
                     .await;
@@ -4711,7 +4758,11 @@ impl Orchestrator {
             }
             (None, None, None) => {
                 let reason = format!("Session '{session_id}' 已由用户取消");
-                tracing::info!(session_id, "当前 Session 执行已由用户取消");
+                tracing::info!(
+                    event_code = "orchestrator.session.user_cancelled",
+                    session_id,
+                    "Current Session execution was cancelled by the user"
+                );
                 self.close_cancelled_model_attempt(&session_id, &activation.id, &reason)
                     .await;
                 let result = self
@@ -4727,7 +4778,8 @@ impl Orchestrator {
                 activation_id = %activation.id,
                 root_turn_id = %activation.root_turn_id,
                 error = %error,
-                "Thread Activation 求值失败"
+                event_code = "orchestrator.activation.evaluation_failed",
+                "Thread Activation evaluation failed"
             );
             if self.activation_route(&activation.id).is_some() {
                 let storage_contention = is_transient_storage_contention(error.as_ref());
@@ -4744,7 +4796,8 @@ impl Orchestrator {
                         activation_id = %activation.id,
                         original_error = %error,
                         error = %outcome_error,
-                        "Activation 求值失败后无法提交用户可见的 Thread 终态"
+                        event_code = "orchestrator.activation.failure_outcome_commit_failed",
+                        "Could not commit a user-visible Thread terminal state after Activation evaluation failed"
                     );
                 }
             }
@@ -4773,7 +4826,8 @@ impl Orchestrator {
                 tracing::error!(
                     activation_id = %activation.id,
                     error = %cancellation_error,
-                    "Activation 已失败，但未能完整收口其非终态 Execution Job"
+                    event_code = "orchestrator.activation.execution_jobs_close_failed",
+                    "Activation failed but its non-terminal Execution Jobs could not be fully closed"
                 );
             }
         }
@@ -4789,7 +4843,8 @@ impl Orchestrator {
             tracing::warn!(
                 activation_id = %activation.id,
                 error = %error,
-                "Thread Activation 终态提交失败；保留原始执行错误"
+                event_code = "orchestrator.activation.terminal_commit_failed",
+                "Thread Activation terminal-state commit failed; preserving the original execution error"
             );
         }
         self.activation_cancellations.clear(&activation.id);
@@ -5162,7 +5217,8 @@ impl Orchestrator {
             tracing::debug!(
                 activation_id = %activation.id,
                 session_id = %activation.session_id,
-                "DialogueTurn 已持久排队；等待同一 Session 的前一轮离开对话通道"
+                event_code = "orchestrator.dialogue_turn.queued_behind_session_turn",
+                "DialogueTurn is durably queued until the preceding turn leaves the Session dialogue channel"
             );
             return Ok(None);
         }
@@ -5181,7 +5237,8 @@ impl Orchestrator {
                     activation_id = %activation.id,
                     session_id = %activation.session_id,
                     %error,
-                    "Activation 受到有界 backpressure；延迟而非失败"
+                    event_code = "orchestrator.activation.backpressure_delayed",
+                    "Activation encountered bounded backpressure and was delayed rather than failed"
                 );
                 return Ok(None);
             }
@@ -5243,7 +5300,7 @@ impl Orchestrator {
             };
             if current.status.is_terminal() {
                 if let Err(error) = self.cancel_activation_lease(&current.id).await {
-                    tracing::warn!(activation_id = %current.id, %error, "Activation 已终止，但取消 lease timer 失败");
+                    tracing::warn!(event_code = "orchestrator.activation.lease_timer_cancel_failed", activation_id = %current.id, %error, "Activation is terminal but its lease Timer could not be cancelled");
                 }
                 return Ok(current);
             }
@@ -5261,7 +5318,7 @@ impl Orchestrator {
             {
                 Ok(ThreadActivationMutation::Updated(updated)) => {
                     if let Err(error) = self.cancel_activation_lease(&updated.id).await {
-                        tracing::warn!(activation_id = %updated.id, %error, "Activation 已终止，但取消 lease timer 失败");
+                        tracing::warn!(event_code = "orchestrator.activation.lease_timer_cancel_failed", activation_id = %updated.id, %error, "Activation is terminal but its lease Timer could not be cancelled");
                     }
                     return Ok(updated);
                 }
@@ -5269,7 +5326,7 @@ impl Orchestrator {
                     if current.status.is_terminal() =>
                 {
                     if let Err(error) = self.cancel_activation_lease(&current.id).await {
-                        tracing::warn!(activation_id = %current.id, %error, "Activation 已终止，但取消 lease timer 失败");
+                        tracing::warn!(event_code = "orchestrator.activation.lease_timer_cancel_failed", activation_id = %current.id, %error, "Activation is terminal but its lease Timer could not be cancelled");
                     }
                     return Ok(current);
                 }
@@ -5908,7 +5965,7 @@ impl Orchestrator {
                         )
                         .await
                         {
-                            tracing::warn!(%error, "持久化 reasoning 完成状态失败");
+                            tracing::warn!(event_code = "orchestrator.model_stream.reasoning_completion_persist_failed", %error, "Failed to persist reasoning-completion state");
                         }
                     }
                     crate::llm::ModelStreamEvent::Usage { usage } => {
@@ -5930,7 +5987,7 @@ impl Orchestrator {
                         )
                         .await
                         {
-                            tracing::warn!(%error, "持久化模型响应收口状态失败");
+                            tracing::warn!(event_code = "orchestrator.model_stream.response_completion_persist_failed", %error, "Failed to persist model-response completion state");
                         }
                         tracing::info!(
                             session_id = %forward_session_id,
@@ -5941,7 +5998,8 @@ impl Orchestrator {
                             reasoning_summary_chars,
                             first_text_delta_ms,
                             total_stream_ms = u64::try_from(stream_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-                            "模型原生流已完成"
+                            event_code = "orchestrator.model_stream.completed",
+                            "Native model stream completed"
                         );
                     }
                     crate::llm::ModelStreamEvent::Failed { message } => {
@@ -5967,7 +6025,7 @@ impl Orchestrator {
                     payload.into_iter().collect(),
                 );
                 if let Err(error) = forward_bus.publish_ephemeral(event).await {
-                    tracing::debug!(%error, "发布瞬时模型流事件失败");
+                    tracing::debug!(event_code = "orchestrator.model_stream.ephemeral_event_publish_failed", %error, "Failed to publish an ephemeral model-stream Event");
                 }
             }
             persist_model_usage(
@@ -6305,8 +6363,9 @@ impl Orchestrator {
         Ok(anchor)
     }
 
-    /// 用当前协议 Client 声明的 TokenCounter 计量完整候选工作请求，
-    /// 并把结果及精度回写到本轮 Context Encoding。计数失败不会阻断 Agent。
+    /// Measures the complete candidate work request with the current protocol client's declared
+    /// TokenCounter and writes the result and accuracy into this turn's Context Encoding. Counting
+    /// failures never block the agent.
     async fn refresh_context_pressure(
         &self,
         context: &mut ContextView,
@@ -6354,7 +6413,8 @@ impl Orchestrator {
                             session_id = %context.active_session_id,
                             anchor_attempt_id = %anchor.attempt_id,
                             anchor_source = %anchor.counter_source,
-                            "已用持久化 Provider usage 锚点校准 Prompt 压力"
+                            event_code = "orchestrator.context_pressure.usage_anchor_applied",
+                            "Calibrated Prompt pressure with a persisted Provider-usage anchor"
                         );
                     }
                 }
@@ -6388,14 +6448,16 @@ impl Orchestrator {
                     source = %count.source,
                     accuracy = count.accuracy.as_str(),
                     pressure = %context.pressure.level,
-                    "Context pressure 已按完整 Prompt 重新计量"
+                    event_code = "orchestrator.context_pressure.remeasured",
+                    "Context pressure remeasured from the complete Prompt"
                 );
                 Some(count)
             }
             Ok(Ok(None)) => {
                 tracing::debug!(
                     session_id = %context.active_session_id,
-                    "当前 LLM Client 未提供 Prompt Token 计量，保留 Context 局部估算"
+                    event_code = "orchestrator.prompt_measurement.client_unsupported",
+                    "Current LLM Client does not provide Prompt-token measurement; retaining the Context-local estimate"
                 );
                 None
             }
@@ -6403,7 +6465,8 @@ impl Orchestrator {
                 tracing::warn!(
                     session_id = %context.active_session_id,
                     error = %error,
-                    "Prompt Token 计量失败，保留 Context 局部估算"
+                    event_code = "orchestrator.prompt_measurement.failed",
+                    "Prompt-token measurement failed; retaining the Context-local estimate"
                 );
                 None
             }
@@ -6411,7 +6474,8 @@ impl Orchestrator {
                 tracing::warn!(
                     session_id = %context.active_session_id,
                     timeout_secs = deadline.as_secs(),
-                    "Prompt Token 计量超时，保留 Context 局部估算"
+                    event_code = "orchestrator.prompt_measurement.timed_out",
+                    "Prompt-token measurement timed out; retaining the Context-local estimate"
                 );
                 None
             }
@@ -6450,7 +6514,8 @@ impl Orchestrator {
                     context_id = %context.context_id,
                     session_id = %context.active_session_id,
                     %error,
-                    "有界维护 Prompt Token 计量失败"
+                    event_code = "orchestrator.maintenance_prompt_measurement.failed",
+                    "Bounded maintenance Prompt-token measurement failed"
                 );
                 None
             }
@@ -6459,7 +6524,8 @@ impl Orchestrator {
                     context_id = %context.context_id,
                     session_id = %context.active_session_id,
                     timeout_secs = deadline.as_secs(),
-                    "有界维护 Prompt Token 计量超时"
+                    event_code = "orchestrator.maintenance_prompt_measurement.timed_out",
+                    "Bounded maintenance Prompt-token measurement timed out"
                 );
                 None
             }
@@ -6674,7 +6740,8 @@ impl Orchestrator {
             tracing::info!(
                 activation_id = %activation.id,
                 disposition = decision.disposition(),
-                "从持久化 assistant_call 恢复 Evaluation 终态"
+                event_code = "orchestrator.evaluation.recovered_terminal_assistant_call",
+                "Recovered Evaluation terminal state from a persisted assistant_call"
             );
             match decision {
                 TerminalDecision::Deliver(content) => {
@@ -6744,7 +6811,8 @@ impl Orchestrator {
         tracing::info!(
             activation_id = %activation.id,
             tool_calls = response.tool_calls.len(),
-            "从持久化 assistant_call 恢复工具执行计划"
+            event_code = "orchestrator.tool_plan.recovered_from_assistant_call",
+            "Recovered the tool-execution plan from a persisted assistant_call"
         );
         self.execute_tool_calls(
             session_id,
@@ -7077,7 +7145,8 @@ impl Orchestrator {
             tracing::info!(
                 session_id,
                 activation_id = %activation.id,
-                "Completion Inbox 已由并发 Delivery Thread 清空；跳过重复模型求值"
+                event_code = "orchestrator.completion_inbox.already_drained",
+                "Completion Inbox was drained by a concurrent Delivery Thread; skipping duplicate model evaluation"
             );
             self.publish_no_reply(session_id, &attempt_id, None).await?;
             return Ok(());
@@ -7169,9 +7238,10 @@ impl Orchestrator {
         let (_prompt_mode, stable_system_prompt) = configured_system_prompt()?;
         let context_message_prefix = "The Runtime provides the current Context Encoding below. It is not an ordinary user message. Execute the final evaluate entry and decide from protocol, inbox, and the current state that follows.";
 
-        // 先计量一个具备完整工作能力的候选请求。压力的物理含义是“当前 Context
-        // 是否还能继续正常工作”，因此即使计量后进入 maintenance/reply-only，仍以
-        // 完整工作工具集作为阈值依据，避免缩减工具后产生临界值振荡。
+        // First measure a candidate request with full work capability. Pressure answers whether the
+        // current Context can continue normal work, so even if measurement leads to maintenance or
+        // reply-only mode, thresholds still use the full work toolset. This avoids oscillation caused
+        // by measuring a reduced toolset near a boundary.
         let measurement_directive = match context.turn_budget.phase.as_str() {
             "soft-checkpoint" => Some(("soft-checkpoint", SOFT_CHECKPOINT_PROMPT)),
             _ => None,
@@ -7277,7 +7347,8 @@ impl Orchestrator {
                 session_id,
                 total_active_observations = total,
                 projected_observations = visible,
-                "Context 超出物理请求预算：启用有界 critical-maintenance 投影"
+                event_code = "orchestrator.context_pressure.critical_projection_enabled",
+                "Context exceeds the physical request budget; enabling a bounded critical-maintenance Projection"
             );
             context = recovery_context;
         }
@@ -7337,7 +7408,8 @@ impl Orchestrator {
                 session_id,
                 attempt = context.turn_budget.attempt,
                 maintenance_budget_exhausted,
-                "Context critical 且维护预算耗尽：进入 reply-only 最终答复"
+                event_code = "orchestrator.context_pressure.reply_only",
+                "Context is critical and maintenance budget is exhausted; entering reply-only final response"
             );
             retain_final_reply_control_tools(&mut tools, objective_control_available);
         } else {
@@ -7346,7 +7418,8 @@ impl Orchestrator {
                     session_id,
                     attempt = context.turn_budget.attempt,
                     interval = context.turn_budget.checkpoint_interval,
-                    "到达 Turn 软检查点：保留完整工具能力并继续任务"
+                    event_code = "orchestrator.turn.soft_checkpoint_reached",
+                    "Reached a Turn soft checkpoint; retaining full tool capability and continuing"
                 );
                 self.publish_progress(
                     session_id,
@@ -7361,7 +7434,8 @@ impl Orchestrator {
             if context.pressure.level == "critical" {
                 tracing::warn!(
                     session_id,
-                    "Context pressure critical：暂停外部高成本动作，要求 Agent 先维护 Context"
+                    event_code = "orchestrator.context_pressure.maintenance_required",
+                    "Context pressure is critical; pausing costly external actions until the agent maintains Context"
                 );
                 retain_context_maintenance_tools(&mut tools, objective_control_available);
             }
@@ -7370,14 +7444,16 @@ impl Orchestrator {
                     session_id,
                     used = context.turn_budget.context_transactions_used,
                     limit = context.turn_budget.context_transactions_limit,
-                    "普通 work 阶段 Context transaction 预算已耗尽；保留物理工作预算"
+                    event_code = "orchestrator.context_transaction.budget_exhausted",
+                    "Context-transaction budget is exhausted during ordinary work; preserving the physical work budget"
                 );
                 tools.retain(|tool| tool.name != "context_tx");
             }
             if context_tx_cooldown {
                 tracing::info!(
                     session_id,
-                    "独立 context_tx 已成功：本次冷却并隐藏 context_tx"
+                    event_code = "orchestrator.context_transaction.cooldown_started",
+                    "Standalone context_tx succeeded; hiding context_tx for this cooldown"
                 );
                 tools.retain(|tool| tool.name != "context_tx");
             }
@@ -7523,7 +7599,8 @@ impl Orchestrator {
                         .map(|measurement| measurement.tokens)
                         .unwrap_or_default(),
                     advisory_input_budget = recovery_prompt_limit,
-                    "最小 critical-maintenance 投影仍超过本地估算预算；继续提交并由 Provider 作最终裁决"
+                    event_code = "orchestrator.context_pressure.minimum_projection_over_budget",
+                    "Minimum critical-maintenance Projection still exceeds the local estimated budget; submitting for final Provider adjudication"
                 );
             }
         }
@@ -7542,7 +7619,8 @@ impl Orchestrator {
                     session_id,
                     activation_id = %activation.id,
                     error = %error,
-                    "Objective Prompt Token 记账失败；继续当前 Evaluation"
+                    event_code = "orchestrator.objective.prompt_accounting_failed",
+                    "Objective Prompt-token accounting failed; continuing the current Evaluation"
                 );
             }
         }
@@ -7647,7 +7725,8 @@ impl Orchestrator {
                             session_id,
                             attempt_id = %model_attempt_id,
                             error = %state_error,
-                            "Runtime 故障后无法持久化模型 Attempt 终态"
+                            event_code = "orchestrator.model_attempt.runtime_failure_persist_failed",
+                            "Could not persist the Model Attempt terminal state after a Runtime failure"
                         );
                     }
                     tracing::error!(
@@ -7655,7 +7734,8 @@ impl Orchestrator {
                         attempt_id = %model_attempt_id,
                         origin = failure_origin,
                         error = %detail,
-                        "模型求值边界发生 Runtime 故障；不将其归类为 Provider 失败"
+                        event_code = "orchestrator.model_evaluation.runtime_boundary_failure",
+                        "Runtime failure occurred at the model-evaluation boundary and is not classified as a Provider failure"
                     );
                     return Err(error.into_source());
                 }
@@ -7794,7 +7874,8 @@ impl Orchestrator {
                         total_active_observations = total,
                         projected_observations = visible,
                         projection_limit = recovery_observation_limit,
-                        "Provider 确认 Context 超限：当前 Activation 获得唯一 maintenance owner"
+                        event_code = "orchestrator.context_pressure.maintenance_owner_acquired",
+                        "Provider confirmed Context overflow; current Activation acquired sole maintenance ownership"
                     );
                     continue;
                 }
@@ -8326,7 +8407,8 @@ impl Orchestrator {
                     tracing::debug!(
                         activation_id = %activation.id,
                         session_id,
-                        "DialogueTurn 已持久离开对话通道；物理工具继续在原 Activation 中执行"
+                    event_code = "orchestrator.dialogue_turn.channel_released",
+                    "DialogueTurn durably left the dialogue channel while physical tools continue in the original Activation"
                     );
                 }
                 if let Some(lease) = dialogue_lease.as_mut() {
@@ -8363,7 +8445,8 @@ impl Orchestrator {
                     tracing::info!(
                         context_id = %context_id,
                         activation_id = %activation.id,
-                        "Context maintenance owner 已提交事务；等待者将从新 Projection 重新求值"
+                    event_code = "orchestrator.context_maintenance.transaction_committed",
+                    "Context maintenance owner committed a transaction; waiters will re-evaluate from the new Projection"
                     );
                 }
                 if context_maintenance_only {
@@ -9032,7 +9115,8 @@ impl Orchestrator {
         if !sessions.is_empty() {
             tracing::info!(
                 sessions = sessions.len(),
-                "已从 pending/deferred Thread 恢复 Delivery Flush Timer"
+                event_code = "orchestrator.delivery_flush_timer.recovered",
+                "Recovered Delivery Flush Timers from pending or deferred Threads"
             );
         }
         Ok(sessions.len())
@@ -9374,7 +9458,8 @@ impl Orchestrator {
                         event_id = %event.id,
                         %error,
                         retry,
-                        "Evaluation outcome 持久化失败；安全地重试同一幂等提交"
+                        event_code = "orchestrator.evaluation_outcome.persist_retrying",
+                        "Evaluation outcome persistence failed; safely retrying the same idempotent commit"
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(
                         50u64.saturating_mul(1 << retry),
@@ -9399,7 +9484,8 @@ impl Orchestrator {
                     activation_id = %route.activation_id,
                     thread_id = %route.thread_id,
                     dependency_id,
-                    "Thread 已持久化进入 Provider 等待；保留 open lifecycle"
+                event_code = "orchestrator.thread.provider_wait_persisted",
+                "Thread durably entered Provider wait while retaining an open lifecycle"
                 );
                 (true, Vec::new(), false)
             }
@@ -9410,7 +9496,8 @@ impl Orchestrator {
                 tracing::warn!(
                     activation_id = %route.activation_id,
                     event_id = %event.id,
-                    "恢复已持久化但尚未确认派发的 Evaluation outcome"
+                event_code = "orchestrator.evaluation_outcome.unconfirmed_dispatch_recovered",
+                "Recovering a persisted Evaluation outcome whose dispatch was not confirmed"
                 );
                 (true, Vec::new(), !requested_provider_wait)
             }
@@ -9419,7 +9506,8 @@ impl Orchestrator {
                     activation_id = %route.activation_id,
                     duplicate_event_id = %event.id,
                     committed_event_id = %event_id,
-                    "抑制同一 Thread Activation 的重复终态输出"
+                event_code = "orchestrator.evaluation_outcome.duplicate_suppressed",
+                "Suppressed duplicate terminal output from the same Thread Activation"
                 );
                 (false, Vec::new(), false)
             }
@@ -9428,7 +9516,8 @@ impl Orchestrator {
                     activation_id = %route.activation_id,
                     event_id = %event.id,
                     thread_group_ids = ?group_ids,
-                    "父 Thread generation 仍有 required attached Thread；拒绝提前提交终态，等待 Group barrier 唤醒"
+                event_code = "orchestrator.thread_group.terminal_blocked",
+                "Parent Thread generation still has required attached Threads; delaying terminal commit until the Group barrier wakes"
                 );
                 (false, Vec::new(), false)
             }
@@ -9436,7 +9525,8 @@ impl Orchestrator {
                 tracing::warn!(
                     activation_id = %route.activation_id,
                     event_id = %event.id,
-                    "抑制已被 DialogueTurn generation fencing 的过期终态输出"
+                event_code = "orchestrator.evaluation_outcome.dialogue_generation_stale",
+                "Suppressed stale terminal output fenced by DialogueTurn generation"
                 );
                 (false, Vec::new(), false)
             }
@@ -9444,7 +9534,8 @@ impl Orchestrator {
                 tracing::warn!(
                     activation_id = %route.activation_id,
                     event_id = %event.id,
-                    "抑制已被取消或终结的物理 Activation 过期输出"
+                event_code = "orchestrator.evaluation_outcome.activation_stale",
+                "Suppressed stale output from a cancelled or terminal physical Activation"
                 );
                 (false, Vec::new(), false)
             }
@@ -9465,7 +9556,8 @@ impl Orchestrator {
                             event_id = %event.id,
                             %error,
                             retry,
-                            "持久 Evaluation outcome 派发失败；保留同一 Event 并重试"
+                        event_code = "orchestrator.evaluation_outcome.dispatch_retrying",
+                        "Durable Evaluation outcome dispatch failed; retaining and retrying the same Event"
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(
                             50u64.saturating_mul(1 << retry),
@@ -9519,7 +9611,8 @@ impl Orchestrator {
                         tracing::error!(
                             thread_id = %route.thread_id,
                             %error,
-                            "Thread 已终止，但依赖 Schedule 即时唤醒失败；等待恢复路径重放"
+                        event_code = "orchestrator.thread.schedule_wake_failed",
+                        "Thread is terminal but its dependent Schedule could not be woken immediately; waiting for recovery replay"
                         );
                     }
                 }
@@ -9545,7 +9638,7 @@ impl Orchestrator {
         {
             Ok(leases) => leases,
             Err(error) => {
-                tracing::error!(thread_id, %error, "读取 Thread Capability Lease 失败");
+                tracing::error!(event_code = "orchestrator.capability_lease.read_failed", thread_id, %error, "Failed to read Thread Capability Lease");
                 return;
             }
         };
@@ -9564,14 +9657,15 @@ impl Orchestrator {
                     tracing::debug!(
                         lease_id = %current.id,
                         revision = current.revision,
-                        "Capability Lease 已被并发修改，无需覆盖最新状态"
+                        event_code = "orchestrator.capability_lease.concurrent_update",
+                        "Capability Lease was concurrently modified; preserving the latest state"
                     );
                 }
                 Ok(CapabilityLeaseMutation::Created(_)) => {
-                    tracing::error!(lease_id = %lease.id, "revoke Capability Lease 不应创建记录");
+                    tracing::error!(event_code = "orchestrator.capability_lease.revoke_created_record", lease_id = %lease.id, "Revoking a Capability Lease unexpectedly created a record");
                 }
                 Err(error) => {
-                    tracing::error!(lease_id = %lease.id, %error, "撤销 Thread Capability Lease 失败");
+                    tracing::error!(event_code = "orchestrator.capability_lease.revoke_failed", lease_id = %lease.id, %error, "Failed to revoke Thread Capability Lease");
                 }
             }
         }
@@ -9830,7 +9924,8 @@ impl Orchestrator {
                 incident_id = %incident.id,
                 error = %error_text,
                 failure_kind = failure.kind.as_str(),
-                "LLM 请求在重试后失败；Thread 转入持久 Provider 等待"
+                event_code = "orchestrator.model_request.provider_wait_entered",
+                "LLM request failed after retries; Thread entered durable Provider wait"
             );
         } else if should_notify_user {
             tracing::error!(
@@ -9839,7 +9934,8 @@ impl Orchestrator {
                 incident_id = %incident.id,
                 error = %error_text,
                 failure_kind = failure.kind.as_str(),
-                "LLM 请求在重试后失败；终止本回合并建立可恢复故障事件"
+                event_code = "orchestrator.model_request.turn_failed",
+                "LLM request failed after retries; terminating the turn and recording a recoverable failure Event"
             );
         } else {
             tracing::warn!(
@@ -9848,7 +9944,8 @@ impl Orchestrator {
                 incident_id = %incident.id,
                 occurrence = incident.occurrence,
                 failure_kind = failure.kind.as_str(),
-                "同一 Runtime 故障仍在发生；抑制重复用户提示"
+                event_code = "orchestrator.runtime_failure.duplicate_notice_suppressed",
+                "The same Runtime failure is still occurring; suppressing duplicate user notices"
             );
         }
         let mut payload = vec![
@@ -10083,7 +10180,8 @@ impl Orchestrator {
                 activation_id,
                 attempt_id,
                 %error,
-                "Activation 已取消，但无法持久化 Model Attempt cancelled 终态"
+                event_code = "orchestrator.model_attempt.cancelled_persist_failed",
+                "Activation was cancelled but the Model Attempt cancelled terminal state could not be persisted"
             );
         }
     }
@@ -11610,7 +11708,8 @@ impl Orchestrator {
                 session_id,
                 attempt_id,
                 deduplicated = deduplicated_context_tx_ids.len(),
-                "同一 assistant response 包含重复 context_tx；已规范化去重"
+                event_code = "orchestrator.assistant_response.duplicate_context_tx",
+                "Assistant response contained duplicate context_tx calls; normalized by deduplication"
             );
         }
         let mut seen_delegations = HashSet::new();
@@ -11632,7 +11731,8 @@ impl Orchestrator {
                 session_id,
                 attempt_id,
                 deduplicated = deduplicated_delegate_ids.len(),
-                "同一 assistant response 包含语义相同的 delegate；已去重以避免重复派生"
+                event_code = "orchestrator.assistant_response.duplicate_delegate",
+                "Assistant response contained semantically identical delegate calls; deduplicated to prevent duplicate spawning"
             );
         }
         if !rejected_context_tx_ids.is_empty() {
@@ -11641,13 +11741,15 @@ impl Orchestrator {
                     session_id,
                     attempt_id,
                     rejected = rejected_context_tx_ids.len(),
-                    "Context transaction 预算已耗尽"
+                        event_code = "orchestrator.assistant_response.context_tx_budget_exhausted",
+                        "Context-transaction budget exhausted"
                 ),
                 _ => tracing::warn!(
                     session_id,
                     attempt_id,
                     rejected = rejected_context_tx_ids.len(),
-                    "同一 assistant response 包含多个不同 context_tx；已全部拒绝并要求合并"
+                        event_code = "orchestrator.assistant_response.multiple_context_tx_rejected",
+                        "Assistant response contained multiple distinct context_tx calls; all were rejected pending consolidation"
                 ),
             }
         }
@@ -11657,7 +11759,8 @@ impl Orchestrator {
                 attempt_id,
                 phase,
                 rejected = unavailable_tool_calls.len(),
-                "模型调用了本轮未提供的工具；Runtime 已拒绝执行"
+                event_code = "orchestrator.assistant_response.unavailable_tool_rejected",
+                "Model called a tool not offered this turn; Runtime rejected execution"
             );
         }
         let continuation_ids = selected_tool_calls
@@ -12612,7 +12715,8 @@ impl Orchestrator {
                         tool = %metadata.tool_name,
                         tool_call_id = %metadata.tool_call_id,
                         %error,
-                        "工具任务在持久化终态前失败"
+                    event_code = "orchestrator.tool_task.failed_before_terminal_persist",
+                    "Tool task failed before persisting its terminal state"
                     );
                     return Err(error);
                 }
@@ -12625,7 +12729,8 @@ impl Orchestrator {
                         tool = %metadata.tool_name,
                         tool_call_id = %metadata.tool_call_id,
                         ?error,
-                        "工具任务 join 失败；生成显式 lost 结果"
+                    event_code = "orchestrator.tool_task.join_failed",
+                    "Tool task join failed; generating an explicit lost result"
                     );
                     let mut output = lost_tool_output(&metadata, &reason);
                     self.stamp_objective_activation_route(attempt_id, &mut output.payload);
@@ -13145,7 +13250,8 @@ impl Orchestrator {
                 evaluation_id,
                 plan_id = %plan.id,
                 status = plan.status.as_str(),
-                "Harness entry Plan 尚未终结；当前 Activation 不启动重复模型求值"
+                event_code = "orchestrator.harness_entry.plan_active",
+                "Harness entry Plan is not terminal; current Activation will not start duplicate model evaluation"
             );
             return Ok(true);
         }
@@ -13165,7 +13271,8 @@ impl Orchestrator {
             objective_id = ?active.as_ref().map(|item| item.objective_id.as_str()),
             evaluation_id,
             harness = %format!("{}@{}", binding.harness_id, binding.harness_version),
-            "Runtime 自动分派绑定 Harness 的 eval 入口"
+            event_code = "orchestrator.harness_entry.dispatched",
+            "Runtime automatically dispatched the bound Harness eval entry"
         );
         self.execute_tool_calls(
             session_id,
@@ -13262,7 +13369,8 @@ impl Orchestrator {
                     evaluation_id,
                     activation_id,
                     error = %error,
-                    "Objective 已停止调度，但物理 Execution Job 取消意图未能完整持久化"
+                event_code = "orchestrator.objective.execution_job_cancel_persist_failed",
+                "Objective stopped scheduling but the physical Execution Job cancellation intent was not fully persisted"
                 );
                 if cancellation_error.is_none() {
                     cancellation_error = Some(error);
@@ -13328,7 +13436,7 @@ impl Orchestrator {
                     ThreadActivationMutation::Updated(updated) => {
                         self.activation_admission.forget(&updated.id);
                         if let Err(error) = self.cancel_activation_lease(&updated.id).await {
-                            tracing::warn!(activation_id = %updated.id, %error, "关闭 Thread 后取消 Activation lease 失败");
+                            tracing::warn!(event_code = "orchestrator.thread_close.activation_lease_cancel_failed", activation_id = %updated.id, %error, "Failed to cancel the Activation lease after closing the Thread");
                         }
                         cancelled = cancelled.saturating_add(1);
                         break;
@@ -13526,7 +13634,7 @@ impl Orchestrator {
                             .human_approval_hub
                             .notify_decision(&cancelled.id, decision)
                         {
-                            tracing::warn!(approval_id = %cancelled.id, %error, "Approval 已持久取消，但进程内 waiter 通知失败");
+                            tracing::warn!(event_code = "orchestrator.approval.cancel_waiter_notify_failed", approval_id = %cancelled.id, %error, "Approval cancellation was persisted but the in-process waiter could not be notified");
                         }
                         if commit.event_created {
                             let event = commit.event.ok_or(
@@ -14719,6 +14827,8 @@ fn action_group_member_status(output: &Event) -> ActionGroupMemberStatus {
     }
 }
 
+// Event construction lists all causal coordinates explicitly to prevent accidental ambient routing.
+#[allow(clippy::too_many_arguments)]
 fn action_group_settled_event(
     group_id: &str,
     context_id: &str,
@@ -14959,7 +15069,7 @@ fn merge_artifact_transfer_requirements(
                 merged.requested.secret_env.push(name);
             }
         }
-        merged.justification.push_str("；");
+        merged.justification.push('；');
         merged.justification.push_str(&requirement.justification);
     }
     Some(merged)
