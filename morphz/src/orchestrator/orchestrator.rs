@@ -2001,6 +2001,41 @@ async fn persist_model_usage(
         accumulator.lock().await.usage_persist_started = false;
         return Err(error);
     }
+    let model_binding = route
+        .iter()
+        .find(|(key, _)| key == "model_binding")
+        .map(|(_, value)| value);
+    let binding_field = |field: &str| {
+        model_binding
+            .and_then(|binding| binding.get(field))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    };
+    let measured_model = measurement
+        .map(|measurement| measurement.model.as_str())
+        .unwrap_or_default();
+    tracing::info!(
+        context_id,
+        session_id,
+        attempt_id,
+        requested_alias = binding_field("requested_alias"),
+        route_id = binding_field("route_id"),
+        provider_instance_id = binding_field("provider_instance_id"),
+        auth_account_id = binding_field("auth_account_id"),
+        physical_model = binding_field("physical_model"),
+        protocol = binding_field("protocol"),
+        measured_model,
+        input_tokens = ?usage.input_tokens,
+        uncached_input_tokens = ?usage.uncached_input_tokens,
+        cached_input_tokens = ?usage.cached_input_tokens,
+        cache_write_input_tokens = ?usage.cache_write_input_tokens,
+        output_tokens = ?usage.output_tokens,
+        reasoning_tokens = ?usage.reasoning_tokens,
+        total_tokens = ?usage.total_tokens,
+        predicted_input_tokens = ?measurement.map(|measurement| measurement.tokens),
+        event_code = "orchestrator.model_usage.persisted",
+        "Provider model usage persisted"
+    );
     Ok(())
 }
 
