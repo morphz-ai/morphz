@@ -3793,6 +3793,9 @@ export default function App() {
                     attemptId,
                     activationId,
                     threadKind: typeof item.thread_kind === 'string' ? item.thread_kind : 'dialogue_turn',
+                    threadId: typeof item.thread_id === 'string' ? item.thread_id : undefined,
+                    rootTurnId: typeof item.root_turn_id === 'string' ? item.root_turn_id : undefined,
+                    objectiveId: typeof item.objective_id === 'string' ? item.objective_id : undefined,
                     state: typeof item.state === 'string' ? item.state : 'streaming',
                     terminal: false,
                     timestamp: typeof item.timestamp === 'string' ? item.timestamp : event.timestamp,
@@ -3836,6 +3839,9 @@ export default function App() {
                   attemptId,
                   activationId,
                   threadKind: typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn',
+                  threadId: typeof event.payload.thread_id === 'string' ? event.payload.thread_id : undefined,
+                  rootTurnId: typeof event.payload.root_turn_id === 'string' ? event.payload.root_turn_id : undefined,
+                  objectiveId: typeof event.payload.objective_id === 'string' ? event.payload.objective_id : undefined,
                   state: typeof event.payload.state === 'string' ? event.payload.state : 'streaming',
                   terminal,
                   timestamp: event.timestamp,
@@ -3852,7 +3858,16 @@ export default function App() {
             const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn'
             const stream = event.payload.stream
             if (attemptId && isModelStreamEvent(stream)) {
-              queueStreamEvent({ attemptId, activationId, threadKind, timestamp: event.timestamp, stream })
+              queueStreamEvent({
+                attemptId,
+                activationId,
+                threadKind,
+                threadId: typeof event.payload.thread_id === 'string' ? event.payload.thread_id : undefined,
+                rootTurnId: typeof event.payload.root_turn_id === 'string' ? event.payload.root_turn_id : undefined,
+                objectiveId: typeof event.payload.objective_id === 'string' ? event.payload.objective_id : undefined,
+                timestamp: event.timestamp,
+                stream,
+              })
             }
             return
           }
@@ -4129,6 +4144,14 @@ export default function App() {
     ),
     [schedulerThreads, sessionEvents],
   )
+  const lineageForLiveAttempt = useCallback((attempt: LiveModelAttempt) => (
+    objectiveLineage.forLiveRoute({
+      activationId: attempt.activationId,
+      threadId: attempt.threadId,
+      rootTurnId: attempt.rootTurnId,
+      objectiveId: attempt.objectiveId,
+    })
+  ), [objectiveLineage])
   const durableReasoningSummaries = useMemo(
     () => selectDurableReasoningSummaries(sessionEvents),
     [sessionEvents],
@@ -4306,9 +4329,9 @@ export default function App() {
   )
   const visibleStreamingAttempts = useMemo(
     () => selectedObjectiveFilterId
-      ? streamingAttempts.filter(attempt => objectiveLineage.forActivation(attempt.activationId).objectiveIds.includes(selectedObjectiveFilterId))
+      ? streamingAttempts.filter(attempt => lineageForLiveAttempt(attempt).objectiveIds.includes(selectedObjectiveFilterId))
       : streamingAttempts,
-    [objectiveLineage, selectedObjectiveFilterId, streamingAttempts],
+    [lineageForLiveAttempt, selectedObjectiveFilterId, streamingAttempts],
   )
   const conversationStreamingAttempts = useMemo(
     // Dialogue and Delivery evaluations terminate in a user-visible reply.
@@ -4407,7 +4430,7 @@ export default function App() {
   // ids in the palette candidate set so historical results do not lose their
   // colour as soon as execution settles.
   const visibleTintLineages = visibleEventsForObjective.map(event => objectiveLineage.forEvent(event))
-  const streamingTintLineages = visibleStreamingAttempts.map(attempt => objectiveLineage.forActivation(attempt.activationId))
+  const streamingTintLineages = visibleStreamingAttempts.map(lineageForLiveAttempt)
   const tintCandidateIds = [...new Set(tintDimension === 'thread'
     ? [
         ...dialogueActivityThreads.map(snapshot => snapshot.thread.id),
@@ -6857,7 +6880,7 @@ export default function App() {
                   )
                 })}
                 {dialogueStreamingAttempts.map(attempt => {
-                  const lineage = objectiveLineage.forActivation(attempt.activationId)
+                  const lineage = lineageForLiveAttempt(attempt)
                   return (
                   <article className={`message-row agent streaming ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyleForLineage(lineage)} key={`stream-${attempt.attemptId}`} aria-live="polite">
                     <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
@@ -7048,7 +7071,7 @@ export default function App() {
                         )
                       })}
                       {executionOutputStreamingAttempts.map(attempt => {
-                        const lineage = objectiveLineage.forActivation(attempt.activationId)
+                        const lineage = lineageForLiveAttempt(attempt)
                         return (
                         <article className={`message-row agent streaming execution-output ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyleForLineage(lineage)} key={`execution-stream-${attempt.attemptId}`} aria-live="polite">
                           <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />

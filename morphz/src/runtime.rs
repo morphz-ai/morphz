@@ -9286,6 +9286,11 @@ mod tests {
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call < 100 {
+                // Keep every Activation shorter than the Objective heartbeat,
+                // while making the whole Evaluation cross multiple lease
+                // windows. This reproduces the production pattern of many
+                // quick tool/no-reply continuations.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 return Ok(no_reply_response(format!("objective-long-run-call-{call}")));
             }
             if !tools.iter().any(|tool| tool.name == "objective_update") {
@@ -13919,6 +13924,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
+        config.orchestrator.objective_evaluation_lease_secs = 1;
         let client = Arc::new(ObjectiveLongRunClient {
             calls: AtomicU64::new(0),
         });

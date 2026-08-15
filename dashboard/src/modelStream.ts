@@ -26,6 +26,9 @@ export interface LiveModelAttempt {
   attemptId: string
   activationId: string
   threadKind: string
+  threadId: string
+  rootTurnId: string
+  objectiveId: string
   text: string
   reasoningSummary: string
   startedAt: string
@@ -54,6 +57,9 @@ export interface ModelStreamBatchItem {
   attemptId: string
   activationId: string
   threadKind: string
+  threadId?: string
+  rootTurnId?: string
+  objectiveId?: string
   timestamp: string
   stream: ModelStreamEvent
 }
@@ -62,6 +68,9 @@ export interface ModelAttemptStateItem {
   attemptId: string
   activationId: string
   threadKind: string
+  threadId?: string
+  rootTurnId?: string
+  objectiveId?: string
   state: string
   terminal: boolean
   timestamp: string
@@ -143,6 +152,9 @@ function reduceAttempt(
         attemptId,
         activationId,
         threadKind,
+        threadId: item.threadId?.trim() ?? '',
+        rootTurnId: item.rootTurnId?.trim() ?? '',
+        objectiveId: item.objectiveId?.trim() ?? '',
         text: '',
         reasoningSummary: '',
         startedAt: timestamp,
@@ -161,18 +173,24 @@ function reduceAttempt(
   // A browser reconnecting mid-response can receive a suffix without its
   // prefix. Only `started` establishes a trustworthy draft bucket.
   if (!current) return previous
+  const routed = {
+    ...current,
+    threadId: item.threadId?.trim() || current.threadId,
+    rootTurnId: item.rootTurnId?.trim() || current.rootTurnId,
+    objectiveId: item.objectiveId?.trim() || current.objectiveId,
+  }
 
   if (stream.kind === 'text_delta') {
     return {
       ...previous,
-      [attemptId]: { ...current, text: current.text + stream.text, lastEventMs: nowMs, status: 'streaming' },
+      [attemptId]: { ...routed, text: current.text + stream.text, lastEventMs: nowMs, status: 'streaming' },
     }
   }
   if (stream.kind === 'reasoning_summary_delta') {
     return {
       ...previous,
       [attemptId]: {
-        ...current,
+        ...routed,
         reasoningSummary: current.reasoningSummary + stream.text,
         lastEventMs: nowMs,
         status: 'streaming',
@@ -183,7 +201,7 @@ function reduceAttempt(
     return {
       ...previous,
       [attemptId]: {
-        ...current,
+        ...routed,
         lastEventMs: nowMs,
         status: 'settling',
         runtimeState: 'waiting_final_output',
@@ -193,16 +211,16 @@ function reduceAttempt(
   if (stream.kind === 'tool_call_started') {
     return {
       ...previous,
-      [attemptId]: { ...current, toolCallCount: current.toolCallCount + 1, lastEventMs: nowMs, status: 'streaming' },
+      [attemptId]: { ...routed, toolCallCount: current.toolCallCount + 1, lastEventMs: nowMs, status: 'streaming' },
     }
   }
   if (stream.kind === 'completed') {
-    return { ...previous, [attemptId]: { ...current, lastEventMs: nowMs, status: 'settling', runtimeState: 'settling' } }
+    return { ...previous, [attemptId]: { ...routed, lastEventMs: nowMs, status: 'settling', runtimeState: 'settling' } }
   }
   if (stream.kind === 'failed') {
-    return { ...previous, [attemptId]: { ...current, lastEventMs: nowMs, status: 'failed', error: stream.message } }
+    return { ...previous, [attemptId]: { ...routed, lastEventMs: nowMs, status: 'failed', error: stream.message } }
   }
-  return { ...previous, [attemptId]: { ...current, lastEventMs: nowMs } }
+  return { ...previous, [attemptId]: { ...routed, lastEventMs: nowMs } }
 }
 
 function reduceAttemptState(
@@ -221,6 +239,9 @@ function reduceAttemptState(
       ...previous,
       [item.attemptId]: {
         ...current,
+        threadId: item.threadId?.trim() || current.threadId,
+        rootTurnId: item.rootTurnId?.trim() || current.rootTurnId,
+        objectiveId: item.objectiveId?.trim() || current.objectiveId,
         lastEventMs: nowMs,
         status: item.state === 'failed' ? 'failed' : 'settling',
         runtimeState: 'settling',
@@ -243,6 +264,9 @@ function reduceAttemptState(
       attemptId: item.attemptId,
       activationId: item.activationId,
       threadKind: item.threadKind,
+      threadId: item.threadId?.trim() || current?.threadId || '',
+      rootTurnId: item.rootTurnId?.trim() || current?.rootTurnId || '',
+      objectiveId: item.objectiveId?.trim() || current?.objectiveId || '',
       text: current?.text ?? '',
       reasoningSummary: current?.reasoningSummary ?? '',
       startedAt: current?.startedAt ?? item.timestamp,

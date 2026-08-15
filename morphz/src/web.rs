@@ -6176,7 +6176,10 @@ fn fold_active_model_attempts(
             json!({
                 "attempt_id": event.payload.get("attempt_id"),
                 "activation_id": event.payload.get("activation_id"),
+                "thread_id": event.payload.get("thread_id"),
+                "root_turn_id": event.payload.get("root_turn_id"),
                 "thread_kind": event.payload.get("thread_kind"),
+                "objective_id": event.payload.get("objective_id"),
                 "state": event.payload.get("state"),
                 "detail": event.payload.get("detail"),
                 "timestamp": event.timestamp,
@@ -6819,7 +6822,10 @@ mod tests {
                 [
                     ("attempt_id".to_string(), json!(attempt)),
                     ("activation_id".to_string(), json!(activation)),
+                    ("thread_id".to_string(), json!("thread-live")),
+                    ("root_turn_id".to_string(), json!("root-live")),
                     ("thread_kind".to_string(), json!("dialogue_turn")),
+                    ("objective_id".to_string(), json!("objective-live")),
                     ("state".to_string(), json!(value)),
                     ("terminal".to_string(), json!(terminal)),
                 ]
@@ -6846,6 +6852,12 @@ mod tests {
 
         assert_eq!(attempts.len(), 1);
         assert_eq!(attempts[0].get("attempt_id"), Some(&json!("attempt-live")));
+        assert_eq!(attempts[0].get("thread_id"), Some(&json!("thread-live")));
+        assert_eq!(attempts[0].get("root_turn_id"), Some(&json!("root-live")));
+        assert_eq!(
+            attempts[0].get("objective_id"),
+            Some(&json!("objective-live"))
+        );
         assert_eq!(
             attempts[0].get("state"),
             Some(&json!("waiting_final_output"))

@@ -5305,7 +5305,12 @@ impl Orchestrator {
                 .and_then(|value| value.as_str())
                 == Some("objective_update");
             if !supervisor
-                .accepts_routed_evaluation(objective_id, evaluation_id, objective_control_receipt)
+                .admit_routed_evaluation(
+                    objective_id,
+                    evaluation_id,
+                    objective_control_receipt,
+                    &activation.id,
+                )
                 .await?
             {
                 tracing::info!(

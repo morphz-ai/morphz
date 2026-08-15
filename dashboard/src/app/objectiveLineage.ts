@@ -27,6 +27,13 @@ export interface CausalLineage {
   objectiveIds: string[]
 }
 
+export interface LiveCausalRoute {
+  activationId: string
+  threadId?: string
+  rootTurnId?: string
+  objectiveId?: string
+}
+
 export interface ObjectiveLineageIndex {
   /** The stable Objective association for each known scheduler Thread. */
   objectiveIdsByThread: ReadonlyMap<string, string[]>
@@ -34,6 +41,8 @@ export interface ObjectiveLineageIndex {
   forEvent: (event: ObjectiveLineageEvent) => CausalLineage
   /** Resolve a live model attempt through its owning Activation. */
   forActivation: (activationId: string) => CausalLineage
+  /** Resolve an in-flight route immediately, before Scheduler snapshots catch up. */
+  forLiveRoute: (route: LiveCausalRoute) => CausalLineage
 }
 
 const emptyLineage = (): CausalLineage => ({ threadIds: [], objectiveIds: [] })
@@ -163,6 +172,20 @@ export function buildObjectiveLineageIndex(
     }
   }
 
+  const forLiveRoute = (route: LiveCausalRoute): CausalLineage => {
+    const activationLineage = forActivation(route.activationId)
+    const threadIds = unique([route.threadId ?? '', ...activationLineage.threadIds])
+    return {
+      threadIds,
+      objectiveIds: unique([
+        route.objectiveId ?? '',
+        ...activationLineage.objectiveIds,
+        ...(route.rootTurnId ? objectiveIdsByRootTurn.get(route.rootTurnId) ?? [] : []),
+        ...threadIds.flatMap(threadId => objectiveIdsByThread.get(threadId) ?? []),
+      ]),
+    }
+  }
+
   const forEvent = (event: ObjectiveLineageEvent): CausalLineage => {
     const directThreadId = stringField(event.payload, 'thread_id')
     const activationId = stringField(event.payload, 'activation_id')
@@ -188,7 +211,7 @@ export function buildObjectiveLineageIndex(
     )
   }
 
-  return { objectiveIdsByThread, forEvent, forActivation }
+  return { objectiveIdsByThread, forEvent, forActivation, forLiveRoute }
 }
 
 /** Which causal dimension the stream is currently coloured by. */

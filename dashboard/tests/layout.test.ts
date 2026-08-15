@@ -24,6 +24,25 @@ test('Context and Session catalog actions stay clickable above navigation', () =
   )
 })
 
+test('live model output uses the same causal tint as its durable message', () => {
+  assert.match(
+    appCss,
+    /\.message-row\.agent\.objective-tinted\s*\{[^}]*border-left:\s*2px solid var\(--objective-color\)/s,
+    'streaming rows must not be excluded from the objective/thread tint selector',
+  )
+  assert.doesNotMatch(appCss, /\.message-row\.agent\.objective-tinted:not\(\.streaming\)/)
+  assert.match(
+    appCss,
+    /\.message-row\.objective-tinted \.reasoning-summary\s*\{[^}]*border-left-color:\s*var\(--objective-color\)/s,
+    'live reasoning must expose the same causal colour as the response stream',
+  )
+  assert.match(
+    appSource,
+    /objectiveLineage\.forLiveRoute\(\{[\s\S]*?threadId:\s*attempt\.threadId,[\s\S]*?objectiveId:\s*attempt\.objectiveId/s,
+    'the first live event must use its direct causal route instead of waiting for a Scheduler refresh',
+  )
+})
+
 test('laptop viewports keep both dashboard chrome bands on one row', () => {
   assert.match(
     appSource,

@@ -1795,34 +1795,69 @@ impl ObjectiveSupervisor {
         self.store.get_objective(id).await
     }
 
-    /// Validate an embedded Objective route against the durable lease before
-    /// the Orchestrator starts a model Evaluation.  This rejects a continuation
-    /// that was queued before pause/cancel (including after a Runtime restart,
-    /// when process-local cancellation tombstones no longer exist).
-    pub async fn accepts_routed_evaluation(
+    /// Admit an embedded Objective route against the durable lease before the
+    /// Orchestrator starts model work. This rejects a continuation queued
+    /// before pause/cancel and refreshes a live Evaluation near its renewal
+    /// boundary, including across chains of short Activations.
+    pub async fn admit_routed_evaluation(
         &self,
         objective_id: &str,
         evaluation_id: &str,
         objective_control_receipt: bool,
+        activation_id: &str,
     ) -> Result<bool, DynError> {
-        Ok(self
-            .store
-            .get_objective(objective_id)
-            .await?
-            .is_some_and(|objective| {
-                (objective.status == ObjectiveStatus::Active
-                    && objective.active_evaluation_id.as_deref() == Some(evaluation_id)
-                    && objective
-                        .evaluation_lease_expires_at
-                        .is_some_and(|expires_at| expires_at > Utc::now()))
-                    || (objective_control_receipt
-                        && matches!(
-                            objective.status,
-                            ObjectiveStatus::Blocked
-                                | ObjectiveStatus::Completed
-                                | ObjectiveStatus::Failed
-                        ))
-            }))
+        let Some(objective) = self.store.get_objective(objective_id).await? else {
+            return Ok(false);
+        };
+        if objective_control_receipt
+            && matches!(
+                objective.status,
+                ObjectiveStatus::Blocked | ObjectiveStatus::Completed | ObjectiveStatus::Failed
+            )
+        {
+            return Ok(true);
+        }
+        let now = Utc::now();
+        let Some(current_lease_expires_at) = objective.evaluation_lease_expires_at else {
+            return Ok(false);
+        };
+        if objective.status != ObjectiveStatus::Active
+            || objective.active_evaluation_id.as_deref() != Some(evaluation_id)
+            || current_lease_expires_at <= now
+        {
+            return Ok(false);
+        }
+        // The tool receipt that installed a durable wait must be allowed to
+        // produce its final explanatory/no-reply response, but a waiting
+        // Objective deliberately rejects lease renewal. It is already fenced
+        // by the exact Evaluation route above and this receipt performs no new
+        // Objective work.
+        if objective_control_receipt {
+            return Ok(true);
+        }
+
+        // An Objective Evaluation spans a chain of Activations. Tool outputs
+        // and no-reply continuations can make every individual Activation
+        // shorter than one heartbeat interval. Treat admission of each exact
+        // routed Activation as durable liveness and renew before model work
+        // begins when the remaining lease is below a safe margin; otherwise a
+        // continuously advancing Evaluation can expire between periodic
+        // heartbeats. The half-lease threshold bounds this to roughly one
+        // durable write per half lease instead of one write per Activation.
+        if current_lease_expires_at > now + self.lease_duration / 2 {
+            return Ok(true);
+        }
+        let lease_expires_at = now + self.lease_duration;
+        Ok(matches!(
+            self.renew_objective_evaluation(
+                objective_id,
+                evaluation_id,
+                lease_expires_at,
+                activation_id,
+            )
+            .await?,
+            ObjectiveMutation::Updated(_)
+        ))
     }
 
     /// Check the durable Objective fencing token owned by one Activation.

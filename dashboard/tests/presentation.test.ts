@@ -256,6 +256,20 @@ test('objective lineage links durable outputs back to their Thread and Objective
   })
 })
 
+test('live causal routes are tintable before scheduler snapshots contain the Activation', () => {
+  const index = buildObjectiveLineageIndex([], [])
+
+  assert.deepEqual(index.forLiveRoute({
+    activationId: 'activation-live',
+    threadId: 'thread-live',
+    rootTurnId: 'root-live',
+    objectiveId: 'objective-live',
+  }), {
+    threadIds: ['thread-live'],
+    objectiveIds: ['objective-live'],
+  })
+})
+
 test('concurrently live entities never share a tint slot', () => {
   const slots = assignTintSlots(['alpha', 'beta', 'gamma'], new Map())
   assert.equal(new Set(slots.values()).size, 3)

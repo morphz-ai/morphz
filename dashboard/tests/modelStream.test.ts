@@ -54,6 +54,25 @@ test('stream attempts are bucketed independently by attempt id', () => {
   assert.equal(state.attempts['attempt-b'].threadKind, 'execution')
 })
 
+test('live attempts retain direct Thread and Objective routes from the first stream event', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 1,
+    items: [{
+      ...stream('attempt-a', 'activation-a', { kind: 'started' }),
+      threadId: 'thread-a',
+      rootTurnId: 'root-a',
+      objectiveId: 'objective-a',
+    }],
+  })
+
+  assert.equal(state.attempts['attempt-a'].threadId, 'thread-a')
+  assert.equal(state.attempts['attempt-a'].rootTurnId, 'root-a')
+  assert.equal(state.attempts['attempt-a'].objectiveId, 'objective-a')
+})
+
 test('reasoning summary deltas never enter public response text', () => {
   let state = createLiveModelState('session-a')
   state = modelStreamReducer(state, {
