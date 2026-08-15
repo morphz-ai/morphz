@@ -416,6 +416,14 @@ enum SystemPromptMode {
 }
 
 impl SystemPromptMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentOwnedContext => BASELINE_SYSTEM_PROMPT_MODE,
+            Self::CognitiveSexprVm => COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE,
+            Self::SemanticSexprVm => SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE,
+        }
+    }
+
     fn from_environment() -> Result<Self, String> {
         match std::env::var(SYSTEM_PROMPT_MODE_ENV) {
             Ok(value) if value == COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE => {
@@ -504,6 +512,23 @@ fn render_semantic_sections(name: &str, text: &str) -> String {
 /// never against one a harness invents.
 pub fn production_system_prompt() -> Result<&'static str, String> {
     configured_system_prompt().map(|(_, prompt)| prompt)
+}
+
+/// Exact stable System Prompt selected by this Runtime process. Operator
+/// surfaces use this descriptor instead of reconstructing a prompt from
+/// Context state or duplicating profile-selection rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductionSystemPromptInspection {
+    pub profile: &'static str,
+    pub content: &'static str,
+}
+
+pub fn production_system_prompt_inspection() -> Result<ProductionSystemPromptInspection, String> {
+    let (mode, content) = configured_system_prompt()?;
+    Ok(ProductionSystemPromptInspection {
+        profile: mode.as_str(),
+        content,
+    })
 }
 
 fn configured_system_prompt() -> Result<(SystemPromptMode, &'static str), String> {
@@ -14816,16 +14841,17 @@ mod tests {
         compose_context_encoding, critical_maintenance_transaction_available, derived_thread_kind,
         extend_exec_output_facts, harness_entry_callable_tools, legacy_plan_effect_sequence,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
-        plan_infer_tool_scope, recovery_owns_activation, render_harness_context,
-        render_system_contract, restrict_tools_to_scope, retain_context_maintenance_tools,
-        retain_final_reply_control_tools, retain_pending_continuation_calls, runtime_claimant_id,
-        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
-        should_force_final_for_maintenance, tool_call_activity_preview,
-        validate_final_reply_response, validate_objective_closure_review_response,
-        validate_objective_completion_call, DialogueThreadGate, DialogueThreadLease,
-        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
-        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
-        NoReplyMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        plan_infer_tool_scope, production_system_prompt_inspection, recovery_owns_activation,
+        render_harness_context, render_system_contract, restrict_tools_to_scope,
+        retain_context_maintenance_tools, retain_final_reply_control_tools,
+        retain_pending_continuation_calls, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
+        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
+        tool_call_activity_preview, validate_final_reply_response,
+        validate_objective_closure_review_response, validate_objective_completion_call,
+        DialogueThreadGate, DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics,
+        DynError, EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
+        ModelReasoningSummaryAccumulator, NoReplyMode, TerminalDecision,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -15802,6 +15828,19 @@ mod tests {
             assert!(!semantic.contains(leaked_task_hint));
         }
         assert!(!contains_cjk(semantic));
+    }
+
+    #[test]
+    fn production_prompt_inspection_uses_the_authoritative_selected_profile() {
+        let inspection = production_system_prompt_inspection().unwrap();
+        let mode = super::SystemPromptMode::from_environment().unwrap();
+        assert_eq!(inspection.profile, mode.as_str());
+        assert_eq!(inspection.content, super::render_stable_system_prompt(mode));
+        if mode == super::SystemPromptMode::SemanticSexprVm {
+            crate::sexpr::parse(inspection.content).expect(
+                "the semantic production System Prompt must remain a complete S-expression",
+            );
+        }
     }
 
     #[test]

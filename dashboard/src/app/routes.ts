@@ -1,6 +1,6 @@
 export type DashboardView = 'overview' | 'dialogue' | 'scheduler' | 'cognition' | 'ledger' | 'runtime' | 'credentials' | 'providers'
 
-export type CognitionView = 'mind' | 'attention' | 'encoding' | 'recall'
+export type CognitionView = 'mind' | 'attention' | 'encoding' | 'prompt' | 'recall'
 
 export interface DashboardRoute {
   view: DashboardView
@@ -11,7 +11,7 @@ export interface DashboardRoute {
   cognitionView?: CognitionView
 }
 
-const cognitionViews = new Set<CognitionView>(['mind', 'attention', 'encoding', 'recall'])
+const cognitionViews = new Set<CognitionView>(['mind', 'attention', 'encoding', 'prompt', 'recall'])
 
 function decoded(value: string | undefined): string | undefined {
   if (!value) return undefined

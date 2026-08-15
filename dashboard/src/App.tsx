@@ -598,20 +598,29 @@ function AppDialog({
   )
 }
 
-const ContextEncodingReader = memo(function ContextEncodingReader({
-  source,
-  exact,
+interface SExpressionReaderRequest {
+  source: string
+  eyebrow: string
+  title: string
+  description: string
+  badge: string
+  badgeTone: 'exact' | 'current'
+  notice: string
+  closeLabel: string
+}
+
+const SExpressionReader = memo(function SExpressionReader({
+  request,
   onClose,
   t,
 }: {
-  source: string
-  exact: boolean
+  request: SExpressionReaderRequest
   onClose: () => void
   t: TFunction
 }) {
   const closeRef = useRef<HTMLButtonElement>(null)
   const [copied, setCopied] = useState(false)
-  const pretty = useMemo(() => prettyPrintSExpression(source), [source])
+  const pretty = useMemo(() => prettyPrintSExpression(request.source), [request.source])
   const highlighted = pretty.tokens.length <= CONTEXT_READER_HIGHLIGHT_TOKEN_LIMIT
 
   useEffect(() => {
@@ -629,7 +638,7 @@ const ContextEncodingReader = memo(function ContextEncodingReader({
 
   return (
     <div
-      className="app-dialog-backdrop context-encoding-reader-backdrop"
+      className="app-dialog-backdrop sexpr-reader-backdrop"
       onMouseDown={event => {
         if (event.target === event.currentTarget) onClose()
       }}
@@ -642,43 +651,41 @@ const ContextEncodingReader = memo(function ContextEncodingReader({
       }}
     >
       <section
-        aria-labelledby="context-encoding-reader-title"
+        aria-labelledby="sexpr-reader-title"
         aria-modal="true"
-        className="context-encoding-reader"
+        className="sexpr-reader"
         role="dialog"
       >
         <header>
           <div>
-            <small>{t('mindView.contextInspect.reader.eyebrow')}</small>
-            <h2 id="context-encoding-reader-title">{t('mindView.contextInspect.reader.title')}</h2>
-            <p>{t('mindView.contextInspect.reader.description')}</p>
+            <small>{request.eyebrow}</small>
+            <h2 id="sexpr-reader-title">{request.title}</h2>
+            <p>{request.description}</p>
           </div>
-          <div className="context-encoding-reader-actions">
+          <div className="sexpr-reader-actions">
             <button type="button" onClick={copy}>
               {copied ? <Check size={14} /> : <Copy size={14} />}
-              {copied ? t('mindView.contextInspect.copied') : t('mindView.contextInspect.copy')}
+              {copied ? t('sexprReader.copied') : t('sexprReader.copy')}
             </button>
             <button
               ref={closeRef}
-              className="context-encoding-reader-close"
+              className="sexpr-reader-close"
               type="button"
-              aria-label={t('mindView.contextInspect.reader.close')}
+              aria-label={request.closeLabel}
               onClick={onClose}
             >
               <X size={16} />
             </button>
           </div>
         </header>
-        <div className="context-encoding-reader-meta">
-          <span className={exact ? 'exact' : 'current'}>
-            {exact ? t('mindView.contextInspect.exact') : t('mindView.contextInspect.current')}
-          </span>
+        <div className="sexpr-reader-meta">
+          <span className={request.badgeTone}>{request.badge}</span>
           <span>
             {pretty.valid
               ? highlighted
-                ? t('mindView.contextInspect.reader.highlighted')
-                : t('mindView.contextInspect.reader.formatOnly')
-              : t('mindView.contextInspect.reader.invalid')}
+                ? t('sexprReader.highlighted')
+                : t('sexprReader.formatOnly')
+              : t('sexprReader.invalid')}
           </span>
         </div>
         <pre className={highlighted ? 'is-highlighted' : ''}>
@@ -688,7 +695,7 @@ const ContextEncodingReader = memo(function ContextEncodingReader({
               : <span className={`sexpr-token ${token.kind}`} key={`${index}-${token.kind}`}>{token.text}</span>)
             : pretty.text}
         </pre>
-        <footer>{t('mindView.contextInspect.reader.notice')}</footer>
+        <footer>{request.notice}</footer>
       </section>
     </div>
   )
@@ -1306,6 +1313,15 @@ interface ContextEncodingResponse {
   session_id: string
   mind_revision: number
   encoding: string
+}
+
+interface SystemPromptInspection {
+  profile: string
+  content: string
+  sha256: string
+  bytes: number
+  chars: number
+  stable: boolean
 }
 
 interface RecallSearchHit {
@@ -2479,7 +2495,10 @@ export default function App() {
   const [latestContextInspect, setLatestContextInspect] = useState<MorphzEvent | null>(null)
   const [contextInspectTab, setContextInspectTab] = useState<ContextInspectTab>('encoding')
   const [contextInspectCopied, setContextInspectCopied] = useState(false)
-  const [contextEncodingReaderOpen, setContextEncodingReaderOpen] = useState(false)
+  const [sexprReader, setSexprReader] = useState<SExpressionReaderRequest | null>(null)
+  const [systemPrompt, setSystemPrompt] = useState<SystemPromptInspection | null>(null)
+  const [systemPromptLoading, setSystemPromptLoading] = useState(false)
+  const [systemPromptCopied, setSystemPromptCopied] = useState(false)
   const [liveModelState, dispatchModelStream] = useReducer(modelStreamReducer, createLiveModelState())
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [selectedContextId, setSelectedContextId] = useState('')
@@ -3214,6 +3233,20 @@ export default function App() {
     }
   }, [])
 
+  const loadSystemPrompt = useCallback(async () => {
+    setSystemPromptLoading(true)
+    try {
+      const inspection = await DASHBOARD_API.get<SystemPromptInspection>('/api/runtime/system-prompt')
+      setSystemPrompt(inspection)
+      setError('')
+    } catch (reason) {
+      setSystemPrompt(null)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setSystemPromptLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     loadSessionRef.current = loadSession
   }, [loadSession])
@@ -3452,7 +3485,7 @@ export default function App() {
       setContextOverview(current => current?.active_session_id === selectedSessionId ? current : null)
       setContextInspectTab('encoding')
       setContextInspectCopied(false)
-      setContextEncodingReaderOpen(false)
+      setSexprReader(null)
       setSchedulerHistoryLimit(SCHEDULER_HISTORY_PAGE_SIZE)
       setExpandedDialogueThreadId('')
       setDialogueThreadDetail(null)
@@ -3514,6 +3547,12 @@ export default function App() {
       window.clearInterval(interval)
     }
   }, [loadContextProjection, selectedContextId, selectedSessionId, view])
+
+  useEffect(() => {
+    if (view !== 'cognition' || cognitionView !== 'prompt') return
+    const timer = window.setTimeout(() => void loadSystemPrompt(), 0)
+    return () => window.clearTimeout(timer)
+  }, [cognitionView, loadSystemPrompt, view])
 
   useEffect(() => {
     if (view !== 'cognition' || contextInspectTab !== 'encoding' || !selectedContextId || !selectedSessionId) return
@@ -7433,7 +7472,7 @@ export default function App() {
               </header>
 
               <nav className="cognition-navigation" aria-label={t('cognition.navigationLabel')}>
-                {(['mind', 'attention', 'encoding', 'recall'] as CognitionView[]).map(item => (
+                {(['mind', 'attention', 'encoding', 'prompt', 'recall'] as CognitionView[]).map(item => (
                   <button className={cognitionView === item ? 'is-active' : ''} key={item} type="button" onClick={() => selectCognitionView(item)} aria-current={cognitionView === item ? 'page' : undefined}>
                     {t(`cognition.tabs.${item}`)}
                   </button>
@@ -7488,7 +7527,18 @@ export default function App() {
                         <button
                           className="context-inspect-reader"
                           type="button"
-                          onClick={() => setContextEncodingReaderOpen(true)}
+                          onClick={() => setSexprReader({
+                            source: contextInspectContent,
+                            eyebrow: t('mindView.contextInspect.reader.eyebrow'),
+                            title: t('mindView.contextInspect.reader.title'),
+                            description: t('mindView.contextInspect.reader.description'),
+                            badge: hasExactContextInspect
+                              ? t('mindView.contextInspect.exact')
+                              : t('mindView.contextInspect.current'),
+                            badgeTone: hasExactContextInspect ? 'exact' : 'current',
+                            notice: t('mindView.contextInspect.reader.notice'),
+                            closeLabel: t('mindView.contextInspect.reader.close'),
+                          })}
                         >
                           <BookOpen size={13} />
                           {t('mindView.contextInspect.reader.open')}
@@ -7520,6 +7570,69 @@ export default function App() {
                 </div>
               </details>}
 
+              {cognitionView === 'prompt' && (
+                <section className="system-prompt-inspector">
+                  <header>
+                    <div>
+                      <small>{t('systemPrompt.eyebrow').toUpperCase()}</small>
+                      <h2>{t('systemPrompt.title')}</h2>
+                      <p>{t('systemPrompt.description')}</p>
+                    </div>
+                    {systemPrompt && <span>{systemPrompt.profile}</span>}
+                  </header>
+                  {systemPromptLoading ? (
+                    <div className="system-prompt-empty"><LoaderCircle className="spinning" size={18} />{t('systemPrompt.loading')}</div>
+                  ) : systemPrompt ? (
+                    <>
+                      <div className="system-prompt-meta">
+                        <div><small>{t('systemPrompt.profile').toUpperCase()}</small><strong>{systemPrompt.profile}</strong></div>
+                        <div><small>SHA-256</small><strong title={systemPrompt.sha256}>{shortId(systemPrompt.sha256, 28)}</strong></div>
+                        <div><small>{t('systemPrompt.characters').toUpperCase()}</small><strong>{systemPrompt.chars.toLocaleString()}</strong></div>
+                        <div><small>{t('systemPrompt.bytes').toUpperCase()}</small><strong>{systemPrompt.bytes.toLocaleString()}</strong></div>
+                      </div>
+                      <nav>
+                        <button
+                          type="button"
+                          onClick={() => setSexprReader({
+                            source: systemPrompt.content,
+                            eyebrow: t('systemPrompt.reader.eyebrow'),
+                            title: t('systemPrompt.reader.title'),
+                            description: t('systemPrompt.reader.description'),
+                            badge: systemPrompt.profile,
+                            badgeTone: 'exact',
+                            notice: t('systemPrompt.reader.notice'),
+                            closeLabel: t('systemPrompt.reader.close'),
+                          })}
+                        >
+                          <BookOpen size={13} />{t('sexprReader.open')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void copyTextToClipboard(systemPrompt.content)
+                              .then(() => {
+                                setSystemPromptCopied(true)
+                                window.setTimeout(() => setSystemPromptCopied(false), 1400)
+                              })
+                              .catch(() => setError(t('errors.copyFailed')))
+                          }}
+                        >
+                          {systemPromptCopied ? <Check size={13} /> : <Copy size={13} />}
+                          {systemPromptCopied ? t('sexprReader.copied') : t('sexprReader.copy')}
+                        </button>
+                        <button type="button" onClick={() => void loadSystemPrompt()}>
+                          <RefreshCw size={13} />{t('systemPrompt.refresh')}
+                        </button>
+                      </nav>
+                      <pre>{systemPrompt.content}</pre>
+                      <footer>{t('systemPrompt.notice')}</footer>
+                    </>
+                  ) : (
+                    <div className="system-prompt-empty">{t('systemPrompt.unavailable')}</div>
+                  )}
+                </section>
+              )}
+
               {cognitionView === 'recall' && <>
                 <form className="recall-search" onSubmit={event => { event.preventDefault(); void searchRecall() }}>
                   <input value={recallQuery} onChange={event => setRecallQuery(event.target.value)} placeholder={t('mindView.searchPlaceholder')} />
@@ -7527,7 +7640,15 @@ export default function App() {
                   {recallIndex && <small className={recallIndex.capability.indexed ? 'indexed' : 'degraded'}>{recallIndex.capability.mode} · {recallIndex.event_documents + recallIndex.frame_documents}</small>}
                 </form>
                 {recallMatches.length > 0 && <div className="recall-results">{recallMatches.map(hit => (
-                  <button key={`${hit.document_kind}-${hit.document_id}`} type="button" onClick={() => hit.document_kind === 'frame' && setSelectedFrameId(hit.document_id)}>
+                  <button
+                    key={`${hit.document_kind}-${hit.document_id}`}
+                    type="button"
+                    onClick={() => {
+                      if (hit.document_kind !== 'frame') return
+                      setSelectedFrameId(hit.document_id)
+                      selectCognitionView('mind')
+                    }}
+                  >
                     <span><b>{hit.document_kind}</b><strong>{hit.document_id}</strong>{hit.retired && <em>{t('mindView.retired')}</em>}</span>
                     <small>{hit.preview}</small>
                   </button>
@@ -7570,7 +7691,27 @@ export default function App() {
                 <article className="frame-inspector">
                   {selectedFrame ? (
                     <>
-                      <header><span><small>{t('mindView.frame').toUpperCase()}</small><strong>{selectedFrame.id}</strong></span><em>{t('mindView.revision', { revision: selectedFrame.revision })}</em></header>
+                      <header>
+                        <span><small>{t('mindView.frame').toUpperCase()}</small><strong>{selectedFrame.id}</strong></span>
+                        <div className="frame-inspector-actions">
+                          <em>{t('mindView.revision', { revision: selectedFrame.revision })}</em>
+                          <button
+                            type="button"
+                            onClick={() => setSexprReader({
+                              source: selectedFrame.body,
+                              eyebrow: t('mindView.frameReader.eyebrow'),
+                              title: selectedFrame.id,
+                              description: t('mindView.frameReader.description'),
+                              badge: t('mindView.revision', { revision: selectedFrame.revision }),
+                              badgeTone: 'current',
+                              notice: t('mindView.frameReader.notice'),
+                              closeLabel: t('mindView.frameReader.close'),
+                            })}
+                          >
+                            <BookOpen size={12} />{t('sexprReader.open')}
+                          </button>
+                        </div>
+                      </header>
                       <div className="frame-lifecycle">
                         <strong>{retired.has(selectedFrame.id) ? t('mindView.retired') : selectedRetirement ? t('mindView.retiring') : t('mindView.active')}</strong>
                         {selectedRetirement && <span>{t('mindView.remainingTicks', { count: Math.max(0, selectedRetirement.eligible_at_tick - (contextView?.cognitive_clock.tick ?? 0)) })} · {selectedRetirement.reason}</span>}
@@ -7762,12 +7903,11 @@ export default function App() {
         </footer>
         <SelectionQuotePopup label={t('conversation.addToChat')} onAdd={addQuote} />
       </section>
-      {contextEncodingReaderOpen && contextInspectContent && (
-        <ContextEncodingReader
-          exact={hasExactContextInspect}
-          source={contextInspectContent}
+      {sexprReader && (
+        <SExpressionReader
+          request={sexprReader}
           t={t}
-          onClose={() => setContextEncodingReaderOpen(false)}
+          onClose={() => setSexprReader(null)}
         />
       )}
       {appDialog && <AppDialog key={appDialog.id} request={appDialog} onResolve={resolveAppDialog} />}

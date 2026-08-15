@@ -403,11 +403,39 @@
       "mind": "Mind",
       "attention": "Attention",
       "encoding": "Context Encoding",
+      "prompt": "System Prompt",
       "recall": "Recall"
     },
     "recall": {
       "emptyTitle": "Recall from the factual Ledger and cognitive Frames",
       "emptyDescription": "Results retain provenance, revision and retirement state."
+    }
+  },
+  "sexprReader": {
+    "open": "Reader",
+    "copy": "Copy",
+    "copied": "Copied",
+    "highlighted": "Formatted · syntax highlighted",
+    "formatOnly": "Formatted · plain text for a large expression",
+    "invalid": "Source is not a complete S-expression · unchanged"
+  },
+  "systemPrompt": {
+    "eyebrow": "Runtime stable prefix",
+    "title": "System Prompt",
+    "description": "Read the stable System Prompt selected and sent by the current Runtime directly, without depending on ephemeral request capture or Context reconstruction.",
+    "profile": "Prompt profile",
+    "characters": "Characters",
+    "bytes": "Bytes",
+    "loading": "Loading the current System Prompt…",
+    "unavailable": "The current System Prompt is unavailable.",
+    "refresh": "Reload",
+    "notice": "Content and hash come from the current Runtime's authoritative Prompt generation path. Per-attempt Context, Harness and tool lists are not part of the System Prompt.",
+    "reader": {
+      "eyebrow": "SYSTEM PROMPT",
+      "title": "System Prompt Reader",
+      "description": "Read the current Runtime's stable prompt with indentation and syntax highlighting. Compatibility profiles that are not complete S-expressions remain unchanged.",
+      "notice": "The reader changes browser presentation only. It never changes the selected Profile or subsequent model requests.",
+      "close": "Close System Prompt Reader"
     }
   },
   "ledger": {
@@ -1080,6 +1108,12 @@
     "retiring": "Organizing",
     "active": "Active",
     "frame": "Mind Frame",
+    "frameReader": {
+      "eyebrow": "MIND FRAME",
+      "description": "Read the complete Mind Frame body in a formatted view. Non-S-expression bodies remain unchanged.",
+      "notice": "The reader changes browser presentation only. It never changes the Mind Frame, revision or provenance.",
+      "close": "Close Mind Frame Reader"
+    },
     "revision": "revision {{revision}}",
     "created": "Created",
     "updated": "Updated",

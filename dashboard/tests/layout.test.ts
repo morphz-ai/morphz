@@ -42,6 +42,16 @@ test('laptop viewports keep both dashboard chrome bands on one row', () => {
   )
   assert.match(
     appCss,
+    /@media \(max-width: 2200px\)[\s\S]*?\.runtime-navigation button\s*\{[^}]*flex:\s*0 1 auto/s,
+    'navigation destinations may shrink with the viewport but must remain content-sized instead of stretching',
+  )
+  assert.match(
+    appCss,
+    /@media \(max-width: 2200px\)[\s\S]*?\.runtime-navigation button span\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s,
+    'a constrained destination must truncate its label rather than widening the navigation row',
+  )
+  assert.match(
+    appCss,
     /@media \(max-width: 2200px\)[\s\S]*?\.navigation-page-toolbar\s*\{[^}]*width:\s*min\(46vw, 760px\);[^}]*flex:\s*0 1 760px/s,
     'the page-tool slot must reserve one stable width while its conversation controls shrink inside it',
   )
@@ -110,6 +120,34 @@ test('execution targets share the tool heading row instead of competing with com
     appCss,
     /\.execution-tool-target > span\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s,
     'a target that still exceeds the viewport must truncate predictably while its title exposes the full value',
+  )
+})
+
+test('System Prompt and Mind Frames use the shared S-expression reader', () => {
+  assert.match(
+    appSource,
+    /DASHBOARD_API\.get<SystemPromptInspection>\('\/api\/runtime\/system-prompt'\)/,
+    'the Dashboard must read the exact active System Prompt from the Runtime instead of reconstructing it',
+  )
+  assert.match(
+    appSource,
+    /const SExpressionReader = memo[\s\S]*?prettyPrintSExpression\(request\.source\)/,
+    'one reusable reader must own S-expression formatting and syntax highlighting',
+  )
+  assert.match(
+    appSource,
+    /source: systemPrompt\.content,[\s\S]*?title: t\('systemPrompt\.reader\.title'\)/,
+    'the authoritative System Prompt must open in the shared reader',
+  )
+  assert.match(
+    appSource,
+    /source: selectedFrame\.body,[\s\S]*?eyebrow: t\('mindView\.frameReader\.eyebrow'\)/,
+    'a complete Mind Frame body must open in the shared reader',
+  )
+  assert.match(
+    appCss,
+    /\.sexpr-reader\s*\{[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto/s,
+    'the shared reader must reserve a scrollable body between stable metadata and actions',
   )
 })
 

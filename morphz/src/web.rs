@@ -769,6 +769,7 @@ impl Server {
             .route("/icons.svg", get(handle_dashboard_icons))
             .route("/health", get(|| async { StatusCode::OK }))
             .route("/api/status", get(handle_status))
+            .route("/api/runtime/system-prompt", get(handle_get_system_prompt))
             .route("/api/overview", get(handle_get_runtime_overview))
             .route(
                 "/api/runtime/secrets",
@@ -1214,6 +1215,32 @@ async fn handle_status(
         identity_mode: state.identity.mode,
         identity_provider_id: state.identity.provider_id.clone(),
     })
+    .into_response()
+}
+
+async fn handle_get_system_prompt(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let inspection = match crate::orchestrator::orchestrator::production_system_prompt_inspection()
+    {
+        Ok(inspection) => inspection,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let bytes = inspection.content.as_bytes();
+    let sha256 = format!("sha256:{:x}", Sha256::digest(bytes));
+    Json(json!({
+        "profile": inspection.profile,
+        "content": inspection.content,
+        "sha256": sha256,
+        "bytes": bytes.len(),
+        "chars": inspection.content.chars().count(),
+        "stable": true,
+    }))
     .into_response()
 }
 
@@ -6389,6 +6416,31 @@ mod tests {
     #[test]
     fn dashboard_auth_accepts_local_no_token_mode() {
         assert!(token_is_authorized(None, &HeaderMap::new(), None));
+    }
+
+    #[tokio::test]
+    async fn system_prompt_endpoint_exposes_the_authoritative_profile_content_and_hash() {
+        let (state, _) = test_state().await;
+        let response =
+            handle_get_system_prompt(State(state), HeaderMap::new(), Query(AuthQuery::default()))
+                .await
+                .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        let inspection =
+            crate::orchestrator::orchestrator::production_system_prompt_inspection().unwrap();
+        assert_eq!(payload["profile"], inspection.profile);
+        assert_eq!(payload["content"], inspection.content);
+        assert_eq!(payload["stable"], true);
+        assert_eq!(payload["bytes"], inspection.content.len());
+        assert_eq!(payload["chars"], inspection.content.chars().count());
+        assert_eq!(
+            payload["sha256"],
+            format!("sha256:{:x}", Sha256::digest(inspection.content.as_bytes()))
+        );
     }
 
     #[tokio::test]

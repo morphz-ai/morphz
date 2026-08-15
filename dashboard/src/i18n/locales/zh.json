@@ -403,11 +403,39 @@
       "mind": "心智",
       "attention": "注意力",
       "encoding": "上下文编码",
+      "prompt": "系统提示词",
       "recall": "召回"
     },
     "recall": {
       "emptyTitle": "从事实账本和认知中召回",
       "emptyDescription": "输入查询后，结果会保留来源、修订和退役状态。"
+    }
+  },
+  "sexprReader": {
+    "open": "阅读",
+    "copy": "复制",
+    "copied": "已复制",
+    "highlighted": "已格式化 · 语法高亮",
+    "formatOnly": "已格式化 · 大型表达式采用纯文本",
+    "invalid": "原文不是完整 S 表达式 · 保持原样"
+  },
+  "systemPrompt": {
+    "eyebrow": "运行时稳定前缀",
+    "title": "系统提示词",
+    "description": "这里直接读取当前运行时实际选择并发送给模型的稳定系统提示词，不依赖临时请求捕获或上下文重建。",
+    "profile": "提示词配置",
+    "characters": "字符",
+    "bytes": "字节",
+    "loading": "正在读取当前系统提示词…",
+    "unavailable": "当前系统提示词不可用。",
+    "refresh": "重新读取",
+    "notice": "内容与哈希来自当前运行时的权威提示词生成路径；本轮动态上下文、领域配置和工具列表不属于系统提示词。",
+    "reader": {
+      "eyebrow": "系统提示词",
+      "title": "系统提示词阅读器",
+      "description": "以缩进和语法高亮阅读当前运行时使用的稳定提示词；若兼容配置不是完整 S 表达式，则保持原文。",
+      "notice": "阅读器只改变浏览器中的展示形式，不会修改当前提示词配置或后续模型请求。",
+      "close": "关闭系统提示词阅读器"
     }
   },
   "ledger": {
@@ -1080,6 +1108,12 @@
     "retiring": "整理中",
     "active": "活跃",
     "frame": "认知帧",
+    "frameReader": {
+      "eyebrow": "认知帧",
+      "description": "以格式化视图阅读完整认知帧正文；非 S 表达式正文保持原样显示。",
+      "notice": "阅读器只改变浏览器中的展示形式，不会修改认知帧、版本或来源。",
+      "close": "关闭认知帧阅读器"
+    },
     "revision": "修订 {{revision}}",
     "created": "创建",
     "updated": "更新",
