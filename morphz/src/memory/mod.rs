@@ -3,8 +3,7 @@ pub mod postgres;
 pub mod sqlite;
 
 pub use lexical::{
-    chunk_segmented_recall_text, recall_phrase_request, segment_recall_chunks,
-    segment_recall_terms, segment_recall_text, RECALL_SEGMENTER,
+    recall_phrase_request, segment_recall_terms, segment_recall_text, RECALL_SEGMENTER,
 };
 
 use chrono::{DateTime, Utc};
@@ -36,10 +35,15 @@ pub struct RecallDocument {
     pub document_id: String,
     pub revision: u64,
     pub searchable_text: String,
-    /// Complete bounded physical-index chunks. `searchable_text` remains the
-    /// first chunk for wire/storage compatibility with older projections.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub searchable_chunks: Vec<String>,
+    /// Read compatibility for projection work enqueued by the temporary
+    /// chunked-index release. New documents always leave this empty and store
+    /// the complete canonical text in `searchable_text`.
+    #[serde(
+        default,
+        rename = "searchable_chunks",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub legacy_searchable_chunks: Vec<String>,
     pub preview: String,
     pub retired: bool,
     pub updated_sequence: u64,
@@ -98,9 +102,10 @@ pub(crate) fn rank_recall_candidates(
 ) -> Vec<RecallSearchHit> {
     use std::collections::{HashMap, HashSet};
 
-    // One logical document can match through several physical chunks. Merge
-    // their lexical evidence before applying coverage ranking and keep the
-    // strongest chunk preview, so callers never see duplicate documents.
+    // Defensively coalesce duplicate backend candidates before applying the
+    // shared ranking contract. A conforming whole-document index produces one
+    // candidate here; keeping this guard makes backend mistakes non-visible to
+    // callers without reintroducing physical chunk semantics.
     let mut merged = HashMap::<(String, String), RecallSearchCandidate>::new();
     for candidate in candidates.drain(..) {
         let key = (
@@ -170,6 +175,14 @@ pub(crate) fn rank_recall_candidates(
             (candidate.hit, exact, matched_count, coverage, density)
         })
         .collect::<Vec<_>>();
+
+    // Physical indexes only select candidates. Always verify at least one
+    // exact canonical term in the authoritative text so a backend/index bug
+    // (or the astronomically unlikely term-key collision) cannot surface a
+    // false Recall result. An exact document-id lookup remains intentional.
+    if !terms.is_empty() {
+        ranked.retain(|(_, exact, matched, _, _)| *exact || *matched > 0);
+    }
 
     let minimum_matches = usize::from(terms.len() > 1) + usize::from(!terms.is_empty());
     if !phrase && minimum_matches > 1 {
@@ -253,10 +266,10 @@ pub enum LexicalSearchMode {
     /// Terms are segmented by the Runtime and indexed whole, so a query only
     /// matches on the same word boundaries the Projection was written with.
     SqliteFts5Segmented,
-    /// PostgreSQL full-text search over the same Runtime-segmented terms.
-    /// `tsvector` is core PostgreSQL, so this needs no `CREATE EXTENSION`
-    /// privilege a managed deployment may not grant.
-    PostgresTsvectorSegmented,
+    /// PostgreSQL GIN over the complete Runtime-segmented term array. This
+    /// needs no extension and avoids imposing `tsvector`'s value-size ceiling
+    /// on an otherwise valid long Recall document.
+    PostgresGinSegmented,
     /// Full-text acceleration is unavailable. The Runtime may still resolve an
     /// exact Recall document id, but must not silently scan every document
     /// with a substring `LIKE` query.
@@ -309,8 +322,6 @@ pub struct AttentionAcknowledgementRecord {
     pub acknowledged_at: DateTime<Utc>,
 }
 
-pub const RECALL_SEARCHABLE_TEXT_MAX_CHARS: usize = 16 * 1024;
-pub const RECALL_SEARCH_CHUNK_OVERLAP_TERMS: usize = 32;
 pub const RECALL_PREVIEW_MAX_CHARS: usize = 500;
 
 /// Runtime diagnostics and transient scheduler protocol are deliberately not
@@ -403,20 +414,19 @@ pub fn event_recall_document_with_retired(
         &serde_json::Value::Object(event.payload.clone()),
         &mut readable,
     );
-    let searchable_chunks = segment_recall_chunks(&readable);
-    let searchable_text = searchable_chunks.first().cloned().unwrap_or_default();
+    let searchable_text = segment_recall_text(&readable);
     let preview = readable
         .chars()
         .take(RECALL_PREVIEW_MAX_CHARS)
         .collect::<String>();
-    let state_hash = recall_chunks_state_hash(&searchable_chunks, retired);
+    let state_hash = recall_state_hash(&searchable_text, retired);
     RecallDocument {
         context_id: context_id.to_string(),
         document_kind: RecallDocumentKind::Event,
         document_id: event.id.clone(),
         revision: 0,
         searchable_text,
-        searchable_chunks,
+        legacy_searchable_chunks: Vec::new(),
         preview,
         retired,
         updated_sequence: sequence,
@@ -424,35 +434,25 @@ pub fn event_recall_document_with_retired(
     }
 }
 
-/// Applies the same hard storage bound to Frame documents prepared by the
-/// Context domain. The hash is recomputed so a bounded Projection remains
-/// deterministic and rebuildable.
-pub fn bound_recall_document(mut document: RecallDocument) -> RecallDocument {
-    if document.searchable_chunks.is_empty() {
-        document.searchable_chunks = chunk_segmented_recall_text(&document.searchable_text);
-    }
-    document.searchable_text = document
-        .searchable_chunks
-        .first()
-        .cloned()
-        .unwrap_or_default();
+/// Canonicalizes a Recall document prepared outside the Event projection.
+///
+/// `legacy_searchable_chunks` is consumed only when replaying work serialized by the
+/// temporary chunked-index release. The resulting physical document always
+/// contains the complete normalized text in one field.
+pub fn canonicalize_recall_document(mut document: RecallDocument) -> RecallDocument {
+    document.searchable_text = if document.legacy_searchable_chunks.is_empty() {
+        segment_recall_text(&document.searchable_text)
+    } else {
+        lexical::merge_legacy_recall_chunks(&document.legacy_searchable_chunks)
+    };
+    document.legacy_searchable_chunks.clear();
     document.preview = document
         .preview
         .chars()
         .take(RECALL_PREVIEW_MAX_CHARS)
         .collect();
-    document.state_hash = recall_chunks_state_hash(&document.searchable_chunks, document.retired);
+    document.state_hash = recall_state_hash(&document.searchable_text, document.retired);
     document
-}
-
-pub fn recall_chunks_state_hash(chunks: &[String], retired: bool) -> String {
-    let mut digest = sha2::Sha256::new();
-    digest.update(if retired { b"1\0" } else { b"0\0" });
-    for chunk in chunks {
-        digest.update(chunk.as_bytes());
-        digest.update(b"\0");
-    }
-    format!("{:x}", digest.finalize())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

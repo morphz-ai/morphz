@@ -43,6 +43,7 @@ use morphz::scheduler::{
     SchedulerDependencyStore, SchedulerKernel,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Command;
@@ -2314,7 +2315,7 @@ where
     S: EventStore + RecallProjectionStore + Send + Sync + 'static,
 {
     let context_id = "conformance-context";
-    let long_chunks = morphz::memory::segment_recall_chunks(&format!(
+    let long_document = morphz::memory::segment_recall_text(&format!(
         "{} 终点火炬只存在于旧上限之后",
         "普通历史内容 ".repeat(5_000)
     ));
@@ -2327,7 +2328,7 @@ where
             searchable_text: morphz::memory::segment_recall_text(
                 "memory/sandbox-permission 沙箱权限审批 Rust 沙箱",
             ),
-            searchable_chunks: Vec::new(),
+            legacy_searchable_chunks: Vec::new(),
             preview: "沙箱权限审批应区分拒绝与可申请的能力扩张".to_string(),
             retired: true,
             updated_sequence: 20,
@@ -2341,7 +2342,7 @@ where
             searchable_text: morphz::memory::segment_recall_text(
                 "related case memory/sandbox-permission 后续案例",
             ),
-            searchable_chunks: Vec::new(),
+            legacy_searchable_chunks: Vec::new(),
             preview: "后续案例".to_string(),
             retired: false,
             updated_sequence: 30,
@@ -2353,7 +2354,7 @@ where
             document_id: "recall-event".to_string(),
             revision: 0,
             searchable_text: morphz::memory::segment_recall_text("全角ＡＢＣ 与中文阳光电源"),
-            searchable_chunks: Vec::new(),
+            legacy_searchable_chunks: Vec::new(),
             preview: "全角ＡＢＣ 与中文阳光电源".to_string(),
             retired: false,
             updated_sequence: 10,
@@ -2364,8 +2365,8 @@ where
             document_kind: RecallDocumentKind::Event,
             document_id: "recall-long-event".to_string(),
             revision: 0,
-            searchable_text: long_chunks.first().cloned().unwrap(),
-            searchable_chunks: long_chunks,
+            searchable_text: long_document,
+            legacy_searchable_chunks: Vec::new(),
             preview: "普通历史内容".to_string(),
             retired: false,
             updated_sequence: 40,
@@ -2374,16 +2375,17 @@ where
         RecallDocument {
             context_id: context_id.to_string(),
             document_kind: RecallDocumentKind::Event,
-            document_id: "recall-many-matching-chunks".to_string(),
+            document_id: "recall-large-shared-document".to_string(),
             revision: 0,
-            searchable_text: "共享 标记 chunk0".to_string(),
-            searchable_chunks: (0..80)
-                .map(|index| format!("共享 标记 chunk{index}"))
-                .collect(),
-            preview: "一个拥有许多匹配分块的文档".to_string(),
+            searchable_text: (0..80)
+                .map(|index| format!("共享 标记 section{index}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            legacy_searchable_chunks: Vec::new(),
+            preview: "一个包含许多匹配位置的完整文档".to_string(),
             retired: false,
             updated_sequence: 50,
-            state_hash: "recall-many-matching-chunks-hash".to_string(),
+            state_hash: "recall-large-shared-document-hash".to_string(),
         },
         RecallDocument {
             context_id: context_id.to_string(),
@@ -2391,8 +2393,8 @@ where
             document_id: "recall-second-shared-result".to_string(),
             revision: 0,
             searchable_text: "共享 标记 second".to_string(),
-            searchable_chunks: Vec::new(),
-            preview: "不能被前一个长文档的物理分块挤掉".to_string(),
+            legacy_searchable_chunks: Vec::new(),
+            preview: "不能被前一个长文档挤掉".to_string(),
             retired: false,
             updated_sequence: 45,
             state_hash: "recall-second-shared-result-hash".to_string(),
@@ -2441,7 +2443,7 @@ where
     assert_eq!(logical_results.len(), 2);
     assert!(logical_results
         .iter()
-        .any(|hit| hit.document_id == "recall-many-matching-chunks"));
+        .any(|hit| hit.document_id == "recall-large-shared-document"));
     assert!(logical_results
         .iter()
         .any(|hit| hit.document_id == "recall-second-shared-result"));
@@ -4884,8 +4886,8 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260718_07_delivery",
         "20260718_08_delegations",
         "20260731_01_scheduler_dependencies",
-        "20260805_01_recall_chunked_index",
-        "20260805_02_recall_chunk_event_backfill",
+        "20260815_01_recall_whole_document_index",
+        "20260815_02_recall_whole_document_event_backfill",
     ] {
         assert!(
             applied_migrations.contains(version),
@@ -5014,6 +5016,112 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         Arc::clone(&independent_store),
     )
     .await;
+
+    // Exercise the real PostgreSQL upgrade path, not only a fresh schema:
+    // recreate the temporary chunk table, reset the new marker, and verify a
+    // second Store collapses overlap and drops the obsolete physical layer.
+    sqlx::query(
+        r#"CREATE TABLE recall_document_chunks (
+             context_id TEXT NOT NULL,
+             document_kind TEXT NOT NULL,
+             document_id TEXT NOT NULL,
+             chunk_index BIGINT NOT NULL,
+             searchable_text TEXT NOT NULL,
+             PRIMARY KEY(context_id, document_kind, document_id, chunk_index)
+           )"#,
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO recall_document_chunks VALUES
+             ('conformance-context', 'event', 'recall-long-event', 0,
+              'alpha beta gamma'),
+             ('conformance-context', 'event', 'recall-long-event', 1,
+              'beta gamma postgres migration suffix')"#,
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE recall_documents SET searchable_text = 'alpha beta gamma'
+           WHERE context_id = 'conformance-context'
+             AND document_kind = 'event' AND document_id = 'recall-long-event'"#,
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query("DROP INDEX IF EXISTS idx_pg_recall_documents_terms")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "DELETE FROM schema_migrations WHERE version = '20260815_01_recall_whole_document_index'",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    let migrated_store = PostgresStore::new(&scoped_url, 8).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT searchable_text FROM recall_documents WHERE document_id = 'recall-long-event'",
+        )
+        .fetch_one(migrated_store.pool())
+        .await
+        .unwrap(),
+        "alpha beta gamma postgres migration suffix"
+    );
+    assert!(!sqlx::query_scalar::<_, bool>(
+        "SELECT to_regclass('recall_document_chunks') IS NOT NULL",
+    )
+    .fetch_one(migrated_store.pool())
+    .await
+    .unwrap());
+    assert!(migrated_store
+        .search_recall_documents("conformance-context", "migration suffix", 8)
+        .await
+        .unwrap()
+        .iter()
+        .any(|hit| hit.document_id == "recall-long-event"));
+
+    // A whole document can legitimately exceed PostgreSQL `tsvector`'s value
+    // ceiling. The term-array GIN index must accept and find such a document
+    // without forcing an arbitrary projection chunk size back into the model.
+    let oversized_terms = (0..150_000)
+        .map(|index| format!("oversized{index}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let oversized_single_term = "z".repeat(100_000);
+    let oversized_document = format!("{oversized_terms} {oversized_single_term}");
+    let oversized_keys = oversized_document
+        .split_whitespace()
+        .map(|term| format!("{:x}", Sha256::digest(term.as_bytes())))
+        .collect::<Vec<_>>();
+    sqlx::query(
+        r#"INSERT INTO recall_documents
+           (context_id, document_kind, document_id, revision, searchable_text,
+            search_term_keys, preview, retired, updated_sequence, state_hash)
+           VALUES ('conformance-context', 'frame', 'memory/postgres-oversized', 1,
+                   $1, $2, 'oversized PostgreSQL document', FALSE, 99, 'oversized-hash')"#,
+    )
+    .bind(&oversized_document)
+    .bind(&oversized_keys)
+    .execute(migrated_store.pool())
+    .await
+    .unwrap();
+    assert!(migrated_store
+        .search_recall_documents("conformance-context", "oversized149999", 8)
+        .await
+        .unwrap()
+        .iter()
+        .any(|hit| hit.document_id == "memory/postgres-oversized"));
+    assert!(migrated_store
+        .search_recall_documents("conformance-context", &oversized_single_term, 8)
+        .await
+        .unwrap()
+        .iter()
+        .any(|hit| hit.document_id == "memory/postgres-oversized"));
+
     // This helper creates another isolated schema, so it must derive that
     // schema from the base database URL instead of stacking a second
     // `options=search_path` parameter on this run's already-scoped URL.

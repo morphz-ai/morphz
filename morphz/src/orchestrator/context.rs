@@ -3839,7 +3839,7 @@ impl ContextEngine {
         let events = self.context_events(context_id).await?;
         let mut documents = all_frame_recall_documents(context_id, &state)
             .into_iter()
-            .map(crate::memory::bound_recall_document)
+            .map(crate::memory::canonicalize_recall_document)
             .collect::<Vec<_>>();
         documents.extend(
             events
@@ -8056,18 +8056,14 @@ fn frame_recall_document(
         text.push(' ');
         text.push_str(&relation.object);
     }
-    let searchable_chunks = crate::memory::segment_recall_chunks(&text);
-    let searchable_text = searchable_chunks.first().cloned().unwrap_or_default();
+    let searchable_text = crate::memory::segment_recall_text(&text);
     let retired = retired_override.unwrap_or_else(|| state.retired.contains(&frame.id));
     let state_hash = format!(
         "{:x}",
         Sha256::digest(
             format!(
                 "{}:{}:{}:{}",
-                frame.revision,
-                retired,
-                searchable_chunks.join("\0"),
-                state.version
+                frame.revision, retired, searchable_text, state.version
             )
             .as_bytes()
         )
@@ -8078,7 +8074,7 @@ fn frame_recall_document(
         document_id: frame.id.clone(),
         revision: frame.revision,
         searchable_text,
-        searchable_chunks,
+        legacy_searchable_chunks: Vec::new(),
         preview: frame.body.chars().take(500).collect(),
         retired,
         updated_sequence: state.version,
@@ -8086,7 +8082,10 @@ fn frame_recall_document(
     }
 }
 
-fn all_frame_recall_documents(context_id: &str, state: &MindState) -> Vec<RecallDocument> {
+pub(crate) fn all_frame_recall_documents(
+    context_id: &str,
+    state: &MindState,
+) -> Vec<RecallDocument> {
     state
         .frames
         .iter()
@@ -11709,7 +11708,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_recall_chunks_are_not_previewed_a_second_time() {
+    async fn event_recall_payload_is_not_previewed_a_second_time() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("recall-preview.db");
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());

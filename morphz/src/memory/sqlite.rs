@@ -1548,22 +1548,19 @@ impl SqliteStore {
 
 const ATTENTION_PROJECTION_BACKFILL_MIGRATION: &str =
     "20260723_01_attention_acknowledgement_projection";
-const RECALL_FTS_BACKFILL_MIGRATION: &str = "20260722_01_recall_fts_backfill";
-const RECALL_SEGMENTED_INDEX_MIGRATION: &str = "20260725_01_recall_segmented_index";
-const RECALL_CHUNKED_INDEX_MIGRATION: &str = "20260805_01_recall_chunked_index";
-const RECALL_CHUNK_EVENT_BACKFILL_MIGRATION: &str = "20260805_02_recall_chunk_event_backfill";
+const RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION: &str = "20260815_01_recall_whole_document_index";
+const RECALL_WHOLE_DOCUMENT_EVENT_BACKFILL_MIGRATION: &str =
+    "20260815_02_recall_whole_document_event_backfill";
 
-/// Rewrites every stored Recall document under the current Runtime segmenter
-/// and refills the freshly created FTS index.
-///
-/// Documents are read in bounded pages so a large Context does not have to be
-/// held in memory at once. Stored text is already NFKC-folded and lowercased,
-/// and both operations are idempotent, so re-deriving from it yields exactly
-/// what the write path would produce for the original input.
-async fn resegment_recall_documents(
+/// Collapses the temporary multi-row Recall projection back into one physical
+/// document. Pages bound memory while preserving the complete suffix of long
+/// Events and Frames. Old chunks overlap by up to 32 terms, so migration must
+/// remove that overlap instead of blindly concatenating rows.
+async fn migrate_whole_recall_documents(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    has_legacy_chunks: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    const PAGE: i64 = 500;
+    const PAGE: i64 = 250;
     let mut cursor: Option<(String, String, String)> = None;
     loop {
         let page = match &cursor {
@@ -1591,16 +1588,53 @@ async fn resegment_recall_documents(
         if page.is_empty() {
             break;
         }
+        let first = &page[0];
+        let last = &page[page.len() - 1];
+        let mut legacy_by_document =
+            std::collections::HashMap::<(String, String, String), Vec<String>>::new();
+        if has_legacy_chunks {
+            let legacy_rows = sqlx::query(
+                r#"SELECT context_id, document_kind, document_id, searchable_text
+                   FROM recall_document_chunks
+                   WHERE (context_id, document_kind, document_id) >= (?, ?, ?)
+                     AND (context_id, document_kind, document_id) <= (?, ?, ?)
+                   ORDER BY context_id, document_kind, document_id, chunk_index"#,
+            )
+            .bind(first.get::<String, _>("context_id"))
+            .bind(first.get::<String, _>("document_kind"))
+            .bind(first.get::<String, _>("document_id"))
+            .bind(last.get::<String, _>("context_id"))
+            .bind(last.get::<String, _>("document_kind"))
+            .bind(last.get::<String, _>("document_id"))
+            .fetch_all(&mut **tx)
+            .await?;
+            for row in legacy_rows {
+                legacy_by_document
+                    .entry((
+                        row.get("context_id"),
+                        row.get("document_kind"),
+                        row.get("document_id"),
+                    ))
+                    .or_default()
+                    .push(row.get("searchable_text"));
+            }
+        }
         for row in &page {
             let context_id = row.get::<String, _>("context_id");
             let document_kind = row.get::<String, _>("document_kind");
             let document_id = row.get::<String, _>("document_id");
             let stored = row.get::<String, _>("searchable_text");
             let retired = row.get::<i64, _>("retired") != 0;
-            let segmented = crate::memory::segment_recall_text(&stored);
-            if segmented == stored {
-                continue;
-            }
+            let key = (
+                context_id.clone(),
+                document_kind.clone(),
+                document_id.clone(),
+            );
+            let segmented = legacy_by_document
+                .remove(&key)
+                .filter(|chunks| !chunks.is_empty())
+                .map(|chunks| crate::memory::lexical::merge_legacy_recall_chunks(&chunks))
+                .unwrap_or_else(|| crate::memory::segment_recall_text(&stored));
             sqlx::query(
                 r#"UPDATE recall_documents SET searchable_text = ?, state_hash = ?
                    WHERE context_id = ? AND document_kind = ? AND document_id = ?"#,
@@ -1613,7 +1647,6 @@ async fn resegment_recall_documents(
             .execute(&mut **tx)
             .await?;
         }
-        let last = &page[page.len() - 1];
         cursor = Some((
             last.get::<String, _>("context_id"),
             last.get::<String, _>("document_kind"),
@@ -1621,15 +1654,40 @@ async fn resegment_recall_documents(
         ));
     }
 
-    // The index was dropped and recreated in this same transaction, and the
-    // maintenance triggers are recreated only after it commits, so fill it
-    // directly rather than relying on the UPDATE statements above.
-    sqlx::query(
-        r#"INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
-           SELECT context_id, document_kind, document_id, searchable_text FROM recall_documents"#,
-    )
-    .execute(&mut **tx)
-    .await?;
+    Ok(())
+}
+
+/// Rebuilds Frame search text from the authoritative current Mind rather than
+/// trusting a historical projection that may predate full-document indexing.
+async fn rebuild_frame_recall_documents(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let rows = sqlx::query("SELECT context_id, state_json FROM mind_projections")
+        .fetch_all(&mut **tx)
+        .await?;
+    for row in rows {
+        let context_id = row.get::<String, _>("context_id");
+        let state = match serde_json::from_str::<crate::orchestrator::context::MindState>(
+            &row.get::<String, _>("state_json"),
+        ) {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::warn!(%context_id, error = %error, "旧 Mind Projection 无法还原为认知帧；保留已折叠的 Recall Frame 投影");
+                continue;
+            }
+        };
+        sqlx::query(
+            "DELETE FROM recall_documents WHERE context_id = ? AND document_kind = 'frame'",
+        )
+        .bind(&context_id)
+        .execute(&mut **tx)
+        .await?;
+        for document in
+            crate::orchestrator::context::all_frame_recall_documents(&context_id, &state)
+        {
+            upsert_recall_document_in_transaction(tx, &document).await?;
+        }
+    }
     Ok(())
 }
 
@@ -1689,6 +1747,7 @@ async fn migrate_recall_projection(
                document_id TEXT NOT NULL,
                revision INTEGER NOT NULL CHECK(revision >= 0),
                searchable_text TEXT NOT NULL,
+               fts_rowid INTEGER,
                preview TEXT NOT NULL,
                retired INTEGER NOT NULL CHECK(retired IN (0, 1)),
                updated_sequence INTEGER NOT NULL CHECK(updated_sequence >= 0),
@@ -1697,19 +1756,6 @@ async fn migrate_recall_projection(
            );
            CREATE INDEX IF NOT EXISTS idx_recall_documents_context_updated
              ON recall_documents(context_id, updated_sequence DESC, document_id);
-           CREATE TABLE IF NOT EXISTS recall_document_chunks (
-               context_id TEXT NOT NULL,
-               document_kind TEXT NOT NULL CHECK(document_kind IN ('event', 'frame')),
-               document_id TEXT NOT NULL,
-               chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
-               searchable_text TEXT NOT NULL,
-               PRIMARY KEY(context_id, document_kind, document_id, chunk_index),
-               FOREIGN KEY(context_id, document_kind, document_id)
-                 REFERENCES recall_documents(context_id, document_kind, document_id)
-                 ON DELETE CASCADE
-           );
-           CREATE INDEX IF NOT EXISTS idx_recall_chunks_document
-             ON recall_document_chunks(context_id, document_kind, document_id, chunk_index);
            CREATE TABLE IF NOT EXISTS recall_projection_outbox (
                context_id TEXT NOT NULL,
                document_kind TEXT NOT NULL CHECK(document_kind IN ('event', 'frame')),
@@ -1731,30 +1777,31 @@ async fn migrate_recall_projection(
     )
     .execute(pool)
     .await?;
+    let recall_columns = sqlx::query("PRAGMA table_info(recall_documents)")
+        .fetch_all(pool)
+        .await?;
+    if !recall_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "fts_rowid")
+    {
+        sqlx::query("ALTER TABLE recall_documents ADD COLUMN fts_rowid INTEGER")
+            .execute(pool)
+            .await?;
+    }
 
-    // The Runtime segments text before it reaches storage, so the physical
-    // index only has to split on whitespace. `trigram` held no entry for any
-    // term shorter than three characters, which silently dropped the most
-    // common Chinese word form out of Recall entirely.
-    //
-    // Claim, retire and rebuild inside one transaction: an interrupted rebuild
-    // rolls back and is retried on the next start, instead of leaving Recall
-    // with an index that is present but half populated.
+    // One logical Event/Frame is one physical FTS row. The FTS table uses the
+    // authoritative projection rowid as its identity, so updates delete by
+    // rowid instead of scanning an FTS virtual table on UNINDEXED metadata.
+    // Claim, collapse and rebuild in one transaction: interruption rolls the
+    // entire derived index migration back without touching Ledger truth.
     let mut tx = pool.begin().await?;
-    let segmented_claimed =
+    let claimed =
         sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
-            .bind(RECALL_SEGMENTED_INDEX_MIGRATION)
+            .bind(RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION)
             .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
             .execute(&mut *tx)
             .await?;
-    let chunked_claimed =
-        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
-            .bind(RECALL_CHUNKED_INDEX_MIGRATION)
-            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-            .execute(&mut *tx)
-            .await?;
-    let resegmenting = segmented_claimed.rows_affected() > 0;
-    let rebuilding = resegmenting || chunked_claimed.rows_affected() > 0;
+    let rebuilding = claimed.rows_affected() > 0;
     if rebuilding {
         for statement in [
             "DROP TRIGGER IF EXISTS recall_documents_ai",
@@ -1767,156 +1814,97 @@ async fn migrate_recall_projection(
         ] {
             sqlx::query(statement).execute(&mut *tx).await?;
         }
-    }
-    let fts = sqlx::query(
-        r#"CREATE VIRTUAL TABLE IF NOT EXISTS recall_documents_fts USING fts5(
-               context_id UNINDEXED,
-               document_kind UNINDEXED,
-               document_id UNINDEXED,
-               chunk_index UNINDEXED,
-               searchable_text,
-               tokenize='unicode61'
-           )"#,
-    )
-    .execute(&mut *tx)
-    .await;
-    if let Err(error) = fts {
-        tracing::warn!(error = %error, "SQLite 不支持 FTS5，Recall 仅允许精确文档 ID 查询");
-        tx.rollback().await?;
-        return Ok(());
-    }
-    if resegmenting {
-        resegment_recall_documents(&mut tx).await?;
-    }
-    sqlx::query(
-        r#"INSERT OR IGNORE INTO recall_document_chunks
-           (context_id, document_kind, document_id, chunk_index, searchable_text)
-           SELECT context_id, document_kind, document_id, 0, searchable_text
-           FROM recall_documents"#,
-    )
-    .execute(&mut *tx)
-    .await?;
-    if rebuilding {
-        sqlx::query("DELETE FROM recall_documents_fts")
+        let has_legacy_chunks = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'recall_document_chunks'",
+        )
+        .fetch_one(&mut *tx)
+        .await?
+            > 0;
+        migrate_whole_recall_documents(&mut tx, has_legacy_chunks).await?;
+        rebuild_frame_recall_documents(&mut tx).await?;
+        sqlx::query("DROP TABLE IF EXISTS recall_document_chunks")
+            .execute(&mut *tx)
+            .await?;
+        // SQLite may rewrite implicit rowids during VACUUM. Persist the FTS
+        // identity as ordinary Projection data so index/content association
+        // remains stable across compaction and backup/restore maintenance.
+        sqlx::query("UPDATE recall_documents SET fts_rowid = rowid WHERE fts_rowid IS NULL")
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            r#"INSERT INTO recall_documents_fts
-               (context_id, document_kind, document_id, chunk_index, searchable_text)
-               SELECT context_id, document_kind, document_id, chunk_index, searchable_text
-               FROM recall_document_chunks"#,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_recall_documents_fts_rowid ON recall_documents(fts_rowid)",
         )
         .execute(&mut *tx)
         .await?;
-    }
-    tx.commit().await?;
 
-    // `CREATE TRIGGER IF NOT EXISTS` cannot upgrade an existing trigger.  The
-    // original UPDATE trigger rebuilt the trigram index for every projection
-    // metadata change (revision, retired, updated_sequence, state_hash, ...).
-    // Under concurrent Context maintenance that turned cheap MVCC bookkeeping
-    // into a full FTS delete+insert and held SQLite's single-writer slot for
-    // seconds.  Recreate only this derived trigger on startup; the FTS table is
-    // a rebuildable Projection and no Ledger data is affected.
-    for trigger in [
-        "recall_documents_ai",
-        "recall_documents_ad",
-        "recall_documents_au",
-        "recall_document_chunks_ai",
-        "recall_document_chunks_ad",
-        "recall_document_chunks_au",
-    ] {
-        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger}"))
-            .execute(pool)
-            .await?;
-    }
-
-    for statement in [
-        r#"CREATE TRIGGER IF NOT EXISTS recall_documents_ai AFTER INSERT ON recall_documents BEGIN
-             INSERT INTO recall_document_chunks
-               (context_id, document_kind, document_id, chunk_index, searchable_text)
-             VALUES (new.context_id, new.document_kind, new.document_id, 0, new.searchable_text);
-           END"#,
-        r#"CREATE TRIGGER IF NOT EXISTS recall_documents_au
-           AFTER UPDATE OF searchable_text
-           ON recall_documents
-           WHEN old.searchable_text IS NOT new.searchable_text
-           BEGIN
-             DELETE FROM recall_document_chunks
-             WHERE context_id = old.context_id AND document_kind = old.document_kind
-               AND document_id = old.document_id;
-             INSERT INTO recall_document_chunks
-               (context_id, document_kind, document_id, chunk_index, searchable_text)
-             VALUES (new.context_id, new.document_kind, new.document_id, 0, new.searchable_text);
-           END"#,
-        r#"CREATE TRIGGER IF NOT EXISTS recall_document_chunks_ai
-           AFTER INSERT ON recall_document_chunks BEGIN
-             INSERT INTO recall_documents_fts
-               (context_id, document_kind, document_id, chunk_index, searchable_text)
-             VALUES (new.context_id, new.document_kind, new.document_id,
-                     new.chunk_index, new.searchable_text);
-           END"#,
-        r#"CREATE TRIGGER IF NOT EXISTS recall_document_chunks_ad
-           AFTER DELETE ON recall_document_chunks BEGIN
-             DELETE FROM recall_documents_fts
-             WHERE context_id = old.context_id AND document_kind = old.document_kind
-               AND document_id = old.document_id AND chunk_index = old.chunk_index;
-           END"#,
-        r#"CREATE TRIGGER IF NOT EXISTS recall_document_chunks_au
-           AFTER UPDATE OF context_id, document_kind, document_id, chunk_index, searchable_text
-           ON recall_document_chunks
-           BEGIN
-             DELETE FROM recall_documents_fts
-             WHERE context_id = old.context_id AND document_kind = old.document_kind
-               AND document_id = old.document_id AND chunk_index = old.chunk_index;
-             INSERT INTO recall_documents_fts
-               (context_id, document_kind, document_id, chunk_index, searchable_text)
-             VALUES (new.context_id, new.document_kind, new.document_id,
-                     new.chunk_index, new.searchable_text);
-           END"#,
-    ] {
-        sqlx::query(statement).execute(pool).await?;
-    }
-
-    let mut tx = pool.begin().await?;
-    let claimed =
-        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
-            .bind(RECALL_FTS_BACKFILL_MIGRATION)
-            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-            .execute(&mut *tx)
-            .await?;
-    if claimed.rows_affected() == 0 {
-        tx.rollback().await?;
-    } else {
-        sqlx::query(
-            r#"INSERT INTO recall_documents_fts
-               (context_id, document_kind, document_id, chunk_index, searchable_text)
-               SELECT c.context_id, c.document_kind, c.document_id, c.chunk_index, c.searchable_text
-               FROM recall_document_chunks c
-               WHERE NOT EXISTS (
-                 SELECT 1 FROM recall_documents_fts f
-                 WHERE f.context_id = c.context_id AND f.document_kind = c.document_kind
-                   AND f.document_id = c.document_id AND f.chunk_index = c.chunk_index
+        let fts = sqlx::query(
+            r#"CREATE VIRTUAL TABLE recall_documents_fts USING fts5(
+                   searchable_text,
+                   content='recall_documents',
+                   content_rowid='fts_rowid',
+                   tokenize='unicode61'
                )"#,
         )
         .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-    }
+        .await;
+        if let Err(error) = fts {
+            tracing::warn!(error = %error, "SQLite 不支持 FTS5，Recall 仅允许精确文档 ID 查询");
+            tx.rollback().await?;
+            return Ok(());
+        }
+        sqlx::query("INSERT INTO recall_documents_fts(recall_documents_fts) VALUES('rebuild')")
+            .execute(&mut *tx)
+            .await?;
 
-    // Existing Event documents may have been projected by a binary that
-    // discarded everything after the first 16 KiB. Re-enqueue their immutable
-    // Ledger source once; the ordinary bounded projection worker rebuilds all
-    // chunks without making startup scan or tokenize large payloads.
+        for statement in [
+            r#"CREATE TRIGGER recall_documents_ai AFTER INSERT ON recall_documents BEGIN
+                 UPDATE recall_documents SET fts_rowid = new.rowid
+                   WHERE rowid = new.rowid AND fts_rowid IS NULL;
+                 INSERT INTO recall_documents_fts(rowid, searchable_text)
+                   SELECT fts_rowid, searchable_text FROM recall_documents
+                   WHERE rowid = new.rowid;
+               END"#,
+            r#"CREATE TRIGGER recall_documents_ad AFTER DELETE ON recall_documents BEGIN
+                 INSERT INTO recall_documents_fts(recall_documents_fts, rowid, searchable_text)
+                 VALUES ('delete', old.fts_rowid, old.searchable_text);
+               END"#,
+            r#"CREATE TRIGGER recall_documents_au
+               AFTER UPDATE OF searchable_text ON recall_documents
+               WHEN old.searchable_text IS NOT new.searchable_text BEGIN
+                 INSERT INTO recall_documents_fts(recall_documents_fts, rowid, searchable_text)
+                 VALUES ('delete', old.fts_rowid, old.searchable_text);
+                 INSERT INTO recall_documents_fts(rowid, searchable_text)
+                 VALUES (new.fts_rowid, new.searchable_text);
+               END"#,
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
+
+    // Re-enqueue immutable Event sources once. This repairs databases whose
+    // oldest projection retained only the first 16K characters before the
+    // temporary chunked release existed; chunk collapse alone cannot recover
+    // text that was never stored.
     let mut tx = pool.begin().await?;
     let claimed =
         sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
-            .bind(RECALL_CHUNK_EVENT_BACKFILL_MIGRATION)
+            .bind(RECALL_WHOLE_DOCUMENT_EVENT_BACKFILL_MIGRATION)
             .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
             .execute(&mut *tx)
             .await?;
     if claimed.rows_affected() == 0 {
         tx.rollback().await?;
+        return Ok(());
+    }
+    let chunk_backfill_was_already_enqueued = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = '20260805_02_recall_chunk_event_backfill'",
+    )
+    .fetch_one(&mut *tx)
+    .await?
+        > 0;
+    if chunk_backfill_was_already_enqueued {
+        tx.commit().await?;
         return Ok(());
     }
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
@@ -4316,7 +4304,7 @@ async fn enqueue_recall_document_in_transaction(
     document: &RecallDocument,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-    let document = crate::memory::bound_recall_document(document.clone());
+    let document = crate::memory::canonicalize_recall_document(document.clone());
     sqlx::query(
         r#"INSERT INTO recall_projection_outbox
            (context_id, document_kind, document_id, generation, document_json,
@@ -4745,12 +4733,8 @@ async fn upsert_recall_document_in_transaction(
     document: &RecallDocument,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let started = std::time::Instant::now();
-    let chunks = if document.searchable_chunks.is_empty() {
-        crate::memory::chunk_segmented_recall_text(&document.searchable_text)
-    } else {
-        document.searchable_chunks.clone()
-    };
-    let result = sqlx::query(
+    let document = crate::memory::canonicalize_recall_document(document.clone());
+    sqlx::query(
         r#"INSERT INTO recall_documents
            (context_id, document_kind, document_id, revision, searchable_text, preview,
             retired, updated_sequence, state_hash)
@@ -4775,71 +4759,16 @@ async fn upsert_recall_document_in_transaction(
     .bind(&document.state_hash)
     .execute(&mut **tx)
     .await?;
-    if result.rows_affected() > 0 {
-        // `recall_documents_ai`/`recall_documents_au` already maintain the
-        // common one-chunk case. Replacing those same rows again fires the FTS
-        // DELETE trigger, whose predicate must scan a large virtual table. On
-        // a multi-gigabyte Recall index that redundant rewrite held SQLite's
-        // single writer for 8-11 seconds and could starve Scheduler Kernel
-        // state transitions. Compare the desired physical chunks first and
-        // rebuild only when the segmentation actually differs.
-        let existing_chunks = sqlx::query(
-            r#"SELECT chunk_index, searchable_text FROM recall_document_chunks
-               WHERE context_id = ? AND document_kind = ? AND document_id = ?
-               ORDER BY chunk_index"#,
-        )
-        .bind(&document.context_id)
-        .bind(document.document_kind.as_str())
-        .bind(&document.document_id)
-        .fetch_all(&mut **tx)
-        .await?;
-        let chunks_match = existing_chunks.len() == chunks.len()
-            && existing_chunks.iter().zip(chunks.iter()).enumerate().all(
-                |(expected_index, (row, expected_text))| {
-                    usize::try_from(row.get::<i64, _>("chunk_index")).ok() == Some(expected_index)
-                        && row.get::<String, _>("searchable_text") == *expected_text
-                },
-            );
-        if !chunks_match {
-            sqlx::query(
-                r#"DELETE FROM recall_document_chunks
-                   WHERE context_id = ? AND document_kind = ? AND document_id = ?"#,
-            )
-            .bind(&document.context_id)
-            .bind(document.document_kind.as_str())
-            .bind(&document.document_id)
-            .execute(&mut **tx)
-            .await?;
-            for (chunk_index, searchable_text) in chunks.iter().enumerate() {
-                sqlx::query(
-                    r#"INSERT INTO recall_document_chunks
-                       (context_id, document_kind, document_id, chunk_index, searchable_text)
-                       VALUES (?, ?, ?, ?, ?)"#,
-                )
-                .bind(&document.context_id)
-                .bind(document.document_kind.as_str())
-                .bind(&document.document_id)
-                .bind(i64::try_from(chunk_index)?)
-                .bind(searchable_text)
-                .execute(&mut **tx)
-                .await?;
-            }
-        }
-    }
     let elapsed = started.elapsed();
-    let searchable_chars = chunks
-        .iter()
-        .map(|chunk| chunk.chars().count())
-        .sum::<usize>();
+    let searchable_chars = document.searchable_text.chars().count();
     if elapsed >= std::time::Duration::from_millis(500) {
         tracing::warn!(
             context_id = %document.context_id,
             document_kind = %document.document_kind.as_str(),
             document_id = %document.document_id,
             searchable_chars,
-            chunk_count = chunks.len(),
             elapsed_ms = elapsed.as_millis(),
-            "Recall document UPSERT（含同步 FTS trigger）耗时过长"
+            "Recall whole-document UPSERT（含同步 FTS trigger）耗时过长"
         );
     } else {
         tracing::debug!(
@@ -4847,9 +4776,8 @@ async fn upsert_recall_document_in_transaction(
             document_kind = %document.document_kind.as_str(),
             document_id = %document.document_id,
             searchable_chars,
-            chunk_count = chunks.len(),
             elapsed_ms = elapsed.as_millis(),
-            "Recall document UPSERT 完成"
+            "Recall whole-document UPSERT 完成"
         );
     }
     Ok(())
@@ -17403,7 +17331,7 @@ async fn sqlite_recall_capability(
         unicode_normalization: "nfkc+lowercase".to_string(),
         segmenter: crate::memory::RECALL_SEGMENTER.to_string(),
         detail: if indexed {
-            "SQLite FTS5 unicode61 index over chunked Runtime-segmented terms".to_string()
+            "SQLite FTS5 unicode61 index over whole Runtime-segmented documents".to_string()
         } else {
             "SQLite FTS5 unavailable; exact Recall document id only".to_string()
         },
@@ -17527,7 +17455,7 @@ async fn materialize_sqlite_recall_claim(
     claim: &SqliteRecallOutboxClaim,
 ) -> Result<Option<RecallDocument>, Box<dyn std::error::Error + Send + Sync>> {
     match claim.document_kind {
-        RecallDocumentKind::Frame => Ok(Some(crate::memory::bound_recall_document(
+        RecallDocumentKind::Frame => Ok(Some(crate::memory::canonicalize_recall_document(
             serde_json::from_str(&claim.document_json)?,
         ))),
         RecallDocumentKind::Event => {
@@ -17730,28 +17658,21 @@ impl RecallProjectionStore for SqliteStore {
             let expression = sqlite_fts_query(&terms, phrase);
             let mut query = QueryBuilder::new(
                 r#"SELECT d.document_kind, d.document_id, d.revision, d.retired,
-                          d.preview, "#,
+                          d.preview, d.searchable_text, "#,
             );
-            query.push("group_concat(c.searchable_text, ' ') AS searchable_text, d.updated_sequence, e.timestamp, CASE WHEN d.document_id = ");
+            query.push("d.updated_sequence, e.timestamp, CASE WHEN d.document_id = ");
             query.push_bind(normalized_query.unwrap_or_default());
             query.push(" THEN 1000000.0 ELSE 1.0 END AS score");
             query.push(
                 r#" FROM recall_documents_fts
-                   JOIN recall_document_chunks c
-                     ON c.context_id = recall_documents_fts.context_id
-                    AND c.document_kind = recall_documents_fts.document_kind
-                    AND c.document_id = recall_documents_fts.document_id
-                    AND c.chunk_index = recall_documents_fts.chunk_index
                    JOIN recall_documents d
-                     ON d.context_id = c.context_id
-                    AND d.document_kind = c.document_kind
-                    AND d.document_id = c.document_id
+                     ON d.fts_rowid = recall_documents_fts.rowid
                    LEFT JOIN events e ON d.document_kind = 'event'
                     AND e.id = d.document_id AND e.context_id = d.context_id
                    WHERE recall_documents_fts MATCH "#,
             );
             query.push_bind(expression);
-            query.push(" AND recall_documents_fts.context_id = ");
+            query.push(" AND d.context_id = ");
             query.push_bind(&request.context_id);
             if let Some(start_time) = &start_time {
                 query.push(" AND d.document_kind = 'event' AND e.timestamp >= ");
@@ -17765,12 +17686,6 @@ impl RecallProjectionStore for SqliteStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
-            // LIMIT applies to logical documents, never physical chunks. A
-            // very long document that matches in hundreds of chunks must not
-            // crowd every other result out of the candidate window.
-            query.push(
-                " GROUP BY d.context_id, d.document_kind, d.document_id, d.revision, d.retired, d.preview, d.updated_sequence, e.timestamp",
-            );
             if chronological {
                 query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC");
             } else {
@@ -18777,7 +18692,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_projection_does_not_rewrite_a_matching_single_chunk() {
+    async fn recall_projection_has_one_logical_and_one_physical_document() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
@@ -18790,16 +18705,6 @@ mod tests {
             })
             .await
             .unwrap();
-        sqlx::query(
-            r#"CREATE TABLE recall_chunk_delete_audit (document_id TEXT NOT NULL);
-               CREATE TRIGGER recall_chunk_delete_audit_trigger
-               AFTER DELETE ON recall_document_chunks BEGIN
-                 INSERT INTO recall_chunk_delete_audit(document_id) VALUES (old.document_id);
-               END"#,
-        )
-        .execute(&store.pool)
-        .await
-        .unwrap();
         store
             .append(Event::new(
                 "recall-no-rewrite-event".to_string(),
@@ -18825,13 +18730,30 @@ mod tests {
         assert_eq!(batch.projected, 1);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM recall_chunk_delete_audit WHERE document_id = 'recall-no-rewrite-event'",
+                "SELECT COUNT(*) FROM recall_documents WHERE document_id = 'recall-no-rewrite-event'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM recall_documents_fts")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            1,
+            "one logical Recall document must have exactly one FTS row"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'recall_document_chunks'",
             )
             .fetch_one(&store.pool)
             .await
             .unwrap(),
             0,
-            "the document trigger already produced the desired chunk; projection must not rebuild it"
+            "the temporary chunk projection must not exist in a new database"
         );
     }
 
@@ -18890,7 +18812,7 @@ mod tests {
             searchable_text: crate::memory::segment_recall_text(
                 "memory/rust-sandbox Rust 沙箱 权限申请",
             ),
-            searchable_chunks: Vec::new(),
+            legacy_searchable_chunks: Vec::new(),
             preview: "Rust 沙箱权限经验".to_string(),
             retired: true,
             updated_sequence: 7,
@@ -18904,7 +18826,7 @@ mod tests {
             searchable_text: crate::memory::segment_recall_text(
                 "三个产品部署到同一个物理节点，共享服务器资源",
             ),
-            searchable_chunks: Vec::new(),
+            legacy_searchable_chunks: Vec::new(),
             preview: "三个产品共享物理部署节点".to_string(),
             retired: false,
             updated_sequence: 8,
@@ -18916,7 +18838,7 @@ mod tests {
             document_id: "memory/server-only".to_string(),
             revision: 1,
             searchable_text: crate::memory::segment_recall_text("服务器健康检查"),
-            searchable_chunks: Vec::new(),
+            legacy_searchable_chunks: Vec::new(),
             preview: "服务器健康检查".to_string(),
             retired: false,
             updated_sequence: 9,
@@ -18935,7 +18857,7 @@ mod tests {
             document_id: event_document.get("document_id"),
             revision: u64::try_from(event_document.get::<i64, _>("revision")).unwrap(),
             searchable_text: event_document.get("searchable_text"),
-            searchable_chunks: Vec::new(),
+            legacy_searchable_chunks: Vec::new(),
             preview: event_document.get("preview"),
             retired: event_document.get::<i64, _>("retired") != 0,
             updated_sequence: u64::try_from(event_document.get::<i64, _>("updated_sequence"))
@@ -19078,13 +19000,21 @@ mod tests {
         assert_eq!(projected.projected, 3);
         assert!(
             sqlx::query_scalar::<_, i64>(
-                r#"SELECT COUNT(*) FROM recall_document_chunks
-                   WHERE document_id = 'recall-time-event-0'"#,
+                "SELECT length(searchable_text) FROM recall_documents WHERE document_id = 'recall-time-event-0'",
             )
             .fetch_one(&store.pool)
             .await
             .unwrap()
-                > 1
+                > 16 * 1024,
+            "the complete long document, not a 16K prefix, must be persisted"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM recall_documents_fts")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            3,
+            "long documents must still occupy one FTS row each"
         );
 
         let suffix = store
@@ -19093,6 +19023,11 @@ mod tests {
             .unwrap();
         assert_eq!(suffix.len(), 1);
         assert_eq!(suffix[0].document_id, "recall-time-event-0");
+        assert!(
+            suffix[0].preview.contains("终点") && suffix[0].preview.contains("火炬"),
+            "a whole-document hit must return a bounded preview around the suffix match: {:?}",
+            suffix[0].preview
+        );
 
         let start_time = chrono::DateTime::parse_from_rfc3339("2026-08-04T09:30:00Z")
             .unwrap()
@@ -19150,7 +19085,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_chunk_migration_reprojects_old_truncated_events_from_the_ledger() {
+    async fn recall_whole_document_migration_collapses_chunks_and_reprojects_events() {
         let tmp_file = NamedTempFile::new().unwrap();
         let path = tmp_file.path().to_str().unwrap().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
@@ -19186,12 +19121,54 @@ mod tests {
             .project_recall_outbox_batch("recall-migration-initial", 8)
             .await
             .unwrap();
-
-        // Simulate the old projection: only chunk zero remains and the new
-        // one-time Event backfill has not run yet.
+        let frame_body = format!("{} 帧尾部不可丢失", "完整认知帧内容 ".repeat(5_000));
+        let mind = crate::orchestrator::context::MindState {
+            version: 9,
+            frames: vec![crate::orchestrator::context::ContextFrame {
+                id: "memory/migration-frame".to_string(),
+                body: frame_body,
+                sources: Vec::new(),
+                provenance: Default::default(),
+                revision: 1,
+                created_version: 9,
+                updated_version: 9,
+            }],
+            ..Default::default()
+        };
         sqlx::query(
-            r#"DELETE FROM recall_document_chunks
-               WHERE document_id = 'recall-migration-event' AND chunk_index > 0"#,
+            r#"INSERT INTO mind_projections
+               (context_id, revision, state_json, state_hash, updated_at)
+               VALUES ('recall-migration-context', 9, ?, 'mind-hash', ?)"#,
+        )
+        .bind(serde_json::to_string(&mind).unwrap())
+        .bind(Utc::now().to_rfc3339())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        // Simulate the temporary chunked schema after its Event backfill. The
+        // second row repeats the last two terms from the first row.
+        sqlx::query(
+            r#"DROP TRIGGER recall_documents_ai;
+               DROP TRIGGER recall_documents_ad;
+               DROP TRIGGER recall_documents_au;
+               DROP TABLE recall_documents_fts;
+               CREATE TABLE recall_document_chunks (
+                 context_id TEXT NOT NULL,
+                 document_kind TEXT NOT NULL,
+                 document_id TEXT NOT NULL,
+                 chunk_index INTEGER NOT NULL,
+                 searchable_text TEXT NOT NULL,
+                 PRIMARY KEY(context_id, document_kind, document_id, chunk_index)
+               );
+               INSERT INTO recall_document_chunks VALUES
+                 ('recall-migration-context', 'event', 'recall-migration-event', 0,
+                  'alpha beta gamma'),
+                 ('recall-migration-context', 'event', 'recall-migration-event', 1,
+                  'beta gamma 迁移 后缀 证据');
+               UPDATE recall_documents
+               SET searchable_text = 'alpha beta gamma', state_hash = 'legacy-chunk-hash'
+               WHERE document_id = 'recall-migration-event';"#,
         )
         .execute(&store.pool)
         .await
@@ -19201,13 +19178,55 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
-            .bind(RECALL_CHUNK_EVENT_BACKFILL_MIGRATION)
+            .bind(RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
+            .bind(RECALL_WHOLE_DOCUMENT_EVENT_BACKFILL_MIGRATION)
             .execute(&store.pool)
             .await
             .unwrap();
         store.pool.close().await;
 
         let restarted = SqliteStore::new(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT searchable_text FROM recall_documents WHERE document_id = 'recall-migration-event'",
+            )
+            .fetch_one(&restarted.pool)
+            .await
+            .unwrap(),
+            "alpha beta gamma 迁移 后缀 证据"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'recall_document_chunks'",
+            )
+            .fetch_one(&restarted.pool)
+            .await
+            .unwrap(),
+            0
+        );
+        let migrated_suffix = restarted
+            .search_recall_documents("recall-migration-context", "迁移后缀证据", 8)
+            .await
+            .unwrap();
+        assert_eq!(migrated_suffix[0].document_id, "recall-migration-event");
+        let frame_suffix = restarted
+            .search_recall_documents("recall-migration-context", "帧尾部不可丢失", 8)
+            .await
+            .unwrap();
+        assert_eq!(frame_suffix[0].document_id, "memory/migration-frame");
+        assert!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT length(searchable_text) FROM recall_documents WHERE document_id = 'memory/migration-frame'",
+            )
+            .fetch_one(&restarted.pool)
+            .await
+            .unwrap()
+                > 16 * 1024
+        );
         let pending = sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(*) FROM recall_projection_outbox
                WHERE document_id = 'recall-migration-event' AND status = 'pending'"#,
@@ -19228,7 +19247,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_fts_reindexes_only_when_search_identity_or_text_changes() {
+    async fn recall_fts_tracks_whole_document_text_without_metadata_rewrites() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
@@ -19243,24 +19262,15 @@ mod tests {
         .execute(&store.pool)
         .await
         .unwrap();
-        let original_rowid = sqlx::query_scalar::<_, i64>(
-            "SELECT rowid FROM recall_documents_fts WHERE context_id = 'trigger-context' AND document_id = 'trigger-frame'",
-        )
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-        // Keep a higher rowid alive so a delete+insert cannot reuse the same
-        // numeric rowid and hide an accidental trigger execution.
-        sqlx::query(
-            r#"INSERT INTO recall_documents
-               (context_id, document_kind, document_id, revision, searchable_text,
-                preview, retired, updated_sequence, state_hash)
-               VALUES ('trigger-context', 'frame', 'trigger-sentinel', 1,
-                       '哨兵 文本', '哨兵', 0, 1, 'sentinel-hash')"#,
-        )
-        .execute(&store.pool)
-        .await
-        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM recall_documents_fts WHERE recall_documents_fts MATCH '原始'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1
+        );
 
         sqlx::query(
             r#"UPDATE recall_documents
@@ -19271,33 +19281,42 @@ mod tests {
         .execute(&store.pool)
         .await
         .unwrap();
-        let metadata_rowid = sqlx::query_scalar::<_, i64>(
-            "SELECT rowid FROM recall_documents_fts WHERE context_id = 'trigger-context' AND document_id = 'trigger-frame'",
-        )
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
         assert_eq!(
-            metadata_rowid, original_rowid,
-            "metadata-only projection updates must not rebuild trigram entries"
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM recall_documents_fts WHERE recall_documents_fts MATCH '原始'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1,
+            "metadata-only updates must leave the indexed text untouched"
         );
 
         sqlx::query(
-            r#"UPDATE recall_documents SET searchable_text = '更新后的 可检索 文本'
+            r#"UPDATE recall_documents SET searchable_text = '更新 可检索 文本'
                WHERE context_id = 'trigger-context' AND document_id = 'trigger-frame'"#,
         )
         .execute(&store.pool)
         .await
         .unwrap();
-        let text_rowid = sqlx::query_scalar::<_, i64>(
-            "SELECT rowid FROM recall_documents_fts WHERE context_id = 'trigger-context' AND document_id = 'trigger-frame'",
-        )
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-        assert_ne!(
-            text_rowid, original_rowid,
-            "searchable text changes must replace the trigram entry"
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM recall_documents_fts WHERE recall_documents_fts MATCH '原始'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM recall_documents_fts WHERE recall_documents_fts MATCH '更新'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1,
+            "searchable text updates must replace the whole-document FTS entry"
         );
     }
 
@@ -19476,19 +19495,130 @@ mod tests {
         .unwrap();
         assert!(row.get::<i64, _>("retired") != 0);
         assert!(
-            row.get::<String, _>("searchable_text").chars().count()
-                <= crate::memory::RECALL_SEARCHABLE_TEXT_MAX_CHARS
+            row.get::<String, _>("searchable_text").chars().count() > 16 * 1024,
+            "projection must preserve the entire large Event rather than a bounded prefix"
         );
     }
 
     #[tokio::test]
-    async fn recall_fts_backfill_runs_once_and_records_its_migration() {
+    async fn recall_outbox_consumes_legacy_serialized_chunks_without_losing_suffix() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let legacy_document = serde_json::json!({
+            "context_id": "legacy-outbox-context",
+            "document_kind": "frame",
+            "document_id": "memory/legacy-chunk-work",
+            "revision": 1,
+            "searchable_text": "alpha beta gamma",
+            "searchable_chunks": [
+                "alpha beta gamma",
+                "beta gamma delta terminal suffix"
+            ],
+            "preview": "legacy frame",
+            "retired": false,
+            "updated_sequence": 1,
+            "state_hash": "legacy-hash"
+        });
+        sqlx::query(
+            r#"INSERT INTO recall_projection_outbox
+               (context_id, document_kind, document_id, generation, document_json,
+                status, attempts, available_at, claimed_by, claim_expires_at,
+                last_error, created_at, updated_at)
+               VALUES ('legacy-outbox-context', 'frame', 'memory/legacy-chunk-work', 1,
+                       ?, 'pending', 0, ?, NULL, NULL, NULL, ?, ?)"#,
+        )
+        .bind(legacy_document.to_string())
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let batch = store
+            .project_recall_outbox_batch("legacy-outbox-worker", 1)
+            .await
+            .unwrap();
+        assert_eq!(batch.projected, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT searchable_text FROM recall_documents WHERE document_id = 'memory/legacy-chunk-work'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            "alpha beta gamma delta terminal suffix"
+        );
+        assert!(store
+            .search_recall_documents("legacy-outbox-context", "terminal suffix", 8)
+            .await
+            .unwrap()
+            .iter()
+            .any(|hit| hit.document_id == "memory/legacy-chunk-work"));
+    }
+
+    #[tokio::test]
+    async fn recall_fts_identity_survives_vacuum() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        for (document_id, searchable_text) in [
+            ("vacuum-discarded", "准备 删除"),
+            ("vacuum-survivor", "真空 压缩 后 仍可 召回 火炬"),
+        ] {
+            sqlx::query(
+                r#"INSERT INTO recall_documents
+                   (context_id, document_kind, document_id, revision, searchable_text,
+                    preview, retired, updated_sequence, state_hash)
+                   VALUES ('vacuum-context', 'frame', ?, 1, ?, ?, 0, 1, ?)"#,
+            )
+            .bind(document_id)
+            .bind(searchable_text)
+            .bind(searchable_text)
+            .bind(format!("hash-{document_id}"))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("DELETE FROM recall_documents WHERE document_id = 'vacuum-discarded'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let stable_fts_rowid = sqlx::query_scalar::<_, i64>(
+            "SELECT fts_rowid FROM recall_documents WHERE document_id = 'vacuum-survivor'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+
+        sqlx::query("VACUUM").execute(&store.pool).await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT fts_rowid FROM recall_documents WHERE document_id = 'vacuum-survivor'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            stable_fts_rowid
+        );
+        let hits = store
+            .search_recall_documents("vacuum-context", "召回火炬", 8)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].document_id, "vacuum-survivor");
+    }
+
+    #[tokio::test]
+    async fn recall_whole_document_schema_is_idempotent() {
         let tmp_file = NamedTempFile::new().unwrap();
         let path = tmp_file.path().to_str().unwrap().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
-
-        // Simulate a database written by a build that already had the ordinary
-        // Recall Projection but had not yet completed the FTS backfill.
         sqlx::query(
             r#"INSERT INTO recall_documents
                (context_id, document_kind, document_id, revision,
@@ -19499,46 +19629,60 @@ mod tests {
         .execute(&store.pool)
         .await
         .unwrap();
-        sqlx::query(
-            "DELETE FROM recall_documents_fts WHERE context_id = 'legacy-context' AND document_id = 'legacy-frame'",
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM recall_documents_fts")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            1
+        );
+        let schema = sqlx::query_scalar::<_, String>(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'recall_documents_fts'",
         )
-        .execute(&store.pool)
+        .fetch_one(&store.pool)
         .await
         .unwrap();
-        sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
-            .bind(RECALL_FTS_BACKFILL_MIGRATION)
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        store.pool.close().await;
-        drop(store);
-
-        let migrated = SqliteStore::new(&path).await.unwrap();
+        assert!(schema.contains("content='recall_documents'"), "{schema}");
+        assert!(schema.contains("content_rowid='fts_rowid'"), "{schema}");
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM recall_documents_fts WHERE context_id = 'legacy-context' AND document_id = 'legacy-frame'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_recall_documents_fts_rowid'",
             )
-            .fetch_one(&migrated.pool)
+            .fetch_one(&store.pool)
             .await
             .unwrap(),
             1
         );
+        let trigger_sql = sqlx::query_scalar::<_, String>(
+            r#"SELECT group_concat(sql, ' ') FROM sqlite_master
+               WHERE type = 'trigger' AND name IN (
+                 'recall_documents_ai', 'recall_documents_ad', 'recall_documents_au'
+               )"#,
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(trigger_sql.contains("old.fts_rowid"), "{trigger_sql}");
+        assert!(
+            !trigger_sql.contains("WHERE context_id"),
+            "FTS maintenance must address one rowid, never scan metadata: {trigger_sql}"
+        );
         let first_applied_at = sqlx::query_scalar::<_, String>(
             "SELECT applied_at FROM schema_migrations WHERE version = ?",
         )
-        .bind(RECALL_FTS_BACKFILL_MIGRATION)
-        .fetch_one(&migrated.pool)
+        .bind(RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION)
+        .fetch_one(&store.pool)
         .await
         .unwrap();
-        migrated.pool.close().await;
-        drop(migrated);
+        store.pool.close().await;
+        drop(store);
 
         let reopened = SqliteStore::new(&path).await.unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
             )
-            .bind(RECALL_FTS_BACKFILL_MIGRATION)
+            .bind(RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION)
             .fetch_one(&reopened.pool)
             .await
             .unwrap(),
@@ -19548,7 +19692,7 @@ mod tests {
             sqlx::query_scalar::<_, String>(
                 "SELECT applied_at FROM schema_migrations WHERE version = ?",
             )
-            .bind(RECALL_FTS_BACKFILL_MIGRATION)
+            .bind(RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION)
             .fetch_one(&reopened.pool)
             .await
             .unwrap(),
