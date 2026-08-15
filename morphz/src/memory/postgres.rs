@@ -472,8 +472,6 @@ impl PostgresStore {
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_session_projections_context_session
                ON session_projections(context_id, session_id, event_id)"#,
-            r#"CREATE INDEX IF NOT EXISTS idx_pg_session_projections_context_session_sequence
-               ON session_projections(context_id, session_id, event_sequence)"#,
             r#"CREATE TABLE IF NOT EXISTS schema_migrations (
                 version TEXT PRIMARY KEY,
                 applied_at TEXT NOT NULL

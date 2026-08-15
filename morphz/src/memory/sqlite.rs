@@ -349,8 +349,6 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_session_projections_context_session
             ON session_projections(context_id, session_id, event_id);
-        CREATE INDEX IF NOT EXISTS idx_session_projections_context_session_sequence
-            ON session_projections(context_id, session_id, event_sequence);
 
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
@@ -1139,6 +1137,8 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_thread_signals_thread_status_sequence
             ON thread_signals(thread_id, status, sequence, id);
+        CREATE INDEX IF NOT EXISTS idx_thread_signals_status_sequence
+            ON thread_signals(status, sequence, id);
 
         CREATE TABLE IF NOT EXISTS activation_signals (
             activation_id TEXT NOT NULL,
@@ -7769,6 +7769,38 @@ impl ActivationStore for SqliteStore {
         rows.iter().map(thread_signal_from_row).collect()
     }
 
+    async fn list_runnable_pending_thread_signals(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit)
+            .map_err(|_| "Thread Signal recovery limit 超出 SQLite INTEGER 范围")?;
+        let rows = sqlx::query(
+            r#"SELECT signals.*
+               FROM thread_signals signals
+               JOIN threads thread ON thread.id = signals.thread_id
+               WHERE signals.status = 'pending'
+                 AND signals.thread_generation = thread.generation
+                 AND thread.status = 'open'
+                 AND thread.control_state = 'active'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM thread_activations activation
+                   WHERE activation.root_turn_id = thread.root_turn_id
+                     AND activation.generation = thread.generation
+                     AND activation.status IN ('queued', 'running')
+                 )
+               ORDER BY signals.sequence, signals.id
+               LIMIT ?"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(thread_signal_from_row).collect()
+    }
+
     async fn list_context_thread_signals_for_threads(
         &self,
         context_id: &str,
@@ -12821,6 +12853,7 @@ impl ScheduleStore for SqliteStore {
         expected_revision: u64,
         next_not_before: Option<DateTime<Utc>>,
         event: &Event,
+        occurrence_thread: Option<&NewThread>,
     ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let expected_revision = i64::try_from(expected_revision)
             .map_err(|_| "Schedule revision 超出 SQLite INTEGER 范围")?;
@@ -12852,8 +12885,15 @@ impl ScheduleStore for SqliteStore {
             .fetch_one(&mut *tx)
             .await?;
         let record = schedule_from_row(&row)?;
+        let delivery_thread_id = if let Some(occurrence_thread) = occurrence_thread {
+            ensure_thread_in_transaction(&mut tx, occurrence_thread)
+                .await?
+                .id
+        } else {
+            record.thread_id.clone()
+        };
         append_event_in_transaction(&mut tx, event).await?;
-        append_direct_thread_signal_in_transaction(&mut tx, event, &record.thread_id).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, event, &delivery_thread_id).await?;
         tx.commit().await?;
         Ok(Some(record))
     }
@@ -19172,6 +19212,49 @@ mod tests {
             sqlite_has_wal_reset_fix(&version),
             "linked SQLite {version} is vulnerable to the WAL-reset race"
         );
+    }
+
+    #[tokio::test]
+    async fn startup_adds_session_projection_sequence_before_creating_its_index() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(tmp_file.path())
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE session_projections (
+                event_id TEXT PRIMARY KEY,
+                context_id TEXT NOT NULL,
+                session_id TEXT
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let columns = sqlx::query("PRAGMA table_info(session_projections)")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert!(columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "event_sequence"));
+        let index_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_session_projections_context_session_sequence'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(index_exists, 1);
     }
 
     #[tokio::test]

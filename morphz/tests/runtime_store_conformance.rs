@@ -1524,7 +1524,7 @@ where
 
 async fn assert_schedule_store_conformance<S>(store: Arc<S>)
 where
-    S: ScheduleStore + ThreadStore + EventStore + Send + Sync + 'static,
+    S: ScheduleStore + ThreadStore + ActivationStore + EventStore + Send + Sync + 'static,
 {
     for (id, kind) in [
         ("conformance-schedule-thread", ThreadKind::Execution),
@@ -1688,6 +1688,7 @@ where
                     dispatch.revision,
                     None,
                     &event,
+                    None,
                 )
                 .await
         })
@@ -1702,6 +1703,7 @@ where
                     dispatch.revision,
                     None,
                     &event,
+                    None,
                 )
                 .await
         })
@@ -1722,6 +1724,73 @@ where
             .len(),
         1
     );
+
+    let recurring = store
+        .ensure_schedule(morphz::memory::NewSchedule {
+            id: "conformance-schedule-recurring".to_string(),
+            thread_id: "conformance-dispatch-thread".to_string(),
+            source_turn_id: "root-conformance-dispatch-thread".to_string(),
+            intent: "dispatch recurring occurrence".to_string(),
+            not_before: None,
+            interval_seconds: Some(60),
+            dependency_thread_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let occurrence_root = "root-conformance-schedule-occurrence";
+    let occurrence = NewThread {
+        id: stable_thread_id(occurrence_root),
+        agent_id: "conformance-agent".to_string(),
+        context_id: "conformance-context".to_string(),
+        session_id: "conformance-session".to_string(),
+        initiating_principal_id: None,
+        root_turn_id: occurrence_root.to_string(),
+        kind: ThreadKind::Execution,
+        executor_kind: "self".to_string(),
+        executor_id: None,
+        target_id: None,
+        supervision: morphz::memory::ThreadSupervision::runtime("schedule-occurrence-router"),
+    };
+    let recurring_event = Event::new(
+        "conformance-schedule-recurring-event".to_string(),
+        "Store-Conformance".to_string(),
+        "tool_output".to_string(),
+        "chat/schedule_due".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "root_turn_id": occurrence_root,
+            "schedule_id": recurring.id
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(store
+        .commit_scheduled_dispatch(
+            &recurring.id,
+            recurring.revision,
+            Some(chrono::Utc::now() + chrono::Duration::seconds(60)),
+            &recurring_event,
+            Some(&occurrence),
+        )
+        .await
+        .unwrap()
+        .is_some());
+    let persisted_occurrence = store
+        .get_thread_by_root(occurrence_root)
+        .await
+        .unwrap()
+        .expect("recurring dispatch must create the occurrence Thread atomically");
+    assert_eq!(persisted_occurrence.id, occurrence.id);
+    let recurring_signal = store
+        .list_context_thread_signals("conformance-context", Some(ThreadSignalStatus::Pending))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|signal| signal.event_id == recurring_event.id)
+        .expect("recurring dispatch must commit one direct occurrence Signal");
+    assert_eq!(recurring_signal.thread_id, occurrence.id);
 
     let failed = store
         .commit_schedule_transaction(

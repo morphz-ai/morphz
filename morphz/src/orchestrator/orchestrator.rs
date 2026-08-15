@@ -27,20 +27,20 @@ use crate::llm::{
     ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
 };
 use crate::memory::{
-    stable_thread_id, ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit,
-    ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus,
-    ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStore,
-    DelegationStatus, DeliveryFlushCommit, EventAppend, EventStore, ExecutionApprovalMutation,
-    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, NewActionGroup, NewActionGroupMember, NewApprovalRequest,
-    NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob, NewRuntimeTimer,
-    NewSession, NewThread, NewThreadActivation, NewThreadSignal, PlanExecutionFilter,
-    PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind,
-    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduleStatus, SessionAttentionState,
-    SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadControlAction, ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
+    stable_thread_activation_id, stable_thread_id, ActionGroupMemberStatus, ActionGroupStore,
+    ActivationOutcomeCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
+    ApprovalStatus, ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation,
+    CapabilityLeaseStore, DelegationStatus, DeliveryFlushCommit, EventAppend, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, NewActionGroup, NewActionGroupMember,
+    NewApprovalRequest, NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob,
+    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
+    PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus,
+    PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduleStatus,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore,
+    SessionUpdate, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter, ThreadKind, ThreadLifecycle,
+    ThreadMutation, ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
@@ -434,6 +434,8 @@ impl DurableEventWriter {
 const SIGNAL_OUTBOX_DISPATCH_BATCH: usize = 128;
 const PLAN_RECONCILE_FALLBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const PLAN_RECONCILE_BATCH: usize = 128;
+const PENDING_SIGNAL_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const PENDING_SIGNAL_RECONCILE_BATCH: usize = 128;
 const SUPERVISION_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn scheduler_audit_event(event: &Event) -> bool {
@@ -3237,6 +3239,7 @@ impl Orchestrator {
         self.refill_activation_admission_queue().await?;
         self.start_activation_admission_refill();
         self.start_plan_reconciler();
+        self.start_pending_signal_reconciler();
         self.start_supervision_invariant_auditor();
         Ok(())
     }
@@ -3296,6 +3299,31 @@ impl Orchestrator {
                         event_code = "orchestrator.plan_execution.recovery_cycle_failed",
                         "PlanExecution recovery cycle failed; retaining persistent state for the next retry"
                     );
+                }
+            }
+        });
+    }
+
+    fn start_pending_signal_reconciler(self: &Arc<Self>) {
+        let orchestrator = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(PENDING_SIGNAL_RECONCILE_INTERVAL).await;
+                let Some(orchestrator) = orchestrator.upgrade() else {
+                    break;
+                };
+                match orchestrator.reconcile_runnable_pending_thread_signals().await {
+                    Ok(0) => {}
+                    Ok(dispatched) => tracing::warn!(
+                        dispatched,
+                        event_code = "orchestrator.thread_signal.runtime_recovered",
+                        "Recovered runnable Thread Signals whose immediate in-process dispatch did not materialize an Activation"
+                    ),
+                    Err(error) => tracing::error!(
+                        %error,
+                        event_code = "orchestrator.thread_signal.runtime_recovery_failed",
+                        "Runnable Thread Signal recovery failed; retaining durable mailbox work for the next bounded retry"
+                    ),
                 }
             }
         });
@@ -4122,6 +4150,56 @@ impl Orchestrator {
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn reconcile_runnable_pending_thread_signals(
+        &self,
+    ) -> Result<usize, DynError> {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(0);
+        };
+        let mut selected_threads = HashSet::new();
+        let signals = session_store
+            .list_runnable_pending_thread_signals(PENDING_SIGNAL_RECONCILE_BATCH)
+            .await?
+            .into_iter()
+            .filter(|signal| selected_threads.insert(signal.thread_id.clone()))
+            .collect::<Vec<_>>();
+        if signals.is_empty() {
+            return Ok(0);
+        }
+        let event_ids = signals
+            .iter()
+            .map(|signal| signal.event_id.clone())
+            .collect::<Vec<_>>();
+        let mut events_by_id = HashMap::new();
+        for event_ids in event_ids.chunks(500) {
+            for event in self
+                .store
+                .query(QueryFilter {
+                    event_ids: event_ids.to_vec(),
+                    ..Default::default()
+                })
+                .await?
+            {
+                events_by_id.insert(event.id.clone(), event);
+            }
+        }
+        let mut dispatched = 0usize;
+        for signal in signals {
+            let Some(event) = events_by_id.remove(&signal.event_id) else {
+                tracing::error!(
+                    signal_id = %signal.id,
+                    event_id = %signal.event_id,
+                    event_code = "orchestrator.thread_signal.runtime_recovery_event_missing",
+                    "Cannot recover runnable Thread Signal because its Event is absent from the Ledger"
+                );
+                continue;
+            };
+            self.bus.dispatch_persisted(event).await?;
+            dispatched = dispatched.saturating_add(1);
+        }
+        Ok(dispatched)
     }
 
     async fn rebuild_activation_admission_queue(&self) -> Result<(), DynError> {
@@ -5786,7 +5864,7 @@ impl Orchestrator {
                 supervision,
             })
             .await?;
-        let activation_id = stable_activation_id(&event.id);
+        let activation_id = stable_thread_activation_id(&event.id);
         let signal_id = crate::memory::stable_thread_signal_id(&event.id);
         let Some(activation) = session_store
             .claim_thread_signal_batch(
@@ -8959,7 +9037,9 @@ impl Orchestrator {
                 response
                     .tool_calls
                     .iter()
-                    .map(|call| stable_activation_id(&format!("output_{attempt_id}_{}", call.id)))
+                    .map(|call| {
+                        stable_thread_activation_id(&format!("output_{attempt_id}_{}", call.id))
+                    })
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
@@ -14758,12 +14838,6 @@ fn recovery_owns_activation(
                     .is_none_or(|expires_at| expires_at <= now)
         }
     }
-}
-
-fn stable_activation_id(trigger_event_id: &str) -> String {
-    let digest = Sha256::digest(trigger_event_id.as_bytes());
-    let id = format!("work_{digest:x}");
-    id[..29].to_string()
 }
 
 fn delivery_flush_timer_id(session_id: &str) -> String {

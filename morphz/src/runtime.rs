@@ -7792,6 +7792,252 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn one_shot_schedule_due_executes_through_the_live_runtime() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-live-schedule".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Live schedule".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: "thread-live-schedule".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-live-schedule".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-live-schedule".to_string(),
+                kind: crate::memory::ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::runtime("schedule-test"),
+            })
+            .await
+            .unwrap();
+        let schedule = runtime
+            .inner
+            .store
+            .ensure_schedule(crate::memory::NewSchedule {
+                id: "schedule-live-once".to_string(),
+                thread_id: "thread-live-schedule".to_string(),
+                source_turn_id: "root-live-schedule".to_string(),
+                intent: "execute the persisted one-shot timer".to_string(),
+                not_before: Some(chrono::Utc::now() + chrono::Duration::milliseconds(30)),
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        runtime.inner.thread_scheduler.arm(schedule).await.unwrap();
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .expect("one-shot schedule must reach a live model Activation")
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+        assert_eq!(
+            runtime
+                .inner
+                .store
+                .get_schedule("schedule-live-once")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::memory::ScheduleStatus::Dispatched
+        );
+    }
+
+    #[tokio::test]
+    async fn recurring_schedule_due_executes_on_an_independent_occurrence_thread() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-live-recurring-schedule".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Live recurring schedule".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: "thread-live-recurring-template".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-live-recurring-schedule".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-live-recurring-template".to_string(),
+                kind: crate::memory::ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::runtime("schedule-template-test"),
+            })
+            .await
+            .unwrap();
+        let schedule = runtime
+            .inner
+            .store
+            .ensure_schedule(crate::memory::NewSchedule {
+                id: "schedule-live-recurring".to_string(),
+                thread_id: "thread-live-recurring-template".to_string(),
+                source_turn_id: "root-live-recurring-template".to_string(),
+                intent: "execute one recurring occurrence".to_string(),
+                not_before: Some(chrono::Utc::now() + chrono::Duration::milliseconds(30)),
+                interval_seconds: Some(60),
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let first_revision = schedule.revision;
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        runtime.inner.thread_scheduler.arm(schedule).await.unwrap();
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .expect("recurring schedule must reach a live model Activation")
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+        let occurrence_root =
+            crate::tool::scheduled_occurrence_root("schedule-live-recurring", first_revision);
+        let occurrence = runtime
+            .inner
+            .store
+            .get_thread_by_root(&occurrence_root)
+            .await
+            .unwrap()
+            .expect("recurring occurrence Thread must be durable");
+        assert_ne!(occurrence.id, "thread-live-recurring-template");
+        let current = runtime
+            .inner
+            .store
+            .get_schedule("schedule-live-recurring")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.status, crate::memory::ScheduleStatus::Queued);
+        assert_eq!(current.revision, first_revision + 1);
+    }
+
+    #[tokio::test]
+    async fn live_runtime_reconciles_a_persisted_signal_after_notify_is_lost() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-live-signal-recovery".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Live signal recovery".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: "thread-live-signal-recovery".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-live-signal-recovery".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-live-signal-recovery".to_string(),
+                kind: crate::memory::ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::runtime("signal-recovery-test"),
+            })
+            .await
+            .unwrap();
+        let event = Event::new(
+            "event-live-signal-recovery".to_string(),
+            "Runtime-Test".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/schedule_due".to_string(),
+            json!({
+                "agent_id": runtime.identity().agent_id,
+                "context_id": runtime.identity().context_id,
+                "session_id": "session-live-signal-recovery",
+                "root_turn_id": "root-live-signal-recovery",
+                "intent": "recover this committed Signal without restarting",
+                "text": "SCHEDULE_DUE: recover live signal"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        runtime
+            .inner
+            .store
+            .append_to_thread(event, "thread-live-signal-recovery")
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+
+        assert_eq!(
+            runtime
+                .inner
+                .orchestrator
+                .reconcile_runnable_pending_thread_signals()
+                .await
+                .unwrap(),
+            1
+        );
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .expect("runtime rescan must execute a Signal after its notify was lost")
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+    }
+
+    #[tokio::test]
     async fn runtime_builder_accepts_one_injected_complete_store() {
         let database = NamedTempFile::new().unwrap();
         let sqlite = Arc::new(

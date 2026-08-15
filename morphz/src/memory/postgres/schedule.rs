@@ -1,6 +1,8 @@
 use super::{
     append_direct_thread_signal_in_tx, append_event_in_tx, insert_new_objective_in_tx, now_text,
-    objective_from_row, parse_time, thread::thread_from_row, thread_group::group_from_row,
+    objective_from_row, parse_time,
+    thread::{ensure_thread_in_tx, thread_from_row},
+    thread_group::group_from_row,
     validate_new_objective, PostgresStore, StoreError,
 };
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
@@ -1248,6 +1250,7 @@ impl ScheduleStore for PostgresStore {
         expected_revision: u64,
         next_not_before: Option<DateTime<Utc>>,
         event: &Event,
+        occurrence_thread: Option<&NewThread>,
     ) -> Result<Option<ScheduleRecord>, StoreError> {
         let next_status = if next_not_before.is_some() {
             ScheduleStatus::Queued
@@ -1273,8 +1276,13 @@ impl ScheduleStore for PostgresStore {
             return Ok(None);
         };
         let record = schedule_from_row(&row)?;
+        let delivery_thread_id = if let Some(occurrence_thread) = occurrence_thread {
+            ensure_thread_in_tx(&mut tx, occurrence_thread).await?.id
+        } else {
+            record.thread_id.clone()
+        };
         append_event_in_tx(&mut tx, event).await?;
-        append_direct_thread_signal_in_tx(&mut tx, event, &record.thread_id).await?;
+        append_direct_thread_signal_in_tx(&mut tx, event, &delivery_thread_id).await?;
         tx.commit().await?;
         Ok(Some(record))
     }

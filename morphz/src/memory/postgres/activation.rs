@@ -62,6 +62,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"ALTER TABLE thread_signals ADD COLUMN IF NOT EXISTS principal_id TEXT"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_signals_thread_status_sequence
            ON thread_signals(thread_id, status, sequence, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_signals_status_sequence
+           ON thread_signals(status, sequence, id)"#,
         r#"CREATE TABLE IF NOT EXISTS activation_signals (
             activation_id TEXT NOT NULL REFERENCES thread_activations(id) ON DELETE CASCADE,
             signal_id TEXT NOT NULL UNIQUE REFERENCES thread_signals(id) ON DELETE CASCADE,
@@ -179,7 +181,7 @@ pub(super) fn activation_from_row(row: &PgRow) -> Result<ThreadActivationRecord,
     })
 }
 
-fn signal_from_row(row: &PgRow) -> Result<ThreadSignalRecord, StoreError> {
+pub(super) fn signal_from_row(row: &PgRow) -> Result<ThreadSignalRecord, StoreError> {
     Ok(ThreadSignalRecord {
         id: row.get("id"),
         thread_id: row.get("thread_id"),
@@ -866,6 +868,36 @@ impl ActivationStore for PostgresStore {
             .fetch_all(&self.pool)
             .await?
         };
+        rows.iter().map(signal_from_row).collect()
+    }
+
+    async fn list_runnable_pending_thread_signals(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ThreadSignalRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT signals.*
+               FROM thread_signals signals
+               JOIN threads thread ON thread.id = signals.thread_id
+               WHERE signals.status = 'pending'
+                 AND signals.thread_generation = thread.generation
+                 AND thread.status = 'open'
+                 AND thread.control_state = 'active'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM thread_activations activation
+                   WHERE activation.root_turn_id = thread.root_turn_id
+                     AND activation.generation = thread.generation
+                     AND activation.status IN ('queued', 'running')
+                 )
+               ORDER BY signals.sequence, signals.id
+               LIMIT $1"#,
+        )
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(signal_from_row).collect()
     }
 

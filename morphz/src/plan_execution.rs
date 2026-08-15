@@ -16,9 +16,10 @@ use sha2::{Digest, Sha256};
 use crate::event::{Event, TYPE_INFER_REQUEST};
 use crate::execution::deterministic_job_id;
 use crate::memory::{
-    ExecutionJobRecord, ExecutionJobStatus, NewExecutionJob, NewPlanExecution,
-    PlanEvaluationCommit, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
-    PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeStore, ThreadActivationStatus,
+    stable_thread_activation_id, ExecutionJobRecord, ExecutionJobStatus, NewExecutionJob,
+    NewPlanExecution, PlanEvaluationCommit, PlanExecutionFilter, PlanExecutionMutation,
+    PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeStore,
+    ThreadActivationStatus,
 };
 use crate::sexpr_eval::{decode_infer_result, PlanAdvance, PlanEffect, PlanMachine, Program};
 use crate::tool::Registry;
@@ -603,7 +604,7 @@ impl PlanExecutionCoordinator {
         }
         let activation = self
             .store
-            .get_thread_activation(activation_id)
+            .reconcile_plan_evaluation_activation(&plan.id, activation_id)
             .await?
             .ok_or_else(|| {
                 format!(
@@ -1127,9 +1128,7 @@ pub fn deterministic_infer_activation_id(event_id: &str) -> PlanExecutionResult<
     if event_id.trim().is_empty() {
         return Err("infer request Event id 不能为空".into());
     }
-    let digest = Sha256::digest(event_id.as_bytes());
-    let id = format!("work_{digest:x}");
-    Ok(id[..29].to_string())
+    Ok(stable_thread_activation_id(event_id))
 }
 
 fn validate_terminal_evaluation_route(
@@ -1283,14 +1282,15 @@ mod tests {
     use crate::llm::ToolDefinition;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        ActivationStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobStore,
+        ActivationStore, EventStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobStore,
         ExecutionJobTerminal, ExecutionRetrySafety, NewCognitiveContext, NewSession, NewThread,
-        NewThreadActivation, PlanExecutionStore, SessionDirectoryStore, SessionMountKind,
-        ThreadActivationMutation, ThreadKind, ThreadStore,
+        NewThreadActivation, NewThreadSignal, PlanExecutionStore, SessionDirectoryStore,
+        SessionMountKind, ThreadActivationMutation, ThreadKind, ThreadStore,
     };
     use crate::sexpr_eval::{validate, AllowList};
     use crate::tool::Tool;
     use chrono::Duration;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tempfile::NamedTempFile;
 
     struct DefinitionOnlyTool;
@@ -1771,21 +1771,50 @@ mod tests {
             child_thread.executor_id.as_deref(),
             Some(waiting.id.as_str())
         );
-        let child_activation = store
-            .ensure_thread_activation(NewThreadActivation {
-                id: activation_id.clone(),
-                agent_id: waiting.agent_id.clone(),
-                context_id: waiting.context_id.clone(),
-                session_id: waiting.session_id.clone(),
-                initiating_principal_id: waiting.initiating_principal_id.clone(),
-                trigger_event_id: request_event.id.clone(),
-                trigger_sequence: 2,
-                trigger_kind: TYPE_INFER_REQUEST.to_string(),
-                parent_activation_id: Some(waiting.activation_id.clone()),
-                root_turn_id: request_event.id.clone(),
+        let stored_request = store
+            .query(QueryFilter {
+                event_id: Some(request_event.id.clone()),
+                context_id: Some(waiting.context_id.clone()),
+                top_k: Some(1),
+                ..QueryFilter::default()
             })
             .await
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("atomic infer hand-off must persist its trigger Event");
+        let trigger_sequence = stored_request
+            .sequence
+            .expect("persisted infer request must own a sequence");
+        let child_activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: crate::memory::stable_thread_signal_id(&request_event.id),
+                    thread_id: child_thread.id.clone(),
+                    thread_generation: child_thread.generation,
+                    event_id: request_event.id.clone(),
+                    principal_id: waiting.initiating_principal_id.clone(),
+                    sequence: trigger_sequence,
+                    kind: request_event.topic.clone(),
+                    parent_activation_id: Some(waiting.activation_id.clone()),
+                },
+                NewThreadActivation {
+                    id: activation_id.clone(),
+                    agent_id: waiting.agent_id.clone(),
+                    context_id: waiting.context_id.clone(),
+                    session_id: waiting.session_id.clone(),
+                    initiating_principal_id: waiting.initiating_principal_id.clone(),
+                    trigger_event_id: request_event.id.clone(),
+                    trigger_sequence,
+                    trigger_kind: request_event.topic.clone(),
+                    parent_activation_id: Some(waiting.activation_id.clone()),
+                    root_turn_id: request_event.id.clone(),
+                },
+                crate::memory::DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+            )
+            .await
+            .unwrap()
+            .expect("pending infer Signal must materialize its deterministic child Activation");
         let result_event = Event::new(
             "plan-infer-result".to_string(),
             "Test-Evaluator".to_string(),
@@ -1855,6 +1884,50 @@ mod tests {
         assert_eq!(terminal_child.status, ThreadActivationStatus::Succeeded);
         assert!(terminal_child.revision > child_activation.revision);
 
+        // Emulate the exact pre-fix direct-Signal row shape observed in a
+        // production database: the Signal was claimed, the linked child
+        // Activation completed, but neither projection retained the explicit
+        // Plan parent. Recovery may fill only these NULLs after validating the
+        // complete deterministic route.
+        let raw_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().filename(tmp_file.path()))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE thread_signals SET parent_activation_id = NULL WHERE event_id = ?")
+            .bind(&request_event.id)
+            .execute(&raw_pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE thread_activations SET parent_activation_id = NULL WHERE id = ?")
+            .bind(&activation_id)
+            .execute(&raw_pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE thread_activations SET parent_activation_id = ? WHERE id = ?")
+            .bind(&activation_id)
+            .bind(&activation_id)
+            .execute(&raw_pool)
+            .await
+            .unwrap();
+        assert!(store
+            .reconcile_plan_evaluation_activation(&waiting.id, &activation_id)
+            .await
+            .is_err());
+        let conflicting_parent: Option<String> =
+            sqlx::query_scalar("SELECT parent_activation_id FROM thread_activations WHERE id = ?")
+                .bind(&activation_id)
+                .fetch_one(&raw_pool)
+                .await
+                .unwrap();
+        assert_eq!(conflicting_parent.as_deref(), Some(activation_id.as_str()));
+        sqlx::query("UPDATE thread_activations SET parent_activation_id = NULL WHERE id = ?")
+            .bind(&activation_id)
+            .execute(&raw_pool)
+            .await
+            .unwrap();
+        raw_pool.close().await;
+
         let resumed = match coordinator
             .reconcile_evaluation(&waiting.id, &activation_id)
             .await
@@ -1863,6 +1936,26 @@ mod tests {
             PlanResumeReceipt::Queued(plan) => plan,
             other => panic!("expected queued plan after infer refill, got {other:?}"),
         };
+        let repaired_activation = store
+            .get_thread_activation(&activation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            repaired_activation.parent_activation_id.as_deref(),
+            Some(waiting.activation_id.as_str())
+        );
+        let repaired_signal = store
+            .list_context_thread_signals(&waiting.context_id, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|signal| signal.event_id == request_event.id)
+            .unwrap();
+        assert_eq!(
+            repaired_signal.parent_activation_id.as_deref(),
+            Some(waiting.activation_id.as_str())
+        );
         match coordinator
             .drive_once(
                 &resumed.id,
@@ -1947,21 +2040,50 @@ mod tests {
             child_thread.executor_id.as_deref(),
             Some(waiting.id.as_str())
         );
-        let child_activation = store
-            .ensure_thread_activation(NewThreadActivation {
-                id: activation_id.clone(),
-                agent_id: waiting.agent_id.clone(),
-                context_id: waiting.context_id.clone(),
-                session_id: waiting.session_id.clone(),
-                initiating_principal_id: waiting.initiating_principal_id.clone(),
-                trigger_event_id: request_event.id.clone(),
-                trigger_sequence: 2,
-                trigger_kind: TYPE_INFER_REQUEST.to_string(),
-                parent_activation_id: Some(waiting.activation_id.clone()),
-                root_turn_id: request_event.id.clone(),
+        let stored_request = store
+            .query(QueryFilter {
+                event_id: Some(request_event.id.clone()),
+                context_id: Some(waiting.context_id.clone()),
+                top_k: Some(1),
+                ..QueryFilter::default()
             })
             .await
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("atomic infer hand-off must persist its trigger Event");
+        let trigger_sequence = stored_request
+            .sequence
+            .expect("persisted infer request must own a sequence");
+        let child_activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: crate::memory::stable_thread_signal_id(&request_event.id),
+                    thread_id: child_thread.id.clone(),
+                    thread_generation: child_thread.generation,
+                    event_id: request_event.id.clone(),
+                    principal_id: waiting.initiating_principal_id.clone(),
+                    sequence: trigger_sequence,
+                    kind: request_event.topic.clone(),
+                    parent_activation_id: Some(waiting.activation_id.clone()),
+                },
+                NewThreadActivation {
+                    id: activation_id.clone(),
+                    agent_id: waiting.agent_id.clone(),
+                    context_id: waiting.context_id.clone(),
+                    session_id: waiting.session_id.clone(),
+                    initiating_principal_id: waiting.initiating_principal_id.clone(),
+                    trigger_event_id: request_event.id.clone(),
+                    trigger_sequence,
+                    trigger_kind: request_event.topic.clone(),
+                    parent_activation_id: Some(waiting.activation_id.clone()),
+                    root_turn_id: request_event.id.clone(),
+                },
+                crate::memory::DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+            )
+            .await
+            .unwrap()
+            .expect("pending infer Signal must materialize its deterministic child Activation");
         let child_activation = match store
             .update_thread_activation(
                 &child_activation.id,

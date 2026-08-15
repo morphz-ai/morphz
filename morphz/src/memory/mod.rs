@@ -897,6 +897,108 @@ pub struct NewThreadActivation {
     pub root_turn_id: String,
 }
 
+/// Strictly validates the durable causal graph of one Plan-owned infer
+/// Evaluation. The two optional parent columns are the only fields allowed to
+/// be absent for rows written before direct Signals carried explicit parent
+/// routes.
+pub(crate) fn validate_plan_evaluation_activation_route(
+    plan: &PlanExecutionRecord,
+    event: &crate::event::Event,
+    child_thread: &ThreadRecord,
+    signal: &ThreadSignalRecord,
+    activation: &ThreadActivationRecord,
+    parent_thread: &ThreadRecord,
+    parent_activation: &ThreadActivationRecord,
+) -> Result<(), String> {
+    let payload_string = |key: &str| event.payload.get(key).and_then(JsonValue::as_str);
+    let event_sequence = event
+        .sequence
+        .ok_or_else(|| format!("infer Event '{}' 缺少 durable sequence", event.id))?;
+    let expected_activation_id = stable_thread_activation_id(&event.id);
+    let expected_signal_id = stable_thread_signal_id(&event.id);
+    let expected_thread_id = stable_thread_id(&event.id);
+    let expected_parent = Some(plan.activation_id.as_str());
+
+    if plan.status != PlanExecutionStatus::Waiting
+        || plan.pending_kind != Some(PlanExecutionWaitKind::Evaluation)
+        || plan.pending_id.as_deref() != Some(activation.id.as_str())
+        || activation.id != expected_activation_id
+        || event.event_type != crate::event::TYPE_INFER_REQUEST
+        || event.topic != "chat/infer_request"
+        || payload_string("plan_execution_id") != Some(plan.id.as_str())
+        || payload_string("agent_id") != Some(plan.agent_id.as_str())
+        || payload_string("context_id") != Some(plan.context_id.as_str())
+        || payload_string("session_id") != Some(plan.session_id.as_str())
+        || payload_string("root_turn_id") != Some(event.id.as_str())
+        || payload_string("parent_activation_id") != expected_parent
+        || payload_string("principal_id") != plan.initiating_principal_id.as_deref()
+    {
+        return Err("PlanExecution 与 deterministic infer Event 的 route 不一致".to_string());
+    }
+
+    if child_thread.id != expected_thread_id
+        || child_thread.agent_id != plan.agent_id
+        || child_thread.context_id != plan.context_id
+        || child_thread.session_id != plan.session_id
+        || child_thread.initiating_principal_id != plan.initiating_principal_id
+        || child_thread.root_turn_id != event.id
+        || child_thread.kind != ThreadKind::Execution
+        || child_thread.executor_kind != "plan_infer"
+        || child_thread.executor_id.as_deref() != Some(plan.id.as_str())
+    {
+        return Err("PlanExecution 与 deterministic infer Thread 的 route 不一致".to_string());
+    }
+
+    if signal.id != expected_signal_id
+        || signal.thread_id != child_thread.id
+        || signal.thread_generation != child_thread.generation
+        || signal.event_id != event.id
+        || signal.principal_id != plan.initiating_principal_id
+        || signal.sequence != event_sequence
+        || signal.kind != event.topic
+        || signal
+            .parent_activation_id
+            .as_deref()
+            .is_some_and(|parent| Some(parent) != expected_parent)
+    {
+        return Err("PlanExecution 与 deterministic infer Signal 的 route 不一致".to_string());
+    }
+
+    if activation.agent_id != plan.agent_id
+        || activation.context_id != plan.context_id
+        || activation.session_id != plan.session_id
+        || activation.initiating_principal_id != plan.initiating_principal_id
+        || activation.trigger_event_id != event.id
+        || activation.trigger_sequence != event_sequence
+        || activation.trigger_kind != event.topic
+        || activation.root_turn_id != child_thread.root_turn_id
+        || activation.generation != child_thread.generation
+        || activation
+            .parent_activation_id
+            .as_deref()
+            .is_some_and(|parent| Some(parent) != expected_parent)
+    {
+        return Err("PlanExecution 与 deterministic infer Activation 的 route 不一致".to_string());
+    }
+
+    if parent_thread.id != plan.thread_id
+        || parent_thread.agent_id != plan.agent_id
+        || parent_thread.context_id != plan.context_id
+        || parent_thread.session_id != plan.session_id
+        || parent_thread.initiating_principal_id != plan.initiating_principal_id
+        || parent_activation.id != plan.activation_id
+        || parent_activation.agent_id != plan.agent_id
+        || parent_activation.context_id != plan.context_id
+        || parent_activation.session_id != plan.session_id
+        || parent_activation.initiating_principal_id != plan.initiating_principal_id
+        || parent_activation.root_turn_id != parent_thread.root_turn_id
+        || parent_activation.generation != parent_thread.generation
+    {
+        return Err("PlanExecution 与 existing parent Activation 的 route 不一致".to_string());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadActivationMutation {
     Updated(ThreadActivationRecord),
@@ -1184,6 +1286,16 @@ pub fn stable_thread_signal_id(event_id: &str) -> String {
     let digest = sha2::Sha256::digest(event_id.as_bytes());
     let id = format!("signal_{digest:x}");
     id[..31].to_string()
+}
+
+/// Stable scheduler identity for the physical Activation caused by one
+/// immutable trigger Event. Keeping the derivation in the Store contract lets
+/// recovery validate legacy rows without depending on process-local router
+/// state.
+pub(crate) fn stable_thread_activation_id(event_id: &str) -> String {
+    let digest = sha2::Sha256::digest(event_id.as_bytes());
+    let id = format!("work_{digest:x}");
+    id[..29].to_string()
 }
 
 /// Stable scheduler identity for the logical Thread rooted at one immutable
@@ -4783,6 +4895,16 @@ pub trait ActivationStore: Send + Sync {
         context_id: &str,
         status: Option<ThreadSignalStatus>,
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded cross-Context recovery view for mailbox work which has no
+    /// queued/running Activation owner. Immediate EventBus dispatch remains
+    /// the normal path; this query closes transient handler failures and
+    /// cross-process commit-before-notify windows while the Runtime stays up.
+    async fn list_runnable_pending_thread_signals(
+        &self,
+        _limit: usize,
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Vec::new())
+    }
     /// Batch mailbox projection for an already selected Thread aggregate.
     /// Store implementations should override this with one indexed query;
     /// the default preserves compatibility for test stores.
@@ -5131,6 +5253,16 @@ pub trait PlanExecutionStore: Send + Sync {
         request_event: &crate::event::Event,
         activation_id: &str,
     ) -> Result<PlanEvaluationCommit, Box<dyn std::error::Error + Send + Sync>>;
+    /// Validates the complete durable route of a waiting deterministic infer
+    /// child and returns its Activation. As a narrowly-scoped compatibility
+    /// repair, an otherwise exact pre-parent-route row may adopt the Plan's
+    /// existing parent Activation when both the Signal and child Activation
+    /// parent columns are NULL. Non-NULL conflicts are never rewritten.
+    async fn reconcile_plan_evaluation_activation(
+        &self,
+        plan_id: &str,
+        activation_id: &str,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Makes a waiting plan runnable after validating the exact child route.
     async fn resume_plan_execution(
         &self,
@@ -5529,6 +5661,7 @@ pub trait ScheduleStore: Send + Sync {
         expected_revision: u64,
         next_not_before: Option<DateTime<Utc>>,
         event: &crate::event::Event,
+        occurrence_thread: Option<&NewThread>,
     ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
 }
 

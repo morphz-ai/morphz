@@ -7,11 +7,11 @@ use crate::execution::{
 };
 use crate::llm::{ModelAttachment, ToolDefinition};
 use crate::memory::{
-    EdgeOutputStream, EventStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionRetrySafety, NewObjective, NewRuntimeTimer, NewSchedule,
-    NewScheduledObjective, NewThread, NewThreadGroup, NewThreadGroupMember, NewThreadGroupPlan,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus,
+    stable_thread_id, EdgeOutputStream, EventStore, ExecutionJobFilter, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionRetrySafety, NewObjective, NewRuntimeTimer,
+    NewSchedule, NewScheduledObjective, NewThread, NewThreadGroup, NewThreadGroupMember,
+    NewThreadGroupPlan, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    RuntimeTimerKind, RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus,
     ScheduledObjectiveWaitBinding, SessionStatus, SessionStore, ThreadGroupPolicy, ThreadKind,
     ThreadLifecycle, ThreadLifetime, ThreadPromotionMutation, ThreadPromotionRequest, ThreadRecord,
     ThreadSupervision, ThreadSupervisorKind,
@@ -1833,6 +1833,19 @@ impl ThreadScheduler {
         } else {
             owner.root_turn_id.clone()
         };
+        let occurrence_thread = current.interval_seconds.map(|_| NewThread {
+            id: stable_thread_id(&root_turn_id),
+            agent_id: owner.agent_id.clone(),
+            context_id: owner.context_id.clone(),
+            session_id: owner.session_id.clone(),
+            initiating_principal_id: owner.initiating_principal_id.clone(),
+            root_turn_id: root_turn_id.clone(),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: owner.target_id.clone(),
+            supervision: ThreadSupervision::runtime("schedule-occurrence-router"),
+        });
         let event_id = format!("schedule_due_{}_r{}", current.id, occurrence_revision);
         let payload = serde_json::Map::from_iter([
             ("agent_id".to_string(), serde_json::json!(owner.agent_id)),
@@ -1885,7 +1898,13 @@ impl ThreadScheduler {
         );
         let Some(claimed) = self
             .sessions
-            .commit_scheduled_dispatch(&current.id, current.revision, next_not_before, &event)
+            .commit_scheduled_dispatch(
+                &current.id,
+                current.revision,
+                next_not_before,
+                &event,
+                occurrence_thread.as_ref(),
+            )
             .await?
         else {
             return Ok(TimerDisposition::Complete);
@@ -3423,7 +3442,7 @@ fn schedule_due_at(
     }))
 }
 
-fn scheduled_occurrence_root(intent_id: &str, revision: u64) -> String {
+pub(crate) fn scheduled_occurrence_root(intent_id: &str, revision: u64) -> String {
     let digest = sha256_hex(format!("{intent_id}\0{revision}").as_bytes());
     format!("scheduled_occurrence_{}", &digest[..24])
 }
@@ -9481,6 +9500,60 @@ Body
             .unwrap()
             .unwrap();
         assert_eq!(recovered.status, ScheduleStatus::Dispatched);
+    }
+
+    #[tokio::test]
+    async fn recurring_schedule_routes_each_due_event_to_its_occurrence_thread() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[("thread-recurring-template", "root-recurring-template")],
+        )
+        .await;
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let (scheduler, timers) = build_test_scheduler(bus, Arc::clone(&store));
+        let intent = store
+            .ensure_schedule(NewSchedule {
+                id: "schedule-recurring-route".to_string(),
+                thread_id: "thread-recurring-template".to_string(),
+                source_turn_id: "root-recurring-template".to_string(),
+                intent: "run one independent recurring occurrence".to_string(),
+                not_before: Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+                interval_seconds: Some(60),
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        scheduler.arm(intent).await.unwrap();
+
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+        let event = receiver.recv().await.unwrap();
+        let occurrence_root = event.payload["root_turn_id"].as_str().unwrap();
+        let occurrence = store
+            .get_thread_by_root(occurrence_root)
+            .await
+            .unwrap()
+            .expect("recurring due commit must atomically materialize its occurrence Thread");
+        let signal = store
+            .list_context_thread_signals(
+                "context-scheduler-test",
+                Some(crate::memory::ThreadSignalStatus::Pending),
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|signal| signal.event_id == event.id)
+            .expect("recurring due commit must append one pending Signal");
+        assert_eq!(signal.thread_id, occurrence.id);
+        assert_ne!(occurrence.id, "thread-recurring-template");
     }
 
     #[async_trait::async_trait]

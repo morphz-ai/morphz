@@ -2,13 +2,14 @@
 
 use super::{
     append_direct_thread_signal_in_transaction, append_event_in_transaction,
-    ensure_execution_job_in_transaction, ensure_thread_in_transaction, parse_time, thread_from_row,
-    SqliteStore,
+    ensure_execution_job_in_transaction, ensure_thread_in_transaction, parse_time,
+    thread_activation_from_row, thread_from_row, thread_signal_from_row, SqliteStore,
 };
 use crate::memory::{
-    stable_thread_id, NewExecutionJob, NewPlanExecution, NewThread, PlanEvaluationCommit,
-    PlanExecutionFilter, PlanExecutionJobCommit, PlanExecutionMutation, PlanExecutionRecord,
-    PlanExecutionStatus, PlanExecutionStore, PlanExecutionWaitKind, ThreadKind, ThreadSupervision,
+    stable_thread_id, validate_plan_evaluation_activation_route, NewExecutionJob, NewPlanExecution,
+    NewThread, PlanEvaluationCommit, PlanExecutionFilter, PlanExecutionJobCommit,
+    PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus, PlanExecutionStore,
+    PlanExecutionWaitKind, ThreadKind, ThreadSupervision,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -747,6 +748,140 @@ impl PlanExecutionStore for SqliteStore {
             activation_id: activation_id.to_string(),
             existing: false,
         })
+    }
+
+    async fn reconcile_plan_evaluation_activation(
+        &self,
+        plan_id: &str,
+        activation_id: &str,
+    ) -> Result<Option<crate::memory::ThreadActivationRecord>, StoreError> {
+        let mut tx = self.pool.begin().await?;
+        // Acquire SQLite's single writer slot before composing the route
+        // snapshot. The repair is then atomic with respect to Signal claims
+        // and Activation terminalization.
+        sqlx::query("UPDATE plan_executions SET revision = revision WHERE id = ?")
+            .bind(plan_id)
+            .execute(&mut *tx)
+            .await?;
+        let plan_row = sqlx::query("SELECT * FROM plan_executions WHERE id = ?")
+            .bind(plan_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("PlanExecution '{plan_id}' 不存在"))?;
+        let plan = record_from_row(&plan_row)?;
+        if plan.status != PlanExecutionStatus::Waiting
+            || plan.pending_kind != Some(PlanExecutionWaitKind::Evaluation)
+            || plan.pending_id.as_deref() != Some(activation_id)
+        {
+            return Err(format!(
+                "PlanExecution '{}' 没有等待 child Activation '{}'",
+                plan.id, activation_id
+            )
+            .into());
+        }
+
+        let Some(activation_row) = sqlx::query("SELECT * FROM thread_activations WHERE id = ?")
+            .bind(activation_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let activation = thread_activation_from_row(&activation_row)?;
+        let child_thread_row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = ?")
+            .bind(&activation.root_turn_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let child_thread = thread_from_row(&child_thread_row)?;
+        let parent_thread_row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+            .bind(&plan.thread_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let parent_thread = thread_from_row(&parent_thread_row)?;
+        let parent_activation_row = sqlx::query("SELECT * FROM thread_activations WHERE id = ?")
+            .bind(&plan.activation_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "PlanExecution '{}' 的 parent Activation '{}' 不存在",
+                    plan.id, plan.activation_id
+                )
+            })?;
+        let parent_activation = thread_activation_from_row(&parent_activation_row)?;
+        let event_row = sqlx::query(
+            r#"SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload
+               FROM events WHERE id = ?"#,
+        )
+        .bind(&activation.trigger_event_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let event = crate::event::Event {
+            id: event_row.get("id"),
+            sequence: Some(u64::try_from(event_row.get::<i64, _>("event_sequence"))?),
+            timestamp: parse_time(&event_row.get::<String, _>("timestamp")),
+            actor: event_row.get("actor"),
+            event_type: event_row.get("type"),
+            topic: event_row.get("topic"),
+            payload: serde_json::from_str(&event_row.get::<String, _>("payload"))?,
+        };
+        let signal_rows = sqlx::query(
+            r#"SELECT signals.* FROM activation_signals links
+               JOIN thread_signals signals ON signals.id = links.signal_id
+               WHERE links.activation_id = ?"#,
+        )
+        .bind(&activation.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if signal_rows.len() != 1 {
+            return Err(format!(
+                "PlanExecution '{}' 的 deterministic child Activation '{}' 关联了 {} 个 Signals",
+                plan.id,
+                activation.id,
+                signal_rows.len()
+            )
+            .into());
+        }
+        let signal = thread_signal_from_row(&signal_rows[0])?;
+        validate_plan_evaluation_activation_route(
+            &plan,
+            &event,
+            &child_thread,
+            &signal,
+            &activation,
+            &parent_thread,
+            &parent_activation,
+        )?;
+
+        if signal.parent_activation_id.is_none() {
+            sqlx::query(
+                "UPDATE thread_signals SET parent_activation_id = ? WHERE id = ? AND parent_activation_id IS NULL",
+            )
+            .bind(&plan.activation_id)
+            .bind(&signal.id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        if activation.parent_activation_id.is_none() {
+            sqlx::query(
+                r#"UPDATE thread_activations
+                   SET parent_activation_id = ?, revision = revision + 1, updated_at = ?
+                   WHERE id = ? AND parent_activation_id IS NULL"#,
+            )
+            .bind(&plan.activation_id)
+            .bind(now_text())
+            .bind(&activation.id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let repaired_row = sqlx::query("SELECT * FROM thread_activations WHERE id = ?")
+            .bind(&activation.id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let repaired = thread_activation_from_row(&repaired_row)?;
+        tx.commit().await?;
+        Ok(Some(repaired))
     }
 
     async fn resume_plan_execution(
