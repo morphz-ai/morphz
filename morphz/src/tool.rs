@@ -5,7 +5,7 @@ use crate::execution::{
     deterministic_job_id, ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat,
     JobOutcome, JobReceipt,
 };
-use crate::llm::ToolDefinition;
+use crate::llm::{ModelAttachment, ToolDefinition};
 use crate::memory::{
     EdgeOutputStream, EventStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, ExecutionRetrySafety, NewObjective, NewRuntimeTimer, NewSchedule,
@@ -29,6 +29,7 @@ use crate::scheduler::{
     SchedulerKernel, SpawnSupervisedGroupCommand,
 };
 use crate::timer::{TimerDisposition, TimerEngine};
+use base64::Engine as _;
 use dashmap::DashMap;
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
@@ -64,6 +65,83 @@ tokio::task_local! {
 pub struct ToolOutputChunk {
     pub stream: EdgeOutputStream,
     pub text: String,
+}
+
+/// Typed, heap-allocated result produced by one tool execution.
+///
+/// `text` is the durable, recallable observation. `model_attachments` are an
+/// ephemeral transport payload: the Orchestrator imports them into its
+/// content-addressed model-input store before the result Event is committed,
+/// then only stable references remain in the Ledger. This keeps binary data
+/// out of Context while allowing the next model Attempt to receive native
+/// multimodal content. Keeping this result behind a `Box` also prevents rich
+/// tool payload support from enlarging every nested Runtime future.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolExecutionResult {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_attachments: Vec<ModelAttachment>,
+}
+
+impl ToolExecutionResult {
+    const TRANSPORT_VERSION: u64 = 1;
+
+    pub fn text(text: impl Into<String>) -> Box<Self> {
+        Box::new(Self {
+            text: text.into(),
+            model_attachments: Vec::new(),
+        })
+    }
+
+    pub fn with_attachments(
+        text: impl Into<String>,
+        model_attachments: Vec<ModelAttachment>,
+    ) -> Box<Self> {
+        Box::new(Self {
+            text: text.into(),
+            model_attachments,
+        })
+    }
+
+    /// Versioned wire representation used only by string-only Edge/SSH
+    /// transports. Plain text remains plain text for backward compatibility.
+    pub fn encode_transport(&self) -> Result<String, serde_json::Error> {
+        if self.model_attachments.is_empty() {
+            return Ok(self.text.clone());
+        }
+        serde_json::to_string(&serde_json::json!({
+            "_morphz_tool_result": {
+                "version": Self::TRANSPORT_VERSION,
+                "text": self.text,
+                "model_attachments": self.model_attachments,
+            }
+        }))
+    }
+
+    pub fn decode_transport(value: String) -> Box<Self> {
+        let Some(envelope) = serde_json::from_str::<serde_json::Value>(&value)
+            .ok()
+            .and_then(|value| value.get("_morphz_tool_result").cloned())
+        else {
+            return Self::text(value);
+        };
+        if envelope.get("version").and_then(serde_json::Value::as_u64)
+            != Some(Self::TRANSPORT_VERSION)
+        {
+            return Self::text(value);
+        }
+        let Some(text) = envelope.get("text").and_then(serde_json::Value::as_str) else {
+            return Self::text(value);
+        };
+        let Some(model_attachments) = envelope
+            .get("model_attachments")
+            .cloned()
+            .and_then(|attachments| serde_json::from_value(attachments).ok())
+        else {
+            return Self::text(value);
+        };
+        Self::with_attachments(text, model_attachments)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,6 +344,12 @@ pub trait Tool: Send + Sync {
     fn retry_safety(&self) -> ExecutionRetrySafety {
         ExecutionRetrySafety::AtMostOnce
     }
+    /// Decoded single-artifact ceiling for tools that can return model-visible
+    /// binary input. Execution backends use this to preserve the same policy
+    /// on local, Managed SSH and Edge targets.
+    fn max_model_input_attachment_bytes(&self) -> Option<usize> {
+        None
+    }
     /// Pure preflight for the exact capability delta this invocation would
     /// request before crossing a physical boundary. Runtime persists and
     /// resolves this requirement before claiming the ExecutionJob.
@@ -279,6 +363,16 @@ pub trait Tool: Send + Sync {
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Rich execution path used by Runtime-owned dispatch. Existing tools
+    /// remain text-only by default; multimodal tools override this method
+    /// without forcing every implementation to manufacture an envelope.
+    async fn execute_result(
+        &self,
+        arguments: &str,
+    ) -> Result<Box<ToolExecutionResult>, Box<dyn std::error::Error + Send + Sync>> {
+        self.execute(arguments).await.map(ToolExecutionResult::text)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4323,17 +4417,33 @@ impl Tool for WriteFileTool {
 // ==========================================
 pub struct ReadFileTool {
     permissions: Arc<PermissionBroker>,
+    max_model_input_attachment_bytes: usize,
 }
 
 impl ReadFileTool {
     pub fn new(config: Arc<PermissionConfig>) -> Self {
         Self {
             permissions: broker_from_config(config),
+            max_model_input_attachment_bytes: crate::config::ModelInputConfig::default()
+                .max_artifact_bytes,
         }
     }
 
     pub fn new_with_permissions(permissions: Arc<PermissionBroker>) -> Self {
-        Self { permissions }
+        Self::new_with_permissions_and_limit(
+            permissions,
+            crate::config::ModelInputConfig::default().max_artifact_bytes,
+        )
+    }
+
+    pub fn new_with_permissions_and_limit(
+        permissions: Arc<PermissionBroker>,
+        max_model_input_attachment_bytes: usize,
+    ) -> Self {
+        Self {
+            permissions,
+            max_model_input_attachment_bytes: max_model_input_attachment_bytes.max(1),
+        }
     }
 }
 
@@ -4361,6 +4471,10 @@ impl Tool for ReadFileTool {
 
     fn retry_safety(&self) -> ExecutionRetrySafety {
         ExecutionRetrySafety::Idempotent
+    }
+
+    fn max_model_input_attachment_bytes(&self) -> Option<usize> {
+        Some(self.max_model_input_attachment_bytes)
     }
 
     fn definition(&self) -> ToolDefinition {
@@ -4403,7 +4517,7 @@ impl Tool for ReadFileTool {
 
         ToolDefinition {
             name: "read".to_string(),
-            description: "Read a UTF-8 file and always return byte count and SHA-256 version for later edit/overwrite. For a short file pass only path. For a long file use query for narrow line-numbered evidence or start_line/end_line for exact paging."
+            description: "Read a file from the current Execution Target. UTF-8 text returns content plus byte count and SHA-256 for later edit/overwrite. JPEG, PNG, GIF, and WebP return a model-visible image attachment; do not pass line/query options for images. For a short text file pass only path. For a long text file use query for narrow line-numbered evidence or start_line/end_line for exact paging."
                 .to_string(),
             parameters: params_json,
         }
@@ -4424,6 +4538,16 @@ impl Tool for ReadFileTool {
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        self.execute_result(arguments)
+            .await?
+            .encode_transport()
+            .map_err(Into::into)
+    }
+
+    async fn execute_result(
+        &self,
+        arguments: &str,
+    ) -> Result<Box<ToolExecutionResult>, Box<dyn std::error::Error + Send + Sync>> {
         let args: ReadFileArgs = serde_json::from_str(arguments)?;
         let absolute_path = match self
             .permissions
@@ -4437,41 +4561,141 @@ impl Tool for ReadFileTool {
             .await
         {
             Ok(path) => path,
-            Err(e) => return Ok(format!("系统报错：读取路径被权限策略拒绝：{}", e)),
+            Err(e) => {
+                return Ok(ToolExecutionResult::text(format!(
+                    "系统报错：读取路径被权限策略拒绝：{}",
+                    e
+                )))
+            }
         };
 
         if !absolute_path.exists() {
-            return Ok(format!(
+            return Ok(ToolExecutionResult::text(format!(
                 "系统报错：读取失败。指定的文件路径 '{}' 不存在，请检查路径是否正确。",
                 args.path
+            )));
+        }
+
+        // Sniff a bounded header before allocating the whole file. The exact
+        // byte check below remains authoritative if the file changes between
+        // metadata and read, but an obviously oversized image must not first
+        // consume unbounded memory merely so Runtime can reject it.
+        if let Ok(metadata) = tokio::fs::metadata(&absolute_path).await {
+            if usize::try_from(metadata.len()).unwrap_or(usize::MAX)
+                > self.max_model_input_attachment_bytes
+            {
+                use tokio::io::AsyncReadExt as _;
+                if let Ok(mut file) = tokio::fs::File::open(&absolute_path).await {
+                    let mut header = [0_u8; 12];
+                    let bytes_read = file.read(&mut header).await.unwrap_or_default();
+                    if supported_image_media_type(&header[..bytes_read]).is_some() {
+                        return Err(format!(
+                            "图片 '{}' 大小为 {} bytes，超过当前模型输入单文件上限 {} bytes",
+                            args.path,
+                            metadata.len(),
+                            self.max_model_input_attachment_bytes,
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+
+        let data = match tokio::fs::read(&absolute_path).await {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Ok(ToolExecutionResult::text(format!(
+                    "系统报错：无权限读取文件 '{}'。请检查操作系统权限设置或更换有读取权限的路径。",
+                    absolute_path.display()
+                )))
+            }
+            Err(error) => {
+                return Ok(ToolExecutionResult::text(format!(
+                    "系统报错：读取文件 '{}' 失败，原因: {:?}",
+                    absolute_path.display(),
+                    error
+                )))
+            }
+        };
+        let sha256 = sha256_hex(&data);
+        if let Some(media_type) = supported_image_media_type(&data) {
+            if args.start_line.is_some()
+                || args.end_line.is_some()
+                || args.query.is_some()
+                || args.context_lines.is_some()
+                || args.max_matches.is_some()
+            {
+                return Err("图片 read 不能使用 start_line、end_line、query、context_lines 或 max_matches；只传 path 即可".into());
+            }
+            if data.len() > self.max_model_input_attachment_bytes {
+                return Err(format!(
+                    "图片 '{}' 大小为 {} bytes，超过当前模型输入单文件上限 {} bytes",
+                    args.path,
+                    data.len(),
+                    self.max_model_input_attachment_bytes,
+                )
+                .into());
+            }
+            let name = absolute_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("image")
+                .to_string();
+            let text = serde_json::json!({
+                "kind": "model_visible_artifact",
+                "status": "loaded",
+                "path": args.path,
+                "name": name.clone(),
+                "media_type": media_type,
+                "size_bytes": data.len(),
+                "sha256": sha256,
+            })
+            .to_string();
+            return Ok(ToolExecutionResult::with_attachments(
+                text,
+                vec![ModelAttachment {
+                    name,
+                    media_type: media_type.to_string(),
+                    data_base64: base64::engine::general_purpose::STANDARD.encode(data),
+                }],
             ));
         }
 
-        match tokio::fs::read_to_string(&absolute_path).await {
-            Ok(content) => {
-                let sha256 = sha256_hex(content.as_bytes());
-                let header = format!(
-                    "[path={}, bytes={}, sha256={}]\n",
-                    args.path,
-                    content.len(),
-                    sha256
-                );
-                if args.query.is_none() && args.start_line.is_none() && args.end_line.is_none() {
-                    return Ok(format!("{}{}", header, content));
-                }
-                Ok(format!("{}{}", header, select_file_lines(&content, &args)?))
-            }
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    return Ok(format!("系统报错：无权限读取文件 '{}'。请检查操作系统权限设置或更换有读取权限的路径。", absolute_path.display()));
-                }
-                Ok(format!(
-                    "系统报错：读取文件 '{}' 失败，原因: {:?}",
-                    absolute_path.display(),
-                    e
-                ))
-            }
+        let content = String::from_utf8(data).map_err(|_| {
+            format!(
+                "文件 '{}' 不是 UTF-8 文本，也不是受支持的 JPEG、PNG、GIF 或 WebP 图片",
+                args.path
+            )
+        })?;
+        let header = format!(
+            "[path={}, bytes={}, sha256={}]\n",
+            args.path,
+            content.len(),
+            sha256
+        );
+        if args.query.is_none() && args.start_line.is_none() && args.end_line.is_none() {
+            return Ok(ToolExecutionResult::text(format!("{}{}", header, content)));
         }
+        Ok(ToolExecutionResult::text(format!(
+            "{}{}",
+            header,
+            select_file_lines(&content, &args)?
+        )))
+    }
+}
+
+fn supported_image_media_type(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if data.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
     }
 }
 
@@ -9465,6 +9689,74 @@ Body
             .unwrap();
         assert!(overwrite_res.contains("operation=overwrite"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "updated");
+    }
+
+    #[tokio::test]
+    async fn read_image_returns_typed_attachment_and_round_trips_edge_transport() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("pixel.png");
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+            .unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let read = ReadFileTool::new(permissive_security());
+        let arguments = serde_json::json!({ "path": path }).to_string();
+
+        let result = read.execute_result(&arguments).await.unwrap();
+        assert_eq!(result.model_attachments.len(), 1);
+        assert_eq!(result.model_attachments[0].name, "pixel.png");
+        assert_eq!(result.model_attachments[0].media_type, "image/png");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&result.model_attachments[0].data_base64)
+                .unwrap(),
+            png
+        );
+        let metadata: serde_json::Value = serde_json::from_str(&result.text).unwrap();
+        assert_eq!(metadata["kind"], "model_visible_artifact");
+        assert_eq!(metadata["size_bytes"], png.len());
+
+        let transport = read.execute(&arguments).await.unwrap();
+        let decoded = ToolExecutionResult::decode_transport(transport);
+        assert_eq!(decoded, result);
+    }
+
+    #[tokio::test]
+    async fn read_image_rejects_text_selectors_and_unknown_binary() {
+        let tmp = TempDir::new().unwrap();
+        let image = tmp.path().join("pixel.png");
+        std::fs::write(&image, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        let binary = tmp.path().join("payload.bin");
+        std::fs::write(&binary, b"\0\xff\0\xfe").unwrap();
+        let read = ReadFileTool::new(permissive_security());
+
+        let selector_error = read
+            .execute_result(&serde_json::json!({ "path": image, "start_line": 1 }).to_string())
+            .await
+            .unwrap_err();
+        assert!(selector_error.to_string().contains("图片 read 不能使用"));
+
+        let binary_error = read
+            .execute_result(&serde_json::json!({ "path": binary }).to_string())
+            .await
+            .unwrap_err();
+        assert!(binary_error.to_string().contains("不是 UTF-8 文本"));
+    }
+
+    #[tokio::test]
+    async fn read_image_uses_the_runtime_supplied_artifact_limit() {
+        let tmp = TempDir::new().unwrap();
+        let image = tmp.path().join("pixel.png");
+        std::fs::write(&image, b"\x89PNG\r\n\x1a\nmore-than-eight").unwrap();
+        let read = ReadFileTool::new_with_permissions_and_limit(
+            broker_from_config(permissive_security()),
+            8,
+        );
+        let error = read
+            .execute_result(&serde_json::json!({ "path": image }).to_string())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("单文件上限 8 bytes"));
     }
 
     #[tokio::test]

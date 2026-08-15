@@ -565,6 +565,43 @@ pub struct ModelRequestContext {
     pub required_capabilities: Vec<String>,
 }
 
+/// Optional decoded-binary ceilings for one physical model request. Missing
+/// values are deliberately unknown rather than guessed. The Runtime combines
+/// a binding's declared limits with host policy by taking the stricter value
+/// for each dimension.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ModelInputLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attachments: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attachment_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_bytes: Option<usize>,
+}
+
+impl ModelInputLimits {
+    pub fn stricter(self, other: Self) -> Self {
+        fn minimum(left: Option<usize>, right: Option<usize>) -> Option<usize> {
+            match (left, right) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            }
+        }
+        Self {
+            max_attachments: minimum(self.max_attachments, other.max_attachments),
+            max_attachment_bytes: minimum(self.max_attachment_bytes, other.max_attachment_bytes),
+            max_total_bytes: minimum(self.max_total_bytes, other.max_total_bytes),
+        }
+    }
+
+    pub fn is_unspecified(&self) -> bool {
+        self.max_attachments.is_none()
+            && self.max_attachment_bytes.is_none()
+            && self.max_total_bytes.is_none()
+    }
+}
+
 /// Immutable physical identity of a Model Attempt. A retry may only change
 /// these fields by creating and persisting a new binding revision explicitly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -581,6 +618,10 @@ pub struct ModelAttemptBinding {
     pub endpoint: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Exact limits declared for this physical model. Empty means the service
+    /// did not declare them; it does not mean unlimited.
+    #[serde(default, skip_serializing_if = "ModelInputLimits::is_unspecified")]
+    pub model_input_limits: ModelInputLimits,
 }
 
 /// Secret-free result of an explicit operator probe against one immutable
@@ -725,6 +766,7 @@ pub trait Client: Send + Sync {
             provider_adapter_version: "1".to_string(),
             endpoint: self.provider_resource_key(),
             capabilities: Vec::new(),
+            model_input_limits: ModelInputLimits::default(),
         })
     }
 

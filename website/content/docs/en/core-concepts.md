@@ -1,16 +1,16 @@
 ---
 title: Core concepts
-description: A stable mental model for Agents, Contexts, Sessions, cognitive frames, and execution.
+description: A stable mental model for the S-Expression Cognitive Machine, Agents, Contexts, Sessions, cognitive frames, and execution.
 section: concepts
 order: 100
 status: current
 ---
 
-Morphz separates model evaluation from runtime state. Models propose cognition and action; the runtime validates structure, permissions, causality, and persistence.
+Morphz is an **S-Expression Cognitive Machine**. S-expressions carry its executable cognitive state, programs, constraints, and evaluation entry points. A replaceable language model acts as the nondeterministic semantic processor that proposes cognition and action; the Runtime acts as the deterministic transactional kernel that validates structure, permissions, causality, versions, and persistence.
 
 ## Agent
 
-An Agent combines identity, cognitive policy, tool boundaries, and defaults. It is not a model account or a single model request.
+An Agent is an instance of the machine with a loaded identity, cognitive policy, tool boundaries, and defaults. It is not Morphz's base machine definition, a model account, or a single model request.
 
 ## Context
 

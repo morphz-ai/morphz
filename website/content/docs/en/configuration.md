@@ -53,3 +53,27 @@ max_output_tokens = 32768
 ```
 
 Set them only when returned by the service or confirmed by the operator. An absent field means unknown, not zero, and must not trigger a guessed value.
+
+Model inputs likewise separate host safety policy from physical-model capability. Host policy belongs to user configuration and cannot be relaxed by a project file:
+
+```toml
+[model_input]
+max_artifacts_per_import = 128
+max_artifact_bytes = 134217728
+max_import_bytes = 268435456
+max_artifacts_per_request = 128
+max_request_bytes = 268435456
+```
+
+The first three fields bound one user upload or tool-result import; the last two bound the final physical model request. Dashboard reads this same policy from Runtime instead of carrying another set of constants. The defaults support a typical 43-screenshot visual review, while remaining configurable host memory, disk, and transport safeguards—not claims about a model.
+
+Declare stricter physical-model limits only when the service returns them explicitly or the operator has confirmed them:
+
+```toml
+[services.example.models."physical-model"]
+max_input_attachments = 64
+max_input_attachment_bytes = 67108864
+max_input_attachment_total_bytes = 201326592
+```
+
+Each request takes the stricter value from host policy and the physical-model declaration for every dimension. Missing model fields remain unknown; Morphz does not infer them from a model name. Model Attempt state records the actual attachment count and bytes, the effective limits, and their source.

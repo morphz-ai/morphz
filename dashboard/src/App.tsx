@@ -873,6 +873,13 @@ interface RuntimeStatus {
   permission_mode: string
   sandbox_mode: string
   reviewer: string
+  model_input: {
+    max_artifacts_per_import: number
+    max_artifact_bytes: number
+    max_import_bytes: number
+    max_artifacts_per_request: number
+    max_request_bytes: number
+  }
 }
 
 interface ExecutionTargetSummary {
@@ -2178,6 +2185,14 @@ const MessageAttachments = memo(function MessageAttachments({
   )
 })
 
+function formatFileSize(bytes: number): string {
+  const mib = 1024 * 1024
+  const kib = 1024
+  if (bytes >= mib) return `${Number((bytes / mib).toFixed(1))} MiB`
+  if (bytes >= kib) return `${Number((bytes / kib).toFixed(1))} KiB`
+  return `${bytes} B`
+}
+
 // Keep draft input state below App. A keystroke should only reconcile the
 // composer, not the full event history and every dashboard view.
 const Composer = memo(function Composer({
@@ -2195,6 +2210,7 @@ const Composer = memo(function Composer({
   onSend,
   onCancel,
   onError,
+  modelInputPolicy,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>
   selectedSessionId: string
@@ -2210,6 +2226,7 @@ const Composer = memo(function Composer({
   onSend: (message: string, attachments: ComposerAttachment[]) => Promise<boolean>
   onCancel: () => void
   onError: (message: string) => void
+  modelInputPolicy?: RuntimeStatus['model_input']
 }) {
   const [message, setMessage] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
@@ -2232,18 +2249,26 @@ const Composer = memo(function Composer({
     if (readOnly) return
     const incoming = Array.from(files)
     if (!incoming.length) return
-    if (attachments.length + incoming.length > 8) {
-      onError(t('composer.attachments.tooMany'))
+    if (modelInputPolicy
+      && attachments.length + incoming.length > modelInputPolicy.max_artifacts_per_import) {
+      onError(t('composer.attachments.tooMany', {
+        count: modelInputPolicy.max_artifacts_per_import,
+      }))
       return
     }
-    if (incoming.some(file => file.size > 20 * 1024 * 1024)) {
-      onError(t('composer.attachments.fileTooLarge'))
+    if (modelInputPolicy
+      && incoming.some(file => file.size > modelInputPolicy.max_artifact_bytes)) {
+      onError(t('composer.attachments.fileTooLarge', {
+        size: formatFileSize(modelInputPolicy.max_artifact_bytes),
+      }))
       return
     }
     const totalBytes = attachments.reduce((total, item) => total + item.size, 0)
       + incoming.reduce((total, file) => total + file.size, 0)
-    if (totalBytes > 40 * 1024 * 1024) {
-      onError(t('composer.attachments.totalTooLarge'))
+    if (modelInputPolicy && totalBytes > modelInputPolicy.max_import_bytes) {
+      onError(t('composer.attachments.totalTooLarge', {
+        size: formatFileSize(modelInputPolicy.max_import_bytes),
+      }))
       return
     }
     try {
@@ -2267,7 +2292,7 @@ const Composer = memo(function Composer({
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [attachments, onError, readOnly, t])
+  }, [attachments, modelInputPolicy, onError, readOnly, t])
 
   return (
     <div
@@ -7903,6 +7928,7 @@ export default function App() {
             onSend={sendMessage}
             onCancel={cancelCurrentSession}
             onError={setError}
+            modelInputPolicy={status?.model_input}
           />
           <div className="shortcut-row"><span>{t('composer.shortcuts.send')}</span><span>{t('composer.shortcuts.newline')}</span><span>{t('composer.shortcuts.tasks')}</span><span>{t('composer.shortcuts.mind')}</span><span>{t('composer.shortcuts.back')}</span></div>
           {error && (

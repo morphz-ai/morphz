@@ -242,7 +242,7 @@ VM 物理与求值规则
 
 已有证据：
 
-- Cognitive SExpr VM 身份相对传统 Agent 身份没有退化；
+- 历史 Cognitive SExpr VM Prompt 实验相对传统 Agent Prompt 没有退化；
 - 模型能把 `seq/call/fallback/module/reply` 映射为真实 Function Calling；
 - VM 身份下普通对话仍然有效；
 - 可读 SExpr 在简短过程测试中表现稳定。

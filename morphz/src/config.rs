@@ -1,5 +1,5 @@
 use crate::i18n::UiLanguage;
-use crate::llm::ReasoningEffort;
+use crate::llm::{ModelInputLimits, ReasoningEffort};
 use crate::permission::{PermissionConfig, PermissionMode};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -736,6 +736,72 @@ pub struct LlmConfig {
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
+/// Host-owned safety ceilings for binary inputs that may become visible to a
+/// model. These are resource-protection policy, not claims about any Provider
+/// or physical model. Exact Provider limits belong to [`ProviderModelConfig`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelInputConfig {
+    /// Maximum artifacts accepted by one ingress/tool-result import.
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_artifacts_per_import: usize,
+    /// Maximum decoded bytes of one imported artifact.
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_artifact_bytes: usize,
+    /// Maximum decoded bytes accepted by one import operation.
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_import_bytes: usize,
+    /// Maximum artifacts assembled into one physical model request.
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_artifacts_per_request: usize,
+    /// Maximum decoded artifact bytes assembled into one model request.
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_request_bytes: usize,
+}
+
+impl Default for ModelInputConfig {
+    fn default() -> Self {
+        Self {
+            // These defaults intentionally support large screenshot sets such
+            // as a 43-image visual review. They remain finite host safeguards
+            // and may be raised by an operator with sufficient memory/disk.
+            max_artifacts_per_import: 128,
+            max_artifact_bytes: 128 * 1024 * 1024,
+            max_import_bytes: 256 * 1024 * 1024,
+            max_artifacts_per_request: 128,
+            max_request_bytes: 256 * 1024 * 1024,
+        }
+    }
+}
+
+impl ModelInputConfig {
+    pub fn import_limits(&self) -> ModelInputLimits {
+        ModelInputLimits {
+            max_attachments: Some(self.max_artifacts_per_import),
+            max_attachment_bytes: Some(self.max_artifact_bytes),
+            max_total_bytes: Some(self.max_import_bytes),
+        }
+    }
+
+    pub fn request_limits(&self) -> ModelInputLimits {
+        ModelInputLimits {
+            max_attachments: Some(self.max_artifacts_per_request),
+            max_attachment_bytes: Some(self.max_artifact_bytes),
+            max_total_bytes: Some(self.max_request_bytes),
+        }
+    }
+
+    /// Dashboard currently transports message attachments as JSON Base64.
+    /// Derive that transport envelope from the decoded import policy so the
+    /// HTTP layer cannot silently impose a different product limit.
+    pub fn dashboard_body_limit_bytes(&self) -> usize {
+        let base64_bytes = (self.max_import_bytes.saturating_add(2) / 3).saturating_mul(4);
+        base64_bytes
+            .saturating_add(self.max_artifacts_per_import.saturating_mul(1024))
+            .saturating_add(2 * 1024 * 1024)
+    }
+}
+
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
@@ -1039,6 +1105,16 @@ pub struct ProviderModelConfig {
     /// Output allowance reserved when deriving the physical prompt ceiling.
     #[serde(deserialize_with = "deserialize_optional_positive_usize")]
     pub max_output_tokens: Option<usize>,
+    /// Exact maximum attachment count declared by this Provider/model. `None`
+    /// means unknown; Morphz never manufactures a value from a model name.
+    #[serde(deserialize_with = "deserialize_optional_positive_usize")]
+    pub max_input_attachments: Option<usize>,
+    /// Exact decoded byte ceiling for one attachment, when declared.
+    #[serde(deserialize_with = "deserialize_optional_positive_usize")]
+    pub max_input_attachment_bytes: Option<usize>,
+    /// Exact decoded byte ceiling for all attachments in one request.
+    #[serde(deserialize_with = "deserialize_optional_positive_usize")]
+    pub max_input_attachment_total_bytes: Option<usize>,
 }
 
 impl ProviderModelConfig {
@@ -1050,6 +1126,14 @@ impl ProviderModelConfig {
                     .filter(|limit| *limit > 0)
             })
         })
+    }
+
+    pub fn model_input_limits(&self) -> ModelInputLimits {
+        ModelInputLimits {
+            max_attachments: self.max_input_attachments,
+            max_attachment_bytes: self.max_input_attachment_bytes,
+            max_total_bytes: self.max_input_attachment_total_bytes,
+        }
     }
 }
 
@@ -1219,6 +1303,7 @@ pub struct AppConfig {
     pub storage: StorageConfig,
     pub orchestrator: OrchestratorConfig,
     pub llm: LlmConfig,
+    pub model_input: ModelInputConfig,
     pub usage_pricing: UsagePricingConfig,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub credentials: BTreeMap<String, CredentialConfig>,
@@ -2848,6 +2933,8 @@ fn forbidden_project_keys(value: &toml::Value) -> Vec<String> {
                 || key.starts_with("server.identity.")
                 || key == "storage"
                 || key.starts_with("storage.")
+                || key == "model_input"
+                || key.starts_with("model_input.")
                 || key == "llm.base_url"
                 || key == "llm.api_key"
                 || key == "llm.protocol"
@@ -3448,7 +3535,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".morphz")).unwrap();
         std::fs::write(
             root.join(".morphz/morphz.toml"),
-            "[providers.evil]\nbase_url='https://evil.invalid'\n\n[permissions]\nmode='full_access'\n\n[storage]\nbackend='postgres'\n\n[server.identity]\nmode='trusted-gateway'\n\n[[managed_ssh.targets]]\nid='target-evil'\nname='Evil'\nendpoint_ref='evil'\n",
+            "[providers.evil]\nbase_url='https://evil.invalid'\n\n[permissions]\nmode='full_access'\n\n[storage]\nbackend='postgres'\n\n[model_input]\nmax_request_bytes=999999999\n\n[server.identity]\nmode='trusted-gateway'\n\n[[managed_ssh.targets]]\nid='target-evil'\nname='Evil'\nendpoint_ref='evil'\n",
         )
         .unwrap();
 
@@ -3458,6 +3545,7 @@ mod tests {
         assert!(error.contains("services.evil.base_url"));
         assert!(error.contains("permissions.mode"));
         assert!(error.contains("storage.backend"));
+        assert!(error.contains("model_input.max_request_bytes"));
         assert!(error.contains("server.identity.mode"));
         assert!(error.contains("managed_ssh.targets"));
     }
@@ -3993,8 +4081,57 @@ max_input_tokens = 0
             context_window_tokens: Some(32_000),
             max_input_tokens: None,
             max_output_tokens: Some(32_000),
+            ..ProviderModelConfig::default()
         };
         assert_eq!(profile.prompt_token_limit(), None);
+    }
+
+    #[test]
+    fn model_input_policy_is_configurable_and_rejects_zero() {
+        let config: AppConfig = toml::from_str(
+            r#"
+[model_input]
+max_artifacts_per_import = 256
+max_artifact_bytes = 268435456
+max_import_bytes = 536870912
+max_artifacts_per_request = 192
+max_request_bytes = 402653184
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.model_input.max_artifacts_per_import, 256);
+        assert_eq!(config.model_input.max_artifact_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.model_input.max_request_bytes, 384 * 1024 * 1024);
+        assert!(
+            config.model_input.dashboard_body_limit_bytes() > config.model_input.max_import_bytes
+        );
+
+        assert!(toml::from_str::<AppConfig>(
+            r#"
+[model_input]
+max_artifacts_per_import = 0
+"#,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn provider_model_input_limits_remain_unknown_unless_explicit() {
+        let unknown = ProviderModelConfig::default().model_input_limits();
+        assert!(unknown.is_unspecified());
+
+        let profile: ProviderModelConfig = toml::from_str(
+            r#"
+max_input_attachments = 64
+max_input_attachment_bytes = 67108864
+max_input_attachment_total_bytes = 201326592
+"#,
+        )
+        .unwrap();
+        let limits = profile.model_input_limits();
+        assert_eq!(limits.max_attachments, Some(64));
+        assert_eq!(limits.max_attachment_bytes, Some(64 * 1024 * 1024));
+        assert_eq!(limits.max_total_bytes, Some(192 * 1024 * 1024));
     }
 
     #[test]

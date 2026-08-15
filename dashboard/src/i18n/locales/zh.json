@@ -1190,9 +1190,9 @@
     "attachments": {
       "add": "添加图片或文件",
       "remove": "移除附件",
-      "tooMany": "单条消息最多添加 8 个附件",
-      "fileTooLarge": "单个附件不能超过 20 MiB",
-      "totalTooLarge": "单条消息的附件总大小不能超过 40 MiB"
+      "tooMany": "单条消息最多添加 {{count}} 个附件",
+      "fileTooLarge": "单个附件不能超过 {{size}}",
+      "totalTooLarge": "单条消息的附件总大小不能超过 {{size}}"
     },
     "status": {
       "idle": "空闲",

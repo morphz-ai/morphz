@@ -2,6 +2,9 @@ export interface ProviderModelProfile {
   context_window_tokens?: number
   max_input_tokens?: number
   max_output_tokens?: number
+  max_input_attachments?: number
+  max_input_attachment_bytes?: number
+  max_input_attachment_total_bytes?: number
 }
 
 export interface ProviderInstanceInput {
@@ -87,6 +90,9 @@ export interface AccountModelOption {
   contextWindowTokens: string
   maxInputTokens: string
   maxOutputTokens: string
+  maxInputAttachments?: number
+  maxInputAttachmentBytes?: number
+  maxInputAttachmentTotalBytes?: number
 }
 
 export interface EnabledModelSelection {
@@ -95,6 +101,9 @@ export interface EnabledModelSelection {
   context_window_tokens?: number
   max_input_tokens?: number
   max_output_tokens?: number
+  max_input_attachments?: number
+  max_input_attachment_bytes?: number
+  max_input_attachment_total_bytes?: number
 }
 
 export interface AccountDiagnosticLike {
@@ -256,6 +265,12 @@ export function buildAccountModelOptions(input: {
   return Array.from(discovered).sort().map(id => {
     const configured = input.configuredProfiles[id]
     const provider = discoveredProfiles[id]
+    const maxInputAttachments =
+      configured?.max_input_attachments ?? provider?.max_input_attachments
+    const maxInputAttachmentBytes =
+      configured?.max_input_attachment_bytes ?? provider?.max_input_attachment_bytes
+    const maxInputAttachmentTotalBytes = configured?.max_input_attachment_total_bytes
+      ?? provider?.max_input_attachment_total_bytes
     return {
       id,
       enabled: enabled.has(id),
@@ -266,6 +281,11 @@ export function buildAccountModelOptions(input: {
         (configured?.max_input_tokens ?? provider?.max_input_tokens)?.toString() ?? '',
       maxOutputTokens:
         (configured?.max_output_tokens ?? provider?.max_output_tokens)?.toString() ?? '',
+      ...(maxInputAttachments === undefined ? {} : { maxInputAttachments }),
+      ...(maxInputAttachmentBytes === undefined ? {} : { maxInputAttachmentBytes }),
+      ...(maxInputAttachmentTotalBytes === undefined
+        ? {}
+        : { maxInputAttachmentTotalBytes }),
     }
   })
 }
@@ -300,6 +320,15 @@ export function buildEnabledModelSelections(options: AccountModelOption[]): Enab
       context_window_tokens: contextWindow,
       max_input_tokens: maxInput,
       max_output_tokens: maxOutput,
+      ...(option.maxInputAttachments === undefined
+        ? {}
+        : { max_input_attachments: option.maxInputAttachments }),
+      ...(option.maxInputAttachmentBytes === undefined
+        ? {}
+        : { max_input_attachment_bytes: option.maxInputAttachmentBytes }),
+      ...(option.maxInputAttachmentTotalBytes === undefined
+        ? {}
+        : { max_input_attachment_total_bytes: option.maxInputAttachmentTotalBytes }),
     }
   })
 }

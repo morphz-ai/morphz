@@ -27,7 +27,9 @@ use crate::memory::{
     ExecutionTargetKind, ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
     ExecutionTargetStore, NewEdgeCommand, NewExecutionJob,
 };
-use crate::tool::{Tool, ToolExecutionClass, ToolExecutionRouting, CURRENT_PRINCIPAL_ID};
+use crate::tool::{
+    Tool, ToolExecutionClass, ToolExecutionResult, ToolExecutionRouting, CURRENT_PRINCIPAL_ID,
+};
 
 pub type TargetExecutionError = Box<dyn Error + Send + Sync>;
 
@@ -801,7 +803,7 @@ pub trait ExecutionTargetBackend: Send + Sync {
         context: &TargetExecutionContext,
         tool: Arc<dyn Tool>,
         arguments: &str,
-    ) -> Result<String, TargetExecutionError>;
+    ) -> Result<Box<ToolExecutionResult>, TargetExecutionError>;
 }
 
 /// Route-pair transport selected by Runtime for cross-Target Artifact
@@ -846,7 +848,7 @@ impl ExecutionTargetBackend for InProcessLocalBackend {
         context: &TargetExecutionContext,
         tool: Arc<dyn Tool>,
         arguments: &str,
-    ) -> Result<String, TargetExecutionError> {
+    ) -> Result<Box<ToolExecutionResult>, TargetExecutionError> {
         if context.target.id != DEFAULT_EXECUTION_TARGET_ID {
             return Err(format!(
                 "InProcessLocal Backend 只能执行 '{}'，不能隐式代理 '{}'",
@@ -854,7 +856,7 @@ impl ExecutionTargetBackend for InProcessLocalBackend {
             )
             .into());
         }
-        tool.execute(arguments).await
+        tool.execute_result(arguments).await
     }
 }
 
@@ -902,7 +904,7 @@ impl ExecutionTargetBackend for EdgeNodeBackend {
         context: &TargetExecutionContext,
         tool: Arc<dyn Tool>,
         arguments: &str,
-    ) -> Result<String, TargetExecutionError> {
+    ) -> Result<Box<ToolExecutionResult>, TargetExecutionError> {
         let provider_node_id = context.target.provider_node_id.as_deref().ok_or_else(|| {
             format!(
                 "Edge Target '{}' 没有权威 provider_node_id",
@@ -927,14 +929,16 @@ impl ExecutionTargetBackend for EdgeNodeBackend {
                 .ok_or("Edge Command 在等待期间消失")?;
             match command.status {
                 EdgeCommandStatus::Succeeded => {
-                    return Ok(command.output.unwrap_or_else(|| {
-                        serde_json::json!({
-                            "status": "success",
-                            "output": null,
-                            "message": "Edge tool completed without output"
-                        })
-                        .to_string()
-                    }));
+                    return Ok(ToolExecutionResult::decode_transport(
+                        command.output.unwrap_or_else(|| {
+                            serde_json::json!({
+                                "status": "success",
+                                "output": null,
+                                "message": "Edge tool completed without output"
+                            })
+                            .to_string()
+                        }),
+                    ));
                 }
                 EdgeCommandStatus::Failed => {
                     return Err(command
@@ -1902,7 +1906,7 @@ impl ExecutionTargetBackend for ManagedSshBackend {
         context: &TargetExecutionContext,
         tool: Arc<dyn Tool>,
         arguments: &str,
-    ) -> Result<String, TargetExecutionError> {
+    ) -> Result<Box<ToolExecutionResult>, TargetExecutionError> {
         if context.target.provider_node_id.is_some() {
             return self.edge.execute(context, tool, arguments).await;
         }
@@ -1979,7 +1983,7 @@ impl ExecutionTargetBackend for ManagedSshBackend {
                     arguments,
                 )?;
                 crate::tool::CURRENT_RUNTIME_MANAGED_SSH
-                    .scope(true, tool.execute(&prepared))
+                    .scope(true, tool.execute_result(&prepared))
                     .await
             }
             "read" | "write" | "edit" | "list_files" | "search" => {
@@ -1988,6 +1992,7 @@ impl ExecutionTargetBackend for ManagedSshBackend {
                     context.target.workspace_root.as_deref(),
                     tool.name(),
                     arguments,
+                    tool.max_model_input_attachment_bytes(),
                 )
                 .await
             }
@@ -3238,6 +3243,7 @@ async fn run_managed_ssh_output(
 /// as JSON, so paths and file contents never become shell syntax.
 const MANAGED_SSH_FILE_TOOL_SCRIPT: &str = r#"
 import fnmatch
+import base64
 import hashlib
 import json
 import os
@@ -3269,9 +3275,61 @@ def read_tool(args, workspace_root):
     if not os.path.exists(path):
         return "系统报错：读取失败。指定的文件路径 '{}' 不存在，请检查路径是否正确。".format(original)
     with open(path, "rb") as handle:
+        header = handle.read(12)
+    media_type = None
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        media_type = "image/png"
+    elif header.startswith(b"\xff\xd8\xff"):
+        media_type = "image/jpeg"
+    elif header.startswith(b"GIF87a") or header.startswith(b"GIF89a"):
+        media_type = "image/gif"
+    elif len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        media_type = "image/webp"
+    max_attachment_bytes = request.get("max_model_input_attachment_bytes")
+    if media_type is not None and max_attachment_bytes is not None:
+        size_bytes = os.path.getsize(path)
+        if size_bytes > max_attachment_bytes:
+            raise ValueError(
+                "图片 '{}' 大小为 {} bytes，超过当前模型输入单文件上限 {} bytes".format(
+                    original, size_bytes, max_attachment_bytes
+                )
+            )
+    with open(path, "rb") as handle:
         data = handle.read()
-    text = data.decode("utf-8")
     digest = hashlib.sha256(data).hexdigest()
+    if media_type is not None:
+        if any(args.get(name) is not None for name in (
+            "start_line", "end_line", "query", "context_lines", "max_matches"
+        )):
+            raise ValueError("图片 read 不能使用行号或 query 参数；只传 path 即可")
+        if max_attachment_bytes is not None and len(data) > max_attachment_bytes:
+            raise ValueError(
+                "图片 '{}' 大小为 {} bytes，超过当前模型输入单文件上限 {} bytes".format(
+                    original, len(data), max_attachment_bytes
+                )
+            )
+        name = os.path.basename(path) or "image"
+        result = {
+            "kind": "model_visible_artifact",
+            "status": "loaded",
+            "path": original,
+            "name": name,
+            "media_type": media_type,
+            "size_bytes": len(data),
+            "sha256": digest,
+        }
+        return json.dumps({
+            "_morphz_tool_result": {
+                "version": 1,
+                "text": json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+                "model_attachments": [{
+                    "name": name,
+                    "media_type": media_type,
+                    "data_base64": base64.b64encode(data).decode("ascii"),
+                }],
+            }
+        }, ensure_ascii=False, separators=(",", ":"))
+    text = data.decode("utf-8")
     header = "[path={}, bytes={}, sha256={}]\n".format(original, len(data), digest)
     if args.get("query") is None and args.get("start_line") is None and args.get("end_line") is None:
         return header + text
@@ -3550,12 +3608,14 @@ async fn execute_managed_ssh_file_tool(
     workspace_root: Option<&str>,
     operation: &str,
     arguments: &str,
-) -> Result<String, TargetExecutionError> {
+    max_model_input_attachment_bytes: Option<usize>,
+) -> Result<Box<ToolExecutionResult>, TargetExecutionError> {
     let arguments: serde_json::Value = serde_json::from_str(arguments)?;
     let request = serde_json::to_vec(&serde_json::json!({
         "operation": operation,
         "arguments": arguments,
         "workspace_root": workspace_root,
+        "max_model_input_attachment_bytes": max_model_input_attachment_bytes,
     }))?;
     let command = managed_ssh_file_tool_command();
     let output = run_managed_ssh_output_with_input(endpoint, &command, &request).await?;
@@ -3576,11 +3636,13 @@ async fn execute_managed_ssh_file_tool(
         )
     })?;
     if envelope.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
-        return Ok(envelope
-            .get("output")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string());
+        return Ok(ToolExecutionResult::decode_transport(
+            envelope
+                .get("output")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ));
     }
     Err(format!(
         "Managed SSH 工具 '{}' 被远端拒绝：{}",
@@ -3703,7 +3765,7 @@ impl ExecutionTargetDispatcher {
         job: &ExecutionJobRecord,
         tool: Arc<dyn Tool>,
         arguments: &str,
-    ) -> Result<String, TargetExecutionError> {
+    ) -> Result<Box<ToolExecutionResult>, TargetExecutionError> {
         let route = route_snapshot_from_job(job)?;
         if tool.execution_routing() == ToolExecutionRouting::ArtifactTransfer {
             let routes = artifact_transfer_routes_from_job(job)?;
@@ -3737,7 +3799,7 @@ impl ExecutionTargetDispatcher {
             if let Some(backend) = self.artifact_transfer_backend_for(&routes) {
                 let receipt = backend.execute_transfer(job, &routes, &transfer).await?;
                 receipt.validate_against(&transfer)?;
-                return Ok(serde_json::to_string(&receipt)?);
+                return Ok(ToolExecutionResult::text(serde_json::to_string(&receipt)?));
             }
             if routes.source.target_id != routes.destination.target_id {
                 return Err(format!(
@@ -5549,6 +5611,35 @@ mod tests {
         assert_eq!(read["ok"], true);
         assert!(read["output"].as_str().unwrap().contains("sha256="));
         assert!(read["output"].as_str().unwrap().contains("generated"));
+
+        std::fs::write(
+            temp.path().join("src/pixel.png"),
+            b"\x89PNG\r\n\x1a\nmanaged-ssh-image",
+        )
+        .unwrap();
+        let image = invoke(serde_json::json!({
+            "operation": "read",
+            "workspace_root": &workspace,
+            "arguments": {"path": "src/pixel.png"}
+        }));
+        assert_eq!(image["ok"], true);
+        let image_result =
+            ToolExecutionResult::decode_transport(image["output"].as_str().unwrap().to_string());
+        assert_eq!(image_result.model_attachments.len(), 1);
+        assert_eq!(image_result.model_attachments[0].media_type, "image/png");
+        assert_eq!(image_result.model_attachments[0].name, "pixel.png");
+
+        let rejected_image = invoke(serde_json::json!({
+            "operation": "read",
+            "workspace_root": &workspace,
+            "max_model_input_attachment_bytes": 8,
+            "arguments": {"path": "src/pixel.png"}
+        }));
+        assert_eq!(rejected_image["ok"], false);
+        assert!(rejected_image["error"]
+            .as_str()
+            .unwrap()
+            .contains("单文件上限 8 bytes"));
 
         let digest = read["output"]
             .as_str()

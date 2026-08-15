@@ -1,6 +1,6 @@
 # Morphz
 
-Morphz 是一个由 Rust 实现、能够通过 SExpr DSL 自主管理自身 Context 的 AI Agent。它的核心不只是运行工具，而是把工作注意力的语义控制权交给 LLM：Agent 自己决定保留、派生、修订、保护、退役和恢复哪些信息，Runtime 只负责事务、版本、权限、资源压力、持久化与恢复。
+Morphz 是一台由 Rust Runtime 承载、运行在大语言模型上的 **S-Expression Cognitive Machine（S 表达式认知机）**。LLM 是可替换的非确定性语义处理器，负责理解、推理与提出认知或行动；Runtime 是确定性事务内核，负责结构、事务、版本、权限、资源边界、持久化与恢复。Agent 是认知机加载身份、Context、能力与行为策略后的实例，不是 Morphz 的基础机器定义。
 
 当前核心能力、验证边界和仍未成熟的方向，统一以 [Morphz Runtime 核心实现状态总览 v1](docs/morphz_runtime_core_implementation_status_v1.md) 为索引。历史设计文档保留演进过程；若其中的旧实施状态与当前源码不一致，以该状态总览和最新专项文档为准。
 

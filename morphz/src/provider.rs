@@ -89,10 +89,19 @@ fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderMod
             .then(|| positive_usize(row.get("outputTokenLimit")))
             .flatten()
     });
+    // These fields are consumed only when a service returns them explicitly.
+    // There is intentionally no model-name table or inferred visual limit.
+    let max_input_attachments = positive_usize(row.get("max_input_attachments"));
+    let max_input_attachment_bytes = positive_usize(row.get("max_input_attachment_bytes"));
+    let max_input_attachment_total_bytes =
+        positive_usize(row.get("max_input_attachment_total_bytes"));
     ProviderModelConfig {
         context_window_tokens,
         max_input_tokens,
         max_output_tokens,
+        max_input_attachments,
+        max_input_attachment_bytes,
+        max_input_attachment_total_bytes,
     }
 }
 

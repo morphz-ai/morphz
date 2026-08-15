@@ -125,9 +125,9 @@ source: generated-cli-schema
 ## 顶层命令帮助
 
 ```text
-Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理运行时。
+Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 S 表达式认知机。语言模型是它的非确定性语义处理器，Runtime 是确定性事务内核。
 
-不带子命令输入的文本会直接发送给代理。
+不带子命令输入的文本会直接发送给所选 Agent 实例。
 
 用法：morphz [OPTIONS] [PROMPT]... [COMMAND]
 

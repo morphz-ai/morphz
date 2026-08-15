@@ -6,6 +6,8 @@
 
 正式结果见 [语义 SExpr VM 五组对照结果 v1](./morphz_semantic_sexpr_vm_ablation_results_v1.md)。其中发现的最终空响应问题，已在 [显式 Reply 决策双组回归结果 v1](./morphz_explicit_reply_ab_results_v1.md) 中完成专项回归。
 
+> 术语说明：本文保留 2026-07-13 实验实际使用的“语义虚拟机”Prompt 原文，以保证实验可复现。当前产品统一称为 **S-Expression Cognitive Machine（S 表达式认知机）**；LLM 是其中的非确定性语义处理器，旧文案不是当前产品身份。
+
 ## 1. 实验边界
 
 本实验只验证 L1 VM 身份，不加载人类助手、Coding Agent、机器控制器等高层身份。所有组使用相同模型、工具、任务、预算、工具结果和终止条件。

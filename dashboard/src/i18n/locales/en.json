@@ -1190,9 +1190,9 @@
     "attachments": {
       "add": "Add images or files",
       "remove": "Remove attachment",
-      "tooMany": "A message can contain at most 8 attachments",
-      "fileTooLarge": "Each attachment must be 20 MiB or smaller",
-      "totalTooLarge": "Attachments in one message must total 40 MiB or less"
+      "tooMany": "A message can contain at most {{count}} attachments",
+      "fileTooLarge": "Each attachment must be {{size}} or smaller",
+      "totalTooLarge": "Attachments in one message must total {{size}} or less"
     },
     "status": {
       "idle": "Idle",

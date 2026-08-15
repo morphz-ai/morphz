@@ -23,8 +23,8 @@ use crate::harness_package::{
     persist_evaluation_harness_binding,
 };
 use crate::llm::{
-    attachment_message, Client, Message, ModelAttachment, ModelFailure, ModelFailureKind,
-    ModelRequestContext, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
+    attachment_message, Client, Message, ModelFailure, ModelFailureKind, ModelRequestContext,
+    ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
 };
 use crate::memory::{
     stable_thread_id, ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit,
@@ -1148,6 +1148,7 @@ enum ModelCompletionErrorOrigin {
     Provider,
     RuntimePersistence,
     RuntimeInternal,
+    RuntimeInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1240,6 +1241,15 @@ impl ModelCompletionError {
             reasoning_summary: String::new(),
             partial_text: String::new(),
             origin: ModelCompletionErrorOrigin::RuntimeInternal,
+        }
+    }
+
+    fn input(source: DynError) -> Self {
+        Self {
+            source,
+            reasoning_summary: String::new(),
+            partial_text: String::new(),
+            origin: ModelCompletionErrorOrigin::RuntimeInput,
         }
     }
 
@@ -1716,6 +1726,7 @@ pub struct Orchestrator {
     tool_definitions: Vec<crate::llm::ToolDefinition>,
     context_engine: Arc<ContextEngine>,
     orchestrator_config: OrchestratorConfig,
+    model_input_config: crate::config::ModelInputConfig,
     event_writer_metrics: Arc<DurableEventWriterMetrics>,
     /// Last full model-request measurement per Context/Session. Rebuilding a
     /// Context Encoding produces a component-only fallback; inspection APIs
@@ -2461,6 +2472,7 @@ impl Orchestrator {
         client: Arc<dyn Client>,
         registry: Arc<Registry>,
         orchestrator_config: OrchestratorConfig,
+        model_input_config: crate::config::ModelInputConfig,
         context_engine: Arc<ContextEngine>,
         objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
         objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
@@ -2504,6 +2516,7 @@ impl Orchestrator {
             tool_definitions,
             context_engine,
             orchestrator_config,
+            model_input_config,
             event_writer_metrics: Arc::new(DurableEventWriterMetrics::default()),
             prompt_pressure_measurements: DashMap::new(),
             prompt_usage_anchors: DashMap::new(),
@@ -2569,6 +2582,7 @@ impl Orchestrator {
             client,
             registry,
             orchestrator_config,
+            crate::config::ModelInputConfig::default(),
             context_engine,
             Arc::new(ObjectiveEvaluationRegistry::default()),
             None,
@@ -5629,6 +5643,21 @@ impl Orchestrator {
                 continuation
                     .messages
                     .push(self.standard_tool_result_message(&call, output));
+                if let Some(items) = output
+                    .payload
+                    .get("model_attachments")
+                    .and_then(serde_json::Value::as_array)
+                {
+                    if let Some(message) = crate::model_input::attachment_message_from_metadata(
+                        &self.message_attachment_root,
+                        items,
+                        self.model_input_config.request_limits(),
+                    )
+                    .await?
+                    {
+                        continuation.messages.push(message);
+                    }
+                }
             }
         }
         Ok(continuation)
@@ -5699,6 +5728,15 @@ impl Orchestrator {
         let stream_context_id = self
             .context_id_for_session(session_id)
             .map_err(ModelCompletionError::internal)?;
+        let model_input_usage = crate::model_input::inspect_model_input_messages(&messages)
+            .map_err(ModelCompletionError::internal)?;
+        let host_model_input_limits = self.model_input_config.request_limits();
+        crate::model_input::validate_model_input_usage(
+            model_input_usage,
+            host_model_input_limits,
+            "最终模型请求（宿主策略）",
+        )
+        .map_err(ModelCompletionError::input)?;
         self.admit_provider_circuit(&stream_context_id)
             .await
             .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
@@ -5751,7 +5789,60 @@ impl Orchestrator {
             })
             .await
             .map_err(|error| ModelCompletionError::internal(error.into()))?;
+        let effective_model_input_limits =
+            host_model_input_limits.stricter(model_binding.model_input_limits);
         stream_route.push(("model_binding".to_string(), json!(&model_binding)));
+        let model_input_attributes = [
+            (
+                "model_input_attachment_count".to_string(),
+                json!(model_input_usage.attachment_count),
+            ),
+            (
+                "model_input_total_bytes".to_string(),
+                json!(model_input_usage.total_bytes),
+            ),
+            (
+                "model_input_largest_attachment_bytes".to_string(),
+                json!(model_input_usage.largest_attachment_bytes),
+            ),
+            (
+                "effective_model_input_limits".to_string(),
+                json!(effective_model_input_limits),
+            ),
+            (
+                "model_input_limit_source".to_string(),
+                json!(if model_binding.model_input_limits.is_unspecified() {
+                    "host-policy"
+                } else {
+                    "host-and-provider-model"
+                }),
+            ),
+        ];
+        if let Err(error) = crate::model_input::validate_model_input_usage(
+            model_input_usage,
+            effective_model_input_limits,
+            if model_binding.model_input_limits.is_unspecified() {
+                "最终模型请求（宿主策略；服务未声明附件上限）"
+            } else {
+                "最终模型请求（宿主与物理模型的有效上限）"
+            },
+        ) {
+            let detail = error.to_string();
+            persist_model_attempt_state(
+                &stream_bus,
+                &stream_context_id,
+                &stream_session_id,
+                &stream_attempt_id,
+                &stream_route,
+                "input_rejected",
+                true,
+                Some(&detail),
+                &model_input_attributes,
+            )
+            .await
+            .map_err(ModelCompletionError::persistence)?;
+            return Err(ModelCompletionError::input(error));
+        }
         persist_model_attempt_state(
             &stream_bus,
             &stream_context_id,
@@ -5761,7 +5852,7 @@ impl Orchestrator {
             "streaming",
             false,
             None,
-            &[],
+            &model_input_attributes,
         )
         .await
         .map_err(ModelCompletionError::persistence)?;
@@ -6686,56 +6777,79 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
-        let Some(items) = event
+        let mut items = event
             .payload
             .get("attachments")
             .and_then(serde_json::Value::as_array)
-        else {
-            return Ok(None);
-        };
-        if items.is_empty() {
-            return Ok(None);
-        }
+            .cloned()
+            .unwrap_or_default();
+        items.extend(
+            self.resolve_model_visible_attachment_metadata(
+                context_id,
+                &serde_json::Value::Object(event.payload.clone()),
+            )
+            .await?,
+        );
+        let mut seen = HashSet::new();
+        items.retain(|item| {
+            let key = (
+                item.get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                item.get("sha256")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            seen.insert(key)
+        });
+        crate::model_input::attachment_message_from_metadata(
+            &self.message_attachment_root,
+            &items,
+            self.model_input_config.request_limits(),
+        )
+        .await
+    }
 
-        let root = tokio::fs::canonicalize(&self.message_attachment_root).await?;
-        let mut attachments = Vec::with_capacity(items.len());
-        for item in items {
-            let name = item
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("消息附件缺少 name")?;
-            let media_type = item
-                .get("media_type")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("application/octet-stream");
-            let expected_digest = item
-                .get("sha256")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("消息附件缺少 sha256")?;
-            let storage_path = item
-                .get("storage_path")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("消息附件缺少 storage_path")?;
-            let path = tokio::fs::canonicalize(storage_path).await?;
-            if !path.starts_with(&root) {
+    async fn resolve_model_visible_attachment_metadata(
+        &self,
+        context_id: &str,
+        value: &serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>, DynError> {
+        let mut stored = Vec::new();
+        for reference in model_visible_attachment_references(value) {
+            let event = self
+                .context_engine
+                .find_event(context_id, &reference.source_event_id)
+                .await?
+                .ok_or_else(|| {
+                    format!("模型附件来源 Event '{}' 不存在", reference.source_event_id)
+                })?;
+            if event.event_type != TYPE_TOOL_OUTPUT {
                 return Err(format!(
-                    "消息附件 '{}' 位于 Artifact Store 之外，拒绝读取",
-                    path.display()
+                    "模型附件来源 Event '{}' 不是工具输出",
+                    reference.source_event_id
                 )
                 .into());
             }
-            let data = tokio::fs::read(&path).await?;
-            let actual_digest = format!("{:x}", Sha256::digest(&data));
-            if actual_digest != expected_digest {
-                return Err(format!("消息附件 '{}' 摘要校验失败", name).into());
-            }
-            attachments.push(ModelAttachment {
-                name: name.to_string(),
-                media_type: media_type.to_string(),
-                data_base64: base64::engine::general_purpose::STANDARD.encode(data),
-            });
+            let item = event
+                .payload
+                .get("model_attachments")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|items| {
+                    items.iter().find(|item| {
+                        item.get("id").and_then(serde_json::Value::as_str)
+                            == Some(reference.id.as_str())
+                            && item.get("sha256").and_then(serde_json::Value::as_str)
+                                == Some(reference.sha256.as_str())
+                    })
+                })
+                .cloned()
+                .ok_or_else(|| format!("模型附件引用 '{}' 与来源 Event 不一致", reference.id))?;
+            stored.push(item);
         }
-        Ok(Some(attachment_message(attachments)?))
+        Ok(stored)
     }
 
     async fn run_attempt(
@@ -7507,6 +7621,7 @@ impl Orchestrator {
                     let failure_origin = match error.origin {
                         ModelCompletionErrorOrigin::RuntimePersistence => "runtime_persistence",
                         ModelCompletionErrorOrigin::RuntimeInternal => "runtime_internal",
+                        ModelCompletionErrorOrigin::RuntimeInput => "input_rejected",
                         ModelCompletionErrorOrigin::Provider => unreachable!(
                             "Provider failures are handled by the following model branches"
                         ),
@@ -11981,6 +12096,9 @@ impl Orchestrator {
             let settled_event = action_group_settled.clone();
             let event_bus = Arc::clone(&self.bus);
             let objective_supervisor = self.objective_supervisor.clone();
+            let model_input_root = self.message_attachment_root.clone();
+            let model_input_import_limits = self.model_input_config.import_limits();
+            let model_input_event_id = output_id.clone();
             let objective_evaluation = self.objective_evaluations.get_for_activation(&attempt_id);
             let task_objective_id = objective_evaluation
                 .as_ref()
@@ -12079,7 +12197,7 @@ impl Orchestrator {
                                                                             )
                                                                             .await,
                                                                         None => tool
-                                                                            .execute(&execution_arguments)
+                                                                            .execute_result(&execution_arguments)
                                                                             .await,
                                                                     },
                                                                     None => Err(format!(
@@ -12106,18 +12224,23 @@ impl Orchestrator {
                                                             };
                                                             match result {
                                                                 Ok(Ok(output)) => {
-                                                                    let status =
-                                                                        infer_tool_status(&output);
+                                                                    let status = infer_tool_status(
+                                                                        &output.text,
+                                                                    );
                                                                     (output, status)
                                                                 }
                                                                 Ok(Err(error)) => (
-                                                                    format!("执行失败: {}", error),
+                                                                    crate::tool::ToolExecutionResult::text(
+                                                                        format!("执行失败: {}", error),
+                                                                    ),
                                                                     "error",
                                                                 ),
                                                                 Err(_) => (
-                                                                    format!(
-                                                                        "执行超时: 超过 {} 秒限额",
-                                                                        timeout_secs
+                                                                    crate::tool::ToolExecutionResult::text(
+                                                                        format!(
+                                                                            "执行超时: 超过 {} 秒限额",
+                                                                            timeout_secs
+                                                                        ),
                                                                     ),
                                                                     "timeout",
                                                                 ),
@@ -12143,7 +12266,10 @@ impl Orchestrator {
                                                                     )
                                                                     .await?;
                                                             }
-                                                            (reason, "cancelled")
+                                                            (
+                                                                crate::tool::ToolExecutionResult::text(reason),
+                                                                "cancelled",
+                                                            )
                                                         };
                                                         let wake_policy = if !task_wake_on_output {
                                                             "none"
@@ -12158,7 +12284,58 @@ impl Orchestrator {
                                                         } else {
                                                             "immediate"
                                                         };
-                                                        let output_empty = output.trim().is_empty();
+                                                        let raw_attachments = output
+                                                            .model_attachments
+                                                            .into_iter()
+                                                            .map(|attachment| {
+                                                                let data = base64::engine::general_purpose::STANDARD
+                                                                    .decode(&attachment.data_base64)
+                                                                    .map_err(|error| {
+                                                                        format!(
+                                                                            "工具 '{}' 返回的模型附件 '{}' 不是合法 Base64：{error}",
+                                                                            call.func_name,
+                                                                            attachment.name
+                                                                        )
+                                                                    })?;
+                                                                Ok::<_, DynError>(
+                                                                    crate::sdk::MessageAttachmentInput {
+                                                                        name: attachment.name,
+                                                                        media_type: attachment.media_type,
+                                                                        data,
+                                                                    },
+                                                                )
+                                                            })
+                                                            .collect::<Result<Vec<_>, _>>()?;
+                                                        let model_attachments =
+                                                            crate::model_input::persist_model_input_attachments(
+                                                                &model_input_root,
+                                                                "tool-inputs",
+                                                                &context_id,
+                                                                &model_input_event_id,
+                                                                raw_attachments,
+                                                                model_input_import_limits,
+                                                            )
+                                                            .await?;
+                                                        let mut output_text = output.text;
+                                                        if !model_attachments.is_empty() {
+                                                            let references = crate::model_input::public_attachment_references(
+                                                                &model_attachments,
+                                                                &model_input_event_id,
+                                                            );
+                                                            let mut value = serde_json::from_str::<serde_json::Value>(&output_text)
+                                                                .unwrap_or_else(|_| json!({
+                                                                    "status": "loaded",
+                                                                    "message": output_text.clone(),
+                                                                }));
+                                                            if let Some(object) = value.as_object_mut() {
+                                                                object.insert(
+                                                                    "model_attachments".to_string(),
+                                                                    serde_json::Value::Array(references),
+                                                                );
+                                                            }
+                                                            output_text = value.to_string();
+                                                        }
+                                                        let output_empty = output_text.trim().is_empty();
                                                         let mut payload = vec![
                                                             (
                                                                 "context_id".to_string(),
@@ -12196,10 +12373,16 @@ impl Orchestrator {
                                                                 "output_empty".to_string(),
                                                                 json!(output_empty),
                                                             ),
-                                                            ("text".to_string(), json!(output)),
+                                                            ("text".to_string(), json!(output_text)),
                                                         ]
                                                         .into_iter()
                                                         .collect::<serde_json::Map<_, _>>();
+                                                        if !model_attachments.is_empty() {
+                                                            payload.insert(
+                                                                "model_attachments".to_string(),
+                                                                serde_json::Value::Array(model_attachments),
+                                                            );
+                                                        }
                                                         if let Some(principal_id) =
                                                             output_principal_id
                                                         {
@@ -12264,7 +12447,7 @@ impl Orchestrator {
                                                         if call.func_name == "exec" {
                                                             extend_exec_output_facts(
                                                                 &mut payload,
-                                                                &output,
+                                                                &output_text,
                                                             );
                                                         }
                                                         let mut output = Event::new(
@@ -13861,13 +14044,29 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                  that text becomes the value of this step, is bound, and is returned to the program for continued evaluation.\
                  Therefore, do not write it as a message addressed to the user.\n\
                  (infer-request\n  (task {task:?})\n  (evidence {}))",
-                serde_json::to_string(&serde_json::Value::Object(evidence))
+                serde_json::to_string(&serde_json::Value::Object(evidence.clone()))
                     .unwrap_or_else(|_| "{}".to_string())
             ),
             name: None,
             tool_call_id: None,
             tool_calls: None,
         }];
+        let context_id = orchestrator.context_id_for_session(&self.session_id)?;
+        let stored = orchestrator
+            .resolve_model_visible_attachment_metadata(
+                &context_id,
+                &serde_json::Value::Object(evidence.clone()),
+            )
+            .await?;
+        if let Some(message) = crate::model_input::attachment_message_from_metadata(
+            &orchestrator.message_attachment_root,
+            &stored,
+            orchestrator.model_input_config.request_limits(),
+        )
+        .await?
+        {
+            messages.push(message);
+        }
         // `eval` is absent from this set, and that omission is what keeps the
         // language total: it severs `eval -> infer -> eval`, so nesting stops
         // at one level and a submitted program stays statically bounded. What
@@ -13940,22 +14139,82 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                 // executed, exactly as a `call` node would be.
                 let outcome = match orchestrator.registry.get(&call.func_name) {
                     Some(tool) if callable.contains(&call.func_name) => tool
-                        .execute(&call.arguments)
+                        .execute_result(&call.arguments)
                         .await
-                        .unwrap_or_else(|error| format!("执行失败: {error}")),
-                    _ => format!("执行拒绝: 工具 '{}' 不能在 infer 中调用", call.func_name),
+                        .unwrap_or_else(|error| {
+                            crate::tool::ToolExecutionResult::text(format!("执行失败: {error}"))
+                        }),
+                    _ => crate::tool::ToolExecutionResult::text(format!(
+                        "执行拒绝: 工具 '{}' 不能在 infer 中调用",
+                        call.func_name
+                    )),
                 };
                 messages.push(Message {
                     role: "tool".to_string(),
-                    content: outcome,
+                    content: outcome.text,
                     name: Some(call.func_name.clone()),
                     tool_call_id: Some(call.id.clone()),
                     tool_calls: None,
                 });
+                if !outcome.model_attachments.is_empty() {
+                    messages.push(attachment_message(outcome.model_attachments)?);
+                }
             }
         }
         Err("infer 未能在预算内产出值".into())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ModelVisibleAttachmentReference {
+    id: String,
+    sha256: String,
+    source_event_id: String,
+}
+
+fn model_visible_attachment_references(
+    value: &serde_json::Value,
+) -> Vec<ModelVisibleAttachmentReference> {
+    fn visit(
+        value: &serde_json::Value,
+        seen: &mut HashSet<ModelVisibleAttachmentReference>,
+        output: &mut Vec<ModelVisibleAttachmentReference>,
+    ) {
+        match value {
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    visit(item, seen, output);
+                }
+            }
+            serde_json::Value::Object(object) => {
+                if let (Some(id), Some(sha256), Some(source_event_id)) = (
+                    object.get("id").and_then(serde_json::Value::as_str),
+                    object.get("sha256").and_then(serde_json::Value::as_str),
+                    object
+                        .get("source_event_id")
+                        .and_then(serde_json::Value::as_str),
+                ) {
+                    let reference = ModelVisibleAttachmentReference {
+                        id: id.to_string(),
+                        sha256: sha256.to_string(),
+                        source_event_id: source_event_id.to_string(),
+                    };
+                    if seen.insert(reference.clone()) {
+                        output.push(reference);
+                    }
+                }
+                for child in object.values() {
+                    visit(child, seen, output);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut output = Vec::new();
+    visit(value, &mut seen, &mut output);
+    output
 }
 
 fn context_tx_output_succeeded(event: &Event) -> bool {
@@ -14840,17 +15099,18 @@ mod tests {
         compact_context_inspect_for_persistence, completed_objective_update_call,
         compose_context_encoding, critical_maintenance_transaction_available, derived_thread_kind,
         extend_exec_output_facts, harness_entry_callable_tools, legacy_plan_effect_sequence,
-        objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
-        plan_infer_tool_scope, production_system_prompt_inspection, recovery_owns_activation,
-        render_harness_context, render_system_contract, restrict_tools_to_scope,
-        retain_context_maintenance_tools, retain_final_reply_control_tools,
-        retain_pending_continuation_calls, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
-        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
-        tool_call_activity_preview, validate_final_reply_response,
-        validate_objective_closure_review_response, validate_objective_completion_call,
-        DialogueThreadGate, DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics,
-        DynError, EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
-        ModelReasoningSummaryAccumulator, NoReplyMode, TerminalDecision,
+        model_visible_attachment_references, objective_supervision_matches_state,
+        persist_model_reasoning_summary, persist_model_usage, plan_infer_tool_scope,
+        production_system_prompt_inspection, recovery_owns_activation, render_harness_context,
+        render_system_contract, restrict_tools_to_scope, retain_context_maintenance_tools,
+        retain_final_reply_control_tools, retain_pending_continuation_calls, runtime_claimant_id,
+        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
+        should_force_final_for_maintenance, tool_call_activity_preview,
+        validate_final_reply_response, validate_objective_closure_review_response,
+        validate_objective_completion_call, DialogueThreadGate, DialogueThreadLease,
+        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
+        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        ModelVisibleAttachmentReference, NoReplyMode, TerminalDecision,
         AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
@@ -16138,5 +16398,49 @@ mod tests {
         assert_eq!(payload["effective_boundary"]["network_enabled"], false);
         assert_eq!(payload["artifact_path"], "/tmp/task.log");
         assert!(!payload.contains_key("output"));
+    }
+
+    #[test]
+    fn model_visible_attachment_references_are_recursive_ordered_and_deduplicated() {
+        let value = json!({
+            "task": "inspect",
+            "evidence": {
+                "model_attachments": [
+                    {
+                        "id": "attachment-a",
+                        "sha256": "aaa",
+                        "source_event_id": "output-1"
+                    },
+                    {
+                        "id": "attachment-a",
+                        "sha256": "aaa",
+                        "source_event_id": "output-1"
+                    },
+                    {
+                        "nested": {
+                            "id": "attachment-b",
+                            "sha256": "bbb",
+                            "source_event_id": "output-2"
+                        }
+                    }
+                ]
+            }
+        });
+
+        assert_eq!(
+            model_visible_attachment_references(&value),
+            vec![
+                ModelVisibleAttachmentReference {
+                    id: "attachment-a".to_string(),
+                    sha256: "aaa".to_string(),
+                    source_event_id: "output-1".to_string(),
+                },
+                ModelVisibleAttachmentReference {
+                    id: "attachment-b".to_string(),
+                    sha256: "bbb".to_string(),
+                    source_event_id: "output-2".to_string(),
+                },
+            ]
+        );
     }
 }

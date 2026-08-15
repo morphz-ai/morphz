@@ -236,12 +236,12 @@ pub fn morphz_command_for(locale: Locale) -> Command {
     let command = Command::new("morphz")
         .version(crate::build_info::VERSION)
         .about(locale.text(
-            "Agent runtime with Context-owned Sessions",
-            "由上下文承载会话的代理运行时",
+            "S-Expression Cognitive Machine runtime",
+            "S 表达式认知机运行时",
         ))
         .long_about(locale.text(
-            "Morphz is an Agent runtime with persistent Context, Sessions, Objectives and a fullscreen terminal UI.\n\nText entered without a subcommand is sent directly to the Agent.",
-            "Morphz 是具有持久上下文、会话、目标和全屏终端界面的代理运行时。\n\n不带子命令输入的文本会直接发送给代理。",
+            "Morphz is an S-Expression Cognitive Machine with persistent Context, Sessions, Objectives and a fullscreen terminal UI. The language model is its nondeterministic semantic processor; the Runtime is its deterministic transactional kernel.\n\nText entered without a subcommand is sent directly to the selected Agent instance.",
+            "Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 S 表达式认知机。语言模型是它的非确定性语义处理器，Runtime 是确定性事务内核。\n\n不带子命令输入的文本会直接发送给所选 Agent 实例。",
         ))
         .propagate_version(true)
         .next_line_help(true)
@@ -2632,10 +2632,11 @@ mod tests {
             .parse(["--help"])
             .unwrap_err();
         let rendered = error.to_string();
-        assert!(rendered.contains("具有持久上下文、会话、目标"));
+        assert!(rendered.contains("S 表达式认知机"));
+        assert!(rendered.contains("非确定性语义处理器"));
         assert!(rendered.contains("用法："));
         assert!(rendered.contains("用户界面语言"));
-        assert!(!rendered.contains("Agent runtime with Context-owned Sessions"));
+        assert!(!rendered.contains("S-Expression Cognitive Machine runtime"));
         assert!(!rendered.contains("Usage:"));
     }
 }

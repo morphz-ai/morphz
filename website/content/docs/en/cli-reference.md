@@ -125,9 +125,9 @@ source: generated-cli-schema
 ## Top-level command help
 
 ```text
-Morphz is an Agent runtime with persistent Context, Sessions, Objectives and a fullscreen terminal UI.
+Morphz is an S-Expression Cognitive Machine with persistent Context, Sessions, Objectives and a fullscreen terminal UI. The language model is its nondeterministic semantic processor; the Runtime is its deterministic transactional kernel.
 
-Text entered without a subcommand is sent directly to the Agent.
+Text entered without a subcommand is sent directly to the selected Agent instance.
 
 Usage: morphz [OPTIONS] [PROMPT]... [COMMAND]
 

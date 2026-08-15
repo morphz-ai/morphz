@@ -332,9 +332,13 @@ async fn parent() -> Result<(), ProbeError> {
                 &session_id,
                 &format!("probe-client-message-{suffix}"),
                 &message,
+                false,
             )
             .await?,
-        MessageClaim::Accepted
+        MessageClaim::Accepted {
+            event: message.clone(),
+            interrupted: None,
+        }
     );
 
     wait_for_child(&mut worker_a, "worker-a").await?;

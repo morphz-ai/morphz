@@ -21,6 +21,7 @@ pub mod identity;
 pub mod llm;
 pub mod local_time;
 pub mod memory;
+pub mod model_input;
 pub mod objective;
 pub mod orchestrator;
 pub mod permission;

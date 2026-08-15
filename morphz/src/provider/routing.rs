@@ -35,7 +35,8 @@ fn split_discovered_catalog(
     for discovered in catalog {
         let has_capacity = discovered.profile.context_window_tokens.is_some()
             || discovered.profile.max_input_tokens.is_some()
-            || discovered.profile.max_output_tokens.is_some();
+            || discovered.profile.max_output_tokens.is_some()
+            || !discovered.profile.model_input_limits().is_unspecified();
         if has_capacity {
             profiles.insert(discovered.id.clone(), discovered.profile);
         }
@@ -393,6 +394,11 @@ impl RoutedClient {
             .provider_instances
             .get(&candidate.provider)
             .expect("validated route provider");
+        let model_input_limits = provider
+            .models
+            .get(&candidate.model)
+            .map(crate::config::ProviderModelConfig::model_input_limits)
+            .unwrap_or_default();
         Ok(ModelAttemptBinding {
             requested_alias: alias,
             route_id: route_id.to_string(),
@@ -405,6 +411,7 @@ impl RoutedClient {
             provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
             endpoint: provider.base_url.clone(),
             capabilities: candidate.capabilities,
+            model_input_limits,
         })
     }
 
@@ -421,6 +428,11 @@ impl RoutedClient {
             .provider_instances
             .get(&candidate.provider)
             .expect("validated route provider");
+        let model_input_limits = provider
+            .models
+            .get(&candidate.model)
+            .map(crate::config::ProviderModelConfig::model_input_limits)
+            .unwrap_or_default();
         ModelAttemptBinding {
             requested_alias: alias.to_string(),
             route_id: route_id.to_string(),
@@ -433,6 +445,7 @@ impl RoutedClient {
             provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
             endpoint: provider.base_url.clone(),
             capabilities: candidate.capabilities,
+            model_input_limits,
         }
     }
 
@@ -1072,6 +1085,11 @@ impl Client for RoutedClient {
             .provider_instances
             .get(&candidate.provider)
             .expect("validated route provider");
+        let model_input_limits = provider
+            .models
+            .get(&candidate.model)
+            .map(crate::config::ProviderModelConfig::model_input_limits)
+            .unwrap_or_default();
         Ok(ModelAttemptBinding {
             requested_alias: alias,
             route_id: route_id.to_string(),
@@ -1084,6 +1102,7 @@ impl Client for RoutedClient {
             provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
             endpoint: provider.base_url.clone(),
             capabilities: candidate.capabilities,
+            model_input_limits,
         })
     }
 
@@ -1197,18 +1216,26 @@ impl Client for RoutedClient {
             .clone()
             .or(enabled_model.clone())
             .unwrap_or_default();
-        let binding_for = |physical_model: String| ModelAttemptBinding {
-            requested_alias: physical_model.clone(),
-            route_id: format!("account:{account_id}"),
-            route_revision: "account-diagnostic-v1".to_string(),
-            provider_instance_id: provider_id.clone(),
-            auth_account_id: account_id.to_string(),
-            physical_model,
-            protocol: provider.protocol.as_str().to_string(),
-            provider_adapter: provider.adapter.clone(),
-            provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
-            endpoint: provider.base_url.clone(),
-            capabilities: Vec::new(),
+        let binding_for = |physical_model: String| {
+            let model_input_limits = provider
+                .models
+                .get(&physical_model)
+                .map(crate::config::ProviderModelConfig::model_input_limits)
+                .unwrap_or_default();
+            ModelAttemptBinding {
+                requested_alias: physical_model.clone(),
+                route_id: format!("account:{account_id}"),
+                route_revision: "account-diagnostic-v1".to_string(),
+                provider_instance_id: provider_id.clone(),
+                auth_account_id: account_id.to_string(),
+                physical_model,
+                protocol: provider.protocol.as_str().to_string(),
+                provider_adapter: provider.adapter.clone(),
+                provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
+                endpoint: provider.base_url.clone(),
+                capabilities: Vec::new(),
+                model_input_limits,
+            }
         };
 
         let started = std::time::Instant::now();
@@ -1392,7 +1419,15 @@ mod tests {
                 protocol: ModelProtocol::OpenaiResponses,
                 base_url: "http://localhost:8317/v1".to_string(),
                 accounts: vec!["account-a".to_string(), "account-b".to_string()],
-                models: BTreeMap::<String, ProviderModelConfig>::new(),
+                models: BTreeMap::from([(
+                    "physical-model-alpha".to_string(),
+                    ProviderModelConfig {
+                        max_input_attachments: Some(48),
+                        max_input_attachment_bytes: Some(96 * 1024 * 1024),
+                        max_input_attachment_total_bytes: Some(192 * 1024 * 1024),
+                        ..ProviderModelConfig::default()
+                    },
+                )]),
                 ..ProviderInstanceConfig::default()
             },
         );
@@ -1444,6 +1479,11 @@ mod tests {
         assert_eq!(first.requested_alias, "coding");
         assert_eq!(first.route_id, "coding-primary");
         assert_eq!(first.physical_model, "physical-model-alpha");
+        assert_eq!(first.model_input_limits.max_attachments, Some(48));
+        assert_eq!(
+            first.model_input_limits.max_total_bytes,
+            Some(192 * 1024 * 1024)
+        );
         assert_eq!(first.auth_account_id, second.auth_account_id);
     }
 

@@ -105,10 +105,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
-use tokio::io::AsyncWriteExt;
 
 pub type RuntimeError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -233,121 +232,25 @@ const ARTIFACT_TRANSFER_REQUEST_TOPIC: &str = "runtime/artifact_transfer_request
 const ARTIFACT_TRANSFER_PROGRESS_TOPIC: &str = "runtime/artifact_transfer_progress";
 const ARTIFACT_TRANSFER_COMPLETED_TOPIC: &str = "runtime/artifact_transfer_completed";
 const ARTIFACT_TRANSFER_FAILED_TOPIC: &str = "runtime/artifact_transfer_failed";
-const MAX_MESSAGE_ATTACHMENTS: usize = 8;
-const MAX_MESSAGE_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
-const MAX_MESSAGE_ATTACHMENTS_TOTAL_BYTES: usize = 40 * 1024 * 1024;
 const ARTIFACT_TRANSFER_CANCELLED_TOPIC: &str = "runtime/artifact_transfer_cancelled";
 const ARTIFACT_TRANSFER_WORKER_LEASE_SECS: i64 = 300;
 
 async fn persist_message_attachments(
     configured_root: &str,
+    model_input: &crate::config::ModelInputConfig,
     session_id: &str,
     event_id: &str,
     attachments: Vec<crate::sdk::MessageAttachmentInput>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    if attachments.len() > MAX_MESSAGE_ATTACHMENTS {
-        return Err(format!("单条消息最多允许 {MAX_MESSAGE_ATTACHMENTS} 个附件").into());
-    }
-    let total_bytes = attachments
-        .iter()
-        .try_fold(0usize, |total, attachment| {
-            if attachment.data.len() > MAX_MESSAGE_ATTACHMENT_BYTES {
-                return Err(format!(
-                    "附件 '{}' 超过单文件 {} MiB 限制",
-                    attachment.name,
-                    MAX_MESSAGE_ATTACHMENT_BYTES / 1024 / 1024
-                ));
-            }
-            total
-                .checked_add(attachment.data.len())
-                .ok_or_else(|| "附件总大小溢出".to_string())
-        })
-        .map_err(|error| -> RuntimeError { error.into() })?;
-    if total_bytes > MAX_MESSAGE_ATTACHMENTS_TOTAL_BYTES {
-        return Err(format!(
-            "单条消息附件总大小超过 {} MiB 限制",
-            MAX_MESSAGE_ATTACHMENTS_TOTAL_BYTES / 1024 / 1024
-        )
-        .into());
-    }
-    if attachments.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let root = PathBuf::from(configured_root);
-    let root = if root.is_absolute() {
-        root
-    } else {
-        std::env::current_dir()?.join(root)
-    };
-    let session_key = format!("{:x}", Sha256::digest(session_id.as_bytes()));
-    let directory = root.join("message-inputs").join(session_key);
-    tokio::fs::create_dir_all(&directory).await?;
-    let directory = tokio::fs::canonicalize(&directory).await?;
-    let mut metadata = Vec::with_capacity(attachments.len());
-
-    for (index, attachment) in attachments.into_iter().enumerate() {
-        let name = Path::new(attachment.name.trim())
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if name.is_empty() || name.chars().count() > 255 {
-            return Err("附件名称不能为空且不能超过 255 个字符".into());
-        }
-        let media_type = attachment.media_type.trim();
-        let media_type = if media_type.is_empty() {
-            "application/octet-stream"
-        } else {
-            media_type
-        };
-        if media_type.chars().count() > 128
-            || !media_type
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric() || "/.+-".contains(character))
-        {
-            return Err(format!("附件 '{}' 的 media type 非法", name).into());
-        }
-
-        let digest = format!("{:x}", Sha256::digest(&attachment.data));
-        let final_path = directory.join(&digest);
-        if !tokio::fs::try_exists(&final_path).await? {
-            let temporary_path = directory.join(format!(".{digest}.{event_id}.{index}.partial"));
-            let mut file = tokio::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temporary_path)
-                .await?;
-            file.write_all(&attachment.data).await?;
-            file.sync_data().await?;
-            drop(file);
-            match tokio::fs::rename(&temporary_path, &final_path).await {
-                Ok(()) => {}
-                Err(error) if tokio::fs::try_exists(&final_path).await.unwrap_or(false) => {
-                    let _ = tokio::fs::remove_file(&temporary_path).await;
-                    tracing::debug!(
-                        path = %final_path.display(),
-                        error = %error,
-                        "消息附件已由并发写入复用"
-                    );
-                }
-                Err(error) => {
-                    let _ = tokio::fs::remove_file(&temporary_path).await;
-                    return Err(error.into());
-                }
-            }
-        }
-        metadata.push(json!({
-            "id": format!("attachment_{digest}"),
-            "name": name,
-            "media_type": media_type,
-            "size_bytes": attachment.data.len(),
-            "sha256": digest,
-            "storage_path": final_path.to_string_lossy(),
-        }));
-    }
-    Ok(metadata)
+    crate::model_input::persist_model_input_attachments(
+        configured_root,
+        "message-inputs",
+        session_id,
+        event_id,
+        attachments,
+        model_input.import_limits(),
+    )
+    .await
 }
 
 struct ArtifactTransferExecutionIdentity {
@@ -784,6 +687,9 @@ pub struct RuntimeStatus {
     pub permission_mode: crate::permission::PermissionMode,
     pub sandbox_mode: SandboxMode,
     pub reviewer: ReviewerKind,
+    /// Authoritative host import/request policy used by every ingress and tool
+    /// backend. Dashboard consumes this instead of carrying its own constants.
+    pub model_input: crate::config::ModelInputConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1432,6 +1338,7 @@ impl MorphzRuntimeBuilder {
             self.client,
             Arc::clone(&registry),
             self.config.orchestrator.clone(),
+            self.config.model_input.clone(),
             Arc::clone(&context_engine),
             objective_evaluations,
             Some(Arc::clone(&objective_supervisor)),
@@ -1579,9 +1486,10 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         Arc::clone(permissions),
         Arc::clone(bus),
     )));
-    registry.register(Arc::new(ReadFileTool::new_with_permissions(Arc::clone(
-        permissions,
-    ))));
+    registry.register(Arc::new(ReadFileTool::new_with_permissions_and_limit(
+        Arc::clone(permissions),
+        config.model_input.max_artifact_bytes,
+    )));
     registry.register(Arc::new(EditFileTool::new_with_runtime(
         Arc::clone(permissions),
         Arc::clone(bus),
@@ -4016,7 +3924,7 @@ impl MorphzRuntime {
         };
 
         let (status, text, error) = match result {
-            Ok(text) => ("success", text, None),
+            Ok(result) => ("success", result.text, None),
             Err(error) => {
                 let cancelled = crate::artifact::is_artifact_transfer_cancelled(error.as_ref());
                 let message = error.to_string();
@@ -6617,6 +6525,7 @@ impl MorphzRuntime {
             permission_mode: self.inner.config.permissions.mode,
             sandbox_mode: self.inner.config.permissions.sandbox_mode,
             reviewer: self.inner.config.permissions.reviewer,
+            model_input: self.inner.config.model_input.clone(),
         }
     }
 
@@ -7043,6 +6952,7 @@ impl SessionHandle {
         let event_id = runtime_id("msg");
         let attachment_metadata = persist_message_attachments(
             &self.runtime.inner.config.background_task.artifact_dir,
+            &self.runtime.inner.config.model_input,
             &self.id,
             &event_id,
             attachments,
@@ -7461,6 +7371,7 @@ mod tests {
                 context_window_tokens: Some(1_000_000),
                 max_input_tokens: None,
                 max_output_tokens: Some(32_000),
+                ..ProviderModelConfig::default()
             },
         );
         config.providers.insert("proxy".to_string(), provider);
@@ -7487,6 +7398,7 @@ mod tests {
         };
         let metadata = persist_message_attachments(
             artifact_root.path().to_str().unwrap(),
+            &AppConfig::default().model_input,
             "session-attachment-test",
             "event-attachment-test",
             vec![input.clone(), input],
@@ -8760,9 +8672,14 @@ mod tests {
             _context: &crate::execution_target::TargetExecutionContext,
             _tool: Arc<dyn crate::tool::Tool>,
             _arguments: &str,
-        ) -> Result<String, crate::execution_target::TargetExecutionError> {
+        ) -> Result<
+            Box<crate::tool::ToolExecutionResult>,
+            crate::execution_target::TargetExecutionError,
+        > {
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-            Ok(format!("managed-ssh-result-{call}"))
+            Ok(crate::tool::ToolExecutionResult::text(format!(
+                "managed-ssh-result-{call}"
+            )))
         }
     }
 

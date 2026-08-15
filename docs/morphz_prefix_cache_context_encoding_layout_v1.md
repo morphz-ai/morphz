@@ -121,7 +121,7 @@ output         × 4.0
 
 System Message 只包含长期稳定的内容：
 
-- LLM 是 Morphz 的 S 表达式语义虚拟机；
+- Morphz 是 S 表达式认知机，LLM 是其中可替换的非确定性语义处理器；
 - 六个基础算子的自然语言语义；
 - 工具调用与普通文本的基础边界；
 - 不随 Evaluation 改变的 Runtime 安全和事实边界。

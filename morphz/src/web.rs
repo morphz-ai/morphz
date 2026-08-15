@@ -308,6 +308,9 @@ struct ProviderAccountModelSelection {
     context_window_tokens: Option<usize>,
     max_input_tokens: Option<usize>,
     max_output_tokens: Option<usize>,
+    max_input_attachments: Option<usize>,
+    max_input_attachment_bytes: Option<usize>,
+    max_input_attachment_total_bytes: Option<usize>,
 }
 
 #[derive(serde::Deserialize)]
@@ -665,6 +668,11 @@ impl Server {
         auth_token: Option<String>,
         gateway_token: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let dashboard_body_limit = self
+            .runtime
+            .config()
+            .model_input
+            .dashboard_body_limit_bytes();
         let broadcast_tx_clone = self.broadcast_tx.clone();
         let runtime = self.runtime.clone();
         let sdk = MorphzSdk::new(self.runtime.clone());
@@ -1126,7 +1134,7 @@ impl Server {
             .route("/api/schedules/:schedule_id", post(handle_mutate_schedule))
             .route("/ws", get(handle_ws_upgrade))
             .fallback(handle_dashboard_fallback)
-            .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+            .layer(DefaultBodyLimit::max(dashboard_body_limit))
             .layer(CompressionLayer::new())
             .layer(cors)
             .with_state(Arc::clone(&state));
@@ -1136,7 +1144,11 @@ impl Server {
             return Err("非本机监听必须配置服务访问令牌，避免事件流和记忆图谱无认证暴露".into());
         }
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        tracing::info!(addr = %addr, "Dashboard API Server 启动成功");
+        tracing::info!(
+            addr = %addr,
+            dashboard_body_limit_bytes = dashboard_body_limit,
+            "Dashboard API Server 启动成功"
+        );
 
         tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, app).await {
@@ -1802,6 +1814,9 @@ async fn handle_put_provider_account_models(
                 context_window_tokens: selection.context_window_tokens,
                 max_input_tokens: selection.max_input_tokens,
                 max_output_tokens: selection.max_output_tokens,
+                max_input_attachments: selection.max_input_attachments,
+                max_input_attachment_bytes: selection.max_input_attachment_bytes,
+                max_input_attachment_total_bytes: selection.max_input_attachment_total_bytes,
             },
         );
     }
@@ -5036,6 +5051,29 @@ async fn handle_send_message(
     if request.text.chars().count() > 1_000_000 {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "消息正文超过 1,000,000 字符");
     }
+    let mut attachment_usage = crate::model_input::ModelInputUsage::default();
+    for attachment in &request.attachments {
+        let encoded = attachment
+            .data_base64
+            .split_once(',')
+            .filter(|(prefix, _)| prefix.starts_with("data:") && prefix.ends_with(";base64"))
+            .map(|(_, data)| data)
+            .unwrap_or(&attachment.data_base64);
+        let bytes = match crate::model_input::decoded_base64_len(encoded) {
+            Ok(bytes) => bytes,
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+        if let Err(error) = attachment_usage.add(bytes) {
+            return error_response(StatusCode::PAYLOAD_TOO_LARGE, error.to_string());
+        }
+    }
+    if let Err(error) = crate::model_input::validate_model_input_usage(
+        attachment_usage,
+        state.runtime.config().model_input.import_limits(),
+        "Dashboard 消息附件导入",
+    ) {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, error.to_string());
+    }
     let client_message_id = request
         .client_message_id
         .unwrap_or_else(|| api_id("client"));
@@ -7753,6 +7791,9 @@ mod tests {
                     context_window_tokens: Some(200_000),
                     max_input_tokens: None,
                     max_output_tokens: Some(4_000),
+                    max_input_attachments: None,
+                    max_input_attachment_bytes: None,
+                    max_input_attachment_total_bytes: None,
                 }],
             }),
         )
@@ -7783,6 +7824,9 @@ mod tests {
                     context_window_tokens: Some(200_000),
                     max_input_tokens: None,
                     max_output_tokens: Some(4_000),
+                    max_input_attachments: None,
+                    max_input_attachment_bytes: None,
+                    max_input_attachment_total_bytes: None,
                 }],
             }),
         )
@@ -7830,6 +7874,9 @@ mod tests {
                     context_window_tokens: Some(0),
                     max_input_tokens: None,
                     max_output_tokens: None,
+                    max_input_attachments: None,
+                    max_input_attachment_bytes: None,
+                    max_input_attachment_total_bytes: None,
                 }],
             }),
         )
@@ -8923,6 +8970,9 @@ account = "xai-account"
                         context_window_tokens: Some(200_000),
                         max_input_tokens: Some(190_000),
                         max_output_tokens: Some(10_000),
+                        max_input_attachments: Some(64),
+                        max_input_attachment_bytes: Some(64 * 1024 * 1024),
+                        max_input_attachment_total_bytes: Some(192 * 1024 * 1024),
                     },
                     ProviderAccountModelSelection {
                         id: "model-b".to_string(),
@@ -8930,6 +8980,9 @@ account = "xai-account"
                         context_window_tokens: None,
                         max_input_tokens: None,
                         max_output_tokens: None,
+                        max_input_attachments: None,
+                        max_input_attachment_bytes: None,
+                        max_input_attachment_total_bytes: None,
                     },
                 ],
             }),
@@ -8995,6 +9048,15 @@ account = "xai-account"
             toml::from_str(&std::fs::read_to_string(managed_config_path).unwrap()).unwrap();
         assert_eq!(persisted.llm.provider, None);
         assert_eq!(persisted.llm.model, "model-b");
+        assert_eq!(
+            persisted.provider_instances["local-provider"].models["model-a"].max_input_attachments,
+            Some(64)
+        );
+        assert_eq!(
+            persisted.provider_instances["local-provider"].models["model-a"]
+                .max_input_attachment_total_bytes,
+            Some(192 * 1024 * 1024)
+        );
         assert_eq!(
             persisted.provider_instances["local-provider"].models["model-b"].max_input_tokens,
             Some(300_000)
@@ -9172,6 +9234,33 @@ account = "xai-account"
         .await
         .into_response();
         assert_eq!(create.status(), StatusCode::CREATED);
+
+        let rejected = handle_send_message(
+            State(Arc::clone(&state)),
+            Path("api-session".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(SendMessageRequest {
+                text: "too many".to_string(),
+                client_message_id: Some("client-message-too-many".to_string()),
+                attachments: (0..129)
+                    .map(|index| IncomingMessageAttachment {
+                        name: format!("shot-{index}.png"),
+                        media_type: "image/png".to_string(),
+                        data_base64: base64::engine::general_purpose::STANDARD
+                            .encode([index as u8]),
+                    })
+                    .collect(),
+                harness: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(rejected.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let rejected_body = axum::body::to_bytes(rejected.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&rejected_body).contains("超过 128 个上限"));
 
         for expected_status in [StatusCode::ACCEPTED, StatusCode::OK] {
             let response = handle_send_message(

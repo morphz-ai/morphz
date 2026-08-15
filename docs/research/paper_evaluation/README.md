@@ -5,6 +5,8 @@
 > 建立日期：2026-08-11
 > 适用论文：*Morphz: Nondeterministic Cognitive Symbol Evaluation over Structured Context*
 
+> 术语基线：Morphz 的正式机器身份是 **S-Expression Cognitive Machine（S 表达式认知机）**；LLM 是非确定性语义处理器，Runtime 是确定性事务内核，Agent 是加载身份与能力后的机器实例。论文标题描述研究问题，不替代这一系统定义。
+
 这里是 Morphz 论文实验的唯一进度入口。产品回归测试可以快速演进；用于论文主张的证据必须遵守冻结协议、完整留痕和结论边界。
 
 ## 文档入口

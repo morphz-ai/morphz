@@ -1195,6 +1195,9 @@ impl MorphzSdk {
                 profile.context_window_tokens,
                 profile.max_input_tokens,
                 profile.max_output_tokens,
+                profile.max_input_attachments,
+                profile.max_input_attachment_bytes,
+                profile.max_input_attachment_total_bytes,
             ]
             .into_iter()
             .flatten()
@@ -1213,6 +1216,16 @@ impl MorphzSdk {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
                     format!("模型 '{model}' 的最大输出必须小于上下文窗口"),
+                ));
+            }
+            if profile
+                .max_input_attachment_bytes
+                .zip(profile.max_input_attachment_total_bytes)
+                .is_some_and(|(single, total)| single > total)
+            {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    format!("模型 '{model}' 的单附件上限不能大于附件总量上限"),
                 ));
             }
             if profile

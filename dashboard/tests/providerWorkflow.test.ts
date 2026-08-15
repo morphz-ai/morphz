@@ -165,6 +165,9 @@ test('model editor copies explicit catalog capacities and preserves operator ove
         context_window_tokens: 200_000,
         max_input_tokens: 190_000,
         max_output_tokens: 10_000,
+        max_input_attachments: 64,
+        max_input_attachment_bytes: 67_108_864,
+        max_input_attachment_total_bytes: 201_326_592,
       },
       'model-b': {},
     },
@@ -178,6 +181,9 @@ test('model editor copies explicit catalog capacities and preserves operator ove
       contextWindowTokens: '200000',
       maxInputTokens: '180000',
       maxOutputTokens: '10000',
+      maxInputAttachments: 64,
+      maxInputAttachmentBytes: 67_108_864,
+      maxInputAttachmentTotalBytes: 201_326_592,
     },
     {
       id: 'model-b',
@@ -198,6 +204,9 @@ test('enabled model payload validates physical capacity relationships before the
     contextWindowTokens: '200000',
     maxInputTokens: '190000',
     maxOutputTokens: '10000',
+    maxInputAttachments: 64,
+    maxInputAttachmentBytes: 67_108_864,
+    maxInputAttachmentTotalBytes: 201_326_592,
   }
   assert.deepEqual(buildEnabledModelSelections([valid]), [{
     id: 'model-a',
@@ -205,6 +214,9 @@ test('enabled model payload validates physical capacity relationships before the
     context_window_tokens: 200_000,
     max_input_tokens: 190_000,
     max_output_tokens: 10_000,
+    max_input_attachments: 64,
+    max_input_attachment_bytes: 67_108_864,
+    max_input_attachment_total_bytes: 201_326_592,
   }])
 
   assert.throws(
