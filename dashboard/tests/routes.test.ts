@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { dashboardPath, parseDashboardRoute, threadPath } from '../src/app/routes.ts'
+import {
+  dashboardPath,
+  observesExactModelRequests,
+  parseDashboardRoute,
+  threadPath,
+} from '../src/app/routes.ts'
 
 test('dashboard routes preserve Context and Session identity', () => {
   const path = dashboardPath('dialogue', 'context/a', 'session b')
@@ -39,4 +44,10 @@ test('unknown paths and cognition tabs fall back to safe views', () => {
     contextId: 'ctx',
     cognitionView: 'mind',
   })
+})
+
+test('exact model requests are observed only while the encoding inspector is open', () => {
+  assert.equal(observesExactModelRequests('cognition', 'encoding'), true)
+  assert.equal(observesExactModelRequests('cognition', 'mind'), false)
+  assert.equal(observesExactModelRequests('dialogue', 'encoding'), false)
 })

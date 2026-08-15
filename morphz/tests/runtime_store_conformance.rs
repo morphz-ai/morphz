@@ -775,6 +775,68 @@ where
         1
     );
 
+    // A Signal that arrives after an Activation has started remains pending
+    // until it is actually compiled into a physical model request. Binding is
+    // the durable ownership boundary and must be identical on both stores.
+    let supplemental_event = Event::new(
+        "conformance-signal-event-supplemental".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store
+        .append_to_thread(supplemental_event.clone(), &thread.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .next_pending_thread_signal(&thread.id)
+            .await
+            .unwrap()
+            .as_ref()
+            .map(|signal| signal.event_id.as_str()),
+        Some(supplemental_event.id.as_str())
+    );
+    let bound = store
+        .bind_activation_input_signals(
+            &first.id,
+            &[
+                supplemental_event.id.clone(),
+                "event-without-signal".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(bound.len(), 1);
+    assert_eq!(bound[0].event_id, supplemental_event.id);
+    assert_eq!(bound[0].status, ThreadSignalStatus::Claimed);
+    assert!(store
+        .next_pending_thread_signal(&thread.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        store
+            .list_activation_signals(&first.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    let replayed = store
+        .bind_activation_input_signals(&first.id, std::slice::from_ref(&supplemental_event.id))
+        .await
+        .unwrap();
+    assert_eq!(replayed.len(), 1, "binding must be idempotent on recovery");
+    assert_eq!(replayed[0].event_id, supplemental_event.id);
+
     let successor_thread = store
         .ensure_thread(NewThread {
             id: "conformance-dialogue-successor-thread".to_string(),

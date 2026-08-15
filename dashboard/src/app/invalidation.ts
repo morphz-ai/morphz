@@ -3,7 +3,7 @@ export type AuthoritativeQuery = 'catalog' | 'session' | 'overview' | 'scheduler
 const ephemeralTopics = new Set([
   'runtime/model_stream',
   'runtime/model_attempt_snapshot',
-  'chat/context_inspect',
+  'runtime/model_request_snapshot',
 ])
 
 /**

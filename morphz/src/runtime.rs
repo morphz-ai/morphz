@@ -4632,6 +4632,23 @@ impl MorphzRuntime {
         }
     }
 
+    /// Enable one process-local diagnostic projection for the lifetime of an
+    /// external observer. This does not persist configuration or Event data.
+    pub fn request_ephemeral_observation(
+        &self,
+        observer_id: impl Into<String>,
+        topic: impl Into<String>,
+        scope_id: impl Into<String>,
+    ) {
+        self.inner
+            .bus
+            .request_ephemeral_observation(observer_id, topic, scope_id);
+    }
+
+    pub fn clear_ephemeral_observations(&self, observer_id: &str) {
+        self.inner.bus.clear_ephemeral_observations(observer_id);
+    }
+
     pub async fn pending_approvals(&self) -> Vec<PendingHumanApproval> {
         let mut pending = self.inner.human_approval_hub.pending();
         let mut known = pending
@@ -5998,21 +6015,8 @@ impl MorphzRuntime {
             pressure,
             attribution,
         ) = if let Some(view) = view {
-            let attribution = self
-                .inner
-                .store
-                .query(QueryFilter {
-                    context_id: Some(context_id.to_string()),
-                    session_id: Some(view.active_session_id.clone()),
-                    topic: Some("chat/context_inspect".to_string()),
-                    latest_k: Some(1),
-                    ..Default::default()
-                })
-                .await?
-                .pop()
-                .and_then(|event| event.payload.get("attribution").cloned())
-                .and_then(|value| serde_json::from_value(value).ok())
-                .filter(|value: &ContextAttribution| value.total_weight_units > 0);
+            let attribution =
+                (view.attribution.total_weight_units > 0).then(|| view.attribution.clone());
             let retired = &view.state.retired;
             (
                 Some(view.active_session_id),

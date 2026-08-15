@@ -457,7 +457,16 @@ impl Tool for ObjectiveCreateTool {
                 .publish_state_event("evaluation_started", claimed, Some(&attempt_id))
                 .await?;
         } else {
-            self.supervisor.reconcile(created.clone()).await?;
+            let supervisor = Arc::clone(&self.supervisor);
+            let created_for_reconcile = created.clone();
+            // The tool itself executes inside an already deep model-attempt
+            // future.  Initial Objective admission is a scheduler phase, so
+            // start it at a task root while preserving await/error semantics.
+            tokio::spawn(async move { supervisor.reconcile(created_for_reconcile).await })
+                .await
+                .map_err(|error| {
+                    format!("Objective initial reconciliation task failed: {error}")
+                })??;
         }
         let current = self.supervisor.get(&created.id).await?.unwrap_or(created);
 
@@ -1770,7 +1779,15 @@ impl ObjectiveSupervisor {
         created: ObjectiveRecord,
     ) -> Result<ObjectiveRecord, DynError> {
         self.publish_state_event("created", &created, None).await?;
-        self.reconcile(created.clone()).await?;
+        let supervisor = Arc::clone(self);
+        let created_for_reconcile = created.clone();
+        // Objective creation may run inside a model tool prelude whose poll
+        // stack already contains Context compilation and protocol handling.
+        // First-Evaluation admission is a separate scheduler phase: execute
+        // it as a task root, while still awaiting and propagating its result.
+        tokio::spawn(async move { supervisor.reconcile(created_for_reconcile).await })
+            .await
+            .map_err(|error| format!("Objective initial reconciliation task failed: {error}"))??;
         Ok(created)
     }
 

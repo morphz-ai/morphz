@@ -11,6 +11,13 @@ export interface DashboardRoute {
   cognitionView?: CognitionView
 }
 
+export function observesExactModelRequests(
+  view: DashboardView,
+  cognitionView: CognitionView,
+): boolean {
+  return view === 'cognition' && cognitionView === 'encoding'
+}
+
 const cognitionViews = new Set<CognitionView>(['mind', 'attention', 'encoding', 'prompt', 'recall'])
 
 function decoded(value: string | undefined): string | undefined {

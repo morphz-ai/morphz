@@ -355,9 +355,6 @@ pub struct OrchestratorConfig {
     pub session_working_set: SessionWorkingSetConfig,
     /// Cognitive-activity window between an explicit frame-retirement request and actual retirement.
     pub frame_retirement: FrameRetirementConfig,
-    /// Whether the Ledger retains full Context Encodings and model messages.
-    /// By default it stores only hashes and sizes; live event subscribers still see full content.
-    pub persist_full_context_inspect: bool,
     /// Tools available to `call` in `eval` programs and to evidence collection in `infer`.
     ///
     /// Both paths share this list. Admission of the whole program cannot foresee every argument
@@ -397,7 +394,6 @@ impl Default for OrchestratorConfig {
             max_context_transactions_per_turn: 6,
             session_working_set: SessionWorkingSetConfig::default(),
             frame_retirement: FrameRetirementConfig::default(),
-            persist_full_context_inspect: false,
             eval_callable_tools: crate::sexpr_eval::DEFAULT_CALLABLE_TOOLS
                 .iter()
                 .map(|name| (*name).to_string())

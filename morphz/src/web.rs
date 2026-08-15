@@ -100,6 +100,8 @@ struct AuthQuery {
     token: Option<String>,
     session_id: Option<String>,
     principal_id: Option<String>,
+    #[serde(default)]
+    observe_model_requests: bool,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -588,6 +590,7 @@ struct LedgerHttpQuery {
 }
 
 static API_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+static WEBSOCKET_OBSERVER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl Server {
     pub fn new(runtime: MorphzRuntime, defaults: ServerDefaults) -> Self {
@@ -5829,7 +5832,14 @@ async fn handle_ws_upgrade(
             "Principal 订阅必须同时指定 session_id",
         );
     }
-    ws.on_upgrade(|socket| handle_ws(socket, state, query.session_id))
+    ws.on_upgrade(move |socket| {
+        handle_ws(
+            socket,
+            state,
+            query.session_id,
+            query.observe_model_requests,
+        )
+    })
 }
 
 fn is_authorized(state: &AppState, headers: &HeaderMap, query_token: Option<&str>) -> bool {
@@ -5872,7 +5882,7 @@ fn token_is_authorized(
 }
 
 fn dashboard_event_requires_session_touch(event: &Event) -> bool {
-    // Provider deltas, model-attempt snapshots and Context Inspect are
+    // Provider deltas and model-request snapshots are
     // observability data, not user activity. Replaying them in the Dashboard
     // must not make an otherwise inactive Session look active.
     !matches!(
@@ -5882,6 +5892,7 @@ fn dashboard_event_requires_session_touch(event: &Event) -> bool {
             | "runtime/model_usage"
             | "runtime/model_attempt_state"
             | "runtime/model_attempt_snapshot"
+            | "runtime/model_request_snapshot"
             | "chat/context_inspect"
     )
 }
@@ -5951,9 +5962,50 @@ async fn ensure_dashboard_event_session_route(
     Ok(())
 }
 
-async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: Option<String>) {
+async fn handle_ws(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    session_filter: Option<String>,
+    observe_model_requests: bool,
+) {
     let mut rx = state.broadcast_tx.subscribe();
+    let observer_id = observe_model_requests
+        .then(|| {
+            format!(
+                "dashboard-ws-{}",
+                WEBSOCKET_OBSERVER_COUNTER.fetch_add(1, Ordering::Relaxed) + 1
+            )
+        })
+        .filter(|_| session_filter.is_some());
+    if let (Some(observer_id), Some(session_id)) = (&observer_id, &session_filter) {
+        state.runtime.request_ephemeral_observation(
+            observer_id,
+            "runtime/model_request_snapshot",
+            session_id,
+        );
+    }
 
+    handle_ws_connection(
+        socket,
+        Arc::clone(&state),
+        session_filter,
+        observe_model_requests,
+        &mut rx,
+    )
+    .await;
+
+    if let Some(observer_id) = observer_id {
+        state.runtime.clear_ephemeral_observations(&observer_id);
+    }
+}
+
+async fn handle_ws_connection(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    session_filter: Option<String>,
+    observe_model_requests: bool,
+    rx: &mut broadcast::Receiver<Event>,
+) {
     // Subscribe before reading the durable state. Events committed during the
     // snapshot query remain queued in `rx`, so the client sees a consistent
     // snapshot followed by its incremental suffix instead of losing the
@@ -5980,6 +6032,9 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
             broadcast_msg = rx.recv() => {
                 match broadcast_msg {
                     Ok(ev) => {
+                        if ev.topic == "runtime/model_request_snapshot" && !observe_model_requests {
+                            continue;
+                        }
                         if let Some(ref expected_session) = session_filter {
                             let event_session = ev
                                 .payload
@@ -6695,14 +6750,16 @@ mod tests {
         );
         assert!(!dashboard_event_requires_session_touch(&model_usage));
 
-        let context_inspect = Event::new(
-            "context-inspect-test".to_string(),
+        let model_request_snapshot = Event::new(
+            "model-request-snapshot-test".to_string(),
             "System-ContextKernel".to_string(),
             crate::event::TYPE_PROPOSAL.to_string(),
-            "chat/context_inspect".to_string(),
+            "runtime/model_request_snapshot".to_string(),
             serde_json::Map::new(),
         );
-        assert!(!dashboard_event_requires_session_touch(&context_inspect));
+        assert!(!dashboard_event_requires_session_touch(
+            &model_request_snapshot
+        ));
 
         let unrelated_ephemeral = Event::new(
             "other-ephemeral-test".to_string(),
@@ -7180,6 +7237,7 @@ mod tests {
                 token: None,
                 session_id: None,
                 principal_id: Some("site-user-1".to_string()),
+                ..Default::default()
             }),
         )
         .await
@@ -7197,6 +7255,7 @@ mod tests {
                 token: None,
                 session_id: None,
                 principal_id: Some("site-user-1".to_string()),
+                ..Default::default()
             }),
             Json(SendMessageRequest {
                 text: "operator must not impersonate".to_string(),
@@ -9626,6 +9685,7 @@ account = "xai-account"
                 token: None,
                 session_id: Some("api-observability-session".to_string()),
                 principal_id: None,
+                ..Default::default()
             }),
         )
         .await

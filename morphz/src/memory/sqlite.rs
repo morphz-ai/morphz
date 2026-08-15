@@ -66,6 +66,7 @@ use libsqlite3_hotbundle as _;
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Acquire, QueryBuilder, Row, SqlitePool};
+use std::collections::HashSet;
 
 mod plan_execution;
 
@@ -6698,6 +6699,138 @@ impl SessionDirectoryStore for SqliteStore {
     }
 }
 
+impl SqliteStore {
+    async fn bind_activation_input_signals_once(
+        &self,
+        activation_id: &str,
+        event_ids: &[String],
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        // SQLite transactions are deferred. Acquire the writer slot before
+        // reading ownership so a competing terminal transition or dispatcher
+        // cannot observe and claim the same pending Signal concurrently.
+        let fenced = sqlx::query("UPDATE thread_activations SET revision = revision WHERE id = ?")
+            .bind(activation_id)
+            .execute(&mut *tx)
+            .await?;
+        if fenced.rows_affected() != 1 {
+            return Err(format!("Thread Activation '{activation_id}' 不存在").into());
+        }
+        let route = sqlx::query(
+            r#"SELECT activation.status AS activation_status,
+                      activation.generation AS activation_generation,
+                      thread.id AS thread_id,
+                      thread.generation AS thread_generation
+               FROM thread_activations activation
+               JOIN threads thread
+                 ON thread.root_turn_id = activation.root_turn_id
+                AND thread.generation = activation.generation
+               WHERE activation.id = ?"#,
+        )
+        .bind(activation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let activation_status: String = route.get("activation_status");
+        if activation_status != ThreadActivationStatus::Running.as_str() {
+            return Err(format!(
+                "Thread Activation '{activation_id}' 不是 running，不能接管模型输入 Signal ({activation_status})"
+            )
+            .into());
+        }
+        let activation_generation: i64 = route.get("activation_generation");
+        let thread_generation: i64 = route.get("thread_generation");
+        let thread_id: String = route.get("thread_id");
+        if activation_generation != thread_generation {
+            return Err(format!("Thread Activation '{activation_id}' generation 已过期").into());
+        }
+        let mut next_ordinal: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM activation_signals WHERE activation_id = ?",
+        )
+        .bind(activation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let mut selected_event_ids = HashSet::new();
+        for event_id in event_ids {
+            let row = sqlx::query(
+                r#"SELECT signals.*, links.activation_id AS owner_activation_id
+                   FROM thread_signals signals
+                   LEFT JOIN activation_signals links ON links.signal_id = signals.id
+                   WHERE signals.event_id = ?"#,
+            )
+            .bind(event_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some(row) = row else {
+                // Tool Outputs with wake_policy=none intentionally have no
+                // scheduler Signal and therefore require no ownership record.
+                continue;
+            };
+            let signal = thread_signal_from_row(&row)?;
+            if signal.thread_id != thread_id || signal.thread_generation as i64 != thread_generation
+            {
+                return Err(format!(
+                    "Thread Signal '{}' 不属于 Activation '{}' 的当前 Thread generation",
+                    signal.id, activation_id
+                )
+                .into());
+            }
+            let owner: Option<String> = row.get("owner_activation_id");
+            if let Some(owner) = owner {
+                if owner != activation_id {
+                    return Err(format!(
+                        "Thread Signal '{}' 已由 Activation '{}' 接管",
+                        signal.id, owner
+                    )
+                    .into());
+                }
+                selected_event_ids.insert(signal.event_id);
+                continue;
+            }
+            if signal.status != ThreadSignalStatus::Pending {
+                return Err(format!(
+                    "Thread Signal '{}' 状态为 '{}' 但没有 Activation owner",
+                    signal.id,
+                    signal.status.as_str()
+                )
+                .into());
+            }
+            sqlx::query(
+                "INSERT INTO activation_signals (activation_id, signal_id, ordinal) VALUES (?, ?, ?)",
+            )
+            .bind(activation_id)
+            .bind(&signal.id)
+            .bind(next_ordinal)
+            .execute(&mut *tx)
+            .await?;
+            let claimed = sqlx::query(
+                r#"UPDATE thread_signals
+                   SET status = 'claimed', claimed_at = ?
+                   WHERE id = ? AND thread_generation = ? AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&signal.id)
+            .bind(thread_generation)
+            .execute(&mut *tx)
+            .await?;
+            if claimed.rows_affected() != 1 {
+                return Err(
+                    format!("Thread Signal '{}' 在模型输入接管时发生并发冲突", signal.id).into(),
+                );
+            }
+            next_ordinal = next_ordinal.saturating_add(1);
+            selected_event_ids.insert(signal.event_id);
+        }
+        tx.commit().await?;
+        Ok(self
+            .list_activation_signals(activation_id)
+            .await?
+            .into_iter()
+            .filter(|signal| selected_event_ids.contains(&signal.event_id))
+            .collect())
+    }
+}
+
 #[async_trait::async_trait]
 impl ActivationStore for SqliteStore {
     async fn commit_context_transaction(
@@ -7417,6 +7550,44 @@ impl ActivationStore for SqliteStore {
         rows.iter().map(thread_signal_from_row).collect()
     }
 
+    async fn bind_activation_input_signals(
+        &self,
+        activation_id: &str,
+        event_ids: &[String],
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut event_ids = event_ids.to_vec();
+        event_ids.sort();
+        event_ids.dedup();
+        let mut contention_retries = 0u64;
+        let mut retry_delay = std::time::Duration::from_millis(25);
+        loop {
+            match self
+                .bind_activation_input_signals_once(activation_id, &event_ids)
+                .await
+            {
+                Ok(signals) => return Ok(signals),
+                Err(error) if is_transient_sqlite_contention(error.as_ref()) => {
+                    contention_retries = contention_retries.saturating_add(1);
+                    if contention_retries == 1 || contention_retries.is_power_of_two() {
+                        tracing::warn!(
+                            activation_id,
+                            contention_retries,
+                            delay_ms = retry_delay.as_millis(),
+                            error = %error,
+                            event_code = "memory.sqlite.activation_signal.store_slot_waiting",
+                            "Activation Signal binding is waiting for a SQLite write slot; retaining and retrying the same ownership transaction"
+                        );
+                    }
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(std::time::Duration::from_secs(1));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
     async fn next_pending_thread_signal(
         &self,
         thread_id: &str,
@@ -24484,11 +24655,29 @@ mod tests {
                 .unwrap()
         });
         let (left, right) = tokio::join!(left, right);
-        let claimed_count = [left.unwrap(), right.unwrap()]
+        let mut claimed_ids = [left.unwrap(), right.unwrap()]
             .into_iter()
-            .filter(Option::is_some)
-            .count();
-        assert_eq!(claimed_count, 1, "Thread Activation 必须 single-flight");
+            .flatten()
+            .map(|activation| activation.id)
+            .collect::<Vec<_>>();
+        // Both claimants may legitimately receive the same Activation: one
+        // creates the bounded batch, while the other observes that its Signal
+        // was already linked and receives the idempotent existing result.
+        // Single-flight is a property of durable Activation identity, not of
+        // how many concurrent callers receive that identity.
+        claimed_ids.sort();
+        claimed_ids.dedup();
+        assert_eq!(
+            claimed_ids.len(),
+            1,
+            "Thread Activation 必须 single-flight; claimed={claimed_ids:?}"
+        );
+        let active = store
+            .list_context_thread_activations("signal-context", false)
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1, "数据库中只能保留一个活动 Activation");
+        assert_eq!(active[0].id, claimed_ids[0]);
         assert_eq!(
             store
                 .get_context_cognitive_clock("signal-context")
@@ -24641,6 +24830,173 @@ mod tests {
                 .lifecycle,
             ThreadLifecycle::Open
         );
+    }
+
+    #[tokio::test]
+    async fn activation_signal_binding_waits_out_sqlite_writer_contention() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_path_buf();
+        let store = Arc::new(
+            SqliteStore::new(path.to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_context(NewCognitiveContext {
+                id: "binding-contention-context".to_string(),
+                agent_id: "binding-contention-agent".to_string(),
+                title: "Binding contention Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "binding-contention-session".to_string(),
+                agent_id: "binding-contention-agent".to_string(),
+                context_id: "binding-contention-context".to_string(),
+                parent_session_id: None,
+                title: "Binding contention Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "binding-contention-thread".to_string(),
+                agent_id: "binding-contention-agent".to_string(),
+                context_id: "binding-contention-context".to_string(),
+                session_id: "binding-contention-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "binding-contention-root".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::runtime("binding-contention-test"),
+            })
+            .await
+            .unwrap();
+        let trigger = Event::new(
+            "binding-contention-trigger".to_string(),
+            "fixture".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "binding-contention-context",
+                "session_id": "binding-contention-session",
+                "root_turn_id": "binding-contention-root"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(trigger.clone()).await.unwrap();
+        let trigger_sequence = store
+            .query(QueryFilter {
+                event_id: Some(trigger.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        let activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: "binding-contention-trigger-signal".to_string(),
+                    thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
+                    event_id: trigger.id.clone(),
+                    principal_id: None,
+                    sequence: trigger_sequence,
+                    kind: trigger.topic.clone(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "binding-contention-activation".to_string(),
+                    agent_id: "binding-contention-agent".to_string(),
+                    context_id: "binding-contention-context".to_string(),
+                    session_id: "binding-contention-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: trigger.id,
+                    trigger_sequence,
+                    trigger_kind: trigger.topic,
+                    parent_activation_id: None,
+                    root_turn_id: "binding-contention-root".to_string(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let activation = match store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Running,
+                Some("test-runtime"),
+                Some(Utc::now() + chrono::Duration::seconds(30)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(activation) => activation,
+            mutation => panic!("unexpected Activation transition: {mutation:?}"),
+        };
+        let supplemental = Event::new(
+            "binding-contention-supplemental".to_string(),
+            "fixture".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::json!({
+                "context_id": "binding-contention-context",
+                "session_id": "binding-contention-session",
+                "root_turn_id": "binding-contention-root"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store
+            .append_to_thread(supplemental.clone(), &thread.id)
+            .await
+            .unwrap();
+
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::ZERO);
+        let mut writer = SqliteConnection::connect_with(&options).await.unwrap();
+        writer.execute("BEGIN IMMEDIATE").await.unwrap();
+
+        let binding_store = Arc::clone(&store);
+        let activation_id = activation.id.clone();
+        let supplemental_id = supplemental.id.clone();
+        let binding = tokio::spawn(async move {
+            binding_store
+                .bind_activation_input_signals(&activation_id, &[supplemental_id])
+                .await
+        });
+
+        // Crossing the connection busy timeout proves the Runtime-owned retry
+        // keeps the Signal pending instead of failing its long-running Thread.
+        tokio::time::sleep(Duration::from_millis(5_100)).await;
+        assert!(!binding.is_finished());
+        writer.execute("COMMIT").await.unwrap();
+        let bound = tokio::time::timeout(Duration::from_secs(3), binding)
+            .await
+            .expect("Signal binding should finish after the Writer is released")
+            .unwrap()
+            .unwrap();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(bound[0].event_id, supplemental.id);
+        assert_eq!(bound[0].status, ThreadSignalStatus::Claimed);
+        assert!(store
+            .next_pending_thread_signal(&thread.id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

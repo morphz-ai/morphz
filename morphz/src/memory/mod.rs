@@ -4708,6 +4708,20 @@ pub trait ActivationStore: Send + Sync {
         &self,
         activation_id: &str,
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically transfers responsibility for the selected pending mailbox
+    /// Signals to one running Activation. Event IDs without a Thread Signal
+    /// are ignored because non-waking Tool Outputs are semantic observations,
+    /// not scheduler work. A Signal already owned by this Activation is an
+    /// idempotent success; ownership by another Activation is a conflict.
+    ///
+    /// This is the authoritative model-input boundary. Diagnostics may report
+    /// which inputs were visible, but scheduler correctness must depend only
+    /// on `thread_signals` and `activation_signals`.
+    async fn bind_activation_input_signals(
+        &self,
+        activation_id: &str,
+        event_ids: &[String],
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn next_pending_thread_signal(
         &self,
         thread_id: &str,

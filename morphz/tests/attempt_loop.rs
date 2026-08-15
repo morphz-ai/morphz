@@ -544,7 +544,7 @@ impl Client for ConcurrentContextLimitClient {
         let critical_maintenance = messages.iter().any(|message| {
             message
                 .content
-                .contains("Runtime 当前进入 critical-maintenance：")
+                .contains("The Runtime has entered critical-maintenance")
         });
         if critical_maintenance {
             self.maintenance_calls.fetch_add(1, Ordering::SeqCst);
@@ -678,7 +678,7 @@ impl Client for ReasoningContinuationClient {
             // back into the immediately following continuation request.
             let _ = stream.send(ModelStreamEvent::ReasoningSummaryCompleted);
             let _ = stream.send(ModelStreamEvent::Completed);
-            return Err("模型响应既没有非空正文，也没有工具调用".into());
+            return Err("neither non-empty content nor a tool call was returned".into());
         }
         let response = text_reply_response("continued into final text");
         let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
@@ -900,7 +900,7 @@ async fn build_orchestrator_with_config(
 
 async fn build_orchestrator_with_config_and_reply_mode(
     responses: Vec<Response>,
-    mut orchestrator_config: morphz::config::OrchestratorConfig,
+    orchestrator_config: morphz::config::OrchestratorConfig,
     _auto_reply: bool,
 ) -> (
     Arc<InMemoryEventBus>,
@@ -909,9 +909,6 @@ async fn build_orchestrator_with_config_and_reply_mode(
     Arc<MockClient>,
     TempDir,
 ) {
-    // Most integration assertions intentionally inspect the exact model request. Production
-    // defaults to compact, content-addressed audit records; tests opt into the diagnostic form.
-    orchestrator_config.persist_full_context_inspect = true;
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("attempt_loop.db");
     let bus = Arc::new(InMemoryEventBus::new());
@@ -944,6 +941,44 @@ async fn build_orchestrator_with_config_and_reply_mode(
     );
     orchestrator.clone().start().await.unwrap();
     (bus, store, orchestrator, client, tmp)
+}
+
+fn capture_model_request_snapshots(
+    bus: &Arc<InMemoryEventBus>,
+    session_id: &'static str,
+) -> Arc<Mutex<Vec<Event>>> {
+    let topic = "runtime/model_request_snapshot";
+    bus.request_ephemeral_observation(
+        format!("test-model-request-snapshot-{session_id}"),
+        topic,
+        session_id,
+    );
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&captured);
+    bus.subscribe(
+        topic.to_string(),
+        Arc::new(move |event| {
+            let sink = Arc::clone(&sink);
+            Box::pin(async move {
+                sink.lock()
+                    .map_err(|_| "captured Event mutex poisoned")?
+                    .push(event);
+                Ok(())
+            })
+        }),
+    );
+    captured
+}
+
+async fn wait_for_captured_count(captured: &Arc<Mutex<Vec<Event>>>, count: usize) -> Vec<Event> {
+    for _ in 0..100 {
+        let events = captured.lock().unwrap().clone();
+        if events.len() >= count {
+            return events;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    captured.lock().unwrap().clone()
 }
 
 fn install_test_session_registry(bus: &Arc<InMemoryEventBus>, store: &Arc<SqliteStore>) {
@@ -1120,6 +1155,55 @@ async fn test_attempt_loop_plain_text_reply_delivers() {
         replies[0].payload.get("text").and_then(|v| v.as_str()),
         Some("hello user")
     );
+}
+
+#[tokio::test]
+async fn model_request_snapshot_observer_failure_cannot_block_evaluation() {
+    let session_id = "snapshot-observer-failure";
+    let (bus, store, _orchestrator, _tmp) =
+        build_orchestrator(vec![text_reply_response("reply survives diagnostics")]).await;
+    bus.request_ephemeral_observation(
+        "failing-model-request-observer",
+        "runtime/model_request_snapshot",
+        session_id,
+    );
+    bus.subscribe(
+        "runtime/model_request_snapshot".to_string(),
+        Arc::new(|_| Box::pin(async { Err("simulated Dashboard subscriber failure".into()) })),
+    );
+
+    publish_user(&bus, session_id, "continue without diagnostics").await;
+
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].payload["text"], "reply survives diagnostics");
+}
+
+#[tokio::test]
+async fn model_request_snapshot_is_not_built_without_live_observer_demand() {
+    let session_id = "snapshot-without-observer";
+    let (bus, store, _orchestrator, _tmp) =
+        build_orchestrator(vec![text_reply_response("normal reply")]).await;
+    let captured = Arc::new(Mutex::new(Vec::<Event>::new()));
+    let sink = Arc::clone(&captured);
+    bus.subscribe(
+        "runtime/model_request_snapshot".to_string(),
+        Arc::new(move |event| {
+            let sink = Arc::clone(&sink);
+            Box::pin(async move {
+                sink.lock()
+                    .map_err(|_| "captured Event mutex poisoned")?
+                    .push(event);
+                Ok(())
+            })
+        }),
+    );
+
+    publish_user(&bus, session_id, "do not construct diagnostics").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+
+    assert_eq!(replies.len(), 1);
+    assert!(captured.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1999,9 +2083,9 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         calls: AtomicUsize::new(0),
         messages_seen: Mutex::new(Vec::new()),
     });
+    let snapshots = capture_model_request_snapshots(&bus, session_id);
     let config = morphz::config::OrchestratorConfig {
         reasoning_continuation_safety_limit: None,
-        persist_full_context_inspect: true,
         ..Default::default()
     };
     let engine = Arc::new(
@@ -2061,19 +2145,42 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
                 && message.content.contains("reasoning segment 3")
         }));
     }
-    let inspections = store
-        .query(QueryFilter {
-            session_id: Some(session_id.to_string()),
-            topic: Some("chat/context_inspect".to_string()),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+    let inspections = wait_for_captured_count(&snapshots, 4).await;
     assert_eq!(
         inspections.len(),
         4,
-        "each physical request must be inspectable"
+        "each physical request must be observable live"
     );
+    assert!(
+        store
+            .query(QueryFilter {
+                session_id: Some(session_id.to_string()),
+                topic: Some("chat/context_inspect".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty(),
+        "exact model inputs must not enter the Ledger"
+    );
+    let queued_attempts = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/model_attempt_state".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.payload.get("state") == Some(&json!("queued")))
+        .collect::<Vec<_>>();
+    assert_eq!(queued_attempts.len(), 4);
+    assert!(queued_attempts.iter().all(|event| {
+        event.payload.get("pressure").is_some()
+            && event.payload.get("request_shape").is_some()
+            && event.payload.get("text").is_none()
+            && event.payload.get("messages").is_none()
+    }));
     let final_inspection = inspections
         .iter()
         .find(|event| {
@@ -2083,7 +2190,7 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
                 .and_then(|value| value.as_str())
                 .is_some_and(|attempt_id| attempt_id.ends_with("_response_retry_3"))
         })
-        .expect("final continuation request must have its own Context Inspect");
+        .expect("final continuation request must have its own live request snapshot");
     let inspected_messages = serde_json::to_string(&final_inspection.payload["messages"]).unwrap();
     assert!(inspected_messages.contains("reasoning segment 1"));
     assert!(inspected_messages.contains("reasoning segment 2"));
@@ -2766,9 +2873,10 @@ async fn test_compiled_context_uses_kernel_mind_inbox_without_legacy_schema() {
         tool_calls: Vec::new(),
     }])
     .await;
+    let snapshots = capture_model_request_snapshots(&bus, session_id);
 
     publish_user(&bus, session_id, "inspect context").await;
-    let inspections = wait_for_topic(&store, "chat/context_inspect", session_id).await;
+    let inspections = wait_for_captured_count(&snapshots, 1).await;
     assert_eq!(inspections.len(), 1);
     let payload = &inspections[0].payload;
     let rendered = payload
@@ -2794,8 +2902,8 @@ async fn test_compiled_context_uses_kernel_mind_inbox_without_legacy_schema() {
         Some(180)
     );
     let messages = serde_json::to_string(payload.get("messages").unwrap()).unwrap();
-    assert!(messages.contains("相互独立的文件读取必须在同一响应中并行调用"));
-    assert!(messages.contains("sha256 未被 file_change 改变的内容不得重复 read"));
+    assert!(messages.contains("Parallelize independent reads in one response"));
+    assert!(messages.contains("sha256 has not changed"));
     assert_eq!(
         payload
             .get("wake")
@@ -2803,6 +2911,15 @@ async fn test_compiled_context_uses_kernel_mind_inbox_without_legacy_schema() {
             .and_then(|cause| cause.as_str()),
         Some("user-message")
     );
+    assert!(store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("chat/context_inspect".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -3523,9 +3640,9 @@ async fn critical_maintenance_rejects_unoffered_physical_tool_with_same_call_id_
     assert!(messages[0]
         .iter()
         .any(|message| message.content.contains("critical-maintenance")));
-    assert!(messages[0]
-        .iter()
-        .any(|message| message.content.contains("外部物理工具已被暂时撤下")));
+    assert!(messages[0].iter().any(|message| message
+        .content
+        .contains("External physical tools are temporarily removed")));
     // The next critical-maintenance request deliberately uses a bounded
     // Context projection instead of replaying an unbounded Function Calling
     // transcript. The same immutable receipt must still be visible, including
@@ -3656,14 +3773,17 @@ async fn test_identical_context_transactions_are_normalized_and_deduplicated() {
         })
         .to_string(),
     };
-    let (bus, store, orchestrator, _tmp) = build_orchestrator(vec![Response {
-        content: "只执行一个 Context transaction".to_string(),
-        tool_calls: vec![
-            transaction("context-1"),
-            transaction("context-2"),
-            transaction("context-3"),
-        ],
-    }])
+    let (bus, store, orchestrator, _tmp) = build_orchestrator(vec![
+        Response {
+            content: "只执行一个 Context transaction".to_string(),
+            tool_calls: vec![
+                transaction("context-1"),
+                transaction("context-2"),
+                transaction("context-3"),
+            ],
+        },
+        text_reply_response("已完成去重后的 Context transaction"),
+    ])
     .await;
 
     publish_user(&bus, session_id, "deduplicate context transactions").await;
@@ -3739,6 +3859,7 @@ async fn test_distinct_context_transactions_are_rejected_then_combined_atomicall
                 .to_string(),
             }],
         },
+        text_reply_response("已完成合并后的原子 Context transaction"),
     ])
     .await;
 
@@ -3746,7 +3867,7 @@ async fn test_distinct_context_transactions_are_rejected_then_combined_atomicall
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
     assert_eq!(replies.len(), 1);
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
-    assert_eq!(assistant_calls.len(), 2);
+    assert_eq!(assistant_calls.len(), 3);
     assert_eq!(
         assistant_calls[0]
             .payload
@@ -4244,6 +4365,7 @@ async fn test_edit_file_change_becomes_next_attempt_observation() {
     let expected_sha256 = format!("{:x}", Sha256::digest(original.as_bytes()));
 
     let bus = Arc::new(InMemoryEventBus::new());
+    let snapshots = capture_model_request_snapshots(&bus, session_id);
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
@@ -4269,10 +4391,7 @@ async fn test_edit_file_change_becomes_next_attempt_observation() {
             tool_calls: Vec::new(),
         },
     ]));
-    // This test intentionally inspects the full diagnostic snapshot. Production defaults persist
-    // only compact context_inspect metadata to avoid duplicating every encoded prompt in Ledger.
     let config = morphz::config::OrchestratorConfig {
-        persist_full_context_inspect: true,
         ..Default::default()
     };
     let engine = Arc::new(
@@ -4324,20 +4443,22 @@ async fn test_edit_file_change_becomes_next_attempt_observation() {
             .and_then(|value| value.as_str()),
         Some("edit")
     );
-    let inspections = store
-        .query(QueryFilter {
-            session_id: Some(session_id.to_string()),
-            topic: Some("chat/context_inspect".to_string()),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+    let inspections = wait_for_captured_count(&snapshots, 2).await;
     assert!(inspections.len() >= 2);
     assert!(inspections.iter().any(|event| event
         .payload
         .get("text")
         .and_then(|value| value.as_str())
         .is_some_and(|text| text.contains("(kind file_change)"))));
+    assert!(store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("chat/context_inspect".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -4755,6 +4876,7 @@ async fn same_session_dialogue_turns_are_serialized() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("single-writer.db");
     let bus = Arc::new(InMemoryEventBus::new());
+    let snapshots = capture_model_request_snapshots(&bus, "serialized-session");
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     install_test_session_registry(&bus, &store);
     let client = Arc::new(ConcurrencyProbeClient {
@@ -4811,14 +4933,7 @@ async fn same_session_dialogue_turns_are_serialized() {
         .iter()
         .all(|item| item.root_turn_id == item.trigger_event_id));
     assert_ne!(activations[0].root_turn_id, activations[1].root_turn_id);
-    let inspections = store
-        .query(QueryFilter {
-            session_id: Some("serialized-session".to_string()),
-            topic: Some("chat/context_inspect".to_string()),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+    let inspections = wait_for_captured_count(&snapshots, 2).await;
     assert_eq!(inspections.len(), 2);
     assert!(inspections.iter().all(|inspection| {
         inspection
@@ -4831,6 +4946,15 @@ async fn same_session_dialogue_turns_are_serialized() {
                 .and_then(|wake| wake.get("event_id"))
                 .and_then(|value| value.as_str())
     }));
+    assert!(store
+        .query(QueryFilter {
+            session_id: Some("serialized-session".to_string()),
+            topic: Some("chat/context_inspect".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -5109,7 +5233,7 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
         .contains("(pending-tools route_probe)"));
     assert!(message_b_encoding
         .content
-        .contains("不得接管、重复或继续它们的动作"));
+        .contains("do not repeat them from this Activation"));
     assert!(message_b_encoding.content.contains("(evaluate"));
     assert!(message_b_encoding
         .content
@@ -5745,6 +5869,7 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("coalesced-wakeups.db");
     let bus = Arc::new(InMemoryEventBus::new());
+    let snapshots = capture_model_request_snapshots(&bus, "coalesced-session");
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     install_test_session_registry(&bus, &store);
     let client = Arc::new(ConcurrencyProbeClient {
@@ -5768,12 +5893,7 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "coalesced-session", "start").await;
-    assert_eq!(
-        wait_for_topic(&store, "chat/context_inspect", "coalesced-session")
-            .await
-            .len(),
-        1
-    );
+    assert_eq!(wait_for_captured_count(&snapshots, 1).await.len(), 1);
     publish_tool_output(&bus, "coalesced-session", "tool-output-1").await;
     publish_tool_output(&bus, "coalesced-session", "tool-output-2").await;
 
@@ -6048,7 +6168,9 @@ async fn eval_runs_a_submitted_program_and_hands_infer_back_to_the_model() {
         inference_turn.content
     );
     assert!(
-        inference_turn.content.contains("不是用户消息"),
+        inference_turn
+            .content
+            .contains("This is not a user message"),
         "the model must be able to tell nobody asked: {}",
         inference_turn.content
     );

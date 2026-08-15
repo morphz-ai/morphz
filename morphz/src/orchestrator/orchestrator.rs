@@ -1223,6 +1223,17 @@ struct ContextMaintenanceGate {
     completed_epoch: AtomicU64,
 }
 
+#[derive(Debug)]
+struct RefreshContextAfterConcurrentMaintenance;
+
+impl std::fmt::Display for RefreshContextAfterConcurrentMaintenance {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("refresh Context after concurrent maintenance")
+    }
+}
+
+impl std::error::Error for RefreshContextAfterConcurrentMaintenance {}
+
 impl ModelCompletionError {
     fn provider(source: DynError) -> Self {
         Self {
@@ -2449,7 +2460,7 @@ impl Orchestrator {
     async fn acquire_model_provider_slot(
         &self,
         deadline: tokio::time::Instant,
-    ) -> Result<ModelProviderPermit, DynError> {
+    ) -> Result<ModelProviderPermit, ModelFailure> {
         self.model_provider_metrics
             .queued
             .fetch_add(1, Ordering::Relaxed);
@@ -2461,9 +2472,21 @@ impl Orchestrator {
         self.model_provider_metrics
             .queued
             .fetch_sub(1, Ordering::Relaxed);
-        let permit = acquired
-            .map_err(|error| Box::new(error) as DynError)?
-            .map_err(|error| Box::new(error) as DynError)?;
+        let permit = match acquired {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(error)) => {
+                return Err(ModelFailure::new(
+                    ModelFailureKind::ProviderQueueTimeout,
+                    format!("local Provider admission semaphore closed: {error}"),
+                ));
+            }
+            Err(_) => {
+                return Err(ModelFailure::new(
+                    ModelFailureKind::ProviderQueueTimeout,
+                    "local Provider admission queue deadline exceeded",
+                ));
+            }
+        };
         self.model_provider_metrics
             .in_flight
             .fetch_add(1, Ordering::Relaxed);
@@ -2935,17 +2958,11 @@ impl Orchestrator {
             &self.orchestrator_config.event_writer,
             Arc::clone(&self.event_writer_metrics),
         );
-        let persist_full_context_inspect = self.orchestrator_config.persist_full_context_inspect;
         self.bus.subscribe_durable_writer(
             "*".to_string(),
-            Arc::new(move |mut event| {
+            Arc::new(move |event| {
                 let event_writer = event_writer.clone();
-                Box::pin(async move {
-                    if !persist_full_context_inspect {
-                        compact_context_inspect_for_persistence(&mut event);
-                    }
-                    event_writer.append(EventAppend { event }).await
-                })
+                Box::pin(async move { event_writer.append(EventAppend { event }).await })
             }),
         );
 
@@ -4679,32 +4696,10 @@ impl Orchestrator {
                     return Ok(());
                 }
             }
-            let force_evaluation = event
-                .payload
-                .get("runtime_force_evaluation")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            let objective_wait_satisfied = if let Some(supervisor) = &self.objective_supervisor {
-                supervisor.prepare_routed_event(&event, &activation.id).await?
-            } else {
-                false
-            };
-            if event.event_type == TYPE_TOOL_OUTPUT
-                && !force_evaluation
-                && !objective_wait_satisfied
-                && self
-                    .activation_signals_already_covered(&session_id, &activation, &event)
-                    .await?
-            {
-                tracing::debug!(
-                    session_id,
-                    event_id = %event.id,
-                    event_code = "orchestrator.tool_wakeup.context_view_superseded",
-                    "Skipped a queued tool wakeup superseded by an updated Context view"
-                );
-                self.release_dialogue_thread(&session_id, &activation.root_turn_id)
-                    .await;
-                return Ok(());
+            if let Some(supervisor) = &self.objective_supervisor {
+                let _ = supervisor
+                    .prepare_routed_event(&event, &activation.id)
+                    .await?;
             }
             self.run_attempt(&session_id, &activation).await
             } => (Some(result), None, None),
@@ -5412,165 +5407,31 @@ impl Orchestrator {
         }
     }
 
-    async fn routed_input_already_covered(
+    async fn pending_routed_inputs(
         &self,
-        session_id: &str,
-        trigger: &Event,
-    ) -> Result<bool, DynError> {
-        let trigger_root_turn_id = trigger
-            .payload
-            .get("root_turn_id")
-            .and_then(|value| value.as_str());
-        let trigger_sequence = match trigger.sequence {
-            Some(sequence) => Some(sequence),
-            None => self
-                .store
-                .query(QueryFilter {
-                    event_id: Some(trigger.id.clone()),
-                    session_id: Some(session_id.to_string()),
-                    ..Default::default()
-                })
-                .await?
-                .into_iter()
-                .find(|event| event.id == trigger.id)
-                .and_then(|event| event.sequence),
-        };
-        let inspections = self
-            .store
-            .query(QueryFilter {
-                session_id: Some(session_id.to_string()),
-                after_sequence: trigger_sequence,
-                topic: Some("chat/context_inspect".to_string()),
-                root_turn_id: trigger_root_turn_id.map(ToOwned::to_owned),
-                top_k: Some(1),
-                ..Default::default()
-            })
-            .await?;
-        Ok(inspections.iter().any(|inspection| {
-            let same_causal_turn = match trigger_root_turn_id {
-                Some(root_turn_id) => {
-                    inspection
-                        .payload
-                        .get("root_turn_id")
-                        .and_then(|value| value.as_str())
-                        == Some(root_turn_id)
-                }
-                None => true,
-            };
-            if !same_causal_turn {
-                return false;
-            }
-            if let Some(covered_ids) = inspection
-                .payload
-                .get("covered_routed_input_ids")
-                .and_then(|value| value.as_array())
-            {
-                return covered_ids
-                    .iter()
-                    .any(|value| value.as_str() == Some(trigger.id.as_str()));
-            }
-            // Compatibility for diagnostic Events written before exact
-            // coverage IDs were introduced. New requests never rely on this
-            // timestamp approximation.
-            match (trigger_sequence, inspection.sequence) {
-                (Some(trigger_sequence), Some(inspection_sequence)) => {
-                    inspection_sequence > trigger_sequence
-                }
-                _ => inspection.timestamp > trigger.timestamp,
-            }
-        }))
-    }
-
-    async fn uncovered_routed_inputs(
-        &self,
-        session_id: &str,
         activation: &ThreadActivationRecord,
     ) -> Result<usize, DynError> {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Thread routed-input fence 需要持久化 SessionStore")?;
-        let covered_through = session_store
-            .list_activation_signals(&activation.id)
-            .await?
-            .into_iter()
-            .map(|signal| signal.sequence)
-            .max()
-            .unwrap_or(activation.trigger_sequence);
-        let candidates = self
-            .store
-            .query(QueryFilter {
-                context_id: Some(activation.context_id.clone()),
-                session_id: Some(session_id.to_string()),
-                after_sequence: Some(covered_through),
-                types: vec![TYPE_TOOL_OUTPUT.to_string()],
-                ..Default::default()
-            })
-            .await?;
-        let mut uncovered = 0usize;
-        for event in candidates {
-            let same_root = event
-                .payload
-                .get("root_turn_id")
-                .and_then(|value| value.as_str())
-                == Some(activation.root_turn_id.as_str());
-            // action_group_settled is only a Runtime barrier. Its member Tool
-            // Outputs carry the semantic facts, so fencing the barrier itself
-            // would cause an already-complete physical batch to evaluate twice.
-            let routed_input = event.event_type == TYPE_TOOL_OUTPUT;
-            if same_root
-                && routed_input
-                && !self
-                    .routed_input_already_covered(session_id, &event)
-                    .await?
-            {
-                uncovered = uncovered.saturating_add(1);
-            }
-        }
-        Ok(uncovered)
-    }
-
-    async fn activation_signals_already_covered(
-        &self,
-        session_id: &str,
-        activation: &ThreadActivationRecord,
-        dispatched_event: &Event,
-    ) -> Result<bool, DynError> {
-        let session_store = self
-            .context_engine
-            .session_store()
-            .ok_or("Activation Signal coverage 需要持久化 SessionStore")?;
-        let signals = session_store
-            .list_activation_signals(&activation.id)
-            .await?;
-        if signals.is_empty() {
-            return self
-                .routed_input_already_covered(session_id, dispatched_event)
-                .await;
-        }
-        for signal in signals {
-            let event = if signal.event_id == dispatched_event.id {
-                dispatched_event.clone()
-            } else {
-                self.context_engine
-                    .find_event(&activation.context_id, &signal.event_id)
-                    .await?
-                    .ok_or_else(|| {
-                        format!(
-                            "Activation '{}' 领取的 Signal Event '{}' 不存在",
-                            activation.id, signal.event_id
-                        )
-                    })?
-            };
-            if event.event_type != TYPE_TOOL_OUTPUT
-                || !self
-                    .routed_input_already_covered(session_id, &event)
-                    .await?
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+            .ok_or("Thread pending-input check 需要持久化 SessionStore")?;
+        Ok(usize::from(
+            session_store
+                .next_pending_thread_signal(
+                    &session_store
+                        .get_thread_by_root(&activation.root_turn_id)
+                        .await?
+                        .ok_or_else(|| {
+                            format!(
+                                "Activation '{}' 所属 Thread '{}' 不存在",
+                                activation.id, activation.root_turn_id
+                            )
+                        })?
+                        .id,
+                )
+                .await?
+                .is_some(),
+        ))
     }
 
     /// Build only the standard Function Calling handshake for the tool batch
@@ -5809,7 +5670,7 @@ impl Orchestrator {
         let _provider_slot = self
             .acquire_model_provider_slot(queue_deadline)
             .await
-            .map_err(ModelCompletionError::provider)?;
+            .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
         let model_hard_deadline = self
             .orchestrator_config
             .model_attempt_hard_timeout_secs
@@ -6920,7 +6781,29 @@ impl Orchestrator {
         Ok(stored)
     }
 
-    async fn run_attempt(
+    fn run_attempt<'a>(
+        &'a self,
+        session_id: &'a str,
+        activation: &'a ThreadActivationRecord,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DynError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            loop {
+                match self.run_attempt_inner(session_id, activation).await {
+                    Err(error)
+                        if error
+                            .downcast_ref::<RefreshContextAfterConcurrentMaintenance>()
+                            .is_some() =>
+                    {
+                        continue;
+                    }
+                    result => return result,
+                }
+            }
+        })
+    }
+
+    async fn run_attempt_inner(
         &self,
         session_id: &str,
         activation: &ThreadActivationRecord,
@@ -7625,7 +7508,7 @@ impl Orchestrator {
             }
         }
         let no_delivered_output_ids = HashSet::new();
-        let mut inspect_delivered_output_ids = if bounded_critical_projection {
+        let mut visible_routed_input_ids = if bounded_critical_projection {
             no_delivered_output_ids.clone()
         } else {
             continuation.delivered_output_ids.clone()
@@ -7648,15 +7531,57 @@ impl Orchestrator {
             } else {
                 format!("{attempt_id}_response_retry_{request_index}")
             };
-            self.record_context_inspect(
+            let mut signal_input_ids = Vec::new();
+            if let Some(focus) = context.activation.as_ref() {
+                signal_input_ids.extend(
+                    focus
+                        .signal_batch
+                        .iter()
+                        .map(|signal| signal.event_id.clone()),
+                );
+            }
+            let visible_observation_ids = context
+                .observations
+                .iter()
+                .map(|observation| observation.id.as_str())
+                .collect::<HashSet<_>>();
+            signal_input_ids.extend(
+                context
+                    .thread_signals
+                    .iter()
+                    .filter(|signal| {
+                        signal.thread_id == thread.id
+                            && visible_observation_ids.contains(signal.event_id.as_str())
+                    })
+                    .map(|signal| signal.event_id.clone()),
+            );
+            signal_input_ids.sort();
+            signal_input_ids.dedup();
+            let bound_signals = session_store
+                .bind_activation_input_signals(&activation.id, &signal_input_ids)
+                .await?;
+
+            // A physical request can still see causal input whose scheduler
+            // Signal belongs to an earlier Activation (for example, the
+            // original user turn during Provider recovery). Keep that broader
+            // diagnostic set separate from the authoritative ownership set.
+            let mut request_input_ids =
+                visible_routed_input_ids.iter().cloned().collect::<Vec<_>>();
+            request_input_ids.extend(signal_input_ids);
+            if let Some(wake_event_id) = context.wake.event_id.as_deref() {
+                request_input_ids.push(wake_event_id.to_string());
+            }
+            request_input_ids.sort();
+            request_input_ids.dedup();
+            self.publish_model_request_snapshot(
                 session_id,
                 &model_attempt_id,
                 &context,
                 &protocol_messages,
                 &tools,
-                &inspect_delivered_output_ids,
+                &request_input_ids,
             )
-            .await?;
+            .await;
             // Register ownership before publishing the first non-terminal
             // state. Cancellation may race this await; the cancellation owner
             // must already know which physical Attempt to close.
@@ -7666,7 +7591,9 @@ impl Orchestrator {
                 session_id,
                 &model_attempt_id,
                 &effective_phase,
+                &context,
                 tools.len(),
+                bound_signals.len(),
             )
             .await?;
             let completion = self
@@ -7763,7 +7690,7 @@ impl Orchestrator {
                             // reusing this attempt's pre-error messages would
                             // immediately submit the stale oversized request.
                             drop(owner);
-                            return Box::pin(self.run_attempt(session_id, activation)).await;
+                            return Err(Box::new(RefreshContextAfterConcurrentMaintenance));
                         }
                         context_maintenance_owner = Some(owner);
                         context_maintenance_gate = Some(Arc::clone(&gate));
@@ -7860,7 +7787,7 @@ impl Orchestrator {
                     request_prompt_measurement = self
                         .count_projected_prompt_tokens(&context, &protocol_messages, &tools)
                         .await;
-                    inspect_delivered_output_ids.clear();
+                    visible_routed_input_ids.clear();
                     protocol_errors = 0;
                     reasoning_continuations = 0;
                     stalled_reasoning_continuations = 0;
@@ -7968,8 +7895,10 @@ impl Orchestrator {
                             &reason,
                         )
                         .await?;
-                        let failure =
-                            ModelFailure::new(ModelFailureKind::StreamIdleTimeout, reason);
+                        let failure = ModelFailure::new(
+                            ModelFailureKind::ReasoningContinuationExhausted,
+                            reason,
+                        );
                         return Box::pin(self.publish_runtime_failure(
                             session_id,
                             &model_attempt_id,
@@ -8112,7 +8041,7 @@ impl Orchestrator {
                     });
                     protocol_messages
                         .push(self.standard_tool_result_message(&protocol_call, &output));
-                    inspect_delivered_output_ids.insert(output.id.clone());
+                    visible_routed_input_ids.insert(output.id.clone());
                     let completion_committed = output
                         .payload
                         .get("text")
@@ -8159,8 +8088,7 @@ impl Orchestrator {
                         .list_schedules(Some(&thread.id), Some(ScheduleStatus::Queued))
                         .await?
                         .len();
-                    let pending_routed_inputs =
-                        self.uncovered_routed_inputs(session_id, activation).await?;
+                    let pending_routed_inputs = self.pending_routed_inputs(activation).await?;
                     if thread_kind != "execution"
                         || (active_root_tasks == 0
                             && pending_schedules == 0
@@ -8254,8 +8182,7 @@ impl Orchestrator {
                 .list_schedules(Some(&thread.id), Some(ScheduleStatus::Queued))
                 .await?
                 .len();
-            let pending_routed_inputs =
-                self.uncovered_routed_inputs(session_id, activation).await?;
+            let pending_routed_inputs = self.pending_routed_inputs(activation).await?;
             let explicit_wait = matches!(&decision, TerminalDecision::NoReply(NoReplyMode::Wait));
             if !completion_prepared
                 && (explicit_wait
@@ -8843,10 +8770,23 @@ impl Orchestrator {
             payload.into_iter().collect(),
         );
         if self.commit_and_dispatch_outcome(attempt_id, &event).await? {
-            if let Some(supervisor) = &self.objective_supervisor {
-                supervisor.terminal_outcome(&event).await?;
-            }
+            self.finalize_objective_outcome(event.clone()).await?;
         }
+        Ok(())
+    }
+
+    async fn finalize_objective_outcome(&self, event: Event) -> Result<(), DynError> {
+        let Some(supervisor) = self.objective_supervisor.as_ref().map(Arc::clone) else {
+            return Ok(());
+        };
+        // The terminal Event and Activation outcome are already durable. Run
+        // Objective reconciliation as a new scheduler task so admitting an
+        // immediate successor Evaluation cannot remain nested inside the
+        // just-finished model poll stack. Awaiting the task preserves strict
+        // completion ordering and propagates every reconciliation error.
+        tokio::spawn(async move { supervisor.terminal_outcome(&event).await })
+            .await
+            .map_err(|error| format!("Objective terminal reconciliation task failed: {error}"))??;
         Ok(())
     }
 
@@ -8997,9 +8937,7 @@ impl Orchestrator {
             payload.into_iter().collect(),
         );
         if self.commit_and_dispatch_outcome(attempt_id, &event).await? {
-            if let Some(supervisor) = &self.objective_supervisor {
-                supervisor.terminal_outcome(&event).await?;
-            }
+            self.finalize_objective_outcome(event.clone()).await?;
         }
         Ok(())
     }
@@ -10015,6 +9953,15 @@ impl Orchestrator {
                     "模型服务额度已耗尽。本次请求已经结束，不会进入等待队列；请等待额度恢复、升级订阅或切换模型。\n\n服务返回：{error_text}"
                 )
             }
+            ModelFailureKind::HardDeadlineExceeded => {
+                "模型请求超过了 Runtime 配置的单次硬期限。本回合已取消，不会把请求延长成无限 Provider 恢复循环；Session、Mind 与已提交修改均已保留。".to_string()
+            }
+            ModelFailureKind::ProviderQueueTimeout => {
+                "Runtime 未能在配置的等待时间内获得本地模型请求槽。请求尚未发送给 Provider，本回合已结束；Session、Mind 与已提交修改均已保留。".to_string()
+            }
+            ModelFailureKind::ReasoningContinuationExhausted => {
+                "模型连续只返回推理进度，未在 Runtime 配置的安全边界内产生最终正文或工具调用。本回合已安全熔断，不会误判为 Provider 故障并无限重试。".to_string()
+            }
             kind if kind.uses_provider_recovery() => {
                 "模型请求失败。Runtime 已保留当前任务并进入 Provider 退避重试；Provider 可用后将自动继续。".to_string()
             }
@@ -10093,7 +10040,9 @@ impl Orchestrator {
         session_id: &str,
         attempt_id: &str,
         phase: &str,
+        context: &ContextView,
         tool_count: usize,
+        input_signal_count: usize,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let mut route = Vec::new();
@@ -10101,6 +10050,16 @@ impl Orchestrator {
         let attributes = vec![
             ("phase".to_string(), json!(phase)),
             ("tool_count".to_string(), json!(tool_count)),
+            ("pressure".to_string(), json!(context.pressure)),
+            ("turn_budget".to_string(), json!(context.turn_budget)),
+            (
+                "request_shape".to_string(),
+                json!({
+                    "context_encoding_chars": context.sexpr.chars().count(),
+                    "observation_count": context.observations.len(),
+                    "input_signal_count": input_signal_count,
+                }),
+            ),
             (
                 "provider_queue_timeout_secs".to_string(),
                 json!(self
@@ -12878,25 +12837,26 @@ impl Orchestrator {
             .unwrap_or(ContextTxReceipt::None))
     }
 
-    async fn record_context_inspect(
+    async fn publish_model_request_snapshot(
         &self,
         session_id: &str,
         attempt_id: &str,
         context: &ContextView,
         messages: &[Message],
         tools: &[ToolDefinition],
-        delivered_output_ids: &HashSet<String>,
-    ) -> Result<(), DynError> {
-        let mut covered_routed_input_ids = delivered_output_ids.iter().cloned().collect::<Vec<_>>();
-        if let Some(wake_event_id) = context.wake.event_id.as_deref() {
-            covered_routed_input_ids.push(wake_event_id.to_string());
+        visible_input_ids: &[String],
+    ) {
+        if !self
+            .bus
+            .ephemeral_observation_requested("runtime/model_request_snapshot", session_id)
+        {
+            return;
         }
-        covered_routed_input_ids.sort();
-        covered_routed_input_ids.dedup();
         let mut payload = vec![
             ("context_id".to_string(), json!(context.context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
+            ("storage".to_string(), json!("ephemeral")),
             ("text".to_string(), json!(context.sexpr)),
             ("messages".to_string(), json!(messages)),
             ("tools".to_string(), json!(tools)),
@@ -12914,25 +12874,31 @@ impl Orchestrator {
                 json!(self.orchestrator_config.model_attempt_hard_timeout_secs),
             ),
             ("wake".to_string(), json!(context.wake)),
-            (
-                "covered_routed_input_ids".to_string(),
-                json!(covered_routed_input_ids),
-            ),
+            ("visible_input_ids".to_string(), json!(visible_input_ids)),
         ];
         self.append_activation_route(attempt_id, &mut payload);
         let event = Event::new(
-            format!("context_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+            format!(
+                "model_request_snapshot_{}",
+                Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ),
             "System-ContextKernel".to_string(),
             crate::event::TYPE_PROPOSAL.to_string(),
-            "chat/context_inspect".to_string(),
+            "runtime/model_request_snapshot".to_string(),
             payload.into_iter().collect(),
         );
-        // This is also the durable coverage watermark for causal inputs that
-        // were visible to this model request. Persist it before the request so
-        // a concurrently arriving result can be distinguished from an input
-        // already represented in Context Encoding.
-        self.bus.publish(event).await?;
-        Ok(())
+        // Exact physical request bodies exist only for live diagnostics. The
+        // durable ModelAttempt stores bounded shape and pressure metadata;
+        // scheduler ownership was committed above in activation_signals.
+        if let Err(error) = self.bus.publish_ephemeral(event).await {
+            tracing::debug!(
+                session_id,
+                attempt_id,
+                error = %error,
+                event_code = "orchestrator.model_request_snapshot.publish_failed",
+                "Failed to publish the ephemeral physical model-request snapshot"
+            );
+        }
     }
 
     fn activation_route(&self, attempt_id: &str) -> Option<ActivationRoute> {
@@ -13700,20 +13666,20 @@ impl Orchestrator {
         let measurement = match self.prompt_pressure_measurements.get(&key) {
             Some(measurement) => Some(measurement.clone()),
             None => {
-                let event = self
+                let events = self
                     .store
                     .query(QueryFilter {
                         context_id: Some(view.context_id.clone()),
                         session_id: Some(view.active_session_id.clone()),
-                        topic: Some("chat/context_inspect".to_string()),
-                        latest_k: Some(1),
+                        topic: Some("runtime/model_attempt_state".to_string()),
+                        latest_k: Some(32),
                         ..Default::default()
                     })
-                    .await?
-                    .pop();
-                event
-                    .as_ref()
-                    .and_then(prompt_pressure_measurement_from_event)
+                    .await?;
+                events
+                    .iter()
+                    .rev()
+                    .find_map(prompt_pressure_measurement_from_event)
                     .inspect(|measurement| {
                         self.prompt_pressure_measurements
                             .insert(key.clone(), measurement.clone());
@@ -14024,39 +13990,6 @@ fn prompt_pressure_measurement_from_event(event: &Event) -> Option<PromptPressur
         },
         context_version,
     })
-}
-
-fn compact_context_inspect_for_persistence(event: &mut Event) {
-    if event.topic != "chat/context_inspect" {
-        return;
-    }
-    let mut components = serde_json::Map::new();
-    for key in ["text", "messages", "tools", "mind", "inbox"] {
-        let Some(value) = event.payload.remove(key) else {
-            continue;
-        };
-        let encoded = serde_json::to_vec(&value).unwrap_or_default();
-        let chars = value.as_str().map_or_else(
-            || String::from_utf8_lossy(&encoded).chars().count(),
-            |text| text.chars().count(),
-        );
-        components.insert(
-            key.to_string(),
-            json!({
-                "sha256": format!("{:x}", Sha256::digest(&encoded)),
-                "bytes": encoded.len(),
-                "chars": chars,
-                "items": value.as_array().map(Vec::len),
-            }),
-        );
-    }
-    event
-        .payload
-        .insert("storage".to_string(), json!("compact-v1"));
-    event.payload.insert(
-        "components".to_string(),
-        serde_json::Value::Object(components),
-    );
 }
 
 /// Carries an `infer` back to the model the way an ordinary turn goes.
@@ -15206,9 +15139,9 @@ mod tests {
     use super::{
         activation_admission_class, apply_prompt_estimate_delta, baseline_system_prompt,
         classify_terminal_response, cognitive_sexpr_vm_system_prompt,
-        compact_context_inspect_for_persistence, completed_objective_update_call,
-        compose_context_encoding, critical_maintenance_transaction_available, derived_thread_kind,
-        extend_exec_output_facts, harness_entry_callable_tools, legacy_plan_effect_sequence,
+        completed_objective_update_call, compose_context_encoding,
+        critical_maintenance_transaction_available, derived_thread_kind, extend_exec_output_facts,
+        harness_entry_callable_tools, legacy_plan_effect_sequence,
         model_visible_attachment_references, objective_supervision_matches_state,
         persist_model_reasoning_summary, persist_model_usage, plan_infer_tool_scope,
         production_system_prompt_inspection, recovery_owns_activation, render_harness_context,
@@ -16443,48 +16376,6 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("参数预览已截断"));
-    }
-
-    #[test]
-    fn compact_context_inspect_persists_hashes_instead_of_duplicate_prompt_bodies() {
-        let mut event = Event::new(
-            "inspect-1".to_string(),
-            "kernel".to_string(),
-            "proposal".to_string(),
-            "chat/context_inspect".to_string(),
-            serde_json::Map::from_iter([
-                ("context_id".to_string(), json!("context-1")),
-                ("text".to_string(), json!("(context large-body)")),
-                (
-                    "messages".to_string(),
-                    json!([{"role":"user","content":"hello"}]),
-                ),
-                (
-                    "tools".to_string(),
-                    json!([{"name":"read","description":"Read a file","parameters":{}}]),
-                ),
-                ("mind".to_string(), json!({"frames": ["a", "b"]})),
-                ("inbox".to_string(), json!([{"ref":"@e1"}])),
-                ("pressure".to_string(), json!({"level":"warning"})),
-            ]),
-        );
-
-        compact_context_inspect_for_persistence(&mut event);
-
-        assert_eq!(event.payload["storage"], "compact-v1");
-        assert_eq!(event.payload["context_id"], "context-1");
-        assert_eq!(event.payload["pressure"]["level"], "warning");
-        for key in ["text", "messages", "tools", "mind", "inbox"] {
-            assert!(!event.payload.contains_key(key));
-            assert_eq!(
-                event.payload["components"][key]["sha256"]
-                    .as_str()
-                    .unwrap()
-                    .len(),
-                64
-            );
-            assert!(event.payload["components"][key]["bytes"].as_u64().unwrap() > 0);
-        }
     }
 
     #[test]

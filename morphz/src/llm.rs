@@ -32,6 +32,12 @@ pub enum ModelFailureKind {
     /// Runtime's optional absolute wall-clock deadline ended one physical
     /// request. This is request-local policy, not shared Provider health.
     HardDeadlineExceeded,
+    /// Runtime could not admit the request before its local Provider queue
+    /// deadline. No Provider request was made, so health recovery is invalid.
+    ProviderQueueTimeout,
+    /// Runtime stopped a reasoning-only continuation loop at its configured
+    /// safety boundary. The Provider completed its requests successfully.
+    ReasoningContinuationExhausted,
     StreamIdleTimeout,
     Unknown,
 }
@@ -49,6 +55,8 @@ impl ModelFailureKind {
             Self::FirstByteTimeout => "first_byte_timeout",
             Self::StreamStalled => "stream_stalled",
             Self::HardDeadlineExceeded => "hard_deadline_exceeded",
+            Self::ProviderQueueTimeout => "provider_queue_timeout",
+            Self::ReasoningContinuationExhausted => "reasoning_continuation_exhausted",
             Self::StreamIdleTimeout => "stream_idle_timeout",
             Self::Unknown => "unknown",
         }
@@ -62,7 +70,6 @@ impl ModelFailureKind {
                 | Self::ServerUnavailable
                 | Self::FirstByteTimeout
                 | Self::StreamStalled
-                | Self::HardDeadlineExceeded
                 | Self::StreamIdleTimeout
         )
     }
@@ -90,7 +97,12 @@ impl ModelFailureKind {
     pub const fn uses_provider_recovery(self) -> bool {
         !matches!(
             self,
-            Self::ContextLimit | Self::InvalidModelOrRequest | Self::QuotaExhausted
+            Self::ContextLimit
+                | Self::InvalidModelOrRequest
+                | Self::QuotaExhausted
+                | Self::HardDeadlineExceeded
+                | Self::ProviderQueueTimeout
+                | Self::ReasoningContinuationExhausted
         )
     }
 
@@ -452,6 +464,9 @@ mod tests {
         assert!(!ModelFailureKind::InvalidModelOrRequest.uses_provider_recovery());
         assert!(!ModelFailureKind::QuotaExhausted.uses_provider_recovery());
         assert!(!ModelFailureKind::ContextLimit.uses_provider_recovery());
+        assert!(!ModelFailureKind::HardDeadlineExceeded.uses_provider_recovery());
+        assert!(!ModelFailureKind::ProviderQueueTimeout.uses_provider_recovery());
+        assert!(!ModelFailureKind::ReasoningContinuationExhausted.uses_provider_recovery());
         assert!(ModelFailureKind::Authentication.uses_provider_recovery());
         assert!(ModelFailureKind::TransientNetwork.uses_provider_recovery());
         assert!(ModelFailureKind::ServerUnavailable.uses_provider_recovery());

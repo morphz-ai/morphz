@@ -170,6 +170,13 @@ struct AsyncDispatchRegistration {
     key: AsyncDispatchKey,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct EphemeralObservationRegistration {
+    observer_id: String,
+    topic: String,
+    scope_id: String,
+}
+
 impl Drop for AsyncDispatchRegistration {
     fn drop(&mut self) {
         self.in_flight.remove(&self.key);
@@ -188,6 +195,10 @@ pub struct InMemoryEventBus {
     async_in_flight: Arc<DashMap<AsyncDispatchKey, ()>>,
     durable_lock: Arc<tokio::sync::Mutex<()>>,
     sync_handler_timeout: std::time::Duration,
+    /// Process-local demand for expensive diagnostic projections. Registering
+    /// interest never creates a Ledger fact; it only lets producers avoid
+    /// constructing large transient payloads when nobody can consume them.
+    ephemeral_observations: DashMap<EphemeralObservationRegistration, ()>,
 }
 
 impl Default for InMemoryEventBus {
@@ -216,7 +227,35 @@ impl InMemoryEventBus {
             async_in_flight: Arc::new(DashMap::new()),
             durable_lock: Arc::new(tokio::sync::Mutex::new(())),
             sync_handler_timeout,
+            ephemeral_observations: DashMap::new(),
         }
+    }
+
+    pub fn request_ephemeral_observation(
+        &self,
+        observer_id: impl Into<String>,
+        topic: impl Into<String>,
+        scope_id: impl Into<String>,
+    ) {
+        self.ephemeral_observations.insert(
+            EphemeralObservationRegistration {
+                observer_id: observer_id.into(),
+                topic: topic.into(),
+                scope_id: scope_id.into(),
+            },
+            (),
+        );
+    }
+
+    pub fn clear_ephemeral_observations(&self, observer_id: &str) {
+        self.ephemeral_observations
+            .retain(|registration, _| registration.observer_id != observer_id);
+    }
+
+    pub fn ephemeral_observation_requested(&self, topic: &str, scope_id: &str) -> bool {
+        self.ephemeral_observations.iter().any(|registration| {
+            registration.key().topic == topic && registration.key().scope_id == scope_id
+        })
     }
 
     pub fn set_error_handler<F>(&mut self, handler: F)
@@ -475,6 +514,23 @@ mod tests {
         // Should contain `audit:chat/msg` (synchronous) and `chat/msg` (asynchronous).
         assert!(recs.contains(&"audit:chat/msg".to_string()));
         assert!(recs.contains(&"chat/msg".to_string()));
+    }
+
+    #[test]
+    fn ephemeral_observation_demand_is_scoped_and_cleared_by_observer() {
+        let bus = InMemoryEventBus::new();
+        bus.request_ephemeral_observation("dashboard-a", "runtime/request", "session-a");
+        bus.request_ephemeral_observation("dashboard-a", "runtime/other", "session-a");
+        bus.request_ephemeral_observation("dashboard-b", "runtime/request", "session-b");
+
+        assert!(bus.ephemeral_observation_requested("runtime/request", "session-a"));
+        assert!(bus.ephemeral_observation_requested("runtime/request", "session-b"));
+        assert!(!bus.ephemeral_observation_requested("runtime/request", "session-c"));
+
+        bus.clear_ephemeral_observations("dashboard-a");
+        assert!(!bus.ephemeral_observation_requested("runtime/request", "session-a"));
+        assert!(!bus.ephemeral_observation_requested("runtime/other", "session-a"));
+        assert!(bus.ephemeral_observation_requested("runtime/request", "session-b"));
     }
 
     #[tokio::test]

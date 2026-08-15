@@ -98,6 +98,7 @@ import type {
 } from './scheduler/types'
 import {
   dashboardPath,
+  observesExactModelRequests,
   parseDashboardRoute,
   threadPath,
   type CognitionView,
@@ -3758,6 +3759,9 @@ export default function App() {
       setWsStatus('connecting')
       const params = new URLSearchParams({ session_id: selectedSessionId })
       if (CORE_TOKEN) params.set('token', CORE_TOKEN)
+      if (observesExactModelRequests(view, cognitionView)) {
+        params.set('observe_model_requests', 'true')
+      }
       socket = new WebSocket(`${CORE_WS_URL}?${params}`)
       socket.onopen = () => {
         setWsStatus('connected')
@@ -3842,10 +3846,10 @@ export default function App() {
             }
             return
           }
-          if (event.topic === 'chat/context_inspect') {
-            // The full inspect is intentionally ephemeral: retain only the
-            // selected Session's latest exact model input in browser memory.
-            // Durable storage keeps hashes and sizes, not another Prompt copy.
+          if (event.topic === 'runtime/model_request_snapshot') {
+            // Exact physical input is process-local observability: retain only
+            // the selected Session's latest request in browser memory. The
+            // Ledger stores bounded ModelAttempt metadata, not another Prompt.
             if (typeof event.payload.text === 'string') setLatestContextInspect(event)
             return
           }
@@ -3927,7 +3931,7 @@ export default function App() {
       pendingStreamEvents = []
       socket?.close()
     }
-  }, [loadSession, route.contextId, selectedContextId, selectedSessionId, t, view])
+  }, [cognitionView, loadSession, route.contextId, selectedContextId, selectedSessionId, t, view])
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {

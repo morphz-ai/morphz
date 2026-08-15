@@ -19,6 +19,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
+use std::collections::HashSet;
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
@@ -852,6 +853,152 @@ impl ActivationStore for PostgresStore {
         .iter()
         .map(signal_from_row)
         .collect()
+    }
+
+    async fn bind_activation_input_signals(
+        &self,
+        activation_id: &str,
+        event_ids: &[String],
+    ) -> Result<Vec<ThreadSignalRecord>, StoreError> {
+        if event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut event_ids = event_ids.to_vec();
+        event_ids.sort();
+        event_ids.dedup();
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+
+        // Lock the current Thread before the Activation. Claim, recovery, and
+        // terminal transitions use this same order, avoiding a cross-path
+        // deadlock while preserving one authoritative owner per Signal.
+        let route = sqlx::query(
+            r#"SELECT activation.root_turn_id,
+                      activation.generation AS activation_generation
+               FROM thread_activations activation
+               WHERE activation.id = $1"#,
+        )
+        .bind(activation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| format!("Thread Activation '{activation_id}' 不存在"))?;
+        let root_turn_id: String = route.get("root_turn_id");
+        let activation_generation: i64 = route.get("activation_generation");
+        let thread = sqlx::query(
+            r#"SELECT id, generation FROM threads
+               WHERE root_turn_id = $1 FOR UPDATE"#,
+        )
+        .bind(&root_turn_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let thread_id: String = thread.get("id");
+        let thread_generation: i64 = thread.get("generation");
+        let activation = sqlx::query(
+            r#"SELECT status, generation FROM thread_activations
+               WHERE id = $1 FOR UPDATE"#,
+        )
+        .bind(activation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let activation_status: String = activation.get("status");
+        let locked_activation_generation: i64 = activation.get("generation");
+        if activation_status != ThreadActivationStatus::Running.as_str() {
+            return Err(format!(
+                "Thread Activation '{activation_id}' 不是 running，不能接管模型输入 Signal ({activation_status})"
+            )
+            .into());
+        }
+        if activation_generation != locked_activation_generation
+            || activation_generation != thread_generation
+        {
+            return Err(format!("Thread Activation '{activation_id}' generation 已过期").into());
+        }
+
+        let mut next_ordinal: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM activation_signals WHERE activation_id = $1",
+        )
+        .bind(activation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let mut selected_event_ids = HashSet::new();
+        for event_id in event_ids {
+            let row = sqlx::query(
+                r#"SELECT signals.*, links.activation_id AS owner_activation_id
+                   FROM thread_signals signals
+                   LEFT JOIN activation_signals links ON links.signal_id = signals.id
+                   WHERE signals.event_id = $1
+                   FOR UPDATE OF signals"#,
+            )
+            .bind(&event_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some(row) = row else {
+                // Tool Outputs with wake_policy=none intentionally have no
+                // scheduler Signal and therefore require no ownership record.
+                continue;
+            };
+            let signal = signal_from_row(&row)?;
+            if signal.thread_id != thread_id || signal.thread_generation as i64 != thread_generation
+            {
+                return Err(format!(
+                    "Thread Signal '{}' 不属于 Activation '{}' 的当前 Thread generation",
+                    signal.id, activation_id
+                )
+                .into());
+            }
+            let owner: Option<String> = row.get("owner_activation_id");
+            if let Some(owner) = owner {
+                if owner != activation_id {
+                    return Err(format!(
+                        "Thread Signal '{}' 已由 Activation '{}' 接管",
+                        signal.id, owner
+                    )
+                    .into());
+                }
+                selected_event_ids.insert(signal.event_id);
+                continue;
+            }
+            if signal.status != ThreadSignalStatus::Pending {
+                return Err(format!(
+                    "Thread Signal '{}' 状态为 '{}' 但没有 Activation owner",
+                    signal.id,
+                    signal.status.as_str()
+                )
+                .into());
+            }
+            sqlx::query(
+                "INSERT INTO activation_signals (activation_id, signal_id, ordinal) VALUES ($1, $2, $3)",
+            )
+            .bind(activation_id)
+            .bind(&signal.id)
+            .bind(next_ordinal)
+            .execute(&mut *tx)
+            .await?;
+            let claimed = sqlx::query(
+                r#"UPDATE thread_signals
+                   SET status = 'claimed', claimed_at = $1
+                   WHERE id = $2 AND thread_generation = $3 AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&signal.id)
+            .bind(thread_generation)
+            .execute(&mut *tx)
+            .await?;
+            if claimed.rows_affected() != 1 {
+                return Err(
+                    format!("Thread Signal '{}' 在模型输入接管时发生并发冲突", signal.id).into(),
+                );
+            }
+            next_ordinal = next_ordinal.saturating_add(1);
+            selected_event_ids.insert(signal.event_id);
+        }
+        tx.commit().await?;
+        Ok(self
+            .list_activation_signals(activation_id)
+            .await?
+            .into_iter()
+            .filter(|signal| selected_event_ids.contains(&signal.event_id))
+            .collect())
     }
 
     async fn next_pending_thread_signal(
