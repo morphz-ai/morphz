@@ -802,6 +802,26 @@ SQLite 的账号状态、亲和、刷新 fencing、Attempt Binding 与远端目�
 | 9 | 兼容 Gateway 仍作为普通 Provider 接入 | 已保留四协议配置入口 |
 | 10 | 内置 Adapter 确定性契约与真实端点冒烟 | Codex、Kimi、Claude、Antigravity、xAI 的确定性契约已通过；真实端点冒烟需要外部测试账号，未伪造完成 |
 
+### 20.1 Codex 订阅可观测性
+
+固定人格需要把“模型暂时没有响应”与“订阅额度已经耗尽”明确区分。Morphz
+通过官方 Codex App Server 的 `account/rateLimits/read` 与
+`account/usage/read` 读取 ChatGPT 订阅窗口、重置时间、Credits 和 token
+活动，不猜测私有 HTTP 接口。Runtime 只提供需要 Operator 认证的只读端点：
+
+```text
+GET /api/runtime/providers/accounts/{account_id}/usage
+```
+
+Morphz 以 `chatgptAuthTokens` 外部凭据模式将现有 OAuth token 交给短生命周期的
+Codex App Server 子进程。子进程使用隔离的临时 `CODEX_HOME`，token 不进入命令行
+或响应，查询完成、失败或超时都会终止进程并清理目录。默认执行文件是 `codex`，
+部署环境可以用 `MORPHZ_CODEX_APP_SERVER_BIN` 指向兼容版本。
+
+公共应用不得直接转发这个 Operator DTO。它应在自己的身份边界内决定公开粒度、
+缓存频率和显示名称；账户 ID、OAuth 邮箱与 token 元数据不应因接入额度组件而自动
+公开。
+
 因此 v1 的代码完成标准是：前九项具备确定性证据，第十项的本地契约部分完成；真实订阅冒烟作为发布前外部验证门，而不是把个人账号变成自动测试依赖。
 
 ## 15. 结论

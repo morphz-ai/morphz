@@ -42,6 +42,7 @@ use crate::memory::{
 use crate::orchestrator::context::{ContextTokenBudget, MindProjectionAudit};
 use crate::provider::auth::{
     OAuthAccountMetadata, OAuthLoginChallenge, OAuthLoginCompletion, OAuthLoginProgress,
+    ProviderSubscriptionUsage,
 };
 use crate::provider::control::{
     ProviderAccountControlAction, ProviderCatalogMutationReceipt, ProviderCatalogObjectKind,
@@ -1597,6 +1598,16 @@ impl MorphzSdk {
     ) -> SdkResult<OAuthAccountMetadata> {
         self.runtime
             .provider_oauth_account_metadata(account_id)
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn provider_subscription_usage(
+        &self,
+        account_id: &str,
+    ) -> SdkResult<ProviderSubscriptionUsage> {
+        self.runtime
+            .provider_subscription_usage(account_id)
+            .await
             .map_err(SdkError::internal)
     }
 

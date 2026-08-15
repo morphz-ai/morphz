@@ -442,17 +442,14 @@ impl PlanExecutionCoordinator {
             .list_plan_executions(PlanExecutionFilter {
                 context_id: context_id.map(str::to_string),
                 status: Some(PlanExecutionStatus::Running),
+                lease_expires_at_or_before: Some(Utc::now()),
                 include_terminal: false,
                 limit: Some(limit.max(1)),
                 ..PlanExecutionFilter::default()
             })
             .await?;
-        let now = Utc::now();
         let mut recovered = Vec::new();
         for plan in plans {
-            if !plan.lease_expires_at.is_some_and(|expiry| expiry <= now) {
-                continue;
-            }
             let Some(claim_token) = plan.claim_token.as_deref() else {
                 continue;
             };
@@ -740,6 +737,7 @@ impl PlanExecutionCoordinator {
             .list_plan_executions(PlanExecutionFilter {
                 context_id: context_id.map(str::to_string),
                 status: Some(PlanExecutionStatus::Waiting),
+                pending_kind: Some(PlanExecutionWaitKind::ExecutionJob),
                 include_terminal: false,
                 limit: Some(limit.max(1)),
                 ..PlanExecutionFilter::default()
@@ -747,10 +745,6 @@ impl PlanExecutionCoordinator {
             .await?;
         let mut report = PlanReconciliationReport::default();
         for plan in plans {
-            if plan.pending_kind != Some(PlanExecutionWaitKind::ExecutionJob) {
-                report.still_waiting.push(plan.id);
-                continue;
-            }
             let Some(job_id) = plan.pending_id.as_deref() else {
                 report.conflicts.push((
                     plan.id,
@@ -791,6 +785,7 @@ impl PlanExecutionCoordinator {
             .list_plan_executions(PlanExecutionFilter {
                 context_id: context_id.map(str::to_string),
                 status: Some(PlanExecutionStatus::Waiting),
+                pending_kind: Some(PlanExecutionWaitKind::Evaluation),
                 include_terminal: false,
                 limit: Some(limit.max(1)),
                 ..PlanExecutionFilter::default()
@@ -798,10 +793,6 @@ impl PlanExecutionCoordinator {
             .await?;
         let mut report = PlanReconciliationReport::default();
         for plan in plans {
-            if plan.pending_kind != Some(PlanExecutionWaitKind::Evaluation) {
-                report.still_waiting.push(plan.id);
-                continue;
-            }
             let Some(activation_id) = plan.pending_id.as_deref() else {
                 report
                     .conflicts
@@ -1103,6 +1094,32 @@ fn infer_request_event(
     // already durable and remains stable if the caller loses the commit
     // response and retries this hand-off.
     event.timestamp = plan.updated_at;
+    Ok(event)
+}
+
+/// Reconstructs the immutable infer request owned by a waiting Plan. This is
+/// used by the live reconciler to redispatch a durable pending Signal when the
+/// asynchronous router has not yet materialized its deterministic child
+/// Activation.
+pub fn pending_infer_request_event(plan: &PlanExecutionRecord) -> PlanExecutionResult<Event> {
+    if plan.status != PlanExecutionStatus::Waiting
+        || plan.pending_kind != Some(PlanExecutionWaitKind::Evaluation)
+    {
+        return Err(format!("PlanExecution '{}' 当前没有等待 infer Evaluation", plan.id).into());
+    }
+    let machine: PlanMachine = serde_json::from_value(plan.state_json.clone())?;
+    let effect = machine
+        .pending_effect()
+        .ok_or_else(|| format!("PlanExecution '{}' 缺少 pending infer effect", plan.id))?;
+    let event = infer_request_event(plan, effect)?;
+    let activation_id = deterministic_infer_activation_id(&event.id)?;
+    if plan.pending_id.as_deref() != Some(activation_id.as_str()) {
+        return Err(format!(
+            "PlanExecution '{}' 的 pending Evaluation 与 infer Event 不一致",
+            plan.id
+        )
+        .into());
+    }
     Ok(event)
 }
 

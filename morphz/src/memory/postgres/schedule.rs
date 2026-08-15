@@ -17,7 +17,7 @@ use crate::scheduler::{
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
@@ -1111,6 +1111,43 @@ impl ScheduleStore for PostgresStore {
         rows.iter().map(schedule_from_row).collect()
     }
 
+    async fn list_undelivered_schedule_events(&self) -> Result<Vec<Event>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT e.sequence, e.id, e.timestamp, e.actor, e.type, e.topic, e.payload
+               FROM events e
+               JOIN threads t
+                 ON t.root_turn_id = COALESCE(
+                        e.root_turn_id,
+                        e.payload->>'root_turn_id'
+                    )
+                AND t.status = 'open'
+               WHERE e.topic = 'chat/schedule_due'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM thread_signals s WHERE s.event_id = e.id
+                 )
+               ORDER BY e.sequence"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let payload = row.get::<JsonValue, _>("payload");
+                Ok(Event {
+                    id: row.get("id"),
+                    sequence: Some(u64::try_from(row.get::<i64, _>("sequence"))?),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: payload
+                        .as_object()
+                        .cloned()
+                        .ok_or("PostgreSQL Event payload must be a JSON object")?,
+                })
+            })
+            .collect()
+    }
+
     async fn list_context_schedules(
         &self,
         context_id: &str,
@@ -1124,6 +1161,31 @@ impl ScheduleStore for PostgresStore {
         .bind(context_id)
         .fetch_all(&self.pool)
         .await?;
+        rows.iter().map(schedule_from_row).collect()
+    }
+
+    async fn list_thread_schedules(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+    ) -> Result<Vec<ScheduleRecord>, StoreError> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<Postgres>::new(
+            "SELECT schedules.* FROM schedules INNER JOIN threads ON threads.id = schedules.thread_id WHERE threads.context_id = ",
+        );
+        query
+            .push_bind(context_id)
+            .push(" AND schedules.thread_id IN (");
+        {
+            let mut values = query.separated(", ");
+            for thread_id in thread_ids {
+                values.push_bind(thread_id);
+            }
+        }
+        query.push(") ORDER BY COALESCE(schedules.not_before, schedules.created_at), schedules.id");
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(schedule_from_row).collect()
     }
 

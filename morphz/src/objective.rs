@@ -2135,10 +2135,26 @@ impl ObjectiveSupervisor {
             .list_context_objectives(context_id, false)
             .await?;
         for objective in objectives {
+            if objective.status != ObjectiveStatus::Active {
+                continue;
+            }
+            let targets_objective = event.topic == "runtime/thread_group_terminal"
+                && event
+                    .payload
+                    .get("objective_id")
+                    .and_then(|value| value.as_str())
+                    == Some(objective.id.as_str());
             let Some(wait) = objective.wait_condition.as_ref() else {
+                // Thread Group terminal commits atomically satisfy the
+                // structured dependency and clear the legacy wait projection.
+                // The barrier is therefore an idempotent scheduling hint even
+                // when the display field is already NULL by dispatch time.
+                if targets_objective {
+                    self.reconcile(objective).await?;
+                }
                 continue;
             };
-            if objective.status != ObjectiveStatus::Active || !wait_matches_event(wait, event) {
+            if !wait_matches_event(wait, event) {
                 continue;
             }
             self.satisfy_wait_dependency(&objective, wait, &event.id)
@@ -3912,6 +3928,132 @@ mod tests {
             .unwrap()
             .expect("objective");
         assert!(runnable.active_evaluation_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn terminal_group_barrier_reconciles_an_objective_whose_legacy_wait_was_precleared() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "precleared-group-wake").await;
+        let group_id = "group-precleared-objective-wake";
+        let waiting = match store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::ThreadGroup {
+                    group_id: group_id.to_string(),
+                }),
+                Some("waiting for terminal group"),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(waiting) => waiting,
+            mutation => panic!("unexpected wait mutation: {mutation:?}"),
+        };
+        let dependency_id = stable_scheduler_dependency_id(
+            SchedulerDependencyOwnerKind::Objective,
+            &waiting.id,
+            waiting.generation,
+            SchedulerDependencyKind::ThreadGroup,
+            group_id,
+            1,
+        );
+        store
+            .register_scheduler_dependency(NewSchedulerDependency {
+                id: dependency_id.clone(),
+                owner_kind: SchedulerDependencyOwnerKind::Objective,
+                owner_id: waiting.id.clone(),
+                owner_generation: waiting.generation,
+                dependency_kind: SchedulerDependencyKind::ThreadGroup,
+                dependency_id: group_id.to_string(),
+                dependency_generation: 1,
+                required: true,
+                metadata: json!({"fixture": true}),
+            })
+            .await
+            .unwrap();
+        let barrier = Event::new(
+            "thread_group_barrier_group-precleared-objective-wake_g1".to_string(),
+            "Runtime".to_string(),
+            "runtime_control".to_string(),
+            "runtime/thread_group_terminal".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!(waiting.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(waiting.coordinator_session_id),
+                ),
+                ("objective_id".to_string(), json!(waiting.id)),
+                ("thread_group_id".to_string(), json!(group_id)),
+                ("thread_group_status".to_string(), json!("satisfied")),
+            ]),
+        );
+        store.append(barrier.clone()).await.unwrap();
+        store
+            .satisfy_scheduler_dependency(&dependency_id, waiting.generation, 1, &barrier.id)
+            .await
+            .unwrap();
+        let precleared = match store
+            .update_objective_state(
+                &waiting.id,
+                waiting.revision,
+                ObjectiveStatus::Active,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(precleared) => precleared,
+            mutation => panic!("unexpected preclear mutation: {mutation:?}"),
+        };
+        assert!(precleared.wait_condition.is_none());
+        assert!(precleared.active_evaluation_id.is_none());
+
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::new(ObjectiveEvaluationRegistry::default()),
+                Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_scheduler_dependency_store(
+                Arc::clone(&store) as Arc<dyn SchedulerDependencyStore>
+            ),
+        );
+        supervisor.started.store(true, Ordering::Release);
+        supervisor.wake_non_routed_event(&barrier).await.unwrap();
+
+        let resumed = store
+            .get_objective(&precleared.id)
+            .await
+            .unwrap()
+            .expect("objective");
+        assert!(resumed.active_evaluation_id.is_some());
+        assert_eq!(resumed.continuation_sequence, 1);
+        let continuations = store
+            .query(QueryFilter {
+                context_id: Some(resumed.context_id),
+                topic: Some("chat/tool_output".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert!(continuations.iter().any(|event| {
+            event
+                .payload
+                .get("tool_name")
+                .and_then(serde_json::Value::as_str)
+                == Some("objective_supervisor")
+        }));
     }
 
     #[tokio::test]

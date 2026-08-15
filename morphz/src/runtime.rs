@@ -52,9 +52,9 @@ use crate::memory::{
     RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
     ScheduleStatus, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore,
     SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
-    ThreadControlState, ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
-    ThreadSupervisorKind, TimerStore,
+    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle,
+    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -70,6 +70,7 @@ use crate::permission::{
 };
 use crate::provider::auth::{
     OAuthAccountMetadata, OAuthLoginChallenge, OAuthLoginCompletion, OAuthLoginProgress,
+    ProviderSubscriptionUsage,
 };
 use crate::provider::control::{
     ProviderAccountControlAction, ProviderAccountControlRecord, ProviderControlSnapshot,
@@ -234,6 +235,9 @@ const ARTIFACT_TRANSFER_COMPLETED_TOPIC: &str = "runtime/artifact_transfer_compl
 const ARTIFACT_TRANSFER_FAILED_TOPIC: &str = "runtime/artifact_transfer_failed";
 const ARTIFACT_TRANSFER_CANCELLED_TOPIC: &str = "runtime/artifact_transfer_cancelled";
 const ARTIFACT_TRANSFER_WORKER_LEASE_SECS: i64 = 300;
+/// Scheduler board history is a bounded projection. Exact, unbounded history
+/// remains available through `thread_detail` when an operator opens a Thread.
+const SCHEDULER_TERMINAL_ACTIVATIONS_PER_THREAD: usize = 32;
 
 async fn persist_message_attachments(
     configured_root: &str,
@@ -546,6 +550,10 @@ pub struct RuntimeOverview {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextOverviewQuery {
     pub active_session_id: Option<String>,
+    /// A caller which requests the complete Scheduler aggregate in parallel
+    /// can omit this duplicate projection. `None` preserves the authoritative
+    /// summary for SDK compatibility.
+    pub include_scheduler_summary: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1228,7 +1236,8 @@ impl MorphzRuntimeBuilder {
         }
         for durable_target in store
             .list_execution_targets(ExecutionTargetFilter {
-                limit: Some(10_000),
+                provider_node_is_null: true,
+                kind: Some(crate::memory::ExecutionTargetKind::ManagedSsh),
                 ..Default::default()
             })
             .await?
@@ -1719,7 +1728,10 @@ impl MorphzRuntime {
                 title: "默认认知 Context".to_string(),
             })
             .await?;
-        for session in self.inner.store.list_sessions(true).await? {
+        // Archived Sessions cannot receive new work. Register only active
+        // routes; archived records remain queryable through the directory and
+        // are registered again if the user explicitly reactivates them.
+        for session in self.inner.store.list_sessions(false).await? {
             self.inner
                 .orchestrator
                 .register_session_context(&session.id, &session.context_id);
@@ -1760,15 +1772,12 @@ impl MorphzRuntime {
             .inner
             .store
             .list_execution_jobs(ExecutionJobFilter {
+                tool_name: Some(ARTIFACT_TRANSFER_TOOL_NAME.to_string()),
                 include_terminal: false,
                 newest_first: false,
-                limit: Some(10_000),
                 ..Default::default()
             })
-            .await?
-            .into_iter()
-            .filter(|job| job.tool_name == ARTIFACT_TRANSFER_TOOL_NAME)
-            .collect::<Vec<_>>();
+            .await?;
         // A non-terminal relay parent may already have a succeeded source
         // leg.  The source leg's uploaded stage is still required by the
         // destination leg, even though that child Job is terminal.  Retain
@@ -1841,7 +1850,16 @@ impl MorphzRuntime {
                         // authoritative control plane a deterministic window.
                         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                     }
-                    Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+                    Ok(batch) if batch.claimed > 0 => {
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                    Ok(_) => {
+                        // Recall is a rebuildable projection, not scheduler
+                        // authority. Avoid four empty database probes per
+                        // second on an idle Runtime; new work is still picked
+                        // up within a small bounded projection lag.
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
                     Err(error) => {
                         tracing::warn!(event_code = "runtime.recall_projection.background_batch_failed", %error, "Recall Projection background batch failed");
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -2110,6 +2128,21 @@ impl MorphzRuntime {
             .provider_auth_manager
             .account_metadata(account_id)
             .map_err(Into::into)
+    }
+
+    /// Return a live, secret-free snapshot of subscription limits and token
+    /// activity for one authenticated Provider account.
+    pub async fn provider_subscription_usage(
+        &self,
+        account_id: &str,
+    ) -> Result<ProviderSubscriptionUsage, RuntimeError> {
+        let mut usage = self
+            .inner
+            .provider_auth_manager
+            .subscription_usage(account_id)
+            .await?;
+        usage.selected_model_alias = Some(self.model());
+        Ok(usage)
     }
 
     pub async fn logout_provider_oauth_account(
@@ -3319,6 +3352,10 @@ impl MorphzRuntime {
                 max_in_flight,
             )
             .await
+    }
+
+    pub async fn wait_for_edge_command_change(&self, timeout: std::time::Duration) {
+        self.inner.store.wait_for_edge_command_change(timeout).await;
     }
 
     pub async fn get_edge_command(
@@ -5015,27 +5052,38 @@ impl MorphzRuntime {
             .map(|thread| (thread.root_turn_id.clone(), thread.id.clone()))
             .collect::<HashMap<_, _>>();
 
+        // Page the root aggregate first. Child history then follows those
+        // selected Thread roots instead of using an independent Activation
+        // page which would require hundreds of point lookups to repair parent
+        // edges. Live orphan candidates are merged separately so operator
+        // attention remains complete.
+        let root_turn_ids = all_threads
+            .iter()
+            .map(|thread| thread.root_turn_id.clone())
+            .collect::<Vec<_>>();
         let mut all_context_activations = self
             .inner
             .store
-            .list_context_thread_activations(context_id, false)
+            .list_scheduler_thread_activations_by_roots(
+                context_id,
+                &root_turn_ids,
+                SCHEDULER_TERMINAL_ACTIVATIONS_PER_THREAD,
+            )
             .await?;
-        if include_terminal {
-            let active_ids = all_context_activations
-                .iter()
-                .map(|activation| activation.id.clone())
-                .collect::<HashSet<_>>();
-            all_context_activations.extend(
-                self.inner
-                    .store
-                    .list_recent_terminal_thread_activations(
-                        context_id,
-                        limit.saturating_mul(4).min(8_000),
-                    )
-                    .await?
-                    .into_iter()
-                    .filter(|activation| !active_ids.contains(&activation.id)),
-            );
+        let aggregate_activation_ids = all_context_activations
+            .iter()
+            .map(|activation| activation.id.clone())
+            .collect::<HashSet<_>>();
+        all_context_activations.extend(
+            self.inner
+                .store
+                .list_context_thread_activations(context_id, false)
+                .await?
+                .into_iter()
+                .filter(|activation| !aggregate_activation_ids.contains(&activation.id)),
+        );
+        if !include_terminal {
+            all_context_activations.retain(|activation| !activation.status.is_terminal());
         }
         let durable_queued_ids = all_context_activations
             .iter()
@@ -5061,22 +5109,27 @@ impl MorphzRuntime {
                 .then_with(|| left.id.cmp(&right.id))
         });
 
+        let selected_thread_ids = thread_ids.iter().cloned().collect::<Vec<_>>();
         let mut all_signals = self
             .inner
             .store
-            // Signals already claimed or acknowledged belong to their
-            // Activation history. They must never fall back into the
-            // standalone pending bucket merely because that Activation is
-            // outside this bounded history page.
-            .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
+            .list_context_thread_signals_for_threads(
+                context_id,
+                &selected_thread_ids,
+                Some(ThreadSignalStatus::Pending),
+            )
             .await?;
-        all_signals.retain(|signal| thread_ids.contains(&signal.thread_id));
         all_signals.sort_by(|left, right| {
             left.sequence
                 .cmp(&right.sequence)
                 .then_with(|| left.id.cmp(&right.id))
         });
 
+        let activation_ids = activations
+            .iter()
+            .map(|activation| activation.id.clone())
+            .collect::<HashSet<_>>();
+        let activation_id_list = activation_ids.iter().cloned().collect::<Vec<_>>();
         let mut jobs = self
             .inner
             .store
@@ -5088,23 +5141,15 @@ impl MorphzRuntime {
             })
             .await?;
         if include_terminal {
-            let history = self
-                .inner
-                .store
-                .list_execution_jobs(ExecutionJobFilter {
-                    context_id: Some(context_id.to_string()),
-                    include_terminal: true,
-                    newest_first: true,
-                    limit: Some(limit.saturating_mul(10).min(20_000)),
-                    ..ExecutionJobFilter::default()
-                })
-                .await?;
             let live_ids = jobs
                 .iter()
                 .map(|job| job.id.clone())
                 .collect::<HashSet<_>>();
             jobs.extend(
-                history
+                self.inner
+                    .store
+                    .list_execution_jobs_for_activations(context_id, &activation_id_list)
+                    .await?
                     .into_iter()
                     .filter(|job| job.status.is_terminal() && !live_ids.contains(&job.id)),
             );
@@ -5114,10 +5159,11 @@ impl MorphzRuntime {
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
+        let job_ids = jobs.iter().map(|job| job.id.clone()).collect::<Vec<_>>();
         let mut approval_by_job = self
             .inner
             .store
-            .list_context_approvals(context_id)
+            .list_job_approvals(context_id, &job_ids)
             .await?
             .into_iter()
             .map(|approval| (approval.job_id.clone(), approval))
@@ -5125,10 +5171,6 @@ impl MorphzRuntime {
 
         let mut jobs_by_activation = HashMap::<String, Vec<SchedulerJobSnapshot>>::new();
         let mut orphan_jobs = Vec::new();
-        let activation_ids = activations
-            .iter()
-            .map(|activation| activation.id.clone())
-            .collect::<HashSet<_>>();
         for job in jobs {
             let snapshot = crate::scheduler::job_snapshot(job, &mut approval_by_job);
             if activation_ids.contains(&snapshot.job.activation_id) {
@@ -5136,30 +5178,32 @@ impl MorphzRuntime {
                     .entry(snapshot.job.activation_id.clone())
                     .or_default()
                     .push(snapshot);
-            } else if self
-                .inner
-                .store
-                .get_thread_activation(&snapshot.job.activation_id)
-                .await?
-                .is_none()
-            {
-                // A bounded Scheduler query may omit an older terminal
-                // Activation while still selecting one of its Jobs through
-                // the independently bounded Job history. That is pagination,
-                // not a broken causal edge. Only records whose parent truly
-                // does not exist in the Context authority are orphans.
+            } else {
+                // Only live Jobs can arrive outside the selected aggregate;
+                // every live Activation was merged above, so this is a true
+                // missing durable parent rather than independent pagination.
                 orphan_jobs.push(snapshot);
             }
         }
 
         let mut activations_by_thread = HashMap::<String, Vec<SchedulerActivationSnapshot>>::new();
         let mut orphan_activations = Vec::new();
+        let mut signals_by_activation = HashMap::<String, Vec<ThreadSignalRecord>>::new();
+        for (activation_id, signal) in self
+            .inner
+            .store
+            .list_activation_signals_for_activations(&activation_id_list)
+            .await?
+        {
+            signals_by_activation
+                .entry(activation_id)
+                .or_default()
+                .push(signal);
+        }
         for activation in activations {
-            let signals = self
-                .inner
-                .store
-                .list_activation_signals(&activation.id)
-                .await?;
+            let signals = signals_by_activation
+                .remove(&activation.id)
+                .unwrap_or_default();
             let snapshot = SchedulerActivationSnapshot {
                 jobs: jobs_by_activation
                     .remove(&activation.id)
@@ -5172,16 +5216,9 @@ impl MorphzRuntime {
                     .entry(thread_id.clone())
                     .or_default()
                     .push(snapshot);
-            } else if self
-                .inner
-                .store
-                .get_thread_by_root(&snapshot.activation.root_turn_id)
-                .await?
-                .is_none_or(|owner| owner.context_id != context_id)
-            {
-                // As above, an Activation whose owning Thread lies outside
-                // this history page is not an orphan. Calling it one makes
-                // operator attention depend on the page size.
+            } else {
+                // Every live Thread and every selected historical root is in
+                // `thread_by_root`; absence now means a true broken edge.
                 orphan_activations.push(snapshot);
             }
         }
@@ -5201,10 +5238,13 @@ impl MorphzRuntime {
         }
 
         let mut schedules_by_thread = HashMap::<String, Vec<ScheduleRecord>>::new();
-        for schedule in self.inner.store.list_context_schedules(context_id).await? {
-            if all_context_thread_ids.contains(&schedule.thread_id)
-                && thread_ids.contains(&schedule.thread_id)
-            {
+        for schedule in self
+            .inner
+            .store
+            .list_thread_schedules(context_id, &selected_thread_ids)
+            .await?
+        {
+            if all_context_thread_ids.contains(&schedule.thread_id) {
                 schedules_by_thread
                     .entry(schedule.thread_id.clone())
                     .or_default()
@@ -5250,18 +5290,32 @@ impl MorphzRuntime {
         }
         let mut authority_group_members = Vec::new();
         let mut thread_groups = Vec::new();
+        let authority_group_ids = authority_groups
+            .iter()
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        let mut members_by_group = HashMap::<String, Vec<ThreadGroupMemberRecord>>::new();
+        for (group_id, member) in self
+            .inner
+            .store
+            .list_thread_group_members_for_groups(&authority_group_ids)
+            .await?
+        {
+            members_by_group.entry(group_id).or_default().push(member);
+        }
+        let mut outcomes_by_group = HashMap::<String, Vec<ThreadOutcomeRecord>>::new();
+        for (group_id, outcome) in self
+            .inner
+            .store
+            .list_thread_group_outcomes_for_groups(&authority_group_ids)
+            .await?
+        {
+            outcomes_by_group.entry(group_id).or_default().push(outcome);
+        }
         for group in &authority_groups {
-            let members = self
-                .inner
-                .store
-                .list_thread_group_members(&group.id)
-                .await?;
+            let members = members_by_group.remove(&group.id).unwrap_or_default();
             authority_group_members.extend(members.iter().cloned());
-            let outcomes = self
-                .inner
-                .store
-                .list_thread_group_outcomes(&group.id)
-                .await?;
+            let outcomes = outcomes_by_group.remove(&group.id).unwrap_or_default();
             if thread_groups.len() < limit && (!group.status.is_terminal() || include_terminal) {
                 thread_groups.push(SchedulerThreadGroupSnapshot {
                     group: group.clone(),
@@ -5271,19 +5325,18 @@ impl MorphzRuntime {
             }
         }
 
-        let mut thread_dependencies = Vec::new();
-        for thread in &authority_threads {
-            thread_dependencies.extend(
-                self.inner
-                    .store
-                    .list_scheduler_dependencies(SchedulerDependencyFilter {
-                        owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
-                        owner_id: Some(thread.id.clone()),
-                        ..SchedulerDependencyFilter::default()
-                    })
-                    .await?,
-            );
-        }
+        let authority_thread_ids = authority_threads
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>();
+        let thread_dependencies = self
+            .inner
+            .store
+            .list_scheduler_dependencies_for_owners(
+                SchedulerDependencyOwnerKind::Thread,
+                &authority_thread_ids,
+            )
+            .await?;
         let mut dependencies_by_thread = HashMap::<String, Vec<_>>::new();
         for dependency in &thread_dependencies {
             dependencies_by_thread
@@ -5292,9 +5345,17 @@ impl MorphzRuntime {
                 .push(dependency.clone());
         }
 
+        let mut outcomes_by_thread = self
+            .inner
+            .store
+            .list_thread_outcomes(&selected_thread_ids)
+            .await?
+            .into_iter()
+            .map(|outcome| (outcome.thread_id.clone(), outcome))
+            .collect::<HashMap<_, _>>();
         let mut threads = Vec::with_capacity(all_threads.len());
         for thread in all_threads {
-            let outcome = self.inner.store.get_thread_outcome(&thread.id).await?;
+            let outcome = outcomes_by_thread.remove(&thread.id);
             let pending_signals = pending_signals_by_thread
                 .remove(&thread.id)
                 .unwrap_or_default();
@@ -5384,19 +5445,20 @@ impl MorphzRuntime {
                 )
             })
             .count();
+        let objective_ids = authority_objectives
+            .iter()
+            .map(|objective| objective.id.clone())
+            .collect::<Vec<_>>();
         let mut dependencies = thread_dependencies;
-        for objective in &authority_objectives {
-            dependencies.extend(
-                self.inner
-                    .store
-                    .list_scheduler_dependencies(SchedulerDependencyFilter {
-                        owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
-                        owner_id: Some(objective.id.clone()),
-                        ..SchedulerDependencyFilter::default()
-                    })
-                    .await?,
-            );
-        }
+        dependencies.extend(
+            self.inner
+                .store
+                .list_scheduler_dependencies_for_owners(
+                    SchedulerDependencyOwnerKind::Objective,
+                    &objective_ids,
+                )
+                .await?,
+        );
         dependencies.sort_by(|left, right| left.id.cmp(&right.id));
         dependencies.dedup_by(|left, right| left.id == right.id);
 
@@ -5430,12 +5492,11 @@ impl MorphzRuntime {
             })
             .collect::<Vec<_>>();
 
-        let mut authority_outcomes = Vec::new();
-        for thread in &authority_threads {
-            if let Some(outcome) = self.inner.store.get_thread_outcome(&thread.id).await? {
-                authority_outcomes.push(outcome);
-            }
-        }
+        let authority_outcomes = self
+            .inner
+            .store
+            .list_thread_outcomes(&authority_thread_ids)
+            .await?;
         let mut invariant_violations = audit_scheduler_invariants(SchedulerInvariantInput {
             objectives: &authority_objectives,
             threads: &authority_threads,
@@ -5445,25 +5506,25 @@ impl MorphzRuntime {
             group_members: &authority_group_members,
             dependencies: &dependencies,
         });
-        let mut barrier_event_ids = HashSet::new();
-        for event_id in authority_groups
+        let requested_barrier_event_ids = authority_groups
             .iter()
             .filter_map(|group| group.barrier_event_id.as_ref())
-        {
-            if self
-                .inner
+            .cloned()
+            .collect::<Vec<_>>();
+        let barrier_event_ids = if requested_barrier_event_ids.is_empty() {
+            HashSet::new()
+        } else {
+            self.inner
                 .store
                 .query(QueryFilter {
-                    event_id: Some(event_id.clone()),
+                    event_ids: requested_barrier_event_ids,
                     ..QueryFilter::default()
                 })
                 .await?
                 .into_iter()
-                .any(|event| event.id == *event_id)
-            {
-                barrier_event_ids.insert(event_id.clone());
-            }
-        }
+                .map(|event| event.id)
+                .collect::<HashSet<_>>()
+        };
         invariant_violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
             &authority_objectives,
             &authority_threads,
@@ -6005,15 +6066,19 @@ impl MorphzRuntime {
             .ok_or_else(|| format!("Context '{context_id}' 不存在"))?;
         let agent = self.inner.store.get_agent(&context.agent_id).await?;
         let objectives = self.list_context_objectives(context_id, false).await?;
-        let scheduler = self
-            .scheduler_snapshot(
+        let scheduler_summary = if query.include_scheduler_summary.unwrap_or(true) {
+            self.scheduler_snapshot(
                 context_id,
                 SchedulerQuery {
                     include_terminal: false,
                     limit: 100,
                 },
             )
-            .await?;
+            .await?
+            .summary
+        } else {
+            SchedulerSummary::default()
+        };
 
         let view = if let Some(session_id) = query.active_session_id.as_deref() {
             let session = self
@@ -6092,7 +6157,7 @@ impl MorphzRuntime {
             pressure,
             attribution,
             objectives,
-            scheduler: scheduler.summary,
+            scheduler: scheduler_summary,
         })
     }
 
@@ -6211,15 +6276,14 @@ impl MorphzRuntime {
                 .then_with(|| left.id.cmp(&right.id))
         });
 
+        let activation_ids = activations
+            .iter()
+            .map(|activation| activation.id.clone())
+            .collect::<Vec<_>>();
         let mut jobs = self
             .inner
             .store
-            .list_execution_jobs(ExecutionJobFilter {
-                context_id: Some(context_id.to_string()),
-                thread_id: Some(thread_id.to_string()),
-                include_terminal: true,
-                ..ExecutionJobFilter::default()
-            })
+            .list_execution_jobs_for_activations(context_id, &activation_ids)
             .await?;
         jobs.sort_by(|left, right| {
             left.created_at
@@ -6233,10 +6297,9 @@ impl MorphzRuntime {
         let mut approval_by_job = self
             .inner
             .store
-            .list_context_approvals(context_id)
+            .list_job_approvals(context_id, &job_ids.iter().cloned().collect::<Vec<_>>())
             .await?
             .into_iter()
-            .filter(|approval| job_ids.contains(&approval.job_id))
             .map(|approval| (approval.job_id.clone(), approval))
             .collect::<HashMap<_, _>>();
         let mut jobs_by_activation = HashMap::<String, Vec<SchedulerJobSnapshot>>::new();
@@ -6249,12 +6312,22 @@ impl MorphzRuntime {
 
         let mut activation_snapshots = Vec::with_capacity(activations.len());
         let mut claimed_signal_ids = HashSet::new();
+        let mut signals_by_activation = HashMap::<String, Vec<ThreadSignalRecord>>::new();
+        for (activation_id, signal) in self
+            .inner
+            .store
+            .list_activation_signals_for_activations(&activation_ids)
+            .await?
+        {
+            signals_by_activation
+                .entry(activation_id)
+                .or_default()
+                .push(signal);
+        }
         for activation in activations {
-            let signals = self
-                .inner
-                .store
-                .list_activation_signals(&activation.id)
-                .await?;
+            let signals = signals_by_activation
+                .remove(&activation.id)
+                .unwrap_or_default();
             claimed_signal_ids.extend(signals.iter().map(|signal| signal.id.clone()));
             let jobs = jobs_by_activation
                 .remove(&activation.id)
@@ -6269,12 +6342,14 @@ impl MorphzRuntime {
         let mut pending_signals = self
             .inner
             .store
-            .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
+            .list_context_thread_signals_for_threads(
+                context_id,
+                &[thread_id.to_string()],
+                Some(ThreadSignalStatus::Pending),
+            )
             .await?
             .into_iter()
-            .filter(|signal| {
-                signal.thread_id == thread_id && !claimed_signal_ids.contains(&signal.id)
-            })
+            .filter(|signal| !claimed_signal_ids.contains(&signal.id))
             .collect::<Vec<_>>();
         pending_signals.sort_by(|left, right| {
             left.sequence
@@ -6284,11 +6359,8 @@ impl MorphzRuntime {
         let mut schedules = self
             .inner
             .store
-            .list_context_schedules(context_id)
-            .await?
-            .into_iter()
-            .filter(|schedule| schedule.thread_id == thread_id)
-            .collect::<Vec<_>>();
+            .list_thread_schedules(context_id, &[thread_id.to_string()])
+            .await?;
         schedules.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
@@ -6408,6 +6480,10 @@ impl MorphzRuntime {
                     self.inner
                         .orchestrator
                         .cancel_thread_activations(&current, reason)
+                        .await?;
+                    self.inner
+                        .orchestrator
+                        .wake_terminal_thread_supervisor(&current)
                         .await?;
                 }
             }
@@ -9788,7 +9864,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scheduler_snapshot_does_not_call_paginated_parents_orphans() {
+    async fn scheduler_snapshot_pages_complete_thread_aggregates_without_false_orphans() {
         let database = NamedTempFile::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
@@ -9832,9 +9908,10 @@ mod tests {
             .await
             .unwrap();
 
-        // limit=1 admits four terminal Activations but ten Jobs. The fifth
-        // Job therefore has a real parent outside the bounded response. It
-        // must be omitted from this page rather than mislabeled as an orphan.
+        // The history limit pages Thread roots. Once this Thread is selected,
+        // all of its durable children belong to the same causal aggregate;
+        // independently truncating Activations or Jobs would either lose the
+        // fifth result or require point queries to repair its parent edge.
         for index in 0..5 {
             let event = Event::new(
                 format!("event-scheduler-pagination-{index}"),
@@ -9939,7 +10016,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(snapshot.threads.len(), 1);
-        assert_eq!(snapshot.threads[0].activations.len(), 4);
+        assert_eq!(snapshot.threads[0].activations.len(), 5);
         assert!(snapshot.threads[0].pending_signals.is_empty());
         assert_eq!(snapshot.summary.pending_signals, 0);
         assert!(snapshot.orphan_activations.is_empty());

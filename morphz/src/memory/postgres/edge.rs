@@ -202,6 +202,10 @@ async fn get_node(pool: &PgPool, node_id: &str) -> Result<Option<ExecutionNodeRe
 
 #[async_trait::async_trait]
 impl EdgeExecutionStore for PostgresStore {
+    async fn wait_for_edge_command_change(&self, timeout: std::time::Duration) {
+        let _ = tokio::time::timeout(timeout, self.edge_command_notify.notified()).await;
+    }
+
     async fn create_node_pairing_code(
         &self,
         pairing: NewNodePairingCode,
@@ -526,7 +530,7 @@ impl EdgeExecutionStore for PostgresStore {
         command: NewEdgeCommand,
     ) -> Result<EdgeCommandRecord, StoreError> {
         let now = now_text();
-        sqlx::query(
+        let inserted = sqlx::query(
             r#"INSERT INTO edge_execution_commands
                (job_id, revision, target_id, provider_node_id, tool_name, arguments, route_json,
                 status, created_at, updated_at)
@@ -541,7 +545,9 @@ impl EdgeExecutionStore for PostgresStore {
         .bind(&command.route)
         .bind(now)
         .execute(&self.pool)
-        .await?;
+        .await?
+        .rows_affected()
+            == 1;
         let row = sqlx::query("SELECT * FROM edge_execution_commands WHERE job_id = $1")
             .bind(&command.job_id)
             .fetch_one(&self.pool)
@@ -558,6 +564,9 @@ impl EdgeExecutionStore for PostgresStore {
                 command.job_id
             )
             .into());
+        }
+        if inserted {
+            self.edge_command_notify.notify_one();
         }
         Ok(current)
     }
@@ -587,6 +596,27 @@ impl EdgeExecutionStore for PostgresStore {
             return Err("Edge Node max_in_flight 必须大于 0".into());
         }
         let now = now_text();
+        let readiness = sqlx::query(
+            r#"SELECT
+                 EXISTS(SELECT 1 FROM edge_execution_commands
+                        WHERE provider_node_id = $1 AND status = 'claimed'
+                          AND lease_expires_at <= $2) AS has_expired,
+                 EXISTS(SELECT 1 FROM edge_execution_commands
+                        WHERE provider_node_id = $1 AND status = 'queued') AS has_queued,
+                 (SELECT COUNT(*) FROM edge_execution_commands
+                  WHERE provider_node_id = $1
+                    AND status IN ('claimed', 'cancel_requested')) AS active"#,
+        )
+        .bind(provider_node_id)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        let has_expired = readiness.get::<bool, _>("has_expired");
+        let has_queued = readiness.get::<bool, _>("has_queued");
+        let active = usize::try_from(readiness.get::<i64, _>("active"))?;
+        if !has_expired && (!has_queued || active >= max_in_flight) {
+            return Ok(None);
+        }
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"UPDATE edge_execution_commands SET revision = revision + 1,
@@ -809,6 +839,7 @@ impl EdgeExecutionStore for PostgresStore {
             .await?
             .ok_or("Edge Command disappeared after completion")?;
         if updated.rows_affected() == 1 {
+            self.edge_command_notify.notify_one();
             Ok(EdgeCommandMutation::Updated(current))
         } else {
             Ok(EdgeCommandMutation::Conflict { current })
@@ -885,6 +916,9 @@ impl EdgeExecutionStore for PostgresStore {
         .await?
         .rows_affected();
         tx.commit().await?;
+        if requeued > 0 {
+            self.edge_command_notify.notify_waiters();
+        }
         Ok(EdgeReconciliationReport {
             nodes_marked_offline: nodes,
             targets_marked_offline: targets,

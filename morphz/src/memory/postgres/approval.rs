@@ -382,6 +382,39 @@ impl ApprovalStore for PostgresStore {
         rows.iter().map(approval_from_row).collect()
     }
 
+    async fn list_job_approvals(
+        &self,
+        context_id: &str,
+        job_ids: &[String],
+    ) -> Result<Vec<ApprovalRecord>, StoreError> {
+        if job_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut records = Vec::new();
+        for job_ids in job_ids.chunks(500) {
+            let mut query = QueryBuilder::<Postgres>::new(
+                "SELECT approval_requests.* FROM approval_requests INNER JOIN execution_jobs ON execution_jobs.id = approval_requests.job_id WHERE execution_jobs.context_id = ",
+            );
+            query
+                .push_bind(context_id)
+                .push(" AND approval_requests.job_id IN (");
+            {
+                let mut values = query.separated(", ");
+                for job_id in job_ids {
+                    values.push_bind(job_id);
+                }
+            }
+            query.push(") ORDER BY approval_requests.created_at, approval_requests.id");
+            let rows = query.build().fetch_all(&self.pool).await?;
+            records.extend(
+                rows.iter()
+                    .map(approval_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        Ok(records)
+    }
+
     async fn commit_approval_decision(
         &self,
         id: &str,

@@ -61,6 +61,28 @@ pub trait SchedulerDependencyStore: Send + Sync {
         filter: SchedulerDependencyFilter,
     ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>>;
 
+    /// Dependencies for a bounded set of owners. Production stores override
+    /// this with one query so scheduler projections never issue one query per
+    /// Thread or Objective.
+    async fn list_scheduler_dependencies_for_owners(
+        &self,
+        owner_kind: SchedulerDependencyOwnerKind,
+        owner_ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = Vec::new();
+        for owner_id in owner_ids {
+            records.extend(
+                self.list_scheduler_dependencies(SchedulerDependencyFilter {
+                    owner_kind: Some(owner_kind),
+                    owner_id: Some(owner_id.clone()),
+                    ..SchedulerDependencyFilter::default()
+                })
+                .await?,
+            );
+        }
+        Ok(records)
+    }
+
     /// Generation-fenced satisfaction. The immutable Event must already be
     /// part of the same Kernel transaction in business hot paths; this narrow
     /// method exists for external/manual facts and conformance testing.

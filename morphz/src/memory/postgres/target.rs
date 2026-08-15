@@ -36,6 +36,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON execution_targets(owner_principal_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_targets_provider_status
            ON execution_targets(provider_node_id, status, updated_at DESC)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_targets_kind_provider_status
+           ON execution_targets(kind, provider_node_id, status, updated_at DESC)"#,
         r#"CREATE TABLE IF NOT EXISTS execution_target_authorizations (
             id TEXT PRIMARY KEY,
             revision BIGINT NOT NULL DEFAULT 1 CHECK(revision >= 1),
@@ -285,9 +287,22 @@ impl ExecutionTargetStore for PostgresStore {
         let mut query = QueryBuilder::<Postgres>::new("SELECT * FROM execution_targets WHERE TRUE");
         if let Some(owner) = filter.owner_principal_id {
             query.push(" AND owner_principal_id = ").push_bind(owner);
+        } else if filter.owner_principal_is_null {
+            query.push(" AND owner_principal_id IS NULL");
+        }
+        if let Some(principal_id) = filter.visible_to_principal_id {
+            query
+                .push(" AND (owner_principal_id IS NULL OR owner_principal_id = ")
+                .push_bind(principal_id)
+                .push(")");
         }
         if let Some(provider) = filter.provider_node_id {
             query.push(" AND provider_node_id = ").push_bind(provider);
+        } else if filter.provider_node_is_null {
+            query.push(" AND provider_node_id IS NULL");
+        }
+        if let Some(kind) = filter.kind {
+            query.push(" AND kind = ").push_bind(kind.as_str());
         }
         if let Some(status) = filter.status {
             query.push(" AND status = ").push_bind(status.as_str());

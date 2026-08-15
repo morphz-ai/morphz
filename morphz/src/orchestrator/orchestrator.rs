@@ -1,6 +1,6 @@
 use crate::activation_admission::{
     ActivationAdmissionController, ActivationAdmissionError, ActivationAdmissionLimits,
-    ActivationAdmissionPermit, RestoreQueuedOutcome,
+    ActivationAdmissionPermit, RestoreQueuedOutcome, SuspendedActivationAdmission,
 };
 use crate::admission::{AdmissionClass, AdmissionKey};
 use crate::approval::{
@@ -35,20 +35,20 @@ use crate::memory::{
     ExecutionJobStore, NewActionGroup, NewActionGroupMember, NewApprovalRequest,
     NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob, NewRuntimeTimer,
     NewSession, NewThread, NewThreadActivation, NewThreadSignal, PlanExecutionFilter,
-    PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
-    SessionMountKind, SessionStatus, SessionStore, SessionUpdate, SignalOutboxStatus,
-    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
-    ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord,
-    ThreadSupervision, ThreadSupervisorKind,
+    PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind,
+    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduleStatus, SessionAttentionState,
+    SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadControlAction, ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
 use crate::permission::{DurableApprovalGrant, PermissionBroker};
 use crate::plan_execution::{
-    PlanArtifactBinding, PlanCallPlanner, PlanDriveReceipt, PlanExecutionCoordinator,
-    PlanExecutionResult, PlanExecutionRoute, PlanResumeReceipt,
+    pending_infer_request_event, PlanArtifactBinding, PlanCallPlanner, PlanDriveReceipt,
+    PlanExecutionCoordinator, PlanExecutionResult, PlanExecutionRoute, PlanResumeReceipt,
 };
 use crate::scheduler::{
     SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
@@ -75,8 +75,107 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
+async fn dispatch_persisted_tool_handoff(
+    bus: &InMemoryEventBus,
+    event: Event,
+    internal_child_handoff: bool,
+) -> Result<(), DynError> {
+    if internal_child_handoff {
+        bus.dispatch_persisted_child_handoff(event).await
+    } else {
+        bus.dispatch_persisted(event).await
+    }
+}
+
 const DELIVERY_KIND_TURN_REPLY: &str = "turn_reply";
 const DELIVERY_KIND_THREAD_DELIVERY: &str = "thread_delivery";
+
+struct ActivationAdmissionSlotState {
+    permit: Option<ActivationAdmissionPermit>,
+    suspended: Option<SuspendedActivationAdmission>,
+    waiting_plans: usize,
+}
+
+struct ActivationAdmissionSlot {
+    state: Mutex<ActivationAdmissionSlotState>,
+}
+
+impl ActivationAdmissionSlot {
+    fn new(permit: ActivationAdmissionPermit) -> Self {
+        Self {
+            state: Mutex::new(ActivationAdmissionSlotState {
+                permit: Some(permit),
+                suspended: None,
+                waiting_plans: 0,
+            }),
+        }
+    }
+
+    async fn suspend_for_plan(&self) -> Result<(), DynError> {
+        let mut state = self.state.lock().await;
+        if state.waiting_plans == 0 {
+            let permit = state
+                .permit
+                .take()
+                .ok_or("Plan 等待子任务时缺少 Activation admission permit")?;
+            state.suspended = Some(permit.suspend());
+        }
+        state.waiting_plans = state.waiting_plans.saturating_add(1);
+        Ok(())
+    }
+
+    async fn release_plan_wait(&self) -> Result<(), DynError> {
+        let mut state = self.state.lock().await;
+        if state.waiting_plans == 0 {
+            return Ok(());
+        }
+        state.waiting_plans -= 1;
+        if state.waiting_plans == 0 {
+            let suspended = state
+                .suspended
+                .take()
+                .ok_or("Plan 恢复父 Activation 时缺少 suspended admission")?;
+            state.permit = Some(suspended.resume().await?);
+        }
+        Ok(())
+    }
+}
+
+struct PlanAdmissionSuspension {
+    slot: Arc<ActivationAdmissionSlot>,
+    released: bool,
+}
+
+impl PlanAdmissionSuspension {
+    async fn release(mut self) -> Result<(), DynError> {
+        self.released = true;
+        let slot = Arc::clone(&self.slot);
+        tokio::spawn(async move { slot.release_plan_wait().await })
+            .await
+            .map_err(|error| format!("Plan admission 恢复任务异常结束: {error}"))??;
+        Ok(())
+    }
+}
+
+impl Drop for PlanAdmissionSuspension {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let slot = Arc::clone(&self.slot);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(error) = slot.release_plan_wait().await {
+                    tracing::error!(
+                        %error,
+                        event_code = "orchestrator.plan.admission_resume_failed",
+                        "Cancelled Plan waiter could not restore parent Activation admission"
+                    );
+                }
+            });
+        }
+    }
+}
 
 struct DurableEventWriteRequest {
     entry: EventAppend,
@@ -333,7 +432,7 @@ impl DurableEventWriter {
     }
 }
 const SIGNAL_OUTBOX_DISPATCH_BATCH: usize = 128;
-const PLAN_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const PLAN_RECONCILE_FALLBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const PLAN_RECONCILE_BATCH: usize = 128;
 const SUPERVISION_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -1143,6 +1242,9 @@ struct ActivationRoute {
     initiating_principal_id: Option<String>,
     context_snapshot_version: Option<u64>,
     thread_kind: &'static str,
+    /// Events that continue an internal Plan infer Thread must not queue
+    /// behind the parent handler that is synchronously waiting for that Plan.
+    internal_child_handoff: bool,
     /// Immutable completion batch that caused a Delivery Activation.  A
     /// reply must only acknowledge results present in this trigger snapshot;
     /// results arriving while the model is running belong to a later
@@ -1792,6 +1894,11 @@ pub struct Orchestrator {
     #[doc(hidden)]
     pub model_provider_semaphore: Arc<tokio::sync::Semaphore>,
     activation_admission: ActivationAdmissionController,
+    /// Share the live permit holder with concurrently spawned tool tasks.
+    /// A durable Plan may suspend the parent permit while its child Evaluation
+    /// runs, then put the reacquired permit back before returning to the
+    /// parent attempt.
+    activation_admission_slots: DashMap<String, Arc<ActivationAdmissionSlot>>,
     /// One ordered Dialogue Lane per Session. Tool/objective continuations do
     /// not take this lock: after a dialogue turn launches an Execution Thread, later
     /// user messages can still be answered while that work continues.
@@ -1804,6 +1911,10 @@ pub struct Orchestrator {
     activation_cancellations: ActivationCancellationRegistry,
     active_session_turns: DashMap<String, Arc<AtomicUsize>>,
     activation_routes: DashMap<String, ActivationRoute>,
+    /// Process-local completion signal for Activation rows materialized by
+    /// the Event dispatcher. Durability remains in SessionStore; this avoids
+    /// polling that same authority every 10ms on the normal path.
+    activation_materialization_waiters: DashMap<String, Arc<Notify>>,
     /// The newest physical Model Attempt owned by each live Activation.
     /// Activation cancellation drops the evaluation future, so the ordinary
     /// completion path cannot publish that Attempt's terminal transition.
@@ -1819,6 +1930,10 @@ pub struct Orchestrator {
     /// invariant audit. The Event Bus coalesces an arbitrary burst into one
     /// indexed live-state read; an idle Runtime performs no audit query.
     supervision_audit_dirty_contexts: Arc<DashMap<String, ()>>,
+    /// Committed scheduler Events wake Plan reconciliation immediately. The
+    /// slow fallback exists only for shared-store mutations from another
+    /// process and the commit-before-notify crash window.
+    plan_reconcile_wakeup: Arc<Notify>,
     delegation_start_lock: Mutex<()>,
     objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
     objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
@@ -2620,16 +2735,19 @@ impl Orchestrator {
             runtime_failure_incidents: DashMap::new(),
             model_provider_semaphore,
             activation_admission,
+            activation_admission_slots: DashMap::new(),
             dialogue_thread_gates: DashMap::new(),
             thread_gates: DashMap::new(),
             cancellation_epochs: DashMap::new(),
             activation_cancellations: ActivationCancellationRegistry::default(),
             active_session_turns: DashMap::new(),
             activation_routes: DashMap::new(),
+            activation_materialization_waiters: DashMap::new(),
             active_model_attempts: DashMap::new(),
             cancelled_at: DashMap::new(),
             session_contexts: DashMap::new(),
             supervision_audit_dirty_contexts: Arc::new(DashMap::new()),
+            plan_reconcile_wakeup: Arc::new(Notify::new()),
             delegation_start_lock: Mutex::new(()),
             objective_evaluations,
             objective_supervisor,
@@ -3030,12 +3148,15 @@ impl Orchestrator {
         // Context's lifetime every two seconds. This listener is deliberately
         // process-local and writes no business state.
         let dirty_contexts = Arc::clone(&self.supervision_audit_dirty_contexts);
+        let plan_reconcile_wakeup = Arc::clone(&self.plan_reconcile_wakeup);
         self.bus.subscribe(
             "*".to_string(),
             Arc::new(move |event| {
                 let dirty_contexts = Arc::clone(&dirty_contexts);
+                let plan_reconcile_wakeup = Arc::clone(&plan_reconcile_wakeup);
                 Box::pin(async move {
                     if scheduler_audit_event(&event) {
+                        plan_reconcile_wakeup.notify_one();
                         if let Some(context_id) = event
                             .payload
                             .get("context_id")
@@ -3159,9 +3280,13 @@ impl Orchestrator {
             return;
         }
         let orchestrator = Arc::downgrade(self);
+        let wakeup = Arc::clone(&self.plan_reconcile_wakeup);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(PLAN_RECONCILE_INTERVAL).await;
+                tokio::select! {
+                    _ = wakeup.notified() => {}
+                    _ = tokio::time::sleep(PLAN_RECONCILE_FALLBACK_INTERVAL) => {}
+                }
                 let Some(orchestrator) = orchestrator.upgrade() else {
                     break;
                 };
@@ -3299,18 +3424,34 @@ impl Orchestrator {
                     ..Default::default()
                 })
                 .await?;
-            let mut members = Vec::new();
+            let group_ids = groups
+                .iter()
+                .map(|group| group.id.clone())
+                .collect::<Vec<_>>();
+            let mut grouped_members = Vec::new();
+            for group_ids in group_ids.chunks(500) {
+                grouped_members.extend(
+                    store
+                        .list_thread_group_members_for_groups(group_ids)
+                        .await?,
+                );
+            }
+            let members = grouped_members
+                .iter()
+                .map(|(_, member)| member.clone())
+                .collect::<Vec<_>>();
             let mut thread_ids_by_entity = HashMap::new();
             for group in &groups {
-                let group_members = store.list_thread_group_members(&group.id).await?;
+                let group_members = grouped_members
+                    .iter()
+                    .filter(|(group_id, _)| group_id == &group.id)
+                    .map(|(_, member)| member);
                 thread_ids_by_entity.insert(
                     ("thread_group".to_string(), group.id.clone()),
                     group_members
-                        .iter()
                         .map(|member| member.thread_id.clone())
                         .collect(),
                 );
-                members.extend(group_members);
             }
             let thread_by_root = threads
                 .iter()
@@ -3324,56 +3465,65 @@ impl Orchestrator {
                     );
                 }
             }
+            let thread_ids = threads
+                .iter()
+                .map(|thread| thread.id.clone())
+                .collect::<Vec<_>>();
             let mut outcomes = Vec::new();
-            for thread in &threads {
-                if let Some(outcome) = store.get_thread_outcome(&thread.id).await? {
-                    outcomes.push(outcome);
-                }
+            for thread_ids in thread_ids.chunks(500) {
+                outcomes.extend(store.list_thread_outcomes(thread_ids).await?);
             }
+            let objective_ids = objectives
+                .iter()
+                .map(|objective| objective.id.clone())
+                .collect::<Vec<_>>();
             let mut dependencies = Vec::new();
-            for objective in &objectives {
+            for objective_ids in objective_ids.chunks(500) {
                 dependencies.extend(
                     store
-                        .list_scheduler_dependencies(SchedulerDependencyFilter {
-                            owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
-                            owner_id: Some(objective.id.clone()),
-                            ..Default::default()
-                        })
+                        .list_scheduler_dependencies_for_owners(
+                            SchedulerDependencyOwnerKind::Objective,
+                            objective_ids,
+                        )
                         .await?,
                 );
             }
-            for thread in &threads {
+            for thread_ids in thread_ids.chunks(500) {
                 dependencies.extend(
                     store
-                        .list_scheduler_dependencies(SchedulerDependencyFilter {
-                            owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
-                            owner_id: Some(thread.id.clone()),
-                            ..Default::default()
-                        })
+                        .list_scheduler_dependencies_for_owners(
+                            SchedulerDependencyOwnerKind::Thread,
+                            thread_ids,
+                        )
                         .await?,
                 );
             }
             dependencies.sort_by(|left, right| left.id.cmp(&right.id));
             dependencies.dedup_by(|left, right| left.id == right.id);
 
-            let mut barrier_event_ids = HashSet::new();
-            for event_id in groups
+            let candidate_barrier_event_ids = groups
                 .iter()
                 .filter_map(|group| group.barrier_event_id.as_ref())
-            {
-                if self
-                    .store
-                    .query(QueryFilter {
-                        event_id: Some(event_id.clone()),
-                        ..Default::default()
-                    })
-                    .await?
-                    .into_iter()
-                    .any(|event| event.id == *event_id)
-                {
-                    barrier_event_ids.insert(event_id.clone());
+                .cloned()
+                .collect::<Vec<_>>();
+            let barrier_event_ids = if candidate_barrier_event_ids.is_empty() {
+                HashSet::new()
+            } else {
+                let mut existing = HashSet::new();
+                for event_ids in candidate_barrier_event_ids.chunks(500) {
+                    existing.extend(
+                        self.store
+                            .query(QueryFilter {
+                                event_ids: event_ids.to_vec(),
+                                ..Default::default()
+                            })
+                            .await?
+                            .into_iter()
+                            .map(|event| event.id),
+                    );
                 }
-            }
+                existing
+            };
 
             let mut violations = crate::scheduler::audit_scheduler_invariants(
                 crate::scheduler::SchedulerInvariantInput {
@@ -3474,26 +3624,32 @@ impl Orchestrator {
             })
             .await?;
 
+        let objective_ids = objectives
+            .iter()
+            .map(|objective| objective.id.clone())
+            .collect::<Vec<_>>();
+        let thread_ids = threads
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>();
         let mut dependencies = Vec::new();
-        for objective in &objectives {
+        for objective_ids in objective_ids.chunks(500) {
             dependencies.extend(
                 store
-                    .list_scheduler_dependencies(SchedulerDependencyFilter {
-                        owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
-                        owner_id: Some(objective.id.clone()),
-                        ..Default::default()
-                    })
+                    .list_scheduler_dependencies_for_owners(
+                        SchedulerDependencyOwnerKind::Objective,
+                        objective_ids,
+                    )
                     .await?,
             );
         }
-        for thread in &threads {
+        for thread_ids in thread_ids.chunks(500) {
             dependencies.extend(
                 store
-                    .list_scheduler_dependencies(SchedulerDependencyFilter {
-                        owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
-                        owner_id: Some(thread.id.clone()),
-                        ..Default::default()
-                    })
+                    .list_scheduler_dependencies_for_owners(
+                        SchedulerDependencyOwnerKind::Thread,
+                        thread_ids,
+                    )
                     .await?,
             );
         }
@@ -3502,105 +3658,141 @@ impl Orchestrator {
 
         // A live Activation can expose the exact terminal Thread invariant
         // without requiring every unrelated terminal Thread in the Context.
-        for root_turn_id in activations
+        let missing_activation_roots = activations
             .iter()
             .map(|activation| activation.root_turn_id.clone())
             .collect::<HashSet<_>>()
-        {
-            if !threads
-                .iter()
-                .any(|thread| thread.root_turn_id == root_turn_id)
-            {
-                if let Some(thread) = store.get_thread_by_root(&root_turn_id).await? {
-                    if thread.context_id == context_id {
-                        threads.push(thread);
-                    }
-                }
-            }
-        }
+            .into_iter()
+            .filter(|root_turn_id| {
+                !threads
+                    .iter()
+                    .any(|thread| thread.root_turn_id == *root_turn_id)
+            })
+            .collect::<Vec<_>>();
+        threads.extend(
+            store
+                .list_threads_by_roots(context_id, &missing_activation_roots)
+                .await?,
+        );
 
         // A pending dependency targeting a newly terminal Group is an online
         // violation. Retrieve that exact Group rather than all closed Groups.
-        for group_id in dependencies
+        let dependency_group_ids = dependencies
             .iter()
             .filter(|dependency| {
                 dependency.status == SchedulerDependencyStatus::Pending
                     && dependency.dependency_kind == SchedulerDependencyKind::ThreadGroup
             })
             .map(|dependency| dependency.dependency_id.clone())
+            .filter(|group_id| !groups.iter().any(|group| group.id == *group_id))
             .collect::<HashSet<_>>()
-        {
-            if !groups.iter().any(|group| group.id == group_id) {
-                if let Some(group) = store.get_thread_group(&group_id).await? {
-                    if group.context_id == context_id {
-                        groups.push(group);
-                    }
-                }
+            .into_iter()
+            .collect::<Vec<_>>();
+        if !dependency_group_ids.is_empty() {
+            for group_ids in dependency_group_ids.chunks(500) {
+                groups.extend(
+                    store
+                        .list_thread_groups_by_ids(context_id, group_ids)
+                        .await?,
+                );
             }
         }
 
         // Open Groups may be owned by an exact terminal/missing authority.
         // Include existing owners so the pure audit can distinguish a valid
         // live generation from an orphan without a Context-wide history scan.
-        for group in groups.clone() {
-            match group.supervisor_kind {
-                ThreadSupervisorKind::Thread => {
-                    if !threads
-                        .iter()
-                        .any(|thread| thread.id == group.supervisor_id)
-                    {
-                        if let Some(thread) = store.get_thread(&group.supervisor_id).await? {
-                            if thread.context_id == context_id {
-                                threads.push(thread);
-                            }
-                        }
-                    }
-                }
-                ThreadSupervisorKind::Evaluation => {
-                    if !activations
-                        .iter()
-                        .any(|activation| activation.id == group.supervisor_id)
-                    {
-                        if let Some(activation) =
-                            store.get_thread_activation(&group.supervisor_id).await?
-                        {
-                            if activation.context_id == context_id {
-                                activations.push(activation);
-                            }
-                        }
-                    }
-                }
-                ThreadSupervisorKind::Objective => {
-                    if !objectives
-                        .iter()
-                        .any(|objective| objective.id == group.supervisor_id)
-                    {
-                        if let Some(objective) = store.get_objective(&group.supervisor_id).await? {
-                            if objective.context_id == context_id {
-                                objectives.push(objective);
-                            }
-                        }
-                    }
-                }
-                ThreadSupervisorKind::Runtime
-                | ThreadSupervisorKind::None
-                | ThreadSupervisorKind::Legacy => {}
-            }
-        }
+        let known_thread_ids = threads
+            .iter()
+            .map(|thread| thread.id.as_str())
+            .collect::<HashSet<_>>();
+        let known_activation_ids = activations
+            .iter()
+            .map(|activation| activation.id.as_str())
+            .collect::<HashSet<_>>();
+        let known_objective_ids = objectives
+            .iter()
+            .map(|objective| objective.id.as_str())
+            .collect::<HashSet<_>>();
+        let missing_supervisor_threads = groups
+            .iter()
+            .filter(|group| group.supervisor_kind == ThreadSupervisorKind::Thread)
+            .map(|group| group.supervisor_id.clone())
+            .filter(|id| !known_thread_ids.contains(id.as_str()))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let missing_supervisor_activations = groups
+            .iter()
+            .filter(|group| group.supervisor_kind == ThreadSupervisorKind::Evaluation)
+            .map(|group| group.supervisor_id.clone())
+            .filter(|id| !known_activation_ids.contains(id.as_str()))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let missing_supervisor_objectives = groups
+            .iter()
+            .filter(|group| group.supervisor_kind == ThreadSupervisorKind::Objective)
+            .map(|group| group.supervisor_id.clone())
+            .filter(|id| !known_objective_ids.contains(id.as_str()))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        drop((known_thread_ids, known_activation_ids, known_objective_ids));
+        threads.extend(
+            store
+                .list_threads_by_ids(context_id, &missing_supervisor_threads)
+                .await?,
+        );
+        activations.extend(
+            store
+                .list_thread_activations_by_ids(context_id, &missing_supervisor_activations)
+                .await?,
+        );
+        objectives.extend(
+            store
+                .list_objectives_by_ids(context_id, &missing_supervisor_objectives)
+                .await?,
+        );
 
-        let mut members = Vec::new();
+        let group_ids = groups
+            .iter()
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        let mut grouped_members = Vec::new();
+        for group_ids in group_ids.chunks(500) {
+            grouped_members.extend(
+                store
+                    .list_thread_group_members_for_groups(group_ids)
+                    .await?,
+            );
+        }
+        let members = grouped_members
+            .iter()
+            .map(|(_, member)| member.clone())
+            .collect::<Vec<_>>();
+        let known_thread_ids = threads
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<HashSet<_>>();
+        let missing_member_thread_ids = members
+            .iter()
+            .map(|member| member.thread_id.clone())
+            .filter(|thread_id| !known_thread_ids.contains(thread_id))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        threads.extend(
+            store
+                .list_threads_by_ids(context_id, &missing_member_thread_ids)
+                .await?,
+        );
         let mut thread_ids_by_entity = HashMap::new();
         for group in &groups {
-            let group_members = store.list_thread_group_members(&group.id).await?;
-            for member in &group_members {
-                if !threads.iter().any(|thread| thread.id == member.thread_id) {
-                    if let Some(thread) = store.get_thread(&member.thread_id).await? {
-                        if thread.context_id == context_id {
-                            threads.push(thread);
-                        }
-                    }
-                }
-            }
+            let group_members = grouped_members
+                .iter()
+                .filter(|(group_id, _)| group_id == &group.id)
+                .map(|(_, member)| member)
+                .collect::<Vec<_>>();
             thread_ids_by_entity.insert(
                 ("thread_group".to_string(), group.id.clone()),
                 group_members
@@ -3608,7 +3800,6 @@ impl Orchestrator {
                     .map(|member| member.thread_id.clone())
                     .collect(),
             );
-            members.extend(group_members);
         }
 
         let thread_by_root = threads
@@ -3624,30 +3815,37 @@ impl Orchestrator {
             }
         }
 
+        let outcome_thread_ids = threads
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>();
         let mut outcomes = Vec::new();
-        for thread in &threads {
-            if let Some(outcome) = store.get_thread_outcome(&thread.id).await? {
-                outcomes.push(outcome);
-            }
+        for thread_ids in outcome_thread_ids.chunks(500) {
+            outcomes.extend(store.list_thread_outcomes(thread_ids).await?);
         }
-        let mut barrier_event_ids = HashSet::new();
-        for event_id in groups
+        let candidate_barrier_event_ids = groups
             .iter()
             .filter_map(|group| group.barrier_event_id.as_ref())
-        {
-            if self
-                .store
-                .query(QueryFilter {
-                    event_id: Some(event_id.clone()),
-                    ..Default::default()
-                })
-                .await?
-                .into_iter()
-                .any(|event| event.id == *event_id)
-            {
-                barrier_event_ids.insert(event_id.clone());
+            .cloned()
+            .collect::<Vec<_>>();
+        let barrier_event_ids = if candidate_barrier_event_ids.is_empty() {
+            HashSet::new()
+        } else {
+            let mut existing = HashSet::new();
+            for event_ids in candidate_barrier_event_ids.chunks(500) {
+                existing.extend(
+                    self.store
+                        .query(QueryFilter {
+                            event_ids: event_ids.to_vec(),
+                            ..Default::default()
+                        })
+                        .await?
+                        .into_iter()
+                        .map(|event| event.id),
+                );
             }
-        }
+            existing
+        };
 
         let mut violations = crate::scheduler::audit_scheduler_invariants(
             crate::scheduler::SchedulerInvariantInput {
@@ -3883,27 +4081,35 @@ impl Orchestrator {
         };
         for context in session_store.list_contexts(false).await? {
             let mut dispatched_threads = HashSet::new();
-            for signal in session_store
+            let signals = session_store
                 .list_context_thread_signals(
                     &context.id,
                     Some(crate::memory::ThreadSignalStatus::Pending),
                 )
                 .await?
-            {
-                if !dispatched_threads.insert(signal.thread_id.clone()) {
-                    continue;
-                }
-                let Some(event) = self
+                .into_iter()
+                .filter(|signal| dispatched_threads.insert(signal.thread_id.clone()))
+                .collect::<Vec<_>>();
+            let event_ids = signals
+                .iter()
+                .map(|signal| signal.event_id.clone())
+                .collect::<Vec<_>>();
+            let mut events_by_id = HashMap::new();
+            for event_ids in event_ids.chunks(500) {
+                for event in self
                     .store
                     .query(QueryFilter {
-                        event_id: Some(signal.event_id.clone()),
+                        event_ids: event_ids.to_vec(),
                         context_id: Some(context.id.clone()),
                         ..Default::default()
                     })
                     .await?
-                    .into_iter()
-                    .find(|event| event.id == signal.event_id)
-                else {
+                {
+                    events_by_id.insert(event.id.clone(), event);
+                }
+            }
+            for signal in signals {
+                let Some(event) = events_by_id.remove(&signal.event_id) else {
                     tracing::error!(
                         signal_id = %signal.id,
                         event_id = %signal.event_id,
@@ -4017,14 +4223,27 @@ impl Orchestrator {
             if activations.is_empty() {
                 continue;
             }
-            let events = self
-                .store
-                .query(QueryFilter {
-                    context_id: Some(context.id.clone()),
-                    excluded_topics: vec!["chat/context_inspect".to_string()],
-                    ..Default::default()
-                })
-                .await?;
+            let mut event_ids = Vec::with_capacity(activations.len().saturating_mul(2));
+            for activation in &activations {
+                event_ids.push(activation.trigger_event_id.clone());
+                event_ids.push(format!("call_{}", activation.id));
+            }
+            event_ids.sort();
+            event_ids.dedup();
+            let mut events = Vec::new();
+            // Keep recovery proportional to live Activations while respecting
+            // SQLite/PostgreSQL bind limits for a large active fleet.
+            for event_ids in event_ids.chunks(500) {
+                events.extend(
+                    self.store
+                        .query(QueryFilter {
+                            event_ids: event_ids.to_vec(),
+                            context_id: Some(context.id.clone()),
+                            ..Default::default()
+                        })
+                        .await?,
+                );
+            }
             let events = events
                 .into_iter()
                 .map(|event| (event.id.clone(), event))
@@ -4985,7 +5204,7 @@ impl Orchestrator {
             return Ok(());
         };
         let activation = admitted.record;
-        let _activation_admission_permit = admitted._permit;
+        let activation_admission = Arc::new(ActivationAdmissionSlot::new(admitted._permit));
 
         // Bind an Objective continuation before any await in the Evaluation
         // body. A concurrent pause/cancel can therefore target this exact
@@ -5028,6 +5247,8 @@ impl Orchestrator {
 
         let mut cancellation = self.cancellation_sender(&session_id).subscribe();
         let start_epoch = *cancellation.borrow();
+        self.activation_admission_slots
+            .insert(activation.id.clone(), Arc::clone(&activation_admission));
         let active_counter = self.active_counter(&session_id);
         active_counter.fetch_add(1, Ordering::SeqCst);
         let objective_lease_maintenance = async {
@@ -5223,6 +5444,7 @@ impl Orchestrator {
             self.activation_routes.remove(&activation.id);
             self.objective_evaluations.remove_activation(&activation.id);
             if result.is_ok() {
+                self.activation_admission_slots.remove(&activation.id);
                 return Err(error);
             }
             tracing::warn!(
@@ -5236,6 +5458,7 @@ impl Orchestrator {
         self.active_model_attempts.remove(&activation.id);
         self.activation_routes.remove(&activation.id);
         self.objective_evaluations.remove_activation(&activation.id);
+        self.activation_admission_slots.remove(&activation.id);
         if matches!(
             final_status,
             ThreadActivationStatus::Succeeded | ThreadActivationStatus::Failed
@@ -5444,16 +5667,36 @@ impl Orchestrator {
                     )
                 })?,
         };
-        let parent_activation_id = event
+        let explicit_parent_activation_id = event
             .payload
             .get("parent_activation_id")
-            .or_else(|| event.payload.get("activation_id"))
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned);
-        let parent = match parent_activation_id.as_deref() {
+        let causal_activation_id = explicit_parent_activation_id.clone().or_else(|| {
+            event
+                .payload
+                .get("activation_id")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        });
+        let parent = match causal_activation_id.as_deref() {
             Some(id) => session_store.get_thread_activation(id).await?,
             None => None,
         };
+        if explicit_parent_activation_id.is_some() && parent.is_none() {
+            return Err(format!(
+                "Trigger Event '{}' 引用的显式 parent Activation '{}' 不存在",
+                event.id,
+                explicit_parent_activation_id.as_deref().unwrap_or_default()
+            )
+            .into());
+        }
+        // Generic tool receipts also carry their producing `activation_id`.
+        // Preserve it as a causal parent only when that durable Activation is
+        // present; legacy/imported Events may retain an informational ID that
+        // was never materialized in this Store. Explicit parent routes are
+        // strict because child infer handoffs depend on that ancestry.
+        let parent_activation_id = parent.as_ref().map(|record| record.id.clone());
         let initiating_principal_id = event
             .payload
             .get("principal_id")
@@ -5575,6 +5818,11 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
+        if let Some(waiter) = self.activation_materialization_waiters.get(&activation.id) {
+            // `notify_one` retains a permit when materialization wins the
+            // narrow race before the waiter starts awaiting.
+            waiter.notify_one();
+        }
         if activation.status.is_terminal() {
             self.activation_admission.forget(&activation.id);
             return Ok(None);
@@ -7380,6 +7628,7 @@ impl Orchestrator {
                 initiating_principal_id: activation.initiating_principal_id.clone(),
                 context_snapshot_version: activation.context_snapshot_version,
                 thread_kind,
+                internal_child_handoff: thread.executor_kind == "plan_infer",
                 delivery_thread_ids,
             },
         );
@@ -8803,20 +9052,38 @@ impl Orchestrator {
             .context_engine
             .session_store()
             .ok_or("Context maintenance continuation 需要持久化 SessionStore")?;
-        for _ in 0..500 {
-            if session_store
+        let waiter = self
+            .activation_materialization_waiters
+            .entry(activation_id.to_string())
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .clone();
+        if session_store
+            .get_thread_activation(activation_id)
+            .await?
+            .is_some()
+        {
+            self.activation_materialization_waiters
+                .remove(activation_id);
+            return Ok(());
+        }
+        let notified = tokio::time::timeout(std::time::Duration::from_secs(5), waiter.notified())
+            .await
+            .is_ok();
+        self.activation_materialization_waiters
+            .remove(activation_id);
+        if notified
+            || session_store
                 .get_thread_activation(activation_id)
                 .await?
                 .is_some()
-            {
-                return Ok(());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "Context maintenance continuation Activation '{activation_id}' 未在 5 秒内物化"
+            )
+            .into())
         }
-        Err(format!(
-            "Context maintenance continuation Activation '{activation_id}' 未在 5 秒内物化"
-        )
-        .into())
     }
 
     async fn execution_result_is_interactive(
@@ -9803,10 +10070,23 @@ impl Orchestrator {
             .get("disposition")
             .and_then(serde_json::Value::as_str)
             == Some("provider_wait");
-        let (should_dispatch, ready_signal_event_ids, thread_terminal) = match commit {
+        let (
+            should_dispatch,
+            ready_signal_event_ids,
+            ready_supervisor_event_ids,
+            thread_terminal,
+            recover_existing_handoffs,
+        ) = match commit {
             ActivationOutcomeCommit::Committed {
                 ready_signal_event_ids,
-            } => (true, ready_signal_event_ids, true),
+                ready_supervisor_event_ids,
+            } => (
+                true,
+                ready_signal_event_ids,
+                ready_supervisor_event_ids,
+                true,
+                false,
+            ),
             ActivationOutcomeCommit::Suspended { ref dependency_id } => {
                 tracing::info!(
                     activation_id = %route.activation_id,
@@ -9815,7 +10095,7 @@ impl Orchestrator {
                 event_code = "orchestrator.thread.provider_wait_persisted",
                 "Thread durably entered Provider wait while retaining an open lifecycle"
                 );
-                (true, Vec::new(), false)
+                (true, Vec::new(), Vec::new(), false, false)
             }
             ActivationOutcomeCommit::Existing { ref event_id } if event_id == &event.id => {
                 // The process may have committed the immutable outcome and
@@ -9827,7 +10107,13 @@ impl Orchestrator {
                 event_code = "orchestrator.evaluation_outcome.unconfirmed_dispatch_recovered",
                 "Recovering a persisted Evaluation outcome whose dispatch was not confirmed"
                 );
-                (true, Vec::new(), !requested_provider_wait)
+                (
+                    true,
+                    Vec::new(),
+                    Vec::new(),
+                    !requested_provider_wait,
+                    !requested_provider_wait,
+                )
             }
             ActivationOutcomeCommit::Existing { ref event_id } => {
                 tracing::warn!(
@@ -9837,7 +10123,7 @@ impl Orchestrator {
                 event_code = "orchestrator.evaluation_outcome.duplicate_suppressed",
                 "Suppressed duplicate terminal output from the same Thread Activation"
                 );
-                (false, Vec::new(), false)
+                (false, Vec::new(), Vec::new(), false, false)
             }
             ActivationOutcomeCommit::DeferredByOpenThreadGroups { ref group_ids } => {
                 tracing::info!(
@@ -9847,7 +10133,7 @@ impl Orchestrator {
                 event_code = "orchestrator.thread_group.terminal_blocked",
                 "Parent Thread generation still has required attached Threads; delaying terminal commit until the Group barrier wakes"
                 );
-                (false, Vec::new(), false)
+                (false, Vec::new(), Vec::new(), false, false)
             }
             ActivationOutcomeCommit::StaleGeneration => {
                 tracing::warn!(
@@ -9856,7 +10142,7 @@ impl Orchestrator {
                 event_code = "orchestrator.evaluation_outcome.dialogue_generation_stale",
                 "Suppressed stale terminal output fenced by DialogueTurn generation"
                 );
-                (false, Vec::new(), false)
+                (false, Vec::new(), Vec::new(), false, false)
             }
             ActivationOutcomeCommit::StaleActivation => {
                 tracing::warn!(
@@ -9865,7 +10151,7 @@ impl Orchestrator {
                 event_code = "orchestrator.evaluation_outcome.activation_stale",
                 "Suppressed stale output from a cancelled or terminal physical Activation"
                 );
-                (false, Vec::new(), false)
+                (false, Vec::new(), Vec::new(), false, false)
             }
         };
         if should_dispatch {
@@ -9923,6 +10209,44 @@ impl Orchestrator {
                         )
                     })?;
                 self.bus.dispatch_persisted(signal_event).await?;
+            }
+            // Objective/Runtime supervisors do not consume Thread Signals.
+            // Their terminal Group barrier is nevertheless a durable wake
+            // fact and must cross the post-commit EventBus handoff. Startup
+            // reconciliation remains the crash fallback for this notification.
+            for supervisor_event_id in ready_supervisor_event_ids {
+                let supervisor_event = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(supervisor_event_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|candidate| candidate.id == supervisor_event_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "Outcome transaction 返回的 Supervisor Event '{}' 不存在",
+                            supervisor_event_id
+                        )
+                    })?;
+                self.bus.dispatch_persisted(supervisor_event).await?;
+            }
+            if recover_existing_handoffs {
+                let terminal_thread = self
+                    .context_engine
+                    .session_store()
+                    .ok_or("恢复终态交接需要持久化 SessionStore")?
+                    .get_thread(&route.thread_id)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                            "恢复 Activation '{}' 的终态交接时 Thread '{}' 不存在",
+                            route.activation_id, route.thread_id
+                        )
+                    })?;
+                self.wake_terminal_thread_supervisor(&terminal_thread)
+                    .await?;
             }
             if thread_terminal {
                 self.revoke_thread_capability_leases(
@@ -10739,6 +11063,22 @@ impl Orchestrator {
         .into_new_job()
     }
 
+    async fn suspend_activation_admission(
+        &self,
+        activation_id: &str,
+    ) -> PlanExecutionResult<PlanAdmissionSuspension> {
+        let slot = self
+            .activation_admission_slots
+            .get(activation_id)
+            .map(|entry| Arc::clone(entry.value()))
+            .ok_or("PlanExecution 等待子任务时缺少 admission permit holder")?;
+        slot.suspend_for_plan().await?;
+        Ok(PlanAdmissionSuspension {
+            slot,
+            released: false,
+        })
+    }
+
     async fn execute_durable_plan(
         &self,
         route: PlanExecutionRoute,
@@ -10810,8 +11150,19 @@ impl Orchestrator {
             .ensure(route.clone(), &program, artifact_binding)
             .await?;
         let worker_id = format!("plan-runner-{}", std::process::id());
+        let mut suspended_admission = None;
 
         loop {
+            if plan.status == PlanExecutionStatus::Waiting {
+                if suspended_admission.is_none() {
+                    suspended_admission = Some(
+                        self.suspend_activation_admission(&route.activation_id)
+                            .await?,
+                    );
+                }
+            } else if let Some(suspended) = suspended_admission.take() {
+                suspended.release().await?;
+            }
             match plan.status {
                 PlanExecutionStatus::Succeeded => {
                     return Ok(plan.result_json.unwrap_or(serde_json::Value::Null));
@@ -10842,8 +11193,33 @@ impl Orchestrator {
                         )
                         .await?;
                     plan = match receipt {
+                        PlanDriveReceipt::WaitingForEvaluation {
+                            plan,
+                            request_event,
+                            ..
+                        } => {
+                            // The Store committed the infer Event, child Thread, and
+                            // pending Signal atomically with this Plan suspension.
+                            // Release the parent's physical Activation slot before
+                            // waking the child, and bypass the EventBus permit held
+                            // by this still-live parent handler. Both capacities can
+                            // otherwise deadlock when their configured limit is one.
+                            if suspended_admission.is_none() {
+                                suspended_admission = Some(
+                                    self.suspend_activation_admission(&route.activation_id)
+                                        .await?,
+                                );
+                            }
+                            // Wake the ordinary chat router with that already-durable
+                            // Event so it can claim the Signal and materialize the
+                            // child Activation. A restart remains the crash-window
+                            // fallback through recover_pending_thread_signals().
+                            self.bus
+                                .dispatch_persisted_child_handoff(*request_event)
+                                .await?;
+                            plan
+                        }
                         PlanDriveReceipt::WaitingForExecutionJob { plan, .. }
-                        | PlanDriveReceipt::WaitingForEvaluation { plan, .. }
                         | PlanDriveReceipt::Succeeded { plan, .. }
                         | PlanDriveReceipt::Failed { plan, .. } => plan,
                         PlanDriveReceipt::Conflict {
@@ -10881,8 +11257,26 @@ impl Orchestrator {
                             )
                             .await?;
                         plan = match receipt {
+                            PlanDriveReceipt::WaitingForEvaluation {
+                                plan,
+                                request_event,
+                                ..
+                            } => {
+                                // A reclaimed deterministic step can cross the
+                                // same durable infer hand-off as an ordinary queued
+                                // step, so it owns the identical dispatch boundary.
+                                if suspended_admission.is_none() {
+                                    suspended_admission = Some(
+                                        self.suspend_activation_admission(&route.activation_id)
+                                            .await?,
+                                    );
+                                }
+                                self.bus
+                                    .dispatch_persisted_child_handoff(*request_event)
+                                    .await?;
+                                plan
+                            }
                             PlanDriveReceipt::WaitingForExecutionJob { plan, .. }
-                            | PlanDriveReceipt::WaitingForEvaluation { plan, .. }
                             | PlanDriveReceipt::Succeeded { plan, .. }
                             | PlanDriveReceipt::Failed { plan, .. } => plan,
                             PlanDriveReceipt::Conflict {
@@ -10973,18 +11367,85 @@ impl Orchestrator {
                                         .await?,
                                 )?;
                             }
-                            Some(_) | None => {
+                            Some(_) => {
                                 // The infer request, its Signal Outbox row and
                                 // the Plan wait are one transaction.  The child
                                 // Activation is deliberately materialized by
                                 // the asynchronous Scheduler router afterwards,
-                                // so a short-lived missing row is an expected
-                                // state rather than an evaluation failure.
+                                // so a short-lived non-terminal row is expected.
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                                 plan = store
                                     .get_plan_execution(&plan.id)
                                     .await?
                                     .ok_or("PlanExecution 在等待 Evaluation 时消失")?;
+                            }
+                            None => {
+                                // The Event, child Thread and pending Signal
+                                // were committed with the Plan wait. A missing
+                                // child Activation means the live router has
+                                // not completed that durable handoff. Re-read
+                                // and redispatch the exact Event instead of
+                                // polling the absent row forever.
+                                if Utc::now().signed_duration_since(plan.updated_at)
+                                    >= chrono::Duration::seconds(60)
+                                {
+                                    let reason = format!(
+                                        "PlanExecution '{}' 的 infer Signal 在 60 秒内未物化 child Activation",
+                                        plan.id
+                                    );
+                                    plan = match store
+                                        .cancel_plan_execution(
+                                            &plan.id,
+                                            plan.revision,
+                                            Some(&reason),
+                                        )
+                                        .await?
+                                    {
+                                        PlanExecutionMutation::Updated(current)
+                                        | PlanExecutionMutation::Existing(current)
+                                        | PlanExecutionMutation::Conflict { current }
+                                        | PlanExecutionMutation::Rejected {
+                                            current: Some(current),
+                                            ..
+                                        } => current,
+                                        PlanExecutionMutation::Rejected {
+                                            current: None,
+                                            reason,
+                                        } => return Err(reason.into()),
+                                        PlanExecutionMutation::NotFound => {
+                                            return Err(format!(
+                                                "PlanExecution '{}' 在 handoff 超时收口时消失",
+                                                plan.id
+                                            )
+                                            .into())
+                                        }
+                                    };
+                                    continue;
+                                }
+                                let expected = pending_infer_request_event(&plan)?;
+                                let request_event = store
+                                    .query(QueryFilter {
+                                        event_id: Some(expected.id.clone()),
+                                        context_id: Some(plan.context_id.clone()),
+                                        ..Default::default()
+                                    })
+                                    .await?
+                                    .into_iter()
+                                    .find(|candidate| candidate.id == expected.id)
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "PlanExecution '{}' 的 infer Event '{}' 不存在",
+                                            plan.id, expected.id
+                                        )
+                                    })?;
+                                self.bus
+                                    .dispatch_persisted_child_handoff(request_event)
+                                    .await?;
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                plan = store
+                                    .get_plan_execution(&plan.id)
+                                    .await?
+                                    .ok_or("PlanExecution 在恢复 Evaluation handoff 时消失")?;
                             }
                         }
                     }
@@ -11976,6 +12437,9 @@ impl Orchestrator {
     ) -> Result<ToolExecutionOutcome, DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let activation_route = self.activation_route(attempt_id);
+        let internal_child_handoff = activation_route
+            .as_ref()
+            .is_some_and(|route| route.internal_child_handoff);
         let active_principal_id = self
             .principal_for_activation_route(&context_id, activation_route.as_ref())
             .await?;
@@ -12290,7 +12754,8 @@ impl Orchestrator {
             } else if !already_persisted {
                 self.store.append(output.clone()).await?;
             }
-            self.bus.dispatch_persisted(output).await?;
+            dispatch_persisted_tool_handoff(self.bus.as_ref(), output, internal_child_handoff)
+                .await?;
         }
         if ordinary_action_count == 0 {
             return Ok(ToolExecutionOutcome::default());
@@ -12547,6 +13012,7 @@ impl Orchestrator {
             let action_groups = self.action_groups.clone();
             let settled_event = action_group_settled.clone();
             let event_bus = Arc::clone(&self.bus);
+            let task_internal_child_handoff = internal_child_handoff;
             let objective_supervisor = self.objective_supervisor.clone();
             let model_input_root = self.message_attachment_root.clone();
             let model_input_import_limits = self.model_input_config.import_limits();
@@ -12967,14 +13433,20 @@ impl Orchestrator {
                                                                     )
                                                                     .await?;
                                                                 if !commit.existing {
-                                                                    event_bus
-                                                                        .dispatch_persisted(output.clone())
-                                                                        .await?;
+                                                                    dispatch_persisted_tool_handoff(
+                                                                        event_bus.as_ref(),
+                                                                        output.clone(),
+                                                                        task_internal_child_handoff,
+                                                                    )
+                                                                    .await?;
                                                                 }
                                                                 if commit.settled_now {
-                                                                    event_bus
-                                                                        .dispatch_persisted(settled.clone())
-                                                                        .await?;
+                                                                    dispatch_persisted_tool_handoff(
+                                                                        event_bus.as_ref(),
+                                                                        settled.clone(),
+                                                                        task_internal_child_handoff,
+                                                                    )
+                                                                    .await?;
                                                                 }
                                                                 true
                                                             }
@@ -13172,10 +13644,20 @@ impl Orchestrator {
                     )
                     .await?;
                 if !commit.existing {
-                    self.bus.dispatch_persisted(output).await?;
+                    dispatch_persisted_tool_handoff(
+                        self.bus.as_ref(),
+                        output,
+                        internal_child_handoff,
+                    )
+                    .await?;
                 }
                 if commit.settled_now {
-                    self.bus.dispatch_persisted(settled_event.clone()).await?;
+                    dispatch_persisted_tool_handoff(
+                        self.bus.as_ref(),
+                        settled_event.clone(),
+                        internal_child_handoff,
+                    )
+                    .await?;
                 }
             }
         } else {
@@ -13202,7 +13684,8 @@ impl Orchestrator {
                 } else if !already_persisted {
                     self.store.append(output.clone()).await?;
                 }
-                self.bus.dispatch_persisted(output).await?;
+                dispatch_persisted_tool_handoff(self.bus.as_ref(), output, internal_child_handoff)
+                    .await?;
             }
         }
         Ok(outcome)
@@ -13829,6 +14312,85 @@ impl Orchestrator {
     /// the mailbox is empty this is intentionally a no-op.
     pub async fn wake_resumed_thread(&self, root_turn_id: &str) -> Result<(), DynError> {
         self.dispatch_next_pending_thread_signal(root_turn_id).await
+    }
+
+    /// Replays the live half of a terminal Thread/Group handoff whose Event
+    /// and optional direct Signal are already durable. This is safe after an
+    /// operator close and after an idempotent outcome retry: EventBus and
+    /// Thread Signal claims both de-duplicate the exact persisted fact.
+    pub async fn wake_terminal_thread_supervisor(
+        &self,
+        thread: &ThreadRecord,
+    ) -> Result<(), DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("终态 Thread 交接需要持久化 SessionStore")?;
+        let (supervisor_kind, supervisor_id, parent_thread_id, barrier_event_id) =
+            if let Some(group_id) = thread.supervision.thread_group_id.as_deref() {
+                let group = session_store
+                    .get_thread_group(group_id)
+                    .await?
+                    .ok_or_else(|| {
+                        format!("Thread '{}' 的终态 Group '{}' 不存在", thread.id, group_id)
+                    })?;
+                if !group.status.is_terminal() {
+                    return Ok(());
+                }
+                let barrier_event_id = group.barrier_event_id.clone().ok_or_else(|| {
+                    format!("终态 Thread Group '{}' 缺少 barrier Event", group.id)
+                })?;
+                (
+                    group.supervisor_kind,
+                    Some(group.supervisor_id),
+                    thread.supervision.parent_thread_id.clone(),
+                    barrier_event_id,
+                )
+            } else {
+                (
+                    thread.supervision.supervisor_kind,
+                    thread.supervision.supervisor_id.clone(),
+                    thread.supervision.parent_thread_id.clone(),
+                    format!("thread_terminal_{}_g{}", thread.id, thread.generation),
+                )
+            };
+
+        match supervisor_kind {
+            ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
+                let parent_thread_id = parent_thread_id
+                    .or(supervisor_id)
+                    .ok_or_else(|| format!("Thread '{}' 缺少 parent Thread", thread.id))?;
+                let parent = session_store
+                    .get_thread(&parent_thread_id)
+                    .await?
+                    .ok_or_else(|| format!("Parent Thread '{}' 不存在", parent_thread_id))?;
+                if parent.lifecycle == ThreadLifecycle::Open {
+                    self.dispatch_next_pending_thread_signal(&parent.root_turn_id)
+                        .await?;
+                }
+            }
+            ThreadSupervisorKind::Objective | ThreadSupervisorKind::Runtime => {
+                let barrier = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(barrier_event_id.clone()),
+                        context_id: Some(thread.context_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|candidate| candidate.id == barrier_event_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "Thread '{}' 的 Supervisor barrier Event '{}' 不存在",
+                            thread.id, barrier_event_id
+                        )
+                    })?;
+                self.bus.dispatch_persisted(barrier).await?;
+            }
+            ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {}
+        }
+        Ok(())
     }
 
     /// Persist cancellation intent for every non-terminal physical Action

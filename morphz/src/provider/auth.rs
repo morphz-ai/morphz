@@ -15,9 +15,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
+use std::process::Stdio;
 use std::sync::{Arc, OnceLock, RwLock};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 const TOKEN_REFRESH_SKEW_SECS: i64 = 300;
 const REFRESH_LEASE_SECS: i64 = 45;
@@ -29,6 +32,157 @@ const XAI_ADAPTER_ID: &str = "xai-oauth";
 const CLAUDE_ADAPTER_ID: &str = "claude-oauth";
 const ANTIGRAVITY_ADAPTER_ID: &str = "antigravity-oauth";
 const XAI_GROK_CLIENT_VERSION: &str = "0.2.93";
+const CODEX_ACCOUNT_PROBE_TIMEOUT_SECS: u64 = 20;
+
+/// A normalized ChatGPT subscription window returned by the official Codex
+/// app-server protocol. `resets_at` is a Unix timestamp in seconds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionUsageWindow {
+    pub used_percent: i32,
+    pub window_duration_mins: Option<i64>,
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionCreditsSnapshot {
+    pub has_credits: bool,
+    pub unlimited: bool,
+    pub balance: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionSpendLimitSnapshot {
+    pub limit: String,
+    pub used: String,
+    pub remaining_percent: i32,
+    pub resets_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionRateLimitSnapshot {
+    pub limit_id: Option<String>,
+    pub limit_name: Option<String>,
+    pub primary: Option<SubscriptionUsageWindow>,
+    pub secondary: Option<SubscriptionUsageWindow>,
+    pub credits: Option<SubscriptionCreditsSnapshot>,
+    pub individual_limit: Option<SubscriptionSpendLimitSnapshot>,
+    pub plan_type: Option<String>,
+    pub rate_limit_reached_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionResetCredit {
+    pub id: String,
+    pub reset_type: String,
+    pub status: String,
+    pub granted_at: i64,
+    pub expires_at: Option<i64>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionResetCreditsSummary {
+    pub available_count: i64,
+    pub credits: Option<Vec<SubscriptionResetCredit>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionTokenUsageSummary {
+    pub lifetime_tokens: Option<u64>,
+    pub peak_daily_tokens: Option<u64>,
+    pub longest_running_turn_sec: Option<u64>,
+    pub current_streak_days: Option<u64>,
+    pub longest_streak_days: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionDailyUsageBucket {
+    pub start_date: String,
+    pub tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionTokenUsage {
+    pub summary: SubscriptionTokenUsageSummary,
+    pub daily_usage_buckets: Option<Vec<SubscriptionDailyUsageBucket>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionAvailability {
+    Available,
+    Low,
+    Exhausted,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSubscriptionUsage {
+    pub account_id: String,
+    pub provider_account_id: Option<String>,
+    pub email: Option<String>,
+    pub adapter_id: String,
+    /// Logical model route currently selected by the Runtime. The auth layer
+    /// leaves this unset; the Runtime fills it before exposing the snapshot.
+    pub selected_model_alias: Option<String>,
+    pub source: String,
+    pub checked_at: DateTime<Utc>,
+    pub availability: SubscriptionAvailability,
+    pub rate_limits: SubscriptionRateLimitSnapshot,
+    pub rate_limits_by_limit_id: Option<BTreeMap<String, SubscriptionRateLimitSnapshot>>,
+    pub rate_limit_reset_credits: Option<SubscriptionResetCreditsSummary>,
+    pub token_usage: SubscriptionTokenUsage,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexRateLimitsResponse {
+    rate_limits: SubscriptionRateLimitSnapshot,
+    rate_limits_by_limit_id: Option<BTreeMap<String, SubscriptionRateLimitSnapshot>>,
+    rate_limit_reset_credits: Option<SubscriptionResetCreditsSummary>,
+}
+
+fn subscription_availability(
+    rate_limits: &SubscriptionRateLimitSnapshot,
+    by_limit_id: Option<&BTreeMap<String, SubscriptionRateLimitSnapshot>>,
+) -> SubscriptionAvailability {
+    let snapshots = std::iter::once(rate_limits)
+        .chain(by_limit_id.into_iter().flat_map(|limits| limits.values()));
+    let mut observed = false;
+    let mut highest = 0;
+    for snapshot in snapshots {
+        if snapshot.rate_limit_reached_type.is_some() {
+            return SubscriptionAvailability::Exhausted;
+        }
+        for window in [snapshot.primary.as_ref(), snapshot.secondary.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            observed = true;
+            highest = highest.max(window.used_percent);
+        }
+    }
+    if !observed {
+        SubscriptionAvailability::Unknown
+    } else if highest >= 100 {
+        SubscriptionAvailability::Exhausted
+    } else if highest >= 80 {
+        SubscriptionAvailability::Low
+    } else {
+        SubscriptionAvailability::Available
+    }
+}
 
 fn oauth_adapters_compatible(configured: &str, actual: &str) -> bool {
     configured == actual
@@ -536,6 +690,217 @@ pub trait AuthAdapter: Send + Sync {
     ) -> Result<AdapterLoginResult, String>;
     async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String>;
     fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String>;
+    /// Optional authenticated account observability. Most Provider OAuth
+    /// adapters do not expose subscription data; Codex implements this through
+    /// the official app-server protocol using externally managed tokens.
+    async fn subscription_usage(
+        &self,
+        _token: &OAuthTokenSet,
+    ) -> Result<(CodexRateLimitsResponse, SubscriptionTokenUsage), String> {
+        Err(format!(
+            "Auth Adapter '{}' does not expose subscription usage",
+            self.id()
+        ))
+    }
+}
+
+struct CodexAppServerProbe {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    state_dir: std::path::PathBuf,
+}
+
+impl CodexAppServerProbe {
+    async fn start() -> Result<Self, String> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("System clock cannot create Codex probe directory: {error}"))?
+            .as_nanos();
+        let state_dir = std::env::temp_dir().join(format!(
+            "morphz-codex-account-probe-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&state_dir).map_err(|error| {
+            format!(
+                "Cannot create isolated Codex account probe directory '{}': {error}",
+                state_dir.display()
+            )
+        })?;
+        let executable = std::env::var("MORPHZ_CODEX_APP_SERVER_BIN")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "codex".to_string());
+        let mut child = Command::new(&executable)
+            .arg("app-server")
+            .arg("--listen")
+            .arg("stdio://")
+            .env("CODEX_HOME", &state_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                let _ = std::fs::remove_dir_all(&state_dir);
+                format!(
+                    "Cannot start official Codex app-server using '{executable}': {error}; install Codex CLI or set MORPHZ_CODEX_APP_SERVER_BIN"
+                )
+            })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or("Codex app-server did not expose stdin")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("Codex app-server did not expose stdout")?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            state_dir,
+        })
+    }
+
+    async fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
+        self.write(json_rpc_message(method, None, params)).await
+    }
+
+    async fn request(&mut self, id: u64, method: &str, params: Value) -> Result<Value, String> {
+        self.write(json_rpc_message(method, Some(id), params))
+            .await?;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read = self
+                .stdout
+                .read_line(&mut line)
+                .await
+                .map_err(|error| format!("Cannot read Codex app-server response: {error}"))?;
+            if read == 0 {
+                return Err("Codex app-server closed before returning account usage".to_string());
+            }
+            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if message.get("id").and_then(Value::as_u64) != Some(id) {
+                continue;
+            }
+            if let Some(error) = message.get("error") {
+                return Err(format!(
+                    "Codex app-server method '{method}' failed: {error}"
+                ));
+            }
+            return message
+                .get("result")
+                .cloned()
+                .ok_or_else(|| format!("Codex app-server method '{method}' returned no result"));
+        }
+    }
+
+    async fn write(&mut self, message: Value) -> Result<(), String> {
+        let mut encoded = serde_json::to_vec(&message)
+            .map_err(|error| format!("Cannot encode Codex app-server request: {error}"))?;
+        encoded.push(b'\n');
+        self.stdin
+            .write_all(&encoded)
+            .await
+            .map_err(|error| format!("Cannot write Codex app-server request: {error}"))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|error| format!("Cannot flush Codex app-server request: {error}"))
+    }
+
+    async fn finish(mut self) {
+        let _ = self.child.start_kill();
+        let _ = self.child.wait().await;
+        let _ = std::fs::remove_dir_all(&self.state_dir);
+    }
+}
+
+impl Drop for CodexAppServerProbe {
+    fn drop(&mut self) {
+        // `timeout` may cancel the async probe before `finish` runs. Make both
+        // the subprocess and its isolated credential directory best-effort
+        // cleanup invariants rather than happy-path behavior.
+        let _ = self.child.start_kill();
+        let _ = std::fs::remove_dir_all(&self.state_dir);
+    }
+}
+
+fn json_rpc_message(method: &str, id: Option<u64>, params: Value) -> Value {
+    let mut message = serde_json::json!({ "method": method, "params": params });
+    if let Some(id) = id {
+        message["id"] = Value::from(id);
+    }
+    message
+}
+
+async fn inspect_codex_subscription_usage(
+    token: &OAuthTokenSet,
+) -> Result<(CodexRateLimitsResponse, SubscriptionTokenUsage), String> {
+    let account_id = token
+        .account_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("Codex OAuth token has no ChatGPT Account ID")?;
+    let run = async {
+        let mut probe = CodexAppServerProbe::start().await?;
+        let result = async {
+            probe
+                .request(
+                    1,
+                    "initialize",
+                    serde_json::json!({
+                        "clientInfo": { "name": "morphz", "version": env!("CARGO_PKG_VERSION") },
+                        "capabilities": { "experimentalApi": true }
+                    }),
+                )
+                .await?;
+            probe.notify("initialized", serde_json::json!({})).await?;
+            probe
+                .request(
+                    2,
+                    "account/login/start",
+                    serde_json::json!({
+                        "type": "chatgptAuthTokens",
+                        "accessToken": token.access_token,
+                        "chatgptAccountId": account_id
+                    }),
+                )
+                .await?;
+            let rate_limits = probe
+                .request(3, "account/rateLimits/read", serde_json::json!({}))
+                .await
+                .and_then(|value| {
+                    serde_json::from_value::<CodexRateLimitsResponse>(value).map_err(|error| {
+                        format!("Cannot decode Codex rate-limit response: {error}")
+                    })
+                })?;
+            let token_usage = probe
+                .request(4, "account/usage/read", serde_json::json!({}))
+                .await
+                .and_then(|value| {
+                    serde_json::from_value::<SubscriptionTokenUsage>(value).map_err(|error| {
+                        format!("Cannot decode Codex token-usage response: {error}")
+                    })
+                })?;
+            Ok::<_, String>((rate_limits, token_usage))
+        }
+        .await;
+        probe.finish().await;
+        result
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(CODEX_ACCOUNT_PROBE_TIMEOUT_SECS),
+        run,
+    )
+    .await
+    .map_err(|_| {
+        format!("Codex account usage probe exceeded {CODEX_ACCOUNT_PROBE_TIMEOUT_SECS} seconds")
+    })?
 }
 
 #[derive(Default)]
@@ -923,6 +1288,49 @@ impl ProviderAuthManager {
     pub fn account_metadata(&self, account_id: &str) -> Result<OAuthAccountMetadata, String> {
         let account = self.oauth_account(account_id)?;
         Ok(self.load_token(&account)?.public_metadata(account_id))
+    }
+
+    /// Read live ChatGPT subscription limits and token activity for one
+    /// authenticated account. No token material is returned or persisted by
+    /// the probe; the official Codex app-server runs in an isolated temporary
+    /// state directory and is terminated after the snapshot is collected.
+    pub async fn subscription_usage(
+        &self,
+        account_id: &str,
+    ) -> Result<ProviderSubscriptionUsage, String> {
+        let account = self.oauth_account(account_id)?;
+        let adapter = self.adapters.get(&account.auth_adapter)?;
+        let mut token = self.load_token(&account)?;
+        if !oauth_adapters_compatible(adapter.id(), &token.adapter_id) {
+            return Err(format!(
+                "Auth Account '{account_id}' token adapter '{}' is incompatible with '{}'",
+                token.adapter_id,
+                adapter.id()
+            ));
+        }
+        if token.needs_refresh(Utc::now()) {
+            token = self
+                .refresh_token(account_id, &account, adapter.as_ref(), token)
+                .await?;
+        }
+        let metadata = token.public_metadata(account_id);
+        let (limits, token_usage) = adapter.subscription_usage(&token).await?;
+        let availability =
+            subscription_availability(&limits.rate_limits, limits.rate_limits_by_limit_id.as_ref());
+        Ok(ProviderSubscriptionUsage {
+            account_id: account_id.to_string(),
+            provider_account_id: metadata.provider_account_id,
+            email: metadata.email,
+            adapter_id: metadata.adapter_id,
+            selected_model_alias: None,
+            source: "codex_app_server".to_string(),
+            checked_at: Utc::now(),
+            availability,
+            rate_limits: limits.rate_limits,
+            rate_limits_by_limit_id: limits.rate_limits_by_limit_id,
+            rate_limit_reset_credits: limits.rate_limit_reset_credits,
+            token_usage,
+        })
     }
 
     pub async fn logout(&self, account_id: &str) -> Result<bool, String> {
@@ -1387,6 +1795,13 @@ impl AuthAdapter for CodexOAuthAdapter {
     fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
         codex_materialize(token)
     }
+
+    async fn subscription_usage(
+        &self,
+        token: &OAuthTokenSet,
+    ) -> Result<(CodexRateLimitsResponse, SubscriptionTokenUsage), String> {
+        inspect_codex_subscription_usage(token).await
+    }
 }
 
 #[derive(Clone)]
@@ -1655,6 +2070,13 @@ impl AuthAdapter for CodexDeviceOAuthAdapter {
 
     fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
         codex_materialize(token)
+    }
+
+    async fn subscription_usage(
+        &self,
+        token: &OAuthTokenSet,
+    ) -> Result<(CodexRateLimitsResponse, SubscriptionTokenUsage), String> {
+        inspect_codex_subscription_usage(token).await
     }
 }
 
@@ -4028,6 +4450,159 @@ mod tests {
 
         discard_oauth_callback(&old_state).unwrap();
         discard_oauth_callback(&new_state).unwrap();
+    }
+
+    #[test]
+    fn codex_subscription_snapshot_preserves_all_public_usage_fields() {
+        let decoded: CodexRateLimitsResponse = serde_json::from_value(json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "limitName": null,
+                "primary": {
+                    "usedPercent": 73,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_786_900_000
+                },
+                "secondary": {
+                    "usedPercent": 41,
+                    "windowDurationMins": 10_080,
+                    "resetsAt": 1_787_000_000
+                },
+                "credits": {
+                    "hasCredits": true,
+                    "unlimited": false,
+                    "balance": "18.60"
+                },
+                "individualLimit": null,
+                "planType": "pro",
+                "rateLimitReachedType": null
+            },
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "limitName": null,
+                    "primary": { "usedPercent": 73, "windowDurationMins": 300, "resetsAt": 1_786_900_000 },
+                    "secondary": { "usedPercent": 41, "windowDurationMins": 10_080, "resetsAt": 1_787_000_000 },
+                    "credits": { "hasCredits": true, "unlimited": false, "balance": "18.60" },
+                    "individualLimit": null,
+                    "planType": "pro",
+                    "rateLimitReachedType": null
+                }
+            },
+            "rateLimitResetCredits": {
+                "availableCount": 1,
+                "credits": [{
+                    "id": "reset-1",
+                    "resetType": "codexRateLimits",
+                    "status": "available",
+                    "grantedAt": 1_786_800_000,
+                    "expiresAt": null,
+                    "title": "Rate-limit reset",
+                    "description": "Reset an eligible Codex rate-limit window."
+                }]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(decoded.rate_limits.plan_type.as_deref(), Some("pro"));
+        assert_eq!(
+            decoded
+                .rate_limits
+                .credits
+                .as_ref()
+                .and_then(|credits| credits.balance.as_deref()),
+            Some("18.60")
+        );
+        assert_eq!(
+            decoded
+                .rate_limit_reset_credits
+                .as_ref()
+                .map(|credits| credits.available_count),
+            Some(1)
+        );
+        assert_eq!(
+            subscription_availability(
+                &decoded.rate_limits,
+                decoded.rate_limits_by_limit_id.as_ref()
+            ),
+            SubscriptionAvailability::Available
+        );
+    }
+
+    #[test]
+    fn codex_subscription_availability_is_exhausted_when_any_bucket_is_reached() {
+        let exhausted = SubscriptionRateLimitSnapshot {
+            limit_id: Some("codex".to_string()),
+            limit_name: None,
+            primary: Some(SubscriptionUsageWindow {
+                used_percent: 96,
+                window_duration_mins: Some(300),
+                resets_at: Some(1_786_900_000),
+            }),
+            secondary: None,
+            credits: None,
+            individual_limit: None,
+            plan_type: Some("pro".to_string()),
+            rate_limit_reached_type: Some("rate_limit_reached".to_string()),
+        };
+        assert_eq!(
+            subscription_availability(&exhausted, None),
+            SubscriptionAvailability::Exhausted
+        );
+    }
+
+    #[test]
+    fn codex_token_activity_accepts_missing_optional_history() {
+        let usage: SubscriptionTokenUsage = serde_json::from_value(json!({
+            "summary": {
+                "lifetimeTokens": 1234567,
+                "peakDailyTokens": null,
+                "longestRunningTurnSec": 540,
+                "currentStreakDays": 8,
+                "longestStreakDays": 14
+            },
+            "dailyUsageBuckets": null
+        }))
+        .unwrap();
+        assert_eq!(usage.summary.lifetime_tokens, Some(1_234_567));
+        assert!(usage.daily_usage_buckets.is_none());
+    }
+
+    /// Explicit end-to-end check of the external-token App Server contract.
+    /// The test reads an existing Codex auth file only when the caller opts in
+    /// and never prints or persists its credential values.
+    #[tokio::test]
+    #[ignore = "requires a live Codex auth file and network access"]
+    async fn live_codex_external_token_probe_reads_subscription_usage() {
+        let path = std::env::var("MORPHZ_TEST_CODEX_AUTH_JSON")
+            .expect("MORPHZ_TEST_CODEX_AUTH_JSON must point to a Codex auth.json file");
+        let auth: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let token = OAuthTokenSet {
+            adapter_id: CODEX_ADAPTER_ID.to_string(),
+            adapter_version: "test".to_string(),
+            access_token: auth["tokens"]["access_token"]
+                .as_str()
+                .expect("Codex auth file has no access token")
+                .to_string(),
+            refresh_token: None,
+            id_token: None,
+            token_type: Some("Bearer".to_string()),
+            scopes: Vec::new(),
+            expires_at: None,
+            subject: None,
+            account_id: Some(
+                auth["tokens"]["account_id"]
+                    .as_str()
+                    .expect("Codex auth file has no account id")
+                    .to_string(),
+            ),
+            email: None,
+            device_id: None,
+            metadata: BTreeMap::new(),
+        };
+        let (limits, usage) = inspect_codex_subscription_usage(&token).await.unwrap();
+        assert!(limits.rate_limits.plan_type.is_some());
+        assert!(usage.summary.lifetime_tokens.is_some());
     }
 
     /// Explicit network smoke test for the upstream Codex subscription login

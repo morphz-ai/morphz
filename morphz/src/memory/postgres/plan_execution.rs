@@ -61,6 +61,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON plan_executions(context_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_plan_executions_pending
            ON plan_executions(pending_kind, pending_id) WHERE status = 'waiting'"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_plan_executions_wait_kind
+           ON plan_executions(pending_kind, updated_at DESC, id) WHERE status = 'waiting'"#,
         r#"CREATE OR REPLACE FUNCTION reject_plan_execution_terminal_reopen()
            RETURNS trigger AS $$
            BEGIN
@@ -349,7 +351,19 @@ impl PlanExecutionStore for PostgresStore {
         } else if !filter.include_terminal {
             query.push(" AND status NOT IN ('succeeded', 'failed', 'cancelled')");
         }
-        query.push(" ORDER BY updated_at DESC, id");
+        if let Some(pending_kind) = filter.pending_kind {
+            query
+                .push(" AND pending_kind = ")
+                .push_bind(pending_kind.as_str());
+        }
+        if let Some(expiry) = filter.lease_expires_at_or_before {
+            query
+                .push(" AND lease_expires_at IS NOT NULL AND lease_expires_at <= ")
+                .push_bind(expiry.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+            query.push(" ORDER BY lease_expires_at, created_at, id");
+        } else {
+            query.push(" ORDER BY updated_at DESC, id");
+        }
         if let Some(limit) = filter.limit {
             query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
         }

@@ -37,6 +37,7 @@ pub struct ActivationAdmissionSnapshot {
     pub aging_promotion_interval_ms: u64,
     pub queued_activation_ids: Vec<String>,
     pub in_flight_activation_ids: Vec<String>,
+    pub suspended_activation_ids: Vec<String>,
     pub waiter_count: usize,
     pub queued_by_class: std::collections::BTreeMap<String, usize>,
     pub in_flight_by_class: std::collections::BTreeMap<String, usize>,
@@ -125,7 +126,10 @@ struct ControllerState {
     /// Only rows with a live local waiter are selectable.  Recovered durable
     /// rows may be rebuilt before their Event handlers are dispatched.
     waiters: HashSet<String>,
-    in_flight: HashMap<String, AdmissionClass>,
+    in_flight: HashMap<String, AdmissionKey>,
+    /// Locally-owned Activations durably waiting on a child primitive. They
+    /// retain lease ownership but do not consume physical execution capacity.
+    suspended: HashMap<String, AdmissionKey>,
 }
 
 #[derive(Debug)]
@@ -173,6 +177,7 @@ impl ActivationAdmissionController {
                     )),
                     waiters: HashSet::new(),
                     in_flight: HashMap::new(),
+                    suspended: HashMap::new(),
                 }),
                 changed: Notify::new(),
                 refill_changed: Notify::new(),
@@ -193,6 +198,7 @@ impl ActivationAdmissionController {
     ) -> Result<RestoreQueuedOutcome, ActivationAdmissionError> {
         let mut state = self.lock_state();
         if state.in_flight.contains_key(&key.id)
+            || state.suspended.contains_key(&key.id)
             || state.queue.iter().any(|entry| entry.key.id == key.id)
         {
             return Ok(RestoreQueuedOutcome::AlreadyTracked);
@@ -211,7 +217,7 @@ impl ActivationAdmissionController {
     pub fn forget(&self, id: &str) -> bool {
         let mut state = self.lock_state();
         state.waiters.remove(id);
-        let removed = state.queue.remove(id).is_some();
+        let removed = state.queue.remove(id).is_some() || state.suspended.remove(id).is_some();
         drop(state);
         if removed {
             self.inner.notify_change();
@@ -236,8 +242,10 @@ impl ActivationAdmissionController {
             .map(|entry| entry.key.id.clone())
             .collect::<Vec<_>>();
         let mut in_flight_activation_ids = state.in_flight.keys().cloned().collect::<Vec<_>>();
+        let mut suspended_activation_ids = state.suspended.keys().cloned().collect::<Vec<_>>();
         queued_activation_ids.sort();
         in_flight_activation_ids.sort();
+        suspended_activation_ids.sort();
 
         let mut queued_by_class = std::collections::BTreeMap::new();
         for entry in state.queue.iter() {
@@ -246,9 +254,9 @@ impl ActivationAdmissionController {
                 .or_insert(0) += 1;
         }
         let mut in_flight_by_class = std::collections::BTreeMap::new();
-        for class in state.in_flight.values() {
+        for key in state.in_flight.values() {
             *in_flight_by_class
-                .entry(class.as_str().to_string())
+                .entry(key.class.as_str().to_string())
                 .or_insert(0) += 1;
         }
 
@@ -260,24 +268,26 @@ impl ActivationAdmissionController {
             aging_promotion_interval_ms: limits.aging_promotion_interval_ms,
             queued_activation_ids,
             in_flight_activation_ids,
+            suspended_activation_ids,
             waiter_count: state.waiters.len(),
             queued_by_class,
             in_flight_by_class,
         }
     }
 
-    /// Whether this process currently owns the physical execution permit for
-    /// the durable Activation.  This is intentionally narrower than
-    /// [`Self::contains`]: a queued row or waiter is locally known, but only an
-    /// in-flight permit proves that re-dispatching an expired lease would race
-    /// a still-running execution in this Runtime.
+    /// Whether this process still owns the durable Activation execution. A
+    /// suspended parent remains a healthy lease owner even though its physical
+    /// slot is temporarily available to the child primitive it awaits.
     pub fn is_in_flight(&self, id: &str) -> bool {
-        self.lock_state().in_flight.contains_key(id)
+        let state = self.lock_state();
+        state.in_flight.contains_key(id) || state.suspended.contains_key(id)
     }
 
     pub fn contains(&self, id: &str) -> bool {
         let state = self.lock_state();
-        state.in_flight.contains_key(id) || state.queue.iter().any(|entry| entry.key.id == id)
+        state.in_flight.contains_key(id)
+            || state.suspended.contains_key(id)
+            || state.queue.iter().any(|entry| entry.key.id == id)
     }
 
     /// Notification used by the Runtime to refill the bounded window from the
@@ -295,12 +305,15 @@ impl ActivationAdmissionController {
         let id = key.id.clone();
         {
             let mut state = self.lock_state();
-            if state.in_flight.contains_key(&id) || state.waiters.contains(&id) {
+            if state.in_flight.contains_key(&id)
+                || state.suspended.contains_key(&id)
+                || state.waiters.contains(&id)
+            {
                 return Err(ActivationAdmissionError::AlreadyLocal(id));
             }
             if !state.queue.iter().any(|entry| entry.key.id == id) {
                 self.check_queue_capacity(&state, &key)?;
-                state.queue.push(AdmissionEntry::new(key, ()))?;
+                state.queue.push(AdmissionEntry::new(key.clone(), ()))?;
             }
             state.waiters.insert(id.clone());
         }
@@ -344,7 +357,7 @@ impl ActivationAdmissionController {
                         })
                         .expect("peeked admission row must remain selectable under one lock");
                     state.waiters.remove(&id);
-                    state.in_flight.insert(id.clone(), entry.key.class);
+                    state.in_flight.insert(id.clone(), entry.key);
                     true
                 } else {
                     false
@@ -355,7 +368,7 @@ impl ActivationAdmissionController {
                 self.inner.notify_change();
                 return Ok(ActivationAdmissionPermit {
                     inner: Arc::clone(&self.inner),
-                    id,
+                    key,
                     released: false,
                 });
             }
@@ -408,13 +421,39 @@ impl ActivationAdmissionController {
 #[derive(Debug)]
 pub struct ActivationAdmissionPermit {
     inner: Arc<ControllerInner>,
-    id: String,
+    key: AdmissionKey,
     released: bool,
 }
 
 impl ActivationAdmissionPermit {
     pub fn activation_id(&self) -> &str {
-        &self.id
+        &self.key.id
+    }
+
+    /// Temporarily releases physical capacity while the owning Activation is
+    /// durably waiting on a child primitive. The returned handle preserves
+    /// local lease ownership and must be resumed before parent execution
+    /// continues.
+    pub fn suspend(mut self) -> SuspendedActivationAdmission {
+        if !self.released {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.in_flight.remove(&self.key.id);
+            state
+                .suspended
+                .insert(self.key.id.clone(), self.key.clone());
+            self.released = true;
+            drop(state);
+            self.inner.notify_change();
+        }
+        SuspendedActivationAdmission {
+            inner: Arc::clone(&self.inner),
+            key: self.key.clone(),
+            resumed: false,
+        }
     }
 
     fn release(&mut self) {
@@ -427,7 +466,7 @@ impl ActivationAdmissionPermit {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.in_flight.remove(&self.id);
+        state.in_flight.remove(&self.key.id);
         drop(state);
         self.inner.notify_change();
     }
@@ -436,6 +475,118 @@ impl ActivationAdmissionPermit {
 impl Drop for ActivationAdmissionPermit {
     fn drop(&mut self) {
         self.release();
+    }
+}
+
+/// Local ownership token for a running Activation which is waiting on a child
+/// and therefore does not consume admission capacity.
+#[derive(Debug)]
+pub struct SuspendedActivationAdmission {
+    inner: Arc<ControllerInner>,
+    key: AdmissionKey,
+    resumed: bool,
+}
+
+impl SuspendedActivationAdmission {
+    pub async fn resume(mut self) -> Result<ActivationAdmissionPermit, ActivationAdmissionError> {
+        let id = self.key.id.clone();
+        {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !state.suspended.contains_key(&id) {
+                return Err(ActivationAdmissionError::AlreadyLocal(id));
+            }
+            if !state.queue.iter().any(|entry| entry.key.id == id) {
+                // This row already belonged to the local execution window
+                // before suspension, so resumption cannot be rejected merely
+                // because unrelated queued work filled that window meanwhile.
+                state
+                    .queue
+                    .push(AdmissionEntry::new(self.key.clone(), ()))?;
+            }
+            state.waiters.insert(id.clone());
+        }
+        let mut waiting = WaitingRegistration {
+            inner: Arc::clone(&self.inner),
+            id: id.clone(),
+            armed: true,
+        };
+        self.inner.notify_change();
+
+        loop {
+            let changed = self.inner.changed.notified();
+            tokio::pin!(changed);
+            let _ = changed.as_mut().enable();
+            let admitted = {
+                let mut state = self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let waiters = state.waiters.clone();
+                let usage = in_flight_usage(&state.in_flight);
+                let capacity = ReservedLaneCapacity {
+                    total_slots: self.inner.limits.total_slots,
+                    dialogue_delivery_slots: self.inner.limits.dialogue_delivery_slots,
+                };
+                let next_id = state
+                    .queue
+                    .peek_next_where(now_ms(), |candidate, _| {
+                        waiters.contains(&candidate.id)
+                            && reserved_lane_decision(candidate.class, capacity, usage)
+                                == CapacityDecision::Admit
+                    })
+                    .map(|entry| entry.key.id.clone());
+                if next_id.as_deref() == Some(id.as_str()) {
+                    let entry = state
+                        .queue
+                        .pop_next_where(now_ms(), |candidate, _| {
+                            waiters.contains(&candidate.id)
+                                && reserved_lane_decision(candidate.class, capacity, usage)
+                                    == CapacityDecision::Admit
+                        })
+                        .expect("peeked suspended admission must remain selectable");
+                    state.waiters.remove(&id);
+                    state.suspended.remove(&id);
+                    state.in_flight.insert(id.clone(), entry.key);
+                    true
+                } else {
+                    false
+                }
+            };
+            if admitted {
+                waiting.armed = false;
+                self.resumed = true;
+                self.inner.notify_change();
+                return Ok(ActivationAdmissionPermit {
+                    inner: Arc::clone(&self.inner),
+                    key: self.key.clone(),
+                    released: false,
+                });
+            }
+            changed.await;
+        }
+    }
+}
+
+impl Drop for SuspendedActivationAdmission {
+    fn drop(&mut self) {
+        if self.resumed {
+            return;
+        }
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.waiters.remove(&self.key.id);
+        state.queue.remove(&self.key.id);
+        state.suspended.remove(&self.key.id);
+        drop(state);
+        self.inner.notify_change();
     }
 }
 
@@ -463,12 +614,12 @@ impl Drop for WaitingRegistration {
     }
 }
 
-fn in_flight_usage(in_flight: &HashMap<String, AdmissionClass>) -> InFlightUsage {
+fn in_flight_usage(in_flight: &HashMap<String, AdmissionKey>) -> InFlightUsage {
     InFlightUsage {
         total: in_flight.len(),
         dialogue_delivery: in_flight
             .values()
-            .filter(|class| class.uses_reserved_lane())
+            .filter(|key| key.class.uses_reserved_lane())
             .count(),
     }
 }
@@ -552,6 +703,51 @@ mod tests {
             .unwrap()
             .unwrap();
         drop(admitted_background);
+    }
+
+    #[tokio::test]
+    async fn suspended_parent_releases_a_single_slot_and_resumes_after_its_child() {
+        let controller = ActivationAdmissionController::new(limits(1));
+        let parent = controller
+            .acquire(key(
+                "parent",
+                "parent-session",
+                AdmissionClass::InteractiveControl,
+                1,
+            ))
+            .await
+            .unwrap();
+        let suspended = parent.suspend();
+        assert_eq!(controller.in_flight_len(), 0);
+        assert!(controller.is_in_flight("parent"));
+        assert_eq!(
+            controller.snapshot().suspended_activation_ids,
+            ["parent".to_string()]
+        );
+
+        let child = controller
+            .acquire(key(
+                "child",
+                "child-session",
+                AdmissionClass::ScheduledBackground,
+                2,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(controller.in_flight_len(), 1);
+        let resume = tokio::spawn(async move { suspended.resume().await.unwrap() });
+        tokio::task::yield_now().await;
+        assert!(!resume.is_finished());
+
+        drop(child);
+        let parent = tokio::time::timeout(Duration::from_secs(1), resume)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(parent.activation_id(), "parent");
+        assert_eq!(controller.in_flight_len(), 1);
+        assert!(controller.snapshot().suspended_activation_ids.is_empty());
+        drop(parent);
     }
 
     #[tokio::test]

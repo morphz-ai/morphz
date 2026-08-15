@@ -30,6 +30,8 @@ use serde_json::Value as JsonValue;
 use sqlx::postgres::{PgConnection, PgPoolOptions, PgRow};
 use sqlx::{Connection, PgPool, Postgres, QueryBuilder, Row};
 use std::future::Future;
+use std::sync::Arc;
+use tokio::sync::Notify;
 
 type StoreError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -55,6 +57,7 @@ mod thread_group;
 
 pub struct PostgresStore {
     pool: PgPool,
+    edge_command_notify: Arc<Notify>,
 }
 
 impl PostgresStore {
@@ -68,13 +71,22 @@ impl PostgresStore {
             .max_connections(max_connections.max(1))
             .connect(database_url)
             .await?;
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            edge_command_notify: Arc::new(Notify::new()),
+        };
         let migrations = async {
             store.ensure_schema_migrations().await?;
             store
                 .run_versioned_migration(
                     "20260718_01_supported_capabilities",
                     store.migrate_supported_capabilities(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260815_03_session_projection_sequences",
+                    store.migrate_session_projection_sequences(),
                 )
                 .await?;
             store
@@ -228,6 +240,16 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260815_02_recall_whole_document_event_backfill",
                     store.enqueue_recall_whole_document_event_backfill(),
+                )
+                .await?;
+            // These indexes were introduced after the component migrations
+            // above had already shipped. Keep them in a new migration so an
+            // existing PostgreSQL deployment receives the same hot-path
+            // indexes as a newly-created database.
+            store
+                .run_versioned_migration(
+                    "20260815_04_sql_performance_indexes",
+                    store.migrate_sql_performance_indexes(),
                 )
                 .await?;
             // Index creation is retried outside the versioned migration so a
@@ -445,10 +467,13 @@ impl PostgresStore {
             r#"CREATE TABLE IF NOT EXISTS session_projections (
                 event_id TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
                 context_id TEXT NOT NULL,
-                session_id TEXT
+                session_id TEXT,
+                event_sequence BIGINT NOT NULL
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_session_projections_context_session
                ON session_projections(context_id, session_id, event_id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_session_projections_context_session_sequence
+               ON session_projections(context_id, session_id, event_sequence)"#,
             r#"CREATE TABLE IF NOT EXISTS schema_migrations (
                 version TEXT PRIMARY KEY,
                 applied_at TEXT NOT NULL
@@ -1035,8 +1060,9 @@ impl PostgresStore {
     async fn migrate_session_projections(&self) -> Result<(), StoreError> {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            r#"INSERT INTO session_projections (event_id, context_id, session_id)
-               SELECT id, context_id, session_id
+            r#"INSERT INTO session_projections
+               (event_id, context_id, session_id, event_sequence)
+               SELECT id, context_id, session_id, sequence
                FROM events
                WHERE context_id IS NOT NULL
                  AND (session_id IS NOT NULL
@@ -1072,6 +1098,73 @@ impl PostgresStore {
             }
         }
         tx.commit().await?;
+        Ok(())
+    }
+
+    async fn migrate_session_projection_sequences(&self) -> Result<(), StoreError> {
+        sqlx::query(
+            "ALTER TABLE session_projections ADD COLUMN IF NOT EXISTS event_sequence BIGINT",
+        )
+        .execute(&self.pool)
+        .await?;
+        loop {
+            let updated = sqlx::query(
+                r#"WITH page AS (
+                     SELECT event_id FROM session_projections
+                     WHERE event_sequence IS NULL
+                     ORDER BY event_id
+                     LIMIT 1000
+                   )
+                   UPDATE session_projections projection
+                   SET event_sequence = events.sequence
+                   FROM events, page
+                   WHERE projection.event_id = page.event_id
+                     AND events.id = projection.event_id"#,
+            )
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+            if updated == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_session_projections_context_session_sequence
+               ON session_projections(context_id, session_id, event_sequence)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("ALTER TABLE session_projections ALTER COLUMN event_sequence SET NOT NULL")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn migrate_sql_performance_indexes(&self) -> Result<(), StoreError> {
+        for statement in [
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_context_open_created
+               ON threads(context_id, created_at, id) WHERE status = 'open'"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_open_updated
+               ON threads(updated_at, id) WHERE status = 'open'"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_context_active_created
+               ON thread_activations(context_id, created_at, id)
+               WHERE status IN ('queued', 'running')"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_active_updated
+               ON thread_activations(updated_at, id)
+               WHERE status IN ('queued', 'running')"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_context_active_created
+               ON execution_jobs(context_id, created_at, id)
+               WHERE status IN ('queued', 'waiting_approval', 'running')"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_tool_status
+               ON execution_jobs(tool_name, status, created_at, id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_plan_executions_wait_kind
+               ON plan_executions(pending_kind, status, lease_expires_at, created_at, id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_targets_kind_provider_status
+               ON execution_targets(kind, provider_node_id, status, updated_at, id)"#,
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
         Ok(())
     }
 }
@@ -1916,8 +2009,10 @@ async fn project_observation_in_tx(
         .expect("event_has_projection_route 已验证 context_id");
     let session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
     sqlx::query(
-        r#"INSERT INTO session_projections (event_id, context_id, session_id)
-           VALUES ($1, $2, $3) ON CONFLICT(event_id) DO NOTHING"#,
+        r#"INSERT INTO session_projections
+           (event_id, context_id, session_id, event_sequence)
+           SELECT $1, $2, $3, sequence FROM events WHERE id = $1
+           ON CONFLICT(event_id) DO NOTHING"#,
     )
     .bind(&event.id)
     .bind(context_id)
@@ -1997,11 +2092,35 @@ async fn append_direct_thread_signal_in_tx(
     .ok_or_else(|| format!("Direct Thread Signal 目标 Thread '{thread_id}' 不存在"))?;
     let status: String = thread.get("status");
     let signal_id = crate::memory::stable_thread_signal_id(&event.id);
-    if let Some(existing) =
-        sqlx::query("SELECT id, thread_id FROM thread_signals WHERE event_id = $1")
-            .bind(&event.id)
-            .fetch_optional(&mut **tx)
-            .await?
+    let explicit_parent_activation_id = event
+        .payload
+        .get("parent_activation_id")
+        .and_then(JsonValue::as_str)
+        .map(ToOwned::to_owned);
+    let causal_activation_id = event
+        .payload
+        .get("activation_id")
+        .and_then(JsonValue::as_str)
+        .map(ToOwned::to_owned);
+    let parent_activation_id = if explicit_parent_activation_id.is_some() {
+        explicit_parent_activation_id
+    } else if let Some(candidate) = causal_activation_id {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT 1::BIGINT FROM thread_activations WHERE id = $1 LIMIT 1",
+        )
+        .bind(&candidate)
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|_| candidate)
+    } else {
+        None
+    };
+    if let Some(existing) = sqlx::query(
+        "SELECT id, thread_id, parent_activation_id FROM thread_signals WHERE event_id = $1",
+    )
+    .bind(&event.id)
+    .fetch_optional(&mut **tx)
+    .await?
     {
         let existing_id: String = existing.get("id");
         let existing_thread_id: String = existing.get("thread_id");
@@ -2011,6 +2130,28 @@ async fn append_direct_thread_signal_in_tx(
                 event.id
             )
             .into());
+        }
+        let existing_parent_activation_id: Option<String> = existing.get("parent_activation_id");
+        if let Some(parent_activation_id) = parent_activation_id.as_deref() {
+            match existing_parent_activation_id.as_deref() {
+                Some(existing) if existing != parent_activation_id => {
+                    return Err(format!(
+                        "Direct Thread Signal Event '{}' 已绑定不同 parent Activation",
+                        event.id
+                    )
+                    .into());
+                }
+                None => {
+                    sqlx::query(
+                        "UPDATE thread_signals SET parent_activation_id = $1 WHERE id = $2 AND parent_activation_id IS NULL",
+                    )
+                    .bind(parent_activation_id)
+                    .bind(&signal_id)
+                    .execute(&mut **tx)
+                    .await?;
+                }
+                Some(_) => {}
+            }
         }
         return Ok(false);
     }
@@ -2030,7 +2171,7 @@ async fn append_direct_thread_signal_in_tx(
         r#"INSERT INTO thread_signals
            (id, thread_id, thread_generation, event_id, principal_id, sequence, kind,
             parent_activation_id, status, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, 'pending', $8)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9)
            ON CONFLICT DO NOTHING"#,
     )
     .bind(&signal_id)
@@ -2040,6 +2181,7 @@ async fn append_direct_thread_signal_in_tx(
     .bind(&principal_id)
     .bind(sequence)
     .bind(&event.topic)
+    .bind(&parent_activation_id)
     .bind(
         event
             .timestamp
@@ -2048,7 +2190,7 @@ async fn append_direct_thread_signal_in_tx(
     .execute(&mut **tx)
     .await?;
     let stored = sqlx::query(
-        "SELECT id, thread_id, thread_generation, sequence, kind FROM thread_signals WHERE event_id = $1",
+        "SELECT id, thread_id, thread_generation, sequence, kind, parent_activation_id FROM thread_signals WHERE event_id = $1",
     )
     .bind(&event.id)
     .fetch_one(&mut **tx)
@@ -2058,6 +2200,7 @@ async fn append_direct_thread_signal_in_tx(
         || stored.get::<i64, _>("thread_generation") != thread_generation
         || stored.get::<i64, _>("sequence") != sequence
         || stored.get::<String, _>("kind") != event.topic
+        || stored.get::<Option<String>, _>("parent_activation_id") != parent_activation_id
     {
         return Err(format!(
             "Event '{}' 已被不同的 Direct Thread Signal route 占用",
@@ -3224,6 +3367,42 @@ impl ObjectiveStore for PostgresStore {
             .transpose()
     }
 
+    async fn list_objectives_by_ids(
+        &self,
+        context_id: &str,
+        objective_ids: &[String],
+    ) -> Result<Vec<ObjectiveRecord>, StoreError> {
+        let mut records = Vec::new();
+        for objective_ids in objective_ids.chunks(500) {
+            let mut query = QueryBuilder::<Postgres>::new(OBJECTIVE_SELECT);
+            query.push(" WHERE context_id = ").push_bind(context_id);
+            query.push(" AND id IN (");
+            {
+                let mut values = query.separated(", ");
+                for objective_id in objective_ids {
+                    values.push_bind(objective_id);
+                }
+            }
+            query.push(") ORDER BY updated_at DESC, id");
+            records.extend(
+                query
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await?
+                    .iter()
+                    .map(objective_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        records.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(records)
+    }
+
     async fn list_context_objectives(
         &self,
         context_id: &str,
@@ -3233,7 +3412,7 @@ impl ObjectiveStore for PostgresStore {
             format!("{OBJECTIVE_SELECT} WHERE context_id = $1 ORDER BY updated_at DESC")
         } else {
             format!(
-                "{OBJECTIVE_SELECT} WHERE context_id = $1 AND status NOT IN ('completed', 'cancelled', 'failed') ORDER BY updated_at DESC"
+                "{OBJECTIVE_SELECT} WHERE context_id = $1 AND status IN ('active', 'paused', 'blocked') ORDER BY updated_at DESC"
             )
         };
         let rows = sqlx::query(&sql)
@@ -3735,7 +3914,8 @@ impl SessionProjectionStore for PostgresStore {
         include_context_wide: bool,
     ) -> Result<Vec<Event>, StoreError> {
         let mut builder = QueryBuilder::<Postgres>::new(
-            r#"SELECT e.sequence, e.id, e.timestamp, e.actor, e.type, e.topic, e.payload
+            r#"SELECT projection.event_sequence AS sequence, e.id, e.timestamp,
+                      e.actor, e.type, e.topic, e.payload
                FROM session_projections projection
                JOIN events e ON e.id = projection.event_id
                WHERE projection.context_id = "#,
@@ -3758,7 +3938,7 @@ impl SessionProjectionStore for PostgresStore {
         } else if !include_context_wide {
             builder.push("FALSE");
         }
-        builder.push(") ORDER BY e.sequence ASC");
+        builder.push(") ORDER BY projection.event_sequence ASC");
         builder
             .build()
             .fetch_all(&self.pool)

@@ -257,6 +257,31 @@ impl SchedulerDependencyStore for PostgresStore {
             .collect()
     }
 
+    async fn list_scheduler_dependencies_for_owners(
+        &self,
+        owner_kind: SchedulerDependencyOwnerKind,
+        owner_ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, StoreError> {
+        if owner_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<Postgres>::new(
+            "SELECT * FROM scheduler_dependencies WHERE owner_kind = ",
+        );
+        query
+            .push_bind(owner_kind.as_str())
+            .push(" AND owner_id IN (");
+        {
+            let mut values = query.separated(", ");
+            for owner_id in owner_ids {
+                values.push_bind(owner_id);
+            }
+        }
+        query.push(") ORDER BY created_at, id");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(dependency_from_row).collect()
+    }
+
     async fn satisfy_scheduler_dependency(
         &self,
         id: &str,

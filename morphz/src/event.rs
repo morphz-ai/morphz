@@ -315,7 +315,7 @@ impl InMemoryEventBus {
     }
 
     pub async fn publish(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.publish_with_durability(ev, true).await
+        self.publish_with_options(ev, true, false).await
     }
 
     /// Delivers transient UI/progress events without crossing the durable
@@ -326,7 +326,7 @@ impl InMemoryEventBus {
         &self,
         ev: Event,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.publish_with_durability(ev, false).await
+        self.publish_with_options(ev, false, false).await
     }
 
     /// Dispatch a durable fact that was committed atomically by another store
@@ -336,13 +336,29 @@ impl InMemoryEventBus {
         &self,
         ev: Event,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.publish_with_durability(ev, false).await
+        self.publish_with_options(ev, false, false).await
     }
 
-    async fn publish_with_durability(
+    /// Dispatch an already-durable child handoff from a business handler that
+    /// remains alive while it waits for that child. The child must not queue
+    /// behind the parent's global business-handler permit, otherwise a
+    /// saturated EventBus can deadlock the durable parent/child dependency.
+    ///
+    /// This only bypasses the process-local concurrency semaphore. Durable
+    /// persistence, per-subscription/Event de-duplication, audit listeners,
+    /// and the child's own admission controls remain unchanged.
+    pub(crate) async fn dispatch_persisted_child_handoff(
+        &self,
+        ev: Event,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.publish_with_options(ev, false, true).await
+    }
+
+    async fn publish_with_options(
         &self,
         ev: Event,
         durable: bool,
+        bypass_async_limit: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut durable_subs = Vec::new();
         let mut durable_writer_subs = Vec::new();
@@ -426,7 +442,11 @@ impl InMemoryEventBus {
                     in_flight,
                     key: dispatch_key,
                 };
-                if let Ok(permit) = semaphore.acquire_owned().await {
+                if bypass_async_limit {
+                    if let Err(err) = handler(ev_clone).await {
+                        err_handler(err, ev_clone_for_err);
+                    }
+                } else if let Ok(permit) = semaphore.acquire_owned().await {
                     let _permit = permit;
                     if let Err(err) = handler(ev_clone).await {
                         err_handler(err, ev_clone_for_err);

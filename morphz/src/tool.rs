@@ -1071,16 +1071,10 @@ impl BackgroundTaskScheduler {
         };
         let jobs = manager
             .store()
-            .list_execution_jobs(ExecutionJobFilter {
-                include_terminal: true,
-                ..Default::default()
-            })
+            .list_terminal_execution_jobs_needing_signal("exec/background")
             .await?;
         let mut armed = 0;
         for job in jobs {
-            if job.tool_name != "exec/background" || !job.status.is_terminal() {
-                continue;
-            }
             if let Some(sessions) = self.sessions.as_ref() {
                 let Some(thread) = sessions.get_thread(&job.thread_id).await? else {
                     tracing::warn!(
@@ -1159,13 +1153,13 @@ impl BackgroundTaskScheduler {
             .list_execution_jobs(ExecutionJobFilter {
                 context_id: (!context_id.is_empty()).then(|| context_id.to_string()),
                 session_id: session_id.map(ToOwned::to_owned),
+                tool_name: Some("exec/background".to_string()),
                 include_terminal: include_finished,
                 ..Default::default()
             })
             .await?;
         let mut snapshots = jobs
             .into_iter()
-            .filter(|job| job.tool_name == "exec/background")
             .map(|job| {
                 let live = get_tasks_map().get(&job.id);
                 background_execution_snapshot(&job, live.as_deref())
@@ -1601,22 +1595,30 @@ impl ThreadScheduler {
     }
 
     pub async fn recover(self: &Arc<Self>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let schedules = self.sessions.list_schedules(None, None).await?;
-        let queued = schedules
-            .iter()
-            .filter(|intent| intent.status == ScheduleStatus::Queued)
-            .cloned()
-            .collect::<Vec<_>>();
+        let queued = self
+            .sessions
+            .list_schedules(None, Some(ScheduleStatus::Queued))
+            .await?;
         // The owner row is authoritative. A crash may happen after pause or
         // cancel commits but before its timer is cancelled; proactively clean
-        // those generations before the Timer Engine starts. A timer which was
-        // already claimed is still harmless because dispatch_timer fences on
-        // both owner status and revision.
-        for intent in schedules
-            .iter()
-            .filter(|intent| intent.status != ScheduleStatus::Queued)
+        // only physically live Schedule timers before the Timer Engine starts.
+        // Historical Schedule rows and fired/cancelled Timer rows are not a
+        // recovery work set and must not be read on every startup.
+        for timer in self
+            .timers
+            .list_live()
+            .await?
+            .into_iter()
+            .filter(|timer| timer.kind == RuntimeTimerKind::Schedule)
         {
-            self.timers.cancel(&schedule_timer_id(&intent.id)).await?;
+            let owner_is_queued = self
+                .sessions
+                .get_schedule(&timer.owner_id)
+                .await?
+                .is_some_and(|intent| intent.status == ScheduleStatus::Queued);
+            if !owner_is_queued {
+                self.timers.cancel(&timer.id).await?;
+            }
         }
         // Close the crash window between a dependency Thread's terminal
         // commit and its in-process notification. Replaying terminal
@@ -1651,39 +1653,22 @@ impl ThreadScheduler {
         // A crash may happen after the schedule occurrence and its wake Event
         // commit atomically but before in-process dispatch. Re-dispatch is safe:
         // trigger_event_id is unique and Thread Activation claiming is idempotent.
-        for event in self
-            .events
-            .query(QueryFilter {
-                topic: Some("chat/schedule_due".to_string()),
-                ..Default::default()
-            })
-            .await?
-        {
+        for event in self.sessions.list_undelivered_schedule_events().await? {
             let root_turn_id = event
                 .payload
                 .get("root_turn_id")
                 .and_then(|value| value.as_str());
-            let terminal = match root_turn_id {
-                Some(root) => self
-                    .sessions
-                    .get_thread_by_root(root)
-                    .await?
-                    .is_some_and(|thread| thread.lifecycle.is_terminal()),
-                None => true,
-            };
-            if !terminal {
-                let root = root_turn_id
-                    .ok_or_else(|| format!("Schedule Event '{}' 缺少 root_turn_id", event.id))?;
-                let thread = self
-                    .sessions
-                    .get_thread_by_root(root)
-                    .await?
-                    .ok_or_else(|| format!("Schedule Event '{}' 缺少权威 Thread", event.id))?;
-                self.events
-                    .append_to_thread(event.clone(), &thread.id)
-                    .await?;
-                self.bus.dispatch_persisted(event).await?;
-            }
+            let root = root_turn_id
+                .ok_or_else(|| format!("Schedule Event '{}' 缺少 root_turn_id", event.id))?;
+            let thread = self
+                .sessions
+                .get_thread_by_root(root)
+                .await?
+                .ok_or_else(|| format!("Schedule Event '{}' 缺少权威 Thread", event.id))?;
+            self.events
+                .append_to_thread(event.clone(), &thread.id)
+                .await?;
+            self.bus.dispatch_persisted(event).await?;
         }
         Ok(())
     }

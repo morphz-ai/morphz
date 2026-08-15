@@ -911,6 +911,11 @@ pub enum ActivationOutcomeCommit {
         /// the same transaction. The Runtime only has to notify the live
         /// executor; it must not infer or materialize another route.
         ready_signal_event_ids: Vec<String>,
+        /// Durable control-plane Events whose projection transition completed
+        /// in the same transaction. They do not route through a Thread Signal,
+        /// but their process-local supervisors still need an idempotent wake
+        /// notification after the commit point.
+        ready_supervisor_event_ids: Vec<String>,
     },
     /// The physical Activation reached a durable Provider-recovery boundary,
     /// but its logical Thread remains open. The same transaction appends the
@@ -1422,7 +1427,13 @@ pub struct ExecutionTargetRegistration {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionTargetFilter {
     pub owner_principal_id: Option<String>,
+    pub owner_principal_is_null: bool,
+    /// Includes unowned shared Targets as well as those owned by this
+    /// Principal. This is distinct from the exact owner filter above.
+    pub visible_to_principal_id: Option<String>,
     pub provider_node_id: Option<String>,
+    pub provider_node_is_null: bool,
+    pub kind: Option<ExecutionTargetKind>,
     pub status: Option<ExecutionTargetStatus>,
     pub limit: Option<usize>,
 }
@@ -1866,6 +1877,12 @@ pub trait EdgeExecutionStore: Send + Sync {
         &self,
         command: NewEdgeCommand,
     ) -> Result<EdgeCommandRecord, Box<dyn std::error::Error + Send + Sync>>;
+    /// Waits for a process-local Edge queue change. Durable stores may use a
+    /// database notification for cross-process producers; the default sleep
+    /// remains a low-frequency recovery fallback for lightweight stores.
+    async fn wait_for_edge_command_change(&self, timeout: std::time::Duration) {
+        tokio::time::sleep(timeout).await;
+    }
     async fn get_edge_command(
         &self,
         job_id: &str,
@@ -2185,6 +2202,8 @@ pub struct PlanExecutionFilter {
     pub harness_version: Option<String>,
     pub source_artifact_hash: Option<String>,
     pub status: Option<PlanExecutionStatus>,
+    pub pending_kind: Option<PlanExecutionWaitKind>,
+    pub lease_expires_at_or_before: Option<DateTime<Utc>>,
     pub include_terminal: bool,
     pub limit: Option<usize>,
 }
@@ -2239,6 +2258,10 @@ pub struct ExecutionJobFilter {
     pub thread_id: Option<String>,
     pub activation_id: Option<String>,
     pub target_id: Option<String>,
+    /// Exact physical tool identity.  Recovery and operator projections must
+    /// push this predicate into the Store instead of reading every Job and
+    /// filtering the durable history in memory.
+    pub tool_name: Option<String>,
     pub status: Option<ExecutionJobStatus>,
     /// When no exact status is selected, terminal rows are omitted by default.
     pub include_terminal: bool,
@@ -4262,6 +4285,46 @@ pub trait ExecutionJobStore: Send + Sync {
         &self,
         filter: ExecutionJobFilter,
     ) -> Result<Vec<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Exact Job projection for a bounded Activation aggregate. Production
+    /// stores override this with one indexed `IN` query.
+    async fn list_execution_jobs_for_activations(
+        &self,
+        context_id: &str,
+        activation_ids: &[String],
+    ) -> Result<Vec<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if activation_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: Some(context_id.to_string()),
+                include_terminal: true,
+                ..ExecutionJobFilter::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|job| activation_ids.contains(&job.activation_id))
+            .collect())
+    }
+    /// Terminal result outboxes which still need their one deterministic
+    /// directed Signal. Production stores implement this as an anti-join over
+    /// open Threads and `thread_signals`, keeping startup recovery proportional
+    /// to unresolved crash windows rather than all historical Jobs.
+    async fn list_terminal_execution_jobs_needing_signal(
+        &self,
+        tool_name: &str,
+    ) -> Result<Vec<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_execution_jobs(ExecutionJobFilter {
+                tool_name: Some(tool_name.to_string()),
+                include_terminal: true,
+                ..ExecutionJobFilter::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|job| job.status.is_terminal() && job.result_event_id.is_some())
+            .collect())
+    }
     /// Claims a queued Job, or consumes a waiting-approval Job when a durable
     /// approval reference is supplied. Running Jobs are never stolen merely
     /// because their lease expired; recovery must first reconcile them.
@@ -4410,6 +4473,22 @@ pub trait ApprovalStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Approval authorities for an already selected Job aggregate.
+    async fn list_job_approvals(
+        &self,
+        context_id: &str,
+        job_ids: &[String],
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if job_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .list_context_approvals(context_id)
+            .await?
+            .into_iter()
+            .filter(|approval| job_ids.contains(&approval.job_id))
+            .collect())
+    }
     /// Atomically commits a revision-fenced allow/deny decision and its
     /// deterministic `runtime/approval_decision` Event. An exact retry of a
     /// committed decision returns `Existing` and repairs a missing Event; an
@@ -4704,10 +4783,48 @@ pub trait ActivationStore: Send + Sync {
         context_id: &str,
         status: Option<ThreadSignalStatus>,
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Batch mailbox projection for an already selected Thread aggregate.
+    /// Store implementations should override this with one indexed query;
+    /// the default preserves compatibility for test stores.
+    async fn list_context_thread_signals_for_threads(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+        status: Option<ThreadSignalStatus>,
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .list_context_thread_signals(context_id, status)
+            .await?
+            .into_iter()
+            .filter(|signal| thread_ids.contains(&signal.thread_id))
+            .collect())
+    }
     async fn list_activation_signals(
         &self,
         activation_id: &str,
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Reads every Activation -> Signal binding for a selected aggregate in a
+    /// single store round trip. The Activation ID is returned alongside the
+    /// Signal because one immutable mailbox item may participate in different
+    /// historical projections.
+    async fn list_activation_signals_for_activations(
+        &self,
+        activation_ids: &[String],
+    ) -> Result<Vec<(String, ThreadSignalRecord)>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = Vec::new();
+        for activation_id in activation_ids {
+            records.extend(
+                self.list_activation_signals(activation_id)
+                    .await?
+                    .into_iter()
+                    .map(|signal| (activation_id.clone(), signal)),
+            );
+        }
+        Ok(records)
+    }
     /// Atomically transfers responsibility for the selected pending mailbox
     /// Signals to one running Activation. Event IDs without a Thread Signal
     /// are ignored because non-waking Tool Outputs are semantic observations,
@@ -4734,6 +4851,22 @@ pub trait ActivationStore: Send + Sync {
         &self,
         id: &str,
     ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Exact Activation parents for an already-selected scheduler aggregate.
+    async fn list_thread_activations_by_ids(
+        &self,
+        context_id: &str,
+        activation_ids: &[String],
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = Vec::new();
+        for activation_id in activation_ids {
+            if let Some(activation) = self.get_thread_activation(activation_id).await? {
+                if activation.context_id == context_id {
+                    records.push(activation);
+                }
+            }
+        }
+        Ok(records)
+    }
     async fn list_context_thread_activations(
         &self,
         context_id: &str,
@@ -4777,6 +4910,55 @@ pub trait ActivationStore: Send + Sync {
             .into_iter()
             .filter(|activation| activation.root_turn_id == root_turn_id)
             .collect())
+    }
+    /// Exact aggregate read for a bounded set of Thread roots. Production
+    /// stores override this with one query so Dashboard history never becomes
+    /// one query per Thread.
+    async fn list_thread_activations_by_roots(
+        &self,
+        context_id: &str,
+        root_turn_ids: &[String],
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = Vec::new();
+        for root_turn_id in root_turn_ids {
+            records.extend(
+                self.list_thread_activations_by_root(context_id, root_turn_id)
+                    .await?,
+            );
+        }
+        Ok(records)
+    }
+    /// Bounded Scheduler-board aggregate: every live Activation plus the most
+    /// recent terminal history for each selected Thread root. Deep Thread
+    /// inspection continues to use the exact unbounded method above.
+    async fn list_scheduler_thread_activations_by_roots(
+        &self,
+        context_id: &str,
+        root_turn_ids: &[String],
+        terminal_limit_per_root: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = self
+            .list_thread_activations_by_roots(context_id, root_turn_ids)
+            .await?;
+        records.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        let mut terminal_counts = std::collections::HashMap::<String, usize>::new();
+        records.retain(|activation| {
+            if !activation.status.is_terminal() {
+                return true;
+            }
+            let count = terminal_counts
+                .entry(activation.root_turn_id.clone())
+                .or_default();
+            let retain = *count < terminal_limit_per_root;
+            *count = count.saturating_add(1);
+            retain
+        });
+        Ok(records)
     }
     /// Bounded global scheduler projection used by Runtime-level operator
     /// surfaces. It never scans the Event Ledger.
@@ -4994,18 +5176,78 @@ pub trait ThreadGroupStore: Send + Sync {
         &self,
         filter: ThreadGroupFilter,
     ) -> Result<Vec<ThreadGroupRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_thread_groups_by_ids(
+        &self,
+        context_id: &str,
+        group_ids: &[String],
+    ) -> Result<Vec<ThreadGroupRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut groups = Vec::new();
+        for group_id in group_ids {
+            if let Some(group) = self.get_thread_group(group_id).await? {
+                if group.context_id == context_id {
+                    groups.push(group);
+                }
+            }
+        }
+        Ok(groups)
+    }
     async fn list_thread_group_members(
         &self,
         group_id: &str,
     ) -> Result<Vec<ThreadGroupMemberRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_thread_group_members_for_groups(
+        &self,
+        group_ids: &[String],
+    ) -> Result<Vec<(String, ThreadGroupMemberRecord)>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let mut records = Vec::new();
+        for group_id in group_ids {
+            records.extend(
+                self.list_thread_group_members(group_id)
+                    .await?
+                    .into_iter()
+                    .map(|member| (group_id.clone(), member)),
+            );
+        }
+        Ok(records)
+    }
     async fn get_thread_outcome(
         &self,
         thread_id: &str,
     ) -> Result<Option<ThreadOutcomeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Outcomes for a bounded Thread aggregate. Production stores override
+    /// this with one indexed query.
+    async fn list_thread_outcomes(
+        &self,
+        thread_ids: &[String],
+    ) -> Result<Vec<ThreadOutcomeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut outcomes = Vec::new();
+        for thread_id in thread_ids {
+            if let Some(outcome) = self.get_thread_outcome(thread_id).await? {
+                outcomes.push(outcome);
+            }
+        }
+        Ok(outcomes)
+    }
     async fn list_thread_group_outcomes(
         &self,
         group_id: &str,
     ) -> Result<Vec<ThreadOutcomeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_thread_group_outcomes_for_groups(
+        &self,
+        group_ids: &[String],
+    ) -> Result<Vec<(String, ThreadOutcomeRecord)>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = Vec::new();
+        for group_id in group_ids {
+            records.extend(
+                self.list_thread_group_outcomes(group_id)
+                    .await?
+                    .into_iter()
+                    .map(|outcome| (group_id.clone(), outcome)),
+            );
+        }
+        Ok(records)
+    }
 }
 
 /// Stable Thread lifecycle and completion-delivery projection.
@@ -5023,6 +5265,38 @@ pub trait ThreadStore: Send + Sync {
         &self,
         root_turn_id: &str,
     ) -> Result<Option<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Exact parent rows for an already-selected scheduler aggregate.
+    async fn list_threads_by_ids(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = Vec::new();
+        for thread_id in thread_ids {
+            if let Some(thread) = self.get_thread(thread_id).await? {
+                if thread.context_id == context_id {
+                    records.push(thread);
+                }
+            }
+        }
+        Ok(records)
+    }
+    /// Exact Thread parents for a bounded set of Activation roots.
+    async fn list_threads_by_roots(
+        &self,
+        context_id: &str,
+        root_turn_ids: &[String],
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = Vec::new();
+        for root_turn_id in root_turn_ids {
+            if let Some(thread) = self.get_thread_by_root(root_turn_id).await? {
+                if thread.context_id == context_id {
+                    records.push(thread);
+                }
+            }
+        }
+        Ok(records)
+    }
     async fn list_context_threads(
         &self,
         context_id: &str,
@@ -5201,6 +5475,15 @@ pub trait ScheduleStore: Send + Sync {
         thread_id: Option<&str>,
         status: Option<ScheduleStatus>,
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Schedule occurrences committed before a crash but not yet delivered to
+    /// their still-open Thread. Production stores implement this as an indexed
+    /// Event/Thread/Signal anti-join, so restart recovery never scans all
+    /// historical `chat/schedule_due` Events.
+    async fn list_undelivered_schedule_events(
+        &self,
+    ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Vec::new())
+    }
     /// Context-scoped schedule projection used by observability surfaces.
     /// The ownership join belongs in SQLite so one Context never scans every
     /// other Agent's scheduled work.
@@ -5208,6 +5491,22 @@ pub trait ScheduleStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Schedule projection for an already selected Thread aggregate.
+    async fn list_thread_schedules(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .list_context_schedules(context_id)
+            .await?
+            .into_iter()
+            .filter(|schedule| thread_ids.contains(&schedule.thread_id))
+            .collect())
+    }
     /// Advance every queued schedule which names `dependency_thread_id` in
     /// the persistent reverse dependency index. The revision bump fences any
     /// timer generation that may already be claimed while the dependency
@@ -5338,6 +5637,22 @@ pub trait ObjectiveStore: Send + Sync {
         &self,
         id: &str,
     ) -> Result<Option<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Exact Objective parents for an already-selected scheduler aggregate.
+    async fn list_objectives_by_ids(
+        &self,
+        context_id: &str,
+        objective_ids: &[String],
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = Vec::new();
+        for objective_id in objective_ids {
+            if let Some(objective) = self.get_objective(objective_id).await? {
+                if objective.context_id == context_id {
+                    records.push(objective);
+                }
+            }
+        }
+        Ok(records)
+    }
     async fn list_context_objectives(
         &self,
         context_id: &str,

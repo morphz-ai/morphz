@@ -13,7 +13,7 @@ use crate::memory::{
 use chrono::Duration;
 use serde_json::{json, Value as JsonValue};
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
@@ -32,6 +32,10 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON threads(context_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_context_updated
            ON threads(context_id, updated_at DESC, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_context_open_created
+           ON threads(context_id, created_at, id) WHERE status = 'open'"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_open_updated
+           ON threads(updated_at DESC, id) WHERE status = 'open'"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_session_delivery
            ON threads(session_id, delivery_status, updated_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_session_status
@@ -303,6 +307,76 @@ impl ThreadStore for PostgresStore {
             .transpose()
     }
 
+    async fn list_threads_by_ids(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        let mut records = Vec::new();
+        for thread_ids in thread_ids.chunks(500) {
+            let mut query =
+                QueryBuilder::<Postgres>::new("SELECT * FROM threads WHERE context_id = ");
+            query.push_bind(context_id).push(" AND id IN (");
+            {
+                let mut values = query.separated(", ");
+                for thread_id in thread_ids {
+                    values.push_bind(thread_id);
+                }
+            }
+            query.push(") ORDER BY created_at, id");
+            records.extend(
+                query
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await?
+                    .iter()
+                    .map(thread_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        records.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(records)
+    }
+
+    async fn list_threads_by_roots(
+        &self,
+        context_id: &str,
+        root_turn_ids: &[String],
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        let mut records = Vec::new();
+        for root_turn_ids in root_turn_ids.chunks(500) {
+            let mut query =
+                QueryBuilder::<Postgres>::new("SELECT * FROM threads WHERE context_id = ");
+            query.push_bind(context_id).push(" AND root_turn_id IN (");
+            {
+                let mut values = query.separated(", ");
+                for root_turn_id in root_turn_ids {
+                    values.push_bind(root_turn_id);
+                }
+            }
+            query.push(") ORDER BY created_at, id");
+            records.extend(
+                query
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await?
+                    .iter()
+                    .map(thread_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        records.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(records)
+    }
+
     async fn list_context_threads(
         &self,
         context_id: &str,
@@ -316,7 +390,7 @@ impl ThreadStore for PostgresStore {
         } else {
             sqlx::query(
                 r#"SELECT * FROM threads WHERE context_id = $1
-                   AND status NOT IN ('completed', 'failed', 'cancelled')
+                   AND status = 'open'
                    ORDER BY created_at, id"#,
             )
             .bind(context_id)
@@ -354,7 +428,7 @@ impl ThreadStore for PostgresStore {
         let rows = sqlx::query(
             r#"SELECT *
                FROM threads
-               WHERE status NOT IN ('completed', 'failed', 'cancelled')
+               WHERE status = 'open'
                ORDER BY updated_at DESC, id
                LIMIT $1"#,
         )

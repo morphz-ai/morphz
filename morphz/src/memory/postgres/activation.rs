@@ -18,7 +18,7 @@ use crate::scheduler::{
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 use std::collections::HashSet;
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
@@ -32,6 +32,12 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON thread_activations(context_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_context_updated
            ON thread_activations(context_id, updated_at DESC, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_context_active_created
+           ON thread_activations(context_id, created_at, id)
+           WHERE status IN ('queued', 'running')"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_active_updated
+           ON thread_activations(updated_at DESC, id)
+           WHERE status IN ('queued', 'running')"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_lease
            ON thread_activations(status, lease_expires_at)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_root_turn
@@ -371,6 +377,20 @@ impl ActivationStore for PostgresStore {
                     .fetch_one(&mut *tx)
                     .await?;
         }
+        if stored_signal.parent_activation_id.is_none() && signal.parent_activation_id.is_some() {
+            sqlx::query(
+                "UPDATE thread_signals SET parent_activation_id = $1 WHERE id = $2 AND parent_activation_id IS NULL",
+            )
+            .bind(&signal.parent_activation_id)
+            .bind(&stored_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            stored_signal.parent_activation_id =
+                sqlx::query_scalar("SELECT parent_activation_id FROM thread_signals WHERE id = $1")
+                    .bind(&stored_signal.id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+        }
         let routed_generation: i64 =
             sqlx::query_scalar("SELECT generation FROM threads WHERE id = $1 FOR UPDATE")
                 .bind(&stored_signal.thread_id)
@@ -416,6 +436,15 @@ impl ActivationStore for PostgresStore {
         if signal.principal_id.is_some() && stored_signal.principal_id != signal.principal_id {
             return Err(format!(
                 "Event '{}' 的 Thread Signal Principal 不一致",
+                signal.event_id
+            )
+            .into());
+        }
+        if signal.parent_activation_id.is_some()
+            && stored_signal.parent_activation_id != signal.parent_activation_id
+        {
+            return Err(format!(
+                "Event '{}' 的 Thread Signal parent Activation 不一致",
                 signal.event_id
             )
             .into());
@@ -840,6 +869,38 @@ impl ActivationStore for PostgresStore {
         rows.iter().map(signal_from_row).collect()
     }
 
+    async fn list_context_thread_signals_for_threads(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+        status: Option<ThreadSignalStatus>,
+    ) -> Result<Vec<ThreadSignalRecord>, StoreError> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<Postgres>::new(
+            "SELECT signals.* FROM thread_signals signals JOIN threads ON threads.id = signals.thread_id WHERE threads.context_id = ",
+        );
+        query
+            .push_bind(context_id)
+            .push(" AND signals.thread_id IN (");
+        {
+            let mut values = query.separated(", ");
+            for thread_id in thread_ids {
+                values.push_bind(thread_id);
+            }
+        }
+        query.push(")");
+        if let Some(status) = status {
+            query
+                .push(" AND signals.status = ")
+                .push_bind(status.as_str());
+        }
+        query.push(" ORDER BY signals.sequence, signals.id");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(signal_from_row).collect()
+    }
+
     async fn list_activation_signals(
         &self,
         activation_id: &str,
@@ -855,6 +916,35 @@ impl ActivationStore for PostgresStore {
         .iter()
         .map(signal_from_row)
         .collect()
+    }
+
+    async fn list_activation_signals_for_activations(
+        &self,
+        activation_ids: &[String],
+    ) -> Result<Vec<(String, ThreadSignalRecord)>, StoreError> {
+        if activation_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut records = Vec::new();
+        for activation_ids in activation_ids.chunks(500) {
+            let mut query = QueryBuilder::<Postgres>::new(
+                "SELECT links.activation_id AS link_activation_id, signals.* FROM activation_signals links JOIN thread_signals signals ON signals.id = links.signal_id WHERE links.activation_id IN (",
+            );
+            {
+                let mut values = query.separated(", ");
+                for activation_id in activation_ids {
+                    values.push_bind(activation_id);
+                }
+            }
+            query.push(") ORDER BY links.activation_id, links.ordinal");
+            for row in query.build().fetch_all(&self.pool).await? {
+                records.push((
+                    row.try_get::<String, _>("link_activation_id")?,
+                    signal_from_row(&row)?,
+                ));
+            }
+        }
+        Ok(records)
     }
 
     async fn bind_activation_input_signals(
@@ -1096,6 +1186,42 @@ impl ActivationStore for PostgresStore {
             .transpose()
     }
 
+    async fn list_thread_activations_by_ids(
+        &self,
+        context_id: &str,
+        activation_ids: &[String],
+    ) -> Result<Vec<ThreadActivationRecord>, StoreError> {
+        let mut records = Vec::new();
+        for activation_ids in activation_ids.chunks(500) {
+            let mut query = QueryBuilder::<Postgres>::new(
+                "SELECT * FROM thread_activations WHERE context_id = ",
+            );
+            query.push_bind(context_id).push(" AND id IN (");
+            {
+                let mut values = query.separated(", ");
+                for activation_id in activation_ids {
+                    values.push_bind(activation_id);
+                }
+            }
+            query.push(") ORDER BY created_at, id");
+            records.extend(
+                query
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await?
+                    .iter()
+                    .map(activation_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        records.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(records)
+    }
+
     async fn list_context_thread_activations(
         &self,
         context_id: &str,
@@ -1111,7 +1237,7 @@ impl ActivationStore for PostgresStore {
         } else {
             sqlx::query(
                 r#"SELECT * FROM thread_activations WHERE context_id = $1
-                   AND status NOT IN ('completed', 'cancelled', 'failed')
+                   AND status IN ('queued', 'running')
                    ORDER BY created_at, id"#,
             )
             .bind(context_id)
@@ -1159,6 +1285,70 @@ impl ActivationStore for PostgresStore {
         rows.iter().map(activation_from_row).collect()
     }
 
+    async fn list_thread_activations_by_roots(
+        &self,
+        context_id: &str,
+        root_turn_ids: &[String],
+    ) -> Result<Vec<ThreadActivationRecord>, StoreError> {
+        if root_turn_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query =
+            QueryBuilder::<Postgres>::new("SELECT * FROM thread_activations WHERE context_id = ");
+        query.push_bind(context_id).push(" AND root_turn_id IN (");
+        {
+            let mut values = query.separated(", ");
+            for root_turn_id in root_turn_ids {
+                values.push_bind(root_turn_id);
+            }
+        }
+        query.push(") ORDER BY created_at, id");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(activation_from_row).collect()
+    }
+
+    async fn list_scheduler_thread_activations_by_roots(
+        &self,
+        context_id: &str,
+        root_turn_ids: &[String],
+        terminal_limit_per_root: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, StoreError> {
+        if root_turn_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<Postgres>::new(
+            "WITH selected AS MATERIALIZED (SELECT * FROM thread_activations WHERE context_id = ",
+        );
+        query.push_bind(context_id).push(" AND root_turn_id IN (");
+        {
+            let mut values = query.separated(", ");
+            for root_turn_id in root_turn_ids {
+                values.push_bind(root_turn_id);
+            }
+        }
+        query.push(
+            r#")), terminal_page AS (
+                 SELECT id FROM (
+                   SELECT id,
+                          ROW_NUMBER() OVER (
+                            PARTITION BY root_turn_id
+                            ORDER BY updated_at DESC, id DESC
+                          ) AS terminal_rank
+                   FROM selected
+                   WHERE status IN ('completed', 'cancelled', 'failed')
+                 ) ranked WHERE terminal_rank <= "#,
+        );
+        query.push_bind(i64::try_from(terminal_limit_per_root)?);
+        query.push(
+            r#") SELECT * FROM selected
+                WHERE status IN ('queued', 'running')
+                   OR id IN (SELECT id FROM terminal_page)
+                ORDER BY created_at, id"#,
+        );
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(activation_from_row).collect()
+    }
+
     async fn list_active_thread_activations(
         &self,
         limit: usize,
@@ -1169,7 +1359,7 @@ impl ActivationStore for PostgresStore {
         let rows = sqlx::query(
             r#"SELECT *
                FROM thread_activations
-               WHERE status NOT IN ('completed', 'cancelled', 'failed')
+               WHERE status IN ('queued', 'running')
                ORDER BY updated_at DESC, id
                LIMIT $1"#,
         )
@@ -2011,6 +2201,7 @@ impl ActivationStore for PostgresStore {
             tx.commit().await?;
             return Ok(ActivationOutcomeCommit::Committed {
                 ready_signal_event_ids: Vec::new(),
+                ready_supervisor_event_ids: Vec::new(),
             });
         }
         let check_results = completion.check_results;
@@ -2110,6 +2301,7 @@ impl ActivationStore for PostgresStore {
         .execute(&mut *tx)
         .await?;
         let mut ready_signal_event_ids = Vec::new();
+        let mut ready_supervisor_event_ids = Vec::new();
         if let Some(group_id) = thread_group_id.as_deref() {
             let member_status = match terminal_kind {
                 "completed" if completion.passed => "completed",
@@ -2365,6 +2557,12 @@ impl ActivationStore for PostgresStore {
                         payload,
                     );
                     append_event_in_tx(&mut tx, &barrier).await?;
+                    if matches!(
+                        supervisor_kind,
+                        ThreadSupervisorKind::Objective | ThreadSupervisorKind::Runtime
+                    ) {
+                        ready_supervisor_event_ids.push(barrier.id.clone());
+                    }
                     let group_generation = group.get::<i64, _>("generation");
                     sqlx::query(
                         r#"UPDATE scheduler_dependencies
@@ -2562,6 +2760,11 @@ impl ActivationStore for PostgresStore {
                     append_direct_thread_signal_in_tx(&mut tx, &terminal_event, target_thread_id)
                         .await?;
                     ready_signal_event_ids.push(terminal_event.id.clone());
+                } else if matches!(
+                    supervisor_kind,
+                    ThreadSupervisorKind::Objective | ThreadSupervisorKind::Runtime
+                ) {
+                    ready_supervisor_event_ids.push(terminal_event.id.clone());
                 }
             }
         }
@@ -2664,6 +2867,7 @@ impl ActivationStore for PostgresStore {
         tx.commit().await?;
         Ok(ActivationOutcomeCommit::Committed {
             ready_signal_event_ids,
+            ready_supervisor_event_ids,
         })
     }
 

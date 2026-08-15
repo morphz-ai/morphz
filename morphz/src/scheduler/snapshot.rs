@@ -119,7 +119,7 @@ pub struct SchedulerAdmissionSnapshot {
     pub context_deferred: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchedulerSummary {
     pub open_threads: usize,
     pub pending_signals: usize,

@@ -1017,7 +1017,8 @@ where
             .await
             .unwrap(),
         ActivationOutcomeCommit::Committed {
-            ready_signal_event_ids: Vec::new()
+            ready_signal_event_ids: Vec::new(),
+            ready_supervisor_event_ids: Vec::new()
         }
     );
     assert_eq!(
@@ -3059,7 +3060,8 @@ where
             .await
             .unwrap(),
         ActivationOutcomeCommit::Committed {
-            ready_signal_event_ids: Vec::new()
+            ready_signal_event_ids: Vec::new(),
+            ready_supervisor_event_ids: Vec::new()
         }
     );
     assert_eq!(
@@ -4950,10 +4952,34 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260731_01_scheduler_dependencies",
         "20260815_01_recall_whole_document_index",
         "20260815_02_recall_whole_document_event_backfill",
+        "20260815_03_session_projection_sequences",
+        "20260815_04_sql_performance_indexes",
     ] {
         assert!(
             applied_migrations.contains(version),
             "missing PostgreSQL migration marker {version}"
+        );
+    }
+    let installed_indexes = sqlx::query_scalar::<_, String>(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()",
+    )
+    .fetch_all(store.pool())
+    .await
+    .unwrap()
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    for index in [
+        "idx_pg_threads_context_open_created",
+        "idx_pg_thread_activations_context_active_created",
+        "idx_pg_execution_jobs_context_active_created",
+        "idx_pg_execution_jobs_tool_status",
+        "idx_pg_plan_executions_wait_kind",
+        "idx_pg_execution_targets_kind_provider_status",
+        "idx_pg_session_projections_context_session_sequence",
+    ] {
+        assert!(
+            installed_indexes.contains(index),
+            "missing PostgreSQL performance index {index}"
         );
     }
     store

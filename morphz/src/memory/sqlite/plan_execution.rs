@@ -293,7 +293,19 @@ impl PlanExecutionStore for SqliteStore {
         } else if !filter.include_terminal {
             query.push(" AND status NOT IN ('succeeded', 'failed', 'cancelled')");
         }
-        query.push(" ORDER BY updated_at DESC, id");
+        if let Some(pending_kind) = filter.pending_kind {
+            query
+                .push(" AND pending_kind = ")
+                .push_bind(pending_kind.as_str());
+        }
+        if let Some(expiry) = filter.lease_expires_at_or_before {
+            query
+                .push(" AND lease_expires_at IS NOT NULL AND lease_expires_at <= ")
+                .push_bind(expiry.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+            query.push(" ORDER BY lease_expires_at, created_at, id");
+        } else {
+            query.push(" ORDER BY updated_at DESC, id");
+        }
         if let Some(limit) = filter.limit {
             query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
         }
@@ -482,6 +494,16 @@ impl PlanExecutionStore for SqliteStore {
             return Err("PlanExecution child Execution Job id 不能为空".into());
         }
         let mut tx = self.pool.begin().await?;
+        // SQLite deferred transactions that read before their first write can
+        // fail with SQLITE_BUSY while upgrading the snapshot, even when a
+        // busy timeout is configured. Multiple sibling Plans are driven in
+        // parallel, so acquire the single WAL writer slot before inspecting
+        // the current fence. The no-op preserves the revision while making
+        // concurrent hand-offs serialize at the transaction boundary.
+        sqlx::query("UPDATE plan_executions SET revision = revision WHERE id = ?")
+            .bind(plan_id)
+            .execute(&mut *tx)
+            .await?;
         let current_row = sqlx::query("SELECT * FROM plan_executions WHERE id = ?")
             .bind(plan_id)
             .fetch_optional(&mut *tx)
@@ -582,6 +604,15 @@ impl PlanExecutionStore for SqliteStore {
             return Err("PlanExecution child Activation id 不能为空".into());
         }
         let mut tx = self.pool.begin().await?;
+        // See the Execution Job hand-off above. In particular, two eval
+        // tools from one assistant response may reach this transaction at the
+        // same time; taking the writer slot first turns the race into normal
+        // SQLite busy-timeout serialization instead of a snapshot-upgrade
+        // SQLITE_BUSY error that would strand one Plan in queued/running.
+        sqlx::query("UPDATE plan_executions SET revision = revision WHERE id = ?")
+            .bind(plan_id)
+            .execute(&mut *tx)
+            .await?;
         let current_row = sqlx::query("SELECT * FROM plan_executions WHERE id = ?")
             .bind(plan_id)
             .fetch_optional(&mut *tx)

@@ -81,6 +81,22 @@ impl TimerEngine {
         Ok(cancelled)
     }
 
+    /// Bounded recovery view of physically live timers. Historical fired and
+    /// cancelled rows are deliberately excluded so semantic schedulers can
+    /// reconcile their owners without scanning the Timer ledger at startup.
+    pub async fn list_live(&self) -> Result<Vec<RuntimeTimerRecord>, DynError> {
+        let mut timers = self
+            .store
+            .list_runtime_timers(Some(crate::memory::RuntimeTimerStatus::Pending))
+            .await?;
+        timers.extend(
+            self.store
+                .list_runtime_timers(Some(crate::memory::RuntimeTimerStatus::Claimed))
+                .await?,
+        );
+        Ok(timers)
+    }
+
     pub fn start(self: &Arc<Self>) -> bool {
         if self.started.swap(true, Ordering::AcqRel) {
             return false;

@@ -2980,9 +2980,14 @@ export default function App() {
       // Keep one window for both views; "load more" then remains stable when
       // the operator returns to Dialogue and opens Scheduler again.
       const schedulerLimit = includeTerminal ? schedulerHistoryLimitRef.current : 50
+      let resolvedSchedulerSummary: SchedulerSnapshot['summary'] | null = null
       const applySchedulerSnapshot = (snapshot: SchedulerSnapshot) => {
         if (!isCurrentScope()) return
+        resolvedSchedulerSummary = snapshot.summary
         setSchedulerSnapshot(snapshot)
+        setContextOverview(previous => previous
+          ? { ...previous, scheduler: snapshot.summary }
+          : previous)
         const activeActivationIds = snapshot.threads
           .flatMap(thread => thread.activations)
           .map(activation => activation.activation)
@@ -2999,10 +3004,15 @@ export default function App() {
         })
       }
       const overviewRequest = DASHBOARD_API.get<ContextOverviewResponse>(
-        `/api/contexts/${encodeURIComponent(contextId)}/overview?session_id=${encodeURIComponent(sessionId)}`,
+        `/api/contexts/${encodeURIComponent(contextId)}/overview?session_id=${encodeURIComponent(sessionId)}&include_scheduler_summary=${includeTerminal ? 'false' : 'true'}`,
       ).then(async snapshot => {
         if (!isCurrentScope()) return
-        setContextOverview(snapshot)
+        // In Dialogue/Scheduler the full snapshot is fetched in parallel.
+        // Never let the intentionally empty overview summary race afterward
+        // and overwrite the authoritative summary that already arrived.
+        setContextOverview(includeTerminal && resolvedSchedulerSummary
+          ? { ...snapshot, scheduler: resolvedSchedulerSummary }
+          : snapshot)
         if (includeTerminal) return
         const summary = snapshot.scheduler
         const needsSchedulerDetail = summary.open_threads > 0

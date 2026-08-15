@@ -551,6 +551,7 @@ struct SchedulerSnapshotHttpQuery {
 struct ContextOverviewHttpQuery {
     token: Option<String>,
     session_id: Option<String>,
+    include_scheduler_summary: Option<bool>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -849,6 +850,10 @@ impl Server {
             .route(
                 "/api/runtime/providers/accounts/:account_id/test",
                 post(handle_diagnose_provider_account),
+            )
+            .route(
+                "/api/runtime/providers/accounts/:account_id/usage",
+                get(handle_provider_subscription_usage),
             )
             .route(
                 "/api/runtime/providers/accounts/:account_id/refresh-models",
@@ -1555,6 +1560,21 @@ async fn handle_diagnose_provider_account(
         .await
     {
         Ok(diagnostic) => Json(diagnostic).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_provider_subscription_usage(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.sdk.provider_subscription_usage(&account_id).await {
+        Ok(usage) => Json(usage).into_response(),
         Err(error) => sdk_error_response(error),
     }
 }
@@ -3623,7 +3643,14 @@ async fn handle_claim_edge_command(
         {
             Ok(Some(job)) => return Json(json!({ "job": job })).into_response(),
             Ok(None) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                // Local producers wake this immediately. Five seconds is the
+                // durable/cross-process fallback, replacing the previous 250ms
+                // write-poll loop without weakening crash recovery.
+                state
+                    .runtime
+                    .wait_for_edge_command_change(remaining.min(std::time::Duration::from_secs(5)))
+                    .await;
             }
             Ok(None) => return StatusCode::NO_CONTENT.into_response(),
             Err(error) => return sdk_error_response(error),
@@ -4384,6 +4411,7 @@ async fn handle_get_context_overview(
             &context_id,
             ContextOverviewQuery {
                 active_session_id: query.session_id,
+                include_scheduler_summary: query.include_scheduler_summary,
             },
         )
         .await
@@ -9710,6 +9738,7 @@ account = "xai-account"
             Query(ContextOverviewHttpQuery {
                 token: None,
                 session_id: Some("api-observability-session".to_string()),
+                include_scheduler_summary: None,
             }),
         )
         .await

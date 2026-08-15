@@ -2607,13 +2607,13 @@ impl ContextEngine {
                 let active_threads = store.list_context_threads(context_id, false).await?;
                 let context_thread_ids = active_threads
                     .iter()
-                    .map(|thread| thread.id.as_str())
-                    .collect::<HashSet<_>>();
+                    .map(|thread| thread.id.clone())
+                    .collect::<Vec<_>>();
                 let scheduled = store
-                    .list_schedules(None, Some(ScheduleStatus::Queued))
+                    .list_thread_schedules(context_id, &context_thread_ids)
                     .await?
                     .into_iter()
-                    .filter(|intent| context_thread_ids.contains(intent.thread_id.as_str()))
+                    .filter(|intent| intent.status == ScheduleStatus::Queued)
                     .collect::<Vec<_>>();
                 let mut projected = active_threads;
                 // Delivery snapshots name their terminal Threads exactly, so
@@ -2649,9 +2649,6 @@ impl ContextEngine {
                 // chronological order for deterministic encoding.
                 recent_terminal.reverse();
                 projected.extend(recent_terminal);
-                let pending_signals = store
-                    .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
-                    .await?;
                 // Context Encoding only needs supervision barriers referenced
                 // by the bounded Thread projection above. Loading every open
                 // group in a long-lived Context would make both Prompt size
@@ -2663,18 +2660,32 @@ impl ContextEngine {
                 projected_group_ids.sort();
                 projected_group_ids.dedup();
                 projected_group_ids.truncate(32);
-                let mut groups = Vec::new();
-                for group_id in projected_group_ids {
-                    if let Some(group) = store.get_thread_group(&group_id).await? {
-                        groups.push(group);
-                    }
-                }
-                let mut members = Vec::new();
-                let mut outcomes = Vec::new();
-                for group in &groups {
-                    members.extend(store.list_thread_group_members(&group.id).await?);
-                    outcomes.extend(store.list_thread_group_outcomes(&group.id).await?);
-                }
+                let groups = store
+                    .list_thread_groups_by_ids(context_id, &projected_group_ids)
+                    .await?;
+                let members = store
+                    .list_thread_group_members_for_groups(&projected_group_ids)
+                    .await?
+                    .into_iter()
+                    .map(|(_, member)| member)
+                    .collect::<Vec<_>>();
+                let outcomes = store
+                    .list_thread_group_outcomes_for_groups(&projected_group_ids)
+                    .await?
+                    .into_iter()
+                    .map(|(_, outcome)| outcome)
+                    .collect::<Vec<_>>();
+                let projected_thread_ids = projected
+                    .iter()
+                    .map(|thread| thread.id.clone())
+                    .collect::<Vec<_>>();
+                let pending_signals = store
+                    .list_context_thread_signals_for_threads(
+                        context_id,
+                        &projected_thread_ids,
+                        Some(ThreadSignalStatus::Pending),
+                    )
+                    .await?;
                 (
                     projected,
                     groups,
@@ -2927,18 +2938,16 @@ impl ContextEngine {
                 }),
         };
         let mut execution_targets = match &self.execution_target_store {
-            Some(store) => store
-                .list_execution_targets(ExecutionTargetFilter {
-                    limit: Some(16),
-                    ..Default::default()
-                })
-                .await?
-                .into_iter()
-                .filter(|target| {
-                    target.owner_principal_id.is_none()
-                        || target.owner_principal_id.as_deref() == active_principal_id.as_deref()
-                })
-                .collect::<Vec<_>>(),
+            Some(store) => {
+                store
+                    .list_execution_targets(ExecutionTargetFilter {
+                        visible_to_principal_id: active_principal_id.clone(),
+                        owner_principal_is_null: active_principal_id.is_none(),
+                        limit: Some(16),
+                        ..Default::default()
+                    })
+                    .await?
+            }
             None => Vec::new(),
         };
         let target_authorizations = match (
@@ -11979,7 +11988,6 @@ mod tests {
             FrameRecallNode::Frame { id, lifecycle, .. }
                 if id == "A" && lifecycle == "retiring"
         )));
-
         let descendants = engine
             .recall_frame_graph(FrameRecallRequest {
                 context_id: "recall-graph-context".to_string(),

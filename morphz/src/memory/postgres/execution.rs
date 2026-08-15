@@ -130,8 +130,13 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON execution_jobs(status, created_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_context_status
            ON execution_jobs(context_id, status, updated_at DESC)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_context_active_created
+           ON execution_jobs(context_id, created_at, id)
+           WHERE status IN ('queued', 'waiting_approval', 'running')"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_thread_status
            ON execution_jobs(thread_id, status, created_at, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_tool_status
+           ON execution_jobs(tool_name, status, created_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_lease
            ON execution_jobs(status, lease_expires_at, id)"#,
         r#"CREATE OR REPLACE FUNCTION morphz_execution_job_terminal_guard()
@@ -587,10 +592,13 @@ impl ExecutionJobStore for PostgresStore {
         if let Some(target_id) = filter.target_id {
             query.push(" AND target_id = ").push_bind(target_id);
         }
+        if let Some(tool_name) = filter.tool_name {
+            query.push(" AND tool_name = ").push_bind(tool_name);
+        }
         if let Some(status) = filter.status {
             query.push(" AND status = ").push_bind(status.as_str());
         } else if !filter.include_terminal {
-            query.push(" AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')");
+            query.push(" AND status IN ('queued', 'waiting_approval', 'running')");
         }
         if filter.newest_first {
             query.push(" ORDER BY created_at DESC, id DESC");
@@ -601,6 +609,59 @@ impl ExecutionJobStore for PostgresStore {
             query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
         }
         let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(execution_job_from_row).collect()
+    }
+
+    async fn list_execution_jobs_for_activations(
+        &self,
+        context_id: &str,
+        activation_ids: &[String],
+    ) -> Result<Vec<ExecutionJobRecord>, StoreError> {
+        if activation_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut records = Vec::new();
+        for activation_ids in activation_ids.chunks(500) {
+            let mut query =
+                QueryBuilder::<Postgres>::new("SELECT * FROM execution_jobs WHERE context_id = ");
+            query.push_bind(context_id).push(" AND activation_id IN (");
+            {
+                let mut values = query.separated(", ");
+                for activation_id in activation_ids {
+                    values.push_bind(activation_id);
+                }
+            }
+            query.push(") ORDER BY created_at, id");
+            let rows = query.build().fetch_all(&self.pool).await?;
+            records.extend(
+                rows.iter()
+                    .map(execution_job_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        Ok(records)
+    }
+
+    async fn list_terminal_execution_jobs_needing_signal(
+        &self,
+        tool_name: &str,
+    ) -> Result<Vec<ExecutionJobRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT j.*
+               FROM execution_jobs j
+               JOIN threads t ON t.id = j.thread_id AND t.status = 'open'
+               WHERE j.tool_name = $1
+                 AND j.status IN ('succeeded', 'failed', 'cancelled', 'lost')
+                 AND j.result_event_id IS NOT NULL
+                 AND NOT EXISTS (
+                     SELECT 1 FROM thread_signals s
+                     WHERE s.event_id = j.result_event_id
+                 )
+               ORDER BY j.finished_at, j.id"#,
+        )
+        .bind(tool_name)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(execution_job_from_row).collect()
     }
 

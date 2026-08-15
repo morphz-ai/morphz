@@ -266,6 +266,28 @@ impl ThreadGroupStore for PostgresStore {
         rows.iter().map(group_from_row).collect()
     }
 
+    async fn list_thread_groups_by_ids(
+        &self,
+        context_id: &str,
+        group_ids: &[String],
+    ) -> Result<Vec<ThreadGroupRecord>, StoreError> {
+        if group_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query =
+            QueryBuilder::<Postgres>::new("SELECT * FROM thread_groups WHERE context_id = ");
+        query.push_bind(context_id).push(" AND id IN (");
+        {
+            let mut values = query.separated(", ");
+            for group_id in group_ids {
+                values.push_bind(group_id);
+            }
+        }
+        query.push(") ORDER BY created_at, id");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(group_from_row).collect()
+    }
+
     async fn list_thread_group_members(
         &self,
         group_id: &str,
@@ -279,6 +301,31 @@ impl ThreadGroupStore for PostgresStore {
         rows.iter().map(member_from_row).collect()
     }
 
+    async fn list_thread_group_members_for_groups(
+        &self,
+        group_ids: &[String],
+    ) -> Result<Vec<(String, ThreadGroupMemberRecord)>, StoreError> {
+        if group_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query =
+            QueryBuilder::<Postgres>::new("SELECT * FROM thread_group_members WHERE group_id IN (");
+        {
+            let mut values = query.separated(", ");
+            for group_id in group_ids {
+                values.push_bind(group_id);
+            }
+        }
+        query.push(") ORDER BY group_id, ordinal, thread_id");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|row| {
+                let member = member_from_row(row)?;
+                Ok((member.group_id.clone(), member))
+            })
+            .collect()
+    }
+
     async fn get_thread_outcome(
         &self,
         thread_id: &str,
@@ -288,6 +335,26 @@ impl ThreadGroupStore for PostgresStore {
             .fetch_optional(&self.pool)
             .await?;
         row.as_ref().map(outcome_from_row).transpose()
+    }
+
+    async fn list_thread_outcomes(
+        &self,
+        thread_ids: &[String],
+    ) -> Result<Vec<ThreadOutcomeRecord>, StoreError> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query =
+            QueryBuilder::<Postgres>::new("SELECT * FROM thread_outcomes WHERE thread_id IN (");
+        {
+            let mut values = query.separated(", ");
+            for thread_id in thread_ids {
+                values.push_bind(thread_id);
+            }
+        }
+        query.push(") ORDER BY created_at, thread_id");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(outcome_from_row).collect()
     }
 
     async fn list_thread_group_outcomes(
@@ -305,5 +372,33 @@ impl ThreadGroupStore for PostgresStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(outcome_from_row).collect()
+    }
+
+    async fn list_thread_group_outcomes_for_groups(
+        &self,
+        group_ids: &[String],
+    ) -> Result<Vec<(String, ThreadOutcomeRecord)>, StoreError> {
+        if group_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<Postgres>::new(
+            "SELECT member.group_id AS outcome_group_id, outcome.* FROM thread_group_members member JOIN thread_outcomes outcome ON outcome.thread_id = member.thread_id WHERE member.group_id IN (",
+        );
+        {
+            let mut values = query.separated(", ");
+            for group_id in group_ids {
+                values.push_bind(group_id);
+            }
+        }
+        query.push(") ORDER BY member.group_id, member.ordinal, outcome.created_at");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row.try_get::<String, _>("outcome_group_id")?,
+                    outcome_from_row(row)?,
+                ))
+            })
+            .collect()
     }
 }
