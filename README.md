@@ -22,7 +22,7 @@ Reality Contract v1 已将上述现实约束与认识纪律统一生成到 Syste
 
 Experience Transfer v1 以相关经验、无关经验和全新 Agent 三 arm 同条件比较已有 Mind 对后续任务的影响。初版结果后来发现 Inbox 可以替 Mind 通过的评分缺陷；当前已改为严格检查活动 Mind Frame/Relation。场景设计、无效夹具与历史结果更正见 [Experience Transfer Benchmark v1](docs/morphz_experience_transfer_benchmark_v1.md)。
 
-Cognitive SExpr VM Prompt 将 LLM 定义为持续运行的 S 表达式认知机器的非确定性语义处理器。严格 Mind-only 评分下的五次 Gemini 配对实验中，VM related 为 15/15、原 Agent Prompt 为 14/15，三 arm 总语义为 31/45 对 26/45；模型尝试略降但物理工具增加，且尚未形成显式抽象原则。候选已证明当前任务族中非退化，完整判据、Mind 审计和结论见 [Cognitive S-Expression VM Prompt A/B](docs/morphz_cognitive_sexpr_vm_prompt_ab.md)。
+历史 Cognitive SExpr VM Prompt 实验将 LLM 定义为持续运行的 Morphz（S 表达式认知机）的非确定性语义处理器。严格 Mind-only 评分下的五次 Gemini 配对实验中，VM related 为 15/15、原 Agent Prompt 为 14/15，三 arm 总语义为 31/45 对 26/45；模型尝试略降但物理工具增加，且尚未形成显式抽象原则。实验所用旧英文词序保留在历史报告中；当前产品统一使用 **S-Expression Cognitive Machine**。完整判据、Mind 审计和结论见 [Cognitive S-Expression VM Prompt A/B](docs/morphz_cognitive_sexpr_vm_prompt_ab.md)。
 
 Runtime 现在提供三个可运行的 System Prompt Profile，并默认使用 `semantic_sexpr_vm`：整个稳定 Prompt 是一棵 SExpr，`seq/call/fallback/bind/if/reply` 的自然语言语义位于各自节点内部。`cognitive_sexpr_vm` 与 `agent_owned_context` 仍可通过 `MORPHZ_SYSTEM_PROMPT_MODE` 选择。三者共享 Context Protocol、DSL、工具和持久化状态；普通无工具文本直接回复当前 active Session，`no_reply` 表示显式静默，`send_message` 用于主动联系另一 Session。完整响应协议见 [单 Session 求值与响应路由协议 v1](docs/morphz_response_routing_protocol_v1.md)。
 

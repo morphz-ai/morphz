@@ -1,6 +1,6 @@
 # Morphz S-Expression 过程指导评测 v1
 
-> 后续设计：本文记录的是第一版外部自然语言 VM 契约实验。新的候选方案把 System Prompt 本身写成 SExpr，并把基础算子的自然语言执行体放在 SExpr 节点内部；见 [分层认知 VM 与可加载身份架构](./morphz_layered_cognitive_vm_identity_architecture.md)、[语义算子 VM 对照实验](./morphz_semantic_sexpr_vm_ablation_v1.md) 和 [五组正式结果](./morphz_semantic_sexpr_vm_ablation_results_v1.md)。
+> 后续设计：本文记录的是第一版外部自然语言 VM 契约实验。新的候选方案把 System Prompt 本身写成 SExpr，并把基础算子的自然语言执行体放在 SExpr 节点内部；见 [分层 S 表达式认知机与可加载身份架构](./morphz_layered_cognitive_vm_identity_architecture.md)、[语义算子 VM 对照实验](./morphz_semantic_sexpr_vm_ablation_v1.md) 和 [五组正式结果](./morphz_semantic_sexpr_vm_ablation_results_v1.md)。
 
 ## 1. 要验证的命题
 

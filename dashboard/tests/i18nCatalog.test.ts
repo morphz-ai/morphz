@@ -74,6 +74,21 @@ test('Mind Frame uses the canonical product term in both languages', () => {
   assert.equal(enMindView.includes('Mind Frame'), true)
 })
 
+test('Morphz uses one canonical machine identity in both dashboard languages', () => {
+  const zh = JSON.parse(readFileSync(
+    new URL('../src/i18n/locales/zh.json', import.meta.url),
+    'utf8',
+  )) as { header: { machineTagline: string } }
+  const en = JSON.parse(readFileSync(
+    new URL('../src/i18n/locales/en.json', import.meta.url),
+    'utf8',
+  )) as { header: { machineTagline: string } }
+
+  assert.equal(zh.header.machineTagline, 'S 表达式认知机')
+  assert.equal(en.header.machineTagline, 'S-Expression Cognitive Machine')
+  assert.notEqual(en.header.machineTagline, 'Cognitive S-Expression Machine')
+})
+
 test('the dashboard language toggle resolves both Chinese and English resources', async () => {
   const instance = i18next.createInstance()
   await instance.init({

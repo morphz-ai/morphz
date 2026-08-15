@@ -26,6 +26,16 @@ test('Context and Session catalog actions stay clickable above navigation', () =
 
 test('laptop viewports keep both dashboard chrome bands on one row', () => {
   assert.match(
+    appSource,
+    /<span><strong>Morphz<\/strong><small>\{t\('header\.machineTagline'\)\}<\/small><\/span>/,
+    'the Morphz brand must expose the canonical machine identity instead of presenting the selected Agent as the product type',
+  )
+  assert.match(
+    appCss,
+    /\.brand small\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s,
+    'the canonical English tagline must truncate rather than wrap the responsive header',
+  )
+  assert.match(
     appCss,
     /\.identity-chip small\s*\{[^}]*white-space:\s*nowrap/s,
     'compact identity labels such as 会话 must never wrap between Chinese characters',
@@ -148,6 +158,24 @@ test('System Prompt and Mind Frames use the shared S-expression reader', () => {
     appCss,
     /\.sexpr-reader\s*\{[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto/s,
     'the shared reader must reserve a scrollable body between stable metadata and actions',
+  )
+})
+
+test('the initial generating state stays visible above the composer in both conversation layouts', () => {
+  assert.match(
+    appSource,
+    /if \(view !== 'dialogue' \|\| typeof ResizeObserver === 'undefined'\) return[\s\S]*?const conversationObserver = new ResizeObserver[\s\S]*?const container = conversationLayout === 'split'[\s\S]*?conversationLaneRef\.current[\s\S]*?: viewFrameRef\.current/s,
+    'content growth must be observed in both split and merged conversations',
+  )
+  assert.doesNotMatch(
+    appSource,
+    /if \(view !== 'dialogue' \|\| conversationLayout !== 'split' \|\| typeof ResizeObserver === 'undefined'\) return/,
+    'merged layout must not be excluded from stream-height correction',
+  )
+  assert.match(
+    appSource,
+    /conversationObserver\.observe\(conversationMessageListRef\.current\)/,
+    'the rendered message list must drive bottom correction when badges or stream content change its height',
   )
 })
 

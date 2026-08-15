@@ -637,7 +637,8 @@
     "active": "Active",
     "resident": "Resident",
     "dashboardHint": "Dashboard only shows Sessions currently readable by the Runtime API.",
-    "agentLabel": "agent/{{title}}"
+    "agentLabel": "agent/{{title}}",
+    "machineTagline": "S-Expression Cognitive Machine"
   },
   "theme": {
     "title": "Accent Theme",

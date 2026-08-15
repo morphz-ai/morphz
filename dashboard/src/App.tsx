@@ -4734,13 +4734,17 @@ export default function App() {
   }, [conversationLayout, selectedSessionId, view])
 
   useEffect(() => {
-    if (view !== 'dialogue' || conversationLayout !== 'split' || typeof ResizeObserver === 'undefined') return
+    if (view !== 'dialogue' || typeof ResizeObserver === 'undefined') return
 
     // Streaming Markdown, reasoning blocks, tables, and images can grow without
-    // changing the event count. Observe the actual lane contents so each track
-    // remains pinned while the user is following the newest output.
+    // changing the event count. This includes the empty initial stream card:
+    // causal badges can make it taller before its first text delta arrives.
+    // Observe the actual content in both merged and split layouts so the latest
+    // status remains above the composer while the user is following the end.
     const conversationObserver = new ResizeObserver(() => {
-      const container = conversationLaneRef.current
+      const container = conversationLayout === 'split'
+        ? conversationLaneRef.current
+        : viewFrameRef.current
       if (!container || !conversationPinnedToEnd.current) return
       lastProgrammaticScroll.current = Date.now()
       container.scrollTop = container.scrollHeight
@@ -4752,7 +4756,9 @@ export default function App() {
       container.scrollTop = container.scrollHeight
     })
     if (conversationMessageListRef.current) conversationObserver.observe(conversationMessageListRef.current)
-    if (executionOutputListRef.current) executionObserver.observe(executionOutputListRef.current)
+    if (conversationLayout === 'split' && executionOutputListRef.current) {
+      executionObserver.observe(executionOutputListRef.current)
+    }
     return () => {
       conversationObserver.disconnect()
       executionObserver.disconnect()
@@ -5886,9 +5892,14 @@ export default function App() {
     <main className="page-shell" data-accent={accentTheme} data-color-mode={resolvedAppearanceMode}>
       <section className={`morphz-shell ${immersiveMode ? 'is-immersive' : ''}`} data-accent={accentTheme} data-view={view}>
         <header className="runtime-header">
-          <button className="brand" type="button" onClick={() => navigate('/')}>
+          <button
+            className="brand"
+            type="button"
+            title={`${t('header.machineTagline')} · ${t('header.agentLabel', { title: selectedAgent?.title ?? (selectedAgentId || 'default') })}`}
+            onClick={() => navigate('/')}
+          >
             <span className="brand-mark">◆</span>
-            <span><strong>Morphz</strong><small>{t('header.agentLabel', { title: selectedAgent?.title ?? (selectedAgentId || 'default') })}</small></span>
+            <span><strong>Morphz</strong><small>{t('header.machineTagline')}</small></span>
           </button>
 
           <div className="identity-trail">

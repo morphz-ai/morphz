@@ -560,9 +560,9 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 
 .brand { justify-self: start; gap: 10px; padding: 6px 0; text-align: left; }
 .brand-mark { color: var(--accent); font-size: 16px; filter: drop-shadow(0 0 8px var(--accent-glow)); }
-.brand > span:last-child { align-items: flex-start; flex-direction: column; gap: 2px; }
+.brand > span:last-child { min-width: 0; align-items: flex-start; flex-direction: column; gap: 2px; }
 .brand strong { color: var(--accent-strong); font-size: 17px; letter-spacing: .01em; }
-.brand small { color: var(--muted); font-family: var(--mono); font-size: 9px; }
+.brand small { max-width: 100%; overflow: hidden; color: var(--muted); font-family: var(--mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 
 .identity-trail { min-width: 0; gap: 8px; overflow: visible; flex-wrap: nowrap; }
 .trail-separator { color: var(--faint); font-family: var(--mono); font-size: 11px; align-self: center; }

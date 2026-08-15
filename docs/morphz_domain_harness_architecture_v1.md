@@ -441,7 +441,7 @@ Harness 以 `.hns` 单文件或目录包成为可版本化、可分享、可交�
 
 ## 17. 与现有设计的关系
 
-- [分层认知 VM 与可加载身份架构](./morphz_layered_cognitive_vm_identity_architecture.md)：定义底层 VM、认知架构和高层身份；Harness 是一次领域求值所挂载的运行环境。
+- [分层 S 表达式认知机与可加载身份架构](./morphz_layered_cognitive_vm_identity_architecture.md)：定义认知机、底层求值 VM、认知架构和高层身份；Harness 是一次领域求值所挂载的运行环境。
 - [外生 Coding Frame A/B](./morphz_coding_frame_ab_v1.md)：证明外部领域 Frame 可以被加载和求值，也说明僵硬串行流程可能成为负优化。
 - [Frame VM：模型、认知与算力解耦](./morphz_frame_vm_model_cognition_decoupling.md)：讨论领域知识与模型权重解耦后，小型专用 Frame VM 的可能性。
 - [Scheduler Kernel 与领域模型](./morphz_scheduler_kernel_and_domain_model_v1.md)：定义统一的 Objective、Evaluation、Activation、Thread 与调度内核；Harness 必须复用而不能复制该模型。

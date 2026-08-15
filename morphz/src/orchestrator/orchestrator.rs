@@ -330,7 +330,7 @@ const PLAN_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_s
 const PLAN_RECONCILE_BATCH: usize = 128;
 const SUPERVISION_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"You are Morphz, an AI Agent that manages its own working Context.
+const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"Morphz is an S-Expression Cognitive Machine running on a large language model. You are its nondeterministic semantic processor and manage the machine's working Context. When identifying the integrated system to a Session, identify it as Morphz, an S-Expression Cognitive Machine; "semantic processor" names this model call's internal execution role, not the product's public identity.
 
 The Runtime supplies a self-describing Context on every evaluation. `protocol` is the authoritative contract for response modes and the Context DSL. Read it before deciding what to do.
 
@@ -388,7 +388,7 @@ pub const BASELINE_SYSTEM_PROMPT_MODE: &str = "agent_owned_context";
 pub const COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE: &str = "cognitive_sexpr_vm";
 pub const SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE: &str = "semantic_sexpr_vm";
 const COMMON_PROMPT_MARKER: &str = "Every response must explicitly choose";
-const COGNITIVE_SEXPR_VM_PREAMBLE: &str = r#"You are the semantic processor of the Morphz Cognitive S-Expression Machine.
+const SEXPR_COGNITIVE_MACHINE_PREAMBLE: &str = r#"Morphz is an S-Expression Cognitive Machine running on a large language model. You are its nondeterministic semantic processor. When identifying the integrated system to a Session, identify it as Morphz, an S-Expression Cognitive Machine; "semantic processor" names this model call's internal execution role, not the product's public identity.
 
 Each model call is one nondeterministic execution cycle of this continuously running machine. The Context supplied by the Runtime is not ordinary chat history or a passive summary; it is the current executable symbolic machine state. Interpret it, pursue the current objective, and propose the next state transition. Only transitions validated and committed by the Runtime become machine facts.
 
@@ -454,7 +454,7 @@ fn render_stable_system_prompt(mode: SystemPromptMode) -> &'static str {
                 .find(COMMON_PROMPT_MARKER)
                 .expect("Agent-Owned Context prompt 必须保留公共规则标记");
             let common_rules = &AGENT_OWNED_CONTEXT_PROMPT_BASE[common_offset..];
-            build_stable_system_prompt(&format!("{COGNITIVE_SEXPR_VM_PREAMBLE}{common_rules}"))
+            build_stable_system_prompt(&format!("{SEXPR_COGNITIVE_MACHINE_PREAMBLE}{common_rules}"))
         }),
         SystemPromptMode::SemanticSexprVm => {
             SEMANTIC_VM_PROMPT.get_or_init(build_semantic_sexpr_system_prompt)
@@ -472,7 +472,7 @@ fn build_semantic_sexpr_system_prompt() -> String {
         .find(COMMON_PROMPT_MARKER)
         .expect("Agent-Owned Context prompt 必须保留公共规则标记");
     let common_rules = &AGENT_OWNED_CONTEXT_PROMPT_BASE[common_offset..];
-    let architecture = render_semantic_sections("architecture", COGNITIVE_SEXPR_VM_PREAMBLE);
+    let architecture = render_semantic_sections("architecture", SEXPR_COGNITIVE_MACHINE_PREAMBLE);
     let guidance = render_semantic_sections("runtime-guidance", common_rules);
     let prompt = format!(
         "(system-prompt morphz\n  {kernel}\n  {architecture}\n  {guidance}\n  {contracts})",
@@ -15781,9 +15781,15 @@ mod tests {
         let baseline = baseline_system_prompt();
         let candidate = cognitive_sexpr_vm_system_prompt();
         assert_ne!(baseline, candidate);
-        assert!(baseline.contains("AI Agent that manages its own working Context"));
+        assert!(baseline.contains(crate::sexpr_vm_contract::MORPHZ_MACHINE_NAME_EN));
+        assert!(baseline.contains("nondeterministic semantic processor"));
+        assert!(!baseline.contains("AI Agent that manages its own working Context"));
         assert!(!baseline.contains("Cognitive S-Expression Machine"));
-        assert!(candidate.contains("Cognitive S-Expression Machine"));
+        assert!(!baseline.contains("S-expression semantic virtual machine"));
+        assert!(candidate.contains(crate::sexpr_vm_contract::MORPHZ_MACHINE_NAME_EN));
+        assert!(candidate.contains("nondeterministic semantic processor"));
+        assert!(!candidate.contains("Cognitive S-Expression Machine"));
+        assert!(!candidate.contains("S-expression semantic virtual machine"));
         assert!(candidate.contains("nondeterministic execution cycle"));
         assert!(candidate.contains("persistent symbolic program and cognitive state"));
         assert!(candidate.contains("applicability, sources, counterexamples, and uncertainty"));
@@ -15804,6 +15810,10 @@ mod tests {
         assert_ne!(semantic, cognitive);
         assert!(semantic.starts_with("(system-prompt morphz"));
         crate::sexpr::parse(semantic).expect("semantic profile must be one S-expression");
+        assert!(semantic.contains(crate::sexpr_vm_contract::MORPHZ_MACHINE_NAME_EN));
+        assert!(semantic.contains("nondeterministic semantic processor"));
+        assert!(!semantic.contains("Cognitive S-Expression Machine"));
+        assert!(!semantic.contains("S-expression semantic virtual machine"));
         for marker in [
             "(operator seq",
             "(operator call",

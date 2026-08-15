@@ -1,6 +1,6 @@
-# Morphz 分层认知 VM 与可加载身份架构
+# Morphz 分层 S 表达式认知机与可加载身份架构
 
-> 状态：设计共识 v1
+> 状态：设计共识 v2
 > 日期：2026-07-13
 > 适用范围：System Prompt、Context Encoding、Mind、高层身份、Session、Delegate 与未来非助手形态
 > 延伸设计：[`morphz_frame_vm_model_cognition_decoupling.md`](morphz_frame_vm_model_cognition_decoupling.md) 讨论专用小型 Frame VM、外置认知和异构模型算力
@@ -8,7 +8,7 @@
 
 ## 1. 核心结论
 
-Morphz 的底层身份不是“AI 助手”，而是运行在大语言模型上的 S-Expression 语义虚拟机。人类助手、Coding Agent、研究员、机器控制器等身份都属于加载到 VM 之上的高层认知配置。
+Morphz 的正式机器身份不是“AI 助手”或“认知状态机”，而是运行在大语言模型上的 **S-Expression Cognitive Machine（S 表达式认知机）**。大语言模型承担可替换的非确定性语义处理器角色，Runtime 是确定性事务内核；人类助手、Coding Agent、研究员、机器控制器等身份属于加载到认知机之上的高层认知配置。
 
 因此 Morphz 不应被定义为：
 
@@ -16,27 +16,29 @@ Morphz 的底层身份不是“AI 助手”，而是运行在大语言模型上�
 
 更准确的定义是：
 
-> 一个运行在 LLM 上的 SExpr 认知虚拟机。它可以加载 Context、Mind、身份、能力与 Session，从而实例化为不同类型的 Agent 或智能控制系统。
+> 一台运行在 LLM 上的 S 表达式认知机。它可以加载 Context、Mind、身份、能力与 Session，从而实例化为不同类型的 Agent 或智能控制系统。
 
-VM 只定义求值与现实交互的底层规则，不预先冻结上层人格、职业、产品形态或任务类型。
+认知机以 S 表达式作为机器语言和程序—数据表示。其底层求值 VM 只定义求值与现实交互规则，不预先冻结上层人格、职业、产品形态或任务类型。
 
 ## 2. 分层模型
 
 | 层级 | 名称 | 职责 | 稳定性 |
 | --- | --- | --- | --- |
-| L0 | LLM 智能处理器 | 非确定性的语义理解、推理与生成 | 可替换模型 |
-| L1 | SExpr VM | 求值、工具调用、Observation、Context 事务、回复边界 | 最稳定 |
+| L0 | LLM 语义处理器 | 非确定性的语义理解、推理与生成 | 可替换模型 |
+| L1 | SExpr 求值 VM | 求值、工具调用、Observation、Context 事务、回复边界 | 最稳定 |
 | L2 | 认知架构 | Mind、目标、事实、经验、认识纪律、Context 自维护 | 长期演化 |
 | L3 | 高层身份 | 人类助手、Coding Agent、机器控制器、研究员等 | 可加载、组合 |
 | L4 | 当前角色 | 项目维护者、设备操作员、某用户的助理等 | 按 Context/Session 挂载 |
 | L5 | Session 与任务 | 当前消息、目标、进展、临时约束和回复路由 | 高频变化 |
 
-VM 身份是一种执行本体，不是人格。高层身份决定“我以什么角色理解和服务世界”，VM 决定“表达式如何变成真实动作”。
+认知机身份是一种计算本体，不是人格。高层身份决定“我以什么角色理解和服务世界”，底层求值 VM 决定“表达式如何变成真实动作”。
 
 一个逻辑 Agent 可以概括为：
 
 ```text
-Agent = VM Kernel
+Agent = S-Expression Cognitive Machine Instance
+      = Runtime Kernel
+      + LLM Semantic Processor
       + Context / Mind
       + Identity Stack
       + Tools
@@ -47,7 +49,7 @@ Agent = VM Kernel
 
 这一定义还允许进一步将模型能力与具体认知解耦：模型主要学习稳定的 Frame 求值能力，领域知识、个体经历和人格则保留在外部 Mind 中。由此产生的专用 Frame VM、跨模型兼容与分层算力设计见 [Frame VM：模型、认知与算力解耦](./morphz_frame_vm_model_cognition_decoupling.md)。
 
-## 3. 底层 VM 的 System Prompt 形态
+## 3. 底层求值 VM 的 System Prompt 形态
 
 System Prompt 本身应当从第一个字符开始就是 SExpr，不在它前面附加一段自然语言启动说明。自然语言并未被排除，而是作为 SExpr 节点中的语义内容存在。
 
@@ -56,7 +58,7 @@ System Prompt 本身应当从第一个字符开始就是 SExpr，不在它前面
 ```lisp
 (vm morphz
   (identity
-    "你是运行在大语言模型上的 S 表达式语义虚拟机。")
+    "Morphz 是一台 S 表达式认知机；你是其中运行在大语言模型上的非确定性语义处理器。")
 
   (evaluation
     "这里的表达式表示需要实际执行的认知过程。
@@ -279,6 +281,6 @@ Morphz 与非确定型图灵机存在有启发性的结构对应：
 
 因此当前更准确的描述是：
 
-> Morphz 是一个由 LLM 提议非确定性语义迁移、由 Runtime 确定性验证和提交的 SExpr 认知状态机。
+> Morphz 是一台 S 表达式认知机：LLM 语义处理器提议非确定性语义迁移，Runtime 事务内核确定性验证并提交状态转换与现实副作用。
 
 如果未来使用 Context Snapshot/Copy-on-Write 创建多个候选分支，在隔离沙箱中并发求值，再由验证器选择一个分支提交，Morphz 会在工程形态上更接近“计算树 + 接受路径”的 NTM 直觉。具有现实副作用的动作必须推迟到分支选择之后，或者使用可验证的事务、幂等操作与补偿机制，不能直接照搬纯理论模型。

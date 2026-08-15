@@ -637,7 +637,8 @@
     "active": "活跃",
     "resident": "驻留",
     "dashboardHint": "控制台只展示运行时接口当前允许读取的会话。",
-    "agentLabel": "代理/{{title}}"
+    "agentLabel": "代理/{{title}}",
+    "machineTagline": "S 表达式认知机"
   },
   "theme": {
     "title": "强调色主题",

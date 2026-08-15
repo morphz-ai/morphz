@@ -5,12 +5,14 @@
 > 目的：验证“把 LLM 定义为 SExpr 认知虚拟机的语义处理器”是否比传统 AI Agent 身份获得更好的正确性、效率和自主抽象。
 >
 > 后续状态：本文的两个 Profile 继续作为历史可运行基线；Runtime 当前默认使用第三版 `semantic_sexpr_vm`。三版共享当前普通文本 / `no_reply` / `send_message` 响应协议，见 [单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)。
+>
+> 术语说明：本文记录并引用的是 2026-07-12 实验时实际使用的 **Cognitive S-Expression Machine** 原文，不能事后改写，否则会破坏实验可复现性。当前产品统一称为 **S-Expression Cognitive Machine（S 表达式认知机）**；旧词序只在本历史实验记录中保留。
 
-> 后续设计：本实验验证的是 VM 身份迁移。关于“System Prompt 本身采用纯 SExpr、算子内部使用自然语言语义体，以及 VM 之上加载高层身份”的新设计，见 [分层认知 VM 与可加载身份架构](./morphz_layered_cognitive_vm_identity_architecture.md) 和 [语义算子 VM 对照实验](./morphz_semantic_sexpr_vm_ablation_v1.md)。
+> 后续设计：本实验验证的是 VM 身份迁移。关于“System Prompt 本身采用纯 SExpr、算子内部使用自然语言语义体，以及认知机之上加载高层身份”的新设计，见 [分层 S 表达式认知机与可加载身份架构](./morphz_layered_cognitive_vm_identity_architecture.md) 和 [语义算子 VM 对照实验](./morphz_semantic_sexpr_vm_ablation_v1.md)。
 
 ## 1. 实验假设
 
-当前基线把 Morphz 定义为“能够管理自身工作 Context 的 AI Agent”。候选 Prompt 把一次模型调用定义为持续运行的 Cognitive S-Expression Machine 的非确定性执行周期：`kernel` 是特权机器状态，`mind` 是持久化符号程序与认知状态，`inbox` 是外部输入；LLM 提出语义迁移，Runtime 确定性提交。
+当前基线把 Morphz 定义为“能够管理自身工作 Context 的 AI Agent”。候选 Prompt 当时使用 `Cognitive S-Expression Machine` 这一旧词序，把一次模型调用定义为持续运行机器的非确定性执行周期：`kernel` 是特权机器状态，`mind` 是持久化符号程序与认知状态，`inbox` 是外部输入；LLM 提出语义迁移，Runtime 确定性提交。
 
 候选 Prompt 只改变机器身份和认知执行模型，不新增 Experience Transfer 场景中的 `approved-current`、A–E、具体值或答案。现有契约中本来就有“时序或使用频率不等于 authority”的通用认识纪律，它在 A/B 中字节级相同；Reality/Epistemic Contract、Context DSL、工具规则、任务、模型和预算均保持不变。
 
@@ -154,6 +156,6 @@ VM Prompt 原始稳定前缀为 6,124 字符，基线为 5,657 字符，增加 4
 
 本轮没有验证“短训练即可产生抽象规律”，这也不是合理的强制门槛。当前证据支持：
 
-> 把 Morphz 定义为 Cognitive S-Expression Machine 的语义处理器，在当前任务族中没有造成退化，并改善了 Mind 保持与聚合倾向；如何从长期经历形成真正可复用的规律，仍需要更长训练、反思触发条件和抽象质量评测。
+> 当时把模型定义为 `Cognitive S-Expression Machine` 的语义处理器，在当前任务族中没有造成退化，并改善了 Mind 保持与聚合倾向；如何从长期经历形成真正可复用的规律，仍需要更长训练、反思触发条件和抽象质量评测。按当前术语，这一架构称为 S-Expression Cognitive Machine，模型承担其非确定性语义处理器角色。
 
 按预注册等级属于“部分支持”：机器身份迁移可接受，抽象能力尚未得到证据。基于本轮主要目标是确认非退化，`cognitive_sexpr_vm` 在当时提升为 Runtime 和普通 Experience Transfer 的默认模式；`agent_owned_context` 保留为显式回归基线。后续第三版 `semantic_sexpr_vm` 已接替默认位置，但本文结论继续作为第二版与第一版的历史对照。

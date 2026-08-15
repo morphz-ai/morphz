@@ -4,15 +4,17 @@
 Context Protocol：v11
 状态：三个 Prompt Profile 仍可运行；本文的 `reply(deliver/suppress)` Function Calling 已于 Protocol v16 被普通文本、`no_reply` 和 `send_message` 取代。当前协议见 [单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)。
 
+> 术语说明：`cognitive_sexpr_vm` 与 `semantic_sexpr_vm` 是需要保持兼容的历史 Profile ID，不是当前产品名称。Morphz 的统一公开身份是 **S-Expression Cognitive Machine（S 表达式认知机）**；LLM 是其中的非确定性语义处理器，Runtime 是确定性事务内核。下文涉及旧 Profile 的词句按历史配置说明保留。
+
 ## 1. 设计结论
 
 Morphz 将 System Prompt 分为三个可选择的版本，三者共享完全相同的 Runtime、Context Encoding、物理工具、`context_tx` DSL 和当前响应协议：
 
 | `MORPHZ_SYSTEM_PROMPT_MODE` | 定位 | Prompt 结构 |
 |---|---|---|
-| `agent_owned_context` | 最初的 Agent-Owned Context 基线 | 自然语言 AI Agent 身份与执行规则 |
-| `cognitive_sexpr_vm` | 第二版认知 VM 身份 | 外部自然语言定义 Cognitive S-Expression Machine，再复用公共执行规则 |
-| `semantic_sexpr_vm` | 第三版语义 SExpr VM，当前默认 | 整个稳定 System Prompt 是一个 SExpr；算子节点内部使用自然语言定义语义 |
+| `agent_owned_context` | 第一版 Context 所有权行为，兼容保留 | 使用统一认知机身份的自然语言执行规则；旧 AI Agent 原文仅保留在历史实验记录中 |
+| `cognitive_sexpr_vm` | 第二版历史认知 VM 身份 | 当时的外部自然语言前言定义机器身份，再复用公共执行规则 |
+| `semantic_sexpr_vm` | 第三版 SExpr Prompt，当前默认 | 整个稳定 System Prompt 是一个 SExpr；当前内容统一定义 S 表达式认知机、语义处理器与事务内核 |
 
 这三个版本比较的是模型如何理解身份、Context 和求值过程，而不是比较不同的工具或终止机制。SExpr 的 `(reply content)` 是普通文本回复的语义算子，不是 Function Calling 工具。
 

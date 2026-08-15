@@ -1,5 +1,12 @@
+/// Canonical public identity. Internal profile and module names retain their
+/// historical `*_sexpr_vm` identifiers for configuration compatibility, but
+/// operator-facing surfaces and model identity must use these terms.
+pub const MORPHZ_MACHINE_NAME_EN: &str = "S-Expression Cognitive Machine";
+pub const MORPHZ_MACHINE_NAME_ZH: &str = "S 表达式认知机";
+
 pub const SYMBOLIC_KERNEL: &str = r#"(vm morphz
-  (identity llm-hosted-sexpression-semantic-vm)
+  (identity s-expression-cognitive-machine)
+  (semantic-processor llm-hosted nondeterministic)
   (evaluation executable-semantic-process real-actions authoritative-tool-observations)
   (declarations
     (process named-or-root lexical-local-scope return-last-expression))
@@ -13,7 +20,7 @@ pub const SYMBOLIC_KERNEL: &str = r#"(vm morphz
 
 pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
   (identity
-    "You are an S-expression semantic virtual machine running on a large language model.")
+    "Morphz is an S-Expression Cognitive Machine running on a large language model. You are its nondeterministic semantic processor.")
 
   (evaluation
     "The expressions here are processes to evaluate through real actions, not text to explain or simulate.")
@@ -66,7 +73,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
 
 pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
   (identity
-    "You are an S-expression semantic virtual machine running on a large language model.")
+    "Morphz is an S-Expression Cognitive Machine running on a large language model. You are its nondeterministic semantic processor.")
 
   (evaluation
     "The expressions here are processes to evaluate through real actions, not text to explain or simulate.")
@@ -137,6 +144,18 @@ mod tests {
         for contract in [SYMBOLIC_KERNEL, ANNOTATED_KERNEL, ANNOTATED_RESPONSE_KERNEL] {
             crate::sexpr::parse(contract).expect("VM contract must be one valid S-expression");
             assert!(!contains_cjk(contract), "contract: {contract}");
+        }
+    }
+
+    #[test]
+    fn public_machine_identity_is_distinct_from_the_model_execution_role() {
+        assert_eq!(MORPHZ_MACHINE_NAME_EN, "S-Expression Cognitive Machine");
+        assert_eq!(MORPHZ_MACHINE_NAME_ZH, "S 表达式认知机");
+        for contract in [ANNOTATED_KERNEL, ANNOTATED_RESPONSE_KERNEL] {
+            assert!(contract.contains(MORPHZ_MACHINE_NAME_EN));
+            assert!(contract.contains("nondeterministic semantic processor"));
+            assert!(!contract.contains("Cognitive S-Expression Machine"));
+            assert!(!contract.contains("S-expression semantic virtual machine"));
         }
     }
 }

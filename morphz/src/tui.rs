@@ -18,6 +18,7 @@ use crate::memory::{
 use crate::orchestrator::context::ContextView;
 use crate::runtime::{MorphzRuntime, SessionHandle};
 use crate::sdk::{MorphzSdk, SendMessageCommand};
+use crate::sexpr_vm_contract::{MORPHZ_MACHINE_NAME_EN, MORPHZ_MACHINE_NAME_ZH};
 use crate::tool::{get_tasks_map, BackgroundTaskStatus};
 use chrono::Utc;
 use crossterm::cursor::Show;
@@ -50,8 +51,6 @@ const USER_MESSAGE_PREFIX: &str = "✨ ";
 const COMPOSER_PREFIX: &str = "❯ ";
 const REASONING_PREVIEW_LINES: usize = 2;
 const MOUSE_SCROLL_LINES: u16 = 3;
-const MORPHZ_TAGLINE_EN: &str = "Cognitive S-Expression Machine";
-const MORPHZ_TAGLINE_ZH: &str = "认知符号表达式机器";
 const MORPHZ_WORDMARK: [&str; 6] = [
     r"███╗   ███╗ ██████╗ ██████╗ ██████╗ ██╗  ██╗ ███████╗",
     r"████╗ ████║██╔═══██╗██╔══██╗██╔══██╗██║  ██║ ╚══███╔╝",
@@ -576,7 +575,8 @@ impl UiState {
     }
 
     fn tagline(&self) -> &'static str {
-        self.locale.text(MORPHZ_TAGLINE_EN, MORPHZ_TAGLINE_ZH)
+        self.locale
+            .text(MORPHZ_MACHINE_NAME_EN, MORPHZ_MACHINE_NAME_ZH)
     }
 
     fn new(runtime: &MorphzRuntime, session: &SessionHandle) -> Self {
@@ -6138,7 +6138,7 @@ mod tests {
             .join("\n");
         assert!(wide.contains("███╗   ███╗"));
         assert!(wide.contains("Morphz"));
-        assert!(wide.contains(MORPHZ_TAGLINE_EN));
+        assert!(wide.contains(MORPHZ_MACHINE_NAME_EN));
         assert!(!wide.contains("persistent coding agent"));
 
         let medium = state
@@ -6158,7 +6158,7 @@ mod tests {
             .join("\n");
         assert!(narrow.contains("◆"));
         assert!(narrow.contains("Morphz"));
-        assert!(narrow.contains(MORPHZ_TAGLINE_EN));
+        assert!(narrow.contains(MORPHZ_MACHINE_NAME_EN));
         assert!(!narrow.contains(r"|  \/  | ___"));
         assert!(!narrow.contains("███╗   ███╗"));
 
@@ -6169,7 +6169,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(tiny.contains("Morphz"));
-        assert!(!tiny.contains(MORPHZ_TAGLINE_EN));
+        assert!(!tiny.contains(MORPHZ_MACHINE_NAME_EN));
 
         assert_eq!(
             interpolate_color(Color::Reset, Color::Rgb(1, 2, 3), 3, 5),
@@ -6377,7 +6377,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(screen.contains("Morphz"));
-        assert!(screen.contains(MORPHZ_TAGLINE_EN));
+        assert!(screen.contains(MORPHZ_MACHINE_NAME_EN));
         assert!(screen.contains("Directory"));
         assert!(screen.contains("Session"));
         assert!(screen.contains("Using"));
@@ -6565,6 +6565,7 @@ mod tests {
             .filter(|character| !character.is_whitespace())
             .collect::<String>();
         assert!(screen.contains("Morphz"));
+        assert_eq!(state.tagline(), MORPHZ_MACHINE_NAME_ZH);
         assert!(compact_screen.contains("快捷键"));
         assert!(!screen.contains("F1 shortcuts"));
         assert!(compact_screen.contains("输入消息"));
