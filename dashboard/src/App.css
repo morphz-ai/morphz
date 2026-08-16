@@ -952,7 +952,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .execution-tool-copy strong { flex: 0 0 auto; overflow: hidden; color: var(--text-soft); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .execution-tool-copy small { display: flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; color: var(--muted); font: 500 8px/1.4 var(--mono); white-space: nowrap; }
 .execution-tool-copy small > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.execution-tool-target { display: inline-flex; min-width: 0; max-width: 100%; flex: 0 1 auto; align-items: center; gap: 4px; padding: 2px 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--accent-soft) 84%, transparent); color: var(--accent-strong); }
+.execution-tool-target { display: inline-flex; min-width: 0; max-width: 100%; flex: 0 1 auto; align-items: center; gap: 4px; padding: 2px 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--accent-soft) 84%, transparent); color: var(--accent-strong); font: 600 8.5px/1 var(--mono); }
 .execution-tool-target svg { flex: 0 0 auto; }
 .execution-tool-target > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .execution-tool-time { opacity: 0; color: var(--faint); font: 500 8px/1 var(--mono); transition: opacity .15s ease; white-space: nowrap; }

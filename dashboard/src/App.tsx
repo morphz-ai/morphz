@@ -143,7 +143,12 @@ import {
   objectiveDisplayStatus,
   type ConversationWindowLane,
 } from './app/presentation'
-import { buildToolTimeline, executionTargetIds, type ToolTimelineItem } from './app/executionTools'
+import {
+  buildToolTimeline,
+  executionTargetIds,
+  executionTargetLabel,
+  type ToolTimelineItem,
+} from './app/executionTools'
 import { prettyPrintSExpression } from './app/sexpr'
 
 /**
@@ -977,6 +982,7 @@ interface ExecutionTargetSummary {
   workspace_root?: string
   provider_node_id?: string
   capabilities: string[]
+  metadata?: Record<string, unknown>
 }
 
 interface ExecutionNodeSummary {
@@ -1491,12 +1497,12 @@ function toolCallTone(status: string): 'running' | 'succeeded' | 'failed' {
 
 const ExecutionToolCalls = memo(function ExecutionToolCalls({
   calls,
-  targetNames,
+  targetLabels,
   locale,
   t,
 }: {
   calls: ToolTimelineItem[]
-  targetNames: ReadonlyMap<string, string>
+  targetLabels: ReadonlyMap<string, string>
   locale: string
   t: TFunction
 }) {
@@ -1515,7 +1521,7 @@ const ExecutionToolCalls = memo(function ExecutionToolCalls({
           const expanded = expandedCallId === call.id
           const targetIds = executionTargetIds(call.arguments)
           const targetLabel = targetIds
-            .map(targetId => targetNames.get(targetId) ?? shortId(targetId, 22))
+            .map(targetId => targetLabels.get(targetId) ?? (targetId.startsWith('target-ssh-') ? 'SSH' : shortId(targetId, 22)))
             .join(' → ')
           return (
             <li className={tone} key={call.id}>
@@ -1537,7 +1543,7 @@ const ExecutionToolCalls = memo(function ExecutionToolCalls({
                     {targetLabel && (
                       <span
                         className="execution-tool-target"
-                        title={`${t('conversation.toolCalls.target')}: ${targetLabel} (${targetIds.join(' → ')})`}
+                        title={`${t('conversation.toolCalls.target')}: ${targetLabel}`}
                       >
                         <Server size={10} />
                         <span>{targetLabel}</span>
@@ -2701,6 +2707,7 @@ export default function App() {
   const appDialogRef = useRef<AppDialogRequest | null>(null)
   const appDialogSequence = useRef(0)
   const principalSearchRequestSequence = useRef(0)
+  const executionTargetCatalogRequestRef = useRef('')
   const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
   const principalScopeRef = useRef<PrincipalDirectoryEntry | null>(null)
   const activeViewRef = useRef(view)
@@ -4148,8 +4155,8 @@ export default function App() {
   const visibleSessions = sessions
     .filter(item => item.context_id === selectedContextId && item.status === 'active')
     .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))
-  const executionTargetNames = useMemo(
-    () => new Map(executionTargets.map(target => [target.id, target.name] as const)),
+  const executionTargetLabels = useMemo(
+    () => new Map(executionTargets.map(target => [target.id, executionTargetLabel(target)] as const)),
     [executionTargets],
   )
   const sessionEvents = useMemo(
@@ -4455,6 +4462,32 @@ export default function App() {
   const toolTimeline = useMemo(() => {
     return buildToolTimeline(sessionEvents)
   }, [sessionEvents])
+
+  useEffect(() => {
+    const knownTargetIds = new Set(executionTargets.map(target => target.id))
+    const missingTargetIds = [...new Set(
+      toolTimeline.flatMap(call => executionTargetIds(call.arguments))
+        .filter(targetId => !knownTargetIds.has(targetId)),
+    )].sort()
+    if (missingTargetIds.length === 0) {
+      executionTargetCatalogRequestRef.current = ''
+      return
+    }
+
+    const requestKey = `${principalScope?.principal.id ?? ''}:${missingTargetIds.join(',')}`
+    if (executionTargetCatalogRequestRef.current === requestKey) return
+    executionTargetCatalogRequestRef.current = requestKey
+    void DASHBOARD_API.tryGet<{ targets?: ExecutionTargetSummary[] }>('/api/execution-targets')
+      .then(result => {
+        if (executionTargetCatalogRequestRef.current !== requestKey) return
+        if (!result) {
+          executionTargetCatalogRequestRef.current = ''
+          return
+        }
+        setExecutionTargets(result.targets ?? [])
+      })
+  }, [executionTargets, principalScope?.principal.id, toolTimeline])
+
   const toolTimelineById = useMemo(
     () => new Map(toolTimeline.map(call => [call.id, call])),
     [toolTimeline],
@@ -6829,7 +6862,7 @@ export default function App() {
                         {assistantText && (
                           <div className="message-body"><MarkdownBody text={assistantText} /></div>
                         )}
-                        <ExecutionToolCalls calls={eventToolCalls} targetNames={executionTargetNames} locale={i18n.language} t={t} />
+                        <ExecutionToolCalls calls={eventToolCalls} targetLabels={executionTargetLabels} locale={i18n.language} t={t} />
                         <div className="message-meta execution-output-meta">
                           <time className="message-time" title={new Date(event.timestamp).toLocaleString(i18n.language)}>
                             {formatTime(event.timestamp, i18n.language)}
@@ -7091,7 +7124,7 @@ export default function App() {
                               {assistantText && (
                                 <div className="message-body"><MarkdownBody text={assistantText} /></div>
                               )}
-                              <ExecutionToolCalls calls={eventToolCalls} targetNames={executionTargetNames} locale={i18n.language} t={t} />
+                              <ExecutionToolCalls calls={eventToolCalls} targetLabels={executionTargetLabels} locale={i18n.language} t={t} />
                               <div className="message-meta execution-output-meta">
                                 <time className="message-time" title={new Date(event.timestamp).toLocaleString(i18n.language)}>
                                   {formatTime(event.timestamp, i18n.language)}

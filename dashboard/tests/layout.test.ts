@@ -166,8 +166,23 @@ test('execution targets share the tool heading row instead of competing with com
   )
   assert.match(
     appCss,
+    /\.execution-tool-target\s*\{[^}]*font:\s*600 8\.5px\/1 var\(--mono\)/s,
+    'the execution target must remain visually subordinate to the tool title',
+  )
+  assert.match(
+    appCss,
     /\.execution-tool-target > span\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s,
     'a target that still exceeds the viewport must truncate predictably while its title exposes the full value',
+  )
+  assert.match(
+    appSource,
+    /new Map\(executionTargets\.map\(target => \[target\.id, executionTargetLabel\(target\)\]/,
+    'execution target badges must use the operator-facing target label instead of the persisted display name or id',
+  )
+  assert.doesNotMatch(
+    appSource,
+    /title=\{`\$\{t\('conversation\.toolCalls\.target'\)\}: \$\{targetLabel\} \(\$\{targetIds/,
+    'execution target tooltips must not expose internal target ids',
   )
 })
 

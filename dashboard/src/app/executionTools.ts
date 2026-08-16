@@ -13,6 +13,46 @@ export interface ToolTimelineItem extends PresentedToolCall {
   result?: string
 }
 
+export interface ExecutionTargetLabelSource {
+  id: string
+  name: string
+  kind: string
+  metadata?: Record<string, unknown>
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed || undefined
+}
+
+function sshPort(value: unknown): number | undefined {
+  const port = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim()
+      ? Number(value)
+      : Number.NaN
+  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : undefined
+}
+
+/** Operator-facing label for a physical execution target. */
+export function executionTargetLabel(target: ExecutionTargetLabelSource): string {
+  const name = target.name.trim()
+  if (target.kind !== 'managed_ssh') return name || target.id
+
+  const host = nonEmptyString(target.metadata?.host)
+  const user = nonEmptyString(target.metadata?.user)
+  const port = sshPort(target.metadata?.port)
+  if (host) {
+    const formattedHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+    const destination = user ? `${user}@${formattedHost}` : formattedHost
+    return port && port !== 22 ? `${destination}:${port}` : destination
+  }
+
+  const legacyName = name.replace(/^SSH\s+/i, '').replace(/:22$/, '')
+  return legacyName || 'SSH'
+}
+
 function toolArgumentsQuality(call: PresentedToolCall): number {
   if (!call.arguments.trim() || call.arguments.trim() === '{}') return 0
   return call.truncated === true ? 1 : 2

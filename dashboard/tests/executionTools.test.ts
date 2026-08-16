@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildToolTimeline, executionTargetIds } from '../src/app/executionTools.ts'
+import {
+  buildToolTimeline,
+  executionTargetIds,
+  executionTargetLabel,
+} from '../src/app/executionTools.ts'
 
 test('Assistant Calls are joined to durable Tool Outputs by tool_call_id', () => {
   const timeline = buildToolTimeline([{
@@ -185,4 +189,35 @@ test('artifact transfer exposes both non-local endpoints', () => {
     source: { target_id: 'target-default', path: 'dist/app' },
     destination: { target_id: 'target-server', path: '/srv/app' },
   })), ['target-server'])
+})
+
+test('managed SSH targets use their operator-facing SSH destination', () => {
+  assert.equal(executionTargetLabel({
+    id: 'target-ssh-internal',
+    kind: 'managed_ssh',
+    name: 'SSH featurize@workspace.featurize.cn:47557',
+    metadata: {
+      host: 'workspace.featurize.cn',
+      user: 'featurize',
+      port: 47_557,
+    },
+  }), 'featurize@workspace.featurize.cn:47557')
+  assert.equal(executionTargetLabel({
+    id: 'target-ssh-internal',
+    kind: 'managed_ssh',
+    name: 'SSH 39.102.208.61',
+    metadata: {
+      host: '39.102.208.61',
+      user: 'shafreeck',
+      port: 22,
+    },
+  }), 'shafreeck@39.102.208.61')
+})
+
+test('managed SSH target labels retain a readable legacy fallback', () => {
+  assert.equal(executionTargetLabel({
+    id: 'target-ssh-internal',
+    kind: 'managed_ssh',
+    name: 'SSH root@39.102.208.61:22',
+  }), 'root@39.102.208.61')
 })
