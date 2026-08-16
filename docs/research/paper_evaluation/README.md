@@ -11,6 +11,7 @@
 
 ## 文档入口
 
+- [Runtime 实验基线 v1](./runtime_baseline_v1.md)：冻结论文实验开始时的代码 commit、验证状态与变更规则；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；
