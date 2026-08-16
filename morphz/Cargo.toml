@@ -24,7 +24,7 @@ sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio
 libsqlite3-hotbundle = "1.530300.0"
 async-trait = "0.1"
 tower-http = { version = "0.5", features = ["compression-gzip", "cors"] }
-nix = { version = "0.31.3", features = ["signal", "process", "poll"] }
+nix = { version = "0.31.3", features = ["signal", "process", "poll", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "time"] }
 toml = "0.8"
@@ -49,8 +49,6 @@ portable-pty = "0.9.0"
 vt100 = "0.16.2"
 clap = "4.5"
 clap_complete = "4.5"
-
-[dev-dependencies]
 tempfile = "3.8"
 
 [lints]

@@ -1235,6 +1235,7 @@ impl MorphzRuntimeBuilder {
             crate::execution_target::RuntimeManagedSshProvisioner::new(
                 Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
                 Arc::clone(&runtime_managed_ssh_endpoints),
+                Arc::clone(&secret_store),
                 self.identity.principal_id.clone(),
                 permissions.policy_digest(),
             );
@@ -1265,6 +1266,15 @@ impl MorphzRuntimeBuilder {
             }
             let endpoint =
                 crate::execution_target::ManagedSshEndpoint::load(&target_config.endpoint_ref)?;
+            if let Some(alias) = endpoint.password_secret.as_deref() {
+                if !secret_store.contains_alias(alias)? {
+                    return Err(format!(
+                        "Runtime Managed SSH Target '{}' 绑定的 password Secret '{}' 不存在",
+                        target_config.id, alias
+                    )
+                    .into());
+                }
+            }
             if endpoint.destination.is_none() {
                 permissions
                     .profile()
@@ -1366,6 +1376,7 @@ impl MorphzRuntimeBuilder {
             Arc::clone(&runtime_managed_ssh_endpoints),
             artifact_transfer_stages.clone(),
             Arc::clone(&permissions),
+            Arc::clone(&secret_store),
             permissions.policy_digest(),
             !permissions.profile().full_access(),
         ));

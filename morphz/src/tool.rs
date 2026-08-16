@@ -95,6 +95,21 @@ fn should_renew_background_execution(
     status == ExecutionJobStatus::Running && claim_matches && !cancellation_requested
 }
 
+fn executable_secret_aliases(
+    runtime_managed_ssh: bool,
+    approved_secret_env: &[String],
+) -> Vec<String> {
+    if runtime_managed_ssh {
+        approved_secret_env
+            .iter()
+            .filter(|name| name.as_str() == "SSH_AUTH_SOCK")
+            .cloned()
+            .collect()
+    } else {
+        approved_secret_env.to_vec()
+    }
+}
+
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
     pub static CURRENT_CONTEXT_ID: String;
@@ -6060,7 +6075,7 @@ impl Tool for ExecuteCommandTool {
 
         ToolDefinition {
             name: "exec".to_string(),
-            description: "Run a Shell command in the operating system's native sandbox, which by default permits configured workspace paths and denies network. Suitable for tests, builds, and formatting. Prefer list_files/search for discovery and edit/write for changes. Do not call ssh/scp/sftp directly on a local Target; resolve a managed_ssh Target and pass its ID as target so the Runtime manages the connection. When other network, path, or secret environment capabilities are truly needed, request the minimum through require_escalated for independent review. A boundary rejection receipt explains how to request it. After the wait timeout the Runtime manages the command in the background. Never create an unmanaged background process with '&'.".to_string(),
+            description: "Run a Shell command in the operating system's native sandbox, which by default permits configured workspace paths and denies network. Suitable for tests, builds, and formatting. Prefer list_files/search for discovery and edit/write for changes. Do not call ssh/scp/sftp directly on a local Target; resolve a managed_ssh Target and pass its ID as target so the Runtime manages the connection. Bind Managed SSH password aliases through resolve_target rather than requesting them as exec environment variables. When other network, path, or secret environment capabilities are truly needed, request the minimum through require_escalated for independent review. A boundary rejection receipt explains how to request it. After the wait timeout the Runtime manages the command in the background. Never create an unmanaged background process with '&'.".to_string(),
             parameters: params_json,
         }
     }
@@ -6214,18 +6229,13 @@ impl Tool for ExecuteCommandTool {
             )?;
         }
         let (prepared, effective_network, approved_secret_env) = if runtime_managed_ssh {
-            if !cmd_trimmed.starts_with("'ssh' ")
+            if !crate::execution_target::is_prepared_managed_ssh_exec_command(cmd_trimmed)
                 || !args.requested_permissions.network
                 || !args.requested_permissions.write_paths.is_empty()
                 || args.sandbox_permissions != SandboxPermissionMode::RequireEscalated
-                || args
-                    .requested_permissions
-                    .secret_env
-                    .iter()
-                    .any(|name| name != "SSH_AUTH_SOCK")
             {
                 return Err(
-                    "Runtime Managed SSH authority 只允许内部生成的 ssh 命令及固定网络/ssh-agent 能力"
+                    "Runtime Managed SSH authority 只允许内部生成的 ssh 命令及固定网络/Target 绑定凭证能力"
                         .into(),
                 );
             }
@@ -6345,9 +6355,11 @@ impl Tool for ExecuteCommandTool {
         let secret_store = Arc::clone(&self.secret_store);
         let secret_context_id = context_id.clone();
         let secret_session_id = session_id.clone();
+        let secrets_to_inject =
+            executable_secret_aliases(runtime_managed_ssh, &approved_secret_env);
         let resolved_secret_env =
             tokio::task::spawn_blocking(move || -> Result<Vec<(String, String)>, String> {
-                approved_secret_env
+                secrets_to_inject
                     .into_iter()
                     .map(|name| {
                         let value = secret_store
@@ -10482,6 +10494,20 @@ Body
             isolate_injected_secret_output(input, &["abc.def-123".to_string()]),
             "wait_task-1783981186436392000-5698 Bearer [INJECTED_SECRET_BLOCKED] agtk_1234567890"
         );
+    }
+
+    #[test]
+    fn managed_ssh_password_alias_is_audited_but_not_injected_as_process_environment() {
+        let approved = vec![
+            "SSH_AUTH_SOCK".to_string(),
+            "FEATURIZE_SSH_PASSWORD".to_string(),
+        ];
+
+        assert_eq!(
+            executable_secret_aliases(true, &approved),
+            vec!["SSH_AUTH_SOCK"]
+        );
+        assert_eq!(executable_secret_aliases(false, &approved), approved);
     }
 
     #[tokio::test]

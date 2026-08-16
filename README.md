@@ -109,8 +109,26 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 
    实际连接由 Runtime 的 OpenSSH 客户端完成，沿用宿主的 `Host`、`User`、`Port`、
    `IdentityFile`、`ProxyJump`、`SSH_AUTH_SOCK` 和 known-hosts 设置，同时强制
-   `BatchMode=yes` 与严格 host-key 校验。`host` 可直接使用 SSH config 中的 Host、
-   普通 DNS hostname 或 IPv4 地址，不需要先创建 Edge Node 或 Managed SSH Target。
+   严格 host-key 校验。默认 `key_only` 使用 `BatchMode=yes`。仅提供密码的主机可先把密码
+   保存到 Secret Store，再把 alias 绑定到 Target；密码值不会进入工具参数、Ledger、Target
+   元数据或普通 Shell 环境：
+
+   ```json
+   {
+     "kind": "managed_ssh",
+     "host": "workspace.example.com",
+     "user": "deploy",
+     "port": 47557,
+     "auth_mode": "password_only",
+     "password_secret": "WORKSPACE_SSH_PASSWORD"
+   }
+   ```
+
+   `auth_mode` 还支持 `key_then_password`。Runtime 按当前 Context、Session、Objective 和
+   Target scope 从 Secret Store 解析该 alias，并通过一次性 askpass FIFO 交给 OpenSSH。
+   已有 Target 可用 `target_id + auth_mode + password_secret` 绑定或轮换密码；切回
+   `key_only` 会移除密码绑定。`host` 可直接使用 SSH config 中的 Host、普通 DNS hostname
+   或 IPv4 地址，不需要先创建 Edge Node 或 Managed SSH Target。
 
    管理员仍可选择预注册固定 Target（例如需要稳定显示名、平台和 Workspace 元数据时）：
 
@@ -132,12 +150,15 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
      "user": "deploy",
      "port": 22,
      "known_hosts_file": "/absolute/operator-owned/path/known_hosts",
-     "approved": true
+     "approved": true,
+     "auth_mode": "password_only",
+     "password_secret": "PRODUCTION_SSH_PASSWORD"
    }
    ```
 
-   固定描述符模式继续要求 Runtime 继承可用的 `SSH_AUTH_SOCK`，并使用显式
-   `known_hosts_file`；它只是可选的管理员固定策略，不是 Managed SSH 的使用前提。
+   固定描述符始终使用显式 `known_hosts_file`；`key_only` / `key_then_password` 可以继承
+   `SSH_AUTH_SOCK`，密码模式引用 Runtime Secret Store alias。它只是可选的管理员固定策略，
+   不是 Managed SSH 的使用前提。
 
    CLI 也可以直接携带提示词；未被已注册命令和选项消费的文本都会交给 Agent：
 
