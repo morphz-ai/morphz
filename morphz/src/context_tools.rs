@@ -143,11 +143,11 @@ impl Tool for RecallTool {
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
         ToolDefinition {
             name: "recall".to_string(),
-            description: format!("Read original Event Ledger content and retired Frames by stable short reference, query, or time range. An observation ref such as @e27 is deterministically derived from its Ledger sequence; prefer that ref in event_id and the Runtime will resolve the full ID. Use this to verify summaries, recover forgotten content, or page through large preview-truncated output. Results enter only inbox and are not written to Mind automatically. event_id mode returns at most {max_chunk_chars} characters per call; when next_offset is present, pass it back unchanged as offset. Search mode accepts a time range alone or together with query; when next_cursor is present, pass it back unchanged to continue."),
+            description: format!("Read original Event Ledger content and retired Frames by stable reference, query, or time range. Use an Observation ref such as @e27 only when the Runtime presents that exact ref in Context or suggested_recall; never construct @eN from a Signal or Ledger sequence. Searchable non-Observation Events use their full immutable Event ID. Use this to verify summaries, recover forgotten content, or page through large preview-truncated output. Results enter only inbox and are not written to Mind automatically. event_id mode returns at most {max_chunk_chars} characters per call; when next_offset is present, pass it back unchanged as offset. Search mode accepts a time range alone or together with query; when next_cursor is present, pass it back unchanged to continue."),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "event_id": { "type": "string", "description": "A stable short Context observation ref such as @e27; a full Ledger Event ID is also accepted" },
+                    "event_id": { "type": "string", "description": "An exact Context Observation ref such as @e27 copied from Runtime output, or a full immutable Ledger Event ID; never synthesize @eN from a sequence" },
                     "frame_id": { "type": "string", "description": "An existing or retired Frame ID" },
                     "query": { "type": "string", "description": "Optional keywords to search across every Session in the current Cognitive Context Ledger" },
                     "start_time": { "type": "string", "format": "date-time", "description": "Optional inclusive RFC 3339 start time interpreted using evaluation-environment.local-time; an explicit offset is required. A time-only recall does not require query" },
@@ -249,8 +249,9 @@ impl Tool for RecallTool {
             .into_iter()
             .map(|hit| {
                 let kind = hit.document_kind.as_str();
-                let event_reference =
-                    (kind == "event").then(|| format!("@e{}", hit.updated_sequence));
+                let event_reference = (kind == "event")
+                    .then(|| page.event_references.get(&hit.document_id).cloned())
+                    .flatten();
                 let suggested_recall = match kind {
                     "event" => event_reference.as_ref().map(|event_id| {
                         serde_json::json!({
@@ -659,6 +660,106 @@ mod tests {
         let aliased: serde_json::Value = serde_json::from_str(&aliased).unwrap();
         assert_eq!(aliased["text"], "甲乙");
         assert_eq!(aliased["event_id"], "@e1");
+    }
+
+    #[tokio::test]
+    async fn recall_search_recommends_short_refs_only_for_observations() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-reference-kinds.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        let mut observation = Event::new(
+            "event:user-evidence".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "recall-reference-context",
+                "session_id": "recall-reference-session",
+                "text": "visible evidence",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        observation.timestamp = DateTime::parse_from_rfc3339("2026-08-16T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        store.append(observation).await.unwrap();
+
+        let mut control_receipt = Event::new(
+            "event:context-receipt".to_string(),
+            "System-Executor".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::json!({
+                "context_id": "recall-reference-context",
+                "session_id": "recall-reference-session",
+                "tool_name": "context_tx",
+                "tool_status": "success",
+                "text": "{\"status\":\"committed\"}",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        control_receipt.timestamp = DateTime::parse_from_rfc3339("2026-08-16T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        store.append(control_receipt).await.unwrap();
+
+        let engine = Arc::new(ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        ));
+        let tool = RecallTool::new(engine);
+        let search = CURRENT_CONTEXT_ID
+            .scope(
+                "recall-reference-context".to_string(),
+                tool.execute(
+                    &serde_json::json!({
+                        "start_time": "2026-08-16T08:00:00Z",
+                        "end_time": "2026-08-16T11:00:00Z",
+                        "limit": 10,
+                    })
+                    .to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        let search: serde_json::Value = serde_json::from_str(&search).unwrap();
+        let matches = search["matches"].as_array().unwrap();
+        let observation = matches
+            .iter()
+            .find(|hit| hit["document_id"] == "event:user-evidence")
+            .unwrap();
+        let control_receipt = matches
+            .iter()
+            .find(|hit| hit["document_id"] == "event:context-receipt")
+            .unwrap();
+        assert_eq!(observation["event_id"], "@e1");
+        assert_eq!(control_receipt["event_id"], "event:context-receipt");
+
+        for hit in [observation, control_receipt] {
+            let suggested = hit["suggested_recall"].clone();
+            let recalled = CURRENT_CONTEXT_ID
+                .scope(
+                    "recall-reference-context".to_string(),
+                    tool.execute(&suggested.to_string()),
+                )
+                .await
+                .unwrap();
+            let recalled: serde_json::Value = serde_json::from_str(&recalled).unwrap();
+            assert_eq!(recalled["event_id"], hit["event_id"]);
+        }
+
+        let forged = CURRENT_CONTEXT_ID
+            .scope(
+                "recall-reference-context".to_string(),
+                tool.execute(&serde_json::json!({ "event_id": "@e2" }).to_string()),
+            )
+            .await
+            .unwrap_err();
+        assert!(forged.to_string().contains("不指向可见 observation"));
     }
 
     #[tokio::test]

@@ -53,7 +53,7 @@ impl std::fmt::Display for RuntimeContextVersionConflict {
 
 impl std::error::Error for RuntimeContextVersionConflict {}
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 27;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 28;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 const FRAME_RECALL_CURSOR_DOMAIN: &[u8] = b"morphz/frame-recall-cursor/v1\0";
@@ -253,6 +253,10 @@ impl ContextReferences {
 
     fn display<'a>(&'a self, id: &'a str) -> &'a str {
         self.id_to_alias.get(id).map(String::as_str).unwrap_or(id)
+    }
+
+    fn observation_reference(&self, id: &str) -> Option<&str> {
+        self.id_to_alias.get(id).map(String::as_str)
     }
 
     fn resolve(&self, reference: &str) -> Result<String, String> {
@@ -918,6 +922,11 @@ pub struct RecallSearchPage {
     pub start_time: Option<DateTime<Utc>>,
     pub end_time: Option<DateTime<Utc>>,
     pub matches: Vec<RecallSearchHit>,
+    /// Canonical model-facing Recall selector for Event hits. Observation
+    /// Events use their exact `@eN` ref; other searchable Ledger Events keep
+    /// their full immutable ID and must never be disguised as Observations.
+    #[serde(default, skip)]
+    pub event_references: BTreeMap<String, String>,
     pub next_cursor: Option<String>,
 }
 
@@ -3437,6 +3446,9 @@ impl ContextEngine {
     }
 
     pub fn event_reference(&self, event: &Event) -> String {
+        if !is_observation(event) {
+            return event.id.clone();
+        }
         event
             .sequence
             .map(|sequence| format!("{EVENT_REFERENCE_PREFIX}{sequence}"))
@@ -4381,12 +4393,36 @@ impl ContextRecallService for ContextEngine {
         } else {
             None
         };
+        let event_ids = matches
+            .iter()
+            .filter(|hit| hit.document_kind == RecallDocumentKind::Event)
+            .map(|hit| hit.document_id.clone())
+            .collect::<Vec<_>>();
+        let event_references = if event_ids.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.store
+                .query(QueryFilter {
+                    context_id: Some(request.context_id.clone()),
+                    event_ids: event_ids.clone(),
+                    top_k: Some(event_ids.len()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .map(|event| {
+                    let reference = self.event_reference(&event);
+                    (event.id, reference)
+                })
+                .collect()
+        };
         Ok(RecallSearchPage {
             context_id: request.context_id,
             query,
             start_time: request.start_time,
             end_time: request.end_time,
             matches,
+            event_references,
             next_cursor,
         })
     }
@@ -5778,14 +5814,22 @@ fn render_current_activation(
                 .signal_batch
                 .iter()
                 .map(|signal| {
-                    list(
-                        "signal",
-                        vec![
-                            pair("event", atom(references.display(&signal.event_id))),
-                            pair("kind", atom(&signal.kind)),
-                            pair("sequence", atom(signal.sequence.to_string())),
-                        ],
-                    )
+                    let observation_reference = references.observation_reference(&signal.event_id);
+                    let mut fields = vec![
+                        pair("event", atom(references.display(&signal.event_id))),
+                        pair("kind", atom(&signal.kind)),
+                        pair(
+                            "observation-ref",
+                            atom(observation_reference.unwrap_or("none")),
+                        ),
+                    ];
+                    // Ledger sequence is useful for ordering visible
+                    // Observations, but exposing it for control-plane Events
+                    // invites the invalid inference `sequence N => @eN`.
+                    if observation_reference.is_some() {
+                        fields.push(pair("sequence", atom(signal.sequence.to_string())));
+                    }
+                    list("signal", fields)
                 })
                 .collect(),
         ),
@@ -10775,7 +10819,10 @@ mod tests {
             tool_name: None,
             visible_in_inbox: true,
         };
-        let references = ContextReferences::default();
+        let references = ContextReferences {
+            alias_to_id: HashMap::from([("@e7".to_string(), "user:1".to_string())]),
+            id_to_alias: HashMap::from([("user:1".to_string(), "@e7".to_string())]),
+        };
         let observations = vec![ContextObservation {
             id: "user:1".to_string(),
             reference: "@e7".to_string(),
@@ -10914,11 +10961,9 @@ mod tests {
         );
         assert!(rendered.contains("advances only the task expressed by root-turn"));
         assert!(rendered.contains(
-            "(signal-batch (signal (event user:1) (kind chat/user_message) (sequence 7)))"
+            "(signal-batch (signal (event @e7) (kind chat/user_message) (observation-ref @e7) (sequence 7)))"
         ));
-        assert!(
-            rendered.contains("(activation (id work-current) (caused-by (signal-batch user:1)))")
-        );
+        assert!(rendered.contains("(activation (id work-current) (caused-by (signal-batch @e7)))"));
         assert!(!rendered.contains("current-evaluation"));
         assert!(rendered.contains("(pending-tools exec)"));
         assert!(rendered.contains("(thread-kind execution)"));
@@ -11421,6 +11466,35 @@ mod tests {
         let policy_wake = wake_for(&[user, policy]);
         assert_eq!(policy_wake.cause, "context-transaction-result");
         assert!(policy_wake.visible_in_inbox);
+    }
+
+    #[test]
+    fn control_plane_signal_does_not_expose_a_forgeable_observation_sequence() {
+        let focus = ActivationFocus {
+            activation_id: "work-control".to_string(),
+            session_id: "session-control".to_string(),
+            root_turn_id: "user:root".to_string(),
+            thread_kind: "execution".to_string(),
+            root_kind: "chat/user_message".to_string(),
+            root_preview: "continue".to_string(),
+            trigger_event_id: "output:context-receipt".to_string(),
+            trigger_kind: "chat/tool_output".to_string(),
+            trigger_preview: r#"{"status":"committed"}"#.to_string(),
+            signal_batch: vec![ActivationSignalFocus {
+                event_id: "output:context-receipt".to_string(),
+                kind: "chat/tool_output".to_string(),
+                sequence: 122_453,
+            }],
+            objective_id: None,
+            objective_evaluation_id: None,
+        };
+
+        let rendered = render_current_activation(&focus, &ContextReferences::default()).to_string();
+        assert!(rendered.contains(
+            "(signal-batch (signal (event output:context-receipt) (kind chat/tool_output) (observation-ref none)))"
+        ));
+        assert!(!rendered.contains("122453"));
+        assert!(!rendered.contains("@e122453"));
     }
 
     #[test]
