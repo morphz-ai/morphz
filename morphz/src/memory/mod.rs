@@ -5402,6 +5402,27 @@ pub trait ActivationStore: Send + Sync {
             .filter(|activation| activation.root_turn_id == root_turn_id)
             .collect())
     }
+    /// The immutable first Activation for one logical Thread root.
+    ///
+    /// Scheduled Threads use a synthetic `root_turn_id`; their original task
+    /// is carried by this Activation's trigger Event. Runtime continuation
+    /// hydration uses this exact indexed lookup instead of scanning or relying
+    /// on whichever Events happen to remain in the active Context projection.
+    async fn get_first_thread_activation_by_root(
+        &self,
+        context_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_thread_activations_by_root(context_id, root_turn_id)
+            .await?
+            .into_iter()
+            .min_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            }))
+    }
     /// Exact aggregate read for a bounded set of Thread roots. Production
     /// stores override this with one query so Dashboard history never becomes
     /// one query per Thread.

@@ -8841,6 +8841,24 @@ impl ActivationStore for SqliteStore {
         rows.iter().map(thread_activation_from_row).collect()
     }
 
+    async fn get_first_thread_activation_by_root(
+        &self,
+        context_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(
+            r#"SELECT * FROM thread_activations
+               WHERE context_id = ? AND root_turn_id = ?
+               ORDER BY created_at, id
+               LIMIT 1"#,
+        )
+        .bind(context_id)
+        .bind(root_turn_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(thread_activation_from_row).transpose()
+    }
+
     async fn list_thread_activations_by_roots(
         &self,
         context_id: &str,

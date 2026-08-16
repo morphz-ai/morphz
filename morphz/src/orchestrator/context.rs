@@ -53,7 +53,7 @@ impl std::fmt::Display for RuntimeContextVersionConflict {
 
 impl std::error::Error for RuntimeContextVersionConflict {}
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 29;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 30;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 const FRAME_RECALL_CURSOR_DOMAIN: &[u8] = b"morphz/frame-recall-cursor/v1\0";
@@ -730,12 +730,19 @@ pub struct ActivationFocus {
     pub activation_id: String,
     pub session_id: String,
     pub root_turn_id: String,
+    /// Exact immutable Event carrying the original task. This differs from
+    /// `root_turn_id` for scheduled Threads, whose stable route ID is
+    /// deliberately synthetic.
+    pub root_event_id: String,
     pub thread_kind: String,
     pub root_kind: String,
     pub root_preview: String,
     pub trigger_event_id: String,
     pub trigger_kind: String,
     pub trigger_preview: String,
+    /// Bounded causal payload used when the standard tool transcript is
+    /// intentionally omitted from a critical-maintenance request.
+    pub trigger_fallback_preview: Option<String>,
     /// The exact deterministic Signal batch atomically claimed by this
     /// Activation. The first entry is the primary trigger; later entries are
     /// concurrent mailbox facts that belong to the same causal Thread.
@@ -744,6 +751,11 @@ pub struct ActivationFocus {
     /// Sharing a Session with an Objective does not create this binding.
     pub objective_id: Option<String>,
     pub objective_evaluation_id: Option<String>,
+    /// Immutable ownership route. Objective supervision does not grant the
+    /// current Activation authority to mutate that Objective; only the
+    /// explicit `objective_id`/`objective_evaluation_id` binding above does.
+    pub supervisor_kind: String,
+    pub supervisor_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2796,8 +2808,74 @@ impl ContextEngine {
             }
             _ => Vec::new(),
         };
-        let activation = activation_record
-            .map(|activation| activation_focus(activation, &activation_signals, &events));
+        // Activation causality is a durable route, not a best-effort Context
+        // projection. In particular, scheduled Threads have a synthetic
+        // `root_turn_id`, while their immutable task lives on the first
+        // Activation's trigger Event. Resolve the current trigger and original
+        // task by exact IDs so retire/projection boundaries cannot erase the
+        // work that a continuation is responsible for.
+        let mut activation_thread = None;
+        let mut activation_root_event = None;
+        let mut activation_trigger_event = None;
+        if let Some(current) = activation_record {
+            activation_thread = threads
+                .iter()
+                .find(|thread| thread.root_turn_id == current.root_turn_id)
+                .cloned();
+            if activation_thread.is_none() {
+                if let Some(store) = &self.session_store {
+                    activation_thread = store.get_thread_by_root(&current.root_turn_id).await?;
+                }
+            }
+
+            activation_trigger_event = events
+                .iter()
+                .find(|event| event.id == current.trigger_event_id)
+                .cloned();
+            if activation_trigger_event.is_none() {
+                activation_trigger_event = self
+                    .find_event(context_id, &current.trigger_event_id)
+                    .await?;
+            }
+
+            activation_root_event = events
+                .iter()
+                .find(|event| event.id == current.root_turn_id)
+                .cloned();
+            if activation_root_event.is_none() {
+                activation_root_event = self.find_event(context_id, &current.root_turn_id).await?;
+            }
+            if activation_root_event.is_none() {
+                if let Some(store) = &self.session_store {
+                    if let Some(first) = store
+                        .get_first_thread_activation_by_root(context_id, &current.root_turn_id)
+                        .await?
+                    {
+                        activation_root_event = if first.trigger_event_id
+                            == current.trigger_event_id
+                        {
+                            activation_trigger_event.clone()
+                        } else {
+                            events
+                                .iter()
+                                .find(|event| event.id == first.trigger_event_id)
+                                .cloned()
+                                .or(self.find_event(context_id, &first.trigger_event_id).await?)
+                        };
+                    }
+                }
+            }
+        }
+        let activation = activation_record.map(|current| {
+            activation_focus(
+                current,
+                &activation_signals,
+                &events,
+                activation_thread.as_ref(),
+                activation_root_event.as_ref(),
+                activation_trigger_event.as_ref(),
+            )
+        });
         let concurrent_activations = active_activations
             .iter()
             .filter(|item| !item.status.is_terminal())
@@ -3326,16 +3404,19 @@ impl ContextEngine {
         max_preview_chars: usize,
     ) -> (usize, usize) {
         let total = view.observations.len();
-        let mut required_ids = HashSet::new();
-        if let Some(activation) = &view.activation {
-            required_ids.insert(activation.root_turn_id.as_str());
-            required_ids.insert(activation.trigger_event_id.as_str());
+        let mut required_ids = HashSet::<String>::new();
+        if let Some(activation) = &mut view.activation {
+            required_ids.insert(activation.root_event_id.clone());
+            required_ids.insert(activation.trigger_event_id.clone());
             required_ids.extend(
                 activation
                     .signal_batch
                     .iter()
-                    .map(|signal| signal.event_id.as_str()),
+                    .map(|signal| signal.event_id.clone()),
             );
+            if let Some(fallback) = activation.trigger_fallback_preview.take() {
+                activation.trigger_preview = fallback;
+            }
         }
 
         let limit = max_observations.max(required_ids.len()).max(1);
@@ -5792,7 +5873,8 @@ fn render_current_activation(
         list(
             "root-turn",
             vec![
-                pair("event", atom(references.display(&evaluation.root_turn_id))),
+                pair("id", atom(&evaluation.root_turn_id)),
+                pair("event", atom(references.display(&evaluation.root_event_id))),
                 pair("kind", atom(&evaluation.root_kind)),
                 pair("input", atom(&evaluation.root_preview)),
             ],
@@ -5834,6 +5916,11 @@ fn render_current_activation(
                 .collect(),
         ),
     ];
+    let mut supervision = vec![pair("kind", atom(&evaluation.supervisor_kind))];
+    if let Some(supervisor_id) = &evaluation.supervisor_id {
+        supervision.push(pair("id", atom(supervisor_id)));
+    }
+    fields.push(list("supervision", supervision));
     if let Some(objective_id) = &evaluation.objective_id {
         let mut binding = vec![pair("id", atom(objective_id))];
         if let Some(evaluation_id) = &evaluation.objective_evaluation_id {
@@ -5960,6 +6047,16 @@ fn render_evaluation_directive(
             pair(
                 "objective-binding",
                 atom(evaluation.objective_id.as_deref().unwrap_or("none")),
+            ),
+            list(
+                "supervision",
+                vec![
+                    pair("kind", atom(&evaluation.supervisor_kind)),
+                    pair(
+                        "id",
+                        atom(evaluation.supervisor_id.as_deref().unwrap_or("none")),
+                    ),
+                ],
             ),
             pair("root-kind", atom(&evaluation.root_kind)),
             pair("root-input", atom(&evaluation.root_preview)),
@@ -7301,7 +7398,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "root-turn",
-                        atom("root-turn is a Thread's stable causal root, not the entire Session dialogue history"),
+                        atom("root-turn.id is a Thread's stable causal route, while root-turn.event is the immutable Event carrying this Thread's original task; neither denotes the entire Session dialogue history"),
                     ),
                     pair(
                         "trigger",
@@ -7322,6 +7419,10 @@ fn render_protocol() -> SExpr {
                     pair(
                         "objective-binding",
                         atom("when evaluate.objective-binding=none, Objective state is background for understanding and progress replies only; do not advance it or call tools for it. Only an explicitly bound Objective Evaluation may advance it through its Execution Thread"),
+                    ),
+                    pair(
+                        "supervision",
+                        atom("evaluate.supervision is the durable owner of this Thread. Objective supervision explains which Objective receives the result but does not grant this Activation objective-control authority; that requires an explicit objective-binding"),
                     ),
                 ],
             ),
@@ -8762,13 +8863,20 @@ fn activation_focus(
     activation: &ThreadActivationRecord,
     signals: &[ThreadSignalRecord],
     events: &[Event],
+    thread: Option<&ThreadRecord>,
+    exact_root: Option<&Event>,
+    exact_trigger: Option<&Event>,
 ) -> ActivationFocus {
-    let root = events
-        .iter()
-        .find(|event| event.id == activation.root_turn_id);
-    let trigger = events
-        .iter()
-        .find(|event| event.id == activation.trigger_event_id);
+    let root = exact_root.or_else(|| {
+        events
+            .iter()
+            .find(|event| event.id == activation.root_turn_id)
+    });
+    let trigger = exact_trigger.or_else(|| {
+        events
+            .iter()
+            .find(|event| event.id == activation.trigger_event_id)
+    });
     let effective_root = root.or(trigger);
     let objective_id = root
         .and_then(|event| event.payload.get("objective_id"))
@@ -8807,10 +8915,16 @@ fn activation_focus(
     } else {
         bounded_event_preview(effective_root, 1_200)
     };
+    let trigger_fallback_preview = trigger
+        .filter(|event| event.event_type == TYPE_TOOL_OUTPUT)
+        .map(|event| bounded_event_preview(Some(event), 800));
     ActivationFocus {
         activation_id: activation.id.clone(),
         session_id: activation.session_id.clone(),
         root_turn_id: activation.root_turn_id.clone(),
+        root_event_id: effective_root
+            .map(|event| event.id.clone())
+            .unwrap_or_else(|| activation.trigger_event_id.clone()),
         thread_kind: thread_kind.to_string(),
         root_kind,
         root_preview,
@@ -8821,6 +8935,7 @@ fn activation_focus(
         } else {
             bounded_event_preview(trigger, 800)
         },
+        trigger_fallback_preview,
         signal_batch: signals
             .iter()
             .map(|signal| ActivationSignalFocus {
@@ -8831,6 +8946,10 @@ fn activation_focus(
             .collect(),
         objective_id,
         objective_evaluation_id,
+        supervisor_kind: thread
+            .map(|thread| thread.supervision.supervisor_kind.as_str().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        supervisor_id: thread.and_then(|thread| thread.supervision.supervisor_id.clone()),
     }
 }
 
@@ -8925,7 +9044,7 @@ fn concurrent_activation_view(
     let root = events
         .iter()
         .find(|event| event.id == activation.root_turn_id);
-    let focus = activation_focus(activation, &[], events);
+    let focus = activation_focus(activation, &[], events, None, root, None);
     let thread_kind = activation_thread_kind(&focus).to_string();
     let thread_id = match thread_kind.as_str() {
         "dialogue_turn" => activation.session_id.clone(),
@@ -9917,6 +10036,213 @@ mod tests {
             .contains("(active-principal (id unknown) (authority runtime) (binding unknown))"));
     }
 
+    #[tokio::test]
+    async fn scheduled_continuation_recovers_retired_task_and_critical_trigger_from_causal_route() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(
+                tmp.path()
+                    .join("scheduled-causal-route.db")
+                    .to_str()
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        let context_id = "scheduled-causal-context";
+        let session_id = "scheduled-causal-session";
+        let root_turn_id = "scheduled_root_causal";
+        let task_event_id = "schedule_due_causal";
+        let trigger_event_id = "tool_output_causal";
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "scheduled-causal-agent".to_string(),
+                    title: "Scheduled Causal Agent".to_string(),
+                    root_context_id: context_id.to_string(),
+                },
+                NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: "scheduled-causal-agent".to_string(),
+                    title: "Scheduled Causal Context".to_string(),
+                },
+                NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "scheduled-causal-agent".to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: "Scheduled Causal Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let task = Event::new(
+            task_event_id.to_string(),
+            "Runtime-Scheduler".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/schedule_due".to_string(),
+            serde_json::json!({
+                "context_id": context_id,
+                "session_id": session_id,
+                "root_turn_id": root_turn_id,
+                "text": "audit the exact durable route"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(task).await.unwrap();
+        let task_sequence = store
+            .query(QueryFilter {
+                event_id: Some(task_event_id.to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: "scheduled-causal-thread".to_string(),
+                agent_id: "scheduled-causal-agent".to_string(),
+                context_id: context_id.to_string(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                root_turn_id: root_turn_id.to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::objective(
+                    "objective-causal",
+                    "evaluation-origin",
+                    7,
+                    None,
+                ),
+            })
+            .await
+            .unwrap();
+        let first = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "activation-causal-first".to_string(),
+                agent_id: "scheduled-causal-agent".to_string(),
+                context_id: context_id.to_string(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: task_event_id.to_string(),
+                trigger_sequence: task_sequence,
+                trigger_kind: "chat/schedule_due".to_string(),
+                parent_activation_id: None,
+                root_turn_id: root_turn_id.to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .update_thread_activation(
+                &first.id,
+                first.revision,
+                crate::memory::ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        engine
+            .apply_context_transaction(
+                context_id,
+                session_id,
+                &format!(
+                    "(context-tx (base-version 0) (reason consumed) (retire {task_event_id}))"
+                ),
+            )
+            .await
+            .unwrap();
+
+        let trigger = Event::new(
+            trigger_event_id.to_string(),
+            "System-Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::json!({
+                "context_id": context_id,
+                "session_id": session_id,
+                "root_turn_id": root_turn_id,
+                "tool_name": "context_tx",
+                "tool_status": "success",
+                "text": "causal receipt payload"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(trigger).await.unwrap();
+        let trigger_sequence = store
+            .query(QueryFilter {
+                event_id: Some(trigger_event_id.to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        let current = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "activation-causal-current".to_string(),
+                agent_id: "scheduled-causal-agent".to_string(),
+                context_id: context_id.to_string(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: trigger_event_id.to_string(),
+                trigger_sequence,
+                trigger_kind: "chat/tool_output".to_string(),
+                parent_activation_id: Some(first.id),
+                root_turn_id: root_turn_id.to_string(),
+            })
+            .await
+            .unwrap();
+
+        let mut view = engine
+            .build_context_encoding_for_activation(context_id, &current, &HashSet::new())
+            .await
+            .unwrap();
+        assert!(!view
+            .observations
+            .iter()
+            .any(|observation| observation.id == task_event_id));
+        let focus = view.activation.as_ref().unwrap();
+        assert_eq!(focus.root_turn_id, root_turn_id);
+        assert_eq!(focus.root_event_id, task_event_id);
+        assert!(focus.root_preview.contains("audit the exact durable route"));
+        assert_eq!(focus.supervisor_kind, "objective");
+        assert_eq!(focus.supervisor_id.as_deref(), Some("objective-causal"));
+        assert_eq!(focus.objective_id, None);
+        assert_eq!(
+            focus.trigger_preview,
+            "[result delivered through the standard function-call transcript]"
+        );
+
+        engine.apply_critical_maintenance_projection(&mut view, 1, 128);
+        let focus = view.activation.as_ref().unwrap();
+        assert!(focus.trigger_preview.contains("causal receipt payload"));
+        assert!(!view
+            .observations
+            .iter()
+            .any(|observation| observation.id == task_event_id));
+        assert!(view.sexpr.contains("(root-turn (id scheduled_root_causal)"));
+        assert!(view.sexpr.contains("audit the exact durable route"));
+        assert!(view.sexpr.contains(
+            "(supervision (kind objective) (id objective-causal)) (objective-binding none)"
+        ));
+    }
+
     #[test]
     fn v20_projection_hash_remains_valid_after_retiring_schema_extension() {
         let mut state = MindState {
@@ -10857,12 +11183,14 @@ mod tests {
             activation_id: "work-current".to_string(),
             session_id: "s1".to_string(),
             root_turn_id: "user:1".to_string(),
+            root_event_id: "user:1".to_string(),
             thread_kind: "dialogue_turn".to_string(),
             root_kind: "chat/user_message".to_string(),
             root_preview: "先回答我".to_string(),
             trigger_event_id: "user:1".to_string(),
             trigger_kind: "chat/user_message".to_string(),
             trigger_preview: "先回答我".to_string(),
+            trigger_fallback_preview: None,
             signal_batch: vec![ActivationSignalFocus {
                 event_id: "user:1".to_string(),
                 kind: "chat/user_message".to_string(),
@@ -10870,6 +11198,8 @@ mod tests {
             }],
             objective_id: None,
             objective_evaluation_id: None,
+            supervisor_kind: "runtime".to_string(),
+            supervisor_id: Some("dialogue-router".to_string()),
         };
         let concurrent_activations = vec![ConcurrentActivationView {
             activation_id: "work-existing".to_string(),
@@ -11163,15 +11493,19 @@ mod tests {
             activation_id: "work-dialogue".to_string(),
             session_id: "session-a".to_string(),
             root_turn_id: "message-new".to_string(),
+            root_event_id: "message-new".to_string(),
             thread_kind: "dialogue_turn".to_string(),
             root_kind: "chat/user_message".to_string(),
             root_preview: "人呢？".to_string(),
             trigger_event_id: "message-new".to_string(),
             trigger_kind: "chat/user_message".to_string(),
             trigger_preview: "人呢？".to_string(),
+            trigger_fallback_preview: None,
             signal_batch: Vec::new(),
             objective_id: None,
             objective_evaluation_id: None,
+            supervisor_kind: "runtime".to_string(),
+            supervisor_id: Some("dialogue-router".to_string()),
         };
         let now = Utc::now();
         let objectives = vec![ObjectiveRecord {
@@ -11477,12 +11811,14 @@ mod tests {
             activation_id: "work-control".to_string(),
             session_id: "session-control".to_string(),
             root_turn_id: "user:root".to_string(),
+            root_event_id: "user:root".to_string(),
             thread_kind: "execution".to_string(),
             root_kind: "chat/user_message".to_string(),
             root_preview: "continue".to_string(),
             trigger_event_id: "output:context-receipt".to_string(),
             trigger_kind: "chat/tool_output".to_string(),
             trigger_preview: r#"{"status":"committed"}"#.to_string(),
+            trigger_fallback_preview: None,
             signal_batch: vec![ActivationSignalFocus {
                 event_id: "output:context-receipt".to_string(),
                 kind: "chat/tool_output".to_string(),
@@ -11490,6 +11826,8 @@ mod tests {
             }],
             objective_id: None,
             objective_evaluation_id: None,
+            supervisor_kind: "runtime".to_string(),
+            supervisor_id: Some("event-router".to_string()),
         };
 
         let rendered = render_current_activation(&focus, &ContextReferences::default()).to_string();
