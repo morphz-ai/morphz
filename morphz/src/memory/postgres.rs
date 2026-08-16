@@ -10,16 +10,17 @@
 use crate::event::Event;
 use crate::memory::{
     causal_payload_string, AttentionAcknowledgementRecord, CognitiveClockStore,
-    ContextCognitiveClock, EventAppend, EventStore, MindProjectionCommit, MindProjectionHead,
-    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective,
-    NewRuntimeTimer, NewThread, ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveRecord,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
-    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
-    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
-    SessionProjectionMutation, SessionProjectionStore, TimerStore,
+    ContextCognitiveClock, ContextEncodingProjectionSnapshot, EventAppend, EventStore,
+    MindProjectionCommit, MindProjectionHead, MindProjectionRecord, MindProjectionStore,
+    MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, NewThread,
+    ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, ProviderAccountAffinityRecord, ProviderAccountStateRecord,
+    ProviderAccountStateStore, ProviderAccountStatus, ProviderModelCatalogRecord,
+    ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter, RecallDocument,
+    RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability,
+    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
+    SessionProjectionStore, TimerStore,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -1957,7 +1958,8 @@ async fn upsert_recall_document_in_tx(
              retired = EXCLUDED.retired,
              updated_sequence = EXCLUDED.updated_sequence,
              state_hash = EXCLUDED.state_hash
-           WHERE EXCLUDED.updated_sequence >= recall_documents.updated_sequence"#,
+           WHERE EXCLUDED.document_kind = 'frame'
+              OR EXCLUDED.updated_sequence >= recall_documents.updated_sequence"#,
     )
     .bind(&document.context_id)
     .bind(document.document_kind.as_str())
@@ -2725,20 +2727,26 @@ async fn finish_pg_recall_claim(
     claim: &PgRecallOutboxClaim,
     document: Option<&RecallDocument>,
 ) -> Result<bool, StoreError> {
-    let current = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS(
-             SELECT 1 FROM recall_projection_outbox
-             WHERE context_id = $1 AND document_kind = $2 AND document_id = $3
-               AND generation = $4 AND status = 'processing' AND claimed_by = $5
-           )"#,
+    // Lock the exact generation before materializing it. A plain MVCC
+    // `SELECT EXISTS` allowed a newer generation to be enqueued and projected
+    // between this check and the document upsert; Frame documents deliberately
+    // permit same-recency replacement, so that race could let the older worker
+    // become the last writer. The row lock serializes generation replacement
+    // with this finish transaction, matching SQLite's Writer boundary.
+    let current = sqlx::query_scalar::<_, i64>(
+        r#"SELECT 1::BIGINT FROM recall_projection_outbox
+           WHERE context_id = $1 AND document_kind = $2 AND document_id = $3
+             AND generation = $4 AND status = 'processing' AND claimed_by = $5
+           FOR UPDATE"#,
     )
     .bind(&claim.context_id)
     .bind(claim.document_kind.as_str())
     .bind(&claim.document_id)
     .bind(i64::try_from(claim.generation)?)
     .bind(&claim.claim_token)
-    .fetch_one(&mut **tx)
-    .await?;
+    .fetch_optional(&mut **tx)
+    .await?
+    .is_some();
     if !current {
         return Ok(false);
     }
@@ -3028,10 +3036,11 @@ impl RecallProjectionStore for PostgresStore {
             return Err("Recall rebuild document 属于错误的 Context".into());
         }
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM recall_projection_outbox WHERE context_id = $1")
-            .bind(context_id)
-            .execute(&mut *tx)
-            .await?;
+        // The rebuild input was assembled before this transaction. Preserve
+        // transactional Outbox intents committed after that snapshot so the
+        // derived index converges to current Ledger/Mind state. Reapplying an
+        // older intent is safe because document sequence and Outbox generation
+        // fencing reject stale overwrites.
         sqlx::query("DELETE FROM recall_documents WHERE context_id = $1")
             .bind(context_id)
             .execute(&mut *tx)
@@ -3955,6 +3964,62 @@ impl SessionProjectionStore for PostgresStore {
                 })
             })
             .collect()
+    }
+
+    async fn read_context_encoding_projection_snapshot(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        include_context_wide: bool,
+    ) -> Result<ContextEncodingProjectionSnapshot, StoreError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        let mind = get_projection(&mut *tx, context_id).await?;
+        let mut builder = QueryBuilder::<Postgres>::new(
+            r#"SELECT e.sequence AS event_sequence, e.id, e.timestamp, e.actor,
+                      e.type, e.topic, e.payload
+               FROM session_projections projection
+               JOIN events e ON e.id = projection.event_id
+               WHERE projection.context_id = "#,
+        );
+        builder.push_bind(context_id);
+        builder.push(" AND (");
+        if include_context_wide {
+            builder.push("projection.session_id IS NULL");
+            if !session_ids.is_empty() {
+                builder.push(" OR ");
+            }
+        }
+        if !session_ids.is_empty() {
+            builder.push("projection.session_id IN (");
+            let mut separated = builder.separated(", ");
+            for session_id in session_ids {
+                separated.push_bind(session_id);
+            }
+            builder.push(")");
+        } else if !include_context_wide {
+            builder.push("FALSE");
+        }
+        builder.push(") ORDER BY projection.event_sequence ASC");
+        let rows = builder.build().fetch_all(&mut *tx).await?;
+        let events = rows
+            .into_iter()
+            .map(|row| {
+                Ok(Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: serde_json::from_value(row.get::<JsonValue, _>("payload"))?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        tx.commit().await?;
+        Ok(ContextEncodingProjectionSnapshot { mind, events })
     }
 }
 

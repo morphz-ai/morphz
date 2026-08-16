@@ -13,15 +13,16 @@ use crate::memory::{
     ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
     CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextSessionCount,
-    ContextTokenBudgetMutation, ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore,
-    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
-    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
-    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
-    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
+    ContextEncodingProjectionSnapshot, ContextSessionCount, ContextTokenBudgetMutation,
+    ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit,
+    DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
+    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
+    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
@@ -4910,7 +4911,8 @@ async fn upsert_recall_document_in_transaction(
              retired = excluded.retired,
              updated_sequence = excluded.updated_sequence,
              state_hash = excluded.state_hash
-           WHERE excluded.updated_sequence >= recall_documents.updated_sequence"#,
+           WHERE excluded.document_kind = 'frame'
+              OR excluded.updated_sequence >= recall_documents.updated_sequence"#,
     )
     .bind(&document.context_id)
     .bind(document.document_kind.as_str())
@@ -18969,10 +18971,13 @@ impl RecallProjectionStore for SqliteStore {
             return Err("Recall rebuild document 属于错误的 Context".into());
         }
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM recall_projection_outbox WHERE context_id = ?")
-            .bind(context_id)
-            .execute(&mut *tx)
-            .await?;
+        // `documents` is a snapshot assembled before this transaction. A
+        // Ledger/Mind commit may therefore enqueue a newer intent after the
+        // snapshot was read but before we acquire SQLite's Writer. Preserve
+        // every transactional Outbox row: replay is idempotent and
+        // updated-sequence/generation fencing prevents an older intent from
+        // replacing newer materialized state. Deleting the Outbox here would
+        // permanently lose facts committed concurrently with rebuild.
         sqlx::query("DELETE FROM recall_documents WHERE context_id = ?")
             .bind(context_id)
             .execute(&mut *tx)
@@ -19164,6 +19169,61 @@ impl SessionProjectionStore for SqliteStore {
                 })
             })
             .collect()
+    }
+
+    async fn read_context_encoding_projection_snapshot(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        include_context_wide: bool,
+    ) -> Result<ContextEncodingProjectionSnapshot, Box<dyn std::error::Error + Send + Sync>> {
+        let mut tx = self.pool.begin().await?;
+        // The first read pins SQLite's WAL snapshot. Mind and Observation
+        // membership below therefore belong to one atomic Context boundary.
+        let mind = get_mind_projection_from_executor(&mut *tx, context_id).await?;
+        let mut builder = QueryBuilder::new(
+            r#"SELECT e.rowid AS event_sequence, e.id, e.timestamp, e.actor,
+                      e.type, e.topic, e.payload
+               FROM session_projections projection
+               JOIN events e ON e.id = projection.event_id
+               WHERE projection.context_id = "#,
+        );
+        builder.push_bind(context_id);
+        builder.push(" AND (");
+        if include_context_wide {
+            builder.push("projection.session_id IS NULL");
+            if !session_ids.is_empty() {
+                builder.push(" OR ");
+            }
+        }
+        if !session_ids.is_empty() {
+            builder.push("projection.session_id IN (");
+            let mut separated = builder.separated(", ");
+            for session_id in session_ids {
+                separated.push_bind(session_id);
+            }
+            builder.push(")");
+        } else if !include_context_wide {
+            builder.push("0");
+        }
+        builder.push(") ORDER BY projection.event_sequence ASC");
+        let rows = builder.build().fetch_all(&mut *tx).await?;
+        let events = rows
+            .into_iter()
+            .map(|row| {
+                Ok(Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp")),
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: serde_json::from_str(&row.get::<String, _>("payload"))?,
+                })
+            })
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
+        tx.commit().await?;
+        Ok(ContextEncodingProjectionSnapshot { mind, events })
     }
 }
 

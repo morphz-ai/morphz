@@ -604,6 +604,16 @@ pub struct SessionProjectionMutation {
     pub restored_event_ids: Vec<String>,
 }
 
+/// Causally consistent input for one model Context compilation. Mind and the
+/// active Observation membership are committed together and must also be
+/// observed from one database snapshot; independent reads can otherwise omit
+/// both a retired source Event and the Frame derived from it.
+#[derive(Debug, Clone)]
+pub struct ContextEncodingProjectionSnapshot {
+    pub mind: Option<MindProjectionRecord>,
+    pub events: Vec<crate::event::Event>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MindSnapshotRecord {
     pub id: String,
@@ -4264,6 +4274,9 @@ pub trait RecallProjectionStore: Send + Sync {
 
     /// Replaces the complete rebuildable index for one Context. This is an
     /// explicit maintenance operation and never mutates Ledger or Mind state.
+    /// Transactional Outbox intents must survive replacement: the input is a
+    /// point-in-time snapshot and newer authoritative commits rely on those
+    /// intents to converge the rebuilt index after the replacement commits.
     async fn replace_recall_documents(
         &self,
         context_id: &str,
@@ -4304,6 +4317,13 @@ pub trait SessionProjectionStore: Send + Sync {
         session_ids: &[String],
         include_context_wide: bool,
     ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn read_context_encoding_projection_snapshot(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        include_context_wide: bool,
+    ) -> Result<ContextEncodingProjectionSnapshot, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Persistent physical clock queue shared by every scheduler policy. Claiming

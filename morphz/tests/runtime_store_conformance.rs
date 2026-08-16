@@ -47,7 +47,7 @@ use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::{NamedTempFile, TempDir};
 
@@ -2394,6 +2394,25 @@ where
         .unwrap()
         .iter()
         .all(|event| event.id != observation.id));
+    let retired_snapshot = store
+        .read_context_encoding_projection_snapshot(context_id, &selected, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        retired_snapshot
+            .mind
+            .as_ref()
+            .and_then(|mind| mind.state.get("projection"))
+            .and_then(serde_json::Value::as_str),
+        Some("retired")
+    );
+    assert!(
+        retired_snapshot
+            .events
+            .iter()
+            .all(|event| event.id != observation.id),
+        "one read snapshot must not combine retired Mind with active source Observation"
+    );
 
     store.append(observation.clone()).await.unwrap();
     assert!(store
@@ -2440,6 +2459,106 @@ where
             .count(),
         1
     );
+    let restored_snapshot = store
+        .read_context_encoding_projection_snapshot(context_id, &selected, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        restored_snapshot
+            .mind
+            .as_ref()
+            .and_then(|mind| mind.state.get("projection"))
+            .and_then(serde_json::Value::as_str),
+        Some("restored")
+    );
+    assert_eq!(
+        restored_snapshot
+            .events
+            .iter()
+            .filter(|event| event.id == observation.id)
+            .count(),
+        1,
+        "one read snapshot must pair restored Mind with the restored Observation"
+    );
+
+    let writer_store = Arc::clone(&store);
+    let writer_observation_id = observation.id.clone();
+    let writer_done = Arc::new(AtomicBool::new(false));
+    let writer_done_signal = Arc::clone(&writer_done);
+    let writer = tokio::spawn(async move {
+        for index in 0..32_u64 {
+            let current = writer_store
+                .get_mind_projection(context_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let active = index % 2 == 1;
+            let event = context_event(
+                &format!("conformance-context-snapshot-toggle-{index}"),
+                context_id,
+            );
+            let mutation = if active {
+                SessionProjectionMutation {
+                    retired_event_ids: Vec::new(),
+                    restored_event_ids: vec![writer_observation_id.clone()],
+                }
+            } else {
+                SessionProjectionMutation {
+                    retired_event_ids: vec![writer_observation_id.clone()],
+                    restored_event_ids: Vec::new(),
+                }
+            };
+            let committed = writer_store
+                .commit_mind_projection_transaction(
+                    &event,
+                    &[],
+                    &mutation,
+                    current.revision,
+                    NewMindProjection {
+                        context_id: context_id.to_string(),
+                        revision: current.revision + 1,
+                        state: json!({
+                            "version": current.revision + 1,
+                            "snapshot_observation_active": active,
+                        }),
+                        state_hash: format!("conformance-snapshot-toggle-{index}"),
+                        head_event_id: Some(event.id.clone()),
+                        recall_documents: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(matches!(committed, MindProjectionCommit::Committed { .. }));
+            tokio::task::yield_now().await;
+        }
+        writer_done_signal.store(true, Ordering::SeqCst);
+    });
+    for _ in 0..512 {
+        let snapshot = store
+            .read_context_encoding_projection_snapshot(context_id, &selected, true)
+            .await
+            .unwrap();
+        if let Some(active) = snapshot
+            .mind
+            .as_ref()
+            .and_then(|mind| mind.state.get("snapshot_observation_active"))
+            .and_then(serde_json::Value::as_bool)
+        {
+            let observed = snapshot
+                .events
+                .iter()
+                .any(|event| event.id == observation.id);
+            assert_eq!(
+                observed, active,
+                "Mind and Session Projection must come from one database snapshot"
+            );
+        }
+        if writer_done.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    writer.await.unwrap();
 }
 
 async fn assert_recall_projection_conformance<S>(store: Arc<S>)
@@ -2631,6 +2750,20 @@ where
         "stored terms are only comparable against queries from the same segmenter"
     );
 
+    // This conformance helper shares one Context with earlier Store checks.
+    // Rebuild deliberately preserves any authoritative Outbox intents those
+    // checks committed, so drain them before measuring the two new timeline
+    // Events below.
+    loop {
+        let batch = store
+            .project_recall_outbox_batch("recall-conformance-prefill", 64)
+            .await
+            .unwrap();
+        if batch.claimed == 0 {
+            break;
+        }
+    }
+
     for (index, timestamp) in ["2026-08-04T10:00:00Z", "2026-08-04T11:00:00Z"]
         .into_iter()
         .enumerate()
@@ -2694,6 +2827,53 @@ where
         .unwrap();
     assert_eq!(combined.len(), 1);
     assert_eq!(combined[0].document_id, "recall-time-conformance-0");
+
+    // Model the exact rebuild race: maintenance captured `documents`, then a
+    // new authoritative Event committed before the replacement transaction.
+    // The Event's transactional Outbox intent is the only durable bridge from
+    // that stale rebuild snapshot to the current Recall projection. Rebuild
+    // must preserve it rather than silently losing the new fact.
+    let concurrent_event = Event::new(
+        "recall-concurrent-with-rebuild".to_string(),
+        "User".to_string(),
+        morphz::event::TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        serde_json::json!({
+            "context_id": context_id,
+            "session_id": "conformance-session",
+            "text": "并发重建唯一火花",
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store.append(concurrent_event.clone()).await.unwrap();
+    store
+        .replace_recall_documents(context_id, &documents)
+        .await
+        .unwrap();
+    let projected = store
+        .project_recall_outbox_batch("recall-rebuild-race-worker", 8)
+        .await
+        .unwrap();
+    assert_eq!(
+        projected.projected, 1,
+        "a stale rebuild must preserve concurrently committed Outbox intents"
+    );
+    let concurrent = store
+        .search_recall_documents(
+            context_id,
+            &morphz::memory::normalize_recall_text("唯一火花"),
+            8,
+        )
+        .await
+        .unwrap();
+    assert!(
+        concurrent
+            .iter()
+            .any(|hit| hit.document_id == concurrent_event.id),
+        "the post-snapshot Event must converge into Recall after rebuild: {concurrent:?}"
+    );
 }
 
 async fn assert_timer_lease_conformance<S>(store: Arc<S>)

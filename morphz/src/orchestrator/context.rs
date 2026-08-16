@@ -30,14 +30,34 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
-use tokio::sync::Mutex;
+use std::sync::{Arc, RwLock, Weak};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
+
+#[derive(Debug)]
+struct RuntimeContextVersionConflict {
+    requested: u64,
+    current: u64,
+}
+
+impl std::fmt::Display for RuntimeContextVersionConflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Runtime Context lifecycle transaction moved from version {} to {}",
+            self.requested, self.current
+        )
+    }
+}
+
+impl std::error::Error for RuntimeContextVersionConflict {}
 
 pub const CONTEXT_PROTOCOL_VERSION: u64 = 27;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
+const FRAME_RECALL_CURSOR_DOMAIN: &[u8] = b"morphz/frame-recall-cursor/v1\0";
+const SEARCH_RECALL_CURSOR_DOMAIN: &[u8] = b"morphz/search-recall-cursor/v1\0";
 
 fn validate_snapshot_head_event(
     snapshot: &MindSnapshotRecord,
@@ -1116,24 +1136,36 @@ pub struct ContextEngine {
     worker_coordination_mode: WorkerCoordinationMode,
     config: OrchestratorConfig,
     model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
-    context_locks: DashMap<String, Arc<Mutex<()>>>,
+    context_locks: DashMap<String, Weak<Mutex<()>>>,
     capacity_metrics: ContextCapacityMetrics,
-    recall_cursor_secret: [u8; 32],
+}
+
+struct ContextLockGuard<'a> {
+    registry: &'a DashMap<String, Weak<Mutex<()>>>,
+    context_id: String,
+    lock: Arc<Mutex<()>>,
+    guard: Option<OwnedMutexGuard<()>>,
+}
+
+impl Drop for ContextLockGuard<'_> {
+    fn drop(&mut self) {
+        // Unlock before removing the registry entry. Otherwise a concurrent
+        // caller could create a second mutex while this guard still owns the
+        // first one, violating per-Context serialization.
+        drop(self.guard.take());
+        if let dashmap::mapref::entry::Entry::Occupied(entry) =
+            self.registry.entry(self.context_id.clone())
+        {
+            let same_lock = Weak::ptr_eq(entry.get(), &Arc::downgrade(&self.lock));
+            if same_lock && Arc::strong_count(&self.lock) == 1 {
+                entry.remove();
+            }
+        }
+    }
 }
 
 impl ContextEngine {
     pub fn new(store: Arc<dyn EventStore>, config: OrchestratorConfig) -> Self {
-        let mut recall_cursor_secret = [0_u8; 32];
-        if getrandom::fill(&mut recall_cursor_secret).is_err() {
-            recall_cursor_secret.copy_from_slice(&Sha256::digest(
-                format!(
-                    "{}:{}",
-                    std::process::id(),
-                    Utc::now().timestamp_nanos_opt().unwrap_or_default()
-                )
-                .as_bytes(),
-            ));
-        }
         let fallback_capacity = ModelContextCapacity {
             provider: None,
             model: String::new(),
@@ -1157,7 +1189,6 @@ impl ContextEngine {
             model_context_capacity: Arc::new(RwLock::new(fallback_capacity)),
             context_locks: DashMap::new(),
             capacity_metrics: ContextCapacityMetrics::default(),
-            recall_cursor_secret,
         }
     }
 
@@ -1685,8 +1716,7 @@ impl ContextEngine {
         {
             return Err("finalize-retirement 是 Runtime 私有生命周期操作".into());
         }
-        let lock = self.context_lock(context_id);
-        let _guard = lock.lock().await;
+        let _guard = self.lock_context(context_id).await;
 
         let referenced_observations = self.transaction_observations(context_id, &parsed).await?;
         let references = ContextReferences::from_events(&referenced_observations);
@@ -1702,6 +1732,12 @@ impl ContextEngine {
         reject_causally_protected_retirements(&parsed, causally_protected_ids)?;
         let current = self.load_current_mind(context_id, None).await?;
         let requested_base_version = parsed.base_version;
+        if allow_runtime_lifecycle_ops && current.version != requested_base_version {
+            return Err(Box::new(RuntimeContextVersionConflict {
+                requested: requested_base_version,
+                current: current.version,
+            }));
+        }
         let auto_rebased = if current.version != requested_base_version {
             self.capacity_metrics
                 .context_tx_conflicts_total
@@ -2138,8 +2174,7 @@ impl ContextEngine {
         if source_context_id == target_context_id {
             return Err("Mind Seed 的来源与目标 Context 不能相同".into());
         }
-        let target_lock = self.context_lock(target_context_id);
-        let _target_guard = target_lock.lock().await;
+        let _target_guard = self.lock_context(target_context_id).await;
         let target_events = self.context_events(target_context_id).await?;
         if !target_events.is_empty() {
             return Err(format!(
@@ -2502,7 +2537,6 @@ impl ContextEngine {
         let (budget_config, _) = self.effective_budget_config(context_id).await?;
         self.finalize_due_frame_retirements(context_id, active_session_id)
             .await?;
-        let state = self.load_current_mind(context_id, None).await?;
         let cognitive_clock = match &self.cognitive_clock_store {
             Some(store) => store.get_context_cognitive_clock(context_id).await?,
             None => ContextCognitiveClock {
@@ -2571,11 +2605,54 @@ impl ContextEngine {
             .filter(|entry| entry.projection == SessionProjection::Full)
             .map(|entry| entry.session.id.clone())
             .collect::<Vec<_>>();
-        let events = match legacy_events {
-            Some(events) => events,
+        let (state, events) = match legacy_events {
+            Some(events) => {
+                let state = self.load_current_mind(context_id, Some(&events)).await?;
+                (state, events)
+            }
             None => {
-                self.context_encoding_events(context_id, &full_session_ids)
-                    .await?
+                if let (Some(projection_store), Some(_)) =
+                    (&self.session_projection_store, &self.mind_projection_store)
+                {
+                    let mut snapshot = projection_store
+                        .read_context_encoding_projection_snapshot(
+                            context_id,
+                            &full_session_ids,
+                            true,
+                        )
+                        .await?;
+                    if snapshot.mind.is_none() {
+                        // Lazily migrate a legacy Ledger, then take a fresh
+                        // atomic snapshot. The steady-state path performs only
+                        // the single snapshot read above.
+                        self.load_current_mind(context_id, None).await?;
+                        snapshot = projection_store
+                            .read_context_encoding_projection_snapshot(
+                                context_id,
+                                &full_session_ids,
+                                true,
+                            )
+                            .await?;
+                    }
+                    let state = Self::validate_mind_projection(
+                        context_id,
+                        snapshot.mind.ok_or_else(|| {
+                            format!("Context '{context_id}' 的一致性编码快照缺少 Mind Projection")
+                        })?,
+                    )?;
+                    (state, snapshot.events)
+                } else {
+                    // Lightweight/legacy configurations must provide both
+                    // materialized projections before they can use the atomic
+                    // snapshot path. Otherwise Mind still comes from Ledger
+                    // replay while active observations come from the optional
+                    // Session Projection compatibility path.
+                    let state = self.load_current_mind(context_id, None).await?;
+                    let events = self
+                        .context_encoding_events(context_id, &full_session_ids)
+                        .await?;
+                    (state, events)
+                }
             }
         };
         let delivery_snapshot_ids = activation_record
@@ -3078,7 +3155,9 @@ impl ContextEngine {
         let Some(clock_store) = &self.cognitive_clock_store else {
             return Ok(());
         };
-        for _ in 0..3 {
+        const MAX_FINALIZATION_RETRIES: usize = 16;
+
+        for attempt in 0..MAX_FINALIZATION_RETRIES {
             let clock = clock_store.get_context_cognitive_clock(context_id).await?;
             let state = self.load_current_mind(context_id, None).await?;
             let due = state
@@ -3134,15 +3213,31 @@ impl ContextEngine {
                     );
                     return Ok(());
                 }
-                Err(error) if error.to_string().contains("版本冲突") => continue,
+                Err(error)
+                    if error
+                        .downcast_ref::<RuntimeContextVersionConflict>()
+                        .is_some()
+                        || error
+                            .to_string()
+                            .starts_with("Context transaction CAS 冲突") =>
+                {
+                    let delay_millis = 1_u64 << attempt.min(4);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_millis)).await;
+                    continue;
+                }
                 Err(error) => return Err(error),
             }
         }
-        Err(format!(
-            "Context '{}' Frame retirement 收口连续发生版本冲突",
-            context_id
-        )
-        .into())
+        // Finalization is derived lifecycle maintenance. Continuous writers
+        // must not make Context compilation fail; the fenced intent remains
+        // durable and the next compilation/clock pass will retry it.
+        tracing::warn!(
+            context_id,
+            retries = MAX_FINALIZATION_RETRIES,
+            event_code = "context.frame_retirement.finalization_deferred",
+            "Frame retirement finalization was deferred because the Context remained busy"
+        );
+        Ok(())
     }
 
     /// Replaces the Context-local character estimate with the model client's complete-Prompt
@@ -3599,10 +3694,7 @@ impl ContextEngine {
 
     fn encode_frame_recall_cursor(&self, cursor: &FrameRecallCursor) -> Result<String, DynError> {
         let payload = serde_json::to_vec(cursor)?;
-        let mut signed = Vec::with_capacity(self.recall_cursor_secret.len() + payload.len());
-        signed.extend_from_slice(&self.recall_cursor_secret);
-        signed.extend_from_slice(&payload);
-        let signature = Sha256::digest(&signed);
+        let signature = recall_cursor_integrity(FRAME_RECALL_CURSOR_DOMAIN, &payload);
         Ok(format!(
             "{}.{}",
             hex_encode(&payload),
@@ -3614,10 +3706,9 @@ impl ContextEngine {
         let (payload, signature) = cursor.split_once('.').ok_or("Recall cursor 格式无效")?;
         let payload = hex_decode(payload)?;
         let signature = hex_decode(signature)?;
-        let mut signed = Vec::with_capacity(self.recall_cursor_secret.len() + payload.len());
-        signed.extend_from_slice(&self.recall_cursor_secret);
-        signed.extend_from_slice(&payload);
-        if signature.as_slice() != Sha256::digest(&signed).as_slice() {
+        if signature.as_slice()
+            != recall_cursor_integrity(FRAME_RECALL_CURSOR_DOMAIN, &payload).as_slice()
+        {
             return Err("Recall cursor 签名无效".into());
         }
         Ok(serde_json::from_slice(&payload)?)
@@ -3625,10 +3716,7 @@ impl ContextEngine {
 
     fn encode_recall_search_cursor(&self, cursor: &RecallSearchCursor) -> Result<String, DynError> {
         let payload = serde_json::to_vec(cursor)?;
-        let mut signed = Vec::with_capacity(self.recall_cursor_secret.len() + payload.len());
-        signed.extend_from_slice(&self.recall_cursor_secret);
-        signed.extend_from_slice(&payload);
-        let signature = Sha256::digest(&signed);
+        let signature = recall_cursor_integrity(SEARCH_RECALL_CURSOR_DOMAIN, &payload);
         Ok(format!(
             "{}.{}",
             hex_encode(&payload),
@@ -3642,10 +3730,9 @@ impl ContextEngine {
             .ok_or("Recall search cursor 格式无效")?;
         let payload = hex_decode(payload)?;
         let signature = hex_decode(signature)?;
-        let mut signed = Vec::with_capacity(self.recall_cursor_secret.len() + payload.len());
-        signed.extend_from_slice(&self.recall_cursor_secret);
-        signed.extend_from_slice(&payload);
-        if signature.as_slice() != Sha256::digest(&signed).as_slice() {
+        if signature.as_slice()
+            != recall_cursor_integrity(SEARCH_RECALL_CURSOR_DOMAIN, &payload).as_slice()
+        {
             return Err("Recall search cursor 签名无效".into());
         }
         Ok(serde_json::from_slice(&payload)?)
@@ -3661,66 +3748,104 @@ impl ContextEngine {
         &self,
         context_id: &str,
     ) -> Result<MindProjectionAudit, DynError> {
+        const MAX_STABLE_VIEW_RETRIES: usize = 8;
+
         let projection_store = self
             .mind_projection_store
             .as_ref()
             .ok_or("ContextEngine 未配置 MindProjectionStore，不能执行 Projection 审计")?;
-        let events = self.context_events(context_id).await?;
-        // An old database may not have a materialized row yet. Audit is also
-        // a safe explicit migration boundary, but never repairs a corrupt row.
-        let _ = self.load_current_mind(context_id, Some(&events)).await?;
-        let full_replay_started = std::time::Instant::now();
-        let ledger = load_mind_from_events(&events)?;
-        let full_replay_micros = full_replay_started.elapsed().as_micros() as u64;
-        let ledger_hash = mind_state_hash(&ledger)?;
-        let projection_validation_started = std::time::Instant::now();
-        let projection = projection_store.get_mind_projection(context_id).await?;
-        let (projection_revision, projection_hash, valid_projection) = match projection {
-            Some(projection) => {
-                let revision = projection.revision;
-                let stored_hash = projection.state_hash.clone();
-                let valid = Self::validate_mind_projection(context_id, projection)
-                    .map(|state| state == ledger)
-                    .unwrap_or(false);
-                (Some(revision), Some(stored_hash), valid)
-            }
-            None => (None, None, false),
-        };
-        let projection_validation_micros =
-            projection_validation_started.elapsed().as_micros() as u64;
-        let incremental_replay_started = std::time::Instant::now();
-        let incremental = self.recover_mind_from_latest_snapshot(context_id).await?;
-        let incremental_replay_micros = incremental
-            .as_ref()
-            .map(|_| incremental_replay_started.elapsed().as_micros() as u64);
-        let (snapshot_revision, incremental_transactions_scanned, incremental_matches) =
-            match incremental {
-                Some(recovery) => (
-                    Some(recovery.snapshot_revision),
-                    Some(recovery.transactions_replayed),
-                    Some(recovery.state == ledger),
-                ),
-                None => (None, None, None),
+        for attempt in 0..=MAX_STABLE_VIEW_RETRIES {
+            let events = self.context_events(context_id).await?;
+            // An old database may not have a materialized row yet. Audit is
+            // also a safe explicit migration boundary, but never repairs a
+            // corrupt row.
+            let _ = self.load_current_mind(context_id, Some(&events)).await?;
+            let full_replay_started = std::time::Instant::now();
+            let ledger = load_mind_from_events(&events)?;
+            let full_replay_micros = full_replay_started.elapsed().as_micros() as u64;
+            let ledger_hash = mind_state_hash(&ledger)?;
+            let projection_validation_started = std::time::Instant::now();
+            let projection = projection_store.get_mind_projection(context_id).await?;
+            let (projection_revision, projection_hash, valid_projection) = match projection {
+                Some(projection) => {
+                    let revision = projection.revision;
+                    let stored_hash = projection.state_hash.clone();
+                    let valid = Self::validate_mind_projection(context_id, projection)
+                        .map(|state| state == ledger)
+                        .unwrap_or(false);
+                    (Some(revision), Some(stored_hash), valid)
+                }
+                None => (None, None, false),
             };
-        Ok(MindProjectionAudit {
-            context_id: context_id.to_string(),
-            ledger_revision: ledger.version,
-            projection_revision,
-            snapshot_revision,
-            ledger_hash: ledger_hash.clone(),
-            projection_hash: projection_hash.clone(),
-            events_scanned: events.len(),
-            incremental_transactions_scanned,
-            incremental_matches,
-            full_replay_micros,
-            incremental_replay_micros,
-            projection_validation_micros,
-            // A Projection written before a hash-schema extension can have a
-            // different stored digest while still decoding to exactly the
-            // same Mind. `validate_mind_projection` has already required the
-            // digest to match one of the explicitly supported hash schemas.
-            matches: valid_projection && incremental_matches.unwrap_or(true),
-        })
+            let projection_validation_micros =
+                projection_validation_started.elapsed().as_micros() as u64;
+
+            // Ledger and Projection are committed atomically, but the audit
+            // reads them through independent Store capabilities. A writer may
+            // commit after the Ledger snapshot and before the Projection
+            // read. That is a moving observation boundary, not corruption.
+            if projection_revision.is_some_and(|revision| revision > ledger.version) {
+                if attempt == MAX_STABLE_VIEW_RETRIES {
+                    return Err(format!(
+                        "Mind Projection 审计无法在持续写入期间取得稳定视图：Ledger revision {}，Projection revision {:?}",
+                        ledger.version, projection_revision
+                    )
+                    .into());
+                }
+                tokio::task::yield_now().await;
+                continue;
+            }
+
+            let incremental_replay_started = std::time::Instant::now();
+            let incremental = self.recover_mind_from_latest_snapshot(context_id).await?;
+            let incremental_replay_micros = incremental
+                .as_ref()
+                .map(|_| incremental_replay_started.elapsed().as_micros() as u64);
+            if incremental
+                .as_ref()
+                .is_some_and(|recovery| recovery.state.version > ledger.version)
+            {
+                if attempt == MAX_STABLE_VIEW_RETRIES {
+                    return Err(format!(
+                        "Mind Projection 审计无法在持续写入期间取得稳定 Snapshot 视图：Ledger revision {}，Snapshot recovery revision {:?}",
+                        ledger.version,
+                        incremental.as_ref().map(|recovery| recovery.state.version)
+                    )
+                    .into());
+                }
+                tokio::task::yield_now().await;
+                continue;
+            }
+            let (snapshot_revision, incremental_transactions_scanned, incremental_matches) =
+                match incremental {
+                    Some(recovery) => (
+                        Some(recovery.snapshot_revision),
+                        Some(recovery.transactions_replayed),
+                        Some(recovery.state == ledger),
+                    ),
+                    None => (None, None, None),
+                };
+            return Ok(MindProjectionAudit {
+                context_id: context_id.to_string(),
+                ledger_revision: ledger.version,
+                projection_revision,
+                snapshot_revision,
+                ledger_hash: ledger_hash.clone(),
+                projection_hash: projection_hash.clone(),
+                events_scanned: events.len(),
+                incremental_transactions_scanned,
+                incremental_matches,
+                full_replay_micros,
+                incremental_replay_micros,
+                projection_validation_micros,
+                // A Projection written before a hash-schema extension can
+                // have a different stored digest while still decoding to the
+                // identical Mind. Validation already required one of the
+                // explicitly supported hash schemas.
+                matches: valid_projection && incremental_matches.unwrap_or(true),
+            });
+        }
+        unreachable!("bounded Mind Projection audit loop must return")
     }
 
     pub async fn search_events(
@@ -3884,10 +4009,33 @@ impl ContextEngine {
     }
 
     fn context_lock(&self, context_id: &str) -> Arc<Mutex<()>> {
-        self.context_locks
-            .entry(context_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+        match self.context_locks.entry(context_id.to_string()) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                if let Some(lock) = entry.get().upgrade() {
+                    lock
+                } else {
+                    let lock = Arc::new(Mutex::new(()));
+                    entry.insert(Arc::downgrade(&lock));
+                    lock
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                let lock = Arc::new(Mutex::new(()));
+                entry.insert(Arc::downgrade(&lock));
+                lock
+            }
+        }
+    }
+
+    async fn lock_context(&self, context_id: &str) -> ContextLockGuard<'_> {
+        let lock = self.context_lock(context_id);
+        let guard = Arc::clone(&lock).lock_owned().await;
+        ContextLockGuard {
+            registry: &self.context_locks,
+            context_id: context_id.to_string(),
+            lock,
+            guard: Some(guard),
+        }
     }
 
     /// Bounded online Ledger read for Context Encoding. Shared Mind state is
@@ -8028,6 +8176,18 @@ fn hex_encode(bytes: &[u8]) -> String {
     output
 }
 
+/// Recall cursors are opaque pagination state, not authorization tokens. The
+/// Runtime revalidates Context access and every query parameter when a cursor
+/// is consumed. A stable domain-separated digest therefore provides the
+/// required corruption/tamper detection without tying pagination to one
+/// process-local random key and breaking restart or multi-worker continuity.
+fn recall_cursor_integrity(domain: &[u8], payload: &[u8]) -> sha2::digest::Output<Sha256> {
+    let mut digest = Sha256::new();
+    digest.update(domain);
+    digest.update(payload);
+    digest.finalize()
+}
+
 fn hex_decode(value: &str) -> Result<Vec<u8>, DynError> {
     if !value.len().is_multiple_of(2) {
         return Err("十六进制 cursor 长度无效".into());
@@ -8089,13 +8249,7 @@ fn frame_recall_document(
     let retired = retired_override.unwrap_or_else(|| state.retired.contains(&frame.id));
     let state_hash = format!(
         "{:x}",
-        Sha256::digest(
-            format!(
-                "{}:{}:{}:{}",
-                frame.revision, retired, searchable_text, state.version
-            )
-            .as_bytes()
-        )
+        Sha256::digest(format!("{}:{}:{}", frame.revision, retired, searchable_text).as_bytes())
     );
     RecallDocument {
         context_id: context_id.to_string(),
@@ -8106,7 +8260,14 @@ fn frame_recall_document(
         legacy_searchable_chunks: Vec::new(),
         preview: frame.body.chars().take(500).collect(),
         retired,
-        updated_sequence: state.version,
+        // Frame recency is a property of the stable Frame, not of the
+        // projection pass that happened to materialize it.  Using the global
+        // Mind version here made a maintenance rebuild rewrite every Frame's
+        // ordering key and changed Recall pagination despite unchanged
+        // cognitive content.  Relation/lifecycle mutations can still replace
+        // the document at the same stable Frame version; the transactional
+        // Outbox generation fences stale writers.
+        updated_sequence: frame.updated_version,
         state_hash,
     }
 }
@@ -9345,7 +9506,62 @@ mod tests {
         NewPrincipal, NewSession, NewThread, NewThreadActivation, ObjectiveStatus,
         SessionDirectoryStore as _, SessionMountKind, SessionStore, ThreadKind, ThreadStore as _,
     };
+    use std::sync::atomic::AtomicBool;
     use tempfile::TempDir;
+
+    struct AuditRaceEventStore {
+        inner: Arc<SqliteStore>,
+        inject_once: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl EventStore for AuditRaceEventStore {
+        async fn append(&self, event: Event) -> Result<(), DynError> {
+            self.inner.append(event).await
+        }
+
+        async fn append_to_thread(&self, event: Event, thread_id: &str) -> Result<(), DynError> {
+            self.inner.append_to_thread(event, thread_id).await
+        }
+
+        async fn append_batch(
+            &self,
+            entries: Vec<crate::memory::EventAppend>,
+        ) -> Result<(), DynError> {
+            self.inner.append_batch(entries).await
+        }
+
+        async fn query(&self, filter: QueryFilter) -> Result<Vec<Event>, DynError> {
+            let inject = filter.context_id.as_deref() == Some("audit-race-context")
+                && !self.inject_once.swap(true, Ordering::SeqCst);
+            let events = self.inner.query(filter).await?;
+            if inject {
+                let writer =
+                    ContextEngine::new(
+                        Arc::clone(&self.inner) as Arc<dyn EventStore>,
+                        OrchestratorConfig::default(),
+                    )
+                    .with_mind_projection_store(
+                        Arc::clone(&self.inner) as Arc<dyn MindProjectionStore>
+                    );
+                writer
+                    .apply_context_transaction(
+                        "audit-race-context",
+                        "audit-race-writer",
+                        "(context-tx (base-version 1) (create after-ledger-snapshot (fact concurrent)))",
+                    )
+                    .await?;
+            }
+            Ok(events)
+        }
+
+        async fn list_attention_acknowledgements(
+            &self,
+            context_id: &str,
+        ) -> Result<Vec<crate::memory::AttentionAcknowledgementRecord>, DynError> {
+            self.inner.list_attention_acknowledgements(context_id).await
+        }
+    }
 
     fn contains_cjk(text: &str) -> bool {
         text.chars().any(|character| {
@@ -12019,7 +12235,30 @@ mod tests {
             .await
             .unwrap();
         assert!(first.truncated);
-        let second = engine
+        // Cursors belong to the persistent Context contract, not to one
+        // process incarnation. A restart or another worker serving the next
+        // page must preserve traversal continuity.
+        let restarted = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        let search_cursor = RecallSearchCursor {
+            context_id: "recall-graph-context".to_string(),
+            normalized_query: "fact".to_string(),
+            start_time: None,
+            end_time: None,
+            before_sequence: 42,
+        };
+        let encoded_search_cursor = engine.encode_recall_search_cursor(&search_cursor).unwrap();
+        assert_eq!(
+            restarted
+                .decode_recall_search_cursor(&encoded_search_cursor)
+                .unwrap(),
+            search_cursor
+        );
+        let second = restarted
             .recall_frame_graph(request(2, 2, first.next_cursor.clone()))
             .await
             .unwrap();
@@ -12078,6 +12317,76 @@ mod tests {
             cyclic_ids.len(),
             cyclic.nodes.len(),
             "cycles must not revisit nodes"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_runtime_retirement_finalization_has_a_typed_retry_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(
+                tmp.path()
+                    .join("frame-retirement-race.db")
+                    .to_str()
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        store
+            .create_context(NewCognitiveContext {
+                id: "retirement-race-context".to_string(),
+                agent_id: "retirement-race-agent".to_string(),
+                title: "Retirement Race".to_string(),
+            })
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        engine
+            .apply_context_transaction(
+                "retirement-race-context",
+                "retirement-race-session",
+                "(context-tx (base-version 0) (create old-frame (fact old)))",
+            )
+            .await
+            .unwrap();
+        engine
+            .apply_context_transaction(
+                "retirement-race-context",
+                "retirement-race-session",
+                "(context-tx (base-version 1) (reason organize) (retire old-frame))",
+            )
+            .await
+            .unwrap();
+        engine
+            .apply_context_transaction(
+                "retirement-race-context",
+                "retirement-race-session",
+                "(context-tx (base-version 2) (create concurrent-frame (fact concurrent)))",
+            )
+            .await
+            .unwrap();
+
+        let error = engine
+            .apply_context_transaction_authorized(
+                "retirement-race-context",
+                "retirement-race-session",
+                None,
+                "(context-tx (base-version 2) (reason runtime) (finalize-retirement old-frame 2 1 8))",
+                true,
+                &BTreeSet::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<RuntimeContextVersionConflict>()
+                .is_some(),
+            "Runtime maintenance must distinguish a moving Context from semantic corruption: {error}"
         );
     }
 
@@ -12525,6 +12834,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(restore_events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mind_projection_audit_retries_a_concurrent_commit_between_independent_reads() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("context-audit-race.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_context(NewCognitiveContext {
+                id: "audit-race-context".to_string(),
+                agent_id: "audit-race-agent".to_string(),
+                title: "Audit Race".to_string(),
+            })
+            .await
+            .unwrap();
+        let writer = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        writer
+            .apply_context_transaction(
+                "audit-race-context",
+                "audit-race-writer",
+                "(context-tx (base-version 0) (create before-audit (fact initial)))",
+            )
+            .await
+            .unwrap();
+
+        let racing_store = Arc::new(AuditRaceEventStore {
+            inner: Arc::clone(&store),
+            inject_once: AtomicBool::new(false),
+        });
+        let auditor = ContextEngine::new(
+            Arc::clone(&racing_store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        let audit = auditor
+            .audit_mind_projection("audit-race-context")
+            .await
+            .unwrap();
+        assert!(audit.matches, "{audit:?}");
+        assert_eq!(audit.ledger_revision, 2);
+        assert_eq!(audit.projection_revision, Some(2));
+    }
+
+    #[tokio::test]
+    async fn context_lock_registry_reclaims_high_churn_context_ids() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("context-lock-churn.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        );
+        for index in 0..1_000 {
+            let guard = engine
+                .lock_context(&format!("transient-context-{index}"))
+                .await;
+            drop(guard);
+        }
+        assert!(
+            engine.context_locks.is_empty(),
+            "completed Contexts must not remain in the process-local lock registry"
+        );
     }
 
     #[tokio::test]
@@ -13168,6 +13549,291 @@ mod tests {
             rebuilt.observations.len(),
             542,
             "bounded recovery is a request projection and must not retire Ledger observations"
+        );
+    }
+
+    #[tokio::test]
+    async fn long_stateful_context_converges_across_projection_snapshot_replay_and_recall_rebuild()
+    {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("context-stateful-audit.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        let context_id = "context-stateful-audit";
+        let session_id = "context-stateful-session";
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "context-stateful-agent".to_string(),
+                    title: "Context Stateful Agent".to_string(),
+                    root_context_id: context_id.to_string(),
+                },
+                NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: "context-stateful-agent".to_string(),
+                    title: "Context Stateful Audit".to_string(),
+                },
+                NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "context-stateful-agent".to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: "Context Stateful Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let observations = (0..12)
+            .map(|index| {
+                let id = format!("context-stateful-observation-{index:02}");
+                EventAppend {
+                    event: Event::new(
+                        id,
+                        "User".to_string(),
+                        TYPE_USER_MESSAGE.to_string(),
+                        "chat/user_message".to_string(),
+                        json!({
+                            "context_id": context_id,
+                            "session_id": session_id,
+                            "text": format!("stateful observation {index:02}"),
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+        store.append_batch(observations).await.unwrap();
+
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+
+        engine
+            .apply_context_transaction(
+                context_id,
+                session_id,
+                "(context-tx (base-version 0) \
+                   (create stateful-frame-0 (stateful revision-1 frame-0)) \
+                   (create stateful-frame-1 (stateful revision-1 frame-1)) \
+                   (create stateful-frame-2 (stateful revision-1 frame-2)) \
+                   (derive stateful-evidence (from context-stateful-observation-00) \
+                     (stateful evidence-root)))",
+            )
+            .await
+            .unwrap();
+
+        for target_version in 2_u64..=130 {
+            let transaction = match target_version {
+                20 => format!(
+                    "(context-tx (base-version {}) \
+                       (relate stateful-frame-0 supports stateful-frame-1))",
+                    target_version - 1
+                ),
+                21 => format!(
+                    "(context-tx (base-version {}) (reason relation-corrected) \
+                       (unrelate stateful-frame-0 supports stateful-frame-1))",
+                    target_version - 1
+                ),
+                32 => format!(
+                    "(context-tx (base-version {}) (checkpoint stateful-checkpoint-32))",
+                    target_version - 1
+                ),
+                40 => format!(
+                    "(context-tx (base-version {}) (protect stateful-frame-2))",
+                    target_version - 1
+                ),
+                41 => format!(
+                    "(context-tx (base-version {}) (reason protection-reviewed) \
+                       (unprotect stateful-frame-2))",
+                    target_version - 1
+                ),
+                48 => format!(
+                    "(context-tx (base-version {}) (reason observation-consumed) \
+                       (retire context-stateful-observation-03))",
+                    target_version - 1
+                ),
+                49 => format!(
+                    "(context-tx (base-version {}) \
+                       (restore context-stateful-observation-03))",
+                    target_version - 1
+                ),
+                64 => format!(
+                    "(context-tx (base-version {}) (checkpoint stateful-checkpoint-64))",
+                    target_version - 1
+                ),
+                72 => format!(
+                    "(context-tx (base-version {}) (reason observation-compacted) \
+                       (retire context-stateful-observation-07))",
+                    target_version - 1
+                ),
+                80 => format!(
+                    "(context-tx (base-version {}) (reason restore-known-good-mind) \
+                       (rollback stateful-checkpoint-64))",
+                    target_version - 1
+                ),
+                96 => format!(
+                    "(context-tx (base-version {}) (checkpoint stateful-checkpoint-96))",
+                    target_version - 1
+                ),
+                _ => {
+                    let frame = target_version % 3;
+                    format!(
+                        "(context-tx (base-version {}) \
+                           (revise stateful-frame-{frame} \
+                             (stateful revision-{target_version} frame-{frame})))",
+                        target_version - 1
+                    )
+                }
+            };
+            let commit = engine
+                .apply_context_transaction(context_id, session_id, &transaction)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("version {target_version} failed for {transaction}: {error}")
+                });
+            assert_eq!(commit.after_version, target_version);
+
+            if target_version.is_multiple_of(16) || target_version == 130 {
+                let audit = engine.audit_mind_projection(context_id).await.unwrap();
+                assert!(
+                    audit.matches,
+                    "audit at revision {target_version}: {audit:?}"
+                );
+                assert_eq!(audit.ledger_revision, target_version);
+                assert_eq!(audit.projection_revision, Some(target_version));
+            }
+        }
+
+        let before_restart = engine
+            .build_context_projection(context_id, session_id, &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(before_restart.state.version, 130);
+        let active_observation_ids = store
+            .query_session_projections(context_id, &[session_id.to_string()], true)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == TYPE_USER_MESSAGE)
+            .map(|event| event.id)
+            .collect::<BTreeSet<_>>();
+        let expected_active_observation_ids = (0..12)
+            .map(|index| format!("context-stateful-observation-{index:02}"))
+            .filter(|id| !before_restart.state.retired.contains(id))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(active_observation_ids, expected_active_observation_ids);
+
+        loop {
+            let batch = store
+                .project_recall_outbox_batch("context-stateful-audit-worker", 64)
+                .await
+                .unwrap();
+            if batch.claimed == 0 {
+                break;
+            }
+        }
+        let incremental_hits = store
+            .search_recall_documents(context_id, "stateful", 100)
+            .await
+            .unwrap();
+        let incremental_signature = incremental_hits
+            .iter()
+            .map(|hit| {
+                (
+                    hit.document_kind.as_str().to_string(),
+                    hit.document_id.clone(),
+                    hit.revision,
+                    hit.retired,
+                    hit.updated_sequence,
+                    hit.preview.clone(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        engine.rebuild_recall_index(context_id).await.unwrap();
+        let rebuilt_hits = store
+            .search_recall_documents(context_id, "stateful", 100)
+            .await
+            .unwrap();
+        let rebuilt_signature = rebuilt_hits
+            .iter()
+            .map(|hit| {
+                (
+                    hit.document_kind.as_str().to_string(),
+                    hit.document_id.clone(),
+                    hit.revision,
+                    hit.retired,
+                    hit.updated_sequence,
+                    hit.preview.clone(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert!(
+            incremental_signature == rebuilt_signature,
+            "incremental-only={:?}; rebuilt-only={:?}",
+            incremental_signature
+                .difference(&rebuilt_signature)
+                .take(12)
+                .collect::<Vec<_>>(),
+            rebuilt_signature
+                .difference(&incremental_signature)
+                .take(12)
+                .collect::<Vec<_>>()
+        );
+
+        // Remove only rebuildable online state. The immutable Ledger and the
+        // latest periodic/rollback Snapshot remain, so a fresh engine must
+        // recover Snapshot + tail transactions to the identical Mind.
+        let maintenance_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&db)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap();
+        let mut maintenance = maintenance_pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM mind_projections WHERE context_id = ?")
+            .bind(context_id)
+            .execute(&mut *maintenance)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM context_heads WHERE context_id = ?")
+            .bind(context_id)
+            .execute(&mut *maintenance)
+            .await
+            .unwrap();
+        maintenance.commit().await.unwrap();
+        maintenance_pool.close().await;
+
+        let restarted = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        let after_restart = restarted
+            .build_context_projection(context_id, session_id, &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(after_restart.state, before_restart.state);
+        let recovered_audit = restarted.audit_mind_projection(context_id).await.unwrap();
+        assert!(recovered_audit.matches, "{recovered_audit:?}");
+        assert!(recovered_audit.snapshot_revision.is_some());
+        assert!(
+            recovered_audit
+                .incremental_transactions_scanned
+                .is_some_and(|count| count > 0),
+            "the restart must exercise Snapshot + tail replay: {recovered_audit:?}"
         );
     }
 
