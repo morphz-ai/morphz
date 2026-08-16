@@ -5075,6 +5075,11 @@ where
         mutation => panic!("unexpected approval creation: {mutation:?}"),
     };
     assert_eq!(job_record.status, ExecutionJobStatus::WaitingApproval);
+    let pending = store
+        .list_context_pending_approvals(&job_record.context_id)
+        .await
+        .unwrap();
+    assert!(pending.iter().any(|record| record.id == approval_record.id));
     assert!(matches!(
         store
             .ensure_execution_job_with_approval(job, approval, &request_event)
@@ -5100,6 +5105,12 @@ where
     };
     assert!(audit.event_created);
     assert_eq!(allowed.status, ApprovalStatus::Allowed);
+    assert!(!store
+        .list_context_pending_approvals(&job_record.context_id)
+        .await
+        .unwrap()
+        .iter()
+        .any(|record| record.id == allowed.id));
     assert!(matches!(
         store
             .commit_approval_decision(&allowed.id, allowed.revision, decision)

@@ -4749,6 +4749,20 @@ pub trait ApprovalStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Pending Approval authorities for one Context. Scheduler observability
+    /// uses this live projection to detect requests whose Execution Job no
+    /// longer owns a valid result route without scanning lifetime history.
+    async fn list_context_pending_approvals(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_context_approvals(context_id)
+            .await?
+            .into_iter()
+            .filter(|approval| approval.status.is_pending())
+            .collect())
+    }
     /// Approval authorities for an already selected Job aggregate.
     async fn list_job_approvals(
         &self,

@@ -12,7 +12,7 @@ use morphz::memory::{
     DelegationStatus, DelegationStore as _, EventStore, NewAgent, NewCognitiveContext, NewSession,
     NewThread, NewThreadActivation, QueryFilter, SessionDirectoryStore as _, SessionMountKind,
     SessionProjectionStore, SessionStore, ThreadActivationMutation, ThreadActivationStatus,
-    ThreadKind, ThreadLifecycle, ThreadStore as _, TimerStore,
+    ThreadKind, ThreadLifecycle, ThreadSignalStatus, ThreadStore as _, TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -1006,6 +1006,9 @@ fn install_test_session_registry(bus: &Arc<InMemoryEventBus>, store: &Arc<Sqlite
                     .get("context_id")
                     .and_then(|value| value.as_str())
                     .unwrap_or(session_id);
+                if store.get_session(session_id).await?.is_some() {
+                    return Ok(());
+                }
                 let agent_id = "test-agent";
                 store
                     .ensure_agent(NewAgent {
@@ -4902,22 +4905,9 @@ async fn same_session_dialogue_turns_are_serialized() {
     publish_user(&bus, "serialized-session", "first").await;
     publish_user(&bus, "serialized-session", "second").await;
 
-    for _ in 0..80 {
-        let replies = store
-            .query(QueryFilter {
-                session_id: Some("serialized-session".to_string()),
-                topic: Some("chat/reply".to_string()),
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .len();
-        if replies == 2 {
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
-    }
+    let replies = wait_for_topic_count(&store, "chat/reply", "serialized-session", 2).await;
 
+    assert_eq!(replies.len(), 2);
     assert_eq!(client.calls.load(Ordering::SeqCst), 2);
     assert_eq!(
         client.max_active.load(Ordering::SeqCst),
@@ -4961,7 +4951,16 @@ async fn same_session_dialogue_turns_are_serialized() {
 async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("context-maintenance-dialogue.db");
-    let bus = Arc::new(InMemoryEventBus::new());
+    let dispatch_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut event_bus = InMemoryEventBus::new();
+    let captured_errors = Arc::clone(&dispatch_errors);
+    event_bus.set_error_handler(move |error, event| {
+        captured_errors
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}: {error}", event.topic, event.id));
+    });
+    let bus = Arc::new(event_bus);
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
@@ -5027,8 +5026,14 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
     );
     completion_gate.notify_one();
 
-    let replies =
-        wait_for_topic_count(&store, "chat/reply", "context-maintenance-dialogue", 2).await;
+    let replies = tokio::time::timeout(
+        tokio::time::Duration::from_secs(3),
+        wait_for_topic_count(&store, "chat/reply", "context-maintenance-dialogue", 2),
+    )
+    .await
+    .expect(
+        "context maintenance hand-off must not depend on the five-second pending-Signal reconciler",
+    );
     if replies.len() < 2 {
         let activations = store
             .list_context_thread_activations("context-maintenance-dialogue", true)
@@ -5069,6 +5074,11 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
             .iter()
             .all(|activation| activation.status != ThreadActivationStatus::Failed),
         "a committed context_tx must hand off after its current Activation becomes terminal, not time out while waiting for its own successor: {activations:#?}"
+    );
+    let dispatch_errors = dispatch_errors.lock().unwrap().clone();
+    assert!(
+        dispatch_errors.is_empty(),
+        "EventBus dispatch failed: {dispatch_errors:#?}"
     );
 }
 
@@ -5582,6 +5592,52 @@ async fn provider_wait_survives_runtime_restart() {
     assert_eq!(threads.len(), 1);
     assert_eq!(threads[0].lifecycle, ThreadLifecycle::Completed);
     assert_eq!(threads[0].generation, 1);
+    assert!(store
+        .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .list_context_thread_activations(context_id, false)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .list_action_groups(ActionGroupFilter {
+            context_id: Some(context_id.to_string()),
+            include_terminal: false,
+            ..ActionGroupFilter::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+    let latest_attempt_states = store
+        .query(QueryFilter {
+            context_id: Some(context_id.to_string()),
+            topic: Some("runtime/model_attempt_state".to_string()),
+            ..QueryFilter::default()
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .fold(std::collections::HashMap::new(), |mut latest, event| {
+            if let Some(attempt_id) = event
+                .payload
+                .get("attempt_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                latest.insert(attempt_id.to_string(), event);
+            }
+            latest
+        });
+    assert!(!latest_attempt_states.is_empty());
+    assert!(latest_attempt_states.values().all(|event| {
+        event
+            .payload
+            .get("terminal")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    }));
 }
 
 #[tokio::test]

@@ -382,6 +382,23 @@ impl ApprovalStore for PostgresStore {
         rows.iter().map(approval_from_row).collect()
     }
 
+    async fn list_context_pending_approvals(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<ApprovalRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT approvals.* FROM approval_requests approvals
+               INNER JOIN execution_jobs jobs ON jobs.id = approvals.job_id
+               WHERE jobs.context_id = $1
+                 AND approvals.status IN ('pending_auto', 'pending_human')
+               ORDER BY approvals.created_at, approvals.id"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(approval_from_row).collect()
+    }
+
     async fn list_job_approvals(
         &self,
         context_id: &str,

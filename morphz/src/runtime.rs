@@ -83,7 +83,8 @@ use crate::provider::{
 };
 use crate::scheduler::{
     audit_scheduler_invariants, derive_objective_readiness, KernelResult,
-    SchedulerDependencyFilter, SchedulerDependencyOwnerKind, SchedulerInvariantInput,
+    SchedulerDependencyFilter, SchedulerDependencyOwnerKind, SchedulerInvariantCode,
+    SchedulerInvariantInput, SchedulerInvariantSeverity, SchedulerInvariantViolation,
     SchedulerKernel,
 };
 pub use crate::scheduler::{
@@ -5358,11 +5359,7 @@ impl MorphzRuntime {
         let mut all_signals = self
             .inner
             .store
-            .list_context_thread_signals_for_threads(
-                context_id,
-                &selected_thread_ids,
-                Some(ThreadSignalStatus::Pending),
-            )
+            .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
             .await?;
         all_signals.sort_by(|left, right| {
             left.sequence
@@ -5405,6 +5402,12 @@ impl MorphzRuntime {
                 .then_with(|| left.id.cmp(&right.id))
         });
         let job_ids = jobs.iter().map(|job| job.id.clone()).collect::<Vec<_>>();
+        let live_job_ids = jobs
+            .iter()
+            .filter(|job| !job.status.is_terminal())
+            .map(|job| job.id.clone())
+            .collect::<HashSet<_>>();
+        let selected_job_ids = job_ids.iter().cloned().collect::<HashSet<_>>();
         let mut approval_by_job = self
             .inner
             .store
@@ -5413,6 +5416,23 @@ impl MorphzRuntime {
             .into_iter()
             .map(|approval| (approval.job_id.clone(), approval))
             .collect::<HashMap<_, _>>();
+        let mut orphan_approvals = Vec::new();
+        for approval in self
+            .inner
+            .store
+            .list_context_pending_approvals(context_id)
+            .await?
+        {
+            if !live_job_ids.contains(&approval.job_id) {
+                orphan_approvals.push(approval.clone());
+            }
+            if selected_job_ids.contains(&approval.job_id) {
+                // A live pending request is the authoritative Approval view
+                // even if the selected aggregate also contains older decided
+                // history for the same Job.
+                approval_by_job.insert(approval.job_id.clone(), approval);
+            }
+        }
 
         let mut jobs_by_activation = HashMap::<String, Vec<SchedulerJobSnapshot>>::new();
         let mut orphan_jobs = Vec::new();
@@ -5627,6 +5647,12 @@ impl MorphzRuntime {
         }
         orphan_activations.extend(activations_by_thread.into_values().flatten());
         orphan_signals.extend(pending_signals_by_thread.into_values().flatten());
+        orphan_approvals.extend(
+            approval_by_job
+                .values()
+                .filter(|approval| approval.status.is_pending())
+                .cloned(),
+        );
 
         let process_admission = self.inner.orchestrator.activation_admission_snapshot();
         let context_loaded_queued = process_admission
@@ -5777,6 +5803,56 @@ impl MorphzRuntime {
             &authority_groups,
             &barrier_event_ids,
         ));
+        invariant_violations.extend(orphan_activations.iter().map(|snapshot| {
+            SchedulerInvariantViolation {
+                severity: SchedulerInvariantSeverity::Error,
+                code: SchedulerInvariantCode::OrphanActivation,
+                entity_kind: "thread_activation".to_string(),
+                entity_id: snapshot.activation.id.clone(),
+                detail: format!(
+                    "Activation '{}' has no selected Thread for root '{}'",
+                    snapshot.activation.id, snapshot.activation.root_turn_id
+                ),
+            }
+        }));
+        invariant_violations.extend(orphan_signals.iter().map(|signal| {
+            SchedulerInvariantViolation {
+                severity: SchedulerInvariantSeverity::Error,
+                code: SchedulerInvariantCode::OrphanSignal,
+                entity_kind: "thread_signal".to_string(),
+                entity_id: signal.id.clone(),
+                detail: format!(
+                    "Pending Signal '{}' has no live Thread route '{}'",
+                    signal.id, signal.thread_id
+                ),
+            }
+        }));
+        invariant_violations.extend(orphan_jobs.iter().map(|snapshot| {
+            SchedulerInvariantViolation {
+                severity: SchedulerInvariantSeverity::Error,
+                code: SchedulerInvariantCode::OrphanExecutionJob,
+                entity_kind: "execution_job".to_string(),
+                entity_id: snapshot.job.id.clone(),
+                detail: format!(
+                    "Execution Job '{}' has no live Activation route '{}'",
+                    snapshot.job.id, snapshot.job.activation_id
+                ),
+            }
+        }));
+        invariant_violations.extend(orphan_approvals.iter().map(|approval| {
+            SchedulerInvariantViolation {
+                severity: SchedulerInvariantSeverity::Error,
+                code: SchedulerInvariantCode::OrphanApproval,
+                entity_kind: "approval".to_string(),
+                entity_id: approval.id.clone(),
+                detail: format!(
+                    "Pending Approval '{}' has no live Execution Job route '{}'",
+                    approval.id, approval.job_id
+                ),
+            }
+        }));
+        invariant_violations.sort();
+        invariant_violations.dedup();
         let deliveries = authority_threads
             .iter()
             .filter(|thread| thread.delivery_status != crate::memory::DeliveryStatus::None)
@@ -5855,7 +5931,7 @@ impl MorphzRuntime {
             orphan_activations,
             orphan_signals,
             orphan_jobs,
-            orphan_approvals: approval_by_job.into_values().collect(),
+            orphan_approvals,
         })
     }
 
@@ -10681,6 +10757,204 @@ mod tests {
         assert_eq!(snapshot.summary.pending_signals, 0);
         assert!(snapshot.orphan_activations.is_empty());
         assert!(snapshot.orphan_jobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scheduler_snapshot_counts_live_rows_whose_terminal_parent_route_disappeared() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-scheduler-orphan".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Scheduler orphan audit".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let thread = runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: "thread-scheduler-orphan".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-scheduler-orphan".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-scheduler-orphan".to_string(),
+                kind: crate::memory::ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+
+        let first = Event::new(
+            "event-scheduler-orphan-first".to_string(),
+            "User-Test".to_string(),
+            "user_message".to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": runtime.identity().context_id,
+                "session_id": "session-scheduler-orphan",
+                "text": "first",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        runtime.inner.store.append(first.clone()).await.unwrap();
+        let first_sequence = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(first.id.clone()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        let activation = runtime
+            .inner
+            .store
+            .claim_thread_signal_batch(
+                crate::memory::NewThreadSignal {
+                    id: "signal-scheduler-orphan-first".to_string(),
+                    thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
+                    event_id: first.id.clone(),
+                    principal_id: None,
+                    sequence: first_sequence,
+                    kind: first.topic,
+                    parent_activation_id: None,
+                },
+                crate::memory::NewThreadActivation {
+                    id: "activation-scheduler-orphan".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "session-scheduler-orphan".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: first.id,
+                    trigger_sequence: first_sequence,
+                    trigger_kind: "chat/user_message".to_string(),
+                    parent_activation_id: None,
+                    root_turn_id: thread.root_turn_id.clone(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        let second = Event::new(
+            "event-scheduler-orphan-second".to_string(),
+            "User-Test".to_string(),
+            "user_message".to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": runtime.identity().context_id,
+                "session_id": "session-scheduler-orphan",
+                "text": "second",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        runtime.inner.store.append(second.clone()).await.unwrap();
+        let second_sequence = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(second.id.clone()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        assert!(runtime
+            .inner
+            .store
+            .claim_thread_signal_batch(
+                crate::memory::NewThreadSignal {
+                    id: "signal-scheduler-orphan-pending".to_string(),
+                    thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
+                    event_id: second.id.clone(),
+                    principal_id: None,
+                    sequence: second_sequence,
+                    kind: second.topic,
+                    parent_activation_id: None,
+                },
+                crate::memory::NewThreadActivation {
+                    id: "activation-scheduler-orphan-unused".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "session-scheduler-orphan".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: second.id,
+                    trigger_sequence: second_sequence,
+                    trigger_kind: "chat/user_message".to_string(),
+                    parent_activation_id: None,
+                    root_turn_id: thread.root_turn_id.clone(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .is_none());
+        runtime
+            .inner
+            .store
+            .update_thread(
+                &thread.id,
+                thread.revision,
+                None,
+                Some(crate::memory::ThreadLifecycle::Completed),
+                Some("intentionally inconsistent fixture"),
+                Some("missing-terminal-event"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let snapshot = runtime
+            .scheduler_snapshot(
+                runtime.identity().context_id.as_str(),
+                SchedulerQuery::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.orphan_activations.len(), 1);
+        assert_eq!(snapshot.orphan_activations[0].activation.id, activation.id);
+        assert_eq!(snapshot.orphan_signals.len(), 1);
+        assert_eq!(
+            snapshot.orphan_signals[0].id,
+            "signal-scheduler-orphan-pending"
+        );
+        assert_eq!(snapshot.summary.pending_signals, 1);
+        assert_eq!(snapshot.summary.invariant_violations, 2);
+        assert!(snapshot.invariant_violations.iter().any(|violation| {
+            violation.code == crate::scheduler::SchedulerInvariantCode::OrphanActivation
+        }));
+        assert!(snapshot.invariant_violations.iter().any(|violation| {
+            violation.code == crate::scheduler::SchedulerInvariantCode::OrphanSignal
+        }));
     }
 
     #[tokio::test]

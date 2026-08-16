@@ -17809,6 +17809,25 @@ impl ApprovalStore for SqliteStore {
         rows.iter().map(approval_from_row).collect()
     }
 
+    async fn list_context_pending_approvals(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT approval_requests.*
+               FROM approval_requests
+               INNER JOIN execution_jobs
+                 ON execution_jobs.id = approval_requests.job_id
+               WHERE execution_jobs.context_id = ?
+                 AND approval_requests.status IN ('pending_auto', 'pending_human')
+               ORDER BY approval_requests.created_at, approval_requests.id"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(approval_from_row).collect()
+    }
+
     async fn list_job_approvals(
         &self,
         context_id: &str,
@@ -30603,6 +30622,12 @@ mod tests {
                 "EXPLAIN QUERY PLAN SELECT * FROM execution_jobs WHERE context_id = 'ctx' AND status IN ('queued', 'waiting_approval', 'running') ORDER BY created_at, id",
                 "idx_execution_jobs_context_active_created",
                 false,
+            ),
+            (
+                "pending approvals by Context",
+                "EXPLAIN QUERY PLAN SELECT approvals.* FROM approval_requests approvals INNER JOIN execution_jobs jobs ON jobs.id = approvals.job_id WHERE jobs.context_id = 'ctx' AND approvals.status IN ('pending_auto', 'pending_human') ORDER BY approvals.created_at, approvals.id",
+                "idx_approval_requests_status",
+                true,
             ),
             (
                 "waiting plan kind",

@@ -1963,10 +1963,6 @@ pub struct Orchestrator {
     activation_cancellations: ActivationCancellationRegistry,
     active_session_turns: DashMap<String, Arc<AtomicUsize>>,
     activation_routes: DashMap<String, ActivationRoute>,
-    /// Process-local completion signal for Activation rows materialized by
-    /// the Event dispatcher. Durability remains in SessionStore; this avoids
-    /// polling that same authority every 10ms on the normal path.
-    activation_materialization_waiters: DashMap<String, Arc<Notify>>,
     /// The newest physical Model Attempt owned by each live Activation.
     /// Activation cancellation drops the evaluation future, so the ordinary
     /// completion path cannot publish that Attempt's terminal transition.
@@ -2808,7 +2804,6 @@ impl Orchestrator {
             activation_cancellations: ActivationCancellationRegistry::default(),
             active_session_turns: DashMap::new(),
             activation_routes: DashMap::new(),
-            activation_materialization_waiters: DashMap::new(),
             active_model_attempts: DashMap::new(),
             cancelled_at: DashMap::new(),
             session_contexts: DashMap::new(),
@@ -6198,11 +6193,6 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
-        if let Some(waiter) = self.activation_materialization_waiters.get(&activation.id) {
-            // `notify_one` retains a permit when materialization wins the
-            // narrow race before the waiter starts awaiting.
-            waiter.notify_one();
-        }
         if activation.status.is_terminal() {
             self.activation_admission.forget(&activation.id);
             return Ok(None);
@@ -9359,17 +9349,6 @@ impl Orchestrator {
                 .tool_calls
                 .iter()
                 .all(|call| call.func_name == "context_tx");
-            let context_maintenance_continuations = if context_maintenance_only {
-                response
-                    .tool_calls
-                    .iter()
-                    .map(|call| {
-                        stable_thread_activation_id(&format!("output_{attempt_id}_{}", call.id))
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
             if !context_maintenance_only {
                 if dialogue_lease.is_some()
                     && session_store
@@ -9425,25 +9404,24 @@ impl Orchestrator {
                     // The context_tx receipt was appended as a durable Signal
                     // while this Activation still owned Thread single-flight.
                     // A successor therefore cannot be claimed until the
-                    // current Activation is terminal. Complete it first, then
-                    // redispatch that exact pending Signal and verify the
-                    // successor row exists before surrendering this task. The
-                    // outer completion path is intentionally idempotent.
+                    // current Activation is terminal. Complete it first and
+                    // redispatch that exact pending Signal. Do not wait for
+                    // the successor row here: this caller still owns the
+                    // root Thread gate that the successor must acquire before
+                    // it can materialize. Durability remains in the pending
+                    // Signal, and the outer completion path is idempotent.
                     self.finish_thread_activation(activation, ThreadActivationStatus::Succeeded)
                         .await?;
                     self.dispatch_next_pending_thread_signal(&activation.root_turn_id)
                         .await?;
-                    for continuation_id in &context_maintenance_continuations {
-                        self.wait_for_continuation_activation(continuation_id)
-                            .await?;
-                    }
                 }
             }
             if context_maintenance_only {
                 if let Some(lease) = dialogue_lease.as_mut() {
-                    // The successor has been made durable above. Keep the
+                    // The successor Signal is durable above. Keep the
                     // process-local lane for that same root so a later user
-                    // turn cannot overtake its final reply.
+                    // turn cannot overtake its final reply while the Thread
+                    // gate is handed to the successor.
                     lease.retain_for_continuation();
                 }
             }
@@ -9451,45 +9429,6 @@ impl Orchestrator {
         }
 
         unreachable!("无工具响应应由终态协议分类、纠错或熔断处理")
-    }
-
-    async fn wait_for_continuation_activation(&self, activation_id: &str) -> Result<(), DynError> {
-        let session_store = self
-            .context_engine
-            .session_store()
-            .ok_or("Context maintenance continuation 需要持久化 SessionStore")?;
-        let waiter = self
-            .activation_materialization_waiters
-            .entry(activation_id.to_string())
-            .or_insert_with(|| Arc::new(Notify::new()))
-            .clone();
-        if session_store
-            .get_thread_activation(activation_id)
-            .await?
-            .is_some()
-        {
-            self.activation_materialization_waiters
-                .remove(activation_id);
-            return Ok(());
-        }
-        let notified = tokio::time::timeout(std::time::Duration::from_secs(5), waiter.notified())
-            .await
-            .is_ok();
-        self.activation_materialization_waiters
-            .remove(activation_id);
-        if notified
-            || session_store
-                .get_thread_activation(activation_id)
-                .await?
-                .is_some()
-        {
-            Ok(())
-        } else {
-            Err(format!(
-                "Context maintenance continuation Activation '{activation_id}' 未在 5 秒内物化"
-            )
-            .into())
-        }
     }
 
     async fn execution_result_is_interactive(

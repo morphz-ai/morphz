@@ -3,10 +3,11 @@ use morphz::event::Event;
 use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
-    ActivationStore, DeliveryIngressStore, EventStore, ExecutionJobMutation, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionRetrySafety, MessageClaim, NewAgent, NewCognitiveContext,
-    NewExecutionJob, NewSession, NewThread, NewThreadActivation, QueryFilter, RuntimeStore,
-    SessionDirectoryStore, SessionMountKind, ThreadKind, ThreadStore, ThreadSupervision,
+    ActionGroupFilter, ActionGroupStore, ActivationStore, DeliveryIngressStore, EventStore,
+    ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore, ExecutionRetrySafety,
+    MessageClaim, NewAgent, NewCognitiveContext, NewExecutionJob, NewPrincipal, NewSession,
+    NewThread, NewThreadActivation, QueryFilter, RuntimeStore, SessionDirectoryStore,
+    SessionMountKind, ThreadKind, ThreadSignalStatus, ThreadStore, ThreadSupervision,
     WorkerCoordinationMode,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
@@ -30,7 +31,9 @@ struct ProbeReport {
     ready_workers: usize,
     model_calls: usize,
     replies: usize,
+    single_flight_quiescent: bool,
     crash_recovery_requeued: bool,
+    schema_cleaned: bool,
     elapsed_millis: u64,
     schema: String,
     success: bool,
@@ -291,6 +294,18 @@ async fn parent() -> Result<(), ProbeError> {
             },
         )
         .await?;
+    let principal_id = "principal-postgres-probe";
+    store
+        .ensure_principal(NewPrincipal {
+            id: principal_id.to_string(),
+            provider_id: "runtime-default".to_string(),
+            assurance: "runtime-default".to_string(),
+            display_name: Some("PostgreSQL process probe".to_string()),
+        })
+        .await?;
+    store
+        .bind_session_principal(&session_id, principal_id)
+        .await?;
 
     let executable = std::env::current_exe()?;
     let spawn_worker = |worker_id: &str| -> Result<Child, ProbeError> {
@@ -324,6 +339,7 @@ async fn parent() -> Result<(), ProbeError> {
             "context_id": context_id,
             "session_id": session_id,
             "client_message_id": format!("probe-client-message-{suffix}"),
+            "principal_id": principal_id,
             "text": "one message for two Runtime processes"
         })
         .as_object()
@@ -363,6 +379,26 @@ async fn parent() -> Result<(), ProbeError> {
         })
         .await?
         .len();
+    let single_flight_quiescent = store
+        .list_context_threads(&context_id, false)
+        .await?
+        .is_empty()
+        && store
+            .list_context_thread_activations(&context_id, false)
+            .await?
+            .is_empty()
+        && store
+            .list_context_thread_signals(&context_id, Some(ThreadSignalStatus::Pending))
+            .await?
+            .is_empty()
+        && store
+            .list_action_groups(ActionGroupFilter {
+                context_id: Some(context_id.clone()),
+                include_terminal: false,
+                ..ActionGroupFilter::default()
+            })
+            .await?
+            .is_empty();
 
     let thread = store
         .ensure_thread(NewThread {
@@ -439,18 +475,31 @@ async fn parent() -> Result<(), ProbeError> {
         .await?
         .is_some_and(|job| job.status == ExecutionJobStatus::Queued);
 
-    let success = ready_workers == 2 && model_calls == 1 && replies == 1 && crash_recovery_requeued;
-    let report = ProbeReport {
+    let success = ready_workers == 2
+        && model_calls == 1
+        && replies == 1
+        && single_flight_quiescent
+        && crash_recovery_requeued;
+    let mut report = ProbeReport {
         generated_at: chrono::Utc::now(),
         workers: 2,
         ready_workers,
         model_calls,
         replies,
+        single_flight_quiescent,
         crash_recovery_requeued,
+        schema_cleaned: false,
         elapsed_millis: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        schema,
+        schema: schema.clone(),
         success,
     };
+    if success {
+        drop(store);
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(administration_store.pool())
+            .await?;
+        report.schema_cleaned = true;
+    }
     println!("{}", serde_json::to_string_pretty(&report)?);
     if success {
         Ok(())

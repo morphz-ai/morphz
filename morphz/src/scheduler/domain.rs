@@ -305,6 +305,10 @@ pub enum SchedulerInvariantCode {
     ObjectiveWaitDisagreesWithDependencies,
     ObjectivePrimaryExecutionOwnerMismatch,
     DuplicateObjectivePrimaryExecutionThread,
+    OrphanActivation,
+    OrphanSignal,
+    OrphanExecutionJob,
+    OrphanApproval,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
