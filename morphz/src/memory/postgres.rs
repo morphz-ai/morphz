@@ -269,6 +269,12 @@ impl PostgresStore {
                     store.migrate_sql_performance_indexes(),
                 )
                 .await?;
+            store
+                .run_versioned_migration(
+                    "20260816_03_directory_domain_constraints",
+                    store.migrate_directory_domain_constraints(),
+                )
+                .await?;
             // Index creation is retried outside the versioned migration so a
             // deployment that failed to build it once recovers on a later
             // start without editing migration history.
@@ -444,7 +450,9 @@ impl PostgresStore {
             r#"CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active',
+                status TEXT NOT NULL DEFAULT 'active'
+                    CONSTRAINT agents_status_domain
+                    CHECK(status IN ('active', 'archived')),
                 root_context_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -453,7 +461,9 @@ impl PostgresStore {
                 id TEXT PRIMARY KEY,
                 agent_id TEXT NOT NULL REFERENCES agents(id),
                 title TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active',
+                status TEXT NOT NULL DEFAULT 'active'
+                    CONSTRAINT cognitive_contexts_status_domain
+                    CHECK(status IN ('active', 'archived')),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 seed_context_id TEXT,
@@ -462,6 +472,8 @@ impl PostgresStore {
                 seed_projection TEXT,
                 requested_hard_token_limit BIGINT,
                 token_budget_revision BIGINT NOT NULL DEFAULT 0
+                    CONSTRAINT cognitive_contexts_token_budget_revision_nonnegative
+                    CHECK(token_budget_revision >= 0)
             )"#,
             r#"CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -469,16 +481,26 @@ impl PostgresStore {
                 context_id TEXT NOT NULL REFERENCES cognitive_contexts(id),
                 parent_session_id TEXT,
                 title TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active',
+                status TEXT NOT NULL DEFAULT 'active'
+                    CONSTRAINT sessions_status_domain
+                    CHECK(status IN ('active', 'archived')),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_activity_at TEXT NOT NULL,
-                attention_state TEXT NOT NULL DEFAULT 'active',
-                attention_revision BIGINT NOT NULL DEFAULT 0,
+                attention_state TEXT NOT NULL DEFAULT 'active'
+                    CONSTRAINT sessions_attention_state_domain
+                    CHECK(attention_state IN ('active', 'retired')),
+                attention_revision BIGINT NOT NULL DEFAULT 0
+                    CONSTRAINT sessions_attention_revision_nonnegative
+                    CHECK(attention_revision >= 0),
                 attention_reason TEXT,
                 attention_changed_at TEXT,
                 attention_event_id TEXT,
                 mount_kind TEXT NOT NULL
+                    CONSTRAINT sessions_mount_kind_domain CHECK(mount_kind IN (
+                    'existing_context', 'new_blank_context',
+                    'new_context_from_mind', 'delegation_projection'
+                    ))
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_sessions_context_activity
                ON sessions(context_id, last_activity_at DESC, id)"#,
@@ -1242,6 +1264,73 @@ impl PostgresStore {
                ON execution_targets(kind, provider_node_id, status, updated_at, id)"#,
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    /// Installs the same directory-domain invariants enforced by SQLite on
+    /// existing PostgreSQL databases. Constraints are added NOT VALID first so
+    /// the schema change takes only a brief metadata lock; VALIDATE then scans
+    /// existing rows without blocking concurrent writes.
+    async fn migrate_directory_domain_constraints(&self) -> Result<(), StoreError> {
+        for (table, constraint, expression) in [
+            (
+                "agents",
+                "agents_status_domain",
+                "status IN ('active', 'archived')",
+            ),
+            (
+                "cognitive_contexts",
+                "cognitive_contexts_status_domain",
+                "status IN ('active', 'archived')",
+            ),
+            (
+                "cognitive_contexts",
+                "cognitive_contexts_token_budget_revision_nonnegative",
+                "token_budget_revision >= 0",
+            ),
+            (
+                "sessions",
+                "sessions_status_domain",
+                "status IN ('active', 'archived')",
+            ),
+            (
+                "sessions",
+                "sessions_attention_state_domain",
+                "attention_state IN ('active', 'retired')",
+            ),
+            (
+                "sessions",
+                "sessions_attention_revision_nonnegative",
+                "attention_revision >= 0",
+            ),
+            (
+                "sessions",
+                "sessions_mount_kind_domain",
+                "mount_kind IN ('existing_context', 'new_blank_context', 'new_context_from_mind', 'delegation_projection')",
+            ),
+        ] {
+            sqlx::query(&format!(
+                r#"DO $$
+                   BEGIN
+                     IF NOT EXISTS (
+                       SELECT 1 FROM pg_constraint
+                       WHERE conname = '{constraint}'
+                         AND conrelid = '{table}'::regclass
+                     ) THEN
+                       ALTER TABLE {table}
+                         ADD CONSTRAINT {constraint} CHECK ({expression}) NOT VALID;
+                     END IF;
+                   END
+                   $$"#,
+            ))
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(&format!(
+                "ALTER TABLE {table} VALIDATE CONSTRAINT {constraint}"
+            ))
+            .execute(&self.pool)
+            .await?;
         }
         Ok(())
     }

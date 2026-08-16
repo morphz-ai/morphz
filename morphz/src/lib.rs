@@ -1,3 +1,10 @@
+//! Morphz runtime library.
+//!
+//! [`sdk`] is the supported embedded application contract. The remaining
+//! public modules are exposed for the Morphz binary, evaluation workspace and
+//! integration tests; they are implementation surfaces and may change between
+//! releases until they are moved behind a dedicated internal crate boundary.
+
 pub mod activation_admission;
 pub mod admission;
 pub mod approval;

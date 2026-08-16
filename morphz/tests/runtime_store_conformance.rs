@@ -5860,10 +5860,35 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260815_04_sql_performance_indexes",
         "20260816_01_thread_signal_notifications",
         "20260816_02_edge_command_notifications",
+        "20260816_03_directory_domain_constraints",
     ] {
         assert!(
             applied_migrations.contains(version),
             "missing PostgreSQL migration marker {version}"
+        );
+    }
+    let directory_constraints = sqlx::query_scalar::<_, String>(
+        r#"SELECT conname
+           FROM pg_constraint
+           WHERE conrelid IN ('agents'::regclass, 'cognitive_contexts'::regclass, 'sessions'::regclass)"#,
+    )
+    .fetch_all(store.pool())
+    .await
+    .unwrap()
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    for constraint in [
+        "agents_status_domain",
+        "cognitive_contexts_status_domain",
+        "cognitive_contexts_token_budget_revision_nonnegative",
+        "sessions_status_domain",
+        "sessions_attention_state_domain",
+        "sessions_attention_revision_nonnegative",
+        "sessions_mount_kind_domain",
+    ] {
+        assert!(
+            directory_constraints.contains(constraint),
+            "missing PostgreSQL directory constraint {constraint}"
         );
     }
     let installed_indexes = sqlx::query_scalar::<_, String>(

@@ -2,15 +2,14 @@ use chrono::{Local, SecondsFormat, Utc};
 use morphz::approval::ApprovalDecision;
 use morphz::cli::{morphz_command, morphz_command_line_parser_for, Invocation};
 use morphz::config;
-use morphz::event::Event;
 use morphz::harness_package::HarnessPackage;
 use morphz::i18n::{locale_from_cli_args, Locale, UiLanguage};
 use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
 use morphz::memory::{
     ExecutionTargetAuthorizationScope, ExecutionTargetKind, ExecutionTargetRegistration,
-    ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewObjective, NewSession,
-    ObjectiveMutation, ObjectiveStatus, SessionMountKind, SessionRecord, SessionStatus,
-    ThreadControlAction, ThreadMutation,
+    ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
+    ObjectiveStatus, SessionMountKind, SessionRecord, SessionStatus, ThreadControlAction,
+    ThreadMutation,
 };
 use morphz::orchestrator::context::{
     FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
@@ -26,7 +25,8 @@ use morphz::runtime::{
 };
 use morphz::sdk::{
     AuthorizeExecutionTargetCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
-    ExactHarnessRef, ExecutionJobQuery, MorphzSdk, SdkErrorCode, SendMessageCommand,
+    ExactHarnessRef, ExecutionJobQuery, MorphzSdk, ObjectiveRequestOrigin, SdkErrorCode,
+    SendMessageCommand,
 };
 use morphz::web::{Server, ServerDefaults};
 use std::io::IsTerminal;
@@ -3379,46 +3379,19 @@ async fn create_objective_command(
         .transpose()?;
     let mut events = runtime.subscribe("*", 256);
     let source_event_id = generated_id("objective_request");
-    runtime
-        .publish(Event::new(
-            source_event_id.clone(),
-            "User-CLI".to_string(),
-            "objective_request".to_string(),
-            "objective/requested".to_string(),
-            vec![
-                ("context_id".to_string(), serde_json::json!(context.id)),
-                ("session_id".to_string(), serde_json::json!(session.id)),
-                (
-                    "principal_id".to_string(),
-                    serde_json::json!(runtime.identity().principal_id),
-                ),
-                (
-                    "requested_objective_id".to_string(),
-                    serde_json::json!(objective_id),
-                ),
-                ("text".to_string(), serde_json::json!(stated_objective)),
-            ]
-            .into_iter()
-            .collect(),
-        ))
-        .await?;
     let sdk = MorphzSdk::new(runtime.clone());
     let result = sdk
         .create_objective(
             &sdk.default_principal(),
             CreateObjectiveCommand {
-                objective: NewObjective {
-                    id: objective_id,
-                    agent_id: context.agent_id,
-                    context_id: context.id,
-                    coordinator_session_id: session.id.clone(),
-                    delivery_session_id: session.id.clone(),
-                    parent_objective_id: None,
-                    source_event_id,
-                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
-                    stated_objective,
-                    token_budget,
-                },
+                id: objective_id,
+                coordinator_session_id: session.id.clone(),
+                delivery_session_id: None,
+                parent_objective_id: None,
+                stated_objective,
+                token_budget,
+                source_event_id,
+                source_origin: ObjectiveRequestOrigin::Cli,
                 harness,
             },
         )

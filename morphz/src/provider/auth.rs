@@ -1,7 +1,7 @@
 //! Provider authentication adapters and OAuth lifecycle management.
 //!
 //! This module deliberately stops at the authentication boundary. Protocol
-//! request/response normalization remains in [`super::ProtocolClient`], while
+//! request/response normalization remains in the internal `ProtocolClient`, while
 //! OAuth browser/device flows, refresh fencing and request authorization are
 //! owned here. Token material is stored only through [`SecretStore`].
 

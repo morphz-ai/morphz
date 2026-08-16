@@ -4552,6 +4552,19 @@ impl MorphzRuntime {
         self.inner.objective_supervisor.create(objective).await
     }
 
+    /// Atomically creates a schedulable Objective and its immutable
+    /// initialization facts before the first Evaluation can be claimed.
+    pub async fn create_objective_with_initial_events(
+        &self,
+        objective: NewObjective,
+        events: Vec<Event>,
+    ) -> Result<ObjectiveRecord, RuntimeError> {
+        self.inner
+            .objective_supervisor
+            .create_with_initial_events(objective, events)
+            .await
+    }
+
     /// Atomically creates a schedulable Objective and binds one exact Harness
     /// package before its first Evaluation can be claimed.
     pub async fn create_objective_with_harness(
@@ -4559,6 +4572,24 @@ impl MorphzRuntime {
         objective: NewObjective,
         harness_id: &str,
         harness_version: &str,
+    ) -> Result<(ObjectiveRecord, HarnessBinding), RuntimeError> {
+        self.create_objective_with_harness_and_initial_events(
+            objective,
+            harness_id,
+            harness_version,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Atomically creates an Objective, caller-supplied initialization facts,
+    /// and the exact Harness binding used by every Evaluation.
+    pub async fn create_objective_with_harness_and_initial_events(
+        &self,
+        objective: NewObjective,
+        harness_id: &str,
+        harness_version: &str,
+        mut events: Vec<Event>,
     ) -> Result<(ObjectiveRecord, HarnessBinding), RuntimeError> {
         let harness = self
             .inner
@@ -4570,10 +4601,11 @@ impl MorphzRuntime {
             &objective.id,
             harness.as_ref(),
         )?;
+        events.push(event);
         let created = self
             .inner
             .objective_supervisor
-            .create_with_initial_events(objective, vec![event])
+            .create_with_initial_events(objective, events)
             .await?;
         Ok((created, binding))
     }

@@ -63,6 +63,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+/// Version of the supported embedded application contract.
+pub const SDK_CONTRACT_VERSION: &str = "1";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SdkErrorCode {
@@ -444,9 +447,34 @@ pub struct AuthorizeExecutionTargetCommand {
     pub scope_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectiveRequestOrigin {
+    Embedded,
+    Cli,
+    Http,
+}
+
+impl ObjectiveRequestOrigin {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Embedded => "embedded",
+            Self::Cli => "cli",
+            Self::Http => "http",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateObjectiveCommand {
-    pub objective: NewObjective,
+    pub id: String,
+    pub coordinator_session_id: String,
+    pub delivery_session_id: Option<String>,
+    pub parent_objective_id: Option<String>,
+    pub stated_objective: String,
+    pub token_budget: Option<u64>,
+    pub source_event_id: String,
+    pub source_origin: ObjectiveRequestOrigin,
     pub harness: Option<ExactHarnessRef>,
 }
 
@@ -454,6 +482,44 @@ pub struct CreateObjectiveCommand {
 pub struct CreateObjectiveResult {
     pub objective: ObjectiveRecord,
     pub harness_binding: Option<HarnessBinding>,
+}
+
+/// Principal-authorized stream containing Events for exactly one Session.
+///
+/// The Runtime Event bus is process-wide. This wrapper is the SDK security
+/// boundary which prevents a caller authorized for one Session from observing
+/// another Session through a wildcard subscription.
+pub struct SessionEventStream {
+    inner: RuntimeEventStream,
+    session_id: String,
+}
+
+impl SessionEventStream {
+    fn matches(&self, event: &Event) -> bool {
+        event
+            .payload
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(self.session_id.as_str())
+    }
+
+    pub async fn recv(&mut self) -> Option<Event> {
+        while let Some(event) = self.inner.recv().await {
+            if self.matches(&event) {
+                return Some(event);
+            }
+        }
+        None
+    }
+
+    pub fn try_recv(&mut self) -> Result<Event, tokio::sync::mpsc::error::TryRecvError> {
+        loop {
+            let event = self.inner.try_recv()?;
+            if self.matches(&event) {
+                return Ok(event);
+            }
+        }
+    }
 }
 
 /// A cloneable, transport-neutral application facade.
@@ -1686,42 +1752,83 @@ impl MorphzSdk {
     pub async fn create_objective(
         &self,
         principal: &PrincipalAssertion,
-        mut command: CreateObjectiveCommand,
+        command: CreateObjectiveCommand,
     ) -> SdkResult<CreateObjectiveResult> {
         let coordinator = self
-            .authorize_session(
-                &principal.principal_id,
-                &command.objective.coordinator_session_id,
-            )
+            .authorize_session(&principal.principal_id, &command.coordinator_session_id)
             .await?;
+        let delivery_session_id = command
+            .delivery_session_id
+            .as_deref()
+            .unwrap_or(&command.coordinator_session_id);
         let delivery = self
-            .authorize_session(
-                &principal.principal_id,
-                &command.objective.delivery_session_id,
-            )
+            .authorize_session(&principal.principal_id, delivery_session_id)
             .await?;
-        if coordinator.context_id != command.objective.context_id
-            || delivery.context_id != command.objective.context_id
-        {
+        if coordinator.context_id != delivery.context_id {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Objective 的 coordinator/delivery Session 必须属于目标 Context",
+                "Objective 的 coordinator/delivery Session 必须属于同一 Context",
             ));
         }
-        if coordinator.agent_id != command.objective.agent_id
-            || delivery.agent_id != command.objective.agent_id
-        {
+        if coordinator.agent_id != delivery.agent_id {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Objective 的 coordinator/delivery Session 必须属于目标 Agent",
+                "Objective 的 coordinator/delivery Session 必须属于同一 Agent",
             ));
         }
-        command.objective.initiating_principal_id = Some(principal.principal_id.clone());
+        let objective = NewObjective {
+            id: command.id.clone(),
+            agent_id: coordinator.agent_id.clone(),
+            context_id: coordinator.context_id.clone(),
+            coordinator_session_id: coordinator.id.clone(),
+            delivery_session_id: delivery.id,
+            parent_objective_id: command.parent_objective_id,
+            source_event_id: command.source_event_id.clone(),
+            initiating_principal_id: Some(principal.principal_id.clone()),
+            stated_objective: command.stated_objective.clone(),
+            token_budget: command.token_budget,
+        };
+        let source_event = Event::new(
+            command.source_event_id,
+            principal.principal_id.clone(),
+            "objective_request".to_string(),
+            "objective/requested".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    serde_json::json!(coordinator.context_id),
+                ),
+                ("session_id".to_string(), serde_json::json!(coordinator.id)),
+                (
+                    "principal_id".to_string(),
+                    serde_json::json!(principal.principal_id),
+                ),
+                (
+                    "requested_objective_id".to_string(),
+                    serde_json::json!(command.id),
+                ),
+                (
+                    "source_origin".to_string(),
+                    serde_json::json!(command.source_origin.as_str()),
+                ),
+                (
+                    "text".to_string(),
+                    serde_json::json!(command.stated_objective),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
         match command.harness {
             Some(harness) => {
                 let (objective, harness_binding) = self
                     .runtime
-                    .create_objective_with_harness(command.objective, &harness.id, &harness.version)
+                    .create_objective_with_harness_and_initial_events(
+                        objective,
+                        &harness.id,
+                        &harness.version,
+                        vec![source_event],
+                    )
                     .await
                     .map_err(|error| {
                         SdkError::new(SdkErrorCode::InvalidArgument, error.to_string())
@@ -1733,7 +1840,7 @@ impl MorphzSdk {
             }
             None => self
                 .runtime
-                .create_objective(command.objective)
+                .create_objective_with_initial_events(objective, vec![source_event])
                 .await
                 .map(|objective| CreateObjectiveResult {
                     objective,
@@ -3046,9 +3153,12 @@ impl MorphzSdk {
         principal_id: &str,
         session_id: &str,
         capacity: usize,
-    ) -> SdkResult<RuntimeEventStream> {
+    ) -> SdkResult<SessionEventStream> {
         self.authorize_session(principal_id, session_id).await?;
-        Ok(self.runtime.subscribe("*", capacity))
+        Ok(SessionEventStream {
+            inner: self.runtime.subscribe("*", capacity),
+            session_id: session_id.to_string(),
+        })
     }
 
     /// Internal first-party adapters occasionally need Runtime-only surfaces
@@ -3231,5 +3341,75 @@ mod tests {
             sdk.list_sessions("principal-a", false).await.unwrap().len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn session_subscription_never_exposes_another_session() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(OfflineClient))
+            .database_path(database.path().to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        runtime
+            .ensure_agent(NewAgent {
+                id: "agent-stream".to_string(),
+                title: "Stream".to_string(),
+                root_context_id: "context-stream".to_string(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: "context-stream".to_string(),
+                agent_id: "agent-stream".to_string(),
+                title: "Stream".to_string(),
+            })
+            .await
+            .unwrap();
+        let sdk = MorphzSdk::new(runtime.clone());
+        for session_id in ["session-stream-a", "session-stream-b"] {
+            sdk.create_session(
+                principal("principal-stream"),
+                NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "agent-stream".to_string(),
+                    context_id: "context-stream".to_string(),
+                    parent_session_id: None,
+                    title: session_id.to_string(),
+                    mount_kind: SessionMountKind::ExistingContext,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut events = sdk
+            .subscribe_session("principal-stream", "session-stream-a", 8)
+            .await
+            .unwrap();
+        for (event_id, session_id) in [
+            ("event-stream-b", "session-stream-b"),
+            ("event-stream-a", "session-stream-a"),
+        ] {
+            runtime
+                .publish(Event::new(
+                    event_id.to_string(),
+                    "test".to_string(),
+                    "test".to_string(),
+                    "test/session-stream".to_string(),
+                    [("session_id".to_string(), serde_json::json!(session_id))]
+                        .into_iter()
+                        .collect(),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.id, "event-stream-a");
     }
 }

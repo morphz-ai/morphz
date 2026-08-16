@@ -10,8 +10,8 @@ use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
     ContextUpdate, DelegationStatus, ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent,
-    NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord,
-    ObjectiveStatus, QueryFilter, ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
+    NewCognitiveContext, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    QueryFilter, ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
     ThreadControlAction, ThreadMutation,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
@@ -29,16 +29,18 @@ use crate::sdk::{
     ConnectExecutionNodeCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
     ExactHarnessRef, ExecutionJobQuery, ExecutionNodeHeartbeatCommand, FinishEdgeCommand,
     HeartbeatEdgeCommand, MessageAttachmentInput, MorphzSdk, OAuthProviderSetup,
-    PairExecutionNodeCommand, RetryDialogueTurnCommand, RotateExecutionNodeKeyCommand, SdkError,
-    SdkErrorCode, SendMessageCommand, SessionEventsQuery, SubmitArtifactTransferCommand,
+    ObjectiveRequestOrigin, PairExecutionNodeCommand, RetryDialogueTurnCommand,
+    RotateExecutionNodeKeyCommand, SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery,
+    SubmitArtifactTransferCommand,
 };
 use axum::{
     body::Body,
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        DefaultBodyLimit, Path, Query, State,
+        DefaultBodyLimit, Path, Query, Request, State,
     },
     http::{header, HeaderMap, Method, StatusCode, Uri},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
     Json, Router,
@@ -53,7 +55,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tower_http::{compression::CompressionLayer, cors::CorsLayer};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::{AllowOrigin, CorsLayer},
+};
 
 const DASHBOARD_INDEX: &[u8] = include_bytes!("../../dashboard/dist/index.html");
 const DASHBOARD_APP_JS: &[u8] = include_bytes!("../../dashboard/dist/assets/app.js");
@@ -758,9 +763,26 @@ impl Server {
             managed_config_path: crate::config::managed_config_path().ok(),
         });
 
-        // Cross-origin resource sharing (CORS).
-        let cors = CorsLayer::new()
-            .allow_origin(tower_http::cors::Any)
+        let addr: SocketAddr = addr_str.parse()?;
+        if !addr.ip().is_loopback() && state.auth_token.is_none() && state.gateway_token.is_none() {
+            return Err("非本机监听必须配置服务访问令牌，避免事件流和记忆图谱无认证暴露".into());
+        }
+
+        // Tokenless localhost remains frictionless for the embedded Dashboard
+        // and local frontend development, but an arbitrary Internet page must
+        // not be able to read the loopback API through the browser's CORS path.
+        let cors = CorsLayer::new();
+        let cors = if addr.ip().is_loopback()
+            && state.auth_token.is_none()
+            && state.gateway_token.is_none()
+        {
+            cors.allow_origin(AllowOrigin::predicate(|origin, _| {
+                is_loopback_web_origin(origin)
+            }))
+        } else {
+            cors.allow_origin(tower_http::cors::Any)
+        };
+        let cors = cors
             .allow_methods(vec![
                 Method::GET,
                 Method::POST,
@@ -1147,14 +1169,11 @@ impl Server {
             .route("/ws", get(handle_ws_upgrade))
             .fallback(handle_dashboard_fallback)
             .layer(DefaultBodyLimit::max(dashboard_body_limit))
+            .layer(middleware::from_fn(normalize_api_error_responses))
             .layer(CompressionLayer::new())
             .layer(cors)
             .with_state(Arc::clone(&state));
 
-        let addr: SocketAddr = addr_str.parse()?;
-        if !addr.ip().is_loopback() && state.auth_token.is_none() && state.gateway_token.is_none() {
-            return Err("非本机监听必须配置服务访问令牌，避免事件流和记忆图谱无认证暴露".into());
-        }
         let listener = tokio::net::TcpListener::bind(addr).await?;
         tracing::info!(
             addr = %addr,
@@ -1173,6 +1192,22 @@ impl Server {
     }
 }
 
+fn is_loopback_web_origin(origin: &header::HeaderValue) -> bool {
+    let Some(host) = origin
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<Uri>().ok())
+        .and_then(|uri| uri.host().map(str::to_string))
+    else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 fn embedded_asset(content_type: &'static str, body: &'static [u8]) -> Response {
     Response::builder()
         .header(header::CONTENT_TYPE, content_type)
@@ -1187,9 +1222,57 @@ async fn handle_dashboard_index() -> Response {
 
 async fn handle_dashboard_fallback(uri: Uri) -> Response {
     if uri.path().starts_with("/api/") || uri.path() == "/api" || uri.path() == "/ws" {
-        return StatusCode::NOT_FOUND.into_response();
+        return error_response(StatusCode::NOT_FOUND, "API route does not exist");
     }
     handle_dashboard_index().await
+}
+
+async fn normalize_api_error_responses(request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_string();
+    normalize_api_error_response(&path, next.run(request).await)
+}
+
+/// Axum extractor and method-routing rejections happen before a handler can
+/// call `error_response`. Keep those framework-generated failures inside the
+/// same public JSON contract without rewriting successful or already
+/// structured responses.
+fn normalize_api_error_response(path: &str, response: Response) -> Response {
+    let is_api = path == "/api" || path.starts_with("/api/");
+    if !is_api || !(response.status().is_client_error() || response.status().is_server_error()) {
+        return response;
+    }
+    let is_json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/json"));
+    if is_json {
+        return response;
+    }
+
+    let status = response.status();
+    let allow = response.headers().get(header::ALLOW).cloned();
+    let retry_after = response.headers().get(header::RETRY_AFTER).cloned();
+    let authenticate = response.headers().get(header::WWW_AUTHENTICATE).cloned();
+    let message = match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => "Invalid request",
+        StatusCode::METHOD_NOT_ALLOWED => "Method is not allowed for this API route",
+        StatusCode::PAYLOAD_TOO_LARGE => "Request body exceeds the configured limit",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => "Unsupported request content type",
+        _ if status.is_server_error() => "Unhandled API failure",
+        _ => status.canonical_reason().unwrap_or("Request failed"),
+    };
+    let mut normalized = error_response(status, message);
+    for (name, value) in [
+        (header::ALLOW, allow),
+        (header::RETRY_AFTER, retry_after),
+        (header::WWW_AUTHENTICATE, authenticate),
+    ] {
+        if let Some(value) = value {
+            normalized.headers_mut().insert(name, value);
+        }
+    }
+    normalized
 }
 
 async fn handle_dashboard_app_js() -> Response {
@@ -1212,6 +1295,8 @@ async fn handle_dashboard_icons() -> Response {
 struct DashboardStatusResponse {
     #[serde(flatten)]
     runtime: crate::runtime::RuntimeStatus,
+    api_contract_version: &'static str,
+    sdk_contract_version: &'static str,
     identity_mode: ServerIdentityMode,
     identity_provider_id: String,
 }
@@ -1222,7 +1307,7 @@ async fn handle_status(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let mut status = state.sdk.runtime_status();
     match state.runtime.inference_model_options().await {
@@ -1237,6 +1322,8 @@ async fn handle_status(
     }
     Json(DashboardStatusResponse {
         runtime: status,
+        api_contract_version: "1",
+        sdk_contract_version: crate::sdk::SDK_CONTRACT_VERSION,
         identity_mode: state.identity.mode,
         identity_provider_id: state.identity.provider_id.clone(),
     })
@@ -1249,7 +1336,7 @@ async fn handle_get_system_prompt(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let inspection = match crate::orchestrator::orchestrator::production_system_prompt_inspection()
     {
@@ -1275,7 +1362,7 @@ async fn handle_list_managed_secrets(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let sdk = state.sdk.clone();
     match tokio::task::spawn_blocking(move || {
@@ -1314,7 +1401,7 @@ async fn handle_put_managed_secret(
     Json(request): Json<PutManagedSecretRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let PutManagedSecretRequest {
         name,
@@ -1355,7 +1442,7 @@ async fn handle_import_managed_secret(
     Json(request): Json<ImportManagedSecretRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let sdk = state.sdk.clone();
     let name = request.name.trim().to_string();
@@ -1381,7 +1468,7 @@ async fn handle_secret_scope_options(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let contexts = match state.runtime.list_contexts(true).await {
         Ok(contexts) => contexts,
@@ -1434,7 +1521,7 @@ async fn handle_delete_managed_secret(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let sdk = state.sdk.clone();
     match tokio::task::spawn_blocking(move || sdk.delete_managed_secret(&name)).await {
@@ -1454,7 +1541,7 @@ async fn handle_provider_control_snapshot(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     if let Some(path) = state.managed_config_path.as_deref() {
         if let Err(error) = state.sdk.prune_unfinished_oauth_accounts(path).await {
@@ -1474,7 +1561,7 @@ async fn handle_discover_provider_models(
     Json(request): Json<DiscoverProviderModelsRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -1492,7 +1579,7 @@ async fn handle_recent_provider_attempts(
     Query(query): Query<ProviderAttemptsQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -1512,7 +1599,7 @@ async fn handle_diagnose_model_route(
     Json(request): Json<ModelRouteDiagnosticRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -1532,7 +1619,7 @@ async fn handle_refresh_model_catalog(
     Json(request): Json<ModelRouteDiagnosticRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -1552,7 +1639,7 @@ async fn handle_diagnose_provider_account(
     Json(request): Json<ProviderAccountDiagnosticRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -1571,7 +1658,7 @@ async fn handle_provider_subscription_usage(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.sdk.provider_subscription_usage(&account_id).await {
         Ok(usage) => Json(usage).into_response(),
@@ -1587,7 +1674,7 @@ async fn handle_refresh_provider_account_catalog(
     Json(request): Json<ProviderAccountDiagnosticRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -1607,7 +1694,7 @@ async fn handle_put_provider_instance_config(
     Json(provider): Json<ProviderInstanceConfig>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
@@ -1632,7 +1719,7 @@ async fn handle_put_provider_catalog_setup(
     Json(request): Json<PutProviderCatalogSetupRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
@@ -1791,7 +1878,7 @@ async fn handle_put_auth_account_config(
     Json(account): Json<AuthAccountConfig>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
@@ -1817,7 +1904,7 @@ async fn handle_put_provider_account_models(
     Json(request): Json<PutProviderAccountModelsRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
@@ -1866,7 +1953,7 @@ async fn handle_put_model_route_config(
     Json(route): Json<ModelRouteConfig>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
@@ -1891,7 +1978,7 @@ async fn handle_update_auto_review_model(
     Json(request): Json<UpdateAutoReviewModelRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
@@ -1913,7 +2000,7 @@ async fn handle_control_provider_account(
     Json(request): Json<ControlProviderAccountRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -2039,7 +2126,7 @@ async fn handle_oauth_provider_setup_services(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let registered = state
         .sdk
@@ -2063,7 +2150,7 @@ async fn handle_start_oauth_provider_setup(
     Json(request): Json<StartOAuthProviderSetupRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
@@ -2135,7 +2222,7 @@ async fn handle_submit_provider_oauth_callback(
     Json(request): Json<SubmitOAuthCallbackRequest>,
 ) -> Response {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let (_, callback_state) = match parse_authorization_response(&request.redirect_url) {
         Ok(callback) => callback,
@@ -2167,7 +2254,7 @@ async fn handle_start_provider_oauth_login(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.sdk.start_provider_oauth_login(&account_id).await {
         Ok(challenge) => (StatusCode::CREATED, Json(challenge)).into_response(),
@@ -2182,7 +2269,7 @@ async fn handle_start_provider_oauth_login_using(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -2202,7 +2289,7 @@ async fn handle_continue_provider_oauth_login(
     Json(completion): Json<OAuthLoginCompletion>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -2221,7 +2308,7 @@ async fn handle_cancel_provider_oauth_login(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.sdk.cancel_provider_oauth_login(&login_id) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
@@ -2237,7 +2324,7 @@ async fn handle_logout_provider_oauth_account(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.sdk.logout_provider_oauth_account(&account_id).await {
         Ok(deleted) => Json(json!({ "deleted": deleted })).into_response(),
@@ -2252,7 +2339,7 @@ async fn handle_search_recall(
     Query(query): Query<RecallSearchHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let query_text = query.query.unwrap_or_default();
     if query_text.trim().is_empty() && query.start_time.is_none() && query.end_time.is_none() {
@@ -2288,7 +2375,7 @@ async fn handle_search_dialogue_history(
     Query(query): Query<DialogueHistorySearchHttpQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_read_principal(
         &state,
@@ -2437,7 +2524,7 @@ async fn handle_recall_frame(
     Query(query): Query<FrameRecallHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .runtime
@@ -2465,7 +2552,7 @@ async fn handle_inspect_recall_index(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.runtime.inspect_recall_index(&context_id).await {
         Ok(audit) => Json(audit).into_response(),
@@ -2480,7 +2567,7 @@ async fn handle_rebuild_recall_index(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.runtime.rebuild_recall_index(&context_id).await {
         Ok(audit) => Json(audit).into_response(),
@@ -2496,7 +2583,7 @@ async fn handle_mutate_frame_lifecycle(
     Json(request): Json<MutateFrameLifecycleRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let action = match request.action.trim() {
         "restore" => "restore",
@@ -2544,7 +2631,7 @@ async fn handle_get_inference(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let options = match state.runtime.inference_model_options().await {
         Ok(options) => options,
@@ -2572,7 +2659,7 @@ async fn handle_update_inference(
     Json(request): Json<UpdateInferenceRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let current_model = state.runtime.model();
     let model = request.model.as_deref().unwrap_or(&current_model).trim();
@@ -2690,7 +2777,7 @@ async fn handle_list_approvals(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     Json(json!({ "approvals": state.runtime.pending_approvals().await })).into_response()
 }
@@ -2703,7 +2790,7 @@ async fn handle_decide_approval(
     Json(request): Json<DecideApprovalRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let rationale = request
         .rationale
@@ -2779,7 +2866,50 @@ fn validate_principal_id(value: &str) -> Result<(), String> {
 }
 
 fn error_response(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
-    (status, Json(json!({ "error": message.into() }))).into_response()
+    let message = message.into();
+    let (code, public_message) = if status == StatusCode::INTERNAL_SERVER_ERROR {
+        tracing::error!(
+            event_code = "web.api.internal_error",
+            error = %message,
+            "HTTP API request failed with an internal error"
+        );
+        (
+            "internal",
+            "The server could not complete the request".to_string(),
+        )
+    } else {
+        (http_error_code(status), message)
+    };
+    (
+        status,
+        Json(json!({
+            "error": {
+                "code": code,
+                "message": public_message,
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn http_error_code(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => "invalid_argument",
+        StatusCode::UNAUTHORIZED => "unauthorized",
+        StatusCode::FORBIDDEN => "forbidden",
+        StatusCode::NOT_FOUND => "not_found",
+        StatusCode::CONFLICT => "conflict",
+        StatusCode::PAYLOAD_TOO_LARGE | StatusCode::TOO_MANY_REQUESTS => "resource_exhausted",
+        StatusCode::RANGE_NOT_SATISFIABLE => "invalid_argument",
+        StatusCode::SERVICE_UNAVAILABLE => "unavailable",
+        StatusCode::GATEWAY_TIMEOUT => "deadline_exceeded",
+        _ if status.is_server_error() => "internal",
+        _ => "request_failed",
+    }
+}
+
+fn unauthorized_response() -> axum::response::Response {
+    error_response(StatusCode::UNAUTHORIZED, "Authentication is required")
 }
 
 fn sdk_error_response(error: SdkError) -> axum::response::Response {
@@ -2791,12 +2921,22 @@ fn sdk_error_response(error: SdkError) -> axum::response::Response {
         SdkErrorCode::Conflict => StatusCode::CONFLICT,
         SdkErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
     };
+    let message = if error.code == SdkErrorCode::Internal {
+        tracing::error!(
+            event_code = "web.api.sdk_internal_error",
+            error = %error.message,
+            "SDK request failed with an internal error"
+        );
+        "The server could not complete the request".to_string()
+    } else {
+        error.message
+    };
     (
         status,
         Json(json!({
             "error": {
                 "code": error.code.as_str(),
-                "message": error.message,
+                "message": message,
             }
         })),
     )
@@ -3087,7 +3227,7 @@ async fn handle_list_agents(
     Query(query): Query<SessionListQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.runtime.list_agents(query.include_archived).await {
         Ok(agents) => Json(json!({ "agents": agents })).into_response(),
@@ -3102,7 +3242,7 @@ async fn handle_create_agent(
     Json(request): Json<CreateAgentRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -3165,7 +3305,7 @@ async fn handle_list_sessions(
     Query(query): Query<SessionListQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -3187,7 +3327,7 @@ async fn handle_search_operator_principals(
     Query(query): Query<PrincipalDirectoryQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let query_text = query.query.trim();
     if query_text.chars().count() > 200 {
@@ -3221,7 +3361,7 @@ async fn handle_list_operator_principal_sessions(
     Query(query): Query<OperatorPrincipalSessionsQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     if let Err(error) = validate_principal_id(&principal_id) {
         return error_response(StatusCode::BAD_REQUEST, error);
@@ -3246,7 +3386,7 @@ async fn handle_list_contexts(
     Query(query): Query<SessionListQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.runtime.list_contexts(query.include_archived).await {
         Ok(contexts) => Json(json!({ "contexts": contexts })).into_response(),
@@ -3260,7 +3400,7 @@ async fn handle_list_execution_targets(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3283,7 +3423,7 @@ async fn handle_register_execution_target(
     Json(registration): Json<ExecutionTargetRegistration>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3306,7 +3446,7 @@ async fn handle_inspect_execution_target(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3330,7 +3470,7 @@ async fn handle_mutate_execution_target(
     Json(request): Json<MutateExecutionTargetRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3358,7 +3498,7 @@ async fn handle_authorize_execution_target(
     Json(command): Json<AuthorizeExecutionTargetCommand>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3380,7 +3520,7 @@ async fn handle_list_execution_target_authorizations(
     Query(query): Query<TargetAuthorizationQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3408,7 +3548,7 @@ async fn handle_revoke_execution_target_authorization(
     Json(request): Json<RevokeTargetAuthorizationRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3441,7 +3581,7 @@ async fn handle_list_capability_leases(
     Query(query): Query<CapabilityLeaseQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3470,7 +3610,7 @@ async fn handle_revoke_capability_lease(
     Json(request): Json<RevokeCapabilityLeaseRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3504,7 +3644,7 @@ async fn handle_create_node_pairing_code(
     Json(command): Json<CreateNodePairingCodeCommand>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3586,7 +3726,7 @@ async fn handle_list_execution_nodes(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3610,7 +3750,7 @@ async fn handle_revoke_execution_node(
     Json(request): Json<RevokeExecutionNodeRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -3776,36 +3916,31 @@ async fn handle_download_edge_artifact(
         .stage_path(&job_id, ArtifactTransferStageKind::RuntimeSource);
     let metadata = match tokio::fs::metadata(&path).await {
         Ok(metadata) if metadata.is_file() => metadata,
-        Ok(_) => return (StatusCode::CONFLICT, "Artifact stage 不是普通文件").into_response(),
+        Ok(_) => return error_response(StatusCode::CONFLICT, "Artifact stage 不是普通文件"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return (StatusCode::NOT_FOUND, "Artifact stage 不存在").into_response()
+            return error_response(StatusCode::NOT_FOUND, "Artifact stage 不存在")
         }
-        Err(error) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
-        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     if channel
         .size_bytes
         .is_some_and(|expected| expected != metadata.len())
     {
-        return (StatusCode::CONFLICT, "Artifact stage 大小与冻结通道不一致").into_response();
+        return error_response(StatusCode::CONFLICT, "Artifact stage 大小与冻结通道不一致");
     }
     if query.offset > metadata.len() {
-        return (
+        return error_response(
             StatusCode::RANGE_NOT_SATISFIABLE,
             "Artifact download offset 超过冻结大小",
-        )
-            .into_response();
+        );
     }
     let mut file = match tokio::fs::File::open(path).await {
         Ok(file) => file,
-        Err(error) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
-        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     use tokio::io::AsyncSeekExt as _;
     if let Err(error) = file.seek(std::io::SeekFrom::Start(query.offset)).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
     }
     let stream = futures_util::stream::try_unfold(file, |mut file| async move {
         use tokio::io::AsyncReadExt as _;
@@ -3940,7 +4075,7 @@ async fn handle_upload_edge_artifact(
         .map(str::to_string)
     {
         Some(value) => value,
-        None => return (StatusCode::BAD_REQUEST, "缺少 Artifact digest").into_response(),
+        None => return error_response(StatusCode::BAD_REQUEST, "缺少 Artifact digest"),
     };
     if channel
         .size_bytes
@@ -3950,7 +4085,7 @@ async fn handle_upload_edge_artifact(
             .as_deref()
             .is_some_and(|expected| expected != claimed_digest)
     {
-        return (StatusCode::CONFLICT, "上传声明与冻结通道不一致").into_response();
+        return error_response(StatusCode::CONFLICT, "上传声明与冻结通道不一致");
     }
     let final_path = match state
         .runtime
@@ -3959,16 +4094,14 @@ async fn handle_upload_edge_artifact(
         .await
     {
         Ok(path) => path,
-        Err(error) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
-        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     let partial_path = final_path.with_extension("partial");
     if tokio::fs::try_exists(&final_path).await.unwrap_or(false) {
         let metadata = match tokio::fs::metadata(&final_path).await {
             Ok(metadata) => metadata,
             Err(error) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
             }
         };
         return Json(json!({
@@ -3986,7 +4119,10 @@ async fn handle_upload_edge_artifact(
         return (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Artifact upload offset 冲突",
+                "error": {
+                    "code": "conflict",
+                    "message": "Artifact upload offset 冲突",
+                },
                 "expected_offset": current_offset,
             })),
         )
@@ -3997,7 +4133,7 @@ async fn handle_upload_edge_artifact(
         let mut prefix = match tokio::fs::File::open(&partial_path).await {
             Ok(prefix) => prefix,
             Err(error) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
             }
         };
         use tokio::io::AsyncReadExt as _;
@@ -4006,7 +4142,7 @@ async fn handle_upload_edge_artifact(
             let count = match prefix.read(&mut buffer).await {
                 Ok(count) => count,
                 Err(error) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
                 }
             };
             if count == 0 {
@@ -4022,9 +4158,7 @@ async fn handle_upload_edge_artifact(
         .await
     {
         Ok(file) => file,
-        Err(error) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
-        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     let mut stream = body.into_data_stream();
     let mut size_bytes = current_offset;
@@ -4036,7 +4170,7 @@ async fn handle_upload_edge_artifact(
                 // Keep the flushed prefix. The Edge client asks for the
                 // authoritative offset and resumes instead of restarting.
                 let _ = file.flush().await;
-                return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+                return error_response(StatusCode::BAD_REQUEST, error.to_string());
             }
         };
         size_bytes = size_bytes.saturating_add(chunk.len() as u64);
@@ -4044,21 +4178,20 @@ async fn handle_upload_edge_artifact(
             .size_bytes
             .is_some_and(|expected| size_bytes > expected)
         {
-            return (
+            return error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Artifact upload 超过冻结大小",
-            )
-                .into_response();
+            );
         }
         hasher.update(&chunk);
         if let Err(error) = file.write_all(&chunk).await {
             let _ = tokio::fs::remove_file(&partial_path).await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
         }
     }
     if size_bytes != claimed_total {
         let _ = file.flush().await;
-        return (StatusCode::CONFLICT, "Artifact upload 尚未达到声明大小").into_response();
+        return error_response(StatusCode::CONFLICT, "Artifact upload 尚未达到声明大小");
     }
     let digest = format!("sha256:{:x}", hasher.finalize());
     if channel
@@ -4070,24 +4203,23 @@ async fn handle_upload_edge_artifact(
             .is_some_and(|expected| expected != size_bytes)
     {
         let _ = tokio::fs::remove_file(&partial_path).await;
-        return (
+        return error_response(
             StatusCode::CONFLICT,
             "Artifact upload 摘要或大小与冻结通道不一致",
-        )
-            .into_response();
+        );
     }
     if digest != claimed_digest {
         let _ = tokio::fs::remove_file(&partial_path).await;
-        return (StatusCode::CONFLICT, "Artifact upload 摘要与声明不一致").into_response();
+        return error_response(StatusCode::CONFLICT, "Artifact upload 摘要与声明不一致");
     }
     if let Err(error) = file.sync_all().await {
         let _ = tokio::fs::remove_file(&partial_path).await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
     }
     drop(file);
     if let Err(error) = tokio::fs::rename(&partial_path, &final_path).await {
         let _ = tokio::fs::remove_file(&partial_path).await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
     }
     Json(json!({
         "job_id": job_id,
@@ -4105,11 +4237,10 @@ fn required_u64_header(headers: &HeaderMap, name: &'static str) -> Result<u64, R
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
         .ok_or_else(|| {
-            (
+            error_response(
                 StatusCode::BAD_REQUEST,
                 format!("缺少或无效 Header: {name}"),
             )
-                .into_response()
         })
 }
 
@@ -4120,7 +4251,7 @@ async fn handle_list_edge_command_output(
     Query(query): Query<EdgeOutputQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -4142,7 +4273,7 @@ async fn handle_list_execution_jobs(
     Query(query): Query<ExecutionJobHttpQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -4176,7 +4307,7 @@ async fn handle_submit_artifact_transfer(
     Json(command): Json<SubmitArtifactTransferCommand>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -4199,7 +4330,7 @@ async fn handle_inspect_artifact_transfer(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -4228,7 +4359,7 @@ async fn handle_artifact_transfer_output(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -4251,7 +4382,7 @@ async fn handle_inspect_execution_job(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -4275,7 +4406,7 @@ async fn handle_cancel_execution_job(
     Json(request): Json<CancelExecutionJobRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
         Ok(principal) => principal,
@@ -4339,7 +4470,7 @@ async fn handle_get_context_working_set(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.runtime.get_context(&context_id).await {
         Ok(Some(_)) => {}
@@ -4403,7 +4534,7 @@ async fn handle_get_context_activations(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.runtime.get_context(&context_id).await {
         Ok(Some(_)) => {}
@@ -4427,7 +4558,7 @@ async fn handle_get_context_overview(
     Query(query): Query<ContextOverviewHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -4451,7 +4582,7 @@ async fn handle_get_runtime_overview(
     Query(query): Query<RuntimeOverviewHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -4475,7 +4606,7 @@ async fn handle_get_model_usage(
     Query(query): Query<ModelUsageHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -4501,7 +4632,7 @@ async fn handle_get_scheduler_snapshot(
     Query(query): Query<SchedulerSnapshotHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -4529,7 +4660,7 @@ async fn handle_list_attention_acknowledgements(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.sdk.attention_acknowledgements(&context_id).await {
         Ok(acknowledgements) => Json(json!({
@@ -4549,7 +4680,7 @@ async fn handle_acknowledge_attention(
     Json(request): Json<AcknowledgeAttentionRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -4577,7 +4708,7 @@ async fn handle_get_thread_detail(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.sdk.thread_detail(&context_id, &thread_id).await {
         Ok(detail) => Json(detail).into_response(),
@@ -4593,7 +4724,7 @@ async fn handle_control_thread(
     Json(request): Json<ControlThreadRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let reason = request
         .reason
@@ -4637,7 +4768,7 @@ async fn handle_query_ledger(
     Query(query): Query<LedgerHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state
         .sdk
@@ -4671,7 +4802,7 @@ async fn handle_audit_mind_projection(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.sdk.audit_mind_projection(&context_id).await {
         Ok(audit) => Json(audit).into_response(),
@@ -4687,7 +4818,7 @@ async fn handle_mutate_schedule(
     Json(request): Json<MutateScheduleRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let action = request.action.trim().to_ascii_lowercase();
     let mutation = match action.as_str() {
@@ -4763,7 +4894,7 @@ async fn handle_create_context(
     Json(request): Json<CreateContextRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let id = request.id.unwrap_or_else(|| api_id("context"));
     if let Err(error) = validate_identifier("context_id", &id) {
@@ -4814,7 +4945,7 @@ async fn handle_update_context(
     Json(request): Json<UpdateContextRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let title = request
         .title
@@ -4845,7 +4976,7 @@ async fn handle_get_context_token_budget(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.sdk.context_token_budget(&context_id).await {
         Ok(budget) => Json(budget).into_response(),
@@ -4861,7 +4992,7 @@ async fn handle_update_context_token_budget(
     Json(request): Json<UpdateContextTokenBudgetRequest>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     if request.requested_hard_token_limit == Some(0) {
         return error_response(
@@ -4904,7 +5035,7 @@ async fn handle_create_session(
     Json(request): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -4955,7 +5086,7 @@ async fn handle_create_independent_session(
     Json(request): Json<CreateIndependentSessionRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -5026,7 +5157,7 @@ async fn handle_get_session(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_read_principal(
         &state,
@@ -5055,7 +5186,7 @@ async fn handle_update_session(
     Json(request): Json<UpdateSessionRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -5092,7 +5223,7 @@ async fn handle_send_message(
     Json(request): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -5212,7 +5343,7 @@ async fn handle_retry_dialogue_turn(
     Json(request): Json<RetryDialogueTurnRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -5255,7 +5386,7 @@ async fn handle_bind_session_principal(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     if state.identity.mode != ServerIdentityMode::TrustedGateway {
         return error_response(
@@ -5284,7 +5415,7 @@ async fn handle_get_session_events(
     Query(query): Query<EventQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_read_principal(
         &state,
@@ -5337,7 +5468,7 @@ async fn handle_get_session_context(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_read_principal(
         &state,
@@ -5373,7 +5504,7 @@ async fn handle_get_session_context_projection(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_read_principal(
         &state,
@@ -5409,7 +5540,7 @@ async fn handle_get_session_context_encoding(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_read_principal(
         &state,
@@ -5451,7 +5582,7 @@ async fn handle_cancel_session(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -5497,7 +5628,7 @@ async fn handle_list_delegations(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.runtime.list_delegations().await {
         Ok(delegations) => Json(json!({ "delegations": delegations })).into_response(),
@@ -5512,7 +5643,7 @@ async fn handle_create_objective(
     Json(request): Json<CreateObjectiveRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -5555,41 +5686,19 @@ async fn handle_create_objective(
         return error_response(StatusCode::BAD_REQUEST, error);
     }
     let source_event_id = api_id("objective_request");
-    let source_event = Event::new(
-        source_event_id.clone(),
-        "User-API".to_string(),
-        "objective_request".to_string(),
-        "objective/requested".to_string(),
-        [
-            ("context_id".to_string(), json!(coordinator.context_id)),
-            ("session_id".to_string(), json!(coordinator.id)),
-            ("principal_id".to_string(), json!(principal.principal_id)),
-            ("requested_objective_id".to_string(), json!(objective_id)),
-            ("text".to_string(), json!(stated_objective)),
-        ]
-        .into_iter()
-        .collect(),
-    );
-    if let Err(error) = state.runtime.publish(source_event).await {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-    }
     match state
         .sdk
         .create_objective(
             &principal,
             CreateObjectiveCommand {
-                objective: NewObjective {
-                    id: objective_id,
-                    agent_id: coordinator.agent_id,
-                    context_id: coordinator.context_id,
-                    coordinator_session_id: coordinator.id,
-                    delivery_session_id: delivery.id,
-                    parent_objective_id: request.parent_objective_id,
-                    source_event_id,
-                    initiating_principal_id: None,
-                    stated_objective,
-                    token_budget: request.token_budget,
-                },
+                id: objective_id,
+                coordinator_session_id: coordinator.id,
+                delivery_session_id: Some(delivery.id),
+                parent_objective_id: request.parent_objective_id,
+                stated_objective,
+                token_budget: request.token_budget,
+                source_event_id,
+                source_origin: ObjectiveRequestOrigin::Http,
                 harness: request.harness,
             },
         )
@@ -5608,7 +5717,7 @@ async fn handle_edit_objective(
     Json(request): Json<EditObjectiveRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     if let Err(error) =
         authorize_objective_request(&state, &headers, query.token.as_deref(), &objective_id).await
@@ -5652,7 +5761,7 @@ async fn handle_resume_objective(
     Json(request): Json<ResumeObjectiveRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let objective =
         match authorize_objective_request(&state, &headers, query.token.as_deref(), &objective_id)
@@ -5712,7 +5821,7 @@ async fn handle_pause_objective(
     Json(request): Json<ResumeObjectiveRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let objective =
         match authorize_objective_request(&state, &headers, query.token.as_deref(), &objective_id)
@@ -5772,7 +5881,7 @@ async fn handle_delete_objective(
     Json(request): Json<ResumeObjectiveRequest>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     if let Err(error) =
         authorize_objective_request(&state, &headers, query.token.as_deref(), &objective_id).await
@@ -5818,7 +5927,7 @@ async fn handle_get_delegation(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     match state.runtime.get_delegation(&delegation_id).await {
         Ok(Some(delegation)) => Json(delegation).into_response(),
@@ -5834,7 +5943,7 @@ async fn handle_cancel_delegation(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     let delegation = match state.runtime.get_delegation(&delegation_id).await {
         Ok(Some(delegation)) => delegation,
@@ -5872,7 +5981,7 @@ async fn handle_ws_upgrade(
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return unauthorized_response();
     }
     if let Some(session_id) = query.session_id.as_deref() {
         if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
@@ -5889,13 +5998,10 @@ async fn handle_ws_upgrade(
                 return sdk_error_response(error);
             }
         }
-    } else if state.identity.mode == ServerIdentityMode::TrustedGateway
-        && !is_operator_authorized(&state, &headers, query.token.as_deref())
-        && query.principal_id.is_some()
-    {
+    } else if !websocket_may_subscribe_globally(&state, &headers, query.token.as_deref()) {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "Principal 订阅必须同时指定 session_id",
+            "非 Operator 的 WebSocket 订阅必须指定 session_id",
         );
     }
     ws.on_upgrade(move |socket| {
@@ -5906,6 +6012,14 @@ async fn handle_ws_upgrade(
             query.observe_model_requests,
         )
     })
+}
+
+fn websocket_may_subscribe_globally(
+    state: &AppState,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+) -> bool {
+    is_operator_authorized(state, headers, query_token)
 }
 
 fn is_authorized(state: &AppState, headers: &HeaderMap, query_token: Option<&str>) -> bool {
@@ -6589,6 +6703,99 @@ mod tests {
         assert!(token_is_authorized(None, &HeaderMap::new(), None));
     }
 
+    #[test]
+    fn tokenless_loopback_cors_accepts_only_loopback_web_origins() {
+        for origin in [
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://[::1]:8080",
+        ] {
+            assert!(is_loopback_web_origin(&origin.parse().unwrap()), "{origin}");
+        }
+        for origin in ["https://example.com", "null", "not-an-origin"] {
+            assert!(
+                !is_loopback_web_origin(&origin.parse().unwrap()),
+                "{origin}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn api_errors_have_one_stable_envelope_and_hide_internal_details() {
+        let bad_request = error_response(StatusCode::BAD_REQUEST, "bad input");
+        let body = axum::body::to_bytes(bad_request.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "invalid_argument");
+        assert_eq!(value["error"]["message"], "bad input");
+
+        let internal = error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "database password and implementation detail",
+        );
+        let body = axum::body::to_bytes(internal.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "internal");
+        assert_eq!(
+            value["error"]["message"],
+            "The server could not complete the request"
+        );
+        assert!(!body
+            .windows("database password".len())
+            .any(|window| window == b"database password"));
+
+        let extractor_rejection = normalize_api_error_response(
+            "/api/objectives",
+            (StatusCode::BAD_REQUEST, "Failed to deserialize JSON").into_response(),
+        );
+        assert_eq!(
+            extractor_rejection
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        let body = axum::body::to_bytes(extractor_rejection.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "invalid_argument");
+        assert_eq!(value["error"]["message"], "Invalid request");
+        assert!(!body
+            .windows("deserialize".len())
+            .any(|window| window == b"deserialize"));
+
+        let dashboard_error = normalize_api_error_response(
+            "/assets/missing.js",
+            (StatusCode::NOT_FOUND, "asset missing").into_response(),
+        );
+        let body = axum::body::to_bytes(dashboard_error.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"asset missing");
+    }
+
+    #[tokio::test]
+    async fn status_declares_http_and_sdk_contract_versions() {
+        let (state, _) = test_state().await;
+        let response = handle_status(State(state), HeaderMap::new(), Query(AuthQuery::default()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["api_contract_version"], "1");
+        assert_eq!(
+            value["sdk_contract_version"],
+            crate::sdk::SDK_CONTRACT_VERSION
+        );
+    }
+
     #[tokio::test]
     async fn system_prompt_endpoint_exposes_the_authoritative_profile_content_and_hash() {
         let (state, _) = test_state().await;
@@ -6684,6 +6891,64 @@ mod tests {
         assert_eq!(
             value["harness_binding"]["harness_version"],
             serde_json::json!("1.2.3")
+        );
+        let objective_request_events = runtime
+            .query_events(QueryFilter {
+                context_id: Some("context-test".to_string()),
+                topic: Some("objective/requested".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(objective_request_events.len(), 1);
+        assert_eq!(
+            objective_request_events[0]
+                .payload
+                .get("requested_objective_id"),
+            Some(&serde_json::json!("objective-http-harness"))
+        );
+        assert_eq!(
+            objective_request_events[0].actor,
+            objective_request_events[0]
+                .payload
+                .get("principal_id")
+                .and_then(Value::as_str)
+                .unwrap()
+        );
+        assert_eq!(
+            objective_request_events[0].payload.get("source_origin"),
+            Some(&serde_json::json!("http"))
+        );
+
+        let duplicate = handle_create_objective(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateObjectiveRequest {
+                id: Some("objective-http-harness".to_string()),
+                coordinator_session_id: "harness-http-session".to_string(),
+                delivery_session_id: None,
+                parent_objective_id: None,
+                stated_objective: "duplicate must not leave a source Event".to_string(),
+                token_budget: None,
+                harness: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            runtime
+                .query_events(QueryFilter {
+                    context_id: Some("context-test".to_string()),
+                    topic: Some("objective/requested".to_string()),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "a rejected Objective must not leave an orphan request Event"
         );
 
         // Objective creation may immediately hand the record to the supervisor,
@@ -7104,6 +7369,34 @@ mod tests {
             },
             managed_config_path: default_state.managed_config_path.clone(),
         });
+        assert!(!websocket_may_subscribe_globally(
+            &state,
+            &gateway_headers(Some("site-user-1")),
+            None
+        ));
+        let mut operator_headers = HeaderMap::new();
+        operator_headers.insert(
+            header::AUTHORIZATION,
+            "Bearer dashboard-secret".parse().unwrap(),
+        );
+        assert!(websocket_may_subscribe_globally(
+            &state,
+            &operator_headers,
+            None
+        ));
+        let unauthorized = handle_status(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(unauthorized.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "unauthorized");
 
         let gateway_overview = handle_get_runtime_overview(
             State(Arc::clone(&state)),

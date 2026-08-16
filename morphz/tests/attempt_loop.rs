@@ -4881,6 +4881,29 @@ async fn same_session_dialogue_turns_are_serialized() {
     let bus = Arc::new(InMemoryEventBus::new());
     let snapshots = capture_model_request_snapshots(&bus, "serialized-session");
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: "serialized-agent".to_string(),
+                title: "Serialized Agent".to_string(),
+                root_context_id: "serialized-session".to_string(),
+            },
+            NewCognitiveContext {
+                id: "serialized-session".to_string(),
+                agent_id: "serialized-agent".to_string(),
+                title: "Serialized Context".to_string(),
+            },
+            NewSession {
+                id: "serialized-session".to_string(),
+                agent_id: "serialized-agent".to_string(),
+                context_id: "serialized-session".to_string(),
+                parent_session_id: None,
+                title: "Serialized Session".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
     install_test_session_registry(&bus, &store);
     let client = Arc::new(ConcurrencyProbeClient {
         active: AtomicUsize::new(0),

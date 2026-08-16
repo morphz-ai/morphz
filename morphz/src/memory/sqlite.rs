@@ -1529,6 +1529,37 @@ impl SqliteStore {
                 .await?;
             }
         }
+        // A Session has one authoritative current mount. Older builds did not
+        // enforce this physically, so converge any legacy duplicate active
+        // rows before installing the invariant. The highest generation remains
+        // active; each older row ends when a newer generation was mounted.
+        sqlx::query(
+            r#"UPDATE session_mounts AS older
+               SET unmounted_at = (
+                   SELECT newer.mounted_at
+                   FROM session_mounts AS newer
+                   WHERE newer.session_id = older.session_id
+                     AND newer.generation > older.generation
+                   ORDER BY newer.generation
+                   LIMIT 1
+               )
+               WHERE older.unmounted_at IS NULL
+                 AND EXISTS (
+                   SELECT 1
+                   FROM session_mounts AS newer
+                   WHERE newer.session_id = older.session_id
+                     AND newer.generation > older.generation
+                 )"#,
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_session_mounts_one_active
+               ON session_mounts(session_id)
+               WHERE unmounted_at IS NULL"#,
+        )
+        .execute(&pool)
+        .await?;
 
         // Objective reasons were originally present only in the immutable
         // event ledger. Keep the current-state projection self-contained for
@@ -24775,6 +24806,53 @@ mod tests {
             .await
             .unwrap();
         assert!(other_session.is_empty());
+    }
+
+    #[tokio::test]
+    async fn schema_enforces_one_active_mount_per_session() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            r#"INSERT INTO sessions
+               (id, agent_id, context_id, parent_session_id, title, status,
+                created_at, updated_at, last_activity_at)
+               VALUES (?, ?, ?, NULL, ?, 'active', ?, ?, ?)"#,
+        )
+        .bind("session-one-active-mount")
+        .bind("agent-schema-test")
+        .bind("context-schema-test")
+        .bind("Schema Test")
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO session_mounts
+               (session_id, generation, context_id, mount_kind, mounted_at, unmounted_at)
+               VALUES (?, 1, ?, 'existing_context', ?, NULL)"#,
+        )
+        .bind("session-one-active-mount")
+        .bind("context-schema-test")
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let duplicate = sqlx::query(
+            r#"INSERT INTO session_mounts
+               (session_id, generation, context_id, mount_kind, mounted_at, unmounted_at)
+               VALUES (?, 2, ?, 'existing_context', ?, NULL)"#,
+        )
+        .bind("session-one-active-mount")
+        .bind("context-schema-test")
+        .bind(&now)
+        .execute(&store.pool)
+        .await;
+        assert!(duplicate.is_err());
     }
 
     #[tokio::test]
