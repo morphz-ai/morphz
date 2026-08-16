@@ -759,6 +759,12 @@ impl CapabilityLeaseStore for PostgresStore {
         if let Some(value) = filter.target_id {
             query.push(" AND target_id = ").push_bind(value);
         }
+        if let Some(value) = filter.capability {
+            query
+                .push(" AND capabilities_json::jsonb @> ")
+                .push_bind(serde_json::to_string(&vec![value])?)
+                .push("::jsonb");
+        }
         if let Some(active_at) = filter.active_at {
             query
                 .push(" AND status = 'active' AND expires_at > ")

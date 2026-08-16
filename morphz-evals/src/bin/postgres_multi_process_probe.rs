@@ -218,7 +218,11 @@ async fn recover_job(args: &[String]) -> Result<(), ProbeError> {
     let store = Arc::new(PostgresStore::new(&database_url, 2).await?);
     let manager = morphz::execution::ExecutionJobManager::new(Arc::clone(&store));
     let report = manager
-        .reconcile_startup(WorkerCoordinationMode::SharedLeases, store.as_ref())
+        .reconcile_startup(
+            WorkerCoordinationMode::SharedLeases,
+            store.as_ref(),
+            Some(store.as_ref()),
+        )
         .await?;
     let requeued = report.requeue_receipts.iter().any(|receipt| {
         receipt

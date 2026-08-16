@@ -111,6 +111,34 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     Ok(())
 }
 
+pub(super) async fn migrate_edge_command_notifications(pool: &PgPool) -> Result<(), StoreError> {
+    // Command state and streamed output may be produced by an Edge worker in
+    // another process. Commit-visible notifications avoid a 250 ms query loop
+    // while the caller's timeout remains the missed-notification fallback.
+    for statement in [
+        r#"CREATE OR REPLACE FUNCTION morphz_notify_edge_command_change()
+           RETURNS trigger AS $function$
+           BEGIN
+             PERFORM pg_notify('morphz_edge_command_change', current_schema());
+             RETURN NEW;
+           END;
+           $function$ LANGUAGE plpgsql"#,
+        r#"DROP TRIGGER IF EXISTS trg_morphz_edge_command_change
+           ON edge_execution_commands"#,
+        r#"CREATE TRIGGER trg_morphz_edge_command_change
+           AFTER INSERT OR UPDATE OF status ON edge_execution_commands
+           FOR EACH ROW EXECUTE FUNCTION morphz_notify_edge_command_change()"#,
+        r#"DROP TRIGGER IF EXISTS trg_morphz_edge_output_change
+           ON edge_command_output_chunks"#,
+        r#"CREATE TRIGGER trg_morphz_edge_output_change
+           AFTER INSERT ON edge_command_output_chunks
+           FOR EACH ROW EXECUTE FUNCTION morphz_notify_edge_command_change()"#,
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
+    Ok(())
+}
+
 fn parse_time(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value)
         .expect("PostgreSQL timestamp must be RFC3339")
@@ -470,23 +498,57 @@ impl EdgeExecutionStore for PostgresStore {
         owner_principal_id: &str,
         expected_revision: u64,
     ) -> Result<Option<ExecutionNodeRecord>, StoreError> {
-        sqlx::query(
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
             r#"UPDATE execution_nodes SET revision = revision + 1, status = 'revoked', updated_at = $1
                WHERE id = $2 AND owner_principal_id = $3 AND revision = $4"#,
         )
-        .bind(now_text())
+        .bind(&now)
         .bind(node_id)
         .bind(owner_principal_id)
         .bind(i64::try_from(expected_revision)?)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        if updated.rows_affected() == 1 {
+            sqlx::query(
+                r#"UPDATE execution_targets
+                   SET revision = revision + 1, status = 'offline', updated_at = $1
+                   WHERE provider_node_id = $2 AND status = 'online'"#,
+            )
+            .bind(&now)
+            .bind(node_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE edge_execution_commands
+                   SET revision = revision + 1,
+                       status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'lost' END,
+                       error = CASE
+                           WHEN status = 'queued' THEN 'Edge Node was revoked before command claim'
+                           ELSE 'Edge Node was revoked while command outcome was not durable'
+                       END,
+                       finished_at = $1, updated_at = $1
+                   WHERE provider_node_id = $2
+                     AND status IN ('queued', 'claimed', 'cancel_requested')"#,
+            )
+            .bind(&now)
+            .bind(node_id)
+            .execute(&mut *tx)
+            .await?;
+        }
         let row =
             sqlx::query("SELECT * FROM execution_nodes WHERE id = $1 AND owner_principal_id = $2")
                 .bind(node_id)
                 .bind(owner_principal_id)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await?;
-        row.as_ref().map(node_from_row).transpose()
+        let node = row.as_ref().map(node_from_row).transpose()?;
+        tx.commit().await?;
+        if updated.rows_affected() == 1 {
+            self.edge_command_notify.notify_waiters();
+        }
+        Ok(node)
     }
 
     async fn rotate_execution_node_key(

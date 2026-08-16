@@ -3401,7 +3401,7 @@ where
 
 async fn assert_action_group_conformance<S>(store: Arc<S>)
 where
-    S: ActionGroupStore + ActivationStore + EventStore + Send + Sync + 'static,
+    S: ActionGroupStore + ActivationStore + EventStore + ExecutionJobStore + Send + Sync + 'static,
 {
     let assistant_call = Event::new(
         "conformance-action-group-call".to_string(),
@@ -3619,6 +3619,127 @@ where
         0,
         "same-database ActionGroup completion must not detour through Signal Outbox"
     );
+
+    let recovery_call = Event::new(
+        "call-conformance-action-group-recovery".to_string(),
+        "Store-Conformance".to_string(),
+        morphz::event::TYPE_AGENT_CALL.to_string(),
+        "chat/assistant_call".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "activation_id": "conformance-activation",
+            "thread_id": "conformance-thread",
+            "root_turn_id": "root-conformance-thread"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store.append(recovery_call.clone()).await.unwrap();
+    let recovery_job_id = "conformance-action-group-recovery-job";
+    let mut recovery_job = execution_job(recovery_job_id, "group-recovery-call");
+    recovery_job.retry_safety = ExecutionRetrySafety::AtMostOnce;
+    recovery_job.request = json!({
+        "path": "README.md",
+        "_morphz_action_group_id": "conformance-action-group-recovery"
+    });
+    let recovery_job = store.create_execution_job(recovery_job).await.unwrap();
+    store
+        .create_action_group(
+            NewActionGroup {
+                id: "conformance-action-group-recovery".to_string(),
+                activation_id: "conformance-activation".to_string(),
+                thread_id: "conformance-thread".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: "conformance-session".to_string(),
+                assistant_call_event_id: recovery_call.id,
+                objective_id: None,
+                objective_evaluation_id: None,
+                objective_revision: None,
+            },
+            vec![
+                NewActionGroupMember {
+                    ordinal: 0,
+                    tool_call_id: "group-recovery-call".to_string(),
+                    tool_name: "read".to_string(),
+                    execution_job_id: Some(recovery_job_id.to_string()),
+                },
+                NewActionGroupMember {
+                    ordinal: 1,
+                    tool_call_id: "group-recovery-logical-call".to_string(),
+                    tool_name: "search".to_string(),
+                    execution_job_id: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    let recovery_job = match store
+        .claim_execution_job(
+            &recovery_job.id,
+            recovery_job.revision,
+            "group-recovery-worker",
+            "group-recovery-claim",
+            chrono::Utc::now() + chrono::Duration::minutes(1),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ExecutionJobMutation::Updated(job) => job,
+        mutation => panic!("unexpected Action Group recovery claim: {mutation:?}"),
+    };
+    let recovery_job = match store
+        .heartbeat_execution_job(
+            &recovery_job.id,
+            recovery_job.revision,
+            "group-recovery-claim",
+            chrono::Utc::now() + chrono::Duration::minutes(1),
+            Some(chrono::Utc::now()),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ExecutionJobMutation::Updated(job) => job,
+        mutation => panic!("unexpected Action Group recovery heartbeat: {mutation:?}"),
+    };
+    let manager: ExecutionJobManager<dyn ExecutionJobStore> =
+        ExecutionJobManager::new(store.clone());
+    let report = manager
+        .reconcile_startup(
+            morphz::memory::WorkerCoordinationMode::ExclusiveProcess,
+            store.as_ref(),
+            Some(store.as_ref()),
+        )
+        .await
+        .unwrap();
+    assert!(report.lost_receipts.iter().any(|receipt| receipt
+        .applied_job()
+        .is_some_and(|job| job.id == recovery_job.id)));
+    let result = store
+        .query(QueryFilter {
+            event_id: Some("output_conformance-activation_group-recovery-call".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        result.payload["action_group_id"],
+        "conformance-action-group-recovery"
+    );
+    assert_eq!(result.payload["wake_policy"], "none");
+    assert!(store
+        .list_context_thread_signals("conformance-context", Some(ThreadSignalStatus::Pending))
+        .await
+        .unwrap()
+        .iter()
+        .all(|signal| signal.event_id != result.id));
 }
 
 fn execution_job(id: &str, tool_call_id: &str) -> NewExecutionJob {
@@ -3973,6 +4094,76 @@ where
             .status,
         EdgeCommandStatus::Cancelled
     );
+
+    for (job_id, call_id) in [
+        ("conformance-edge-revoke-queued", "tool-call-revoke-queued"),
+        (
+            "conformance-edge-revoke-claimed",
+            "tool-call-revoke-claimed",
+        ),
+    ] {
+        store
+            .create_execution_job(execution_job_on_target(
+                job_id,
+                call_id,
+                "conformance-edge-target",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_edge_command(NewEdgeCommand {
+                job_id: job_id.to_string(),
+                target_id: "conformance-edge-target".to_string(),
+                provider_node_id: "node-conformance".to_string(),
+                tool_name: "read".to_string(),
+                arguments: "{}".to_string(),
+                route: queued.route.clone(),
+            })
+            .await
+            .unwrap();
+    }
+    let revoke_claimed = store
+        .claim_edge_command(
+            "node-conformance",
+            "worker-revoke",
+            "claim-revoke",
+            chrono::Utc::now() + chrono::Duration::seconds(30),
+            8,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(revoke_claimed.job_id, "conformance-edge-revoke-queued");
+    let revoked = store
+        .revoke_execution_node(
+            "node-conformance",
+            "principal:conformance",
+            rotated.revision,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(revoked.status, ExecutionNodeStatus::Revoked);
+    assert_eq!(
+        store
+            .get_edge_command("conformance-edge-revoke-queued")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        EdgeCommandStatus::Lost,
+        "a claimed command has an unknown outcome when its Node is revoked"
+    );
+    assert_eq!(
+        store
+            .get_edge_command("conformance-edge-revoke-claimed")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        EdgeCommandStatus::Cancelled,
+        "an unclaimed command must not remain queued for a revoked Node"
+    );
 }
 
 async fn assert_execution_target_conformance<S>(store: Arc<S>)
@@ -4071,6 +4262,26 @@ where
     };
     assert_eq!(created.status, ExecutionTargetAuthorizationStatus::Active);
     assert!(store
+        .has_active_execution_target_authorization(
+            "conformance-edge-target",
+            "principal:conformance",
+            "other-agent",
+            "other-context",
+            "conformance-thread",
+        )
+        .await
+        .unwrap());
+    assert!(!store
+        .has_active_execution_target_authorization(
+            "conformance-edge-target",
+            "principal:conformance",
+            "other-agent",
+            "other-context",
+            "other-thread",
+        )
+        .await
+        .unwrap());
+    assert!(store
         .has_execution_target_authorization_history("conformance-edge-target")
         .await
         .unwrap());
@@ -4103,6 +4314,16 @@ where
         mutation => panic!("unexpected Target authorization revoke mutation: {mutation:?}"),
     };
     assert_eq!(revoked.status, ExecutionTargetAuthorizationStatus::Revoked);
+    assert!(!store
+        .has_active_execution_target_authorization(
+            "conformance-edge-target",
+            "principal:conformance",
+            "other-agent",
+            "other-context",
+            "conformance-thread",
+        )
+        .await
+        .unwrap());
     assert!(store
         .list_execution_target_authorizations(ExecutionTargetAuthorizationFilter {
             target_id: Some("conformance-edge-target".to_string()),
@@ -4163,6 +4384,7 @@ where
                 principal_id: Some("principal:conformance".to_string()),
                 thread_id: Some("conformance-thread".to_string()),
                 target_id: Some("conformance-edge-target".to_string()),
+                capability: Some("exec".to_string()),
                 active_at: Some(chrono::Utc::now()),
                 ..CapabilityLeaseFilter::default()
             })
@@ -4171,6 +4393,18 @@ where
             .len(),
         1
     );
+    assert!(store
+        .list_capability_leases(CapabilityLeaseFilter {
+            principal_id: Some("principal:conformance".to_string()),
+            thread_id: Some("conformance-thread".to_string()),
+            target_id: Some("conformance-edge-target".to_string()),
+            capability: Some("read".to_string()),
+            active_at: Some(chrono::Utc::now()),
+            ..CapabilityLeaseFilter::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
     let revoked = match store
         .revoke_capability_lease(&created.id, created.revision, "conformance revoke")
         .await
@@ -4364,6 +4598,40 @@ where
             .unwrap(),
         ExecutionJobMutation::Updated(job) if job.status == ExecutionJobStatus::Queued
     ));
+
+    let cancellable = store
+        .create_execution_job(execution_job(
+            "conformance-cancel-cause",
+            "tool-call-cancel",
+        ))
+        .await
+        .unwrap();
+    let first_cancel = match store
+        .request_cancel_execution_job(
+            &cancellable.id,
+            cancellable.revision,
+            Some("first durable cause"),
+        )
+        .await
+        .unwrap()
+    {
+        ExecutionJobMutation::Updated(job) => job,
+        mutation => panic!("unexpected first cancellation mutation: {mutation:?}"),
+    };
+    let repeated = match store
+        .request_cancel_execution_job(&first_cancel.id, first_cancel.revision, None)
+        .await
+        .unwrap()
+    {
+        ExecutionJobMutation::Updated(job) => job,
+        mutation => panic!("unexpected repeated cancellation mutation: {mutation:?}"),
+    };
+    assert_eq!(repeated.revision, first_cancel.revision);
+    assert_eq!(
+        repeated.cancel_reason.as_deref(),
+        Some("first durable cause"),
+        "later cancellation requests must not rewrite the original cause"
+    );
 }
 
 fn approval_bundle(
@@ -4548,7 +4816,7 @@ where
         ExecutionApprovalMutation::Existing { .. }
     ));
 
-    let (job, approval, request_event) = approval_bundle("cancel-job", "tool-call-cancel");
+    let (job, approval, request_event) = approval_bundle("cancel-job", "tool-call-approval-cancel");
     let created = store
         .ensure_execution_job_with_approval(job, approval, &request_event)
         .await
@@ -4798,6 +5066,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
         .reconcile_startup(
             morphz::memory::WorkerCoordinationMode::SharedLeases,
             second.as_ref(),
+            Some(second.as_ref()),
         )
         .await
         .unwrap();
@@ -4852,6 +5121,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
         .reconcile_startup(
             morphz::memory::WorkerCoordinationMode::SharedLeases,
             second.as_ref(),
+            Some(second.as_ref()),
         )
         .await
         .unwrap();
@@ -5203,6 +5473,8 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260815_02_recall_whole_document_event_backfill",
         "20260815_03_session_projection_sequences",
         "20260815_04_sql_performance_indexes",
+        "20260816_01_thread_signal_notifications",
+        "20260816_02_edge_command_notifications",
     ] {
         assert!(
             applied_migrations.contains(version),

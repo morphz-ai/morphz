@@ -517,16 +517,41 @@ impl ExecutionTargetAuthorizationStore for PostgresStore {
         })
     }
 
+    async fn has_active_execution_target_authorization(
+        &self,
+        target_id: &str,
+        owner_principal_id: &str,
+        agent_id: &str,
+        context_id: &str,
+        thread_id: &str,
+    ) -> Result<bool, StoreError> {
+        Ok(sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM execution_target_authorizations
+                   WHERE target_id = $1 AND owner_principal_id = $2 AND status = 'active'
+                     AND ((scope = 'agent' AND scope_id = $3)
+                       OR (scope = 'context' AND scope_id = $4)
+                       OR (scope = 'thread' AND scope_id = $5))
+               )"#,
+        )
+        .bind(target_id)
+        .bind(owner_principal_id)
+        .bind(agent_id)
+        .bind(context_id)
+        .bind(thread_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     async fn has_execution_target_authorization_history(
         &self,
         target_id: &str,
     ) -> Result<bool, StoreError> {
-        Ok(sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM execution_target_authorizations WHERE target_id = $1",
+        Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM execution_target_authorizations WHERE target_id = $1)",
         )
         .bind(target_id)
         .fetch_one(&self.pool)
-        .await?
-            > 0)
+        .await?)
     }
 }

@@ -28,7 +28,7 @@ use crate::scheduler::{
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
-use sqlx::postgres::{PgConnection, PgPoolOptions, PgRow};
+use sqlx::postgres::{PgConnection, PgListener, PgPoolOptions, PgRow};
 use sqlx::{Connection, PgPool, Postgres, QueryBuilder, Row};
 use std::future::Future;
 use std::sync::Arc;
@@ -40,6 +40,8 @@ type StoreError = Box<dyn std::error::Error + Send + Sync>;
 // dedicated connection so a Store configured with a one-connection pool can
 // still migrate without deadlocking itself.
 const SCHEMA_MIGRATION_LOCK: i64 = 0x4D4F_5250_485A_0001_i64;
+const THREAD_SIGNAL_NOTIFY_CHANNEL: &str = "morphz_thread_signal_change";
+const EDGE_COMMAND_NOTIFY_CHANNEL: &str = "morphz_edge_command_change";
 
 mod action_group;
 mod activation;
@@ -59,6 +61,7 @@ mod thread_group;
 pub struct PostgresStore {
     pool: PgPool,
     edge_command_notify: Arc<Notify>,
+    thread_signal_notify: Arc<Notify>,
 }
 
 impl PostgresStore {
@@ -75,6 +78,7 @@ impl PostgresStore {
         let store = Self {
             pool,
             edge_command_notify: Arc::new(Notify::new()),
+            thread_signal_notify: Arc::new(Notify::new()),
         };
         let migrations = async {
             store.ensure_schema_migrations().await?;
@@ -137,6 +141,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260816_02_edge_command_notifications",
+                    edge::migrate_edge_command_notifications(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260721_03_edge_device_identity",
                     edge::migrate(&store.pool),
                 )
@@ -169,6 +179,12 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260718_05_activations",
                     activation::migrate(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260816_01_thread_signal_notifications",
+                    activation::migrate_thread_signal_notifications(&store.pool),
                 )
                 .await?;
             store
@@ -266,7 +282,66 @@ impl PostgresStore {
             .await;
         migrations?;
         unlock?;
+        store.start_database_change_listener(database_url).await?;
         Ok(store)
+    }
+
+    async fn start_database_change_listener(&self, database_url: &str) -> Result<(), StoreError> {
+        let schema = sqlx::query_scalar::<_, String>("SELECT current_schema()")
+            .fetch_one(&self.pool)
+            .await?;
+        let mut listener = PgListener::connect(database_url).await?;
+        listener.listen(THREAD_SIGNAL_NOTIFY_CHANNEL).await?;
+        listener.listen(EDGE_COMMAND_NOTIFY_CHANNEL).await?;
+        let thread_signal_notify = Arc::downgrade(&self.thread_signal_notify);
+        let edge_command_notify = Arc::downgrade(&self.edge_command_notify);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    notification = listener.recv() => match notification {
+                        Ok(notification) => {
+                            // PostgreSQL channels are database-scoped. The
+                            // payload keeps independent Morphz schemas from
+                            // waking and querying each other's queues.
+                            if notification.payload() != schema {
+                                continue;
+                            }
+                            let notify = match notification.channel() {
+                                THREAD_SIGNAL_NOTIFY_CHANNEL => thread_signal_notify.upgrade(),
+                                EDGE_COMMAND_NOTIFY_CHANNEL => edge_command_notify.upgrade(),
+                                _ => None,
+                            };
+                            if let Some(notify) = notify {
+                                // `notify_one` retains a permit if a consumer
+                                // is between waits, closing commit-before-wait
+                                // races without making NOTIFY authoritative.
+                                notify.notify_one();
+                            } else if thread_signal_notify.upgrade().is_none()
+                                && edge_command_notify.upgrade().is_none()
+                            {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                %error,
+                                event_code = "memory.postgres.scheduler_listener.receive_failed",
+                                "PostgreSQL scheduler notification listener failed; bounded durable recovery remains active"
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
+                    },
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                        if thread_signal_notify.upgrade().is_none()
+                            && edge_command_notify.upgrade().is_none()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
     }
 
     pub fn pool(&self) -> &PgPool {

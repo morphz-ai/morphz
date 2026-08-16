@@ -22,9 +22,8 @@ use crate::llm::ToolDefinition;
 use crate::memory::{
     EdgeCommandStatus, EdgeExecutionStore, ExecutionJobMutation, ExecutionJobRecord,
     ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationScope,
-    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
-    ExecutionTargetKind, ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
+    ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetKind,
+    ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
     ExecutionTargetStore, NewEdgeCommand, NewExecutionJob,
 };
 use crate::tool::{
@@ -956,7 +955,9 @@ impl ExecutionTargetBackend for EdgeNodeBackend {
                 EdgeCommandStatus::Queued
                 | EdgeCommandStatus::Claimed
                 | EdgeCommandStatus::CancelRequested => {
-                    tokio::time::sleep(self.poll_interval).await;
+                    self.store
+                        .wait_for_edge_command_change(self.poll_interval)
+                        .await;
                 }
             }
         }
@@ -1048,7 +1049,9 @@ impl ArtifactTransferExecutionBackend for EdgeNodeBackend {
                 EdgeCommandStatus::Queued
                 | EdgeCommandStatus::Claimed
                 | EdgeCommandStatus::CancelRequested => {
-                    tokio::time::sleep(self.poll_interval).await;
+                    self.store
+                        .wait_for_edge_command_change(self.poll_interval)
+                        .await;
                 }
             }
         }
@@ -1164,7 +1167,9 @@ impl ArtifactTransferExecutionBackend for EdgeProxyArtifactTransferBackend {
                 EdgeCommandStatus::Queued
                 | EdgeCommandStatus::Claimed
                 | EdgeCommandStatus::CancelRequested => {
-                    tokio::time::sleep(self.poll_interval).await;
+                    self.store
+                        .wait_for_edge_command_change(self.poll_interval)
+                        .await;
                 }
             }
         }
@@ -1241,7 +1246,9 @@ impl RuntimeEdgeArtifactTransferBackend {
                 EdgeCommandStatus::Queued
                 | EdgeCommandStatus::Claimed
                 | EdgeCommandStatus::CancelRequested => {
-                    tokio::time::sleep(self.poll_interval).await;
+                    self.store
+                        .wait_for_edge_command_change(self.poll_interval)
+                        .await;
                 }
             }
         }
@@ -1675,7 +1682,11 @@ impl EdgeRelayArtifactTransferBackend {
                     return Err(crate::artifact::ArtifactTransferCancelled.into())
                 }
                 EdgeCommandStatus::Lost => return Err("Edge relay leg outcome lost".into()),
-                _ => tokio::time::sleep(self.poll_interval).await,
+                _ => {
+                    self.edges
+                        .wait_for_edge_command_change(self.poll_interval)
+                        .await
+                }
             }
         }
     }
@@ -3974,24 +3985,12 @@ impl ExecutionTargetDispatcher {
         {
             return Ok(());
         }
-        let grants = self
+        let matches = self
             .authorizations
-            .list_execution_target_authorizations(ExecutionTargetAuthorizationFilter {
-                target_id: Some(target.id.clone()),
-                owner_principal_id: Some(owner.to_string()),
-                active_only: true,
-                limit: Some(1_000),
-                ..Default::default()
-            })
+            .has_active_execution_target_authorization(
+                &target.id, owner, agent_id, context_id, thread_id,
+            )
             .await?;
-        let matches = grants.iter().any(|grant| {
-            grant.status == ExecutionTargetAuthorizationStatus::Active
-                && match grant.scope {
-                    ExecutionTargetAuthorizationScope::Agent => grant.scope_id == agent_id,
-                    ExecutionTargetAuthorizationScope::Context => grant.scope_id == context_id,
-                    ExecutionTargetAuthorizationScope::Thread => grant.scope_id == thread_id,
-                }
-        });
         if !matches {
             return Err(format!(
                 "Execution Target '{}' 已进入 scoped authorization 模式，但当前 Agent/Context/Thread 没有有效授权",

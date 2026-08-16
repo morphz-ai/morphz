@@ -1742,6 +1742,7 @@ impl MorphzRuntime {
             .reconcile_startup(
                 self.inner.store.worker_coordination_mode(),
                 self.inner.store.as_ref(),
+                Some(self.inner.store.as_ref()),
             )
             .await?;
         let recovered_background_outboxes = self
@@ -1768,6 +1769,8 @@ impl MorphzRuntime {
             event_code = "runtime.execution_jobs.startup_recovery_completed",
             "Execution Job startup recovery completed"
         );
+        self.reconcile_artifact_transfer_scheduler_projections()
+            .await?;
         let artifact_transfer_records = self
             .inner
             .store
@@ -3606,10 +3609,10 @@ impl MorphzRuntime {
             tool_call_id: identity.tool_call_id.clone(),
             tool_name: ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
             request: job_request,
-            // A staged transfer can be retried safely only before the
-            // persisted physical side-effect boundary. Once execution starts,
-            // restart reconciliation must inspect reality instead of replaying.
-            retry_safety: crate::memory::ExecutionRetrySafety::Idempotent,
+            // A staged transfer can be retried safely before publication. Once
+            // the persisted publication boundary is crossed, restart must
+            // inspect reality rather than replaying the transfer blindly.
+            retry_safety: crate::memory::ExecutionRetrySafety::ReconcileRequired,
             // PermissionBroker authorizes the exact source+destination delta
             // at the physical boundary. `claim` is ownership, not approval.
             requires_approval: false,
@@ -4179,6 +4182,160 @@ impl MorphzRuntime {
                 tracing::warn!(event_code = "runtime.artifact_transfer.thread_projection_finalize_failed", job_id = %job.id, %error, "Failed to finalize the Artifact Transfer Thread projection");
             }
         }
+    }
+
+    async fn reconcile_artifact_transfer_scheduler_projections(
+        &self,
+    ) -> Result<usize, RuntimeError> {
+        // Recovery cost follows live scheduler authority, never lifetime
+        // Transfer history. An open transfer Thread owns the deterministic
+        // Job ID directly; the activation scan covers the narrow partial
+        // state where a Thread was terminalized before its Activation.
+        let mut candidate_job_ids = HashSet::new();
+        for context in self.inner.store.list_contexts(false).await? {
+            for thread in self
+                .inner
+                .store
+                .list_context_threads(&context.id, false)
+                .await?
+            {
+                if thread.executor_kind == ARTIFACT_TRANSFER_EXECUTOR_KIND {
+                    let job_id = thread.executor_id.as_deref().ok_or_else(|| {
+                        format!(
+                            "开放 Artifact Transfer Thread '{}' 缺少 Execution Job identity",
+                            thread.id
+                        )
+                    })?;
+                    candidate_job_ids.insert(job_id.to_string());
+                }
+            }
+            for activation in self
+                .inner
+                .store
+                .list_context_thread_activations(&context.id, false)
+                .await?
+            {
+                let Some(thread) = self
+                    .inner
+                    .store
+                    .get_thread_by_root(&activation.root_turn_id)
+                    .await?
+                else {
+                    continue;
+                };
+                if thread.executor_kind == ARTIFACT_TRANSFER_EXECUTOR_KIND {
+                    let job_id = thread.executor_id.as_deref().ok_or_else(|| {
+                        format!(
+                            "Artifact Transfer Activation '{}' 的 Thread '{}' 缺少 Execution Job identity",
+                            activation.id, thread.id
+                        )
+                    })?;
+                    candidate_job_ids.insert(job_id.to_string());
+                }
+            }
+        }
+        let mut candidate_job_ids = candidate_job_ids.into_iter().collect::<Vec<_>>();
+        candidate_job_ids.sort();
+        let mut repaired = 0usize;
+        for job_id in candidate_job_ids {
+            let job = self
+                .inner
+                .store
+                .get_execution_job(&job_id)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "Artifact Transfer scheduler projection references missing Job '{job_id}'"
+                    )
+                })?;
+            if job.tool_name != ARTIFACT_TRANSFER_TOOL_NAME {
+                return Err(format!(
+                    "Artifact Transfer scheduler projection references Job '{}' with tool '{}'",
+                    job.id, job.tool_name
+                )
+                .into());
+            }
+            if !job.status.is_terminal() {
+                continue;
+            }
+            let activation_open = self
+                .inner
+                .store
+                .get_thread_activation(&job.activation_id)
+                .await?
+                .is_some_and(|activation| !activation.status.is_terminal());
+            let thread_open = self
+                .inner
+                .store
+                .get_thread(&job.thread_id)
+                .await?
+                .is_some_and(|thread| !thread.lifecycle.is_terminal());
+            if !activation_open && !thread_open {
+                continue;
+            }
+            let result_event_id = job.result_event_id.as_deref().ok_or_else(|| {
+                format!(
+                    "终态 Artifact Transfer Job '{}' 缺少 result_event_id",
+                    job.id
+                )
+            })?;
+            let result = self
+                .inner
+                .store
+                .query(QueryFilter {
+                    event_id: Some(result_event_id.to_string()),
+                    context_id: Some(job.context_id.clone()),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    format!(
+                        "终态 Artifact Transfer Job '{}' 的结果 Event '{}' 不存在",
+                        job.id, result_event_id
+                    )
+                })?;
+            let text = result
+                .payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .or(job.error.as_deref())
+                .unwrap_or("Artifact Transfer 已终结")
+                .to_string();
+            let (activation_status, lifecycle) = match job.status {
+                ExecutionJobStatus::Succeeded => (
+                    ThreadActivationStatus::Succeeded,
+                    ThreadLifecycle::Completed,
+                ),
+                ExecutionJobStatus::Cancelled => (
+                    ThreadActivationStatus::Cancelled,
+                    ThreadLifecycle::Cancelled,
+                ),
+                ExecutionJobStatus::Failed | ExecutionJobStatus::Lost => {
+                    (ThreadActivationStatus::Failed, ThreadLifecycle::Failed)
+                }
+                _ => continue,
+            };
+            self.close_artifact_transfer_scheduler_projection(
+                &job,
+                activation_status,
+                lifecycle,
+                &text,
+                result_event_id,
+            )
+            .await;
+            repaired = repaired.saturating_add(1);
+        }
+        if repaired > 0 {
+            tracing::info!(
+                repaired,
+                event_code = "runtime.artifact_transfer.scheduler_projection_recovered",
+                "Recovered terminal Artifact Transfer scheduler projections from durable Job results"
+            );
+        }
+        Ok(repaired)
     }
 
     pub async fn list_capability_leases(
@@ -15624,5 +15781,176 @@ mod tests {
         assert_eq!(event.len(), 1);
         assert_eq!(event[0].topic, ARTIFACT_TRANSFER_CANCELLED_TOPIC);
         assert_eq!(event[0].payload["tool_status"], "cancelled");
+    }
+
+    #[tokio::test]
+    async fn artifact_transfer_startup_repair_closes_terminal_scheduler_projection() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .create_session(NewSession {
+                id: "session-artifact-projection-recovery".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Artifact projection recovery".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let identity = artifact_transfer_execution_identity(
+            &runtime.identity().principal_id,
+            &session.id,
+            "transfer-projection-recovery",
+        );
+        let request_event = Event::new(
+            identity.event_id.clone(),
+            "Runtime-ArtifactTransfer".to_string(),
+            "runtime_control".to_string(),
+            ARTIFACT_TRANSFER_REQUEST_TOPIC.to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!(session.context_id)),
+                ("session_id".to_string(), json!(session.id)),
+                ("thread_id".to_string(), json!(identity.thread_id)),
+                ("activation_id".to_string(), json!(identity.activation_id)),
+                ("job_id".to_string(), json!(identity.job_id)),
+                ("tool_call_id".to_string(), json!(identity.tool_call_id)),
+                ("tool_name".to_string(), json!(ARTIFACT_TRANSFER_TOOL_NAME)),
+                ("wake_policy".to_string(), json!("none")),
+            ]),
+        );
+        let seeded = runtime
+            .inner
+            .store
+            .ensure_artifact_transfer_execution(NewArtifactTransferExecution {
+                request_event,
+                thread: NewThread {
+                    id: identity.thread_id.clone(),
+                    agent_id: session.agent_id.clone(),
+                    context_id: session.context_id.clone(),
+                    session_id: session.id.clone(),
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    root_turn_id: identity.event_id.clone(),
+                    kind: ThreadKind::Execution,
+                    executor_kind: ARTIFACT_TRANSFER_EXECUTOR_KIND.to_string(),
+                    executor_id: Some(identity.job_id.clone()),
+                    target_id: Some(
+                        crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                    ),
+                    supervision: ThreadSupervision::runtime("artifact-transfer-ingress"),
+                },
+                activation: NewThreadActivation {
+                    id: identity.activation_id.clone(),
+                    agent_id: session.agent_id.clone(),
+                    context_id: session.context_id.clone(),
+                    session_id: session.id.clone(),
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    trigger_event_id: identity.event_id.clone(),
+                    trigger_sequence: 0,
+                    trigger_kind: ARTIFACT_TRANSFER_REQUEST_TOPIC.to_string(),
+                    parent_activation_id: None,
+                    root_turn_id: identity.event_id.clone(),
+                },
+                job: crate::memory::NewExecutionJob {
+                    id: identity.job_id.clone(),
+                    activation_id: identity.activation_id.clone(),
+                    thread_id: identity.thread_id.clone(),
+                    agent_id: session.agent_id.clone(),
+                    context_id: session.context_id.clone(),
+                    session_id: session.id.clone(),
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                    tool_call_id: identity.tool_call_id.clone(),
+                    tool_name: ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+                    request: json!({"_morphz_wake_thread": false}),
+                    retry_safety: crate::memory::ExecutionRetrySafety::ReconcileRequired,
+                    requires_approval: false,
+                },
+            })
+            .await
+            .unwrap();
+        let claimed = match runtime
+            .inner
+            .store
+            .claim_execution_job(
+                &seeded.job.id,
+                seeded.job.revision,
+                "projection-recovery-worker",
+                "projection-recovery-claim",
+                chrono::Utc::now() + chrono::Duration::minutes(1),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            crate::memory::ExecutionJobMutation::Updated(job) => job,
+            mutation => panic!("unexpected Artifact Transfer claim: {mutation:?}"),
+        };
+        let result_event = Event::new(
+            format!("output_{}", claimed.id),
+            "Runtime-ArtifactTransfer".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            ARTIFACT_TRANSFER_FAILED_TOPIC.to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!(claimed.context_id)),
+                ("session_id".to_string(), json!(claimed.session_id)),
+                ("thread_id".to_string(), json!(claimed.thread_id)),
+                ("activation_id".to_string(), json!(claimed.activation_id)),
+                ("job_id".to_string(), json!(claimed.id)),
+                ("tool_call_id".to_string(), json!(claimed.tool_call_id)),
+                ("tool_name".to_string(), json!(claimed.tool_name)),
+                ("tool_status".to_string(), json!("lost")),
+                ("text".to_string(), json!("transfer outcome is unknown")),
+                ("wake_policy".to_string(), json!("none")),
+            ]),
+        );
+        let receipt = runtime
+            .inner
+            .execution_jobs
+            .finish_with_event(
+                &claimed.id,
+                claimed.revision,
+                Some("projection-recovery-claim"),
+                JobOutcome::Lost {
+                    result_event_id: Some(result_event.id.clone()),
+                    reason: "transfer outcome is unknown".to_string(),
+                },
+                &result_event,
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(receipt, JobReceipt::Applied { .. }));
+
+        assert_eq!(
+            runtime
+                .reconcile_artifact_transfer_scheduler_projections()
+                .await
+                .unwrap(),
+            1
+        );
+        let activation = runtime
+            .inner
+            .store
+            .get_thread_activation(&identity.activation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let thread = runtime
+            .inner
+            .store
+            .get_thread(&identity.thread_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(activation.status, ThreadActivationStatus::Failed);
+        assert_eq!(thread.lifecycle, ThreadLifecycle::Failed);
+        assert!(activation.revision > seeded.activation.revision);
+        assert_eq!(thread.result_event_id, Some(result_event.id));
     }
 }

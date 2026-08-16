@@ -810,8 +810,7 @@ impl ExecutionJobStore for PostgresStore {
                    claim_token = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
                    progress_ref = NULL, updated_at = $1
                WHERE id = $2 AND revision = $3 AND status = 'running'
-                 AND retry_safety = 'idempotent'
-                 AND side_effect_started_at IS NULL
+                 AND (side_effect_started_at IS NULL OR retry_safety = 'idempotent')
                  AND cancel_requested_at IS NULL"#,
         )
         .bind(now_text())
@@ -824,7 +823,7 @@ impl ExecutionJobStore for PostgresStore {
                 self,
                 id,
                 expected_revision,
-                "只有尚未越过副作用边界的 idempotent running Job 可以恢复为 queued",
+                "只有未请求取消、且尚未越过副作用边界或声明为 idempotent 的 running Job 可以恢复为 queued",
             )
             .await;
         }
@@ -854,7 +853,7 @@ impl ExecutionJobStore for PostgresStore {
             });
         }
         let reason = reason.map(|value| value.chars().take(10_000).collect::<String>());
-        if current.cancel_requested_at.is_some() && current.cancel_reason == reason {
+        if current.cancel_requested_at.is_some() {
             return Ok(ExecutionJobMutation::Updated(current));
         }
         let now = now_text();
@@ -862,7 +861,8 @@ impl ExecutionJobStore for PostgresStore {
             r#"UPDATE execution_jobs
                SET revision = revision + 1,
                    cancel_requested_at = COALESCE(cancel_requested_at, $1),
-                   cancel_reason = $2, updated_at = $1
+                   cancel_reason = CASE WHEN cancel_requested_at IS NULL THEN $2 ELSE cancel_reason END,
+                   updated_at = $1
                WHERE id = $3 AND revision = $4
                  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
         )

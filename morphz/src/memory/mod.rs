@@ -1708,6 +1708,17 @@ pub trait ExecutionTargetAuthorizationStore: Send + Sync {
         &self,
         filter: ExecutionTargetAuthorizationFilter,
     ) -> Result<Vec<ExecutionTargetAuthorizationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Performs the physical-boundary authorization decision without
+    /// materializing an arbitrarily bounded grant list. Any one of the exact
+    /// Agent, Context or Thread scopes is sufficient.
+    async fn has_active_execution_target_authorization(
+        &self,
+        target_id: &str,
+        owner_principal_id: &str,
+        agent_id: &str,
+        context_id: &str,
+        thread_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
     async fn revoke_execution_target_authorization(
         &self,
         id: &str,
@@ -3313,6 +3324,9 @@ pub struct CapabilityLeaseFilter {
     pub agent_id: Option<String>,
     pub thread_id: Option<String>,
     pub target_id: Option<String>,
+    /// Require an exact capability element rather than scanning unrelated
+    /// leases in the same execution scope.
+    pub capability: Option<String>,
     pub active_at: Option<DateTime<Utc>>,
     pub limit: Option<usize>,
 }
@@ -4924,6 +4938,14 @@ pub trait ActivationStore: Send + Sync {
         _limit: usize,
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Vec::new())
+    }
+    /// Waits until durable mailbox work may have become runnable. PostgreSQL
+    /// overrides this with a commit-visible database notification so a Signal
+    /// created by another Runtime process wakes this worker immediately. The
+    /// timeout is deliberately retained as a recovery fallback: notifications
+    /// accelerate discovery but never become scheduler authority.
+    async fn wait_for_thread_signal_change(&self, timeout: std::time::Duration) {
+        tokio::time::sleep(timeout).await;
     }
     /// Batch mailbox projection for an already selected Thread aggregate.
     /// Store implementations should override this with one indexed query;

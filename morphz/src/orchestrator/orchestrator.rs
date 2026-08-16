@@ -27,20 +27,21 @@ use crate::llm::{
     ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
 };
 use crate::memory::{
-    stable_thread_activation_id, stable_thread_id, ActionGroupMemberStatus, ActionGroupStore,
-    ActivationOutcomeCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
-    ApprovalStatus, ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseStore, DelegationStatus, DeliveryFlushCommit, EventAppend, EventStore,
-    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, NewActionGroup, NewActionGroupMember,
-    NewApprovalRequest, NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob,
-    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
-    PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus,
-    PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduleStatus,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore,
-    SessionUpdate, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter, ThreadKind, ThreadLifecycle,
-    ThreadMutation, ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
+    stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberStatus,
+    ActionGroupRecord, ActionGroupStore, ActivationOutcomeCommit, ApprovalFilter, ApprovalMutation,
+    ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore, CapabilityLeaseFilter,
+    CapabilityLeaseMutation, CapabilityLeaseStore, DelegationStatus, DeliveryFlushCommit,
+    EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, NewActionGroup,
+    NewActionGroupMember, NewApprovalRequest, NewCapabilityLease, NewCognitiveContext,
+    NewDelegation, NewExecutionJob, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation,
+    NewThreadSignal, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
+    PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
+    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus,
+    SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSupervision,
+    ThreadSupervisorKind,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
@@ -1202,8 +1203,12 @@ async fn covering_capability_lease_grant(
             agent_id: Some(agent_id.to_string()),
             thread_id: Some(thread.id.clone()),
             target_id: Some(target.id.clone()),
+            capability: Some(capability.clone()),
             active_at: Some(Utc::now()),
-            limit: Some(100),
+            // Every row already belongs to this exact indexed execution
+            // scope. Authorization correctness must not depend on a recent
+            // row window.
+            limit: None,
         })
         .await?;
     Ok(leases.into_iter().find_map(|lease| {
@@ -3232,6 +3237,7 @@ impl Orchestrator {
         self.reconcile_orphaned_execution_jobs().await?;
         self.recover_pending_delivery_flushes().await?;
         self.migrate_legacy_signal_outbox_once().await?;
+        self.recover_action_groups().await?;
         self.recover_pending_thread_signals().await?;
         // Activation redispatch is deliberately last: after this point model
         // and tool continuations may write concurrently with the caller.
@@ -3308,7 +3314,21 @@ impl Orchestrator {
         let orchestrator = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(PENDING_SIGNAL_RECONCILE_INTERVAL).await;
+                let Some(current) = orchestrator.upgrade() else {
+                    break;
+                };
+                let Some(session_store) = current.context_engine.session_store() else {
+                    drop(current);
+                    tokio::time::sleep(PENDING_SIGNAL_RECONCILE_INTERVAL).await;
+                    continue;
+                };
+                // Do not retain the Orchestrator while waiting. The Store
+                // notification is only a latency hint; the bounded indexed
+                // query below remains the durable recovery authority.
+                drop(current);
+                session_store
+                    .wait_for_thread_signal_change(PENDING_SIGNAL_RECONCILE_INTERVAL)
+                    .await;
                 let Some(orchestrator) = orchestrator.upgrade() else {
                     break;
                 };
@@ -4150,6 +4170,90 @@ impl Orchestrator {
             }
         }
         Ok(())
+    }
+
+    async fn recover_action_groups(&self) -> Result<usize, DynError> {
+        let Some(groups) = self.action_groups.as_ref() else {
+            return Ok(0);
+        };
+        let running = groups
+            .list_action_groups(ActionGroupFilter {
+                include_terminal: false,
+                newest_first: false,
+                ..Default::default()
+            })
+            .await?;
+        let mut committed = 0usize;
+        for group in running {
+            let durable_attempt_id = group
+                .assistant_call_event_id
+                .strip_prefix("call_")
+                .ok_or_else(|| {
+                    format!(
+                        "Action Group '{}' 的 assistant_call_event_id '{}' 不符合确定性格式",
+                        group.id, group.assistant_call_event_id
+                    )
+                })?;
+            let selected_event_id = format!("tool_calls_selected_{durable_attempt_id}");
+            let Some(selected) = self
+                .context_engine
+                .find_event(&group.context_id, &selected_event_id)
+                .await?
+            else {
+                return Err(format!(
+                    "Action Group '{}' 缺少工具选择 Event '{}'",
+                    group.id, selected_event_id
+                )
+                .into());
+            };
+            let Some(wake_policy) = selected
+                .payload
+                .get("action_group_wake_policy")
+                .and_then(serde_json::Value::as_str)
+            else {
+                tracing::warn!(
+                    action_group_id = %group.id,
+                    selected_event_id = %selected.id,
+                    event_code = "orchestrator.action_group.legacy_recovery_deferred",
+                    "Legacy Action Group lacks an explicit durable wake policy; leaving it for Activation replay rather than guessing its continuation semantics"
+                );
+                continue;
+            };
+            let settled = recovered_action_group_settled_event(&group, &selected, wake_policy)?;
+            for member in groups.list_action_group_members(&group.id).await? {
+                if member.status.is_terminal() {
+                    continue;
+                }
+                let result_id = format!("output_{}_{}", group.activation_id, member.tool_call_id);
+                let Some(result) = self
+                    .context_engine
+                    .find_event(&group.context_id, &result_id)
+                    .await?
+                else {
+                    continue;
+                };
+                let commit = groups
+                    .commit_action_group_member_result(
+                        &group.id,
+                        &member.tool_call_id,
+                        action_group_member_status(&result),
+                        &result,
+                        &settled,
+                    )
+                    .await?;
+                if !commit.existing {
+                    committed = committed.saturating_add(1);
+                }
+            }
+        }
+        if committed > 0 {
+            tracing::info!(
+                committed_members = committed,
+                event_code = "orchestrator.action_group.startup_recovery_completed",
+                "Recovered durable Action Group members from their immutable result Events"
+            );
+        }
+        Ok(committed)
     }
 
     pub(crate) async fn reconcile_runnable_pending_thread_signals(
@@ -11015,6 +11119,7 @@ impl Orchestrator {
                     ),
                 },
             )?;
+            attach_execution_join_route(&mut request, None, false)?;
             let full_access = self
                 .durable_approvals
                 .as_ref()
@@ -11116,6 +11221,7 @@ impl Orchestrator {
             &mut request,
             &crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
         )?;
+        attach_execution_join_route(&mut request, None, false)?;
         let requirement = if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
             tool.approval_requirement(&invocation.tool_arguments)?
         } else if self
@@ -11846,6 +11952,7 @@ impl Orchestrator {
                 &crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
             )?;
         }
+        attach_execution_join_route(&mut request, action_group_id, standalone_signal)?;
         let full_access = self
             .durable_approvals
             .as_ref()
@@ -12778,6 +12885,14 @@ impl Orchestrator {
             ("deduplicated_count".to_string(), json!(deduplicated_count)),
             ("rejected_count".to_string(), json!(rejected_count)),
             ("rejection_status".to_string(), json!(rejection_status)),
+            (
+                "action_group_wake_policy".to_string(),
+                json!(if options.wake_on_output {
+                    "direct_signal"
+                } else {
+                    "none"
+                }),
+            ),
         ];
         if let Some(model_attempt_id) = options.model_attempt_id.as_deref() {
             selected_payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
@@ -12882,6 +12997,11 @@ impl Orchestrator {
                     ordinal: ordinal as u64,
                     tool_call_id: call.id.clone(),
                     tool_name: call.func_name.clone(),
+                    // The Job is created only after the Group barrier exists,
+                    // so a foreign-keyed member cannot point at it yet. The
+                    // immutable Job request carries the exact Group route;
+                    // this optional field remains reserved for import paths
+                    // that create both records in one Store transaction.
                     execution_job_id: None,
                 })
                 .collect::<Vec<_>>();
@@ -13617,14 +13737,18 @@ impl Orchestrator {
             let (mut output, already_persisted, job_outcome) = match task.handle.await {
                 Ok(Ok(result)) => (result.output, result.already_persisted, None),
                 Ok(Err(error)) => {
+                    let reason = format!(
+                        "工具 '{}' 的执行任务在收敛终态时失败：{error}",
+                        metadata.tool_name
+                    );
                     tracing::error!(
                         tool = %metadata.tool_name,
                         tool_call_id = %metadata.tool_call_id,
                         %error,
-                    event_code = "orchestrator.tool_task.failed_before_terminal_persist",
-                    "Tool task failed before persisting its terminal state"
+                        event_code = "orchestrator.tool_task.terminal_convergence_failed",
+                        "Tool task failed while converging its terminal state; recovering from the durable Job result when one exists"
                     );
-                    return Err(error);
+                    self.recover_failed_tool_task(&metadata, &reason).await?
                 }
                 Err(error) => {
                     let reason = format!(
@@ -13638,13 +13762,7 @@ impl Orchestrator {
                     event_code = "orchestrator.tool_task.join_failed",
                     "Tool task join failed; generating an explicit lost result"
                     );
-                    let mut output = lost_tool_output(&metadata, &reason);
-                    self.stamp_objective_activation_route(attempt_id, &mut output.payload);
-                    let outcome = metadata.execution_job.as_ref().map(|_| JobOutcome::Lost {
-                        result_event_id: Some(output.id.clone()),
-                        reason,
-                    });
-                    (output, false, outcome)
+                    self.recover_failed_tool_task(&metadata, &reason).await?
                 }
             };
             if !metadata.wake_on_output {
@@ -13658,19 +13776,14 @@ impl Orchestrator {
                         .execution_jobs
                         .as_ref()
                         .ok_or("Execution Job 完成时 Manager 不存在")?;
-                    applied_execution_job(
-                        manager
-                            .finish_with_event(
-                                &job.id,
-                                job.revision,
-                                Some(&job.claim_token),
-                                outcome,
-                                &output,
-                                metadata.wake_on_output && action_group_id.is_none(),
-                            )
-                            .await?,
-                        "terminal result commit",
-                    )?;
+                    finish_claimed_physical_job_with_outcome(
+                        manager.as_ref(),
+                        &job,
+                        outcome,
+                        &output,
+                        metadata.wake_on_output && action_group_id.is_none(),
+                    )
+                    .await?;
                     true
                 }
                 (_, None) => already_persisted,
@@ -13774,6 +13887,54 @@ impl Orchestrator {
             }
         }
         Ok(outcome)
+    }
+
+    async fn recover_failed_tool_task(
+        &self,
+        metadata: &ToolTaskMetadata,
+        reason: &str,
+    ) -> Result<(Event, bool, Option<JobOutcome>), DynError> {
+        if let Some(claimed) = metadata.execution_job.as_ref() {
+            let manager = self
+                .execution_jobs
+                .as_ref()
+                .ok_or("Execution Job 恢复时 Manager 不存在")?;
+            let current = manager
+                .store()
+                .get_execution_job(&claimed.id)
+                .await?
+                .ok_or_else(|| format!("Execution Job '{}' 在任务恢复时不存在", claimed.id))?;
+            if current.status.is_terminal() {
+                let result_event_id = current.result_event_id.as_deref().ok_or_else(|| {
+                    format!("终态 Execution Job '{}' 缺少 result_event_id", current.id)
+                })?;
+                let output = self
+                    .context_engine
+                    .find_event(&metadata.context_id, result_event_id)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                            "终态 Execution Job '{}' 的结果 Event '{}' 不存在",
+                            current.id, result_event_id
+                        )
+                    })?;
+                if output.id != metadata.output_id {
+                    return Err(format!(
+                        "Execution Job '{}' 的结果 Event '{}' 与调用确定性输出 '{}' 不一致",
+                        current.id, output.id, metadata.output_id
+                    )
+                    .into());
+                }
+                return Ok((output, true, None));
+            }
+        }
+        let mut output = lost_tool_output(metadata, reason);
+        self.stamp_objective_activation_route(&metadata.attempt_id, &mut output.payload);
+        let outcome = metadata.execution_job.as_ref().map(|_| JobOutcome::Lost {
+            result_event_id: Some(output.id.clone()),
+            reason: reason.to_string(),
+        });
+        Ok((output, false, outcome))
     }
 
     async fn context_tx_receipt(
@@ -15711,6 +15872,65 @@ async fn finish_claimed_physical_job(
     .into())
 }
 
+async fn finish_claimed_physical_job_with_outcome(
+    manager: &ExecutionJobManager<dyn ExecutionJobStore>,
+    claimed: &ClaimedExecutionJob,
+    outcome: JobOutcome,
+    output: &Event,
+    standalone_signal: bool,
+) -> Result<(), DynError> {
+    for _ in 0..8 {
+        let current = manager
+            .store()
+            .get_execution_job(&claimed.id)
+            .await?
+            .ok_or_else(|| format!("Execution Job '{}' 在恢复终态前消失", claimed.id))?;
+        if current.status.is_terminal() {
+            if current.result_event_id.as_deref() == Some(output.id.as_str()) {
+                return Ok(());
+            }
+            return Err(format!(
+                "Execution Job '{}' 已由不同结果 '{}' 终结",
+                current.id,
+                current.result_event_id.as_deref().unwrap_or("<none>")
+            )
+            .into());
+        }
+        match manager
+            .finish_with_event(
+                &current.id,
+                current.revision,
+                Some(&claimed.claim_token),
+                outcome.clone(),
+                output,
+                standalone_signal,
+            )
+            .await?
+        {
+            JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => return Ok(()),
+            JobReceipt::Conflict { .. } => continue,
+            JobReceipt::Rejected {
+                current, reason, ..
+            } => {
+                return Err(format!(
+                    "Execution Job '{}' 恢复终态被拒绝（{}）：{reason}",
+                    current.id,
+                    current.status.as_str()
+                )
+                .into());
+            }
+            JobReceipt::NotFound { .. } => {
+                return Err(format!("Execution Job '{}' 在恢复终态时不存在", claimed.id).into());
+            }
+        }
+    }
+    Err(format!(
+        "Execution Job '{}' 在恢复终态时持续发生 revision 竞争",
+        claimed.id
+    )
+    .into())
+}
+
 fn lost_tool_output(metadata: &ToolTaskMetadata, reason: &str) -> Event {
     let mut payload = serde_json::Map::from_iter([
         ("context_id".to_string(), json!(metadata.context_id.clone())),
@@ -15849,6 +16069,97 @@ fn action_group_settled_event(
     )
 }
 
+fn recovered_action_group_settled_event(
+    group: &ActionGroupRecord,
+    selected: &Event,
+    wake_policy: &str,
+) -> Result<Event, DynError> {
+    if !matches!(wake_policy, "direct_signal" | "none") {
+        return Err(format!(
+            "Action Group '{}' 的持久化 wake policy '{}' 非法",
+            group.id, wake_policy
+        )
+        .into());
+    }
+    let required_str = |key: &str| -> Result<String, DynError> {
+        selected
+            .payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                format!(
+                    "Action Group '{}' 的工具选择 Event '{}' 缺少 '{}'",
+                    group.id, selected.id, key
+                )
+                .into()
+            })
+    };
+    let context_id = required_str("context_id")?;
+    let session_id = required_str("session_id")?;
+    let activation_id = required_str("activation_id")?;
+    let thread_id = required_str("thread_id")?;
+    if context_id != group.context_id
+        || session_id != group.session_id
+        || activation_id != group.activation_id
+        || thread_id != group.thread_id
+    {
+        return Err(format!(
+            "Action Group '{}' 与工具选择 Event '{}' 的因果 route 不一致",
+            group.id, selected.id
+        )
+        .into());
+    }
+    let root_turn_id = required_str("root_turn_id")?;
+    let trigger_event_id = required_str("trigger_event_id")?;
+    let trigger_sequence = selected
+        .payload
+        .get("trigger_sequence")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            format!(
+                "Action Group '{}' 的工具选择 Event '{}' 缺少 trigger_sequence",
+                group.id, selected.id
+            )
+        })?;
+    let mut payload = serde_json::Map::from_iter([
+        ("context_id".to_string(), json!(group.context_id)),
+        ("session_id".to_string(), json!(group.session_id)),
+        ("attempt_id".to_string(), json!(group.activation_id)),
+        ("action_group_id".to_string(), json!(group.id)),
+        ("member_count".to_string(), json!(group.member_count)),
+        ("thread_id".to_string(), json!(group.thread_id)),
+        ("activation_id".to_string(), json!(group.activation_id)),
+        ("root_turn_id".to_string(), json!(root_turn_id)),
+        ("trigger_event_id".to_string(), json!(trigger_event_id)),
+        ("trigger_sequence".to_string(), json!(trigger_sequence)),
+        ("wake_policy".to_string(), json!(wake_policy)),
+    ]);
+    if let Some(principal_id) = selected
+        .payload
+        .get("principal_id")
+        .and_then(serde_json::Value::as_str)
+    {
+        payload.insert("principal_id".to_string(), json!(principal_id));
+    }
+    if let Some(objective_id) = &group.objective_id {
+        payload.insert("objective_id".to_string(), json!(objective_id));
+    }
+    if let Some(evaluation_id) = &group.objective_evaluation_id {
+        payload.insert("objective_evaluation_id".to_string(), json!(evaluation_id));
+    }
+    if let Some(revision) = group.objective_revision {
+        payload.insert("objective_revision".to_string(), json!(revision));
+    }
+    Ok(Event::new(
+        format!("action_group_settled_{}", group.id),
+        "Runtime-ActionScheduler".to_string(),
+        "runtime_control".to_string(),
+        "runtime/action_group_settled".to_string(),
+        payload,
+    ))
+}
+
 fn unstarted_cancelled_tool_output(job: &ExecutionJobRecord, reason: &str) -> Event {
     let mut payload = serde_json::Map::from_iter([
         ("context_id".to_string(), json!(job.context_id)),
@@ -15923,6 +16234,24 @@ fn stamp_execution_route_facts(
     if let Some(worker_id) = worker_id {
         payload.insert("worker_id".to_string(), json!(worker_id));
     }
+}
+
+/// Freezes the one authoritative parent-join route into the immutable Job
+/// request. Plan construction and live physical dispatch must call this same
+/// helper before the deterministic Job identity is persisted or replayed.
+fn attach_execution_join_route(
+    request: &mut serde_json::Value,
+    action_group_id: Option<&str>,
+    standalone_signal: bool,
+) -> Result<(), DynError> {
+    let object = request
+        .as_object_mut()
+        .ok_or("Physical Execution request 在附加 join route 后不是 JSON object")?;
+    if let Some(group_id) = action_group_id {
+        object.insert("_morphz_action_group_id".to_string(), json!(group_id));
+    }
+    object.insert("_morphz_wake_thread".to_string(), json!(standalone_signal));
+    Ok(())
 }
 
 fn extend_exec_output_facts(
@@ -16175,8 +16504,9 @@ mod tests {
         harness_entry_callable_tools, legacy_plan_effect_sequence,
         model_visible_attachment_references, objective_supervision_matches_state,
         persist_model_reasoning_summary, persist_model_usage, plan_infer_tool_scope,
-        production_system_prompt_inspection, recovery_owns_activation, render_harness_context,
-        render_system_contract, restrict_tools_to_scope, retain_context_maintenance_tools,
+        production_system_prompt_inspection, recovered_action_group_settled_event,
+        recovery_owns_activation, render_harness_context, render_system_contract,
+        restrict_tools_to_scope, retain_context_maintenance_tools,
         retain_final_reply_control_tools, retain_pending_continuation_calls, runtime_claimant_id,
         scheduler_audit_event, semantic_sexpr_vm_system_prompt,
         should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
@@ -16198,7 +16528,7 @@ mod tests {
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        AttentionAcknowledgementRecord, EventAppend, EventStore, QueryFilter,
+        ActionGroupRecord, AttentionAcknowledgementRecord, EventAppend, EventStore, QueryFilter,
         ThreadActivationRecord, ThreadActivationStatus, WorkerCoordinationMode,
     };
     use std::collections::{BTreeSet, HashMap, HashSet};
@@ -17498,5 +17828,52 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn action_group_recovery_rebuilds_the_exact_durable_barrier_route() {
+        let now = chrono::Utc::now();
+        let group = ActionGroupRecord {
+            id: "group-recovery".to_string(),
+            revision: 2,
+            activation_id: "activation-recovery".to_string(),
+            thread_id: "thread-recovery".to_string(),
+            agent_id: "agent-recovery".to_string(),
+            context_id: "context-recovery".to_string(),
+            session_id: "session-recovery".to_string(),
+            assistant_call_event_id: "call-attempt-recovery".to_string(),
+            objective_id: Some("objective-recovery".to_string()),
+            objective_evaluation_id: Some("evaluation-recovery".to_string()),
+            objective_revision: Some(7),
+            status: crate::memory::ActionGroupStatus::Running,
+            member_count: 2,
+            terminal_member_count: 1,
+            created_at: now,
+            updated_at: now,
+            settled_at: None,
+        };
+        let selected = Event::new(
+            "tool_calls_selected_attempt-recovery".to_string(),
+            "test".to_string(),
+            "runtime_control".to_string(),
+            "runtime/tool_calls_selected".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!(group.context_id)),
+                ("session_id".to_string(), json!(group.session_id)),
+                ("activation_id".to_string(), json!(group.activation_id)),
+                ("thread_id".to_string(), json!(group.thread_id)),
+                ("root_turn_id".to_string(), json!("root-recovery")),
+                ("trigger_event_id".to_string(), json!("trigger-recovery")),
+                ("trigger_sequence".to_string(), json!(11)),
+                ("principal_id".to_string(), json!("principal-recovery")),
+            ]),
+        );
+        let settled =
+            recovered_action_group_settled_event(&group, &selected, "direct_signal").unwrap();
+        assert_eq!(settled.id, "action_group_settled_group-recovery");
+        assert_eq!(settled.payload["action_group_id"], group.id);
+        assert_eq!(settled.payload["thread_id"], group.thread_id);
+        assert_eq!(settled.payload["wake_policy"], "direct_signal");
+        assert_eq!(settled.payload["objective_revision"], 7);
     }
 }

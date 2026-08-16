@@ -114,6 +114,30 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     Ok(())
 }
 
+pub(super) async fn migrate_thread_signal_notifications(pool: &PgPool) -> Result<(), StoreError> {
+    // PostgreSQL delivers NOTIFY only after the surrounding transaction
+    // commits, exactly matching the scheduler's durable visibility boundary.
+    // The trigger also covers an explicit requeue to `pending`.
+    for statement in [
+        r#"CREATE OR REPLACE FUNCTION morphz_notify_thread_signal_change()
+           RETURNS trigger AS $function$
+           BEGIN
+             PERFORM pg_notify('morphz_thread_signal_change', current_schema());
+             RETURN NEW;
+           END;
+           $function$ LANGUAGE plpgsql"#,
+        r#"DROP TRIGGER IF EXISTS trg_morphz_thread_signal_change ON thread_signals"#,
+        r#"CREATE TRIGGER trg_morphz_thread_signal_change
+           AFTER INSERT OR UPDATE OF status ON thread_signals
+           FOR EACH ROW
+           WHEN (NEW.status = 'pending')
+           EXECUTE FUNCTION morphz_notify_thread_signal_change()"#,
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
+    Ok(())
+}
+
 fn parse_activation_status(value: &str) -> Result<ThreadActivationStatus, StoreError> {
     match value {
         "queued" => Ok(ThreadActivationStatus::Queued),
@@ -228,6 +252,10 @@ fn outbox_from_row(row: &PgRow) -> Result<SignalOutboxRecord, StoreError> {
 
 #[async_trait::async_trait]
 impl ActivationStore for PostgresStore {
+    async fn wait_for_thread_signal_change(&self, timeout: std::time::Duration) {
+        let _ = tokio::time::timeout(timeout, self.thread_signal_notify.notified()).await;
+    }
+
     async fn commit_context_transaction(
         &self,
         event: &Event,

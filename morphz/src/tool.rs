@@ -11257,6 +11257,7 @@ Body
             .reconcile_startup(
                 crate::memory::WorkerCoordinationMode::ExclusiveProcess,
                 store.as_ref(),
+                None,
             )
             .await
             .unwrap();
@@ -11627,6 +11628,7 @@ Body
             .reconcile_startup(
                 crate::memory::WorkerCoordinationMode::ExclusiveProcess,
                 store.as_ref(),
+                None,
             )
             .await
             .unwrap();

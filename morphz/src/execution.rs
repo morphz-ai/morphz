@@ -12,9 +12,9 @@ use sha2::{Digest, Sha256};
 
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
-    EventStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, NewExecutionJob, QueryFilter,
-    WorkerCoordinationMode,
+    ActionGroupFilter, ActionGroupStore, EventStore, ExecutionJobFilter, ExecutionJobMutation,
+    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
+    ExecutionRetrySafety, NewExecutionJob, QueryFilter, WorkerCoordinationMode,
 };
 use crate::scheduler::{KernelResult, SchedulerKernel};
 
@@ -290,16 +290,18 @@ pub struct RestartPlan {
 
 pub fn restart_plan(job: &ExecutionJobRecord) -> RestartPlan {
     let action = match job.status {
-        ExecutionJobStatus::Queued | ExecutionJobStatus::WaitingApproval => {
-            RestartAction::Preserve
-        }
+        ExecutionJobStatus::Queued | ExecutionJobStatus::WaitingApproval => RestartAction::Preserve,
         ExecutionJobStatus::Running
-            if job.side_effect_started_at.is_none()
-                && job.retry_safety == ExecutionRetrySafety::Idempotent
-                && job.cancel_requested_at.is_none() =>
+            if job.cancel_requested_at.is_none()
+                && (job.side_effect_started_at.is_none()
+                    || job.retry_safety == ExecutionRetrySafety::Idempotent) =>
         {
             RestartAction::Requeue {
-                reason: "previous worker disappeared before the persisted side-effect boundary; a fenced requeue transition is required".to_string(),
+                reason: if job.side_effect_started_at.is_none() {
+                    "previous worker disappeared before the persisted side-effect boundary; a fenced requeue transition is safe".to_string()
+                } else {
+                    "previous worker disappeared after the side-effect boundary, but the exact Action is declared idempotent and is safe to replay".to_string()
+                },
             }
         }
         ExecutionJobStatus::Running => RestartAction::MarkLost {
@@ -569,6 +571,7 @@ where
         &self,
         coordination: WorkerCoordinationMode,
         events: &E,
+        action_groups: Option<&dyn ActionGroupStore>,
     ) -> ExecutionResult<RestartReconcileReport> {
         let jobs = self
             .store
@@ -578,14 +581,16 @@ where
         let now = chrono::Utc::now();
 
         for job in jobs {
+            let action_group_id = action_group_id_for_job(action_groups, &job).await?;
+            let direct_wake = direct_thread_wake_for_job(&job, action_group_id.as_deref())?;
             if let Some(event) = durable_result_event_for_job(events, &job).await? {
                 let outcome = observed_job_outcome(&event);
-                let wake_thread = event.payload.get("action_group_id").is_none()
-                    && event
-                        .payload
-                        .get("wake_policy")
-                        .and_then(serde_json::Value::as_str)
-                        != Some("delegation_result");
+                let wake_policy = event
+                    .payload
+                    .get("wake_policy")
+                    .and_then(serde_json::Value::as_str);
+                let wake_thread =
+                    direct_wake && !matches!(wake_policy, Some("none" | "delegation_result"));
                 let receipt = self
                     .reconcile_observed_result(&job.id, job.revision, outcome, &event, wake_thread)
                     .await?;
@@ -632,7 +637,9 @@ where
                         .push(self.requeue(&job.id, job.revision).await?);
                 }
                 RestartAction::MarkLost { reason } => {
-                    let event = restart_lost_event(&job, reason);
+                    let wake_thread = direct_wake;
+                    let event =
+                        restart_lost_event(&job, reason, action_group_id.as_deref(), wake_thread);
                     let mutation = self
                         .store
                         .finish_execution_job_with_event(
@@ -645,7 +652,7 @@ where
                             }
                             .into(),
                             &event,
-                            false,
+                            wake_thread,
                         )
                         .await?;
                     report.lost_receipts.push(JobReceipt::from_mutation(
@@ -657,6 +664,82 @@ where
         }
 
         Ok(report)
+    }
+}
+
+fn direct_thread_wake_for_job(
+    job: &ExecutionJobRecord,
+    action_group_id: Option<&str>,
+) -> ExecutionResult<bool> {
+    if action_group_id.is_some()
+        || job.tool_name == crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME
+        || job.tool_name == "exec/background"
+    {
+        return Ok(false);
+    }
+    match job.request.get("_morphz_wake_thread") {
+        Some(serde_json::Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!(
+            "Execution Job '{}' 的 _morphz_wake_thread 不是 boolean",
+            job.id
+        )
+        .into()),
+        // Legacy ordinary physical Jobs predate the explicit join marker.
+        // Their only supported non-direct routes had stable dedicated tool
+        // names handled above; preserve the old standalone continuation.
+        None => Ok(true),
+    }
+}
+
+async fn action_group_id_for_job(
+    groups: Option<&dyn ActionGroupStore>,
+    job: &ExecutionJobRecord,
+) -> ExecutionResult<Option<String>> {
+    if let Some(group_id) = job
+        .request
+        .get("_morphz_action_group_id")
+        .and_then(serde_json::Value::as_str)
+    {
+        if group_id.trim().is_empty() {
+            return Err(format!("Execution Job '{}' 的 Action Group route 为空", job.id).into());
+        }
+        return Ok(Some(group_id.to_string()));
+    }
+    let Some(groups) = groups else {
+        return Ok(None);
+    };
+    let candidates = groups
+        .list_action_groups(ActionGroupFilter {
+            activation_id: Some(job.activation_id.clone()),
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await?;
+    let mut matches = Vec::new();
+    for group in candidates {
+        if groups
+            .list_action_group_members(&group.id)
+            .await?
+            .iter()
+            .any(|member| {
+                member.execution_job_id.as_deref() == Some(job.id.as_str())
+                    || (member.execution_job_id.is_none()
+                        && member.tool_call_id == job.tool_call_id
+                        && member.tool_name == job.tool_name)
+            })
+        {
+            matches.push(group.id);
+        }
+    }
+    match matches.as_slice() {
+        [] => Ok(None),
+        [group_id] => Ok(Some(group_id.clone())),
+        _ => Err(format!(
+            "Execution Job '{}' 匹配到多个 Action Group：{}",
+            job.id,
+            matches.join(", ")
+        )
+        .into()),
     }
 }
 
@@ -780,35 +863,47 @@ fn observed_job_outcome(event: &Event) -> JobOutcome {
     }
 }
 
-fn restart_lost_event(job: &ExecutionJobRecord, reason: &str) -> Event {
+fn restart_lost_event(
+    job: &ExecutionJobRecord,
+    reason: &str,
+    action_group_id: Option<&str>,
+    wake_thread: bool,
+) -> Event {
+    let mut payload = serde_json::Map::from_iter([
+        ("context_id".to_string(), serde_json::json!(job.context_id)),
+        ("session_id".to_string(), serde_json::json!(job.session_id)),
+        (
+            "attempt_id".to_string(),
+            serde_json::json!(job.activation_id),
+        ),
+        (
+            "activation_id".to_string(),
+            serde_json::json!(job.activation_id),
+        ),
+        ("thread_id".to_string(), serde_json::json!(job.thread_id)),
+        (
+            "tool_call_id".to_string(),
+            serde_json::json!(job.tool_call_id),
+        ),
+        ("caused_by".to_string(), serde_json::json!(job.tool_call_id)),
+        ("tool_name".to_string(), serde_json::json!(job.tool_name)),
+        ("tool_status".to_string(), serde_json::json!("lost")),
+        (
+            "wake_policy".to_string(),
+            serde_json::json!(if wake_thread { "immediate" } else { "none" }),
+        ),
+        ("output_empty".to_string(), serde_json::json!(false)),
+        ("text".to_string(), serde_json::json!(reason)),
+    ]);
+    if let Some(group_id) = action_group_id {
+        payload.insert("action_group_id".to_string(), serde_json::json!(group_id));
+    }
     Event::new(
         format!("output_{}_{}", job.activation_id, job.tool_call_id),
         "Runtime-ExecutionReconciler".to_string(),
         TYPE_TOOL_OUTPUT.to_string(),
         "chat/tool_output".to_string(),
-        serde_json::Map::from_iter([
-            ("context_id".to_string(), serde_json::json!(job.context_id)),
-            ("session_id".to_string(), serde_json::json!(job.session_id)),
-            (
-                "attempt_id".to_string(),
-                serde_json::json!(job.activation_id),
-            ),
-            (
-                "activation_id".to_string(),
-                serde_json::json!(job.activation_id),
-            ),
-            ("thread_id".to_string(), serde_json::json!(job.thread_id)),
-            (
-                "tool_call_id".to_string(),
-                serde_json::json!(job.tool_call_id),
-            ),
-            ("caused_by".to_string(), serde_json::json!(job.tool_call_id)),
-            ("tool_name".to_string(), serde_json::json!(job.tool_name)),
-            ("tool_status".to_string(), serde_json::json!("lost")),
-            ("wake_policy".to_string(), serde_json::json!("immediate")),
-            ("output_empty".to_string(), serde_json::json!(false)),
-            ("text".to_string(), serde_json::json!(reason)),
-        ]),
+        payload,
     )
 }
 
@@ -903,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn side_effect_boundary_forbids_automatic_replay() {
+    fn idempotent_job_replays_after_side_effect_boundary() {
         let mut job = sample_job(
             ExecutionJobStatus::Running,
             ExecutionRetrySafety::Idempotent,
@@ -911,18 +1006,33 @@ mod tests {
         job.side_effect_started_at = Some(job.updated_at);
         assert!(matches!(
             restart_plan(&job).action,
-            RestartAction::MarkLost { .. }
+            RestartAction::Requeue { .. }
         ));
     }
 
     #[test]
-    fn non_idempotent_running_job_is_lost_even_before_recorded_boundary() {
+    fn every_uncancelled_job_replays_before_recorded_boundary() {
         for safety in [
             ExecutionRetrySafety::ReconcileRequired,
             ExecutionRetrySafety::AtMostOnce,
         ] {
             assert!(matches!(
                 restart_plan(&sample_job(ExecutionJobStatus::Running, safety)).action,
+                RestartAction::Requeue { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn non_idempotent_job_is_lost_after_recorded_boundary() {
+        for safety in [
+            ExecutionRetrySafety::ReconcileRequired,
+            ExecutionRetrySafety::AtMostOnce,
+        ] {
+            let mut job = sample_job(ExecutionJobStatus::Running, safety);
+            job.side_effect_started_at = Some(job.updated_at);
+            assert!(matches!(
+                restart_plan(&job).action,
                 RestartAction::MarkLost { .. }
             ));
         }
@@ -1005,5 +1115,41 @@ mod tests {
                 current,
             }
         );
+    }
+
+    #[test]
+    fn lost_group_member_routes_only_through_the_group_barrier() {
+        let job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::AtMostOnce,
+        );
+        let event = restart_lost_event(&job, "outcome unknown", Some("group-1"), false);
+        assert_eq!(event.payload["action_group_id"], "group-1");
+        assert_eq!(event.payload["wake_policy"], "none");
+        assert_eq!(event.payload["tool_status"], "lost");
+    }
+
+    #[test]
+    fn standalone_lost_job_retains_one_direct_wake_route() {
+        let job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::AtMostOnce,
+        );
+        let event = restart_lost_event(&job, "outcome unknown", None, true);
+        assert!(!event.payload.contains_key("action_group_id"));
+        assert_eq!(event.payload["wake_policy"], "immediate");
+    }
+
+    #[test]
+    fn explicit_join_marker_overrides_legacy_direct_wake_fallback() {
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::AtMostOnce,
+        );
+        job.request["_morphz_wake_thread"] = json!(false);
+        assert!(!direct_thread_wake_for_job(&job, None).expect("valid join marker"));
+
+        job.request["_morphz_wake_thread"] = json!("false");
+        assert!(direct_thread_wake_for_job(&job, None).is_err());
     }
 }

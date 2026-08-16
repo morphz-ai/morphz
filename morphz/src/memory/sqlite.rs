@@ -15024,12 +15024,39 @@ impl ExecutionTargetAuthorizationStore for SqliteStore {
         })
     }
 
+    async fn has_active_execution_target_authorization(
+        &self,
+        target_id: &str,
+        owner_principal_id: &str,
+        agent_id: &str,
+        context_id: &str,
+        thread_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM execution_target_authorizations
+                   WHERE target_id = ? AND owner_principal_id = ? AND status = 'active'
+                     AND ((scope = 'agent' AND scope_id = ?)
+                       OR (scope = 'context' AND scope_id = ?)
+                       OR (scope = 'thread' AND scope_id = ?))
+               )"#,
+        )
+        .bind(target_id)
+        .bind(owner_principal_id)
+        .bind(agent_id)
+        .bind(context_id)
+        .bind(thread_id)
+        .fetch_one(&self.pool)
+        .await?
+            != 0)
+    }
+
     async fn has_execution_target_authorization_history(
         &self,
         target_id: &str,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         Ok(sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM execution_target_authorizations WHERE target_id = ?",
+            "SELECT EXISTS(SELECT 1 FROM execution_target_authorizations WHERE target_id = ?)",
         )
         .bind(target_id)
         .fetch_one(&self.pool)
@@ -15325,23 +15352,57 @@ impl EdgeExecutionStore for SqliteStore {
         expected_revision: u64,
     ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        sqlx::query(
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
             r#"UPDATE execution_nodes SET revision = revision + 1, status = 'revoked', updated_at = ?
                WHERE id = ? AND owner_principal_id = ? AND revision = ?"#,
         )
-        .bind(now)
+        .bind(&now)
         .bind(node_id)
         .bind(owner_principal_id)
         .bind(i64::try_from(expected_revision)?)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        if updated.rows_affected() == 1 {
+            sqlx::query(
+                r#"UPDATE execution_targets
+                   SET revision = revision + 1, status = 'offline', updated_at = ?
+                   WHERE provider_node_id = ? AND status = 'online'"#,
+            )
+            .bind(&now)
+            .bind(node_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE edge_execution_commands
+                   SET revision = revision + 1,
+                       status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'lost' END,
+                       error = CASE
+                           WHEN status = 'queued' THEN 'Edge Node was revoked before command claim'
+                           ELSE 'Edge Node was revoked while command outcome was not durable'
+                       END,
+                       finished_at = ?, updated_at = ?
+                   WHERE provider_node_id = ?
+                     AND status IN ('queued', 'claimed', 'cancel_requested')"#,
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(node_id)
+            .execute(&mut *tx)
+            .await?;
+        }
         let row =
             sqlx::query("SELECT * FROM execution_nodes WHERE id = ? AND owner_principal_id = ?")
                 .bind(node_id)
                 .bind(owner_principal_id)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await?;
-        row.as_ref().map(execution_node_from_row).transpose()
+        let node = row.as_ref().map(execution_node_from_row).transpose()?;
+        tx.commit().await?;
+        if updated.rows_affected() == 1 {
+            self.edge_command_notify.notify_waiters();
+        }
+        Ok(node)
     }
 
     async fn rotate_execution_node_key(
@@ -16388,8 +16449,7 @@ impl ExecutionJobStore for SqliteStore {
                    claim_token = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
                    progress_ref = NULL, updated_at = ?
                WHERE id = ? AND revision = ? AND status = 'running'
-                 AND retry_safety = 'idempotent'
-                 AND side_effect_started_at IS NULL
+                 AND (side_effect_started_at IS NULL OR retry_safety = 'idempotent')
                  AND cancel_requested_at IS NULL"#,
         )
         .bind(&now)
@@ -16402,7 +16462,7 @@ impl ExecutionJobStore for SqliteStore {
                 self,
                 id,
                 expected_revision,
-                "只有尚未越过副作用边界的 idempotent running Job 可以恢复为 queued",
+                "只有未请求取消、且尚未越过副作用边界或声明为 idempotent 的 running Job 可以恢复为 queued",
             )
             .await;
         }
@@ -16432,7 +16492,7 @@ impl ExecutionJobStore for SqliteStore {
             });
         }
         let reason = reason.map(|value| value.chars().take(10_000).collect::<String>());
-        if current.cancel_requested_at.is_some() && current.cancel_reason == reason {
+        if current.cancel_requested_at.is_some() {
             return Ok(ExecutionJobMutation::Updated(current));
         }
         let expected_sql = i64::try_from(expected_revision)
@@ -16442,7 +16502,8 @@ impl ExecutionJobStore for SqliteStore {
             r#"UPDATE execution_jobs
                SET revision = revision + 1,
                    cancel_requested_at = COALESCE(cancel_requested_at, ?),
-                   cancel_reason = ?, updated_at = ?
+                   cancel_reason = CASE WHEN cancel_requested_at IS NULL THEN ? ELSE cancel_reason END,
+                   updated_at = ?
                WHERE id = ? AND revision = ?
                  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
         )
@@ -17645,6 +17706,12 @@ impl CapabilityLeaseStore for SqliteStore {
         }
         if let Some(value) = filter.target_id {
             query.push(" AND target_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.capability {
+            query
+                .push(" AND EXISTS (SELECT 1 FROM json_each(capabilities_json) WHERE value = ")
+                .push_bind(value)
+                .push(")");
         }
         if let Some(active_at) = filter.active_at {
             query
@@ -23237,7 +23304,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execution_job_requeue_only_accepts_clean_idempotent_recovery() {
+    async fn execution_job_requeue_follows_the_persisted_side_effect_boundary() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
@@ -23298,9 +23365,47 @@ mod tests {
             ExecutionJobMutation::Updated(job) => job,
             other => panic!("unexpected unsafe claim: {other:?}"),
         };
+        let clean_at_most_once = match store
+            .requeue_execution_job(&unsafe_claimed.id, unsafe_claimed.revision)
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected clean at-most-once requeue: {other:?}"),
+        };
+        let started_claim = match store
+            .claim_execution_job(
+                &clean_at_most_once.id,
+                clean_at_most_once.revision,
+                "crashed-worker",
+                "claim-started-unsafe",
+                Utc::now() + chrono::Duration::minutes(1),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected started at-most-once claim: {other:?}"),
+        };
+        let started_claim = match store
+            .heartbeat_execution_job(
+                &started_claim.id,
+                started_claim.revision,
+                "claim-started-unsafe",
+                Utc::now() + chrono::Duration::minutes(1),
+                Some(Utc::now()),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected started at-most-once heartbeat: {other:?}"),
+        };
         assert!(matches!(
             store
-                .requeue_execution_job(&unsafe_claimed.id, unsafe_claimed.revision)
+                .requeue_execution_job(&started_claim.id, started_claim.revision)
                 .await
                 .unwrap(),
             ExecutionJobMutation::Rejected { .. }
@@ -29864,5 +29969,72 @@ mod tests {
             0,
             "empty queue probes must remain read-only"
         );
+    }
+
+    #[tokio::test]
+    async fn target_authorization_existence_is_not_truncated_by_history_size() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .register_execution_target(ExecutionTargetRegistration {
+                id: "large-auth-target".to_string(),
+                owner_principal_id: Some("principal:owner".to_string()),
+                provider_node_id: None,
+                kind: ExecutionTargetKind::ManagedCloudWorker,
+                name: "Large authorization target".to_string(),
+                status: ExecutionTargetStatus::Online,
+                platform: None,
+                workspace_root: None,
+                capabilities: vec!["exec".to_string()],
+                metadata: serde_json::json!({}),
+                policy_digest: "policy:test".to_string(),
+                last_seen_at: None,
+            })
+            .await
+            .unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        for index in 0..=1_000i64 {
+            let scope_id = if index == 0 {
+                "thread:wanted".to_string()
+            } else {
+                format!("thread:decoy:{index}")
+            };
+            sqlx::query(
+                r#"INSERT INTO execution_target_authorizations
+                   (id, revision, target_id, owner_principal_id, scope, scope_id,
+                    status, created_at, updated_at)
+                   VALUES (?, 1, 'large-auth-target', 'principal:owner', 'thread', ?,
+                           'active', ?, ?)"#,
+            )
+            .bind(format!("auth-{index:04}"))
+            .bind(scope_id)
+            .bind(format!(
+                "2026-08-16T00:00:{:02}.{:09}Z",
+                index / 1_000,
+                index
+            ))
+            .bind(format!(
+                "2026-08-16T00:00:{:02}.{:09}Z",
+                index / 1_000,
+                index
+            ))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        assert!(store
+            .has_active_execution_target_authorization(
+                "large-auth-target",
+                "principal:owner",
+                "agent:other",
+                "context:other",
+                "thread:wanted",
+            )
+            .await
+            .unwrap());
     }
 }
