@@ -9598,7 +9598,7 @@ mod tests {
                 .unwrap(),
         );
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "budget-context".to_string(),
                 agent_id: "budget-agent".to_string(),
                 title: "Budget Context".to_string(),
@@ -12122,7 +12122,7 @@ mod tests {
                 .unwrap(),
         );
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "recall-graph-context".to_string(),
                 agent_id: "recall-graph-agent".to_string(),
                 title: "Recall Graph".to_string(),
@@ -12334,7 +12334,7 @@ mod tests {
             .unwrap(),
         );
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "retirement-race-context".to_string(),
                 agent_id: "retirement-race-agent".to_string(),
                 title: "Retirement Race".to_string(),
@@ -12399,7 +12399,7 @@ mod tests {
                 .unwrap(),
         );
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "retirement-context".to_string(),
                 agent_id: "retirement-agent".to_string(),
                 title: "Retirement Context".to_string(),
@@ -12615,7 +12615,7 @@ mod tests {
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
         let session_id = "persistent-session";
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: session_id.to_string(),
                 agent_id: "persistent-agent".to_string(),
                 title: "Persistent Context".to_string(),
@@ -12859,7 +12859,7 @@ mod tests {
                 .unwrap(),
         );
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "audit-race-context".to_string(),
                 agent_id: "audit-race-agent".to_string(),
                 title: "Audit Race".to_string(),
@@ -12928,7 +12928,7 @@ mod tests {
         let db = tmp.path().join("context-concurrency.db");
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "shared-context".to_string(),
                 agent_id: "shared-agent".to_string(),
                 title: "Shared Context".to_string(),
@@ -13026,7 +13026,7 @@ mod tests {
                 .unwrap(),
         );
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "many-writers-context".to_string(),
                 agent_id: "many-writers-agent".to_string(),
                 title: "Many Writers Context".to_string(),
@@ -13086,7 +13086,7 @@ mod tests {
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
         for context_id in ["seed-source", "seed-target"] {
             store
-                .create_context(NewCognitiveContext {
+                .create_test_context(NewCognitiveContext {
                     id: context_id.to_string(),
                     agent_id: "seed-agent".to_string(),
                     title: context_id.to_string(),
@@ -13411,7 +13411,7 @@ mod tests {
             .expect("protected active observation must be remapped");
 
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "projection-child".to_string(),
                 agent_id: "projection-agent".to_string(),
                 title: "Projection Child".to_string(),

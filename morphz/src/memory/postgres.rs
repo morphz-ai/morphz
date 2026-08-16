@@ -20,7 +20,8 @@ use crate::memory::{
     RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
     RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
     RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
-    SessionProjectionMutation, SessionProjectionStore, TimerStore,
+    SessionProjectionMutation, SessionProjectionStore, StorageMaintenanceReport,
+    StorageMaintenanceStore, TimerStore, TransientStorageRetention,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -273,6 +274,12 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260816_03_directory_domain_constraints",
                     store.migrate_directory_domain_constraints(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260816_04_core_domain_constraints",
+                    store.migrate_core_domain_constraints(),
                 )
                 .await?;
             // Index creation is retried outside the versioned migration so a
@@ -1334,6 +1341,254 @@ impl PostgresStore {
         }
         Ok(())
     }
+
+    /// Brings PostgreSQL's persisted Runtime domains in line with SQLite.
+    ///
+    /// The Rust decoders already reject values outside these domains, but a
+    /// database constraint is the last line of defence for manual SQL,
+    /// partially-upgraded deployments, and future write paths. Historical
+    /// Activation spellings are canonicalized before validation; no business
+    /// record is discarded by this migration.
+    async fn migrate_core_domain_constraints(&self) -> Result<(), StoreError> {
+        for statement in [
+            r#"UPDATE threads
+               SET kind = CASE kind
+                   WHEN 'dialogue' THEN 'dialogue_turn'
+                   WHEN 'work' THEN 'execution'
+                   WHEN 'objective' THEN 'execution'
+                   WHEN 'delegation' THEN 'execution'
+                   ELSE kind
+               END,
+                   status = CASE status
+                   WHEN 'active' THEN 'open'
+                   WHEN 'waiting' THEN 'open'
+                   ELSE status
+               END
+               WHERE kind IN ('dialogue', 'work', 'objective', 'delegation')
+                  OR status IN ('active', 'waiting')"#,
+            r#"UPDATE thread_activations
+               SET status = 'completed'
+               WHERE status IN ('waiting_tool', 'waiting_external', 'succeeded')"#,
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
+
+        for (table, constraint, expression) in [
+            (
+                "signal_outbox",
+                "signal_outbox_status_domain",
+                "status IN ('pending', 'materialized', 'discarded')",
+            ),
+            (
+                "runtime_timers",
+                "runtime_timers_generation_nonnegative",
+                "generation >= 0",
+            ),
+            (
+                "runtime_timers",
+                "runtime_timers_kind_domain",
+                "kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'activation_lease', 'delivery_flush')",
+            ),
+            (
+                "runtime_timers",
+                "runtime_timers_status_domain",
+                "status IN ('pending', 'claimed', 'fired', 'cancelled')",
+            ),
+            (
+                "objectives",
+                "objectives_revision_positive",
+                "revision >= 1",
+            ),
+            (
+                "objectives",
+                "objectives_status_domain",
+                "status IN ('active', 'paused', 'blocked', 'completed', 'cancelled', 'failed')",
+            ),
+            (
+                "objectives",
+                "objectives_continuation_sequence_nonnegative",
+                "continuation_sequence >= 0",
+            ),
+            (
+                "objectives",
+                "objectives_tokens_used_nonnegative",
+                "tokens_used >= 0",
+            ),
+            (
+                "objectives",
+                "objectives_time_used_seconds_nonnegative",
+                "time_used_seconds >= 0",
+            ),
+            ("threads", "threads_revision_positive", "revision >= 1"),
+            (
+                "threads",
+                "threads_generation_positive",
+                "generation >= 1",
+            ),
+            (
+                "threads",
+                "threads_kind_domain",
+                "kind IN ('dialogue_turn', 'execution', 'delivery')",
+            ),
+            (
+                "threads",
+                "threads_status_domain",
+                "status IN ('open', 'completed', 'failed', 'cancelled')",
+            ),
+            (
+                "threads",
+                "threads_control_state_domain",
+                "control_state IN ('active', 'paused')",
+            ),
+            (
+                "threads",
+                "threads_lifetime_domain",
+                "lifetime IN ('attached', 'durable', 'disposable')",
+            ),
+            (
+                "threads",
+                "threads_supervisor_kind_domain",
+                "supervisor_kind IN ('thread', 'evaluation', 'objective', 'runtime', 'none', 'legacy')",
+            ),
+            (
+                "threads",
+                "threads_supervision_generation_positive",
+                "supervision_generation >= 1",
+            ),
+            (
+                "threads",
+                "threads_delivery_status_domain",
+                "delivery_status IN ('none', 'pending', 'deferred', 'delivered')",
+            ),
+            (
+                "thread_activations",
+                "thread_activations_revision_positive",
+                "revision >= 1",
+            ),
+            (
+                "thread_activations",
+                "thread_activations_generation_positive",
+                "generation >= 1",
+            ),
+            (
+                "thread_activations",
+                "thread_activations_trigger_sequence_nonnegative",
+                "trigger_sequence >= 0",
+            ),
+            (
+                "thread_activations",
+                "thread_activations_status_domain",
+                "status IN ('queued', 'running', 'completed', 'cancelled', 'failed')",
+            ),
+            (
+                "execution_jobs",
+                "execution_jobs_revision_positive",
+                "revision >= 1",
+            ),
+            (
+                "execution_jobs",
+                "execution_jobs_status_domain",
+                "status IN ('queued', 'waiting_approval', 'running', 'succeeded', 'failed', 'cancelled', 'lost')",
+            ),
+            (
+                "execution_jobs",
+                "execution_jobs_retry_safety_domain",
+                "retry_safety IN ('idempotent', 'reconcile_required', 'at_most_once')",
+            ),
+            (
+                "action_groups",
+                "action_groups_revision_positive",
+                "revision >= 1",
+            ),
+            (
+                "action_groups",
+                "action_groups_status_domain",
+                "status IN ('running', 'settled', 'cancelled', 'lost')",
+            ),
+            (
+                "action_group_members",
+                "action_group_members_status_domain",
+                "status IN ('pending', 'succeeded', 'failed', 'cancelled', 'lost', 'skipped')",
+            ),
+            (
+                "action_group_members",
+                "action_group_members_result_invariant",
+                "(status = 'pending' AND result_event_id IS NULL) OR (status <> 'pending' AND result_event_id IS NOT NULL)",
+            ),
+            (
+                "approval_requests",
+                "approval_requests_revision_positive",
+                "revision >= 1",
+            ),
+            (
+                "approval_requests",
+                "approval_requests_status_domain",
+                "status IN ('pending_auto', 'pending_human', 'allowed', 'denied', 'cancelled')",
+            ),
+        ] {
+            add_and_validate_postgres_check(&self.pool, table, constraint, expression).await?;
+        }
+
+        add_and_validate_postgres_foreign_key(
+            &self.pool,
+            "sessions",
+            "sessions_parent_session_fk",
+            "FOREIGN KEY (parent_session_id) REFERENCES sessions(id)",
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+async fn add_and_validate_postgres_check(
+    pool: &PgPool,
+    table: &str,
+    constraint: &str,
+    expression: &str,
+) -> Result<(), StoreError> {
+    add_and_validate_postgres_constraint(pool, table, constraint, &format!("CHECK ({expression})"))
+        .await
+}
+
+async fn add_and_validate_postgres_foreign_key(
+    pool: &PgPool,
+    table: &str,
+    constraint: &str,
+    definition: &str,
+) -> Result<(), StoreError> {
+    add_and_validate_postgres_constraint(pool, table, constraint, definition).await
+}
+
+async fn add_and_validate_postgres_constraint(
+    pool: &PgPool,
+    table: &str,
+    constraint: &str,
+    definition: &str,
+) -> Result<(), StoreError> {
+    // Every caller supplies compile-time identifiers and SQL fragments. Keep
+    // the helper private so dynamic/user input can never reach this DDL.
+    sqlx::query(&format!(
+        r#"DO $$
+           BEGIN
+             IF NOT EXISTS (
+               SELECT 1 FROM pg_constraint
+               WHERE conname = '{constraint}'
+                 AND conrelid = '{table}'::regclass
+             ) THEN
+               ALTER TABLE {table}
+                 ADD CONSTRAINT {constraint} {definition} NOT VALID;
+             END IF;
+           END
+           $$"#,
+    ))
+    .execute(pool)
+    .await?;
+    sqlx::query(&format!(
+        "ALTER TABLE {table} VALIDATE CONSTRAINT {constraint}"
+    ))
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 fn provider_account_state_from_pg_row(
@@ -1687,6 +1942,72 @@ impl ProviderAccountStateStore for PostgresStore {
 impl crate::memory::RuntimeStore for PostgresStore {
     fn worker_coordination_mode(&self) -> crate::memory::WorkerCoordinationMode {
         crate::memory::WorkerCoordinationMode::SharedLeases
+    }
+}
+
+#[async_trait::async_trait]
+impl StorageMaintenanceStore for PostgresStore {
+    async fn prune_transient_storage(
+        &self,
+        policy: TransientStorageRetention,
+    ) -> Result<StorageMaintenanceReport, StoreError> {
+        if policy.batch_limit == 0 {
+            return Ok(StorageMaintenanceReport::default());
+        }
+        let limit = i64::try_from(policy.batch_limit)?;
+        let outbox_cutoff = policy
+            .resolved_signal_outbox_before
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let credentials_cutoff = policy
+            .expired_edge_credentials_before
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let outbox = sqlx::query(
+            r#"DELETE FROM signal_outbox
+               WHERE event_id IN (
+                 SELECT event_id FROM signal_outbox
+                 WHERE status IN ('materialized', 'discarded')
+                   AND resolved_at IS NOT NULL AND resolved_at <= $1
+                 ORDER BY resolved_at, event_id LIMIT $2
+               )"#,
+        )
+        .bind(&outbox_cutoff)
+        .bind(limit)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let pairing_codes = sqlx::query(
+            r#"DELETE FROM execution_node_pairing_codes
+               WHERE code_hash IN (
+                 SELECT code_hash FROM execution_node_pairing_codes
+                 WHERE expires_at <= $1
+                 ORDER BY expires_at, code_hash LIMIT $2
+               )"#,
+        )
+        .bind(&credentials_cutoff)
+        .bind(limit)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let challenges = sqlx::query(
+            r#"DELETE FROM execution_node_challenges
+               WHERE id IN (
+                 SELECT id FROM execution_node_challenges
+                 WHERE expires_at <= $1
+                 ORDER BY expires_at, id LIMIT $2
+               )"#,
+        )
+        .bind(&credentials_cutoff)
+        .bind(limit)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(StorageMaintenanceReport {
+            resolved_signal_outbox_deleted: outbox,
+            expired_pairing_codes_deleted: pairing_codes,
+            expired_challenges_deleted: challenges,
+        })
     }
 }
 

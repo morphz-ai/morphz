@@ -4471,6 +4471,14 @@ async fn test_delegate_isolates_siblings_returns_to_parent_and_parent_integrates
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     store
+        .ensure_agent(NewAgent {
+            id: "delegate-agent".to_string(),
+            title: "Delegate agent".to_string(),
+            root_context_id: "delegate-main".to_string(),
+        })
+        .await
+        .unwrap();
+    store
         .create_context(NewCognitiveContext {
             id: "delegate-main".to_string(),
             agent_id: "delegate-agent".to_string(),
@@ -4648,6 +4656,14 @@ async fn attached_delegate_waits_for_result_without_model_polling() {
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     store
+        .ensure_agent(NewAgent {
+            id: "attached-agent".to_string(),
+            title: "Attached agent".to_string(),
+            root_context_id: "attached-context".to_string(),
+        })
+        .await
+        .unwrap();
+    store
         .create_context(NewCognitiveContext {
             id: "attached-context".to_string(),
             agent_id: "attached-agent".to_string(),
@@ -4763,6 +4779,14 @@ async fn delegation_depth_limit_rejects_recursive_spawn_before_creating_child() 
     let db_path = tmp.path().join("delegate-depth.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .ensure_agent(NewAgent {
+            id: "depth-agent".to_string(),
+            title: "Depth agent".to_string(),
+            root_context_id: "depth-root-context".to_string(),
+        })
+        .await
+        .unwrap();
     store
         .create_context(NewCognitiveContext {
             id: "depth-root-context".to_string(),

@@ -374,7 +374,7 @@ mod tests {
     use super::*;
     use crate::config::OrchestratorConfig;
     use crate::memory::sqlite::SqliteStore;
-    use crate::memory::{EventStore, SessionDirectoryStore};
+    use crate::memory::EventStore;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -714,7 +714,7 @@ mod tests {
         let db = tmp.path().join("recall-time-range.db");
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
         store
-            .create_context(crate::memory::NewCognitiveContext {
+            .create_test_context(crate::memory::NewCognitiveContext {
                 id: "recall-time-context".to_string(),
                 agent_id: "recall-agent".to_string(),
                 title: "Recall time".to_string(),

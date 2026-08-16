@@ -55,6 +55,7 @@ use crate::memory::{
     ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle,
     ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
     ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -987,6 +988,43 @@ impl MorphzRuntimeBuilder {
                 }
             },
         };
+        if self.config.storage.retention.enabled {
+            let now = chrono::Utc::now();
+            let outbox_age = i64::try_from(
+                self.config
+                    .storage
+                    .retention
+                    .resolved_signal_outbox_age
+                    .as_secs(),
+            )?;
+            let edge_credential_age = i64::try_from(
+                self.config
+                    .storage
+                    .retention
+                    .expired_edge_credential_age
+                    .as_secs(),
+            )?;
+            let policy = TransientStorageRetention {
+                resolved_signal_outbox_before: now - chrono::Duration::seconds(outbox_age),
+                expired_edge_credentials_before: now
+                    - chrono::Duration::seconds(edge_credential_age),
+                batch_limit: self.config.storage.retention.startup_batch_limit,
+            };
+            match store.prune_transient_storage(policy).await {
+                Ok(report) => tracing::debug!(
+                    resolved_signal_outbox_deleted = report.resolved_signal_outbox_deleted,
+                    expired_pairing_codes_deleted = report.expired_pairing_codes_deleted,
+                    expired_challenges_deleted = report.expired_challenges_deleted,
+                    event_code = "runtime.storage.transient_retention_completed",
+                    "Bounded transient storage retention completed"
+                ),
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    event_code = "runtime.storage.transient_retention_failed",
+                    "Transient storage retention failed; durable Runtime startup will continue"
+                ),
+            }
+        }
         self.client.attach_provider_account_state_store(
             Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>
         );
@@ -10301,6 +10339,14 @@ mod tests {
                 coding_eval: true,
             })
             .build()
+            .await
+            .unwrap();
+        runtime
+            .ensure_agent(NewAgent {
+                id: runtime.identity().agent_id.clone(),
+                title: "Scheduler snapshot agent".to_string(),
+                root_context_id: runtime.identity().context_id.clone(),
+            })
             .await
             .unwrap();
         runtime

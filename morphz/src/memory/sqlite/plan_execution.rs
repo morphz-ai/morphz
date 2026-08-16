@@ -1036,7 +1036,7 @@ mod tests {
         let activation_id = format!("plan-activation-{suffix}");
         let root_turn_id = format!("plan-root-{suffix}");
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: context_id.clone(),
                 agent_id: "plan-agent".to_string(),
                 title: "Plan Context".to_string(),

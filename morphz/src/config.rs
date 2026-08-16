@@ -647,6 +647,29 @@ pub struct PostgresStorageConfig {
     pub max_connections: u32,
 }
 
+/// Conservative startup cleanup for records that no longer carry Runtime
+/// authority. This never applies to Ledger Events, model attempts, Threads,
+/// Objectives, tool results, Mind snapshots, or Recall documents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StorageRetentionConfig {
+    pub enabled: bool,
+    pub resolved_signal_outbox_age: HumanDuration,
+    pub expired_edge_credential_age: HumanDuration,
+    pub startup_batch_limit: usize,
+}
+
+impl Default for StorageRetentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            resolved_signal_outbox_age: HumanDuration::from_secs(7 * 24 * 60 * 60),
+            expired_edge_credential_age: HumanDuration::from_secs(24 * 60 * 60),
+            startup_batch_limit: 1_000,
+        }
+    }
+}
+
 impl Default for PostgresStorageConfig {
     fn default() -> Self {
         Self {
@@ -662,6 +685,7 @@ pub struct StorageConfig {
     pub backend: StorageBackend,
     pub sqlite: SqliteStorageConfig,
     pub postgres: PostgresStorageConfig,
+    pub retention: StorageRetentionConfig,
 }
 
 /// Server and network configuration.
@@ -3721,6 +3745,16 @@ mod tests {
         assert_eq!(cfg.storage.sqlite.path, "morphz.db");
         assert_eq!(cfg.storage.sqlite.max_connections, 8);
         assert_eq!(cfg.storage.postgres.url_env, "MORPHZ_POSTGRES_URL");
+        assert!(cfg.storage.retention.enabled);
+        assert_eq!(
+            cfg.storage.retention.resolved_signal_outbox_age.as_secs(),
+            7 * 24 * 60 * 60
+        );
+        assert_eq!(
+            cfg.storage.retention.expired_edge_credential_age.as_secs(),
+            24 * 60 * 60
+        );
+        assert_eq!(cfg.storage.retention.startup_batch_limit, 1_000);
         assert_eq!(cfg.llm.max_retries, 5);
         assert_eq!(cfg.llm.connect_timeout_secs, 30);
         assert_eq!(cfg.llm.stream_idle_timeout_secs, 120);

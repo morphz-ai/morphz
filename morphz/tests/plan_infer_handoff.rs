@@ -3,7 +3,7 @@ use morphz::event::{Event, TYPE_INFER_REQUEST, TYPE_USER_MESSAGE};
 use morphz::llm::{Client, Message, Response, ToolCallRepr, ToolDefinition};
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    stable_thread_signal_id, ActivationStore as _, EventStore as _, NewCognitiveContext,
+    stable_thread_signal_id, ActivationStore as _, EventStore as _, NewAgent, NewCognitiveContext,
     NewSession, NewThread, NewThreadActivation, NewThreadSignal, PlanExecutionFilter,
     PlanExecutionStatus, PlanExecutionStore as _, QueryFilter, RuntimeStore,
     SessionDirectoryStore as _, SessionMountKind, ThreadKind, ThreadSignalStatus, ThreadStore as _,
@@ -458,6 +458,14 @@ async fn claiming_a_pre_fix_direct_signal_backfills_its_parent_activation() {
             .await
             .unwrap(),
     );
+    store
+        .ensure_agent(NewAgent {
+            id: "legacy-parent-agent".to_string(),
+            title: "Legacy parent agent".to_string(),
+            root_context_id: "legacy-parent-context".to_string(),
+        })
+        .await
+        .unwrap();
     store
         .create_context(NewCognitiveContext {
             id: "legacy-parent-context".to_string(),

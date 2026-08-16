@@ -5528,7 +5528,7 @@ mod tests {
         let child_context_id = format!("child-context-{suffix}");
         let child_session_id = format!("child-session-{suffix}");
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: child_context_id.clone(),
                 agent_id: objective.agent_id.clone(),
                 title: "Delegated Objective Context".to_string(),
@@ -6280,14 +6280,28 @@ mod tests {
             .status_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("不存在")));
-        let invalidated = store
-            .query(QueryFilter {
-                context_id: Some(objective.context_id),
-                topic: Some("objective/wait_invalidated".to_string()),
-                ..QueryFilter::default()
-            })
-            .await
-            .unwrap();
+        // Objective EventBus business handlers are intentionally asynchronous.
+        // Under a busy test process the recovery handler can make the durable
+        // state visible just before its audit Event is appended, so assert the
+        // bounded eventual contract instead of racing the handler scheduler.
+        let invalidated = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let events = store
+                    .query(QueryFilter {
+                        context_id: Some(objective.context_id.clone()),
+                        topic: Some("objective/wait_invalidated".to_string()),
+                        ..QueryFilter::default()
+                    })
+                    .await
+                    .unwrap();
+                if !events.is_empty() {
+                    break events;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("wait invalidation audit event should converge");
         assert_eq!(invalidated.len(), 1);
     }
 

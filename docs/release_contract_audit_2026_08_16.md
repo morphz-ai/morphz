@@ -56,7 +56,7 @@ SDK 契约版本为 `1`。HTTP `/api/status` 同时返回：
 | Provider 状态 | `provider_account_states`、`provider_account_affinities`、`provider_refresh_leases`、`provider_model_catalog` |
 | 迁移控制 | `schema_migrations` |
 
-这组 Schema 没有发现“装饰性表”：每个表都能对应当前 Store trait、恢复流程、投影或控制面实现。
+第一轮发布契约审计确认每个表都有现存 Store、恢复、投影或控制面调用，但这不足以证明每个物理边界都应永久保留。后续逐表审计已识别出 3 个可收敛边界、1 个应退役的兼容 backfill 表，以及 6 个缺少保留策略的工作集；详见 `docs/database_schema_table_audit_2026_08_16.md`。
 
 ### 3.2 SQLite 与 PostgreSQL 差异
 

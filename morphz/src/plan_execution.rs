@@ -1379,7 +1379,7 @@ mod tests {
         let thread_id = "plan-coordinator-thread".to_string();
         let activation_id = "plan-coordinator-activation".to_string();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: context_id.clone(),
                 agent_id: "plan-agent".to_string(),
                 title: "Plan Context".to_string(),

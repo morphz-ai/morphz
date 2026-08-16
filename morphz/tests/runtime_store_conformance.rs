@@ -31,9 +31,9 @@ use morphz::memory::{
     RecallProjectionStore, RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus,
     ScheduleStore, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
     SessionProjectionMutation, SessionProjectionStore, SessionStatus, SessionUpdate,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction,
-    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore,
-    ThreadSupervision, TimerStore,
+    SignalOutboxStatus, StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationStatus,
+    ThreadControlAction, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadSignalStatus, ThreadStore, ThreadSupervision, TimerStore, TransientStorageRetention,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
@@ -118,6 +118,14 @@ fn sqlite_two_process_context_cas_is_fenced() {
         .unwrap();
     runtime.block_on(async {
         let store = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
+        store
+            .ensure_agent(NewAgent {
+                id: "sqlite-process-agent".to_string(),
+                title: "SQLite Process Agent".to_string(),
+                root_context_id: "sqlite-process-context".to_string(),
+            })
+            .await
+            .unwrap();
         store
             .create_context(NewCognitiveContext {
                 id: "sqlite-process-context".to_string(),
@@ -5861,6 +5869,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260816_01_thread_signal_notifications",
         "20260816_02_edge_command_notifications",
         "20260816_03_directory_domain_constraints",
+        "20260816_04_core_domain_constraints",
     ] {
         assert!(
             applied_migrations.contains(version),
@@ -5891,6 +5900,141 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
             "missing PostgreSQL directory constraint {constraint}"
         );
     }
+    let core_constraints = sqlx::query_scalar::<_, String>(
+        r#"SELECT conname
+           FROM pg_constraint
+           WHERE conrelid IN (
+             'signal_outbox'::regclass,
+             'runtime_timers'::regclass,
+             'objectives'::regclass,
+             'threads'::regclass,
+             'thread_activations'::regclass,
+             'execution_jobs'::regclass,
+             'action_groups'::regclass,
+             'action_group_members'::regclass,
+             'approval_requests'::regclass,
+             'sessions'::regclass
+           )"#,
+    )
+    .fetch_all(store.pool())
+    .await
+    .unwrap()
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    for constraint in [
+        "signal_outbox_status_domain",
+        "runtime_timers_kind_domain",
+        "runtime_timers_status_domain",
+        "objectives_status_domain",
+        "threads_kind_domain",
+        "threads_status_domain",
+        "threads_supervisor_kind_domain",
+        "thread_activations_status_domain",
+        "execution_jobs_status_domain",
+        "execution_jobs_retry_safety_domain",
+        "action_groups_status_domain",
+        "action_group_members_status_domain",
+        "action_group_members_result_invariant",
+        "approval_requests_status_domain",
+        "sessions_parent_session_fk",
+    ] {
+        assert!(
+            core_constraints.contains(constraint),
+            "missing PostgreSQL core constraint {constraint}"
+        );
+    }
+    let retention_now = chrono::Utc::now();
+    let retention_old = (retention_now - chrono::Duration::days(30)).to_rfc3339();
+    let retention_fresh = (retention_now + chrono::Duration::hours(1)).to_rfc3339();
+    for event_id in ["pg-retention-old-event", "pg-retention-fresh-event"] {
+        sqlx::query(
+            r#"INSERT INTO events
+               (id, timestamp, actor, type, topic, payload)
+               VALUES ($1, $2, 'runtime', 'system', 'runtime/test', '{}'::jsonb)"#,
+        )
+        .bind(event_id)
+        .bind(&retention_old)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    }
+    for (event_id, resolved_at) in [
+        ("pg-retention-old-event", retention_old.as_str()),
+        ("pg-retention-fresh-event", retention_fresh.as_str()),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO signal_outbox
+               (event_id, status, signal_id, created_at, resolved_at)
+               VALUES ($1, 'discarded', NULL, $2, $3)"#,
+        )
+        .bind(event_id)
+        .bind(&retention_old)
+        .bind(resolved_at)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        r#"INSERT INTO execution_nodes
+           (id, owner_principal_id, name, status, device_key_fingerprint,
+            device_public_key, device_token_hash, protocol_version,
+            created_at, updated_at)
+           VALUES ('pg-retention-node', 'principal', 'node', 'offline',
+                   'fingerprint', 'public-key', 'token', 1, $1, $1)"#,
+    )
+    .bind(&retention_old)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    for (suffix, expires_at) in [
+        ("old", retention_old.as_str()),
+        ("fresh", retention_fresh.as_str()),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO execution_node_pairing_codes
+               (code_hash, owner_principal_id, expires_at, created_at)
+               VALUES ($1, 'principal', $2, $3)"#,
+        )
+        .bind(format!("pg-pairing-{suffix}"))
+        .bind(expires_at)
+        .bind(&retention_old)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO execution_node_challenges
+               (id, node_id, nonce_hash, expires_at, created_at)
+               VALUES ($1, 'pg-retention-node', $2, $3, $4)"#,
+        )
+        .bind(format!("pg-challenge-{suffix}"))
+        .bind(format!("nonce-{suffix}"))
+        .bind(expires_at)
+        .bind(&retention_old)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    }
+    let retention_report = store
+        .prune_transient_storage(TransientStorageRetention {
+            resolved_signal_outbox_before: retention_now,
+            expired_edge_credentials_before: retention_now,
+            batch_limit: 10,
+        })
+        .await
+        .unwrap();
+    assert_eq!(retention_report.resolved_signal_outbox_deleted, 1);
+    assert_eq!(retention_report.expired_pairing_codes_deleted, 1);
+    assert_eq!(retention_report.expired_challenges_deleted, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM events WHERE id LIKE 'pg-retention-%-event'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap(),
+        2,
+        "PostgreSQL transient cleanup must preserve Ledger Events"
+    );
     let installed_indexes = sqlx::query_scalar::<_, String>(
         "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()",
     )

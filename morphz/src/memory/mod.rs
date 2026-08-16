@@ -6293,6 +6293,34 @@ pub enum WorkerCoordinationMode {
     SharedLeases,
 }
 
+/// Cutoffs for bounded cleanup of records that are explicitly transient and
+/// have already lost all authority. Ledger Events and Runtime outcomes are
+/// intentionally outside this policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransientStorageRetention {
+    pub resolved_signal_outbox_before: DateTime<Utc>,
+    pub expired_edge_credentials_before: DateTime<Utc>,
+    pub batch_limit: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageMaintenanceReport {
+    pub resolved_signal_outbox_deleted: u64,
+    pub expired_pairing_codes_deleted: u64,
+    pub expired_challenges_deleted: u64,
+}
+
+/// Bounded, auditable storage hygiene. Implementations may delete only the
+/// three transient classes named by `StorageMaintenanceReport`; durable
+/// domain history is governed by separate product retention decisions.
+#[async_trait::async_trait]
+pub trait StorageMaintenanceStore: Send + Sync {
+    async fn prune_transient_storage(
+        &self,
+        policy: TransientStorageRetention,
+    ) -> Result<StorageMaintenanceReport, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Complete durable authority required by one Morphz Runtime worker.
 ///
 /// This capability composition keeps Runtime assembly independent from a
@@ -6318,6 +6346,7 @@ pub trait RuntimeStore:
     + CognitiveClockStore
     + ProviderAccountStateStore
     + ProviderModelCatalogStore
+    + StorageMaintenanceStore
     + crate::scheduler::SchedulerDependencyStore
     + Send
     + Sync

@@ -46,13 +46,14 @@ use crate::memory::{
     ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
     SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
     SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadControlAction, ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord,
-    ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus,
-    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation,
-    ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord, ThreadPromotionRequest,
-    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, ThreadSupervision,
-    ThreadSupervisorKind, TimerStore, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    SignalOutboxStatus, StorageMaintenanceReport, StorageMaintenanceStore,
+    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
+    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus,
+    ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind,
+    ThreadLifecycle, ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
+    ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
@@ -454,7 +455,8 @@ impl SqliteStore {
             seed_snapshot_hash TEXT,
             seed_projection TEXT,
             requested_hard_token_limit INTEGER,
-            token_budget_revision INTEGER NOT NULL DEFAULT 0 CHECK(token_budget_revision >= 0)
+            token_budget_revision INTEGER NOT NULL DEFAULT 0 CHECK(token_budget_revision >= 0),
+            FOREIGN KEY(agent_id) REFERENCES agents(id)
         );
         CREATE INDEX IF NOT EXISTS idx_contexts_agent_updated
             ON cognitive_contexts(agent_id, updated_at DESC);
@@ -525,7 +527,10 @@ impl SqliteStore {
             status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            last_activity_at TEXT NOT NULL
+            last_activity_at TEXT NOT NULL,
+            FOREIGN KEY(agent_id) REFERENCES agents(id),
+            FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id),
+            FOREIGN KEY(parent_session_id) REFERENCES sessions(id)
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_agent_activity
             ON sessions(agent_id, last_activity_at DESC);
@@ -558,7 +563,8 @@ impl SqliteStore {
             attention_changed_at TEXT,
             attention_event_id TEXT,
             PRIMARY KEY(session_id, generation),
-            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id)
         );
         CREATE INDEX IF NOT EXISTS idx_session_mounts_context
             ON session_mounts(context_id, unmounted_at);
@@ -577,7 +583,12 @@ impl SqliteStore {
             status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
             result_event_id TEXT,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(agent_id) REFERENCES agents(id),
+            FOREIGN KEY(parent_context_id) REFERENCES cognitive_contexts(id),
+            FOREIGN KEY(parent_session_id) REFERENCES sessions(id),
+            FOREIGN KEY(child_context_id) REFERENCES cognitive_contexts(id),
+            FOREIGN KEY(child_session_id) REFERENCES sessions(id)
         );
         CREATE INDEX IF NOT EXISTS idx_delegations_parent
             ON delegations(parent_session_id, updated_at DESC);
@@ -1615,6 +1626,8 @@ impl SqliteStore {
                 .await?;
         }
 
+        migrate_directory_foreign_keys(&pool).await?;
+
         migrate_session_projection_sequences(&pool).await?;
         migrate_session_projections(&pool).await?;
         migrate_event_causal_columns(&pool).await?;
@@ -1641,6 +1654,7 @@ const THREAD_SIGNAL_GENERATION_BACKFILL_MIGRATION: &str =
 const THREAD_OUTCOME_ID_BACKFILL_MIGRATION: &str = "20260815_08_thread_outcome_id_backfill";
 const SCHEDULE_DEPENDENCY_BACKFILL_MIGRATION: &str = "20260815_06_schedule_dependency_backfill";
 const LEGACY_ACTIVATION_WAIT_STATUS_MIGRATION: &str = "20260815_07_legacy_activation_wait_status";
+const DIRECTORY_FOREIGN_KEYS_MIGRATION: &str = "20260816_04_directory_foreign_keys";
 const RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION: &str = "20260815_01_recall_whole_document_index";
 const RECALL_WHOLE_DOCUMENT_EVENT_BACKFILL_MIGRATION: &str =
     "20260815_02_recall_whole_document_event_backfill";
@@ -1667,6 +1681,351 @@ async fn mark_sqlite_migration(
         .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+async fn sqlite_has_foreign_key(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    parent_table: &str,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let rows = sqlx::query(&format!("PRAGMA foreign_key_list({table})"))
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.iter().any(|row| {
+        row.get::<String, _>("from") == column && row.get::<String, _>("table") == parent_table
+    }))
+}
+
+/// SQLite can add columns in place but cannot add a foreign key to an
+/// existing table. Rebuild the small directory/routing projections once so
+/// both storage backends reject the same orphan routes. No row is repaired or
+/// discarded implicitly: an inconsistent legacy database fails with exact
+/// orphan counts and remains untouched for explicit operator repair.
+async fn migrate_directory_foreign_keys(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if sqlite_migration_applied(pool, DIRECTORY_FOREIGN_KEYS_MIGRATION).await? {
+        return Ok(());
+    }
+
+    let expected = [
+        ("cognitive_contexts", "agent_id", "agents"),
+        ("sessions", "agent_id", "agents"),
+        ("sessions", "context_id", "cognitive_contexts"),
+        ("sessions", "parent_session_id", "sessions"),
+        ("session_mounts", "session_id", "sessions"),
+        ("session_mounts", "context_id", "cognitive_contexts"),
+        ("delegations", "agent_id", "agents"),
+        ("delegations", "parent_context_id", "cognitive_contexts"),
+        ("delegations", "parent_session_id", "sessions"),
+        ("delegations", "child_context_id", "cognitive_contexts"),
+        ("delegations", "child_session_id", "sessions"),
+    ];
+    let mut complete = true;
+    for (table, column, parent) in expected {
+        complete &= sqlite_has_foreign_key(pool, table, column, parent).await?;
+    }
+    if complete {
+        mark_sqlite_migration(pool, DIRECTORY_FOREIGN_KEYS_MIGRATION).await?;
+        return Ok(());
+    }
+
+    let orphan_queries = [
+        (
+            "cognitive_contexts.agent_id",
+            r#"SELECT COUNT(*) FROM cognitive_contexts c
+               LEFT JOIN agents a ON a.id = c.agent_id
+               WHERE a.id IS NULL"#,
+        ),
+        (
+            "sessions.agent_id",
+            r#"SELECT COUNT(*) FROM sessions s
+               LEFT JOIN agents a ON a.id = s.agent_id
+               WHERE a.id IS NULL"#,
+        ),
+        (
+            "sessions.context_id",
+            r#"SELECT COUNT(*) FROM sessions s
+               LEFT JOIN cognitive_contexts c ON c.id = s.context_id
+               WHERE c.id IS NULL"#,
+        ),
+        (
+            "sessions.parent_session_id",
+            r#"SELECT COUNT(*) FROM sessions s
+               LEFT JOIN sessions p ON p.id = s.parent_session_id
+               WHERE s.parent_session_id IS NOT NULL AND p.id IS NULL"#,
+        ),
+        (
+            "session_mounts.context_id",
+            r#"SELECT COUNT(*) FROM session_mounts m
+               LEFT JOIN cognitive_contexts c ON c.id = m.context_id
+               WHERE c.id IS NULL"#,
+        ),
+        (
+            "delegations.agent_id",
+            r#"SELECT COUNT(*) FROM delegations d
+               LEFT JOIN agents a ON a.id = d.agent_id
+               WHERE a.id IS NULL"#,
+        ),
+        (
+            "delegations.parent_context_id",
+            r#"SELECT COUNT(*) FROM delegations d
+               LEFT JOIN cognitive_contexts c ON c.id = d.parent_context_id
+               WHERE c.id IS NULL"#,
+        ),
+        (
+            "delegations.parent_session_id",
+            r#"SELECT COUNT(*) FROM delegations d
+               LEFT JOIN sessions s ON s.id = d.parent_session_id
+               WHERE s.id IS NULL"#,
+        ),
+        (
+            "delegations.child_context_id",
+            r#"SELECT COUNT(*) FROM delegations d
+               LEFT JOIN cognitive_contexts c ON c.id = d.child_context_id
+               WHERE c.id IS NULL"#,
+        ),
+        (
+            "delegations.child_session_id",
+            r#"SELECT COUNT(*) FROM delegations d
+               LEFT JOIN sessions s ON s.id = d.child_session_id
+               WHERE s.id IS NULL"#,
+        ),
+    ];
+    let mut orphans = Vec::new();
+    for (route, query) in orphan_queries {
+        let count = sqlx::query_scalar::<_, i64>(query).fetch_one(pool).await?;
+        if count != 0 {
+            orphans.push(format!("{route}={count}"));
+        }
+    }
+    if !orphans.is_empty() {
+        return Err(format!(
+            "SQLite 目录外键迁移发现孤儿路由；未修改数据库：{}",
+            orphans.join(", ")
+        )
+        .into());
+    }
+
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *connection)
+        .await?;
+    let migration = async {
+        let mut tx = connection.begin().await?;
+        for temporary in [
+            "cognitive_contexts_directory_fk_migration",
+            "sessions_directory_fk_migration",
+            "session_mounts_directory_fk_migration",
+            "delegations_directory_fk_migration",
+        ] {
+            sqlx::query(&format!("DROP TABLE IF EXISTS {temporary}"))
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        sqlx::query(
+            r#"CREATE TABLE cognitive_contexts_directory_fk_migration (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                seed_context_id TEXT,
+                seed_context_version INTEGER,
+                seed_snapshot_hash TEXT,
+                seed_projection TEXT,
+                requested_hard_token_limit INTEGER,
+                token_budget_revision INTEGER NOT NULL DEFAULT 0 CHECK(token_budget_revision >= 0),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO cognitive_contexts_directory_fk_migration
+               SELECT id, agent_id, title, status, created_at, updated_at,
+                      seed_context_id, seed_context_version, seed_snapshot_hash,
+                      seed_projection, requested_hard_token_limit, token_budget_revision
+               FROM cognitive_contexts"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE cognitive_contexts")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE cognitive_contexts_directory_fk_migration RENAME TO cognitive_contexts",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX idx_contexts_agent_updated ON cognitive_contexts(agent_id, updated_at DESC)",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE TABLE sessions_directory_fk_migration (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                context_id TEXT NOT NULL,
+                parent_session_id TEXT,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL,
+                FOREIGN KEY(agent_id) REFERENCES agents(id),
+                FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id),
+                FOREIGN KEY(parent_session_id) REFERENCES sessions(id)
+            )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO sessions_directory_fk_migration
+               SELECT id, agent_id, context_id, parent_session_id, title, status,
+                      created_at, updated_at, last_activity_at
+               FROM sessions"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE sessions")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE sessions_directory_fk_migration RENAME TO sessions")
+            .execute(&mut *tx)
+            .await?;
+        for statement in [
+            "CREATE INDEX idx_sessions_agent_activity ON sessions(agent_id, last_activity_at DESC)",
+            "CREATE INDEX idx_sessions_context_activity ON sessions(context_id, last_activity_at DESC, id)",
+            "CREATE INDEX idx_sessions_parent ON sessions(parent_session_id)",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+
+        sqlx::query(
+            r#"CREATE TABLE session_mounts_directory_fk_migration (
+                session_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                context_id TEXT NOT NULL,
+                mount_kind TEXT NOT NULL,
+                mounted_at TEXT NOT NULL,
+                unmounted_at TEXT,
+                attention_state TEXT NOT NULL DEFAULT 'active'
+                    CHECK(attention_state IN ('active', 'retired')),
+                attention_revision INTEGER NOT NULL DEFAULT 0 CHECK(attention_revision >= 0),
+                attention_reason TEXT,
+                attention_changed_at TEXT,
+                attention_event_id TEXT,
+                PRIMARY KEY(session_id, generation),
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id)
+            )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO session_mounts_directory_fk_migration
+               SELECT session_id, generation, context_id, mount_kind, mounted_at,
+                      unmounted_at, attention_state, attention_revision,
+                      attention_reason, attention_changed_at, attention_event_id
+               FROM session_mounts"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE session_mounts")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE session_mounts_directory_fk_migration RENAME TO session_mounts",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX idx_session_mounts_context ON session_mounts(context_id, unmounted_at)",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"CREATE UNIQUE INDEX idx_session_mounts_one_active
+               ON session_mounts(session_id) WHERE unmounted_at IS NULL"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE TABLE delegations_directory_fk_migration (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                parent_context_id TEXT NOT NULL,
+                parent_session_id TEXT NOT NULL,
+                child_context_id TEXT NOT NULL,
+                child_session_id TEXT NOT NULL,
+                initiating_principal_id TEXT,
+                task TEXT NOT NULL,
+                success_when TEXT,
+                context_scope TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN (
+                    'queued', 'running', 'completed', 'failed', 'cancelled'
+                )),
+                result_event_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(agent_id) REFERENCES agents(id),
+                FOREIGN KEY(parent_context_id) REFERENCES cognitive_contexts(id),
+                FOREIGN KEY(parent_session_id) REFERENCES sessions(id),
+                FOREIGN KEY(child_context_id) REFERENCES cognitive_contexts(id),
+                FOREIGN KEY(child_session_id) REFERENCES sessions(id)
+            )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO delegations_directory_fk_migration
+               SELECT id, agent_id, parent_context_id, parent_session_id,
+                      child_context_id, child_session_id, initiating_principal_id,
+                      task, success_when, context_scope, status, result_event_id,
+                      created_at, updated_at
+               FROM delegations"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE delegations")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE delegations_directory_fk_migration RENAME TO delegations")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX idx_delegations_parent ON delegations(parent_session_id, updated_at DESC)",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("CREATE UNIQUE INDEX idx_delegations_child ON delegations(child_session_id)")
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .await;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *connection)
+        .await?;
+    migration?;
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&mut *connection)
+        .await?;
+    if !violations.is_empty() {
+        return Err(format!("SQLite 目录外键迁移后发现 {} 条外键违规", violations.len()).into());
+    }
+    mark_sqlite_migration(pool, DIRECTORY_FOREIGN_KEYS_MIGRATION).await?;
     Ok(())
 }
 
@@ -2743,6 +3102,72 @@ impl ProviderAccountStateStore for SqliteStore {
 impl crate::memory::RuntimeStore for SqliteStore {
     fn worker_coordination_mode(&self) -> crate::memory::WorkerCoordinationMode {
         crate::memory::WorkerCoordinationMode::SharedHostLeases
+    }
+}
+
+#[async_trait::async_trait]
+impl StorageMaintenanceStore for SqliteStore {
+    async fn prune_transient_storage(
+        &self,
+        policy: TransientStorageRetention,
+    ) -> Result<StorageMaintenanceReport, Box<dyn std::error::Error + Send + Sync>> {
+        if policy.batch_limit == 0 {
+            return Ok(StorageMaintenanceReport::default());
+        }
+        let limit = i64::try_from(policy.batch_limit)?;
+        let outbox_cutoff = policy
+            .resolved_signal_outbox_before
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let credentials_cutoff = policy
+            .expired_edge_credentials_before
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let outbox = sqlx::query(
+            r#"DELETE FROM signal_outbox
+               WHERE event_id IN (
+                 SELECT event_id FROM signal_outbox
+                 WHERE status IN ('materialized', 'discarded')
+                   AND resolved_at IS NOT NULL AND resolved_at <= ?
+                 ORDER BY resolved_at, event_id LIMIT ?
+               )"#,
+        )
+        .bind(&outbox_cutoff)
+        .bind(limit)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let pairing_codes = sqlx::query(
+            r#"DELETE FROM execution_node_pairing_codes
+               WHERE code_hash IN (
+                 SELECT code_hash FROM execution_node_pairing_codes
+                 WHERE expires_at <= ?
+                 ORDER BY expires_at, code_hash LIMIT ?
+               )"#,
+        )
+        .bind(&credentials_cutoff)
+        .bind(limit)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let challenges = sqlx::query(
+            r#"DELETE FROM execution_node_challenges
+               WHERE id IN (
+                 SELECT id FROM execution_node_challenges
+                 WHERE expires_at <= ?
+                 ORDER BY expires_at, id LIMIT ?
+               )"#,
+        )
+        .bind(&credentials_cutoff)
+        .bind(limit)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(StorageMaintenanceReport {
+            resolved_signal_outbox_deleted: outbox,
+            expired_pairing_codes_deleted: pairing_codes,
+            expired_challenges_deleted: challenges,
+        })
     }
 }
 
@@ -19830,6 +20255,28 @@ impl SessionProjectionStore for SqliteStore {
 }
 
 #[cfg(test)]
+impl SqliteStore {
+    /// Creates a complete directory parent for unit-test fixtures before the
+    /// Context itself is inserted. Production callers must establish the Agent
+    /// explicitly (normally through `create_agent_bundle`); keeping that rule
+    /// in tests prevents fixtures from bypassing the same foreign-key contract.
+    pub(crate) async fn create_test_context(
+        &self,
+        context: NewCognitiveContext,
+    ) -> Result<CognitiveContextRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if self.get_agent(&context.agent_id).await?.is_none() {
+            self.create_agent(NewAgent {
+                id: context.agent_id.clone(),
+                title: context.agent_id.clone(),
+                root_context_id: context.id.clone(),
+            })
+            .await?;
+        }
+        SessionDirectoryStore::create_context(self, context).await
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::approval_authority::stable_approval_identity;
@@ -19893,6 +20340,255 @@ mod tests {
         assert!(
             sqlite_has_wal_reset_fix(&version),
             "linked SQLite {version} is vulnerable to the WAL-reset race"
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_schema_enforces_directory_foreign_keys() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        for (table, column, parent) in [
+            ("cognitive_contexts", "agent_id", "agents"),
+            ("sessions", "agent_id", "agents"),
+            ("sessions", "context_id", "cognitive_contexts"),
+            ("sessions", "parent_session_id", "sessions"),
+            ("session_mounts", "context_id", "cognitive_contexts"),
+            ("delegations", "agent_id", "agents"),
+            ("delegations", "parent_context_id", "cognitive_contexts"),
+            ("delegations", "parent_session_id", "sessions"),
+            ("delegations", "child_context_id", "cognitive_contexts"),
+            ("delegations", "child_session_id", "sessions"),
+        ] {
+            assert!(
+                sqlite_has_foreign_key(&store.pool, table, column, parent)
+                    .await
+                    .unwrap(),
+                "missing SQLite foreign key {table}.{column} -> {parent}"
+            );
+        }
+
+        let orphan = sqlx::query(
+            r#"INSERT INTO cognitive_contexts
+               (id, agent_id, title, status, created_at, updated_at)
+               VALUES ('orphan-context', 'missing-agent', 'orphan', 'active', 'now', 'now')"#,
+        )
+        .execute(&store.pool)
+        .await;
+        assert!(orphan.is_err(), "SQLite accepted an orphan Context route");
+    }
+
+    #[tokio::test]
+    async fn transient_retention_is_bounded_and_preserves_ledger_events() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let now = Utc::now();
+        let old =
+            (now - chrono::Duration::days(30)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let fresh =
+            (now + chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        for event_id in ["retention-old-event", "retention-fresh-event"] {
+            sqlx::query(
+                r#"INSERT INTO events (id, timestamp, actor, type, topic, payload)
+                   VALUES (?, ?, 'runtime', 'system', 'runtime/test', '{}')"#,
+            )
+            .bind(event_id)
+            .bind(&old)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        for (event_id, resolved_at) in [
+            ("retention-old-event", old.as_str()),
+            ("retention-fresh-event", fresh.as_str()),
+        ] {
+            sqlx::query(
+                r#"INSERT INTO signal_outbox
+                   (event_id, status, signal_id, created_at, resolved_at)
+                   VALUES (?, 'discarded', NULL, ?, ?)"#,
+            )
+            .bind(event_id)
+            .bind(&old)
+            .bind(resolved_at)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            r#"INSERT INTO execution_nodes
+               (id, owner_principal_id, name, status, device_key_fingerprint,
+                device_public_key, device_token_hash, protocol_version,
+                created_at, updated_at)
+               VALUES ('retention-node', 'principal', 'node', 'offline',
+                       'fingerprint', 'public-key', 'token', 1, ?, ?)"#,
+        )
+        .bind(&old)
+        .bind(&old)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        for (suffix, expires_at) in [("old", old.as_str()), ("fresh", fresh.as_str())] {
+            sqlx::query(
+                r#"INSERT INTO execution_node_pairing_codes
+                   (code_hash, owner_principal_id, expires_at, created_at)
+                   VALUES (?, 'principal', ?, ?)"#,
+            )
+            .bind(format!("pairing-{suffix}"))
+            .bind(expires_at)
+            .bind(&old)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                r#"INSERT INTO execution_node_challenges
+                   (id, node_id, nonce_hash, expires_at, created_at)
+                   VALUES (?, 'retention-node', ?, ?, ?)"#,
+            )
+            .bind(format!("challenge-{suffix}"))
+            .bind(format!("nonce-{suffix}"))
+            .bind(expires_at)
+            .bind(&old)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+
+        let report = store
+            .prune_transient_storage(TransientStorageRetention {
+                resolved_signal_outbox_before: now,
+                expired_edge_credentials_before: now,
+                batch_limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.resolved_signal_outbox_deleted, 1);
+        assert_eq!(report.expired_pairing_codes_deleted, 1);
+        assert_eq!(report.expired_challenges_deleted, 1);
+        for table in [
+            "signal_outbox",
+            "execution_node_pairing_codes",
+            "execution_node_challenges",
+        ] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap(),
+                1,
+                "retention must keep the fresh row in {table}"
+            );
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE id LIKE 'retention-%-event'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            2,
+            "transient cleanup must not delete immutable Ledger Events"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_rebuilds_legacy_directory_tables_without_losing_routes() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let mut connection = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(tmp_file.path())
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        connection
+            .execute(
+                r#"CREATE TABLE agents (
+                    id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL,
+                    root_context_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE cognitive_contexts (
+                    id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, title TEXT NOT NULL,
+                    status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    seed_context_id TEXT, seed_context_version INTEGER,
+                    seed_snapshot_hash TEXT, seed_projection TEXT
+                );
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, context_id TEXT NOT NULL,
+                    parent_session_id TEXT, title TEXT NOT NULL, status TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_activity_at TEXT NOT NULL
+                );
+                CREATE TABLE session_mounts (
+                    session_id TEXT NOT NULL, generation INTEGER NOT NULL,
+                    context_id TEXT NOT NULL, mount_kind TEXT NOT NULL,
+                    mounted_at TEXT NOT NULL, unmounted_at TEXT,
+                    PRIMARY KEY(session_id, generation)
+                );
+                CREATE TABLE delegations (
+                    id TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
+                    parent_context_id TEXT NOT NULL, parent_session_id TEXT NOT NULL,
+                    child_context_id TEXT NOT NULL, child_session_id TEXT NOT NULL,
+                    task TEXT NOT NULL, success_when TEXT, context_scope TEXT NOT NULL,
+                    status TEXT NOT NULL, result_event_id TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                INSERT INTO agents VALUES (
+                    'agent', 'Agent', 'active', 'context',
+                    '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z'
+                );
+                INSERT INTO cognitive_contexts
+                    VALUES ('context', 'agent', 'Context', 'active',
+                            '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z',
+                            NULL, NULL, NULL, NULL);
+                INSERT INTO sessions
+                    VALUES ('parent', 'agent', 'context', NULL, 'Parent', 'active',
+                            '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z',
+                            '2026-08-16T00:00:00Z');
+                INSERT INTO sessions
+                    VALUES ('child', 'agent', 'context', 'parent', 'Child', 'active',
+                            '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z',
+                            '2026-08-16T00:00:00Z');
+                INSERT INTO session_mounts
+                    VALUES ('child', 1, 'context', 'existing_context',
+                            '2026-08-16T00:00:00Z', NULL);
+                INSERT INTO delegations
+                    VALUES ('delegation', 'agent', 'context', 'parent', 'context', 'child',
+                            'task', NULL, 'scope', 'queued', NULL,
+                            '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z');"#,
+            )
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_session("child")
+                .await
+                .unwrap()
+                .unwrap()
+                .parent_session_id,
+            Some("parent".to_string())
+        );
+        assert!(store.get_delegation("delegation").await.unwrap().is_some());
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert!(violations.is_empty());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
+            )
+            .bind(DIRECTORY_FOREIGN_KEYS_MIGRATION)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1
         );
     }
 
@@ -20025,7 +20721,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "attached-migration-context".to_string(),
                 agent_id: "attached-migration-agent".to_string(),
                 title: "Attached migration".to_string(),
@@ -20575,7 +21271,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "recall-no-rewrite-context".to_string(),
                 agent_id: "recall-agent".to_string(),
                 title: "Recall no rewrite".to_string(),
@@ -20641,7 +21337,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "recall-context".to_string(),
                 agent_id: "recall-agent".to_string(),
                 title: "Recall Context".to_string(),
@@ -20829,7 +21525,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "recall-time-context".to_string(),
                 agent_id: "recall-agent".to_string(),
                 title: "Recall time Context".to_string(),
@@ -20967,7 +21663,7 @@ mod tests {
         let path = tmp_file.path().to_str().unwrap().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "recall-migration-context".to_string(),
                 agent_id: "recall-agent".to_string(),
                 title: "Recall migration".to_string(),
@@ -21333,7 +22029,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "recall-outbox-context".to_string(),
                 agent_id: "recall-agent".to_string(),
                 title: "Recall outbox".to_string(),
@@ -21626,7 +22322,7 @@ mod tests {
         let target_thread_id = format!("schedule-thread-{suffix}");
         let dependency_thread_id = format!("schedule-dependency-{suffix}");
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: context_id.clone(),
                 agent_id: "schedule-agent".to_string(),
                 title: "Schedule Context".to_string(),
@@ -21690,7 +22386,7 @@ mod tests {
         let context_id = format!("delivery-context-{suffix}");
         let session_id = format!("delivery-session-{suffix}");
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: context_id.clone(),
                 agent_id: "delivery-agent".to_string(),
                 title: "Delivery Context".to_string(),
@@ -22096,6 +22792,27 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
+            r#"CREATE TABLE agents (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL,
+                root_context_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )"#,
+        )
+        .execute(&legacy)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE cognitive_contexts (
+                id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, title TEXT NOT NULL,
+                status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                seed_context_id TEXT, seed_context_version INTEGER, seed_snapshot_hash TEXT,
+                seed_projection TEXT, requested_hard_token_limit INTEGER,
+                token_budget_revision INTEGER NOT NULL DEFAULT 0
+            )"#,
+        )
+        .execute(&legacy)
+        .await
+        .unwrap();
+        sqlx::query(
             r#"CREATE TABLE sessions (
                 id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, context_id TEXT NOT NULL,
                 parent_session_id TEXT, title TEXT NOT NULL,
@@ -22155,6 +22872,22 @@ mod tests {
         .await
         .unwrap();
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            "INSERT INTO agents (id, title, status, root_context_id, created_at, updated_at) VALUES ('legacy-agent', 'legacy-agent', 'active', 'legacy-context', ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&legacy)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cognitive_contexts (id, agent_id, title, status, created_at, updated_at) VALUES ('legacy-context', 'legacy-agent', 'legacy', 'active', ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&legacy)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO sessions (id, agent_id, context_id, title, status, created_at, updated_at, last_activity_at) VALUES ('legacy-session', 'legacy-agent', 'legacy-context', 'legacy', 'active', ?, ?, ?)",
         )
@@ -22260,7 +22993,7 @@ mod tests {
         let activation_id = format!("job-activation-{suffix}");
         let root_turn_id = format!("job-root-{suffix}");
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: context_id.clone(),
                 agent_id: "job-agent".to_string(),
                 title: "Job Context".to_string(),
@@ -24570,6 +25303,27 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
+            r#"CREATE TABLE agents (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL,
+                root_context_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE cognitive_contexts (
+                id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, title TEXT NOT NULL,
+                status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                seed_context_id TEXT, seed_context_version INTEGER, seed_snapshot_hash TEXT,
+                seed_projection TEXT, requested_hard_token_limit INTEGER,
+                token_budget_revision INTEGER NOT NULL DEFAULT 0
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
             r#"CREATE TABLE sessions (
                 id TEXT PRIMARY KEY,
                 agent_id TEXT NOT NULL,
@@ -24661,6 +25415,22 @@ mod tests {
         .await
         .unwrap();
         let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO agents (id, title, status, root_context_id, created_at, updated_at) VALUES ('agent', 'agent', 'active', 'context', ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cognitive_contexts (id, agent_id, title, status, created_at, updated_at) VALUES ('context', 'agent', 'context', 'active', ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO sessions (id, agent_id, context_id, title, status, created_at, updated_at, last_activity_at) VALUES ('session', 'agent', 'context', 'legacy', 'active', ?, ?, ?)",
         )
@@ -24812,6 +25582,14 @@ mod tests {
     async fn schema_enforces_one_active_mount_per_session() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "context-schema-test".to_string(),
+                agent_id: "agent-schema-test".to_string(),
+                title: "Schema Test".to_string(),
+            })
             .await
             .unwrap();
         let now = Utc::now().to_rfc3339();
@@ -25182,7 +25960,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "retry-context".to_string(),
                 agent_id: "retry-agent".to_string(),
                 title: "Retry Context".to_string(),
@@ -25768,7 +26546,7 @@ mod tests {
         let path = tmp_file.path().to_str().unwrap();
         let store = Arc::new(SqliteStore::new(path).await.unwrap());
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "outbox-context".to_string(),
                 agent_id: "outbox-agent".to_string(),
                 title: "Outbox Context".to_string(),
@@ -25903,7 +26681,7 @@ mod tests {
         let path = tmp_file.path().to_str().unwrap();
         let store = SqliteStore::new(path).await.unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "admission-context".to_string(),
                 agent_id: "admission-agent".to_string(),
                 title: "Admission Context".to_string(),
@@ -26247,7 +27025,7 @@ mod tests {
                 .unwrap(),
         );
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "signal-context".to_string(),
                 agent_id: "signal-agent".to_string(),
                 title: "Signal Context".to_string(),
@@ -26624,7 +27402,7 @@ mod tests {
                 .unwrap(),
         );
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "contention-context".to_string(),
                 agent_id: "contention-agent".to_string(),
                 title: "Contention Context".to_string(),
@@ -26757,7 +27535,7 @@ mod tests {
                 .unwrap(),
         );
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "binding-contention-context".to_string(),
                 agent_id: "binding-contention-agent".to_string(),
                 title: "Binding contention Context".to_string(),
@@ -26921,7 +27699,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "terminal-replay-context".to_string(),
                 agent_id: "terminal-replay-agent".to_string(),
                 title: "Terminal Replay Context".to_string(),
@@ -27047,7 +27825,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "dialogue-batch-context".to_string(),
                 agent_id: "dialogue-batch-agent".to_string(),
                 title: "Dialogue Batch Context".to_string(),
@@ -27333,7 +28111,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "control-context".to_string(),
                 agent_id: "control-agent".to_string(),
                 title: "Control Context".to_string(),
@@ -27465,7 +28243,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "group-control-context".to_string(),
                 agent_id: "group-control-agent".to_string(),
                 title: "Group Control Context".to_string(),
@@ -27599,7 +28377,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "attached-barrier-context".to_string(),
                 agent_id: "attached-barrier-agent".to_string(),
                 title: "Attached barrier".to_string(),
@@ -27725,7 +28503,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "orphaned-group-context".to_string(),
                 agent_id: "orphaned-group-agent".to_string(),
                 title: "Orphaned attached group".to_string(),
@@ -28051,7 +28829,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "interrupt-context".to_string(),
                 agent_id: "interrupt-agent".to_string(),
                 title: "Interrupt Context".to_string(),
@@ -28250,7 +29028,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "fifo-context".to_string(),
                 agent_id: "fifo-agent".to_string(),
                 title: "FIFO Context".to_string(),
@@ -28390,7 +29168,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "context-api-1".to_string(),
                 agent_id: "agent-main".to_string(),
                 title: "共享认知 Context".to_string(),
@@ -28626,7 +29404,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "context-archive-1".to_string(),
                 agent_id: "agent-main".to_string(),
                 title: "可归档 Context".to_string(),
@@ -28710,7 +29488,7 @@ mod tests {
         let path = tmp_file.path().to_string_lossy().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "context-budget-cas".to_string(),
                 agent_id: "agent-main".to_string(),
                 title: "Budget CAS".to_string(),
@@ -28780,6 +29558,21 @@ mod tests {
             )
             .await
             .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE agents (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL,
+                root_context_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agents (id, title, status, root_context_id, created_at, updated_at) VALUES ('agent-main', 'agent-main', 'active', 'legacy-context', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             r#"CREATE TABLE cognitive_contexts (
                 id TEXT PRIMARY KEY,
@@ -28884,7 +29677,7 @@ mod tests {
             .is_none());
 
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "context-child".to_string(),
                 agent_id: "agent-lifecycle".to_string(),
                 title: "Delegated".to_string(),
@@ -29870,7 +30663,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "projection-context".to_string(),
                 agent_id: "projection-agent".to_string(),
                 title: "Projection Context".to_string(),
@@ -29982,7 +30775,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "session-projection-context".to_string(),
                 agent_id: "session-projection-agent".to_string(),
                 title: "Session Projection Context".to_string(),
@@ -30157,7 +30950,7 @@ mod tests {
         let session_id = "session-projection-migration-session";
         let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
         store
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: context_id.to_string(),
                 agent_id: "session-projection-migration-agent".to_string(),
                 title: "Session Projection Migration".to_string(),
@@ -30267,7 +31060,7 @@ mod tests {
         let path = tmp_file.path().to_str().unwrap().to_string();
         let bootstrap = SqliteStore::new(&path).await.unwrap();
         bootstrap
-            .create_context(NewCognitiveContext {
+            .create_test_context(NewCognitiveContext {
                 id: "sqlite-shared-context".to_string(),
                 agent_id: "sqlite-shared-agent".to_string(),
                 title: "SQLite Shared Context".to_string(),
