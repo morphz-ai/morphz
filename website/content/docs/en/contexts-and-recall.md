@@ -6,7 +6,7 @@ order: 110
 status: current
 ---
 
-A Context does not keep every historical byte in every prompt. The runtime maintains an active working set while preserving the complete event ledger. The Agent can Recall authoritative evidence when it becomes relevant.
+A Context does not keep every historical byte in every prompt. The runtime maintains an active working set while preserving the complete Event History. The Agent can Recall authoritative evidence when it becomes relevant.
 
 ## What the model sees
 
@@ -18,7 +18,7 @@ Each model request receives a Context Encoding compiled for that moment. It may 
 - Objective, Thread, and permission metadata;
 - Stable references to recallable source text.
 
-Leaving the active working set does not mean deletion. The source may still exist in the immutable event ledger or in a retired frame.
+Leaving the active working set does not mean deletion. The source may still exist in the immutable Event History or in a retired frame.
 
 ## Recall modes
 
@@ -26,7 +26,7 @@ Recall currently supports four primary access paths:
 
 1. Read event text by stable short reference or full Event ID, with pagination;
 2. Traverse a cognitive frame by Frame ID;
-3. Search the current Context ledger with Unicode keywords;
+3. Search the current Context event history with Unicode keywords;
 4. Search an explicit time range, alone or combined with keywords.
 
 Time-range example:

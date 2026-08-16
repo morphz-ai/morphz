@@ -1333,7 +1333,7 @@ async fn verify_existing_event_in_tx(
         && existing.get::<JsonValue, _>("payload") == JsonValue::Object(event.payload.clone());
     if !same {
         return Err(format!(
-            "Execution Job 恢复引用的 Event '{}' 与 Ledger 内容不一致",
+            "Execution Job 恢复引用的 Event '{}' 与持久化事件内容不一致",
             event.id
         )
         .into());

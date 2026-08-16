@@ -22,7 +22,7 @@ Morphz Dashboard 应正式定位为 **Runtime Console（Runtime 控制台）**�
 - Shared Mind、Frame、Observation、Recall 与 Context Encoding；
 - Objective、Thread、Signal、Activation、Schedule 与 Delivery；
 - Model Attempt、Action Group、Execution Job、Executor 与 Approval；
-- Ledger、Projection、Context pressure、恢复状态与诊断信息。
+- Event History、Projection、Context pressure、恢复状态与诊断信息。
 
 这不意味着把所有数据库表平铺到页面上。Runtime 概念必须被忠实表达，但通过**稳定层级、权威状态、渐进展开和因果钻取**组织起来。
 
@@ -56,7 +56,7 @@ conversation | work | mind
 4. `Mind` 页面同时承担稳定认知、Recall、Attention、Context Encoding 和实时诊断，概念边界过宽；
 5. Principal、Session working set、swap in/out 原因和 Frame provenance 没有成为清晰的一等视图；
 6. 缺少 Context 级总览，用户只能在聊天、任务和 Mind 三个局部页面之间猜测整体状态；
-7. 缺少 Ledger/因果事件浏览器和 Runtime/Provider/Storage 的系统页面；
+7. 缺少 Event History/因果事件浏览器和 Runtime/Provider/Storage 的系统页面；
 8. 约三千行的单体 `App.tsx` 同时实现请求、状态折叠、业务推断和视图，难以继续保证术语与状态一致；
 9. 部分 UI 状态由 WebSocket 事件启发式推断，容易再次出现“回复已经完成但仍显示求值中”；
 10. 页面没有稳定 URL，Thread、Frame、Event 和 Attempt 无法深链接、刷新恢复或分享定位。
@@ -65,11 +65,11 @@ conversation | work | mind
 
 ### 3.1 忠实表达概念，不暴露实现噪声
 
-公开展示 `Context`、`Session`、`Principal`、`Objective`、`Thread`、`Activation`、`Execution Job`、`Frame` 和 `Ledger`。数据库表名、内部队列字段和实现型计数只在诊断层展开。
+公开展示 `Context`、`Session`、`Principal`、`Objective`、`Thread`、`Activation`、`Execution Job`、`Frame` 和 `Event History`。数据库表名、内部队列字段和实现型计数只在诊断层展开。
 
 ### 3.2 Context 是主要工作空间
 
-Agent 是长期主体，Context 是一次控制台工作空间的主范围，Session 是其中可选择的交互连接。调度、认知和 Ledger 默认按 Context 展示；对话默认按 Session 展示。
+Agent 是长期主体，Context 是一次控制台工作空间的主范围，Session 是其中可选择的交互连接。调度、认知和 Event History 默认按 Context 展示；对话默认按 Session 展示。
 
 ### 3.3 因果结构优先于全局流水
 
@@ -131,7 +131,7 @@ ID、revision、lease、claim token 等细节默认折叠，但始终可查看�
 对话 Dialogue
 调度 Scheduler
 认知 Cognition
-账本 Ledger
+事件历史 Event History
 Runtime
 ```
 
@@ -169,10 +169,10 @@ Agent  /  Context r42  /  Session  /  Principal
 - 当前仍需要用户决定，并且至少存在一个合法动作；或者 Runtime 明确允许用户“确认已知”；
 - `Thread.lifecycle = open` 只表示语义线程尚未终结、未来仍可接收 Signal，不表示正在执行；当前活动只由 Scheduler `phase = runnable | running | waiting` 决定；
 - 审批继续提供允许/拒绝；Objective 继续提供恢复/删除；Job、Delivery 和 Runtime invariant 异常至少提供因果检查与“确认已知”；
-- “确认已知”不修改 Thread、Job、Approval 或 Delivery，也不删除失败证据，而是向 Event Ledger 追加 `runtime/attention_acknowledged` 审计事件；
-- Runtime 在同一 Ledger 事务维护 acknowledgement Projection；Dashboard 直接读取该 Projection，不得按刷新周期扫描和排序整个 Event Ledger；
+- “确认已知”不修改 Thread、Job、Approval 或 Delivery，也不删除失败证据，而是向 Event History 追加 `runtime/attention_acknowledged` 审计事件；
+- Runtime 在同一 Event History 事务维护 acknowledgement Projection；Dashboard 直接读取该 Projection，不得按刷新周期扫描和排序整个 Event History；
 - 确认键包含源对象 revision。源状态恢复后该项自动从派生列表消失；同一对象产生新 revision 或新失败时使用新键重新进入关注区；
-- 已确认的问题仍可在 Event Ledger 与执行历史中追溯，浏览器本地隐藏状态不得成为权威。
+- 已确认的问题仍可在 Event History 与执行历史中追溯，浏览器本地隐藏状态不得成为权威。
 
 ## 5. 页面设计
 
@@ -289,11 +289,11 @@ Cognition 采用四个子视图。
 - 查询、结果和来源；
 - Recall index capability/lag；
 - Frame/Event 命中、retired 状态；
-- 从命中项跳转 Frame 或 Ledger Event。
+- 从命中项跳转 Frame 或 persisted Event。
 
-### 5.5 Ledger：事实与诊断
+### 5.5 Event History：事实与诊断
 
-Ledger 页面回答“Runtime 认为哪些事情已经真实发生”。
+Event History 页面回答“Runtime 认为哪些事情已经真实发生”。
 
 提供：
 
@@ -305,7 +305,7 @@ Ledger 页面回答“Runtime 认为哪些事情已经真实发生”。
 - Context Inspect 元数据与实时精确 Inspect；
 - Projection head、Snapshot 和审计状态。
 
-未来 Diagnostic Store 独立后，Ledger 页面仍展示语义事实；诊断页签查询 Diagnostic Store，两者通过 Event/Attempt ID 关联。
+未来 Diagnostic Store 独立后，Event History 页面仍展示语义事实；诊断页签查询 Diagnostic Store，两者通过 Event/Attempt ID 关联。
 
 ### 5.6 Runtime：系统运行状态
 
@@ -326,16 +326,16 @@ Runtime 页面集中展示和修改系统级配置：
 | 概念 | 主页面 | 关联入口 |
 | --- | --- | --- |
 | Agent / Context | Scope Bar、Overview | Runtime、Cognition |
-| Session / Principal | Dialogue | Attention、Ledger |
+| Session / Principal | Dialogue | Attention、Event History |
 | Objective / Schedule | Scheduler Control Objects | Overview Attention |
-| Thread / Signal / Activation | Scheduler | Dialogue Capsule、Ledger |
-| Model Attempt | Thread Detail | Encoding、Ledger |
-| Action Group / Execution Job | Thread Detail | Approval、Ledger |
+| Thread / Signal / Activation | Scheduler | Dialogue Capsule、Event History |
+| Model Attempt | Thread Detail | Encoding、Event History |
+| Action Group / Execution Job | Thread Detail | Approval、Event History |
 | Delegation | Thread executor | Context/Session 跳转 |
-| Mind / Frame / Relation | Cognition Mind | Ledger provenance |
+| Mind / Frame / Relation | Cognition Mind | Event History provenance |
 | Working Set / Observation | Cognition Attention | Encoding |
 | Context Encoding / Inspect | Cognition Encoding | Model Attempt |
-| Event / Projection / Snapshot | Ledger | Runtime health |
+| Event / Projection / Snapshot | Event History | Runtime health |
 
 ## 7. URL 与深链接
 
@@ -351,7 +351,7 @@ Runtime 页面集中展示和修改系统级配置：
 /contexts/:contextId/cognition/attention
 /contexts/:contextId/cognition/encoding
 /contexts/:contextId/cognition/recall
-/contexts/:contextId/ledger
+/contexts/:contextId/events
 /runtime
 ```
 
@@ -368,11 +368,11 @@ SchedulerSnapshot
 ThreadDetail
 CognitionSnapshot
 ContextEncodingInspect
-LedgerQueryPage
+EventHistoryPage
 RuntimeStatus
 ```
 
-当前已有 `/contexts/:id/working-set`、`/scheduler`、Session events/context、Recall、Approval 等基础接口，可以逐步组合；缺少的 Thread detail、Ledger query 和 Runtime overview 应首先成为 SDK 查询能力，而不是只为 Dashboard 写专用 SQL。
+当前已有 `/contexts/:id/working-set`、`/scheduler`、Session events/context、Recall、Approval 等基础接口，可以逐步组合；缺少的 Thread detail、Event History query 和 Runtime overview 应首先成为 SDK 查询能力，而不是只为 Dashboard 写专用 SQL。
 
 推荐同步模型：
 
@@ -394,7 +394,7 @@ GET authoritative snapshot
 2. 非 Scheduler 页面只在 Overview 表明存在非终态 Thread、Activation、Approval 或 Schedule 时请求活跃调度投影；
 3. Scheduler 页面首次只加载有限数量的历史 Thread，用户再按需加载更早记录；
 4. Cognition 页面才读取结构化 Context Projection；完整 S-expression Encoding 只在用户打开 Encoding 子页时生成和传输；
-5. HTTP 响应启用 gzip，降低长历史、Ledger 和诊断投影的传输体积。
+5. HTTP 响应启用 gzip，降低长历史、Event History 和诊断投影的传输体积。
 
 相关接口具有不同语义，不能互相替代：
 
@@ -419,13 +419,13 @@ GET /api/sessions/:id/context/encoding
 src/
   app/              router, providers, query cache, websocket
   layout/           RuntimeShell, ScopeBar, Navigation, AttentionCenter
-  pages/            overview, dialogue, scheduler, cognition, ledger, runtime
+  pages/            overview, dialogue, scheduler, cognition, event history, runtime
   domains/
     identity/
     session/
     scheduler/
     cognition/
-    ledger/
+    event history/
     runtime/
   components/       Status, ObjectLink, Inspector, Timeline, Empty/Error states
   api/              typed client and authoritative query models
@@ -476,9 +476,9 @@ Dashboard 不适合继续在现有约三千行 `App.tsx` 上叠加页面，也�
 - 完整展示 Principal/Session provenance 和 working set；
 - 明确 Inspect 的实时/compact/回退语义。
 
-### Phase 4：Ledger 与 Runtime
+### Phase 4：Event History 与 Runtime
 
-- 增加领域级 Ledger query、对象链接和 Attempt inspector；
+- 增加领域级 Event History query、对象链接和 Attempt inspector；
 - 增加 Runtime/Provider/Storage/Sandbox/Identity 状态页；
 - 为未来 Diagnostic Store 预留诊断页签，不提前实现存储。
 
@@ -492,7 +492,7 @@ Dashboard 不适合继续在现有约三千行 `App.tsx` 上叠加页面，也�
 ## 12. 本轮建议先确认的决策
 
 1. 对外产品名继续叫 Dashboard，界面内部标题使用 `Morphz Runtime Console`；
-2. 顶层采用 `Overview / Dialogue / Scheduler / Cognition / Ledger / Runtime`；
+2. 顶层采用 `Overview / Dialogue / Scheduler / Cognition / Event History / Runtime`；
 3. Context 是默认工作空间，Session 是 Dialogue 主范围和其他页面的可选过滤器；
 4. 工具调用只在对应 Thread/Execution Job 下展示，不再保留无因果归属的全局 Tool Timeline；
 5. Runtime 权威 Projection 决定终态，WebSocket 只负责实时增量和查询失效；
@@ -505,17 +505,17 @@ Dashboard 不适合继续在现有约三千行 `App.tsx` 上叠加页面，也�
 已完成：
 
 - 稳定 URL、浏览器深链接与后端 SPA fallback；
-- `Overview / Dialogue / Scheduler / Cognition / Ledger / Runtime` 顶层导航；
+- `Overview / Dialogue / Scheduler / Cognition / Event History / Runtime` 顶层导航；
 - Context、Session、Principal 的持久 Scope Bar；
-- Runtime → Rust SDK → HTTP → typed Dashboard client 的 Context Overview、Scheduler Snapshot、Thread Detail、Ledger Query 与 Runtime Status 契约；
+- Runtime → Rust SDK → HTTP → typed Dashboard client 的 Context Overview、Scheduler Snapshot、Thread Detail、Event History Query 与 Runtime Status 契约；
 - WebSocket 只做流式增量和权威查询失效，断线或遗漏事件后由 Projection 恢复；
 - Context Overview 指挥台、分组 Thread Board、Thread 因果详情、Objective/Schedule/Approval 控制；
 - Model Attempt 状态与推理摘要归入对应 Thread 的具体 Activation，不保留无因果归属的全局工具流水；缺失历史因果字段时才在 Thread 级诊断区兜底；
 - Dialogue 消息的 Thread Capsule，可直接跳转到该消息派生工作的因果链；
 - Cognition 的 Mind、Attention、Encoding、Recall 四个子视图，含 Principal/Session provenance、Session working set 与 Context Transaction 历史；
-- Ledger 的时间、Principal、Session、Thread、Activation、Actor、Topic 和全文过滤，以及领域对象跳转；
+- Event History 的时间、Principal、Session、Thread、Activation、Actor、Topic 和全文过滤，以及领域对象跳转；
 - Runtime 的 Provider、Storage、Sandbox、Identity、Context capacity、Scheduler admission、uptime 与启动恢复统计；
-- 人工触发的 Mind Projection 完整性审计。该操作会重放 Ledger，因此不会自动进入请求热路径；
+- 人工触发的 Mind Projection 完整性审计。该操作会重放 Event History，因此不会自动进入请求热路径；
 - 中英文词汇、主题、Markdown、Composer、IME、流式正文与推理摘要开关继续复用；
 - 初始加载、错误提示、空状态、响应式布局、键盘导航和断线后的权威状态恢复已经统一；
 - Dashboard typed client、路由、查询失效规则、展示辅助函数与主要页面已从单体入口逐步提取，并由前端契约测试覆盖。

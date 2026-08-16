@@ -27,7 +27,7 @@ Raw diagnostic logs are a machine and operator interface, not a localized UI:
 - changing user-facing wording does not rename the code.
 
 Durable runtime Events continue to use their existing stable `event_type`. A diagnostic
-`event_code` identifies a tracing record and does not replace a Ledger Event.
+`event_code` identifies a tracing record and does not replace a persisted Event.
 
 Dashboard, Setup, TUI, and CLI may translate an event for users by mapping its stable code to an
 i18n resource. They must preserve the code and structured fields in diagnostic details. This keeps

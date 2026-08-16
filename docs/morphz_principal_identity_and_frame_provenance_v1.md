@@ -316,7 +316,7 @@ Runtime 使用以下确定性规则：
 来源谱系是 Frame 自身的 Runtime 元数据，因此：
 
 - Session swap out 后，Frame 仍知道来源 Principal 和 Session；
-- Observation retire 后，来源谱系仍保留，具体证据仍可从 Ledger recall；
+- Observation retire 后，来源谱系仍保留，具体证据仍可从 Event History recall；
 - Frame retire/restore 不改变其来源；
 - Mind seed、Frame exchange 和跨 Context 迁移必须连同来源谱系一起复制；
 - 需要查看具体证据时，再按 `sources` recall，不需要为识别来源加载整个旧 Session。

@@ -22,7 +22,7 @@ Morphz 的设计文档记录了多个阶段的探索、取舍和实现过程。�
 | Scheduler Kernel v2 | 核心完成，运行期观察 | 统一 Kernel Command、权威 Store、结构化 Dependency、内部 Direct Signal、Thread/Activation/Group/Delivery 原子终态、Controller 与 Reconciler 分层、SQLite/PostgreSQL 契约测试 | 长期 soak、更多进程崩溃与外部故障注入、生产负载下的稳定性数据 |
 | Session / Thread 并发 | v1 完成 | 多 Session 并发、同 Session 对话串行门、工具执行与对话并发、持久 Thread/Activation、批量排队消息、因果路由 | 极端并发时的公平性、长时间运行下的恢复验证与交互细节 |
 | Objective Supervisor | v1 完成 | First-Class Objective、持久 Evaluation、Dependency 派生 readiness、暂停/继续/删除、持久收口审计、受监督并发 | 不同模型的自主收口质量、复杂目标下的长期行为评测 |
-| Mind / Context Projection | 核心完成 | Event Ledger、Mind Projection、Snapshot 增量恢复、Session Projection、有界 Context Encoding、SQLite/PostgreSQL revision CAS | 大规模生产容量、Projection 重建运维、跨主机故障注入 |
+| Mind / Context Projection | 核心完成 | Event History、Mind Projection、Snapshot 增量恢复、Session Projection、有界 Context Encoding、SQLite/PostgreSQL revision CAS | 大规模生产容量、Projection 重建运维、跨主机故障注入 |
 | Frame 级 MVCC | 已实现 | Runtime 从 SExpr 提取受影响对象；不同 Frame 的并发修改可安全 rebase；同一 Frame、来源已变化或全局生命周期操作保持冲突 fence | 生产冲突率与收益数据、更复杂 Relation/Checkpoint 场景验证 |
 | Frame 生命周期与召回 | 基础能力完成 | create/derive/revise/retire/restore/protect、来源与身份、Recall Projection、活动/退役视图 | 自动语义激活、分层 Frame Working Set、长期认知质量与 Frame Exchange |
 | Provider 与流式协议 | 可用，持续补齐 | OpenAI Responses/Chat Completions、Anthropic Messages、Gemini generateContent、流式正文/推理/工具、真实 usage 持久化与本地压力估算 | 多模态与 Provider 特有状态的完整 Conformance、长首字节/中断恢复的持续兼容验证 |
@@ -31,7 +31,7 @@ Morphz 的设计文档记录了多个阶段的探索、取舍和实现过程。�
 | Execution Target / Edge / Artifact | v1 可用 | 本地与 Managed SSH Target、Target capability、远程 exec/read/write/search/transfer、Artifact Store、权限模型复用 | Edge Node 成品客户端、多跳代理、对象存储、断点续传、商业化配额 |
 | Domain Harness / `.hns` | 基础设施 v1 完成 | Loader、Manifest/Contract/Mind、显式 `eval/infer`、Typed Plan IR、持久 PlanExecution、Registry、Evaluation Scope Binding | `process` 与模块组合、签名/远端目录、内置领域包、可重复的领域增益证据 |
 | PostgreSQL / 多 Runtime | 首个可部署版本 | 完整 RuntimeStore 能力、SharedLeases、双 Store/双 Runtime/双 OS 进程 single-flight 与 lease 恢复、迁移锁和版本表 | 跨主机长期运行、数据库故障切换、生产编排与容量规划 |
-| Dashboard | 持续产品化 | Runtime 全局视角、对话/调度/认知/账本/运行时、模型与推理控制、附件、Principal 查询、目标与线程控制 | 信息架构和移动端持续优化、更多诊断与运维工作流 |
+| Dashboard | 持续产品化 | Runtime 全局视角、对话/调度/认知/事件历史/运行时、模型与推理控制、附件、Principal 查询、目标与线程控制 | 信息架构和移动端持续优化、更多诊断与运维工作流 |
 | TUI / 配置 | 可用，持续产品化 | Setup、国际化、主题、CLI 子命令、统一用户级配置、Dashboard/Runtime 共享模型配置 | 与 Dashboard 的能力对齐、跨平台交互与配置迁移体验 |
 | Web App / Desktop App | 尚未进入主实现阶段 | 产品边界与启动形态已有规划 | 面向终端用户的独立体验、远程 Edge 配对与正式发布 |
 
@@ -57,12 +57,12 @@ Controller
 
 ## 4. 当前 Context 与并发写语义
 
-在线请求从 Projection 读取当前 Mind 和 Session 状态，完整 Ledger 重放只用于首次迁移、显式审计、损坏恢复和 Seed 导出。Context transaction 仍携带全局 `base-version`，但不再意味着所有陈旧版本都必然失败：
+在线请求从 Projection 读取当前 Mind 和 Session 状态，完整 Event History 重放只用于首次迁移、显式审计、损坏恢复和 Seed 导出。Context transaction 仍携带全局 `base-version`，但不再意味着所有陈旧版本都必然失败：
 
 - 修改不同 Frame 的事务可以在 Runtime 验证 read/write set 后安全自动 rebase；
 - 同一 Frame 被并发 revise/retire、来源 Frame 已变化、相同 ID 创建冲突时拒绝；
 - checkpoint/rollback 等大范围操作继续使用 Context 级 fence；
-- 全局 Context revision 继续承担 Ledger 物理顺序和审计职责。
+- 全局 Context revision 继续承担 Event History 物理顺序和审计职责。
 
 因此，当前实现已经从“纯 Context 级 CAS”演进为“Context revision + Frame revision 的分层 OCC/MVCC”，而不是把 Mind 拆成 Runtime 固定业务表。
 

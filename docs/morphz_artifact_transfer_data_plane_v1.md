@@ -17,7 +17,7 @@ Morphz 的 Agent 不属于某一台机器。一个 Agent 可以在云端求值�
 
 ### 2.1 Artifact
 
-Artifact 是 **Runtime 可以寻址、传输并验证的数据对象**。它不暗示数据由 Agent 生成，也不暗示内容必须写入 Event Ledger、Mind 或 Context Encoding。
+Artifact 是 **Runtime 可以寻址、传输并验证的数据对象**。它不暗示数据由 Agent 生成，也不暗示内容必须写入 Event History、Mind 或 Context Encoding。
 
 Artifact 的来源可以是：
 

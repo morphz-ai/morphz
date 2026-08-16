@@ -81,7 +81,7 @@ Dashboard 展示 Runtime 的真实领域模型：
 - Objective / Thread / Signal / Activation / Schedule；
 - Model Attempt / Action Group / Execution Job / Approval；
 - Mind / Frame / Observation / Context Encoding / Recall；
-- Ledger / Projection / Snapshot / Provider / Sandbox / Storage。
+- Event History / Projection / Snapshot / Provider / Sandbox / Storage。
 
 Dashboard 可以友好，但不应为了“像聊天产品”而隐藏 Morphz 的核心概念。
 
@@ -126,7 +126,7 @@ Web App 不必隐藏所有 Runtime 概念，但应使用用户任务语言：
 | Approval | 权限请求 / 需要你确认 |
 | Delivery | 结果 / 更新 |
 | Mind / Frame | 记忆与认知；默认只展示用户可理解的摘要 |
-| Ledger | 活动记录；不直接暴露全局事实账本 |
+| Event History | 活动记录；不直接暴露全局持久化事件 |
 
 映射只发生在呈现层，不能在 Web App 中重新构造另一套状态机。
 
@@ -200,7 +200,7 @@ TUI 默认保留：
 
 TUI 默认不承担：
 
-- 完整因果图和大规模 Ledger 浏览；
+- 完整因果图和大规模 Event History 浏览；
 - Frame relation/provenance 图；
 - 多列 Runtime 配置控制台；
 - 大型 JSON、Prompt 和工具结果的长期并排比较。
@@ -222,7 +222,7 @@ TUI 可以减少元素，但不能修改概念：
 ### 8.1 CLI 与 TUI 分离
 
 - 无子命令或显式 `tui` 进入交互 TUI；
-- `context/session/objective/thread/ledger/runtime` 等子命令提供稳定脚本接口；
+- `context/session/objective/thread/events/runtime` 等子命令提供稳定脚本接口；
 - 所有查询支持人类表格与 JSON；
 - CLI Help 和命令层级属于公开产品契约。
 
@@ -233,7 +233,7 @@ Rust SDK 和 TypeScript SDK 不应只覆盖 Session Service。随着 Dashboard/W
 - Context 与 Session；
 - Principal scoped conversation/task queries；
 - Objective、Thread、Schedule 和 Approval；
-- Cognition 与 Ledger 的只读查询；
+- Cognition 与 Event History 的只读查询；
 - Runtime Admin queries（单独权限域）。
 
 Dashboard、Web App 和 Desktop 可以拥有不同 API facade，但底层 ViewModel 应先在 Runtime/SDK 定义，不能由页面临时拼 SQL 或猜状态。

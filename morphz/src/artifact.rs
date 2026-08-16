@@ -2,7 +2,7 @@
 //!
 //! An Artifact is any byte sequence the Runtime is asked to move.  It may be
 //! created by a user, an Agent, a Tool, or an external system; registering a
-//! descriptor does **not** place its bytes in the Event Ledger or the Mind.
+//! descriptor does **not** place its bytes in the Event Store or the Mind.
 //! Paths are Target-local facts.  This module intentionally does not impose a
 //! second workspace jail: the normal [`crate::permission::PermissionProfile`]
 //! decides whether an absolute, relative, parent-traversing, or protected path

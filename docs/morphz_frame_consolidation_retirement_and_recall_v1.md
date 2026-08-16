@@ -11,7 +11,7 @@ Morphz 允许模型通过 `context_tx` 自己维护 Mind：
 - observation 是尚未完全消化的外部观察与执行证据；
 - Frame 是模型主动形成的认知单元；
 - relation 与 sources 表达 Frame 之间以及 Frame 与原始证据之间的血缘；
-- `retire` 只把内容移出当前 Context Encoding，不删除 Ledger 中的事实；
+- `retire` 只把内容移出当前 Context Encoding，不删除 Event History 中的事实；
 - `restore` 可以把已经退役的内容重新换入当前 Context。
 
 真实长任务暴露了一个问题：当前 `(retire ID...)` 对 observation 和 Frame 采用相同的立即生效语义。模型在 Context pressure 下可能直接退休刚形成不久的 Frame。这样虽然可以快速释放 Token，却会产生三个负面结果：
@@ -20,7 +20,7 @@ Morphz 允许模型通过 `context_tx` 自己维护 Mind：
 2. 模型更倾向把 Frame 当作可丢弃的事实记录，而不是继续整理成更高级的概念；
 3. 原始 Inbox 与已经付出认知成本形成的 Frame 没有生命周期差异。
 
-与此同时，安全退休依赖可靠召回。当前 `recall(frame_id)` 可以读取活跃或已退役 Frame，但 `recall(query)` 只对 Ledger Event 的 JSON payload 和 topic 执行 `%LIKE% / %ILIKE%`：
+与此同时，安全退休依赖可靠召回。当前 `recall(frame_id)` 可以读取活跃或已退役 Frame，但 `recall(query)` 只对 persisted Event 的 JSON payload 和 topic 执行 `%LIKE% / %ILIKE%`：
 
 - 中文连续字符串可以命中，但没有中文分词或 Unicode 子串索引；
 - SQLite 和 PostgreSQL 都可能全表扫描；
@@ -48,7 +48,7 @@ Inbox observation
 高阶概念 Frame / 极小语义根
         │ relation + sources
         ▼
-退休的底层 Frame 与 Ledger 证据
+退休的底层 Frame 与 Event History 证据
         │ recall(query / frame_id / depth)
         └──────────────────────────────► 按需换入
 ```
@@ -60,7 +60,7 @@ Inbox observation
 3. 模型在整理期内可以把 Frame 精简、合并或提升为 successor；
 4. successor 已经承接旧认知时，旧 Frame 可以立即退休；
 5. 空闲、Runtime 在线但没有认知活动、以及 Runtime 关闭期间都不推进整理期；
-6. 已退休 Frame 的正文不进入活动 Context，但关系、血缘和 Ledger 永久可追溯；
+6. 已退休 Frame 的正文不进入活动 Context，但关系、血缘和 Event History 永久可追溯；
 7. 关键词搜索必须对中文可用，并且使用真正的索引而不是 `%LIKE%` 全表扫描；
 8. `recall(frame_id, depth)` 可以从高阶概念沿关系与 sources 逐层找到底层 Frame 和原始证据；
 9. Runtime 只提供物理状态、索引、时间顺序、版本和容量约束，不替模型生成总结或判断语义价值。
@@ -71,7 +71,7 @@ Inbox observation
 
 本设计不引入 `purge`。任何退休操作都不得删除：
 
-- Event Ledger；
+- Event History；
 - Frame 历史版本；
 - relation；
 - sources 血缘；
@@ -105,7 +105,7 @@ v1 先建设可靠的关键词全文索引和关系遍历。向量检索可以�
 
 ### 4.1 Observation
 
-外部世界、用户、工具、调度器或其他 Agent 产生的客观事件在当前 Context 中的可见表示。Observation 原文保存在 Ledger，Context Encoding 中可能只显示 preview。
+外部世界、用户、工具、调度器或其他 Agent 产生的客观事件在当前 Context 中的可见表示。Observation 原文保存在 Event History，Context Encoding 中可能只显示 preview。
 
 ### 4.2 Frame
 
@@ -252,7 +252,7 @@ Runtime 记录退休意图，但本次 transaction 不把 Frame ID加入 `retire
 - observation 立即退休；
 - 旧 Frame 立即退休；
 - 新的高阶 Frame 保持 active；
-- relation、sources 和完整 Ledger 历史保留。
+- relation、sources 和完整 Event History 历史保留。
 
 这条快速路径是 Context critical 时整理 Mind 的主要手段，也是从机制上鼓励模型形成更高阶概念的关键。
 
@@ -450,7 +450,7 @@ relation 和 sources 是长期认知的寻址结构。Frame 正文退休后：
 - relation 保留；
 - sources 保留；
 - successor 链保留；
-- Ledger 证据保留；
+- Event History 证据保留；
 - restore 能够恢复完整 Frame。
 
 ### 11.2 高阶语义根
@@ -472,7 +472,7 @@ relation 和 sources 是长期认知的寻址结构。Frame 正文退休后：
 
 - 活跃 Frame 附近的关系：进入 Context Encoding；
 - 其他关系：保存在可查询 Relation Projection；
-- 完整历史：保存在 Ledger。
+- 完整历史：保存在 Event History。
 
 Agent 应继续通过 successor 归纳关系结构，Runtime 则保证任何未展开边都可被查询。
 
@@ -668,7 +668,7 @@ SQL 必须在数据库内应用 limit，不得读取全部命中结果后再截�
 
 ### 14.1 Recall Projection 不是事实源
 
-Ledger 和 Mind Projection 仍然是真值。`recall_documents` 是可重建索引：
+Event History 和 Mind Projection 仍然是真值。`recall_documents` 是可重建索引：
 
 - Event append 后只在同一事务写入轻量 Recall Outbox 意图；
 - create / derive / revise 后把当前 Frame document 写入 Outbox；
@@ -678,16 +678,16 @@ Ledger 和 Mind Projection 仍然是真值。`recall_documents` 是可重建索�
 
 ### 14.2 原子写入
 
-Recall 是可重建的检索 Projection，不得延长 Ledger/Mind 的权威写事务。当前实现采用同库 Transactional Outbox：
+Recall 是可重建的检索 Projection，不得延长 Events/Mind 的权威写事务。当前实现采用同库 Transactional Outbox：
 
-- Ledger/Mind 事实与对应 Outbox 意图原子提交；
+- Events/Mind 事实与对应 Outbox 意图原子提交；
 - 后台 projector 以小批次提取文本、执行 NFKC 规范化并更新 FTS/trigram；
 - 每个文档使用递增 generation 和 claim token fencing，旧 worker 不能覆盖更新的 retire/restore 或 Frame revision；
 - claim 具有租约，进程退出后可自动恢复；失败采用有界指数退避；
 - 同一文档的重复意图合并为最新 generation，而不是积累无界队列；
 - 只索引具有认知价值的 Event topic；诊断、模型流、调度协议等内部 Event 不进入 Recall；
 - 单文档 searchable text 和 preview 均有硬上限，巨大工具 payload 不会生成无界 trigram；
-- 显式 rebuild 仍可从 Ledger + Mind 重建完整索引，不改变任何权威事实。
+- 显式 rebuild 仍可从 Event History + Mind 重建完整索引，不改变任何权威事实。
 
 因此 Recall 查询允许短暂的 Projection lag，但 Agent 的事实提交不会再被 FTS 单写者阻塞。
 
@@ -700,7 +700,7 @@ morphz context recall-index inspect CONTEXT_ID
 morphz context recall-index rebuild CONTEXT_ID
 ```
 
-重建只更新派生索引，不修改 Ledger、Mind 或 Frame 生命周期。
+重建只更新派生索引，不修改 Event History、Mind 或 Frame 生命周期。
 
 ## 15. Runtime API、SDK、CLI 与 Dashboard
 
@@ -962,7 +962,7 @@ D ────────┘
 - 重复 Signal 不重复推进 tick；
 - stale retirement generation 不误退休；
 - 未授权 Context 召回为 0；
-- Ledger 和关系无不可逆删除；
+- Event History 和关系无不可逆删除；
 - restart 后状态与 Projection 一致。
 
 ## 22. v1 实现结果
@@ -1003,7 +1003,7 @@ Morphz 不应把 Context 压缩实现成“旧消息到阈值后由框架统一�
 2. Frame retire 首先表达整理意图，并进入以新认知活动计数的整理窗口；
 3. revise 让原 Frame 自身变得更精简；
 4. derive + supersedes 让多个事实 Frame 提升为更高阶概念，并使来源立即退休；
-5. 退休只移出正文，不删除关系、血缘和 Ledger；
+5. 退休只移出正文，不删除关系、血缘和 Event History；
 6. 高阶 Frame 可以压缩到极小语义根；
 7. 关键词全文索引负责发现候选，关系深度遍历负责沿认知链逐层恢复；
 8. Runtime 管理物理约束，模型拥有认知结构。

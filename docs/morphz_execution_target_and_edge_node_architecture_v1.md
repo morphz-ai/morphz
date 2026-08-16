@@ -172,7 +172,7 @@ ExecutionRoute
   online_state
 ```
 
-`endpoint_ref` 只能引用 Provider Node 本地保存的连接配置，不能包含私钥、密码或 Token 值。凭证不进入云端 Prompt、Ledger 或 Execution Job。
+`endpoint_ref` 只能引用 Provider Node 本地保存的连接配置，不能包含私钥、密码或 Token 值。凭证不进入云端 Prompt、Event History 或 Execution Job。
 
 Tool Output 和审计事件需要同时记录：
 
@@ -394,7 +394,7 @@ Execution Target
 └── ManagedCloudWorkerBackend
 ```
 
-Managed SSH Backend 可以由 Runtime 使用 ssh-agent、系统钥匙串或受管凭证建立连接，Agent 仍只提交目标明确的命令。凭证值不进入 Prompt、Ledger 或普通 Shell 环境。
+Managed SSH Backend 可以由 Runtime 使用 ssh-agent、系统钥匙串或受管凭证建立连接，Agent 仍只提交目标明确的命令。凭证值不进入 Prompt、Event History 或普通 Shell 环境。
 
 在 Edge 模式下，这个 Backend 应当运行在持有凭证并能访问目标网络的 Provider Node 上，而不是默认运行在云端 Runtime：
 
@@ -580,7 +580,7 @@ HTTP 使用 `/api/execution-targets`、`/api/execution-target-authorizations`、
 1. **Agent 不属于机器**：机器只是它可使用的物理执行节点。
 2. **Target 不属于模型隐式状态**：每个物理动作都有权威目标。
 3. **Node 主动连接云端**：用户不需要开放本地端口。
-4. **凭证留在所属信任域**：模型、Prompt 和 Ledger 不保存私钥或 Token 值。
+4. **凭证留在所属信任域**：模型、Prompt 和 Event History 不保存私钥或 Token 值。
 5. **本地是最终物理权限裁决者**：云端不能覆盖本地保护规则。
 6. **Job 状态必须持久化**：断线、重启和重试不能制造重复副作用。
 7. **一个 Target 可以离线，一个 Agent 仍然存在**：认知连续性不依赖设备在线。

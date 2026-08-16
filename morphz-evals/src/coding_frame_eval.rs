@@ -81,13 +81,13 @@ pub struct CodingFrameEvalRun {
     pub exit_code: Option<i32>,
     pub model_profile: ModelProfileIdentity,
     pub verification: CodingEvalVerification,
-    pub ledger_score: CodingEvalScore,
+    pub event_score: CodingEvalScore,
     pub discipline: CodingDisciplineReport,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodingFrameDelta {
-    pub ledger_score: i32,
+    pub event_score: i32,
     pub discipline_score: i32,
     pub assistant_attempts: i32,
     pub work_attempts: i32,
@@ -219,12 +219,12 @@ pub async fn run_coding_frame_eval(
         };
 
     let verification = verify_coding_eval(&environment.run_root).await?;
-    let ledger_score = score_coding_eval(&environment.run_root).await?;
+    let event_score = score_coding_eval(&environment.run_root).await?;
     let discipline = inspect_coding_discipline(
         &environment.run_root,
         &environment.manifest,
         verification.success,
-        &ledger_score,
+        &event_score,
     )
     .await?;
     let run = CodingFrameEvalRun {
@@ -237,7 +237,7 @@ pub async fn run_coding_frame_eval(
         exit_code: status.code(),
         model_profile: profile.clone(),
         verification,
-        ledger_score,
+        event_score,
         discipline,
     };
     std::fs::write(
@@ -280,14 +280,14 @@ pub async fn run_coding_frame_suite(
     )
     .await?;
     let delta = CodingFrameDelta {
-        ledger_score: coding_frame.ledger_score.score as i32 - fresh.ledger_score.score as i32,
+        event_score: coding_frame.event_score.score as i32 - fresh.event_score.score as i32,
         discipline_score: coding_frame.discipline.score as i32 - fresh.discipline.score as i32,
-        assistant_attempts: coding_frame.ledger_score.attempts as i32
-            - fresh.ledger_score.attempts as i32,
-        work_attempts: coding_frame.ledger_score.work_attempts as i32
-            - fresh.ledger_score.work_attempts as i32,
-        context_attempts: coding_frame.ledger_score.context_attempts as i32
-            - fresh.ledger_score.context_attempts as i32,
+        assistant_attempts: coding_frame.event_score.attempts as i32
+            - fresh.event_score.attempts as i32,
+        work_attempts: coding_frame.event_score.work_attempts as i32
+            - fresh.event_score.work_attempts as i32,
+        context_attempts: coding_frame.event_score.context_attempts as i32
+            - fresh.event_score.context_attempts as i32,
         physical_tool_calls: coding_frame.discipline.physical_tool_calls as i32
             - fresh.discipline.physical_tool_calls as i32,
         duration_seconds: coding_frame.duration_seconds - fresh.duration_seconds,
@@ -329,7 +329,7 @@ pub(crate) async fn inspect_coding_discipline(
     run_root: &Path,
     manifest: &CodingEvalManifest,
     verifier_passed: bool,
-    ledger_score: &CodingEvalScore,
+    event_score: &CodingEvalScore,
 ) -> Result<CodingDisciplineReport, DynError> {
     let store = SqliteStore::new(manifest.database_path.to_string_lossy().as_ref()).await?;
     let events = store
@@ -441,7 +441,7 @@ pub(crate) async fn inspect_coding_discipline(
         .unwrap_or_default()
         .to_string();
     let final_reply_lower = final_reply.to_lowercase();
-    let final_reply_mentions_changed_files = ledger_score
+    let final_reply_mentions_changed_files = event_score
         .scope_audit
         .changed_paths
         .iter()
@@ -498,7 +498,7 @@ pub(crate) async fn inspect_coding_discipline(
         .filter(|id| **id != CODING_FRAME_ID)
         .count();
 
-    let scope_clean = ledger_score.scope_audit.clean_scope;
+    let scope_clean = event_score.scope_audit.clean_scope;
     let score = u32::from(baseline_failure_before_first_change) * 2
         + u32::from(relevant_paths_read_before_first_change.len() >= 3)
         + u32::from(validation_success_after_last_change) * 2

@@ -19,7 +19,7 @@ const content = {
     principlesTitle: "不是聊天外壳，而是认知与执行底座",
     principlesLead: "模型可以变化，任务可以跨越多轮，进程也可能重启。Morphz 把必须可靠的部分留在运行时。",
     principles: [
-      ["认知上下文持有认知", "认知上下文持有跨会话认知、认知帧与可召回账本；会话是沟通通道，不是记忆容器。"],
+      ["认知上下文持有认知", "认知上下文持有跨会话认知、认知帧与可召回事件历史；会话是沟通通道，不是记忆容器。"],
       ["可恢复执行", "线程、激活与目标把执行生命周期显式化，使暂停、恢复、委派和失败处理可审计。"],
       ["模型服务无关接入", "模型服务、认证账号、物理模型与模型路由彼此分离，不让运行时绑定某一家模型厂商。"],
     ],
@@ -54,7 +54,7 @@ const content = {
     principlesTitle: "A cognition and execution runtime, not a chat wrapper",
     principlesLead: "Models change, work spans many turns, and processes restart. Morphz keeps the parts that must remain reliable inside the runtime.",
     principles: [
-      ["Context-owned cognition", "A Context owns cross-session cognition, cognitive frames, and the recallable ledger. A Session is a communication channel, not a memory container."],
+      ["Context-owned cognition", "A Context owns cross-session cognition, cognitive frames, and the recallable event history. A Session is a communication channel, not a memory container."],
       ["Recoverable execution", "Threads, Activations, and Objectives make execution lifecycles explicit, auditable, pausable, and recoverable."],
       ["Provider-independent access", "Providers, auth accounts, physical models, and model routes remain separate so the runtime is not coupled to one vendor."],
     ],

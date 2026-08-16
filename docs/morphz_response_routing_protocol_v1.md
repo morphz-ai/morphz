@@ -87,18 +87,18 @@ Provider 适配器默认请求协议原生流，并把不同协议统一为 `Sta
 3. 流中断或 Provider 报错时，未提交的 draft 不能冒充最终 Session 消息；
 4. 每条瞬时流都携带 `attempt_id` 和稳定的 `activation_id/thread_kind` 路由；协议纠错产生的新 Model Attempt 不会与同 Session 的其他并发求值混合；
 5. Dashboard 按浏览器绘制帧合并增量，避免每个 token 重绘整棵 Markdown；
-6. `runtime/model_stream` 不写 Ledger、不更新 Session 活跃时间；完整普通文本通过终态提交后，界面用持久事件原子替换 transient draft；
+6. `runtime/model_stream` 不写 Event History、不更新 Session 活跃时间；完整普通文本通过终态提交后，界面用持久事件原子替换 transient draft；
 7. 瞬时流对每个 Runtime 订阅者采用非阻塞 best-effort 投递；慢订阅者队列满时可以丢弃 draft chunk，不能反向阻塞 Provider 请求。普通持久事件仍使用可靠等待投递；
 8. Dashboard WebSocket 发现 broadcast gap 时必须断开并从持久快照重同步，不能继续展示缺少中段的正文。
 9. `ReasoningSummaryDelta` 只承载 Provider 主动返回的可展示推理摘要，不是最终 assistant 正文，也不是 Runtime 向模型索取的隐藏思维链。Dashboard 由用户显式开关展开；它不进入 `Response.content`、Session 消息或 Context observation。
-10. Runtime 在一次 Model Attempt 结束时把所有 `ReasoningSummaryDelta` 聚合为一条 `runtime/model_reasoning_summary` 事件写入 Ledger，不按 delta 频繁落盘。该事件携带 `context_id/session_id/attempt_id/activation_id/thread_kind/text/complete`，使 Dashboard 和 SDK 在 Runtime 重启后仍可查看当时的推理摘要。这是独立的可观测轨道：既不更新 Session 活跃时间，也不会在下一轮被当成 Agent 可见上下文。
+10. Runtime 在一次 Model Attempt 结束时把所有 `ReasoningSummaryDelta` 聚合为一条 `runtime/model_reasoning_summary` 事件写入 Event History，不按 delta 频繁落盘。该事件携带 `context_id/session_id/attempt_id/activation_id/thread_kind/text/complete`，使 Dashboard 和 SDK 在 Runtime 重启后仍可查看当时的推理摘要。这是独立的可观测轨道：既不更新 Session 活跃时间，也不会在下一轮被当成 Agent 可见上下文。
 11. Model Attempt 的机器生命周期另以 `runtime/model_attempt_state` 不可变转换事件持久化；重连客户端接收折叠后的 `runtime/model_attempt_snapshot`。`reasoning_summary_text.done` 只表示 `waiting_final_output`，只有 Provider/Runtime 终态才清除 active Attempt。
 
 plain CLI 在等待当前求值时串行显示进度和最终持久回复，不承诺逐 delta 渲染正文；TUI 与 Dashboard 承担原生流展示。`no_reply` 结束等待后，后台 Activation 的工具活动、主动消息和最终回复仍会在输入提示符期间即时显示，不需要用户再发送一条消息来“带出”已经落账的结果。
 
 ## 6. 协议错误与熔断
 
-以下响应不合法：空响应、`no_reply` 携带正文、多个 `no_reply`、`no_reply` 与其他工具混用。Runtime 返回明确的 Response Protocol Error，并最多纠正两次；仍失败时发布 `runtime/response_protocol_fused`，向当前 Session 提交安全失败说明，已经完成的文件修改、Mind 事务和 Ledger 事实保持不变。
+以下响应不合法：空响应、`no_reply` 携带正文、多个 `no_reply`、`no_reply` 与其他工具混用。Runtime 返回明确的 Response Protocol Error，并最多纠正两次；仍失败时发布 `runtime/response_protocol_fused`，向当前 Session 提交安全失败说明，已经完成的文件修改、Mind 事务和 Event History 事实保持不变。
 
 ## 7. 并发不变量
 

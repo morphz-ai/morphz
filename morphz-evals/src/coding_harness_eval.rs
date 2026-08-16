@@ -167,7 +167,7 @@ pub struct CodingHarnessEvalRun {
     pub model_profile: ModelProfileIdentity,
     pub objective_id: String,
     pub verification: CodingEvalVerification,
-    pub ledger_score: CodingEvalScore,
+    pub event_score: CodingEvalScore,
     pub discipline: CodingDisciplineReport,
     pub harness: CodingHarnessEvidence,
     pub procedure_adherence: Option<ProcedureAdherenceEvidence>,
@@ -176,7 +176,7 @@ pub struct CodingHarnessEvalRun {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodingHarnessDelta {
-    pub ledger_score: i32,
+    pub event_score: i32,
     pub discipline_score: i32,
     pub assistant_attempts: i32,
     pub work_attempts: i32,
@@ -347,12 +347,12 @@ pub async fn run_coding_harness_eval(
         };
 
     let verification = verify_coding_eval(&environment.run_root).await?;
-    let ledger_score = score_coding_eval(&environment.run_root).await?;
+    let event_score = score_coding_eval(&environment.run_root).await?;
     let discipline = inspect_coding_discipline(
         &environment.run_root,
         &environment.manifest,
         verification.success,
-        &ledger_score,
+        &event_score,
     )
     .await?;
     let harness =
@@ -378,7 +378,7 @@ pub async fn run_coding_harness_eval(
         model_profile: profile.clone(),
         objective_id,
         verification,
-        ledger_score,
+        event_score,
         discipline,
         harness,
         procedure_adherence,
@@ -428,14 +428,14 @@ pub async fn run_coding_harness_suite(
     )
     .await?;
     let delta = CodingHarnessDelta {
-        ledger_score: harness.ledger_score.score as i32 - baseline.ledger_score.score as i32,
+        event_score: harness.event_score.score as i32 - baseline.event_score.score as i32,
         discipline_score: harness.discipline.score as i32 - baseline.discipline.score as i32,
-        assistant_attempts: harness.ledger_score.attempts as i32
-            - baseline.ledger_score.attempts as i32,
-        work_attempts: harness.ledger_score.work_attempts as i32
-            - baseline.ledger_score.work_attempts as i32,
-        context_attempts: harness.ledger_score.context_attempts as i32
-            - baseline.ledger_score.context_attempts as i32,
+        assistant_attempts: harness.event_score.attempts as i32
+            - baseline.event_score.attempts as i32,
+        work_attempts: harness.event_score.work_attempts as i32
+            - baseline.event_score.work_attempts as i32,
+        context_attempts: harness.event_score.context_attempts as i32
+            - baseline.event_score.context_attempts as i32,
         physical_tool_calls: harness.discipline.physical_tool_calls as i32
             - baseline.discipline.physical_tool_calls as i32,
         duplicate_physical_tool_calls: harness.discipline.exact_duplicate_physical_tool_calls

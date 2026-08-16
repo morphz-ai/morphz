@@ -124,7 +124,7 @@ Thread 不负责决定 Objective 是否完成。Thread 只提交自己的权威 
 
 DialogueTurn 与 Execution 还具有不同的并发边界：
 
-- DialogueTurn 占用持久化的 Session Dialogue Lane，连续未读的用户消息会按 Ledger
+- DialogueTurn 占用持久化的 Session Dialogue Lane，连续未读的用户消息会按 Event History
   顺序合并为下一轮，而不是各自并发求值；
 - 一旦本轮已经产生用户回复或持久化的物理执行计划，DialogueTurn 可以释放
   Dialogue Lane，让下一轮对话开始；
@@ -354,7 +354,7 @@ ThreadOutcome
 
 - `summary` 是结果摘要，不是唯一证据；
 - `artifact_refs` 指向生成或修改的 Artifact；
-- `evidence_refs` 指向 Ledger Event、Job Result、测试报告等事实；
+- `evidence_refs` 指向 persisted Event、Job Result、测试报告等事实；
 - `check_results` 保存确定性完成契约的验证结果；
 - `unresolved_failures` 表示上层必须继续处理的问题；
 - `terminal_event_sequence` 固定因果顺序；
@@ -498,7 +498,7 @@ thread/group id
 terminal outcome id
 ```
 
-旧 Evaluation、旧 Objective revision 或旧 Group generation 的迟到 Signal 可以进入 Ledger 审计，但不得创建新的有效 Activation。
+旧 Evaluation、旧 Objective revision 或旧 Group generation 的迟到 Signal 可以进入 Event History 审计，但不得创建新的有效 Activation。
 
 ## 10. `schedule_tx` 目标接口
 

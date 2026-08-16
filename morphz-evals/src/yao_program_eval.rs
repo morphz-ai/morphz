@@ -5,7 +5,7 @@
 //! program on the first try; when the validator refuses one, does the repair
 //! feedback actually lead it to a valid resubmission; and does it reach for
 //! `eval` at all when a task is shaped for it. The production wiring —
-//! Orchestrator interception, budgets, Ledger — is integration-tested with
+//! Orchestrator interception, budgets, and durable Event persistence — is integration-tested with
 //! mocks and deliberately out of scope here, exactly as the bind/if benchmark
 //! isolates the model's own evaluation semantics.
 
@@ -572,7 +572,7 @@ pub async fn run_yao_program_eval(
         conclusion_boundary:
             "本评测隔离测量模型对爻语言表面的掌握：仅凭 eval 工具描述能否写出合法程序、\
             验证反馈能否引导修复、任务成形时是否采用 eval。infer 宿主为评测内直连实现，\
-            与 Orchestrator 生产路径同形但不含准入、预算与 Ledger；生产接线由集成测试覆盖。"
+            与 Orchestrator 生产路径同形但不含准入、预算与持久化 Event 接线；生产接线由集成测试覆盖。"
                 .to_string(),
     };
     std::fs::write(

@@ -861,7 +861,7 @@ impl PostgresStore {
                 last.get("document_id"),
             ));
         }
-        // Historical Frame projections cannot be repaired from Event Ledger.
+        // Historical Frame projections cannot be repaired from persisted Events alone.
         // Re-derive them from the authoritative current Mind before retiring
         // the temporary chunk table.
         let mind_rows = sqlx::query("SELECT context_id, state_json FROM mind_projections")
@@ -3686,7 +3686,7 @@ impl RecallProjectionStore for PostgresStore {
         let mut tx = self.pool.begin().await?;
         // The rebuild input was assembled before this transaction. Preserve
         // transactional Outbox intents committed after that snapshot so the
-        // derived index converges to current Ledger/Mind state. Reapplying an
+        // derived index converges to current Event/Mind state. Reapplying an
         // older intent is safe because document sequence and Outbox generation
         // fencing reject stale overwrites.
         sqlx::query("DELETE FROM recall_documents WHERE context_id = $1")

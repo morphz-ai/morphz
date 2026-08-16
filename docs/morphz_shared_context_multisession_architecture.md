@@ -23,7 +23,7 @@ Morphz 已经初步验证：LLM 可以通过 SExpr DSL 自主创建、修订、�
 2. 一个 Agent 可以同时理解、管理和推进多个 Session；
 3. 多个 Session 可以共享同一个 Context，也可以使用 COW 分支隔离；
 4. 一个 Session 可以由多个并发 Sub Agent 或算力节点共同推进；
-5. Agent 的身份、Mind 与 Ledger 不应绑定到某个模型进程；
+5. Agent 的身份、Mind 与 Event History 不应绑定到某个模型进程；
 6. Context 应成为可寻址、版本化、可共享、可分支、可合并、可重置的一等状态对象；
 7. Runtime 负责事务、路由、一致性、权限与资源边界，模型负责语义、注意力、共享意图和冲突判断；
 8. 复杂底层必须通过小而清晰的认知接口暴露，不能要求模型充当数据库内核。
@@ -51,7 +51,7 @@ flowchart LR
     WC --> CC["LLM / Tool Compute Node"]
 
     AG <--> CTX["Versioned Context Graph\nShared / Forked / Resettable"]
-    CTX <--> LEDGER["Immutable Event Ledger"]
+    CTX <--> EVENTS["Immutable Event History"]
 ```
 
 该模型同时支持两个方向的多路复用：
@@ -69,7 +69,7 @@ Agent 是长期存在的逻辑身份，拥有：
 
 - 稳定 `agent_id`；
 - 长期 Mind 与可复用经验；
-- 可审计 Event Ledger；
+- 可审计 Event History；
 - Context 拓扑与版本历史；
 - 多 Session 状态目录；
 - 权限、身份、长期约束和产品策略；
@@ -92,7 +92,7 @@ Session 必须保持执行连续性和回复路由隔离，但不应天然隔离
 
 ### 3.3 Context
 
-Context 是可被 Session、Sub Agent 或其他执行实体挂载的版本化认知状态对象。它不是一次 Prompt 文本，也不等同于全部 Ledger 历史。
+Context 是可被 Session、Sub Agent 或其他执行实体挂载的版本化认知状态对象。它不是一次 Prompt 文本，也不等同于全部 Event History 历史。
 
 一个逻辑 Context 至少需要具备：
 
@@ -326,8 +326,8 @@ context agent-main / generation 8
 | Seed Frames | 用户/产品配置 | 按模板保留 |
 | Agent 自建 Frame/Relation | Agent/LLM | 不带入新 generation |
 | Session 局部执行状态 | Session | 清空 |
-| Observation / Tool Result | Ledger | 默认不挂载到新 Context |
-| 旧 Ledger / Snapshot | 存储策略 | 保留、冷存储或 Purge |
+| Observation / Tool Result | Event History | 默认不挂载到新 Context |
+| 旧 Event History / Snapshot | 存储策略 | 保留、冷存储或 Purge |
 
 初始结构不等于固定认知 Schema。最小模板可以只是 `Kernel + Protocol + Tools + Empty Mind + Empty Inbox`，让模型重新自由形成结构。
 
@@ -367,7 +367,7 @@ Session Coding-42
 
 Morphz 不应把认知连续性保存在某个模型进程的内存中。系统应分为：
 
-1. **Event Plane**：不可变 Ledger、事件顺序与因果关系；
+1. **Event Plane**：不可变 Event History、事件顺序与因果关系；
 2. **State Plane**：Context Snapshot、Shared Mind、COW Overlay、Frame Revision；
 3. **Coordination Plane**：Scheduler、事务、租约、冲突检测、最终回复提交；
 4. **Compute Plane**：LLM Worker、Sub Agent、工具执行节点；
@@ -388,7 +388,7 @@ Morphz 不应把认知连续性保存在某个模型进程的内存中。系统�
 
 ### 10.1 单机阶段
 
-近期无需立即引入分布式共识。单 Leader、Append-Only Ledger、数据库事务、Snapshot、Frame Revision 和 CAS/MVCC 足以验证语义。
+近期无需立即引入分布式共识。单 Leader、Append-Only Event History、数据库事务、Snapshot、Frame Revision 和 CAS/MVCC 足以验证语义。
 
 基本提交过程：
 
@@ -406,7 +406,7 @@ Morphz 不应把认知连续性保存在某个模型进程的内存中。系统�
 
 Raft 或 Paxos 适合解决：
 
-- 多节点 Ledger 的统一提交顺序；
+- 多节点 Event History 的统一提交顺序；
 - Leader 选举；
 - 副本一致性；
 - 故障恢复；
@@ -432,7 +432,7 @@ Agent / Coordinator
 Context 一致并不自动保证外部世界只执行一次。多 Worker 系统必须额外提供：
 
 - 工具调用稳定 idempotency key；
-- 执行租约与结果账本；
+- 执行租约与结果事件历史；
 - 重试去重；
 - 文件/部署/消息等副作用的版本检查；
 - 每个用户 Turn 唯一 Final Reply Commit；
@@ -518,7 +518,7 @@ Runtime 应把冲突反馈编译为可行动的自描述信息，例如：
 | Session/Turn/Reply 路由 | 不得伪造 | 确定性维护 |
 | Snapshot/COW/MVCC | 不手工维护 | 确定性实现 |
 | 身份、租户与披露权限 | 不得绕过 | 强制执行 |
-| Ledger 事实与因果顺序 | 引用和解释 | 保存、复制、重放 |
+| Event History 事实与因果顺序 | 引用和解释 | 保存、复制、重放 |
 
 Context 共享不是 Runtime 自动把所有信息注入所有 Prompt。Agent 仍然拥有注意力和语义控制权；Runtime 提供 Session Directory、挂载关系、稳定引用和按需 recall。
 
@@ -532,7 +532,7 @@ Context 共享不是 Runtime 自动把所有信息注入所有 Prompt。Agent �
 - 工具结果标准回传显著减少重复调用；
 - 模型能在真实证据到达后使用来源引用；
 - 最终 Mind 可以保留实体、关系、策略、案例和持续约束；
-- COW 所需的 Snapshot、版本、Checkpoint 与不可变 Ledger 已有部分基础。
+- COW 所需的 Snapshot、版本、Checkpoint 与不可变 Event History 已有部分基础。
 
 ### 14.2 尚未验证
 
@@ -553,7 +553,7 @@ Context 共享不是 Runtime 自动把所有信息注入所有 Prompt。Agent �
 
 这套方向复杂，但不要求当前阶段立即实现全部机制。近期开发只需避免堵死未来：
 
-1. Ledger 保持不可变、可重放；
+1. Event History 保持不可变、可重放；
 2. 事件逐步具备稳定 `agent_id/session_id/turn_id/attempt_id` 和因果关系；
 3. Mind 不依赖某个模型进程的内存；
 4. Frame 保持稳定 ID、revision、sources 和 transaction Diff；
@@ -577,7 +577,7 @@ Multi-Sub-Agent Shared Session
         ↓
 Frame-level MVCC + Distributed Compute
         ↓
-Replicated Ledger / Consensus / Failover
+Replicated Event History / Consensus / Failover
 ```
 
 每一步都必须配套可证伪评测，不能只验证 API 能调用。
@@ -626,7 +626,7 @@ Morphz 的长期架构可以用以下几句话定义：
 2. **Session 是可并发管理的交互连接，隔离执行连续性，但不天然隔离 Agent 认知。**
 3. **Context 是一等版本化对象；共享与隔离分别是挂载同一 Head 与 COW Fork。**
 4. **多个 Session 可以共享一个 Context，多个 Sub Agent 也可以共同推进一个 Session。**
-5. **Agent 的状态、Ledger 和 Context 与实际推理/工具算力节点分离。**
+5. **Agent 的状态、Event History 和 Context 与实际推理/工具算力节点分离。**
 6. **Runtime 保证事务、并发、路由、权限、恢复与一致性；模型负责语义、注意力、共享意图和冲突判断。**
 7. **Context 可以从模板创建新 generation，清除 LLM 生成状态，同时保留可审计历史或按策略 Purge。**
 8. **最终目标不是许多彼此失忆的聊天 Agent，而是一个通过多条连接与多个算力节点持续理解世界、并行行动和自主演化的统一 Agent。**

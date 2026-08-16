@@ -18,7 +18,7 @@ Morphz CLI 产品化 v1 将现有可工作的 Agent Runtime 变成一个可配�
 - Session 挂载于 Context，可共享或隔离认知结构。
 - Objective 是持久化的一等运行目标。
 - `reply` 是 Session 消息投递和回合终止的明确决定。
-- Runtime Ledger 是物理事实来源，TUI 只是事件消费者。
+- Runtime Event History 是物理事实来源，TUI 只是事件消费者。
 
 ## 2. 核心边界
 
@@ -81,7 +81,7 @@ name = "LOCAL_M4_API_KEY"
 - 无 stdin 的凭证 helper 命令
 - 无凭证的本地端点
 
-凭证值不得进入配置诊断、事件 Ledger、Context Encoding 或工具参数。
+凭证值不得进入配置诊断、事件 Event History、Context Encoding 或工具参数。
 
 ## 3. 配置分层
 
@@ -154,7 +154,7 @@ ModelStreamFailed
 对于 `reply`：
 
 - 支持工具参数增量的 Provider 可以把已解析的 `reply.content` 片段作为 UI 草稿流展示。
-- 只有完整、合法、成功执行的 `reply` 才进入 Ledger 并投递 Session。
+- 只有完整、合法、成功执行的 `reply` 才进入 Event History 并投递 Session。
 - 不支持增量工具参数的 Provider 自动退化为原子回复。
 - UI 草稿不是事实，不得被 Context Recall 当作已投递消息。
 

@@ -49,7 +49,7 @@ Context Main
 }
 ```
 
-A、B、C 读取同一个 Mind 与 Context Ledger，分别维护消息顺序和回复路由。
+A、B、C 读取同一个 Mind 与 Context Event History，分别维护消息顺序和回复路由。
 
 ### 2.2 独立 Session
 
@@ -92,7 +92,7 @@ Context Independent@0
 - Observation 级 retired/protected；
 - 父 Context checkpoint 和可写执行现场。
 
-新 Context Ledger 只从一个可重放的 `runtime/context_seeded` Genesis Event 开始。继承 Frame 的父 Observation 来源保存在 Seed 审计载荷中，不伪装成子 Context 的本地证据。
+新 Context Event History 只从一个可重放的 `runtime/context_seeded` Genesis Event 开始。继承 Frame 的父 Observation 来源保存在 Seed 审计载荷中，不伪装成子 Context 的本地证据。
 
 ### 2.3 空白 Agent
 
@@ -103,7 +103,7 @@ create_agent
   └── initial Session
 ```
 
-新 Agent 不继承旧 Agent 的 Mind、Context、Session、Ledger 或 Context 拓扑。模板、默认模型、工具权限和 Workspace 属于后续 Agent Profile 扩展，不应通过复制旧 Context 暗中获得。
+新 Agent 不继承旧 Agent 的 Mind、Context、Session、Event History 或 Context 拓扑。模板、默认模型、工具权限和 Workspace 属于后续 Agent Profile 扩展，不应通过复制旧 Context 暗中获得。
 
 ## 3. Context Mount
 
@@ -135,7 +135,7 @@ source MindState
         ↓ mind-only projection
 seeded MindState@0
         ↓ append genesis event
-target Context Ledger
+target Context Event History
 ```
 
 投影规则：
@@ -202,7 +202,7 @@ Context Main@43 → visible to A / B / C
 
 Sub Agent 默认没有父 Context 写权限。它在独立 Context 中执行完整模型/工具循环；完成结果作为 `delegation_result` Tool Observation 返回 C。C 对结果负责，可以验证、拒绝、回复用户或提交 Main `context_tx`。
 
-`mode=attached` 是默认调度语义：queued 回执只写入 Ledger，不唤醒父模型；父 Session
+`mode=attached` 是默认调度语义：queued 回执只写入 Event History，不唤醒父模型；父 Session
 挂起到 `delegation_result` 到达，因此不需要也不应通过 `recall` 轮询。`mode=detached`
 仅用于明确的后台工作：queued 回执立即恢复父 Session，父级可继续或回复，结果稍后仍
 返回原 Session。Runtime 对递归委派设置可配置的深度和每 Agent 活跃数量上限；取消
@@ -300,7 +300,7 @@ Agent 创建响应返回：
 ## 8. Runtime 不变量
 
 1. 一个 Session 在一个 Binding Generation 内只挂载一个可写 Context Head；
-2. 同 Context Session 共享 Mind/Ledger，回复仍按 Session 路由；
+2. 同 Context Session 共享 Mind/Event History，回复仍按 Session 路由；
 3. Mind Seed 不复制父 Session Directory、Inbox 或执行现场；
 4. Seed/Projection 由 Runtime 确定性产生，LLM 不能伪造；
 5. Delegate 默认只读父 Context，不能直接提交父 Context `context_tx`；
@@ -308,7 +308,7 @@ Agent 创建响应返回：
 7. 父 Session 决定是否把 Sub Agent 结果写入共享 Mind；
 8. Agent、Context、Session、Delegation 的身份与生命周期由 Runtime 维护；
 9. 外部共享必须经 Grant；
-10. 所有操作可审计、可重启恢复；失败必须显式呈现，不能把未完成挂载伪装成成功。v1 通过创建前版本/ID 校验与 Agent Bootstrap 数据库事务消除可预见的半挂载；跨 Event Ledger 与 Registry 的完全原子提交留给统一 Unit-of-Work。
+10. 所有操作可审计、可重启恢复；失败必须显式呈现，不能把未完成挂载伪装成成功。v1 通过创建前版本/ID 校验与 Agent Bootstrap 数据库事务消除可预见的半挂载；跨 Event History 与 Registry 的完全原子提交留给统一 Unit-of-Work。
 
 ## 9. v1 验收
 

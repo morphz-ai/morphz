@@ -1119,8 +1119,8 @@ async fn configure_oauth_secret_backend(
         .choose(
             locale.text("Store OAuth tokens", "保存 OAuth 令牌"),
             locale.text(
-                "OAuth access and refresh tokens never enter configuration, prompts, Ledger, or logs.",
-                "OAuth 访问令牌和刷新令牌不会进入配置、提示词、事件账本或日志。",
+                "OAuth access and refresh tokens never enter configuration, prompts, persisted Events, or logs.",
+                "OAuth 访问令牌和刷新令牌不会进入配置、提示词、持久化事件或日志。",
             ),
             &[
                 Choice::new(

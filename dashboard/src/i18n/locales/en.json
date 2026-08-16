@@ -8,7 +8,7 @@
     "dialogue": "Dialogue",
     "scheduler": "Scheduler",
     "cognition": "Cognition",
-    "ledger": "Ledger",
+    "events": "Events",
     "runtime": "Runtime",
     "credentials": "Credentials",
     "providers": "Models"
@@ -273,7 +273,7 @@
     "available": "Available",
     "unavailable": "Currently unavailable",
     "editor": "Register credential",
-    "writeOnly": "Values are write-only; Dashboard, API, models and the Event Ledger cannot read them back.",
+    "writeOnly": "Values are write-only; Dashboard, API, models and persisted Events cannot read them back.",
     "mode": "Registration mode",
     "storeNew": "Store or rotate",
     "importExisting": "Import existing alias",
@@ -376,7 +376,7 @@
     "emptySessions": "No Sessions are currently available in this Context",
     "empty": "No matching runtime state",
     "emptyHint": "Try another search term or filter.",
-    "bounded": "This command board shows a bounded recent Context set; search and drill-down do not scan the Event Ledger.",
+    "bounded": "This command board shows a bounded recent Context set; search and drill-down do not scan complete Event History.",
     "states": {
       "needs_attention": "Needs attention",
       "waiting_user": "Waiting for you",
@@ -407,7 +407,7 @@
       "recall": "Recall"
     },
     "recall": {
-      "emptyTitle": "Recall from the factual Ledger and cognitive Frames",
+      "emptyTitle": "Recall from persisted Events and cognitive Frames",
       "emptyDescription": "Results retain provenance, revision and retirement state."
     }
   },
@@ -438,9 +438,9 @@
       "close": "Close System Prompt Reader"
     }
   },
-  "ledger": {
+  "eventHistory": {
     "eyebrow": "Immutable facts",
-    "heading": "Event Ledger",
+    "heading": "Event History",
     "description": "Inspect events the Runtime considers to have happened and follow their causal identity.",
     "refresh": "Refresh",
     "loading": "Connecting to Morphz Runtime",
@@ -474,7 +474,7 @@
     "openSession": "Open Session",
     "openFrame": "Open Mind Frame",
     "pagination": {
-      "label": "Ledger pagination",
+      "label": "Event History pagination",
       "newer": "Newer events",
       "older": "Older events",
       "page": "Page {{page}}"
@@ -550,12 +550,12 @@
     "recoveryLost": "Lost Jobs",
     "recoveryOutboxes": "Recovered background outboxes",
     "projectionAudit": "Mind Projection Integrity Audit",
-    "projectionAuditHint": "Explicit Ledger replay; never runs on the request hot path",
+    "projectionAuditHint": "Explicit Event replay; never runs on the request hot path",
     "runProjectionAudit": "Run audit",
     "auditingProjection": "Auditing…",
     "projectionAuditNotRun": "No audit has been run. The online Projection remains active; this area only presents explicit verification results.",
     "auditResult": "Result",
-    "auditMatches": "Ledger, Projection and Snapshot match",
+    "auditMatches": "Event Replay, Projection and Snapshot match",
     "auditMismatch": "Mismatch detected; operator attention is required",
     "auditRevisions": "Revisions",
     "auditScanned": "Full events / incremental transactions",
@@ -755,7 +755,7 @@
       "scope": "Current Context · across Sessions · includes app deliveries",
       "empty": "No related chat message or app execution result was found",
       "sessionUnavailable": "The Session containing this message is not currently accessible",
-      "messageUnavailable": "The record was found, but its message could not be loaded from the Event Ledger",
+      "messageUnavailable": "The record was found, but its message could not be loaded from Event History",
       "kind": {
         "user": "User",
         "agent": "Reply",
@@ -1065,7 +1065,7 @@
         "summary": "{{active}} active Mind Frames, {{retiring}} retiring Mind Frames, {{retired}} retired Mind Frames",
         "active": "{{count}} active Mind Frames: still included in the current Mind and Context Encoding",
         "retiring": "{{count}} retiring Mind Frames: retirement has started, but their lifecycle is not complete",
-        "retired": "{{count}} retired Mind Frames: retained in the historical Ledger and omitted from current cognition by default"
+        "retired": "{{count}} retired Mind Frames: retained in Event History and omitted from current cognition by default"
       }
     },
     "contextInspect": {
@@ -1099,7 +1099,7 @@
       },
       "empty": "No evaluation context is available.",
       "notRetained": "This exact request component belongs to a previous or missed live evaluation and was intentionally not duplicated in durable storage. Send a new message to capture the next exact request here.",
-      "ephemeralNotice": "This is the latest exact input observed live for this Session. The browser retains it in memory; the Ledger stores only hashes, sizes and causal metadata.",
+      "ephemeralNotice": "This is the latest exact input observed live for this Session. The browser retains it in memory; persisted Events contain only hashes, sizes and causal metadata.",
       "reconstructedNotice": "No exact live request is currently retained. This view is freshly compiled from the current Projection and may differ from an earlier model request."
     },
     "frameLibrary": "Mind Frame Library",
@@ -1141,7 +1141,7 @@
     "lineageTruncated": "Results are truncated; continue through the Recall API",
     "transactions": {
       "title": "Recent Cognitive Transactions",
-      "subtitle": "Context Transaction history from the immutable Ledger",
+      "subtitle": "Context Transaction history reconstructed from immutable Events",
       "updated": "Cognitive projection updated",
       "empty": "This Context has no cognitive transactions yet"
     },
@@ -1159,7 +1159,7 @@
     "checkpoints": "Checkpoints",
     "checkpointsDetail": "Explicitly maintained by Agent",
     "retiredCount": "Retired",
-    "retiredDetail": "Recoverable, Ledger not deleted",
+    "retiredDetail": "Recoverable, source Event retained",
     "recallIndex": "Recall Index",
     "indexed": "Indexed",
     "degraded": "Degraded",
@@ -1169,7 +1169,7 @@
       "population": "{{full}} full · {{metadata}} metadata-only",
       "empty": "No Sessions are resident in the current encoding",
       "observations": "Active Observations and Inbox Sources",
-      "observationHint": "Only active projected facts are shown; complete history remains in the Ledger",
+      "observationHint": "Only active projected facts are shown; complete Event History remains available",
       "contextScope": "Context scope",
       "protected": "Protected",
       "noObservations": "No active Observations",
@@ -1289,7 +1289,7 @@
     "unspecifiedCommand": "command hidden",
     "unspecifiedQuery": "query hidden",
     "workspace": "workspace",
-    "contextLedger": "Context Ledger",
+    "contextEvents": "Context Events",
     "subAgent": "Sub Agent",
     "backgroundTask": "background task",
     "targetSession": "target Session",
@@ -1366,7 +1366,7 @@
     "editObjective": "After this edit, Runtime continues from the new Objective revision. Press Command/Ctrl + Enter to save.",
     "optional": "Optional",
     "renameContext": "Enter a new Context name",
-    "archiveContext": "Archive Context “{{title}}”?\n\nIts Sessions will be archived with it; the Event Ledger, cognition projections and audit records remain intact.",
+    "archiveContext": "Archive Context “{{title}}”?\n\nIts Sessions will be archived with it; Event History, cognition projections and audit records remain intact.",
     "renameSession": "Enter a new Session name",
     "archiveSession": "Archive Session “{{title}}”?\n\nMessage history and audit records remain intact.",
     "deleteObjectiveTitle": "Delete this Objective?",

@@ -70,7 +70,7 @@ impl EdgeLocalCapabilityLease {
     }
 }
 
-/// Provider-local lease ledger. It never leaves the Edge Node and is not a
+/// Provider-local lease registry. It never leaves the Edge Node and is not a
 /// substitute for the cloud CapabilityLease. Both sides independently check
 /// their own policy digest and either side may revoke.
 #[derive(Clone)]

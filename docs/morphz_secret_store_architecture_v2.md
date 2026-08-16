@@ -17,7 +17,7 @@
 - 不可解析的引用，例如 `secret://runtime/DEPLOY_TOKEN`；
 - 作用域、值后端和更新时间等非敏感元数据。
 
-模型、Prompt、Mind、Session、Event Ledger、审批请求、HTTP 响应和普通日志都不能看到凭证值。Dashboard 只提供写入、轮换、导入别名和撤销，不提供“显示值”。
+模型、Prompt、Mind、Session、Event History、审批请求、HTTP 响应和普通日志都不能看到凭证值。Dashboard 只提供写入、轮换、导入别名和撤销，不提供“显示值”。
 
 ## 2. 数据分层
 
@@ -135,11 +135,11 @@ Secret Store 不创造第二套权限模型。`full_access`、自动审批、人
 - 实际 Context、Session、Objective、Target；
 - 使用时间。
 
-不记录凭证值或命令环境快照。主机 JSONL 审计采用有界保留，避免长期运行后无限增长；它是 Operator 诊断数据，不替代 Event Ledger。
+不记录凭证值或命令环境快照。主机 JSONL 审计采用有界保留，避免长期运行后无限增长；它是 Operator 诊断数据，不替代 Event History。
 
 ## 8. 输出隔离
 
-Runtime 记录本次实际注入的值，并在 stdout/stderr 进入模型、Ledger、后台输出归档或 Artifact 前按精确值替换。
+Runtime 记录本次实际注入的值，并在 stdout/stderr 进入模型、Event History、后台输出归档或 Artifact 前按精确值替换。
 
 不使用 `sk-`、`Bearer` 等字符串形状猜测秘密，因为这会破坏正常数据。这个边界也不能保证已获准使用秘密的恶意程序不会主动编码或传输它，因此网络、命令和凭证能力仍需统一审批。
 
@@ -160,7 +160,7 @@ Edge 协议只传输别名和权限请求，不传输真实值。`execution_targ
 - 向模型提供读取值工具；
 - 自动暴露进程环境或 `.env` 中的所有变量名；
 - 系统凭证库失败后静默写入 `.env`；
-- 在 HTTP、Dashboard、Ledger 或审计中提供值读取；
+- 在 HTTP、Dashboard、Event History 或审计中提供值读取；
 - 将 Runtime 本地凭证透明复制到远端 Target；
 - 宣称注入秘密后仍能阻止获批进程的一切外泄行为。
 

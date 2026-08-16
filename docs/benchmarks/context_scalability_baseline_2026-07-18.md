@@ -44,12 +44,12 @@ Projection 审计结果：
 | 在线 Projection 读取与验证 | 21 µs |
 | 三方状态/hash 一致 | true |
 
-只有 257 个小事务时，全量重放已经很快，因此这里更重要的证据是复杂度边界：Snapshot 路径只扫描 Snapshot 之后的 1 条事务，而不是 257 条。更大 Ledger、Frame body 和 Observation 引用下的收益需要长程基准继续验证。
+只有 257 个小事务时，全量重放已经很快，因此这里更重要的证据是复杂度边界：Snapshot 路径只扫描 Snapshot 之后的 1 条事务，而不是 257 条。更大 Event History、Frame body 和 Observation 引用下的收益需要长程基准继续验证。
 
 ## 当前可以得出的结论
 
 1. SQLite 单写者并不意味着必须逐 Event commit；有界 group commit 明显提高物理写入效率。
-2. Mind Projection 的正常读取不再随 Ledger 长度线性增长。
+2. Mind Projection 的正常读取不再随 Event History 长度线性增长。
 3. Snapshot 增量恢复确实按 Snapshot 之后的事务数量工作，完整 Genesis 重放可以留在显式审计路径。
 4. 当前测试没有覆盖网络 Provider、模型延迟、跨进程 Worker、SQLite busy 尾延迟或一百万 Session 注册量，不能据此宣称公开服务可承载 76k 用户请求/秒。
 

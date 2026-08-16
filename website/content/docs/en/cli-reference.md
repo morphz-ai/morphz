@@ -75,10 +75,10 @@ source: generated-cli-schema
 | `morphz context list` | List Cognitive Contexts |
 | `morphz context show` | Show one Cognitive Context |
 | `morphz context status` | Show Context state, Sessions and active work |
-| `morphz context audit` | Verify the Context Mind projection against its ledger |
+| `morphz context audit` | Verify the Context Mind projection against its event history |
 | `morphz context recall-index` | Inspect or rebuild the derived lexical Recall index |
 | `morphz context recall-index inspect` | Show Recall index capability and document counts |
-| `morphz context recall-index rebuild` | Rebuild the derived Recall index from Ledger and Mind |
+| `morphz context recall-index rebuild` | Rebuild the derived Recall index from Event History and Mind |
 | `morphz context recall` | Search Context memory or traverse one Mind Frame lineage |
 | `morphz context recall search` | Search indexed Event and Mind Frame documents |
 | `morphz context recall frame` | Traverse Mind Frame sources and relations |
@@ -1287,7 +1287,7 @@ Commands:
   status
           Show Context state, Sessions and active work
   audit
-          Verify the Context Mind projection against its ledger
+          Verify the Context Mind projection against its event history
   recall-index
           Inspect or rebuild the derived lexical Recall index
   recall

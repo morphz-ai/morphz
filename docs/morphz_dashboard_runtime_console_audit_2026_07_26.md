@@ -9,19 +9,19 @@
 Dashboard 的信息架构仍然成立：它是 Runtime 的可操作投影，不是传统聊天产品。但 Runtime 在此后新增或重构了 Thread、Activation、Schedule、Delivery、Identity、Execution Target、Recall、Context Encoding 和用量统计，Dashboard 的部分实现没有同步收口，形成了三类系统性偏差：
 
 1. **把历史存在误判为当前活动**：`open` lifecycle、已消费 Signal、终态 Schedule 和历史 Execution Job 被部分组件当成正在运行或等待处理；
-2. **同一事实被多个页面重新推导**：有的组件使用 Scheduler Projection，有的从 Event Ledger、WebSocket 或数组长度猜状态；
+2. **同一事实被多个页面重新推导**：有的组件使用 Scheduler Projection，有的从 Event History、WebSocket 或数组长度猜状态；
 3. **接口与展示层继续漂移**：部分请求绕过统一客户端，TypeScript DTO 手工复制 Rust 结构，错误、鉴权、空响应和 revision conflict 的行为不一致。
 
 因此，本轮审计冻结以下原则：
 
 ```text
 当前物理状态  ← Runtime 权威 Projection / Scheduler phase
-历史因果事实  ← Event Ledger + bounded causal history
+历史因果事实  ← Event History + bounded causal history
 低延迟增量    ← WebSocket（只做更新与失效通知）
 用户操作      ← 统一领域命令接口（revision fenced）
 ```
 
-历史事实不能删除，但也不能因为仍在账本中就显示成“当前待处理”。
+历史事实不能删除，但也不能因为仍在事件历史中就显示成“当前待处理”。
 
 ## 2. 状态语义审计
 
@@ -129,7 +129,7 @@ queued | paused
 ### P2：前端结构与体验
 
 1. `App.tsx` 仍是超大控制器，混合 Catalog、Session、Scheduler、streaming、Mind 和命令处理；应按领域 Surface 拆分 controller/hooks。
-2. 生产 bundle 约 680 KB，需按 Overview/Dialogue/Scheduler/Cognition/Ledger/Runtime 路由懒加载。
+2. 生产 bundle 约 680 KB，需按 Overview/Dialogue/Scheduler/Cognition/Event History/Runtime 路由懒加载。
 3. Objective 染色槽目前在 render 中同步修正 state，虽然可运行但不是稳健 React 模式；应改为 reducer 或事件驱动分配。
 4. 因果卡片仍有 `A/J` 等内部缩写，需在不牺牲紧凑度的前提下提供清晰标签。
 5. 空态、加载态、部分失败和 stale Projection 尚未形成统一视觉语言。

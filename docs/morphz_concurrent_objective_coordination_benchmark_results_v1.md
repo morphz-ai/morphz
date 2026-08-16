@@ -17,7 +17,7 @@
 1. 明确要求使用 First-Class Objective 后，模型两次都自主拆出了 3 个兄弟 Objective；它们在 51 毫秒内全部开始求值，峰值并发为 3。
 2. Runtime 在三个 Objective 仍活跃时被强制终止；lease 到期后三个 Objective 均恢复，最终全部 completed，没有重复交付或遗留 Activation。
 3. 最新一轮的有效并行度为 2.69。隐藏验证 7/7 通过，生成项目自身 86 个测试全部通过。
-4. 运行中状态询问能够独立得到基于 Ledger 的准确回复，不会停止正在工作的 Objective。
+4. 运行中状态询问能够独立得到基于 Event History 的准确回复，不会停止正在工作的 Objective。
 5. 运行中追加的跨模块 yank 规则被写入受保护 Mind Frame，并最终同时体现在 resolver、install、registry、search 及测试中。
 
 但本轮也发现两个不能被总分掩盖的问题：
@@ -45,7 +45,7 @@
 | 在线探针应答 | 未执行 | 旧入口，无效 | 1 / 2 |
 | Model Attempt | 25 | 55 | 81 |
 | 物理工具调用 | 40 | 85 | 105 |
-| Objective token 账本累计 | 不适用 | 4,292,028 | 5,132,165 |
+| Objective token 事件历史累计 | 不适用 | 4,292,028 | 5,132,165 |
 | 失败工具结果 | 0 | 2 | 3 |
 | Context 版本冲突 | 0 | 2，重试收敛 | 0 |
 | 跨 Objective 文件重叠 | 不适用 | 旧轨迹无法归因 | `src/semver.rs`，3 个 Objective |
@@ -79,7 +79,7 @@
 三路第一轮 Evaluation 在约 51 毫秒内启动。运行中发送状态询问，模型准确列出 3 个 active Objective、各自范围和执行状态，并明确区分：
 
 - 已经存在的脚手架与 Mind 契约；
-- 尚未在 Ledger 中出现的文件、构建和测试证据。
+- 尚未在 Event History 中出现的文件、构建和测试证据。
 
 这条回答没有接管或停止兄弟 Objective，证明 Dialogue Turn 与 Objective Evaluation 可以在同一 Session 中并行。
 
@@ -158,7 +158,7 @@ ForgeDepot 已提供 Harbor Task schema、Morphz custom agent、容器环境、O
 - persona 映射为稳定 Principal 和该 persona 专属共享 Context/Mind；
 - task 映射为 Session；
 - 同 persona 跨 task 共享认知，不同 persona 隔离；
-- 不可变 Ledger 被转换为官方 trace parser 可读取的 `turn_*.json`。
+- 不可变 Event History 被转换为官方 trace parser 可读取的 `turn_*.json`。
 
 bridge 单元测试和官方 trace parser 兼容性已验证。完整 PROC/COMP 仍依赖 AppWorld MCP 后端，尚未获得官方分数。
 

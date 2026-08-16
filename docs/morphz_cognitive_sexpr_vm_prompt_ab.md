@@ -77,7 +77,7 @@
 
 - 模型服务当前不能提供受控随机 seed，属于同条件并发配对，不是逐 token 可复现实验；
 - Experience Transfer 目前只有一个证据判断任务族；
-- 重启轮禁止新工具和 Ledger recall，但 Context 中仍可能存在未 retire 的 Inbox Observation，因此“回复仅来自 Mind”不是完全隔离；正式实验的 `mind_passed` 已修正为只检查活动 Mind Frame/Relation，不再允许 Inbox 文本替 Mind 通过；
+- 重启轮禁止新工具和 Event History recall，但 Context 中仍可能存在未 retire 的 Inbox Observation，因此“回复仅来自 Mind”不是完全隔离；正式实验的 `mind_passed` 已修正为只检查活动 Mind Frame/Relation，不再允许 Inbox 文本替 Mind 通过；
 - 候选 Prompt 本身提到了跨任务抽象，因此“是否形成抽象”证明的是机器身份与元认知指导整体有效，而不是模型在完全无提示下自然发现抽象目标。
 
 ## 6. 运行入口

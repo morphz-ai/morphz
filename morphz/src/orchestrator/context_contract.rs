@@ -19,7 +19,7 @@ pub(crate) const EPISTEMIC_CONTRACT_NAME: &str = "epistemic-contract-v1";
 pub(crate) const REALITY_CONTRACT: &[ContractClause] = &[
     ContractClause {
         key: "sequence",
-        meaning: "seq is the Ledger's stable physical write order; later means written later, not semantically more correct or authoritative",
+        meaning: "seq is the stable physical Event append order; later means appended later, not semantically more correct or authoritative",
     },
     ContractClause {
         key: "timestamp",

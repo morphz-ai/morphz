@@ -27,7 +27,7 @@ Morphz 已经验证了一组区别于传统顺序 Agent Loop 的核心能力：
 Thread / Activation
 Thread Group
 Objective wait_condition
-Event Ledger
+Event History
 Signal Outbox
 Dispatcher 生成的 ThreadSignal
 Supervisor / Reconciler 修复逻辑
@@ -67,7 +67,7 @@ Scheduler Kernel v2 的目标不是增加一套新调度器，而是把已经存
 - 不重写已经成立的 Thread、Activation、Objective 和 Job 领域概念；
 - 不实现多机 Worker 调度算法；
 - 不把模型决策改造成完全确定性的工作流；
-- 不要求 Event Ledger 成为高频运行状态查询表；
+- 不要求 Event History 成为高频运行状态查询表；
 - 不为未发布的旧 API 保留永久兼容层。
 
 当前数据库中已经存在持久任务，因此迁移阶段需要有限的**数据兼容桥**。兼容桥只用于把旧持久状态迁移到新不变量，不构成长期产品 API。
@@ -90,7 +90,7 @@ Scheduler v2 分为三个层次：
                              │ KernelStore transaction
 ┌────────────────────────────▼──────────────────────────────┐
 │ Persistence                                                │
-│ SQLite / PostgreSQL · authoritative projections · Ledger  │
+│ SQLite / PostgreSQL · authoritative projections · Event History  │
 └───────────────────────────────────────────────────────────┘
 ```
 
@@ -149,11 +149,11 @@ Scheduler v2 冻结以下权威边界：
 | 待处理工作 | `thread_signals` | Signal Outbox、Event topic |
 | 等待关系 | `scheduler_dependencies` | Objective wait 展示字段 |
 | 对外投递 | `deliveries` / external outbox | `chat/reply` Event |
-| 历史事实 | Event Ledger | 所有实时 Projection |
+| 历史事实 | Event History | 所有实时 Projection |
 
 原则：
 
-> Event Ledger 记录“发生过什么”，Projection 回答“现在是什么”。不能通过反复扫描和解释 Ledger 来猜测实时调度状态。
+> Event History 记录“发生过什么”，Projection 回答“现在是什么”。不能通过反复扫描和解释 Event History 来猜测实时调度状态。
 
 ## 5. Kernel Command
 
@@ -372,7 +372,7 @@ Reconciler **不得**：
 - 重新生成正常业务 Event；
 - 猜测 Objective 应等待什么；
 - 因为“看起来完成”而完成 Objective；
-- 重新解释历史 Ledger 来创建新 Thread；
+- 重新解释历史 Event History 来创建新 Thread；
 - 让一条坏数据终止整个周期恢复任务。
 
 正常路径需要 Reconciler 补业务事实，意味着 Kernel 原子事务仍有缺口。
@@ -687,6 +687,6 @@ Reconciler 不再创建 barrier、猜测 Objective wait 或补造 Thread 业务�
 
 由此得到 Scheduler Kernel v2 的最终定义：
 
-> Scheduler Kernel 是 Morphz Runtime 中唯一能够修改调度权威状态的确定性事务内核。模型和各类 Controller 决定意图，Kernel 以 revision、generation、fencing、不变量和原子因果提交把意图变成可恢复的物理事实；Event Ledger 保留历史，Signal 驱动执行，Projection 呈现当前状态。
+> Scheduler Kernel 是 Morphz Runtime 中唯一能够修改调度权威状态的确定性事务内核。模型和各类 Controller 决定意图，Kernel 以 revision、generation、fencing、不变量和原子因果提交把意图变成可恢复的物理事实；Event History 保留历史，Signal 驱动执行，Projection 呈现当前状态。
 
 这不是削弱模型自主性，而是为模型自主调度提供一个不会因并发、取消、重启和部分失败而失真的物理基础。

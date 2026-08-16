@@ -76,7 +76,7 @@
 - [ ] episodes 索引；
 - [ ] 原始请求/响应；
 - [ ] 工具和 Runtime trace；
-- [ ] Context/Ledger 快照；
+- [ ] Context/Event History 快照；
 - [ ] 逐项 scores；
 - [ ] summary；
 - [ ] checksums；

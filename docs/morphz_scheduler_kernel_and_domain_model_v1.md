@@ -42,7 +42,7 @@ Morphz 应当明确区分四个平面。
 - `CognitiveContext`：Agent 的共享认知环境；
 - `Mind`：由模型维护的当前心智结构；
 - `Frame`：Mind 中可创建、修订、取代、交换和换入换出的认知单元；
-- `Ledger`：不可变的物理事件事实；
+- `Event History`：不可变的物理事件事实；
 - `ContextEncoding`：Runtime 向模型呈现的可求值视图。
 
 认知平面不负责判断一个进程是否仍在运行，也不负责确保一个定时器必定唤醒。模型可以理解和维护任务语义，但物理执行状态必须由 Runtime 掌握。
@@ -103,7 +103,7 @@ Session 不是 Context，也不是任务。大量 Session 可以挂载在同一�
 
 中文：认知上下文。
 
-Context 表示 Agent 共享认知所属的环境。它可以包含多个 Session、一个共享 Mind、长期 Frame 和 Event Ledger，但它不是“某一次发送给模型的完整 Prompt”。
+Context 表示 Agent 共享认知所属的环境。它可以包含多个 Session、一个共享 Mind、长期 Frame 和 Event History，但它不是“某一次发送给模型的完整 Prompt”。
 
 发送给模型的是 Context 在某个时刻、面向某个 Session 和 Thread 求值出来的 `ContextEncoding`。
 
@@ -276,7 +276,7 @@ v1 固定采用“一个 Activation 原子领取同一 Thread 当前可见的一
 
 具体规则：
 
-1. Scheduler 按 `available_at`、Ledger sequence 和 Signal ID 形成确定性顺序；
+1. Scheduler 按 `available_at`、Event sequence 和 Signal ID 形成确定性顺序；
 2. 在一个事务中领取当前已经 pending 的 Signal，创建一个 Activation，并写入 `activation_signals` 关联；
 3. 单次领取有明确上限，超过上限的 Signal 保留给后续 Activation；
 4. 事务提交之后新到达的 Signal 不加入正在运行的 Activation，而是留在 mailbox 中等待下一次激活；
@@ -800,7 +800,7 @@ Scheduler Kernel 至少应维护以下不变量：
 25. Objective 的 pause/cancel 只能取消与该 Objective Evaluation 精确绑定的 Activation/Job，不得扩大成 Session 级取消并影响普通对话或兄弟 Objective。
 26. Delivery 合并不得越过第一个 pending 结果的最大等待边界；同一 Timer generation 的重试最多产生一个确定性 Event/Outbox。
 27. Delivery 终态只能确认其不可变 Trigger Snapshot 中的 Thread；求值开始后新完成的结果必须留给下一次 Delivery。
-28. 瞬时模型流是可丢弃的 UI 草稿，不能反向阻塞 Model Attempt、Execution Job 或持久事实提交；最终界面必须由持久终态纠正。Provider 返回的 reasoning summary 必须与公开正文分通道展示，不得混入 Session 回复或 Context observation；一次 Attempt 只能在终态聚合后写入一条独立 Ledger 可观测事实。
+28. 瞬时模型流是可丢弃的 UI 草稿，不能反向阻塞 Model Attempt、Execution Job 或持久事实提交；最终界面必须由持久终态纠正。Provider 返回的 reasoning summary 必须与公开正文分通道展示，不得混入 Session 回复或 Context observation；一次 Attempt 只能在终态聚合后写入一条独立 Event History 可观测事实。
 
 ## 10. 持久化调度内核
 
@@ -824,7 +824,7 @@ thread_outcomes
 deliveries
 objectives
 delegations
-events                         immutable ledger
+events                         immutable event history
 ```
 
 核心事务边界：
@@ -944,7 +944,7 @@ class 由 Runtime 根据持久 Trigger Event 推导，不接受模型提供任�
 
 ### 11.3 保留通道与有界背压
 
-完整 Activation 的总运行槽位由 Runtime `activation_admission.max_in_flight` 控制，并为 Dialogue/Delivery 保留可配置容量。模型 Provider 的物理请求额度由独立的 `model_provider_max_in_flight` 控制；等待工具、定时器或审批的 Activation 不会占用模型请求槽位。内存调度窗口也为延迟敏感工作保留位置；普通队列溢出仍留在 SQLite 的 `queued` Activation 中，通过无丢失 Notify 驱动的 refill 再进入窗口，不生成假失败回复，也不扫描整个 Event Ledger。
+完整 Activation 的总运行槽位由 Runtime `activation_admission.max_in_flight` 控制，并为 Dialogue/Delivery 保留可配置容量。模型 Provider 的物理请求额度由独立的 `model_provider_max_in_flight` 控制；等待工具、定时器或审批的 Activation 不会占用模型请求槽位。内存调度窗口也为延迟敏感工作保留位置；普通队列溢出仍留在 SQLite 的 `queued` Activation 中，通过无丢失 Notify 驱动的 refill 再进入窗口，不生成假失败回复，也不扫描整个 Event History。
 
 当前配置项包括：
 
@@ -1229,7 +1229,7 @@ Delivery 是结果路由
 - Thread lifecycle 与 Scheduler phase 正式解耦：`open + idle` 是可在未来恢复的非终态线程，不是当前执行；Dashboard 当前执行、分组和默认展开状态一律服从 `phase`；
 - 失败/异常 Attention 使用源类型、源 ID、源 revision 与状态构造精确 fingerprint；确认只对该版本有效；
 - Rust Runtime/SDK 与 HTTP 共同提供 Context 范围的 Attention acknowledgement 读取/写入接口；写入形成不可变 `runtime/attention_acknowledged` Event，不新增只属于 Dashboard 的旁路状态；
-- Dashboard 对审批保留决策动作，对 Job/Delivery/invariant 异常提供因果链检查和持久“确认已知”；已处理项从当前关注列表自动消解，但继续留在 Ledger 和历史中。
+- Dashboard 对审批保留决策动作，对 Job/Delivery/invariant 异常提供因果链检查和持久“确认已知”；已处理项从当前关注列表自动消解，但继续留在 Event History 和历史中。
 
 ### 2026-07-16：Phase 1 第一条完整纵切
 
@@ -1247,7 +1247,7 @@ Delivery 是结果路由
 
 第一条纵切当时尚未完成：
 
-- 当前 Event 先跨过 Ledger 持久化边界，Orchestrator 随后才物化 Thread Signal；“状态变更 + Signal”尚未对所有生产者统一为一个数据库事务。已持久化 Signal 可以恢复，但 Event 已提交而 Signal 尚未生成的极窄崩溃窗口仍需由 durable outbox/dispatcher 收口；
+- 当前 Event 先跨过 Event History 持久化边界，Orchestrator 随后才物化 Thread Signal；“状态变更 + Signal”尚未对所有生产者统一为一个数据库事务。已持久化 Signal 可以恢复，但 Event 已提交而 Signal 尚未生成的极窄崩溃窗口仍需由 durable outbox/dispatcher 收口；
 - Schedule、Objective、Delegation 和后台任务仍各自拥有部分唤醒路径，尚未全部改为统一 Signal producer；
 - 当时遗留的 SQLite 物理名称已在 2026-07-17 的统一领域接口迁移中完成收口；
 - 通用 Wait Condition、统一 Timer Engine 和持久 Execution Job 属于 Phase 2/3，不在本次纵切范围内。
@@ -1258,7 +1258,7 @@ Delivery 是结果路由
 
 已经实现：
 
-- 新增持久 `signal_outbox`。所有需要触发 Scheduler 的 Event 都把 Ledger 事实与 Outbox 投递意图放在同一个 SQLite 事务提交；
+- 新增持久 `signal_outbox`。所有需要触发 Scheduler 的 Event 都把 Event History 事实与 Outbox 投递意图放在同一个 SQLite 事务提交；
 - Outbox 明确区分 `pending | materialized | discarded`。`pending` Event 在成功创建对应 `ThreadSignal` 之前不会消失；取消 Session 的迟到信号会显式进入 `discarded`，不会形成永久重试；
 - `claim_thread_signal_batch` 在创建 Signal/Activation 的同一事务中把 Outbox 标记为 `materialized` 并绑定唯一 `signal_id`；重复 dispatch、并发 worker 和重复 Event append 都不能重新打开或重复消费这次投递；
 - Runtime 启动时扫描 pending Outbox，运行期间也由弱引用后台 dispatcher 周期重试。进程在“Event 已提交、EventBus 尚未派发”窗口崩溃后，重启仍能恢复；
@@ -1266,13 +1266,13 @@ Delivery 是结果路由
 - Schedule occurrence 的状态推进、due Event 和 Outbox 在同一事务提交；
 - Objective 的 evaluation lease、continuation Event 和 Outbox 在同一事务提交；过期 revision 不会留下孤立 Event；
 - Delegation 的完成状态、result Event 和父 Thread Outbox 在同一事务提交；并发完成只能有一个提交者；
-- EventBus 的可靠订阅边界只为真正会进入 `chat/*` 求值的 User/Tool Event 创建 Outbox；同一批工具中明确不唤醒模型的中间结果仍只进入 Ledger，不会制造额外 Activation；
+- EventBus 的可靠订阅边界只为真正会进入 `chat/*` 求值的 User/Tool Event 创建 Outbox；同一批工具中明确不唤醒模型的中间结果仍只进入 Event History，不会制造额外 Activation；
 - 对旧版已经落盘、后来才被选为 wake 的 Event，会先幂等补齐 Outbox，再执行 `dispatch_persisted`。
 
 验证边界：
 
 - 故障注入测试模拟了 User Event 与 Outbox 已提交、EventBus 尚未调用便进程退出；重新打开数据库后能够恢复为唯一 Signal/Activation；
-- 原子回滚测试证明缺少路由的 Outbox Event 不会留下半条 Ledger 记录；
+- 原子回滚测试证明缺少路由的 Outbox Event 不会留下半条 Event History 记录；
 - Objective CAS 冲突不会留下 continuation Event/Outbox；Delegation 重复完成不会产生第二个 result Event；
 - Signal batch、Activation single-flight、Schedule restart、Objective restart 与普通 Runtime 回归继续通过。
 
@@ -1385,7 +1385,7 @@ Phase 3 的单机 Execution Job、Durable Approval 与物理取消控制面至�
 - Allow 生成稳定、一次性的 grant；grant 消费与 Job claim 在同一事务完成，并绑定 claim token。错误 Job、错误 request/policy、pending/denied 或已经消费的 grant 都不能启动执行；
 - Deny/Cancel 形成明确工具输出与 `cancelled` Job terminal fact，并继续服从同一物理工具 batch barrier。取消与允许并发时，Pending 或 `Allowed + grant 尚未消费` 都可通过 revision fencing 收敛为 Cancelled；已经消费的授权不能被事后伪装为未执行；
 - Runtime 重启后 pending Approval 仍可重新呈现给审批 adapter，allowed/denied/consumed 状态按持久记录恢复，不依赖旧进程中的 oneshot 才能解释 authority；
-- Objective Supervisor 启动时会按 `context_id + objective.updated_at + 精确 topic` 检查 Permission、ExternalEvent 与 ResourceAvailable 的持久 Ledger 事实。因此进程即使在“审批/外部事件已提交、EventBus 尚未派发”的窗口退出，重启后也会复用 `wake_non_routed_event → reconcile` 清除等待并继续推进，而不会永久漏唤醒或制造第二套状态迁移。
+- Objective Supervisor 启动时会按 `context_id + objective.updated_at + 精确 topic` 检查 Permission、ExternalEvent 与 ResourceAvailable 的持久 Event History 事实。因此进程即使在“审批/外部事件已提交、EventBus 尚未派发”的窗口退出，重启后也会复用 `wake_non_routed_event → reconcile` 清除等待并继续推进，而不会永久漏唤醒或制造第二套状态迁移。
 
 ### 2026-07-17：Phase 4.1 Schedule 控制面
 
@@ -1407,7 +1407,7 @@ Phase 3 的单机 Execution Job、Durable Approval 与物理取消控制面至�
 - aging 按固定间隔逐级提升有效 class，避免低 class 在持续交互流量下永久饥饿；
 - Runtime 为 Dialogue/Delivery 保留运行槽和内存排队位置。一般工作不能占满全部保留容量；一槽 Runtime 会自动归一化，避免保留规则使一般工作永远不能运行；
 - in-memory window 满时 Activation 留在 SQLite `queued`，不失败、不丢弃。Store 使用有界 reserved/general candidate union，旧的一般工作 aging 后也不能把声明为 Dialogue/Delivery 的所有候选挤出查询窗口；
-- permit/window 变化通过可保留通知触发 refill，Runtime 不轮询整张 Event Ledger；重启从 durable queued Activation 重建确定顺序。
+- permit/window 变化通过可保留通知触发 refill，Runtime 不轮询整张 Event History；重启从 durable queued Activation 重建确定顺序。
 
 当前边界：fairness cursor 是进程内加速状态，重启会重置轮转相位；容量控制仍是单机全局上限 + Dialogue/Delivery 保留槽，不等于每 Agent/Context/Session/Thread 独立数字配额。
 
@@ -1437,7 +1437,7 @@ Phase 4 已经形成单机调度管理闭环。每租户数字配额、跨进程
 - `objective_create` 是控制面 prelude，不是普通 ActionGroup member。Runtime 先执行它、建立或收编 Objective Evaluation route，再允许同一响应中的物理 Action 越过副作用边界；
 - prelude 结束之前不会持久化兄弟 Action 的结果，因此每个结果 Event 在第一次写入前就携带最终 `objective_id / objective_evaluation_id / objective_revision` route。Event 一旦写入即不可变，Runtime 不再用相同 ID 补字段重写；
 - prelude 之后只有一个普通 Action 时不创建 Group，直接等待该 Action 的标准 tool result；有两个或更多普通 Action 时创建一个持久 `ActionGroup`；
-- 每个 member 仍拥有独立 Execution Job、独立不可变结果 Event，并在完成时立即进入 Ledger 和前端可观测流；Group 不阻塞单项结果展示；
+- 每个 member 仍拥有独立 Execution Job、独立不可变结果 Event，并在完成时立即进入 Event History 和前端可观测流；Group 不阻塞单项结果展示；
 - 最后一个 member 以数据库事务推进 Group 到 `settled`，并原子写入唯一、确定 ID 的 `runtime/action_group_settled` Event 与 Signal Outbox。只有该 barrier 唤醒一次后继 Activation；并发完成、重放和 Runtime 重启不能制造第二次批次唤醒；
 - attached delegation 的 `queued` 回执是持久可观测事实，但明确不产生父 Thread successor Activation；真正的 delegation result 才是唯一唤醒事实。
 

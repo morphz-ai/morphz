@@ -37,7 +37,7 @@ resident | swapped_out
 - Agent 可以显式 swap out / swap in；
 - swapped-out Session 收到新的外部消息时，Runtime 必须确定性地自动 swap in；
 - Shared Mind 不属于任何单独 Session，不随 Session swap out；
-- Event Ledger 是永久 backing store，swap 不删除事实。
+- Event History 是永久 backing store，swap 不删除事实。
 
 这个机制把三个既有设计统一起来：
 
@@ -54,7 +54,7 @@ resident | swapped_out
 | 内存工作集 | Context Encoding |
 | 共享内存 | Shared Mind |
 | 进程或可换出页组 | Session 及其 Session-scoped Observation |
-| 交换区 | Event Ledger + Session Registry |
+| 交换区 | Event History + Session Registry |
 | swap out | Agent 退役 Session |
 | swap in | Agent 主动恢复，或 Runtime 因新 IO 自动恢复 |
 | 缺页或外部中断 | swapped-out Session 收到新消息或匹配的外部事件 |
@@ -143,7 +143,7 @@ Runtime 不根据年龄、标题或内容替 Agent 判断价值。使用频率�
 1. 把 Session Residency 记录为 `swapped_out`；
 2. 从默认 `session-directory` 移除其完整条目；
 3. 在默认 Context Encoding 中屏蔽其 Session-scoped Observation；
-4. 保留 Session Registry、Mount、Ledger、消息顺序和来源关系；
+4. 保留 Session Registry、Mount、Event History、消息顺序和来源关系；
 5. 保留 Shared Mind 中已存在的 Frame 和 Relation；
 6. 保留 Observation 自身的逐条 retired/protected 状态；
 7. 产生可审计的 Runtime/Context Event，记录操作者、reason、版本和受影响 Session；
@@ -156,7 +156,7 @@ Session 级屏蔽应是附加可见性掩码，不应把该 Session 的每一个
 模型看不到 swapped-out Session，因此外部消息到达时不能等待模型主动恢复。Runtime 必须执行物理唤醒：
 
 ```text
-new input committed to Ledger
+new input committed to Event History
         ↓
 lookup Session mount and residency
         ↓
@@ -197,7 +197,7 @@ Agent 决定语义价值，Runtime 负责防止切断正在发生的物理工作
 
 ### 10.1 消息先到，Agent 后 retire
 
-如果新消息已经进入 Ledger 或 Ready Queue，`retire-session` 必须因 pending input 或 Residency revision 冲突而失败。Agent 重新求值后决定如何处理。
+如果新消息已经进入 Event History 或 Ready Queue，`retire-session` 必须因 pending input 或 Residency revision 冲突而失败。Agent 重新求值后决定如何处理。
 
 ### 10.2 Agent 先 retire，消息后到
 
@@ -231,7 +231,7 @@ swapped-out Session 不应继续以完整条目占据每轮 Prompt。默认 Kern
   (lookup "按 id、活动时间、来源或状态查询 Session Registry"))
 ```
 
-当 Session 数量达到数百或数千时，Agent 需要通用的 Session Registry 查询/recall 能力，而不是把所有 retired Session ID 固定放在 Prefix 中。该查询只返回 Runtime 元数据或明确请求的 Ledger 证据，不替 Agent编写语义摘要。
+当 Session 数量达到数百或数千时，Agent 需要通用的 Session Registry 查询/recall 能力，而不是把所有 retired Session ID 固定放在 Prefix 中。该查询只返回 Runtime 元数据或明确请求的 Event History 证据，不替 Agent编写语义摘要。
 
 ## 12. 与共享 Mind 的关系
 
@@ -246,14 +246,14 @@ inactive Session raw history → swap out
 Shared Mind              → remains resident
 ```
 
-因此，一个 Session 被 swap out 后，其他 Session 仍然可以使用它已经贡献到 Shared Mind 的经验。只有需要核验原始证据时，Agent 才主动 restore 或按 Session recall Ledger。
+因此，一个 Session 被 swap out 后，其他 Session 仍然可以使用它已经贡献到 Shared Mind 的经验。只有需要核验原始证据时，Agent 才主动 restore 或按 Session recall Event History。
 
 ## 13. 不做的事情
 
 本设计明确不引入：
 
 - Runtime 按固定 TTL 自动 swap out；
-- 因 Session 不活跃而删除 Ledger；
+- 因 Session 不活跃而删除 Event History；
 - Runtime 为每个 Session 生成固定业务摘要；
 - 把 Session archived 与 swapped_out 合并；
 - 让未知的新消息静默留在 swapped-out 状态；
@@ -293,7 +293,7 @@ Observation attention state
 实现前至少建立以下确定性测试：
 
 1. 一个 Context 挂载 1,000 个 Session；swap out 990 个后，默认 Encoding 大小不再随这 990 个 Session 的历史线性增长；
-2. swap out 不删除 Session、Mount、Ledger 或 Shared Mind Frame；
+2. swap out 不删除 Session、Mount、Event History 或 Shared Mind Frame；
 3. 新消息到达 swapped-out Session 后自动且仅自动 swap in 一次；
 4. 自动 swap in 后消息被正确路由并得到回复；
 5. 逐条 retired 的 Observation 不因 Session swap in 而恢复；

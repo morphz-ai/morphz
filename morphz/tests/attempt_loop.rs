@@ -2170,7 +2170,7 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
             .await
             .unwrap()
             .is_empty(),
-        "exact model inputs must not enter the Ledger"
+        "exact model inputs must not be persisted as Events"
     );
     let queued_attempts = store
         .query(QueryFilter {

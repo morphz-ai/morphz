@@ -165,7 +165,7 @@ pub async fn create_context_long_run_eval(
         rounds: ROUND_COUNT,
         expected_markers,
         obsolete_marker: "/v1/ingest".to_string(),
-        round_prompt: "继续这个长期项目：本轮只需根据已有 Context 简要报告当前最重要状态，不需要检查 workspace、召回 Ledger 或调用任何工具。不要猜测或执行后续任务。".to_string(),
+        round_prompt: "继续这个长期项目：本轮只需根据已有 Context 简要报告当前最重要状态，不需要检查 workspace、召回事件历史 或调用任何工具。不要猜测或执行后续任务。".to_string(),
         probe_prompt: "长期运行核验：请只根据你目前维护的 Context 回答，不调用任何工具。明确区分当前结论与已作废方案：项目代号、正式服务端口、审计保留期、持久化模式、当前事件入口、默认时区分别是什么？旧事件入口是什么状态？".to_string(),
     };
     let manifest_path = run_root.join("manifest.json");
@@ -726,7 +726,7 @@ fn synthetic_round(round: usize) -> Vec<String> {
     };
     for index in 0..noise_count {
         entries.push(format!(
-            "第{round}批次过程记录 {index:02}：临时候选 RUN-{round:02}-{index:02} 已完成一次性采样、诊断计时和调试输出检查。该记录只用于当轮排障，没有改变 HELIOS-9 的项目代号、正式端口、审计保留期、SQLite WAL 持久化、事件入口或默认时区。具体采样数值、临时路径和中间输出已经失去工作价值，应在形成必要结论后从活跃 Context 退休；原始证据仍可通过 Event Ledger 的稳定事件 ID 召回。这不是项目阶段完成记录，不是新需求，也不是长期事实。"
+            "第{round}批次过程记录 {index:02}：临时候选 RUN-{round:02}-{index:02} 已完成一次性采样、诊断计时和调试输出检查。该记录只用于当轮排障，没有改变 HELIOS-9 的项目代号、正式端口、审计保留期、SQLite WAL 持久化、事件入口或默认时区。具体采样数值、临时路径和中间输出已经失去工作价值，应在形成必要结论后从活跃 Context 退休；原始证据仍可通过 Event History 的稳定事件 ID 召回。这不是项目阶段完成记录，不是新需求，也不是长期事实。"
         ));
     }
     entries

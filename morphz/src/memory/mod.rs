@@ -70,7 +70,7 @@ pub struct RecallDocumentSearchRequest {
     pub normalized_query: Option<String>,
     pub start_time: Option<DateTime<Utc>>,
     pub end_time: Option<DateTime<Utc>>,
-    /// Stable exclusive Ledger sequence boundary for backward pagination.
+    /// Stable exclusive Event sequence boundary for backward pagination.
     pub before_sequence: Option<u64>,
     pub limit: usize,
 }
@@ -297,7 +297,7 @@ pub struct RecallIndexAudit {
 }
 
 /// Result of one bounded, rebuildable Recall Projection outbox pass.
-/// Ledger and Mind commits only enqueue work; this result describes the
+/// Events and Mind commits only enqueue work; this result describes the
 /// independent projection work and is never part of domain correctness.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecallProjectionBatch {
@@ -308,11 +308,11 @@ pub struct RecallProjectionBatch {
 }
 
 /// Runtime-owned read model for an operator's acknowledgement of one derived
-/// attention fact. The immutable source Event remains in the Ledger.
+/// attention fact. The immutable source Event remains persisted.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttentionAcknowledgementRecord {
     pub event_id: String,
-    /// Immutable Ledger sequence that advanced this projection key. A zero
+    /// Immutable Event sequence that advanced this projection key. A zero
     /// value is used only by the synchronous command response before the
     /// committed projection is read back.
     #[serde(default)]
@@ -596,7 +596,7 @@ pub struct NewMindProjection {
     pub state_hash: String,
     pub head_event_id: Option<String>,
     /// Changed Frame lexical documents prepared by the Context domain. Event
-    /// documents are projected automatically when their Ledger row is added.
+    /// documents are projected automatically when their Event row is added.
     pub recall_documents: Vec<RecallDocument>,
 }
 
@@ -639,7 +639,7 @@ pub enum MindProjectionCommit {
 
 /// Durable online Mind projection with database-enforced revision fencing.
 ///
-/// The immutable Event Ledger remains the source of truth. This store owns the
+/// The append-only Event Store remains the source of truth. This store owns the
 /// rebuildable current-state projection and the Context head used for CAS. A
 /// successful Context mutation must persist its Event, Mind Projection,
 /// Session Projection mutation and affected Session attention rows in one
@@ -662,7 +662,7 @@ pub trait MindProjectionStore: Send + Sync {
         context_id: &str,
     ) -> Result<Option<MindSnapshotRecord>, Box<dyn std::error::Error + Send + Sync>>;
 
-    /// Lazily installs a projection reconstructed from the Ledger. Concurrent
+    /// Lazily installs a projection reconstructed by replaying persisted Events. Concurrent
     /// initializers converge on the already committed row.
     async fn initialize_mind_projection(
         &self,
@@ -1024,7 +1024,7 @@ pub enum ThreadActivationMutation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivationOutcomeCommit {
     Committed {
-        /// Ledger Events whose authoritative Thread Signals were created in
+        /// Persisted Events whose authoritative Thread Signals were created in
         /// the same transaction. The Runtime only has to notify the live
         /// executor; it must not infer or materialize another route.
         ready_signal_event_ids: Vec<String>,
@@ -1314,7 +1314,7 @@ pub(crate) fn stable_thread_activation_id(event_id: &str) -> String {
 }
 
 /// Stable scheduler identity for the logical Thread rooted at one immutable
-/// Ledger fact.  Ingress, recovery and the Orchestrator must derive the same
+/// persisted Event fact.  Ingress, recovery and the Orchestrator must derive the same
 /// identity so a crash between durable commit and in-process dispatch cannot
 /// create a second Thread.
 pub fn stable_thread_id(root_turn_id: &str) -> String {
@@ -1345,7 +1345,7 @@ pub fn objective_primary_execution_root_id(
 /// activation claiming, not an Orchestrator-local tuning knob.
 pub const DEFAULT_THREAD_SIGNAL_BATCH_LIMIT: usize = 32;
 
-/// Durable handoff between the immutable Ledger and the Scheduler mailbox.
+/// Durable handoff between immutable Events and the Scheduler mailbox.
 /// `pending` means the Event is committed but has not yet been materialized as
 /// a Thread Signal. `materialized` means `signal_id` is the durable successor.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -4344,7 +4344,7 @@ pub struct QueryFilter {
     pub after_sequence: Option<u64>,
     /// Only return events physically appended before this sequence. Combined
     /// with `latest_k`, this provides stable backward pagination over the
-    /// immutable Ledger without offset scans.
+    /// immutable Event Sequence without offset scans.
     pub before_sequence: Option<u64>,
     pub start_time: Option<DateTime<Utc>>,
     pub end_time: Option<DateTime<Utc>>,
@@ -4393,7 +4393,7 @@ pub(crate) fn causal_payload_string<'a>(
         })
 }
 
-// EventStore defines the physical persistence interface for Event history.
+// EventStore defines the physical persistence interface for immutable Events.
 #[derive(Debug, Clone)]
 pub struct EventAppend {
     pub event: crate::event::Event,
@@ -4413,7 +4413,7 @@ pub trait EventStore: Send + Sync {
         ev: crate::event::Event,
         thread_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    /// Atomically commits an ordered group of immutable Ledger Events. A
+    /// Atomically commits an ordered group of immutable persisted Events. A
     /// failure rolls back the complete group. Scheduler delivery is an
     /// explicit Kernel operation and is never inferred by this generic API.
     async fn append_batch(
@@ -4440,7 +4440,7 @@ pub trait EventStore: Send + Sync {
     }
 
     /// Reads the current operator acknowledgement Projection. Implementations
-    /// must not reconstruct it by scanning the immutable Ledger per request.
+    /// must not reconstruct it by scanning immutable Events per request.
     async fn list_attention_acknowledgements(
         &self,
         context_id: &str,
@@ -4467,7 +4467,7 @@ pub trait EventStore: Send + Sync {
         Ok(records)
     }
 
-    /// Reads acknowledgement changes strictly after one immutable Ledger
+    /// Reads acknowledgement changes strictly after one immutable Event
     /// sequence. Implementations return ascending sequence order so callers
     /// can advance a durable incremental cursor without gaps.
     async fn list_attention_acknowledgements_after(
@@ -4489,10 +4489,10 @@ pub trait EventStore: Send + Sync {
 }
 
 /// Rebuildable lexical projection shared by Tool, CLI, HTTP and Dashboard.
-/// The Event Ledger and Mind Projection remain authoritative; implementations
+/// The Event Store and Mind Projection remain authoritative; implementations
 /// source mutation only enqueues a lightweight Outbox intent. Expensive text
 /// extraction and lexical index writes run independently and may be rebuilt
-/// from Ledger + Mind after failure.
+/// from Events + Mind after failure.
 #[async_trait::async_trait]
 pub trait RecallProjectionStore: Send + Sync {
     async fn recall_index_capability(
@@ -4507,7 +4507,7 @@ pub trait RecallProjectionStore: Send + Sync {
     ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Searches the Recall projection with optional lexical and authoritative
-    /// Ledger-time constraints. Time-filtered results are ordered by immutable
+    /// Event-time constraints. Time-filtered results are ordered by immutable
     /// Event sequence and use an exclusive `before_sequence` cursor.
     async fn query_recall_documents(
         &self,
@@ -4515,7 +4515,7 @@ pub trait RecallProjectionStore: Send + Sync {
     ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Replaces the complete rebuildable index for one Context. This is an
-    /// explicit maintenance operation and never mutates Ledger or Mind state.
+    /// explicit maintenance operation and never mutates Events or Mind state.
     /// Transactional Outbox intents must survive replacement: the input is a
     /// point-in-time snapshot and newer authoritative commits rely on those
     /// intents to converge the rebuilt index after the replacement commits.
@@ -4549,7 +4549,7 @@ pub trait CognitiveClockStore: Send + Sync {
 }
 
 /// Current, transactionally maintained Observation set for Session-aware
-/// Context Encoding. The immutable Ledger remains authoritative history;
+/// Context Encoding. Immutable Events remain authoritative history;
 /// this Projection contains only observations which have not been retired.
 #[async_trait::async_trait]
 pub trait SessionProjectionStore: Send + Sync {
@@ -4786,7 +4786,7 @@ pub trait ExecutionJobStore: Send + Sync {
         wake_thread: bool,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Repairs a stale non-terminal Job projection from an immutable result
-    /// Event which is already present in the Ledger. Unlike normal `finish`,
+    /// Event which is already persisted. Unlike normal `finish`,
     /// this recovery boundary does not require a live worker claim; unlike
     /// `finish_with_event`, it must never create the Event it relies on.
     /// The Store must verify the complete Event contents and causal route in
@@ -5096,7 +5096,7 @@ pub trait SessionDirectoryStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Updates Context metadata. Archiving a Context also archives every
-    /// Session mounted to it in the same database transaction; Ledger and
+    /// Session mounted to it in the same database transaction; Events and
     /// projections remain intact and auditable.
     async fn update_context(
         &self,
@@ -5452,7 +5452,7 @@ pub trait ActivationStore: Send + Sync {
         Ok(records)
     }
     /// Bounded global scheduler projection used by Runtime-level operator
-    /// surfaces. It never scans the Event Ledger.
+    /// surfaces. It never scans persisted Events.
     async fn list_active_thread_activations(
         &self,
         limit: usize,
@@ -5477,7 +5477,7 @@ pub trait ActivationStore: Send + Sync {
     /// durable age participates in the DB ordering so overflow cannot starve
     /// outside the in-memory window. Declared dialogue/delivery rows retain
     /// their reserved waiting room even when old general rows have aged into
-    /// the same effective class. Callers must not scan the Context Event Ledger
+    /// the same effective class. Callers must not scan all Context Events
     /// to rebuild this queue.
     async fn list_queued_thread_activations_for_admission(
         &self,
@@ -6209,7 +6209,7 @@ impl<T> SessionStore for T where
 }
 
 /// Persistent Objective control plane. Implementations enforce lifecycle and
-/// optimistic concurrency; Objective semantics remain in Context Mind/Ledger.
+/// optimistic concurrency; Objective semantics remain in the Context Mind and persisted Events.
 #[async_trait::async_trait]
 pub trait ObjectiveStore: Send + Sync {
     async fn create_objective(
@@ -6613,7 +6613,7 @@ pub enum WorkerCoordinationMode {
 }
 
 /// Cutoffs for bounded cleanup of records that are explicitly transient and
-/// have already lost all authority. Ledger Events and Runtime outcomes are
+/// have already lost all authority. Persisted Events and Runtime outcomes are
 /// intentionally outside this policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransientStorageRetention {

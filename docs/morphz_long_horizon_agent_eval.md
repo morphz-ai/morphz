@@ -54,7 +54,7 @@ v1 定义三个互补族，每个族至少有一个可离线重放场景：
 | `agent_owned` | LLM 通过 `context_tx` 自主维护 Mind，Runtime 只管机制 | 当前候选基线（manifest 另存 protocol version） |
 | `fixed_window` | 仅保留固定近期事件，不自主摘要和召回 | 待实现对照适配器 |
 | `runtime_compaction` | Runtime 在阈值处生成统一摘要 | 待实现对照适配器 |
-| `retrieval_only` | 原始 Ledger + 被动检索，没有 Agent-Owned Mind | 可选扩展对照 |
+| `retrieval_only` | 原始 Event History + 被动检索，没有 Agent-Owned Mind | 可选扩展对照 |
 
 对照适配器只能改变 Context 编译策略，不能改变任务、工具或验证器。
 
@@ -66,7 +66,7 @@ v1 定义三个互补族，每个族至少有一个可离线重放场景：
 - 工作区初始快照与允许修改边界；
 - 有序 `stages`，每阶段包含用户任务、外部变化、是否重启 Agent 和隐藏验收；
 - 固定模型、Context 策略、输出上限、Context 软/硬限制与 Attempt 预算；
-- 每阶段的 reply、Mind、workspace、Ledger 和资源快照；
+- 每阶段的 reply、Mind、workspace、Event History 和资源快照；
 - 运行时 commit hash，保证后续可重放。
 
 场景验证器必须区分：
@@ -74,7 +74,7 @@ v1 定义三个互补族，每个族至少有一个可离线重放场景：
 1. **Outcome**：产物和隐藏测试是否正确；
 2. **Behavior**：是否无界扩张、重复工具、越权修改；
 3. **Context**：约束、当前目标、取代关系与未完成事项是否正确；
-4. **Cost**：模型请求、Token、工具调用、Context 事务、延迟与 Ledger 增长；
+4. **Cost**：模型请求、Token、工具调用、Context 事务、延迟与 Event History 增长；
 5. **Recovery**：重启、失败事务、错误遗忘后能否恢复。
 
 ## 6. v1 公开指标
@@ -89,7 +89,7 @@ v1 定义三个互补族，每个族至少有一个可离线重放场景：
 - `Context Commit/Failure/Repair`；
 - `Self-Amnesia Rate`；
 - `Model Attempts` 与 `Maintenance Overhead`；
-- `Peak Context Tokens` 和 `Ledger Growth`；
+- `Peak Context Tokens` 和 `Event History Growth`；
 - `Workspace Scope Violations`。
 
 所有率类指标报告分子和分母，不只报百分比。
@@ -105,7 +105,7 @@ v1 定义三个互补族，每个族至少有一个可离线重放场景：
 3. 注入 v3 热修复，要求更新端口和事件入口；
 4. 关闭并重启 Morphz 进程，核验 Mind 与工作区恢复；
 5. 注入写入时间更晚但明确标记为 archived/untrusted 的旧通知，检查 Agent 不会因物理时间更新就复活旧值；
-6. 生成最终运行报告，并对照 Mind、文件和 Ledger 三份证据。
+6. 生成最终运行报告，并对照 Mind、文件和 Event History 三份证据。
 
 首轮只运行 `agent_owned_v6`，不在看到失败前修改 Runtime。随后实现对照适配器并进行配对比较。
 
@@ -161,7 +161,7 @@ Runtime；评分器根据 Session Registry 解析真实 Context，不再假设�
 | 物理工具调用 | 17 |
 | Context commit / failure | 6 / 0 |
 | 峰值 / 最终 estimated tokens | 4,760 / 2,823 |
-| Ledger events / SQLite bytes | 114 / 77,824 |
+| Event count / SQLite bytes | 114 / 77,824 |
 
 唯一失败发生在进程重启后的无工具恢复核验：端口 `9443`、入口 `/v3/events`、保留期、时区、安全约束和完整取代链均能恢复，但稳定项目代号 `ORBIT-42` 已从 Mind 中消失。工作区文件仍正确，后续重新读取证据后最终报告恢复了代号。
 
@@ -203,7 +203,7 @@ v7 新增的 checkpoint 在该轨迹中调用 0 次，因此效率差异不能�
 3. 案例 B：正迁移，拒绝晚到 archive，选择 `BETA-42`；
 4. 案例 C：反例压力，较新的 approved hotfix 明确取代旧值，必须选择 `GAMMA-2`；
 5. 根据反例修订策略边界，同时保留三个正确示例；
-6. 重启进程，禁止读取 workspace/召回 Ledger，只从恢复的 Mind 报告策略和示例。
+6. 重启进程，禁止读取 workspace/召回 Event History，只从恢复的 Mind 报告策略和示例。
 
 2026-07-12 的首次 GLM-5.2 样本完成 6/6 阶段，严格通过 5/6；状态、Mind、正迁移、反例修正和重启恢复均通过。唯一严格扣分是第 2 阶段：规则 ID 已正确写入 Mind，回复表达了规则含义，但没有逐字报告 ID。
 
@@ -227,7 +227,7 @@ v7 新增的 checkpoint 在该轨迹中调用 0 次，因此效率差异不能�
 
 Operations Continuity 的 v7 诊断样本出现 5 次 `READ_ALREADY_COVERED`，Autonomous Transfer 首样本出现 1 次。这说明重复读取不是新闻系统或某个业务场景的特例。
 
-早期 Runtime 曾通过 Read guard 拒绝同一 Root Turn 内的重复 `read`，并把模型导向已有 Ledger 证据。后续真实运行证明，这种成本优化启发式不应成为工具执行规则：Context maintenance 可能已经 retire 原证据，模型也可能有意重新聚焦当前文件内容。硬拒绝会迫使模型额外调用 recall，反而增加求值轮次与 Token，并且让 Runtime 越权替模型判断“是否还需要读取”。
+早期 Runtime 曾通过 Read guard 拒绝同一 Root Turn 内的重复 `read`，并把模型导向已有 Event History 证据。后续真实运行证明，这种成本优化启发式不应成为工具执行规则：Context maintenance 可能已经 retire 原证据，模型也可能有意重新聚焦当前文件内容。硬拒绝会迫使模型额外调用 recall，反而增加求值轮次与 Token，并且让 Runtime 越权替模型判断“是否还需要读取”。
 
 因此该机制已从执行路径移除。`read` 恢复为稳定、直接的工具契约：模型请求读取，Runtime 就返回当前内容。重复读取仍可通过普通工具事件观测和评测，但不再被 Runtime 拒绝；真正的无进展循环应由更高层诊断处理。
 
@@ -244,13 +244,13 @@ Operations Continuity 的 v7 诊断样本出现 5 次 `READ_ALREADY_COVERED`，A
 
 “完全重复”定义为同一用户轮次内函数名和完整参数相同的额外调用；同路径重读还会捕获参数不同但目标文件相同的调用；Read guard 表示 Runtime 拒绝的已覆盖读取。三类指标在 10 条 v8 轨迹中都为 0，说明把当前工具结果同时作为标准 `assistant(tool_calls)` / `tool` 消息回传，能够让模型直接建立调用与结果的对应关系，避免把 Context View 中的 Observation 误判为缺失的接口结果。
 
-该结果同时暴露了两个未解决问题。第一，10 条轨迹仍有 24 次空正文 standalone `context_tx`，占 195 次模型请求的 12.3%；其中 Operations 有 2 次事务因维护预算耗尽被拒绝。第二，Operations 的策略修订阶段有 4/5 样本在热修复 read 证据出现前过早引入 `v3`。这没有破坏文件和最终 Mind，却属于明确的语义时序错误。先前人工统计只匹配两个 frame 名称，漏掉了 `release-v3`；新的证据门按事实标记和 Ledger 顺序捕获了全部四条。
+该结果同时暴露了两个未解决问题。第一，10 条轨迹仍有 24 次空正文 standalone `context_tx`，占 195 次模型请求的 12.3%；其中 Operations 有 2 次事务因维护预算耗尽被拒绝。第二，Operations 的策略修订阶段有 4/5 样本在热修复 read 证据出现前过早引入 `v3`。这没有破坏文件和最终 Mind，却属于明确的语义时序错误。先前人工统计只匹配两个 frame 名称，漏掉了 `release-v3`；新的证据门按事实标记和 Event History 顺序捕获了全部四条。
 
 升级前只有每个场景一个同模型样本，因此 30 → 20.0、31 → 15.2 等差异仍是强信号而不是完整配对因果结论。确认 Runtime 改进的最低下一步是保留这 5 个 v8 样本，并补齐相同场景的升级前 5 样本对照，或使用可复现 seed 做真正的配对实验。
 
 ## 14. 证据时序与分层评分框架
 
-长程 manifest 现在支持声明通用 `EvidenceGate`：场景配置被保护的事实标记、什么 topic/tool/内容构成证据，以及首次写入 Mind 时是否必须引用证据 Event。评测器按 Ledger sequence 处理事件：事实先于证据进入 `context_tx` 或最终回复记为 temporal violation；证据已出现但首次 Context 写入没有引用对应 `@eN` 记为 provenance violation。规则只存在于评测场景，不改变 Runtime，也不替 Agent 判断业务事实。
+长程 manifest 现在支持声明通用 `EvidenceGate`：场景配置被保护的事实标记、什么 topic/tool/内容构成证据，以及首次写入 Mind 时是否必须引用证据 Event。评测器按 Event sequence 处理事件：事实先于证据进入 `context_tx` 或最终回复记为 temporal violation；证据已出现但首次 Context 写入没有引用对应 `@eN` 记为 provenance violation。规则只存在于评测场景，不改变 Runtime，也不替 Agent 判断业务事实。
 
 `inspect` 会根据 `chat/user_message` 重建阶段边界，因此旧数据库无需重新调用模型即可重新评分。每阶段及总报告新增：
 

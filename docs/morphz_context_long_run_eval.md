@@ -25,9 +25,9 @@ Context，并用 `MORPHZ_CONTEXT_ID` 挂载测试 Session；文中的“同一�
 
 - 必须长期保持的 `HELIOS-9`、端口 `9090`、审计保留 `45天`、`SQLite WAL` 和 `Asia/Shanghai`；
 - `/v1/ingest` 先作为候选出现，随后被 `/v2/events` 正式取代；
-- 大量明确标注为一次性、可从 Ledger 召回、不应形成长期事实的批次诊断记录。
+- 大量明确标注为一次性、可从 Event History 召回、不应形成长期事实的批次诊断记录。
 
-每轮提示只要求根据已有 Context 汇报状态，明确禁止 workspace 检查、Ledger recall 和其他物理工具；是否调用 `context_tx`、如何组织事务仍由模型决定。最后使用此前未提供的核验问题检查六项稳定事实和旧入口的作废状态。
+每轮提示只要求根据已有 Context 汇报状态，明确禁止 workspace 检查、Event History recall 和其他物理工具；是否调用 `context_tx`、如何组织事务仍由模型决定。最后使用此前未提供的核验问题检查六项稳定事实和旧入口的作废状态。
 
 评分拆成三个相互独立的轴：
 

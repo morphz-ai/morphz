@@ -100,7 +100,7 @@ Harness。它在正常编码纪律中插入一个安全、无助于修复、模�
 
 Baseline 和 Harness 工作区都包含同一个 `PROCEDURE.md`，用户任务也完全相同；
 唯一自变量是 Objective 是否绑定 `coding-procedure-probe@1.0.0`。评测器不读取
-最终报告来判分，而是从 Ledger 验证失败测试、读取、命令和首次文件变更的实际
+最终报告来判分，而是从 Event History 验证失败测试、读取、命令和首次文件变更的实际
 事件顺序。
 
 ### 3.4 `runtime-eval`
@@ -128,7 +128,7 @@ Baseline 和 Harness 工作区都包含同一个 `PROCEDURE.md`，用户任务�
 | 指标 | Baseline | Coding Harness | 差值 |
 | --- | ---: | ---: | ---: |
 | 独立隐藏验证 | 通过 | 通过 | 持平 |
-| Ledger 总分 | 70 | 70 | 0 |
+| Event History 总分 | 70 | 70 | 0 |
 | 过程纪律 | 7 / 9 | 7 / 9 | 0 |
 | 模型尝试 | 6 | 6 | 0 |
 | Work 尝试 | 5 | 5 | 0 |
@@ -147,7 +147,7 @@ Baseline 和 Harness 工作区都包含同一个 `PROCEDURE.md`，用户任务�
 - 没有创建或修改共享 Mind；
 - 没有出现精确重复物理工具调用。
 
-Harness 组的 Ledger 同时确认：
+Harness 组的 Event History 同时确认：
 
 - package 已注册；
 - Objective 已绑定 `coding@1.0.0`；
@@ -159,7 +159,7 @@ Harness 组的 Ledger 同时确认：
 | 指标 | Baseline | Coding Harness | 差值 |
 | --- | ---: | ---: | ---: |
 | 独立隐藏验证 | 通过 | 通过 | 持平 |
-| Ledger 总分 | 70 | 70 | 0 |
+| Event History 总分 | 70 | 70 | 0 |
 | 过程纪律 | 6 / 9 | 6 / 9 | 0 |
 | 模型尝试 | 6 | 6 | 0 |
 | Work 尝试 | 5 | 5 | 0 |
@@ -194,7 +194,7 @@ Harness 组的 Ledger 同时确认：
 | --- | ---: | ---: | ---: |
 | 独立隐藏验证 | 通过 | 通过 | 持平 |
 | 程序遵守 | 1 / 5 | 5 / 5 | **+4** |
-| Ledger 总分 | 70 | 78 | +8 |
+| Event History 总分 | 70 | 78 | +8 |
 | 过程纪律 | 6 / 9 | 8 / 9 | +2 |
 | 模型尝试 | 6 | 8 | +2 |
 | Work 尝试 | 5 | 7 | +2 |
@@ -208,7 +208,7 @@ Harness 组的 Ledger 同时确认：
 程序遵守增益没有以牺牲编码正确性为代价。
 
 Baseline 偶然读取了一次 `PROCEDURE.md`，但没有执行探针命令，也没有在首次
-修改前取得失败基线，故只得到 1 / 5。Harness 组的 Ledger 序列为：
+修改前取得失败基线，故只得到 1 / 5。Harness 组的 Event History 序列为：
 
 ```text
 失败基线 @19
@@ -249,7 +249,7 @@ Runtime 按节点确定性执行 Contract，也不能由单个样本外推为稳
 | 指标 | Baseline | Runtime Eval Harness | 差值 |
 | --- | ---: | ---: | ---: |
 | 独立隐藏验证 | 通过 | 通过 | 持平 |
-| Ledger 总分 | 65 | 75 | **+10** |
+| Event History 总分 | 65 | 75 | **+10** |
 | 过程纪律 | 5 / 9 | 7 / 9 | **+2** |
 | 模型尝试 | 5 | 3 | -2 |
 | Work 尝试 | 5 | 2 | -3 |
@@ -260,7 +260,7 @@ Runtime 按节点确定性执行 Contract，也不能由单个样本外推为稳
 | 时长 | 66.90s | 151.78s | +84.88s |
 
 两组都只修改 `src/service.rs`，并通过 3 个公开测试和 4 个隐藏测试。
-Runtime Eval 组的 Ledger 进一步确认：
+Runtime Eval 组的 Event History 进一步确认：
 
 - `PlanExecution` 按 `exec → read → infer → edit → exec` 顺序推进；
 - 内部 infer 产生一个 `plan/infer_result`，没有自行调用物理工具；
@@ -281,7 +281,7 @@ Runtime Eval 组的 Ledger 进一步确认：
   coding_harness_ab_v1-runtime-eval-suite-20260726T012116.145Z-66781/
 ```
 
-为避免只靠人工读取 Ledger 判断控制流，随后用新版报告器单独复跑 Harness 臂。
+为避免只靠人工读取 Event History 判断控制流，随后用新版报告器单独复跑 Harness 臂。
 这次得到如下机器证据：
 
 ```text

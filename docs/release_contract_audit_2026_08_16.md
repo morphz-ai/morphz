@@ -27,7 +27,7 @@
 2. HTTP/WS 是 SDK 与 Runtime operator projection 的传输适配层，不自行创造领域事实。
 3. CLI 与 HTTP 对同一领域命令必须调用同一 SDK 命令。
 4. `RuntimeStore` trait 是 SQLite/PostgreSQL 的行为契约；物理 Schema 可以不同，但 CAS、事务、状态机、分页与恢复语义必须一致。
-5. `events` 是不可变事实账本；current-state 表、outbox、lease 和 projection 各自承担明确职责，不互相替代。
+5. `events` 是不可变持久化事件；current-state 表、outbox、lease 和 projection 各自承担明确职责，不互相替代。
 
 `morphz/src/lib.rs` 现在明确声明：`sdk` 是支持的嵌入式契约；其他公开模块目前为了 Morphz 二进制、评测工作区和集成测试而可见，仍属于不稳定实现面。
 
@@ -161,7 +161,7 @@ JSON、Query、Body limit 与 method routing 等发生在 handler 之前的 Axum
 
 ### 5.3 分页、幂等与并发
 
-- Ledger、Recall、Event、Model Usage、Execution Job、Edge output 与目录查询均有默认值和上限；底层 Store 对最终 SQL limit 再做 clamp。
+- Event History、Recall、Event、Model Usage、Execution Job、Edge output 与目录查询均有默认值和上限；底层 Store 对最终 SQL limit 再做 clamp。
 - 消息入口使用 `client_message_id` 去重。
 - Objective/Session 等创建支持调用方 ID；同 ID 冲突不会部分写入。
 - 修改类 API 使用 expected revision/CAS；Edge 命令另有 claim token 和 generation fencing。
@@ -175,7 +175,7 @@ JSON、Query、Body limit 与 method routing 等发生在 handler 之前的 Axum
 
 ## 6. WebSocket 契约
 
-- WS 数据单位仍是 `Event`，不会引入与 Ledger 不同的第二种领域格式。
+- WS 数据单位仍是 `Event`，不会引入与 Event History 不同的第二种领域格式。
 - Session 过滤使用顶层 payload `session_id` 精确匹配。
 - 重连先订阅 live broadcast，再读取 durable Model Attempt snapshot，避免 snapshot 与 live 之间丢转换。
 - `runtime/model_stream` 是可丢弃草稿；terminal reply/progress 是可靠事实。

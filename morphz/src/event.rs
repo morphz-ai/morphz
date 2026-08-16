@@ -63,7 +63,7 @@ impl Event {
 }
 
 /// Fair process-local retry queue for business delivery of already durable
-/// Events. The Event ledger remains the crash-recovery authority; this queue
+/// Events. The Event Store remains the crash-recovery authority; this queue
 /// only closes the live-process window where an asynchronous subscriber sees
 /// a transient Store error after the Event itself has committed.
 ///
@@ -134,7 +134,7 @@ impl DurableEventDeliveryQueue {
 /// Whether one immutable Event is part of the Agent-visible Observation
 /// projection. This predicate is shared by Context Encoding and persistence:
 /// changing it in only one layer would make the online Projection disagree
-/// with a full Ledger rebuild.
+/// with a full replay of persisted Events.
 pub fn is_context_observation(event: &Event) -> bool {
     if event.topic == "chat/assistant_call"
         || event.topic == "chat/progress"
@@ -266,7 +266,7 @@ pub struct InMemoryEventBus {
     durable_lock: Arc<tokio::sync::Mutex<()>>,
     sync_handler_timeout: std::time::Duration,
     /// Process-local demand for expensive diagnostic projections. Registering
-    /// interest never creates a Ledger fact; it only lets producers avoid
+    /// interest never creates a persisted Event fact; it only lets producers avoid
     /// constructing large transient payloads when nobody can consume them.
     ephemeral_observations: DashMap<EphemeralObservationRegistration, ()>,
 }
@@ -389,7 +389,7 @@ impl InMemoryEventBus {
     }
 
     /// Delivers transient UI/progress events without crossing the durable
-    /// Ledger boundary. Ephemeral events must never be used for user messages,
+    /// durable Event boundary. Ephemeral events must never be used for user messages,
     /// tool receipts, Context transactions, replies, or any other physical
     /// fact that must survive restart.
     pub async fn publish_ephemeral(
@@ -983,7 +983,9 @@ mod tests {
         bus.subscribe_durable(
             "*".to_string(),
             Arc::new(move |_event| {
-                Box::pin(async move { Err(std::io::Error::other("ledger unavailable").into()) })
+                Box::pin(
+                    async move { Err(std::io::Error::other("event store unavailable").into()) },
+                )
             }),
         );
         let business_seen_handler = Arc::clone(&business_seen);

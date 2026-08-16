@@ -8,7 +8,7 @@
 
 Morphz 当前不是“一个普通业务却随意建了 50 张表”，而是把以下系统同时嵌入一个 Runtime：
 
-- 不可变 Event Ledger；
+- 不可变 Event History；
 - Context/Mind 的当前状态与快照；
 - 可恢复的 Thread、Activation、Signal、Timer、Dependency 和 Group 调度；
 - 工具执行、审批、能力租约与 Edge Node 控制面；
@@ -48,7 +48,7 @@ Morphz 当前不是“一个普通业务却随意建了 50 张表”，而是把
 
 - SQLite 主 Schema：`morphz/src/memory/sqlite.rs:294-1283`；
 - SQLite Recall/FTS Schema：`morphz/src/memory/sqlite.rs:1900-2030`；
-- PostgreSQL 目录、Ledger、Timer、Objective：`morphz/src/memory/postgres.rs:450-665`；
+- PostgreSQL 目录、Event History、Timer、Objective：`morphz/src/memory/postgres.rs:450-665`；
 - PostgreSQL Thread/Activation/Job：`morphz/src/memory/postgres/execution.rs:24-141`；
 - Signal/Outcome：`morphz/src/memory/postgres/activation.rs` 与 SQLite `ActivationStore` 实现；
 - Thread/Action Group：`morphz/src/memory/postgres/thread_group.rs`、`action_group.rs`；
@@ -59,14 +59,14 @@ Morphz 当前不是“一个普通业务却随意建了 50 张表”，而是把
 
 ## 3. 逐表结论
 
-### 3.1 Ledger、Context 与 Recall（10 张普通表 + 1 个 FTS 虚表）
+### 3.1 Event History、Context 与 Recall（10 张普通表 + 1 个 FTS 虚表）
 
 | 表 | 类型与职责 | 增长/重建 | 结论 |
 |---|---|---|---|
-| `events` | 不可变事实 Ledger；所有可审计因果事实的根 | 主增长源，不应按运行队列清理 | **保留** |
+| `events` | 不可变事实 Event History；所有可审计因果事实的根 | 主增长源，不应按运行队列清理 | **保留** |
 | `event_causal_projection_backfills` | 记录旧 Event 因果列按 Thread/Topic 完成渐进回填 | 只为旧数据兼容；完成标记长期保留 | **退役**：确定兼容截止版本，完成全库迁移后删除表和懒回填分支 |
 | `attention_acknowledgements` | `(context,key)` 当前确认投影，指向权威 Event | 可由确认 Event 重建，按 key 覆盖，天然有界 | **保留** |
-| `session_projections` | 当前未 retire 的 Observation 成员集合 | 只有 Event ID 与路由，不复制 payload；可从 Ledger+Mind retire 状态重建 | **保留** |
+| `session_projections` | 当前未 retire 的 Observation 成员集合 | 只有 Event ID 与路由，不复制 payload；可从 Event History+Mind retire 状态重建 | **保留** |
 | `context_cognitive_clocks` | 每个 Context 的认知活动时钟与批次幂等围栏 | 每 Context 一行 | **保留**；与目录行分离可避免高频写放大 |
 | `context_heads` | Mind CAS 头：revision/hash/head event | 每 Context 一行 | **保留**；与大 `state_json` 垂直拆分可让热头查询不加载完整 Mind |
 | `mind_projections` | 当前 Mind 状态 | 每 Context 一行，可由快照+Event 恢复 | **保留** |
@@ -247,7 +247,7 @@ expired_edge_credential_age = "1d"
 startup_batch_limit = 1000
 ```
 
-该清理是单事务、分表有界的；测试明确验证它不会删除对应的不可变 Ledger Event。仍缺少产品级 retention/归档决策的是：
+该清理是单事务、分表有界的；测试明确验证它不会删除对应的不可变 persisted Event。仍缺少产品级 retention/归档决策的是：
 
 - orphaned/old terminal `runtime_timers`；
 - 自动 `mind_snapshots`；

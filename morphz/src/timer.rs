@@ -83,7 +83,7 @@ impl TimerEngine {
 
     /// Bounded recovery view of physically live timers. Historical fired and
     /// cancelled rows are deliberately excluded so semantic schedulers can
-    /// reconcile their owners without scanning the Timer ledger at startup.
+    /// reconcile their owners without scanning all Timer records at startup.
     pub async fn list_live(&self) -> Result<Vec<RuntimeTimerRecord>, DynError> {
         let mut timers = self
             .store

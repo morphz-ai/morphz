@@ -36,7 +36,7 @@ Morphz 默认采用 AI 自动审批，在安全性与长时间自主运行之间
 - `require_escalated` 只申请本次命令所需的网络、只读目录和可写目录差量；
 - 可替换的 `ApprovalProvider`，默认主程序接入无工具权限的独立 AI Auto-review 调用；
 - Reviewer 允许后只扩张本次命令的策略；拒绝时不启动目标进程；
-- 审批请求和决定写入 Event Ledger；
+- 审批请求和决定写入 Event History；
 - CLI 人工审批以及 `/api/approvals` 查询、决定接口；
 - AI 返回 `ask_human` 时自动转入同一个人工审批 Hub；
 - 旧 `[tool_security]` 配置只保留读取迁移，旧路径开关和命令字符串黑名单已退出 Runtime；
@@ -118,7 +118,7 @@ flowchart TD
     G["Capability Grant\n受限、短期、不可扩张的授权"]
     S["Sandbox Executor\n统一执行接口"]
     B["Sandbox Backend\nmacOS / Linux / Windows"]
-    L["Event Ledger\n请求、决定、执行与结果"]
+    L["Event History\n请求、决定、执行与结果"]
 
     A --> T
     T --> P
@@ -291,7 +291,7 @@ WASM/WASI 适合执行纯计算、插件、过滤器或仅使用显式 Capabilit
 | [nanosandbox](https://docs.rs/crate/nanosandbox/latest/source/README.md) | 文档声称三平台 | 从其 [Windows 实现源码](https://docs.rs/crate/nanosandbox/latest/source/src/platform/windows/mod.rs) 看，当前主要创建 Job Object；尚不足以证明文档所述的完整 Restricted Token/AppContainer 边界。这里是基于源码的审慎推断，因此不采用 |
 | [OpenAI Codex](https://github.com/openai/codex) | 产品内部统一抽象，按平台使用不同原生实现 | 证明“稳定上层接口 + 各平台后端”是可行路线，但目前不是供外部直接复用的独立三平台沙箱库 |
 
-因此选型不是“自己重写所有系统调用”，而是：Morphz 持有稳定的窄接口；每个平台后端可以复用已经验证的系统工具或局部依赖；是否替换某个后端，不影响上层 `exec`、审批和 Ledger。第三方库只有通过同一套攻击契约测试后，才有资格进入后端实现。
+因此选型不是“自己重写所有系统调用”，而是：Morphz 持有稳定的窄接口；每个平台后端可以复用已经验证的系统工具或局部依赖；是否替换某个后端，不影响上层 `exec`、审批和 Event History。第三方库只有通过同一套攻击契约测试后，才有资格进入后端实现。
 
 跨平台安全不能靠在 macOS 上交叉编译来证明。验证分四层：
 
@@ -313,7 +313,7 @@ Permission Broker 是整个系统的授权中枢，但不直接理解任务的�
 5. 拦截不可覆盖的禁止项；
 6. 为剩余请求选择审批器；
 7. 验证审批结果并签发受限授权；
-8. 将完整过程写入 Event Ledger。
+8. 将完整过程写入 Event History。
 
 ### 7.1 不信任 Agent 自报权限
 
@@ -430,7 +430,7 @@ AI Reviewer：
 - 可以进行极少量只读核查；
 - 只能返回结构化审批决定；
 - 不能调用执行工具；
-- 不能修改权限策略、授权规则和 Event Ledger；
+- 不能修改权限策略、授权规则和 Event History；
 - 不能向主 Agent 暴露秘密策略内容或敏感信息。
 
 主 Agent 和 Reviewer 可以使用不同模型，也可以使用相同基础模型，但不能共享同一次推理或让主 Agent 直接生成最终授权。
@@ -493,7 +493,7 @@ struct EffectiveGrant {
 3. 授权有较短有效期；
 4. 授权不能跨 Agent、Context 或租户复用；
 5. Backend 只能获得已经计算好的 `EffectiveGrant`；
-6. 授权失败、取消和执行状态必须进入 Ledger；
+6. 授权失败、取消和执行状态必须进入 Event History；
 7. 对未知副作用的重试不能假设上一次没有执行。
 
 可复用规则与一次性授权必须分开。规则只用于未来判断是否需要再次审批，每一次实际执行仍生成独立 Grant 和审计记录。
@@ -540,7 +540,7 @@ sequenceDiagram
     participant P as Permission Broker
     participant R as Approval Provider
     participant S as Sandbox Backend
-    participant L as Event Ledger
+    participant L as Event History
 
     A->>T: 提交工具调用
     T->>T: 解析并规范化动作
@@ -594,7 +594,7 @@ Agent 也可以表达申请意图：
 
 但这只是 Agent 对现实控制层的请求。Permission Broker 根据真实工具参数重新计算权限，并且只有 Runtime 签发的 `EffectiveGrant` 才能驱动 Backend 执行。
 
-## 14. Event Ledger 与审计
+## 14. Event History 与审计
 
 至少记录以下事件：
 
@@ -608,9 +608,9 @@ Agent 也可以表达申请意图：
 - `execution_finished`、`execution_cancelled` 或 `execution_unknown`；
 - `approval_rule_created`、`approval_rule_revoked`。
 
-Ledger 保存客观发生的审批和执行事实；Agent 可以把其中值得长期保留的经验整理进 Mind，但不能改写 Ledger 中的授权与执行记录。
+Event History 保存客观发生的审批和执行事实；Agent 可以把其中值得长期保留的经验整理进 Mind，但不能改写 Event History 中的授权与执行记录。
 
-Ledger 必须保留实际发生的控制面事实，Runtime 不应通过 `sk-`、`Bearer` 等字符串形状启发式地改写任意内容，否则可能破坏工具调用 ID、命令和证据的身份一致性。秘密通过 `secret_env` 等命名能力注入，实际值不进入审批请求；对于 Runtime 确实注入给子进程的值，只在该子进程的输出返回边界按精确值隔离。存储层加密和展示层遮罩可以独立提供，但不得反向改变 Ledger 原文。
+Event History 必须保留实际发生的控制面事实，Runtime 不应通过 `sk-`、`Bearer` 等字符串形状启发式地改写任意内容，否则可能破坏工具调用 ID、命令和证据的身份一致性。秘密通过 `secret_env` 等命名能力注入，实际值不进入审批请求；对于 Runtime 确实注入给子进程的值，只在该子进程的输出返回边界按精确值隔离。存储层加密和展示层遮罩可以独立提供，但不得反向改变 Event History 原文。
 
 ## 15. 并发、重试与失败语义
 
@@ -705,7 +705,7 @@ custom            分别配置 sandbox_mode、approval_policy、reviewer 和环�
 - MCP、Connector 和外部 API；
 - 数据库写入、消息发送与远程设备控制。
 
-这些能力可以拥有不同的风险标注和 Backend，但复用同一套 Permission Broker、Approval Provider、Grant 和 Ledger 语义。
+这些能力可以拥有不同的风险标注和 Backend，但复用同一套 Permission Broker、Approval Provider、Grant 和 Event History 语义。
 
 ## 18. 需要通过评测回答的问题
 

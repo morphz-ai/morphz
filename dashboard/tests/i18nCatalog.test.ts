@@ -59,19 +59,29 @@ test('Mind Frame uses the canonical product term in both languages', () => {
   const zh = JSON.parse(readFileSync(
     new URL('../src/i18n/locales/zh.json', import.meta.url),
     'utf8',
-  )) as { ledger: { openFrame: string }, mindView: Record<string, unknown> }
+  )) as { eventHistory: { openFrame: string }, mindView: Record<string, unknown> }
   const en = JSON.parse(readFileSync(
     new URL('../src/i18n/locales/en.json', import.meta.url),
     'utf8',
-  )) as { ledger: { openFrame: string }, mindView: Record<string, unknown> }
+  )) as { eventHistory: { openFrame: string }, mindView: Record<string, unknown> }
   const zhMindView = strings(zh.mindView).join('\n')
   const enMindView = strings(en.mindView).join('\n')
 
-  assert.equal(zh.ledger.openFrame, '打开认知帧')
+  assert.equal(zh.eventHistory.openFrame, '打开认知帧')
   assert.equal(zhMindView.includes('认知框架'), false)
   assert.equal(zhMindView.includes('认知帧'), true)
-  assert.equal(en.ledger.openFrame, 'Open Mind Frame')
+  assert.equal(en.eventHistory.openFrame, 'Open Mind Frame')
   assert.equal(enMindView.includes('Mind Frame'), true)
+})
+
+test('Event History uses the canonical event terminology', () => {
+  const zh = readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8')
+  const en = readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8')
+
+  assert.equal(zh.includes('事件历史'), true)
+  assert.equal(en.includes('Event History'), true)
+  assert.equal(zh.includes('事件回放'), true)
+  assert.equal(en.includes('Event Replay'), true)
 })
 
 test('Morphz uses one canonical machine identity in both dashboard languages', () => {

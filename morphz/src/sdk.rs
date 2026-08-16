@@ -52,9 +52,10 @@ use crate::provider::routing::EffectiveProviderCatalog;
 use crate::runtime::{
     AcknowledgeAttentionCommand, AttentionAcknowledgement, AttentionAcknowledgementsPage,
     ContextOverview, ContextOverviewQuery, ContextTokenBudgetUpdate, DialogueTurnRetryReceipt,
-    LedgerQuery, LedgerQueryPage, MessageIngressError, MessageIngressErrorKind, MessageReceipt,
-    ModelUsagePage, ModelUsageQuery, MorphzRuntime, RuntimeEventStream, RuntimeOverview,
-    RuntimeOverviewQuery, RuntimeStatus, SchedulerQuery, SchedulerSnapshot, ThreadDetail,
+    EventHistoryPage, EventHistoryQuery, MessageIngressError, MessageIngressErrorKind,
+    MessageReceipt, ModelUsagePage, ModelUsageQuery, MorphzRuntime, RuntimeEventStream,
+    RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus, SchedulerQuery, SchedulerSnapshot,
+    ThreadDetail,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -284,13 +285,13 @@ pub struct RetryDialogueTurnCommand {
 pub struct SessionEventsQuery {
     pub session_id: String,
     pub after_sequence: Option<u64>,
-    /// Stable backward cursor over the immutable Event Ledger. Mutually
+    /// Stable backward cursor over the immutable Event Sequence. Mutually
     /// exclusive with `after_sequence`.
     pub before_sequence: Option<u64>,
     /// Restrict the page to Events required to reconstruct the human-facing
     /// Dialogue presentation, including the durable tool-call lifecycle. The
     /// limit then means "latest N presentation Events", not "latest N
-    /// arbitrary Ledger Events".
+    /// arbitrary persisted Events".
     pub conversation_only: bool,
     pub limit: usize,
 }
@@ -664,9 +665,12 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
-    pub async fn query_ledger(&self, query: LedgerQuery) -> SdkResult<LedgerQueryPage> {
+    pub async fn query_event_history(
+        &self,
+        query: EventHistoryQuery,
+    ) -> SdkResult<EventHistoryPage> {
         self.runtime
-            .query_ledger(query)
+            .query_event_history(query)
             .await
             .map_err(SdkError::internal)
     }
@@ -1697,7 +1701,7 @@ impl MorphzSdk {
     }
 
     /// Explicit integrity audit. This intentionally remains a command rather
-    /// than a hot-path status query because it replays the immutable Ledger.
+    /// than a hot-path status query because it replays immutable Events.
     pub async fn audit_mind_projection(&self, context_id: &str) -> SdkResult<MindProjectionAudit> {
         self.runtime
             .audit_mind_projection(context_id)

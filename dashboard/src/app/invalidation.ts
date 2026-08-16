@@ -1,4 +1,4 @@
-export type AuthoritativeQuery = 'catalog' | 'session' | 'overview' | 'scheduler' | 'ledger' | 'thread' | 'mind-transactions'
+export type AuthoritativeQuery = 'catalog' | 'session' | 'overview' | 'scheduler' | 'events' | 'thread' | 'mind-transactions'
 
 const ephemeralTopics = new Set([
   'runtime/model_stream',
@@ -13,7 +13,7 @@ const ephemeralTopics = new Set([
  */
 export function invalidatedQueriesForTopic(topic: string): AuthoritativeQuery[] {
   if (ephemeralTopics.has(topic)) return []
-  const queries: AuthoritativeQuery[] = ['session', 'overview', 'scheduler', 'ledger']
+  const queries: AuthoritativeQuery[] = ['session', 'overview', 'scheduler', 'events']
   if (
     topic === 'runtime/context_seeded'
     || topic === 'runtime/session_restored'

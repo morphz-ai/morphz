@@ -105,8 +105,8 @@ import {
   type CognitionView,
   type DashboardView,
 } from './app/routes'
-import { LedgerPage } from './pages/LedgerPage'
-import type { LedgerFilters } from './pages/LedgerPage'
+import { EventHistoryPage } from './pages/EventHistoryPage'
+import type { EventHistoryFilters } from './pages/EventHistoryPage'
 import { CredentialsPage } from './pages/CredentialsPage'
 import { ProvidersPage } from './pages/ProvidersPage'
 import { OverviewPage } from './pages/OverviewPage'
@@ -1029,10 +1029,10 @@ interface ExecutionJobSummary {
 
 interface MindProjectionAudit {
   context_id: string
-  ledger_revision: number
+  replayed_event_revision: number
   projection_revision?: number
   snapshot_revision?: number
-  ledger_hash: string
+  replayed_state_hash: string
   projection_hash?: string
   events_scanned: number
   incremental_transactions_scanned?: number
@@ -1349,7 +1349,7 @@ interface ContextOverviewResponse {
   scheduler: SchedulerSnapshot['summary']
 }
 
-interface LedgerQueryResponse {
+interface EventHistoryResponse {
   context_id: string
   generated_at: string
   events: MorphzEvent[]
@@ -2616,11 +2616,11 @@ export default function App() {
   const [runtimeOverviewLoading, setRuntimeOverviewLoading] = useState(false)
   const [runtimeOverviewError, setRuntimeOverviewError] = useState('')
   const [modelUsagePage, setModelUsagePage] = useState<ModelUsagePage | null>(null)
-  const [ledgerPage, setLedgerPage] = useState<LedgerQueryResponse | null>(null)
-  const [mindTransactionPage, setMindTransactionPage] = useState<LedgerQueryResponse | null>(null)
-  const [ledgerFilters, setLedgerFilters] = useState<LedgerFilters>({ sessionId: '', principalId: '', threadId: '', activationId: '', actor: '', topic: '', search: '', afterSequence: '', startTime: '', endTime: '' })
-  const [ledgerBeforeSequence, setLedgerBeforeSequence] = useState('')
-  const [ledgerCursorHistory, setLedgerCursorHistory] = useState<string[]>([])
+  const [eventHistoryPage, setEventHistoryPage] = useState<EventHistoryResponse | null>(null)
+  const [mindTransactionPage, setMindTransactionPage] = useState<EventHistoryResponse | null>(null)
+  const [eventHistoryFilters, setEventHistoryFilters] = useState<EventHistoryFilters>({ sessionId: '', principalId: '', threadId: '', activationId: '', actor: '', topic: '', search: '', afterSequence: '', startTime: '', endTime: '' })
+  const [eventHistoryBeforeSequence, setEventHistoryBeforeSequence] = useState('')
+  const [eventHistoryCursorHistory, setEventHistoryCursorHistory] = useState<string[]>([])
   const [contextView, setContextView] = useState<ContextViewResponse | null>(null)
   const [contextEncoding, setContextEncoding] = useState<ContextEncodingResponse | null>(null)
   const [events, setEvents] = useState<MorphzEvent[]>([])
@@ -3372,7 +3372,7 @@ export default function App() {
     }
   }, [])
 
-  const loadLedger = useCallback(async (contextId: string, filters: LedgerFilters, beforeSequence = '') => {
+  const loadEventHistory = useCallback(async (contextId: string, filters: EventHistoryFilters, beforeSequence = '') => {
     if (!contextId) return
     try {
       const query = new URLSearchParams({ limit: '200' })
@@ -3387,11 +3387,11 @@ export default function App() {
       if (beforeSequence) query.set('before_sequence', beforeSequence)
       if (filters.startTime) query.set('start_time', new Date(filters.startTime).toISOString())
       if (filters.endTime) query.set('end_time', new Date(filters.endTime).toISOString())
-      const page = await DASHBOARD_API.get<LedgerQueryResponse>(
-        `/api/contexts/${encodeURIComponent(contextId)}/ledger?${query}`,
+      const page = await DASHBOARD_API.get<EventHistoryResponse>(
+        `/api/contexts/${encodeURIComponent(contextId)}/events?${query}`,
       )
       if (selectedScopeRef.current.contextId !== contextId) return
-      setLedgerPage(page)
+      setEventHistoryPage(page)
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -3417,8 +3417,8 @@ export default function App() {
     if (!contextId) return
     const query = new URLSearchParams({ topic: 'chat/context_tx_committed', limit: '50' })
     try {
-      const page = await DASHBOARD_API.get<LedgerQueryResponse>(
-        `/api/contexts/${encodeURIComponent(contextId)}/ledger?${query}`,
+      const page = await DASHBOARD_API.get<EventHistoryResponse>(
+        `/api/contexts/${encodeURIComponent(contextId)}/events?${query}`,
       )
       if (selectedScopeRef.current.contextId === contextId) setMindTransactionPage(page)
     } catch {
@@ -3654,9 +3654,9 @@ export default function App() {
     const reset = window.setTimeout(() => {
       attentionDeltaCursorRef.current = { contextId: '', initialized: false, latestSequence: 0 }
       setAttentionAcknowledgements([])
-      setLedgerPage(null)
-      setLedgerBeforeSequence('')
-      setLedgerCursorHistory([])
+      setEventHistoryPage(null)
+      setEventHistoryBeforeSequence('')
+      setEventHistoryCursorHistory([])
       setDialogueSearchQuery('')
       setDialogueSearchMatches([])
       setDialogueSearchOpen(false)
@@ -3774,14 +3774,14 @@ export default function App() {
   ])
 
   useEffect(() => {
-    if (view !== 'ledger' || !selectedContextId) return
-    const initial = window.setTimeout(() => void loadLedger(selectedContextId, ledgerFilters, ledgerBeforeSequence), 0)
-    const interval = window.setInterval(() => void loadLedger(selectedContextId, ledgerFilters, ledgerBeforeSequence), 15000)
+    if (view !== 'events' || !selectedContextId) return
+    const initial = window.setTimeout(() => void loadEventHistory(selectedContextId, eventHistoryFilters, eventHistoryBeforeSequence), 0)
+    const interval = window.setInterval(() => void loadEventHistory(selectedContextId, eventHistoryFilters, eventHistoryBeforeSequence), 15000)
     return () => {
       window.clearTimeout(initial)
       window.clearInterval(interval)
     }
-  }, [ledgerBeforeSequence, ledgerFilters, loadLedger, selectedContextId, view])
+  }, [eventHistoryBeforeSequence, eventHistoryFilters, loadEventHistory, selectedContextId, view])
 
   useEffect(() => {
     if (view !== 'scheduler' || !selectedContextId || !route.threadId) {
@@ -3859,8 +3859,8 @@ export default function App() {
         setContextEncoding(null)
         void loadContextProjection(selectedSessionId, selectedContextId)
       }
-      if (view === 'ledger' && invalidated.includes('ledger')) {
-        void loadLedger(selectedContextId, ledgerFilters, ledgerBeforeSequence)
+      if (view === 'events' && invalidated.includes('events')) {
+        void loadEventHistory(selectedContextId, eventHistoryFilters, eventHistoryBeforeSequence)
       }
       if (view === 'cognition' && cognitionView === 'mind' && invalidated.includes('mind-transactions')) {
         void loadMindTransactions(selectedContextId)
@@ -3871,9 +3871,9 @@ export default function App() {
     }
   }, [
     cognitionView,
-    ledgerBeforeSequence,
-    ledgerFilters,
-    loadLedger,
+    eventHistoryBeforeSequence,
+    eventHistoryFilters,
+    loadEventHistory,
     loadCatalog,
     loadMindTransactions,
     loadOverview,
@@ -4034,7 +4034,7 @@ export default function App() {
           if (event.topic === 'runtime/model_request_snapshot') {
             // Exact physical input is process-local observability: retain only
             // the selected Session's latest request in browser memory. The
-            // Ledger stores bounded ModelAttempt metadata, not another Prompt.
+            // Events store bounded ModelAttempt metadata, not another Prompt.
             if (typeof event.payload.text === 'string') setLatestContextInspect(event)
             return
           }
@@ -4042,7 +4042,7 @@ export default function App() {
           setEvents(previous => {
             if (previous.some(item => item.id === event.id)) return previous
             // Server-paged history is part of the current read model. Never
-            // discard it when a live Event arrives; the Event Ledger cursor,
+            // discard it when a live Event arrives; the Event History cursor,
             // not an arbitrary browser cap, owns the history boundary.
             return mergeSessionEvents(previous, [event])
           })
@@ -5039,7 +5039,7 @@ export default function App() {
     pendingScrollRestore.current = { lane, previousHeight: container.scrollHeight }
 
     // First reveal lane-local items already resident in the browser. Once that
-    // lane is exhausted, continue from the shared durable Ledger cursor.
+    // lane is exhausted, continue from the shared durable Event cursor.
     if (hiddenEventCounts[lane] > 0) {
       const availableCount = lane === 'merged'
         ? conversationEventsForObjective.length
@@ -6032,23 +6032,23 @@ export default function App() {
 
   const currentTheme = accentThemes.find(theme => theme.id === accentTheme)
   const currentLangCode = i18n.language?.startsWith('zh') ? 'ZH' : 'EN'
-  const applyLedgerFilters = (filters: LedgerFilters) => {
-    setLedgerPage(null)
-    setLedgerBeforeSequence('')
-    setLedgerCursorHistory([])
-    setLedgerFilters(filters)
+  const applyEventHistoryFilters = (filters: EventHistoryFilters) => {
+    setEventHistoryPage(null)
+    setEventHistoryBeforeSequence('')
+    setEventHistoryCursorHistory([])
+    setEventHistoryFilters(filters)
   }
-  const loadOlderLedgerPage = () => {
-    const next = ledgerPage?.next_before_sequence
+  const loadOlderEventHistoryPage = () => {
+    const next = eventHistoryPage?.next_before_sequence
     if (next === undefined) return
-    setLedgerCursorHistory(current => [...current, ledgerBeforeSequence])
-    setLedgerBeforeSequence(String(next))
+    setEventHistoryCursorHistory(current => [...current, eventHistoryBeforeSequence])
+    setEventHistoryBeforeSequence(String(next))
   }
-  const loadNewerLedgerPage = () => {
-    const previous = ledgerCursorHistory.at(-1)
+  const loadNewerEventHistoryPage = () => {
+    const previous = eventHistoryCursorHistory.at(-1)
     if (previous === undefined) return
-    setLedgerCursorHistory(current => current.slice(0, -1))
-    setLedgerBeforeSequence(previous)
+    setEventHistoryCursorHistory(current => current.slice(0, -1))
+    setEventHistoryBeforeSequence(previous)
   }
 
   const renderDialogueActivityDock = () => (
@@ -6572,8 +6572,8 @@ export default function App() {
             <button className={view === 'cognition' ? 'is-active' : ''} type="button" aria-label={t('navigation.cognition')} title={t('navigation.cognition')} disabled={!selectedContextId} onClick={() => setView('cognition')} aria-current={view === 'cognition' ? 'page' : undefined}>
               <Brain size={14} /><span>{t('navigation.cognition')}</span>
             </button>
-            <button className={view === 'ledger' ? 'is-active' : ''} type="button" aria-label={t('navigation.ledger')} title={t('navigation.ledger')} disabled={!selectedContextId} onClick={() => setView('ledger')} aria-current={view === 'ledger' ? 'page' : undefined}>
-              <Database size={14} /><span>{t('navigation.ledger')}</span>
+            <button className={view === 'events' ? 'is-active' : ''} type="button" aria-label={t('navigation.events')} title={t('navigation.events')} disabled={!selectedContextId} onClick={() => setView('events')} aria-current={view === 'events' ? 'page' : undefined}>
+              <Database size={14} /><span>{t('navigation.events')}</span>
             </button>
             <button className={view === 'runtime' ? 'is-active' : ''} type="button" aria-label={t('navigation.runtime')} title={t('navigation.runtime')} onClick={() => setView('runtime')} aria-current={view === 'runtime' ? 'page' : undefined}>
               <Radio size={14} /><span>{t('navigation.runtime')}</span>
@@ -7665,14 +7665,14 @@ export default function App() {
             </section>
           )}
 
-          {view === 'ledger' && (
-            <LedgerPage
+          {view === 'events' && (
+            <EventHistoryPage
               key={selectedContextId}
               contextTitle={selectedContext?.title ?? shortId(selectedContextId)}
-              sessionTitle={ledgerFilters.sessionId
-                ? sessions.find(session => session.id === ledgerFilters.sessionId)?.title ?? shortId(ledgerFilters.sessionId)
-                : t('ledger.allSessions')}
-              events={(ledgerPage?.events ?? []).map(event => ({
+              sessionTitle={eventHistoryFilters.sessionId
+                ? sessions.find(session => session.id === eventHistoryFilters.sessionId)?.title ?? shortId(eventHistoryFilters.sessionId)
+                : t('eventHistory.allSessions')}
+              events={(eventHistoryPage?.events ?? []).map(event => ({
                 id: event.id,
                 sequence: event.sequence,
                 timestamp: event.timestamp,
@@ -7682,18 +7682,18 @@ export default function App() {
                 topic: event.topic,
                 payload: event.payload,
               }))}
-              scannedCount={ledgerPage?.scanned_count ?? 0}
-              scanExhaustive={ledgerPage?.scan_exhaustive ?? true}
-              pageNumber={ledgerCursorHistory.length + 1}
-              canLoadNewer={ledgerCursorHistory.length > 0}
-              canLoadOlder={ledgerPage?.next_before_sequence !== undefined}
+              scannedCount={eventHistoryPage?.scanned_count ?? 0}
+              scanExhaustive={eventHistoryPage?.scan_exhaustive ?? true}
+              pageNumber={eventHistoryCursorHistory.length + 1}
+              canLoadNewer={eventHistoryCursorHistory.length > 0}
+              canLoadOlder={eventHistoryPage?.next_before_sequence !== undefined}
               sessions={sessions.filter(session => session.context_id === selectedContextId).map(session => ({ id: session.id, title: session.title }))}
-              filters={ledgerFilters}
+              filters={eventHistoryFilters}
               canRefresh={Boolean(selectedContextId)}
-              onRefresh={() => void loadLedger(selectedContextId, ledgerFilters, ledgerBeforeSequence)}
-              onApplyFilters={applyLedgerFilters}
-              onLoadNewer={loadNewerLedgerPage}
-              onLoadOlder={loadOlderLedgerPage}
+              onRefresh={() => void loadEventHistory(selectedContextId, eventHistoryFilters, eventHistoryBeforeSequence)}
+              onApplyFilters={applyEventHistoryFilters}
+              onLoadNewer={loadNewerEventHistoryPage}
+              onLoadOlder={loadOlderEventHistoryPage}
               onOpenThread={(threadId) => navigate(threadPath(selectedContextId, threadId))}
               onOpenSession={(sessionId) => { setSelectedSessionId(sessionId); navigate(dashboardPath('dialogue', selectedContextId, sessionId)) }}
               onOpenFrame={(frameId) => { setSelectedFrameId(frameId); navigate(dashboardPath('cognition', selectedContextId, undefined, 'mind')) }}

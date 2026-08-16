@@ -232,7 +232,7 @@ Runtime 可以确定性验证：
 
 ```text
                          Persistent Agent
-                  Identity / Mind / Frame / Ledger
+                  Identity / Mind / Frame / Event History
                                   │
                                   ▼
                        Lightweight Frame VM
@@ -271,7 +271,7 @@ Agent identity continuity
     = stable Agent ID
     + Persistent Mind
     + Session / Relationship history
-    + Ledger provenance
+    + Event History provenance
     + Runtime governance
 
     ≠ one fixed model process

@@ -12,7 +12,7 @@ This audit follows one directed user message from an authenticated ingress throu
 1. **MID-I01 — Authenticated identity precedes routing.** An external Principal is established before selecting or mutating a Session. Request content cannot override the authenticated Principal.
 2. **MID-I02 — Session ownership requires authority.** Creating, reviving, or migrating a Principal/Session binding requires an explicit authority or ownership proof. Knowing a Session ID is never sufficient to claim its history.
 3. **MID-I03 — Idempotency binds immutable intent.** `(session_id, client_message_id)` identifies exactly one immutable request: Principal, normalized message text, attachment identities, and exact Harness binding. An exact replay returns the original Event; a mismatched replay is a conflict.
-4. **MID-I04 — Ingress is one durable commit.** Accepting a message atomically commits the Ledger Event, its exact Dialogue Thread Signal, Session activity/attention changes, and any dialogue interruption. Notification is only an optimization after commit.
+4. **MID-I04 — Ingress is one durable commit.** Accepting a message atomically commits the persisted Event, its exact Dialogue Thread Signal, Session activity/attention changes, and any dialogue interruption. Notification is only an optimization after commit.
 5. **MID-I05 — Authorization is checked at commit.** The Session must still be active and bound to the asserted Principal in the same transaction that claims the message; preflight checks alone are insufficient.
 6. **MID-I06 — Interruption has a physical boundary.** A consecutive message may supersede model-only work, but cannot silently cancel work after physical execution has begun. FIFO and replacement lineage remain durable and explainable.
 7. **MID-I07 — Logical replies are exactly once.** A logical assistant reply is appended once and atomically covers its completed Threads. A retry after persistence must deliver the existing reply rather than re-evaluate it.
@@ -70,9 +70,9 @@ Correction: Runtime and SDK now enforce one shared 1..=128-byte ASCII identifier
 
 ### MID-F06 — Gateway authentication reached unscoped operator endpoints (fixed, critical)
 
-`is_authorized` accepts either the Dashboard/Operator token or the Trusted Gateway service token. That is correct only for Principal-scoped data-plane endpoints. A large set of handlers then performs no Principal authorization at all, including global Recall maintenance, inference configuration, approval decisions, Context scheduler and Ledger inspection, Thread control, schedule mutation, and Delegation control. A trusted identity Gateway can therefore become a Runtime operator even though the configuration and public contract explicitly separate those credentials.
+`is_authorized` accepts either the Dashboard/Operator token or the Trusted Gateway service token. That is correct only for Principal-scoped data-plane endpoints. A large set of handlers then performs no Principal authorization at all, including global Recall maintenance, inference configuration, approval decisions, Context scheduler and Event History inspection, Thread control, schedule mutation, and Delegation control. A trusted identity Gateway can therefore become a Runtime operator even though the configuration and public contract explicitly separate those credentials.
 
-Correction: unscoped Runtime, Recall, inference, approval, scheduler, Ledger, Thread, schedule, Delegation, credential, and provider-control endpoints now require operator authorization. Principal data-plane endpoints retain asserted-Principal resource fencing; device routes retain their device-token protocol. Context creation and explicit legacy Session migration remain intentional Gateway authorities. Objective mutation now authorizes through its coordinator Session for Gateway callers. HTTP tests prove the Gateway cannot cross into operator APIs or mutate another Principal's Session/Objective.
+Correction: unscoped Runtime, Recall, inference, approval, scheduler, Event History, Thread, schedule, Delegation, credential, and provider-control endpoints now require operator authorization. Principal data-plane endpoints retain asserted-Principal resource fencing; device routes retain their device-token protocol. Context creation and explicit legacy Session migration remain intentional Gateway authorities. Objective mutation now authorizes through its coordinator Session for Gateway callers. HTTP tests prove the Gateway cannot cross into operator APIs or mutate another Principal's Session/Objective.
 
 ### MID-F07 — Delivery recovery and batch snapshots were unbounded (fixed, high)
 
@@ -102,11 +102,11 @@ Principal IDs are opaque provider subjects rather than Session-style resource id
 
 ### MID-A05 — WebSocket reconnect has a durable suffix path (audited, accepted)
 
-The server subscribes to the live broadcast before producing the current model-attempt snapshot. Session-scoped Gateway connections authorize the Principal/Session binding before upgrade. Broadcast lag closes the socket instead of silently skipping Events; Dashboard and SDK reconnect paths discard transient drafts, reload persisted Session Events by Ledger sequence, and then resume live consumption. The global stream remains an explicitly trusted host-to-host operational surface and is not a browser credential.
+The server subscribes to the live broadcast before producing the current model-attempt snapshot. Session-scoped Gateway connections authorize the Principal/Session binding before upgrade. Broadcast lag closes the socket instead of silently skipping Events; Dashboard and SDK reconnect paths discard transient drafts, reload persisted Session Events by Event sequence, and then resume live consumption. The global stream remains an explicitly trusted host-to-host operational surface and is not a browser credential.
 
 ### MID-A06 — Morphz owns logical delivery, not channel acknowledgement (audited, accepted boundary)
 
-Morphz atomically persists one reply Event and exact Thread coverage. HTTP/WebSocket delivery is intentionally replayable and at-least-once with stable Event IDs and Ledger sequence cursors. A WeChat or other channel adapter owns its provider-specific send receipt, retry, and acknowledgement ledger; treating a socket write as a provider ACK would be incorrect. The connector contract must deduplicate by Morphz Event ID and resume from its durable cursor.
+Morphz atomically persists one reply Event and exact Thread coverage. HTTP/WebSocket delivery is intentionally replayable and at-least-once with stable Event IDs and Event sequence cursors. A WeChat or other channel adapter owns its provider-specific send receipt, retry, and acknowledgement event history; treating a socket write as a provider ACK would be incorrect. The connector contract must deduplicate by Morphz Event ID and resume from its durable cursor.
 
 ## Final verification
 

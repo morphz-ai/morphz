@@ -1,6 +1,6 @@
 # Morphz 数据库选型深度评估与混合双轨存储架构设计
 
-> 历史选型记录：本文描述的 LanceDB 路径已从默认 Runtime 移出。当前 Core 只保留 SQLite Ledger/Session/Context，检索后端由 Extension 提供。
+> 历史选型记录：本文描述的 LanceDB 路径已从默认 Runtime 移出。当前 Core 只保留 SQLite Event History/Session/Context，检索后端由 Extension 提供。
 
 在重构智能体底座时，数据库的选型是决定系统**部署摩擦力、单机吞吐量以及未来扩展性**的最核心工程决策。
 

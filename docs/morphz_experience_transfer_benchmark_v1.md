@@ -25,7 +25,7 @@
 
 1. 比较正式批准的负责人记录与晚到但未批准的个人草案，选择 `OWNER-LIN-17`，拒绝 `OWNER-LIN-99`；
 2. 比较已被取代的供应方记录与当前批准修正案，选择 `GAMMA-2`，拒绝 `GAMMA-1`；
-3. 重启 Morphz，禁止读取 Workspace、召回 Ledger 或调用物理工具，只根据恢复后的 Mind 报告案例 D、E 和判断边界。
+3. 重启 Morphz，禁止读取 Workspace、召回 Event History 或调用物理工具，只根据恢复后的 Mind 报告案例 D、E 和判断边界。
 
 目标提示、隐藏注入、预期状态和预算在三个 arm 中逐字段相同。目标提示不出现训练案例 `ALPHA/BETA/CHARLIE`，也不出现“已有策略”或“使用经验”等迁移暗示。
 

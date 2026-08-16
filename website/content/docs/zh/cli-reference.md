@@ -75,10 +75,10 @@ source: generated-cli-schema
 | `morphz context list` | 列出认知上下文 |
 | `morphz context show` | 显示一个认知上下文 |
 | `morphz context status` | 显示上下文状态、会话和活跃工作 |
-| `morphz context audit` | 对照账本验证上下文的认知投影 |
+| `morphz context audit` | 对照事件历史验证上下文的认知投影 |
 | `morphz context recall-index` | 检查或重建派生的词法召回索引 |
 | `morphz context recall-index inspect` | 显示召回索引能力与文档数量 |
-| `morphz context recall-index rebuild` | 根据账本与认知重建派生的召回索引 |
+| `morphz context recall-index rebuild` | 根据事件历史与认知重建派生的召回索引 |
 | `morphz context recall` | 搜索上下文记忆或遍历一个认知帧的血缘 |
 | `morphz context recall search` | 搜索已索引的事件与认知帧文档 |
 | `morphz context recall frame` | 遍历认知帧的来源与关系 |
@@ -1190,7 +1190,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   status
           显示上下文状态、会话和活跃工作
   audit
-          对照账本验证上下文的认知投影
+          对照事件历史验证上下文的认知投影
   recall-index
           检查或重建派生的词法召回索引
   recall

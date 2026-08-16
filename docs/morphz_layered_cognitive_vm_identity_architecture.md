@@ -270,7 +270,7 @@ Morphz 与非确定型图灵机存在有启发性的结构对应：
 | 多个可能后继 | LLM 对同一 Context 可能提出不同语义迁移 |
 | 计算分支 | Context Snapshot / Copy-on-Write + 并发 Delegate |
 | 接受路径 | 通过任务验证器、现实 Observation 和目标判据的执行路径 |
-| 确定性模拟 | Runtime 账本、队列、事务和调度器对分支的实际执行 |
+| 确定性模拟 | Runtime 事件历史、队列、事务和调度器对分支的实际执行 |
 
 但当前 Morphz 不是形式意义上的非确定型图灵机：
 

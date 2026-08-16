@@ -51,7 +51,7 @@ PostgreSQL 生产规模下的 `EXPLAIN (ANALYZE, BUFFERS)` 和 p95/p99 仍属于
 - Event、Signal、Activation、Outcome 的关键写入具有原子事务边界；
 - 主键读取、revision CAS、generation fence、lease claim 普遍有对应索引；
 - Plan、Objective、Pending Signal 等恢复器已经采用有界批次；
-- Context Encoding 已经读取 `session_projections`，不再在每次模型请求前扫描完整 Ledger；
+- Context Encoding 已经读取 `session_projections`，不再在每次模型请求前扫描完整 Event History；
 - SQLite 对易出现 deferred read→write upgrade 的路径已经主动获取 writer slot；
 - PostgreSQL 的队列 claim 普遍使用 `FOR UPDATE SKIP LOCKED`。
 
@@ -187,7 +187,7 @@ Event 已存在
 - `events(id)` 主键；
 - `context_heads(context_id)` / `mind_projections(context_id)` 主键。
 
-这条路径不会默认读取完整 Ledger，设计正确。它的返回规模等于真正要发给模型的 active working set，因此无法通过 SQL 分页来“优化”而不改变模型语义。
+这条路径不会默认读取完整 Event History，设计正确。它的返回规模等于真正要发给模型的 active working set，因此无法通过 SQL 分页来“优化”而不改变模型语义。
 
 需要持续观察的写放大是：每次 `context_tx` 会 CAS `context_heads`，并整体重写一行 `mind_projections.state_json`。如果 Frame state 将来增长到 MiB 级且 transaction 高频，SQLite WAL 与 PostgreSQL MVCC 都会放大。当前样本的 Mind 行仍很小，现阶段不应为了假设提前拆表；应先记录 `state_json_bytes`、commit latency 和 PostgreSQL dead tuples，再决定是否改为增量 projection。
 
@@ -425,7 +425,7 @@ acknowledgement 按 `(context,key)` 覆盖，但 key 代表具体 attention fing
 - `rebuild_recall_index`；
 - deep historical invariant audit；
 - seed/export；
-- 显式全 Ledger 查询。
+- 显式全 Event History 查询。
 
 云部署不应在每次应用启动时无条件跑大表 rewrite。需要把大型 migration 标为可观测、可恢复、可预执行，并给 PostgreSQL 使用独立 migration job/maintenance window。
 
@@ -433,8 +433,8 @@ acknowledgement 按 `(context,key)` 覆盖，但 key 代表具体 attention fing
 
 | 领域 | 表 | 热度与主要访问 |
 |---|---|---|
-| Ledger | `events` | H0：append、Context join、Dialogue page、Recall materialize；历史查询 C |
-| Ledger | `session_message_requests` | H0：消息幂等 PK insert/get |
+| Event History | `events` | H0：append、Context join、Dialogue page、Recall materialize；历史查询 C |
+| Event History | `session_message_requests` | H0：消息幂等 PK insert/get |
 | Context | `context_heads` | H0：Mind revision CAS/读取 |
 | Context | `mind_projections` | H0：Attempt snapshot read；context_tx 全行 rewrite |
 | Context | `session_projections` | H0：Attempt working-set join；context_tx membership mutation |
@@ -527,6 +527,6 @@ PostgreSQL 基准启用 `pg_stat_statements` 并记录 normalized query、calls�
 
 ## 10. 当前发布判断
 
-本轮没有发现“每个正常模型 Attempt 都扫描完整 Ledger”或“所有 Scheduler 查询都无索引”这类系统性灾难。核心事务继续以正确性为先，第一批六项扩展风险也已经在不削弱 durable recovery 的前提下收敛。
+本轮没有发现“每个正常模型 Attempt 都扫描完整 Event History”或“所有 Scheduler 查询都无索引”这类系统性灾难。核心事务继续以正确性为先，第一批六项扩展风险也已经在不削弱 durable recovery 的前提下收敛。
 
 因此，当前代码可以进入多 Context、长历史的受控论文实验；实验必须同时记录 page 命中率、`has_more_*`、admission deferred 数量、Store operation latency 与数据库临时排序/块读取。第二批项目仍需在正式云端多租户发布前完成，尤其是 Objective wait cursor、Recall/Timer 分支索引、启动恢复 N+1 与 PostgreSQL Event 真正批量写入。这里的“可以实验”不等于已经证明云端容量，生产规模 PostgreSQL 基准仍是发布证据的一部分。

@@ -31,7 +31,7 @@ principal_id:     Option<String>       （创建时设定，身份归属；不�
 ```
 
 - 属性属于 Runtime Reality（Registry 元数据），不依赖模型在 Frame 中自觉记录；
-- 变更应产生可审计事件（建议记入 Ledger，标注操作来源为网关/所有者）。
+- 变更应产生可审计事件（建议记入 Event History，标注操作来源为网关/所有者）。
 
 **principal_id 的动机**（2026-07-20 补充）：同一身份可以拥有多条 Session
 （多设备、多话题、网站 + 终端），当前 `SessionRecord` 无任何身份关联字段，
@@ -81,7 +81,7 @@ active = shared   →  working set 候选 = { active } ∪ { s | s.projection_sc
 ## 3. 不变量
 
 1. 投影过滤是 Runtime 物理边界，不是模型行为约定；
-2. private 只收窄「模型投影」层：Ledger 持久化、Shared Mind 共享、
+2. private 只收窄「模型投影」层：Event History 持久化、Shared Mind 共享、
    Agent 语义提炼均不受影响；
 3. 对等性由过滤规则保证：不分享者也看不到他人（无搭便车）；
 4. 属性变更可审计、可回放；
@@ -91,7 +91,7 @@ active = shared   →  working set 候选 = { active } ∪ { s | s.projection_sc
 ## 4. 开放问题（评审时定）
 
 1. 属性放 Session Registry 列，还是通用 Session 元数据机制的首个用例；
-2. scope 变更事件的 Ledger event 类型与脱敏（公开流不得泄露谁切换了什么）；
+2. scope 变更 Event 的类型与脱敏（公开流不得泄露谁切换了什么）；
 3. `send_message`（Agent 主动跨会话发消息）是否受 scope 约束——倾向不约束
    （那是披露决策，属 Frame/披露边界层），但需明确写入设计；
 4. Prefix cache 影响：candidates 因 scope 过滤差异导致不同用户的 inbox 段

@@ -288,7 +288,7 @@ pub struct OrchestratorConfig {
     pub model_provider_max_in_flight: usize,
     /// In-process concurrency window for asynchronous EventBus business handlers.
     pub event_bus: EventBusConfig,
-    /// Bounded single-node write and group-commit policy for the durable Session/Event Ledger.
+    /// Bounded single-node write and group-commit policy for durable Session state and Events.
     pub event_writer: EventWriterConfig,
     /// General runtime scheduling policy. It defines physical windows, not task semantics.
     pub scheduler: SchedulerConfig,
@@ -344,7 +344,7 @@ pub struct OrchestratorConfig {
     pub context_hard_token_limit: usize,
     /// Token capacity reserved for agent-driven context maintenance.
     pub context_maintenance_reserve_tokens: usize,
-    /// Maximum characters shown for one raw Observation; the Ledger retains the full text.
+    /// Maximum characters shown for one raw Observation; the persisted Event retains full text.
     pub observation_preview_chars: usize,
     /// Soft model-evaluation checkpoint interval for one user message. It prompts reflection but
     /// does not stop the task.
@@ -648,7 +648,7 @@ pub struct PostgresStorageConfig {
 }
 
 /// Conservative startup cleanup for records that no longer carry Runtime
-/// authority. This never applies to Ledger Events, model attempts, Threads,
+/// authority. This never applies to persisted Events, model attempts, Threads,
 /// Objectives, tool results, Mind snapshots, or Recall documents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1189,7 +1189,7 @@ pub struct BackgroundTaskConfig {
     pub timeout_notify_secs: u64,
     pub max_output_buffer_bytes: usize,
     /// Window for combining background stdout/stderr before publishing Events, avoiding line-by-line
-    /// Ledger amplification.
+    /// Event Store amplification.
     pub output_event_coalesce_ms: u64,
     /// Maximum characters in one background-output Event; artifacts always retain full content.
     pub max_output_event_chars: usize,

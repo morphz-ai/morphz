@@ -88,7 +88,7 @@ Harness 不是简单地位于“人格之上”或“人格之下”。Agent 的
                     └─────────┬───────────┘
                               │ uses
                        Runtime Kernel
-       Ledger · Context Tx · Scheduler · Sandbox · Permission
+       Event History · Context Tx · Scheduler · Sandbox · Permission
        Causality · Identity · Tool I/O · Recovery · Fencing
                               │
                          Real World
@@ -161,7 +161,7 @@ Harness 可以给出领域调度建议和默认策略，但 Objective、Evaluati
 1. **Manifest（清单）**：名称、版本、领域、兼容的 Runtime 契约、依赖和入口。
 2. **Harness Contract（领域契约）**：稳定的对象、算子、能力与现实语义，并用自然语言说明每项含义。
 3. **Context Encoder（上下文编码器）**：把领域状态紧凑地编码进当前求值视图。
-4. **Projection Adapter（投影适配器）**：将 Ledger 中相关事实投影为可查询的领域状态，但不改变 Ledger 的权威性。
+4. **Projection Adapter（投影适配器）**：将 Event History 中相关事实投影为可查询的领域状态，但不改变 Event History 的权威性。
 5. **Tool Bundle（工具集合）**：领域工具、参数规范、结果结构和错误语义；仍受 Runtime 权限与沙箱控制。
 6. **Default Frames（默认认知 Frame）**：由人精心构造的领域认识纪律和可复用经验。
 7. **Skill Index（技能索引）**：紧凑描述可发现的 Skill，具体内容按需加载。
@@ -365,7 +365,7 @@ Harness 不能以牺牲上下文效率为代价。它进入 Context Encoding 时
 3. 详细 Skill 在被选择后延迟加载；
 4. 当前资源、证据、依赖和领域 Projection 属于动态区；
 5. Agent 自己形成的领域 Frame 按相关性、工作集和 Context pressure 激活；
-6. 不活跃的领域状态和 Frame 可以 swap out，并保留在持久 Projection / Ledger 中。
+6. 不活跃的领域状态和 Frame 可以 swap out，并保留在持久 Projection / Event History 中。
 
 因此 Harness 不是一份每轮重复注入的巨大 Prompt，而是一套可编码、可投影、可延迟发现的领域环境。
 
@@ -406,7 +406,7 @@ Harness 以 `.hns` 单文件或目录包成为可版本化、可分享、可交�
 - 支持任意多个 Harness 组合；
 - 自动相信 Harness 提供的校验结果；
 - 把所有领域 Skill 一次性放入 Context；
-- 为不同 Harness 复制 Agent、Session、Ledger 或 Runtime；
+- 为不同 Harness 复制 Agent、Session、Event History 或 Runtime；
 - 仅凭一两个任务就证明 Agent 已形成可泛化的领域认知。
 
 这些边界可以避免在证据不足时把一个正确的架构方向过早固化成错误接口。

@@ -12,7 +12,7 @@
 验证当前 Runtime 在同时推进多个 Session 时，是否能够：
 
 1. 把用户消息、工具结果、进度和最终回复路由到正确 Session；
-2. 让模型只看到当前 Session 的 Ledger、Mind 和 Inbox；
+2. 让模型只看到当前 Session 的 Event History、Mind 和 Inbox；
 3. 在互相冲突的身份、项目、口令和端口下保持认知隔离；
 4. 并发修订各自 Mind，不发生版本、来源或内容串线；
 5. Runtime 重启后分别恢复三个 Session，并继续正确回答。
@@ -95,7 +95,7 @@ Cirrus  2026-07-12T13:54:12.414045000Z  user 顾川 → 顾澜
 
 因此，在当前隔离模式下，可以确认：
 
-> Runtime 的 Session 路由、Ledger 查询、Context 构造、Mind transaction 和重启恢复均保持了 Session 边界；模型能够依据各自 Context 分辨并持续推进多个对话。
+> Runtime 的 Session 路由、Event History 查询、Context 构造、Mind transaction 和重启恢复均保持了 Session 边界；模型能够依据各自 Context 分辨并持续推进多个对话。
 
 ## 5. 独立发现：Context 隔离不等于物理环境隔离
 
@@ -110,7 +110,7 @@ Cirrus  2026-07-12T13:54:12.414045000Z  user 顾川 → 顾澜
 
 这说明：
 
-1. **不是 Session Context 串线**：三个 Ledger 的外来标记均为 0，Mind 和回复也正确；
+1. **不是 Session Context 串线**：三个 Event History 的外来标记均为 0，Mind 和回复也正确；
 2. **是模型工具纪律问题**：Gemini 在 maintain 后把普通“项目配置”误当成需要检查 workspace 的任务；
 3. **物理 workspace 当前确实共享**：不同 Session 使用同一 Tool Registry 和 `workspace_root`，一个 Session 写入的文件原则上可被另一个 Session 读取；
 4. 后续若需要项目级物理隔离，应把 `workspace_id/workspace_root` 作为 Runtime 路由资源，而不能依赖模型自行区分。

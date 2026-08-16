@@ -21,8 +21,8 @@ use crate::provider::auth::{
 };
 use crate::provider::control::ProviderAccountControlAction;
 use crate::runtime::{
-    AcknowledgeAttentionCommand, ContextOverviewQuery, LedgerQuery, ModelUsageQuery, MorphzRuntime,
-    RuntimeOverviewQuery, SchedulerQuery,
+    AcknowledgeAttentionCommand, ContextOverviewQuery, EventHistoryQuery, ModelUsageQuery,
+    MorphzRuntime, RuntimeOverviewQuery, SchedulerQuery,
 };
 use crate::sdk::{
     AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, ClaimEdgeCommand,
@@ -595,7 +595,7 @@ struct ModelUsageHttpQuery {
 }
 
 #[derive(Default, serde::Deserialize)]
-struct LedgerHttpQuery {
+struct EventHistoryHttpQuery {
     token: Option<String>,
     session_id: Option<String>,
     principal_id: Option<String>,
@@ -1077,7 +1077,10 @@ impl Server {
                 "/api/contexts/:context_id/threads/:thread_id",
                 get(handle_get_thread_detail).post(handle_control_thread),
             )
-            .route("/api/contexts/:context_id/ledger", get(handle_query_ledger))
+            .route(
+                "/api/contexts/:context_id/events",
+                get(handle_query_event_history),
+            )
             .route(
                 "/api/contexts/:context_id/projection-audit",
                 post(handle_audit_mind_projection),
@@ -2379,7 +2382,7 @@ async fn handle_search_recall(
     }
 }
 
-/// Search the human-facing transcript rather than the complete Event Ledger.
+/// Search the human-facing transcript rather than the complete Event History.
 ///
 /// Recall remains the lexical candidate engine, but this read model only
 /// admits persisted messages which can actually be opened in Dialogue. Frame,
@@ -4788,18 +4791,18 @@ async fn handle_control_thread(
     }
 }
 
-async fn handle_query_ledger(
+async fn handle_query_event_history(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
     headers: HeaderMap,
-    Query(query): Query<LedgerHttpQuery>,
+    Query(query): Query<EventHistoryHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
     match state
         .sdk
-        .query_ledger(LedgerQuery {
+        .query_event_history(EventHistoryQuery {
             context_id,
             session_id: query.session_id,
             principal_id: query.principal_id,
@@ -10165,7 +10168,7 @@ account = "xai-account"
         let summary = restored
             .iter()
             .find(|event| event.topic == "runtime/model_reasoning_summary")
-            .expect("restarted Runtime must recover the reasoning summary from the Ledger");
+            .expect("restarted Runtime must recover the reasoning summary from persisted Events");
         assert_eq!(
             summary.payload.get("text").and_then(|value| value.as_str()),
             Some("provider-authored summary")
@@ -10372,27 +10375,28 @@ account = "xai-account"
         assert!(scheduler_json["model_provider"].is_object());
         assert!(scheduler_json["context_capacity"].is_object());
 
-        let ledger = handle_query_ledger(
+        let event_history = handle_query_event_history(
             State(Arc::clone(&state)),
             Path("context-test".to_string()),
             HeaderMap::new(),
-            Query(LedgerHttpQuery {
+            Query(EventHistoryHttpQuery {
                 token: None,
                 session_id: Some("api-observability-session".to_string()),
                 limit: Some(50),
-                ..LedgerHttpQuery::default()
+                ..EventHistoryHttpQuery::default()
             }),
         )
         .await
         .into_response();
-        assert_eq!(ledger.status(), StatusCode::OK);
-        let ledger_body = axum::body::to_bytes(ledger.into_body(), usize::MAX)
+        assert_eq!(event_history.status(), StatusCode::OK);
+        let event_history_body = axum::body::to_bytes(event_history.into_body(), usize::MAX)
             .await
             .unwrap();
-        let ledger_json: serde_json::Value = serde_json::from_slice(&ledger_body).unwrap();
-        assert_eq!(ledger_json["context_id"], json!("context-test"));
-        assert!(ledger_json["events"].is_array());
-        assert!(ledger_json["scanned_count"].is_number());
+        let event_history_json: serde_json::Value =
+            serde_json::from_slice(&event_history_body).unwrap();
+        assert_eq!(event_history_json["context_id"], json!("context-test"));
+        assert!(event_history_json["events"].is_array());
+        assert!(event_history_json["scanned_count"].is_number());
 
         let projection_audit = handle_audit_mind_projection(
             State(Arc::clone(&state)),
@@ -10441,15 +10445,15 @@ account = "xai-account"
     }
 
     #[tokio::test]
-    async fn ledger_query_returns_the_latest_page_and_pages_backward_without_overlap() {
+    async fn event_history_query_returns_the_latest_page_and_pages_backward_without_overlap() {
         let (_, runtime) = test_state().await;
         for index in 1..=5 {
             runtime
                 .publish(Event::new(
-                    format!("ledger-page-{index}"),
-                    "Ledger-Pagination-Test".to_string(),
-                    "ledger_test".to_string(),
-                    "test/ledger-pagination".to_string(),
+                    format!("event-history-page-{index}"),
+                    "Event-History-Pagination-Test".to_string(),
+                    "event_history_test".to_string(),
+                    "test/event-history-pagination".to_string(),
                     vec![
                         ("context_id".to_string(), json!("context-test")),
                         ("ordinal".to_string(), json!(index)),
@@ -10462,11 +10466,11 @@ account = "xai-account"
         }
 
         let latest = runtime
-            .query_ledger(LedgerQuery {
+            .query_event_history(EventHistoryQuery {
                 context_id: "context-test".to_string(),
-                actor: Some("Ledger-Pagination-Test".to_string()),
+                actor: Some("Event-History-Pagination-Test".to_string()),
                 limit: 2,
-                ..LedgerQuery::default()
+                ..EventHistoryQuery::default()
             })
             .await
             .unwrap();
@@ -10476,19 +10480,19 @@ account = "xai-account"
                 .iter()
                 .map(|event| event.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ledger-page-4", "ledger-page-5"]
+            vec!["event-history-page-4", "event-history-page-5"]
         );
         let older_cursor = latest
             .next_before_sequence
             .expect("an older page must exist");
 
         let older = runtime
-            .query_ledger(LedgerQuery {
+            .query_event_history(EventHistoryQuery {
                 context_id: "context-test".to_string(),
-                actor: Some("Ledger-Pagination-Test".to_string()),
+                actor: Some("Event-History-Pagination-Test".to_string()),
                 before_sequence: Some(older_cursor),
                 limit: 2,
-                ..LedgerQuery::default()
+                ..EventHistoryQuery::default()
             })
             .await
             .unwrap();
@@ -10498,7 +10502,7 @@ account = "xai-account"
                 .iter()
                 .map(|event| event.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ledger-page-2", "ledger-page-3"]
+            vec!["event-history-page-2", "event-history-page-3"]
         );
         assert!(older.next_before_sequence.is_some());
     }
@@ -10676,7 +10680,7 @@ account = "xai-account"
             .await
             .unwrap();
         // Recall is an eventually consistent, rebuildable Projection and is
-        // deliberately outside the Ledger/Mind commit transaction.
+        // deliberately outside the Event and Mind commit transaction.
         runtime.rebuild_recall_index("context-test").await.unwrap();
 
         let inspect = handle_inspect_recall_index(
@@ -10895,7 +10899,7 @@ account = "xai-account"
         }
         // Recent Runtime noise must not evict an old but still newest
         // Dialogue tail. The initial page is defined by message count and
-        // immutable Ledger sequence, not by wall-clock date or arbitrary
+        // immutable Event sequence, not by wall-clock date or arbitrary
         // Event count.
         for ordinal in 1..=8 {
             runtime

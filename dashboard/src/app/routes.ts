@@ -1,4 +1,4 @@
-export type DashboardView = 'overview' | 'dialogue' | 'scheduler' | 'cognition' | 'ledger' | 'runtime' | 'credentials' | 'providers'
+export type DashboardView = 'overview' | 'dialogue' | 'scheduler' | 'cognition' | 'events' | 'runtime' | 'credentials' | 'providers'
 
 export type CognitionView = 'mind' | 'attention' | 'encoding' | 'prompt' | 'recall'
 
@@ -57,8 +57,8 @@ export function parseDashboardRoute(pathname: string): DashboardRoute {
         cognitionView: candidate && cognitionViews.has(candidate) ? candidate : 'mind',
       }
     }
-    case 'ledger':
-      return { view: 'ledger', contextId }
+    case 'events':
+      return { view: 'events', contextId }
     case 'overview':
     default:
       return { view: 'overview', contextId }
@@ -89,8 +89,8 @@ export function dashboardPath(
       return `/contexts/${context}/scheduler`
     case 'cognition':
       return `/contexts/${context}/cognition/${cognitionView}`
-    case 'ledger':
-      return `/contexts/${context}/ledger`
+    case 'events':
+      return `/contexts/${context}/events`
     case 'overview':
     default:
       return `/contexts/${context}/overview`

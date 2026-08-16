@@ -23,7 +23,7 @@
 3. 按 `chat_id` 幂等创建挂载于共享 Context 的 Session；
 4. 通过 Morphz HTTP API 发送消息并以 Event sequence 等待终态回复；
 5. 把回复送回官方 `POST /send`；
-6. 从不可变 Ledger Event 生成π-Bench 评分器需要的 `turn_*.json` 轨迹。
+6. 从不可变 persisted Event 生成π-Bench 评分器需要的 `turn_*.json` 轨迹。
 
 `/new` 只是官方 Channel 的 task 边界握手：桥接器创建/确认对应 Session 并返回 `New session started`，不会清空共享 Mind。
 

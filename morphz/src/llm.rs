@@ -320,7 +320,7 @@ pub struct Message {
 }
 
 /// Ephemeral provider-envelope marker. This message is assembled from
-/// Ledger-backed attachment metadata immediately before a model request and is
+/// Event-backed attachment metadata immediately before a model request and is
 /// never persisted as conversational text.
 pub const MODEL_ATTACHMENT_MESSAGE_NAME: &str = "__morphz_model_attachments__";
 

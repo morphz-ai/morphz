@@ -4,7 +4,7 @@
 >
 > 日期：2026-08-01
 >
-> 适用范围：共享 Mind、Context Transaction、Frame 生命周期、Session 海量并发、Event Ledger、在线状态恢复与多 Runtime Worker
+> 适用范围：共享 Mind、Context Transaction、Frame 生命周期、Session 海量并发、Event History、在线状态恢复与多 Runtime Worker
 >
 > 上位架构：[统一人格、多路会话与分布式认知架构](./morphz_single_identity_distributed_cognition_architecture.md)
 >
@@ -18,14 +18,14 @@
 
 - SQLite `context_heads`、`mind_projections` 与周期/检查点 `mind_snapshots`；
 - Context transaction 通过数据库 revision CAS 提交，不再只依赖进程内 Mutex；
-- Ledger Event、Mind Projection、Context Head 与 Session attention 在同一 SQLite transaction 中原子提交；
+- persisted Event、Mind Projection、Context Head 与 Session attention 在同一 SQLite transaction 中原子提交；
 - Context Encoding、Frame 查询与 Mind version 读取在线 Projection；旧数据库仅在首次访问时完整重放并懒迁移；
-- 已增加 `session_projections`：每条 Agent 可见 Observation 在 Ledger append 的同一数据库事务中进入当前态投影；`retire` 删除投影行、`restore` 从不可变 Ledger 恢复投影行；
-- Session Projection 不引入 projection head、watermark 或 Session Snapshot。Ledger append 与 Projection 更新原子提交，因此查询出的行集本身就是当前完整状态；
-- Context Encoding 先计算有界 Session Working Set，再只读取这些 Session 与 Context-wide Observation 的 Session Projection，不再扫描所选 Session 的完整 Ledger；
+- 已增加 `session_projections`：每条 Agent 可见 Observation 在 Event append 的同一数据库事务中进入当前态投影；`retire` 删除投影行、`restore` 从不可变 Event History 恢复投影行；
+- Session Projection 不引入 projection head、watermark 或 Session Snapshot。Event append 与 Projection 更新原子提交，因此查询出的行集本身就是当前完整状态；
+- Context Encoding 先计算有界 Session Working Set，再只读取这些 Session 与 Context-wide Observation 的 Session Projection，不再扫描所选 Session 的完整 Event History；
 - `context_tx` 只按 SExpr 实际涉及的标识查询、验证 Observation，不再扫描全 Context 来解析少量 `@eN`；
 - 新事务默认记录规范化 SExpr、Diff、`before_hash` 与 `after_hash`，Projection Profile 不再复制完整 `state_after`；
-- Projection 缺失时优先从最近可信 Snapshot + 后续 Mind Transactions 增量重建；Snapshot、事务 hash chain 与 Ledger 游标任一不一致都会显式失败；
+- Projection 缺失时优先从最近可信 Snapshot + 后续 Mind Transactions 增量重建；Snapshot、事务 hash chain 与 Event History 游标任一不一致都会显式失败；
 - Context Head 与 Mind Projection 的在线一致性由同一条数据库语句读取；不会因另一 Runtime 恰好在两次查询之间完成原子初始化而把健康状态误报为单边损坏；
 - `morphz context audit [CONTEXT_ID]` 同时执行 Genesis 全量重放、Snapshot 增量重放并比对在线 Projection；
 - 两个独立 ContextEngine 对同一 Context 的并发同版本写入，已由 SQLite CAS 验证为仅一个成功；
@@ -36,7 +36,7 @@
 - Provider 的 queued、in-flight、max-in-flight 与累计取得槽位次数已进入统一 Scheduler Snapshot；CLI、HTTP API、Rust SDK 与 Dashboard 使用同一事实源。
 - Runtime 持久层已从具体 `Arc<SqliteStore>` 解耦为一份完整的 `RuntimeStore` capability composition；SDK 可以显式注入后端，所有原子能力必须由同一个 Store 提供，禁止把一次因果提交拆到互不相关的数据库。
 - 已建立数据库无关的完整 RuntimeStore conformance suite；SQLite/PostgreSQL 均已通过 Context revision CAS、Projection/Event/Session attention 原子一致、Scheduler authority 和失败 Batch 全回滚测试。
-- PostgreSQL Context Authority 已实现 Event Ledger/query、原子 Batch/outbox、Mind Projection/head revision CAS、Snapshot、seed provenance 和 Session attention 同事务更新；已在临时 PostgreSQL 15 实例上与 SQLite 运行同一套 Context transaction conformance suite 并通过。
+- PostgreSQL Context Authority 已实现 Event History/query、原子 Batch/outbox、Mind Projection/head revision CAS、Snapshot、seed provenance 和 Session attention 同事务更新；已在临时 PostgreSQL 15 实例上与 SQLite 运行同一套 Context transaction conformance suite 并通过。
 - PostgreSQL 物理 Timer Store 已实现 generation fence、leased claim、retry/complete/cancel；到期领取使用 `FOR UPDATE SKIP LOCKED`，两个并发 Worker 已通过同一套无重复 claim 测试。
 - PostgreSQL Objective Store 已实现生命周期 revision CAS、等待条件、求值 lease、用量记账，以及“求值 lease + continuation Event/outbox”原子提交；SQLite/PostgreSQL 已通过同版本双写只允许一个胜者和 Event 冲突整笔回滚测试。
 - PostgreSQL Execution Job Store 已实现因果路由验证、revision/claim-token 双重 fence、heartbeat、requeue/cancel、不可逆终态，以及“物理终态 + tool-output Event”原子且幂等提交；并发 Worker claim 与陈旧 claim 拒绝已通过跨后端契约测试。
@@ -73,8 +73,8 @@ Morphz 已经具备一套成立的 Context 并发语义：
 - Context transaction 显式携带 `base-version`；
 - Runtime 从在线 Mind Projection 读取最新状态并拒绝陈旧版本；
 - Context 内的事务由进程内互斥锁串行提交；
-- 每次事务形成不可变 Ledger Event，并记录事务、Diff 与前后 hash；
-- Mind 可以通过 Ledger 确定性重放，退役内容仍可恢复；
+- 每次事务形成不可变 persisted Event，并记录事务、Diff 与前后 hash；
+- Mind 可以通过 Event History 确定性重放，退役内容仍可恢复；
 - `session_working_set.max_sessions = 1` 时，每次模型求值只完整投影当前 Session，同时继续读取共享 Mind。
 
 因此，当前实现作为单机 SQLite Agent Runtime 已经足够，并且允许同一主机上的多个 Runtime 进程共享数据库：Context CAS 防止 lost update，Activation/Job/Timer 等通过持久 lease 仲裁。SQLite WAL 仍只有一个物理写者，因此这是一种正确的多进程协调能力，不等于高吞吐分布式数据库。PostgreSQL 已完成双 Runtime、双 OS 进程和进程终止后的 lease 恢复验证；在跨主机、数据库故障切换和生产编排环境验证完成前，仍不宣称完整生产级横向扩展。
@@ -86,7 +86,7 @@ Morphz 已经具备一套成立的 Context 并发语义：
 3. 多 Runtime Worker 已通过独立连接池、双完整 Runtime、双 OS 进程和进程崩溃恢复验证，尚缺跨主机与生产编排故障注入；
 4. Frame 级 MVCC 已消除不相干 Frame 写入的保守冲突，但尚缺生产负载下的冲突率、自动 rebase 收益和复杂事务分布数据。
 
-目标架构不是取消 Event Ledger，也不是让 Runtime 接管 Frame 语义，而是增加一个可验证、可重建的在线 `Mind Projection`，把高频服务路径与完整历史审计路径分开。
+目标架构不是取消 Event History，也不是让 Runtime 接管 Frame 语义，而是增加一个可验证、可重建的在线 `Mind Projection`，把高频服务路径与完整历史审计路径分开。
 
 ## 2. Phase 0 原基线的准确语义
 
@@ -110,7 +110,7 @@ Phase 0 Runtime 执行：
   ↓
 取得 context_id 对应的进程内 Mutex
   ↓
-读取该 Context 的相关 Ledger Events
+读取该 Context 的相关 persisted Events
   ↓
 确定性重建当前 MindState
   ↓
@@ -129,7 +129,7 @@ Phase 0 Runtime 执行：
 
 当前实现已经包含 MVCC/OCC 的核心要素：
 
-- Ledger 保留多个历史版本；
+- Event History 保留多个历史版本；
 - Evaluation 基于一个 Context version 读取和思考；
 - 事务声明自己的 `base-version`；
 - 提交时执行陈旧版本检查；
@@ -158,7 +158,7 @@ Phase 0 的 Context Mutex 只存在于一个 Runtime 进程，因而无法防止
 - `MindState.version`：一次成功 Context transaction 增加 1，保护整个事务读取的 Context Snapshot；
 - `ContextFrame.revision`：对某个 Frame 执行 `revise` 时增加 1，描述该 Frame 自身的修订历史。
 
-当前实现同时使用两层版本：全局 `MindState.version` 保留 Ledger 物理提交顺序与事务审计，`ContextFrame.revision` 则是认知修改的 MVCC 边界。事务即使携带旧 Context version，只要 Runtime 能证明它涉及的 Frame、Relation 与来源在 base-version 后没有变化，就可以安全 rebase 到当前 head；修改不同 Frame 的事务不再无条件互相冲突。
+当前实现同时使用两层版本：全局 `MindState.version` 保留 Event History 物理提交顺序与事务审计，`ContextFrame.revision` 则是认知修改的 MVCC 边界。事务即使携带旧 Context version，只要 Runtime 能证明它涉及的 Frame、Relation 与来源在 base-version 后没有变化，就可以安全 rebase 到当前 head；修改不同 Frame 的事务不再无条件互相冲突。
 
 以下情况仍会拒绝并要求基于最新状态重新求值：同一 Frame 被并发 revise/retire、创建相同 Frame ID、derive/revise 所依赖的来源已变化，以及 checkpoint/rollback 等大范围状态操作。模型仍只提交高层 SExpr，不需要显式维护 read/write set 或数据库版本向量。
 
@@ -172,7 +172,7 @@ Phase 0 的 Context Mutex 只存在于一个 Runtime 进程，因而无法防止
 - `runtime/context_seeded`；
 - `context/projected_observation`。
 
-这些事件按 Ledger sequence 排序后交给 `load_mind_from_events`。
+这些事件按 Event sequence 排序后交给 `load_mind_from_events`。
 
 这条路径刻意不受 Session Working Set 限制，因为它是在验证共享 Mind 的完整因果历史；它不再位于普通模型求值热路径。正常 Context Encoding 从 `mind_projections` 和 `session_projections` 读取当前态。
 
@@ -203,7 +203,7 @@ transaction v1 → v2
 3. 检查事务 `base-version` 是否连续；
 4. 比较重新计算的状态与事件记录的 `state_after`；
 5. 比较重新计算的 changes 与记录的 changes；
-6. 任意不一致都视为 Ledger 损坏或实现不确定。
+6. 任意不一致都视为 Event History 损坏或实现不确定。
 
 所以重放同时承担状态恢复与完整性审计。
 
@@ -236,7 +236,7 @@ retired:
 - `supersedes` 是显式关系，不自动删除、退役旧 Frame；
 - 当前没有按时间自动判定 Frame “过期”的 Runtime 语义。
 
-因此，退役减少模型可见 Context，却不会减少 Ledger 存储量和完整历史重放成本。
+因此，退役减少模型可见 Context，却不会减少 Event History 存储量和完整历史重放成本。
 
 ## 4. 海量 Session 下哪些路径可以扩展
 
@@ -271,7 +271,7 @@ Stable VM Prefix
 - 创建独立 Mind；
 - 阻止不同 Session 并发读取同一 Mind；
 - 删除其他 Session；
-- 自动减少当前 Mind 重建时扫描的 Context Ledger 历史；
+- 自动减少当前 Mind 重建时扫描的 Context Event History 历史；
 - 消除 SQLite 的单物理写者限制。
 
 因此它解决 Prompt 认知负担和 Session 隔离，但不是持久层查询优化。
@@ -305,11 +305,11 @@ O(当前 Context 历史事件总数)
 O(当前活跃 Frame 数 + 当前 Session 事件数)
 ```
 
-当前普通求值先读取一行 `mind_projections`，再按有界 Working Set 查询 `session_projections`。复杂度现在取决于活跃 Mind 和被选中 Session 的当前有效 Observation，而不取决于整个 Context 的历史事件数。完整 Ledger 扫描只保留在迁移、恢复、审计和显式历史操作中。
+当前普通求值先读取一行 `mind_projections`，再按有界 Working Set 查询 `session_projections`。复杂度现在取决于活跃 Mind 和被选中 Session 的当前有效 Observation，而不取决于整个 Context 的历史事件数。完整 Event History 扫描只保留在迁移、恢复、审计和显式历史操作中。
 
 ### 5.2 Context 锁内重建完整 Mind（已消除）
 
-早期 Context Mutex 覆盖事件读取、引用解析、Mind 重建和事务应用。当前锁内从在线 Mind Projection 读取状态；Context transaction 只按实际引用的 Event ID 查询 Observation，并通过数据库 revision CAS 提交。锁的成本不再随完整 Ledger 线性增长。
+早期 Context Mutex 覆盖事件读取、引用解析、Mind 重建和事务应用。当前锁内从在线 Mind Projection 读取状态；Context transaction 只按实际引用的 Event ID 查询 Observation，并通过数据库 revision CAS 提交。锁的成本不再随完整 Event History 线性增长。
 
 单 Context 串行提交能力近似：
 
@@ -331,7 +331,7 @@ O(transaction_count × average_mind_size)
 
 ### 5.4 Observation 引用全量准备（已消除）
 
-当前只提取事务实际出现的引用，按稳定 Event ID 或短引用查询对应 Observation，并校验其 Ledger sequence 严格早于 transaction Event。不会为一次小事务预先遍历整个 Context。
+当前只提取事务实际出现的引用，按稳定 Event ID 或短引用查询对应 Observation，并校验其 Event sequence 严格早于 transaction Event。不会为一次小事务预先遍历整个 Context。
 
 ### 5.5 SQLite 单物理写者
 
@@ -342,13 +342,13 @@ WAL 支持并发读和单写，但 Session Event、Signal、Activation、Executi
 目标持久模型分为五层：
 
 ```text
-Session Event Ledger
+Session Event History
   每个 Session 的消息、回复、工具与局部因果事实
 
 Session Projection
   每个 Session 当前仍激活的 Observation 行集；支持 swap in / swap out
 
-Mind Transaction Ledger
+Mind Transaction Event History
   真正修改共享认知的 context_tx 与 Context Seed
 
 Mind Projection
@@ -358,12 +358,12 @@ Mind Snapshot / Audit Checkpoint
   用于快速恢复、历史验证与离线完整重放
 ```
 
-### 6.1 Ledger 与 Projection 的权威关系
+### 6.1 Event History 与 Projection 的权威关系
 
-- Ledger 仍是不可变事实源；
+- Event History 仍是不可变事实源；
 - Projection 是可重建的在线物化视图；
-- 正常请求读取 Projection，不重放全部 Ledger；
-- Projection 更新必须与事务 Ledger 追加处于同一原子提交；
+- 正常请求读取 Projection，不重放全部 Event History；
+- Projection 更新必须与事务 Event History 追加处于同一原子提交；
 - Projection 损坏时可从 Snapshot + 后续事务重建；
 - 完整历史重放转为后台审计和恢复工具，不再位于高频请求路径。
 
@@ -380,13 +380,13 @@ session_projections
 
 它没有 `session_projection_heads`，也没有 Session Snapshot：
 
-- 新 Observation 与 Ledger Event 在同一数据库事务中插入 Projection；
+- 新 Observation 与 persisted Event 在同一数据库事务中插入 Projection；
 - `retire @event` 与 Mind revision CAS 在同一事务中删除该 Projection 行；
-- `restore @event` 按 Ledger 中不可变 Event 恢复该 Projection 行；
+- `restore @event` 按 Event History 中不可变 Event 恢复该 Projection 行；
 - 同一个 Event 的幂等 append 不会把已经 retire 的行意外复活；
-- 并发 retire/restore 的最终顺序由 Context transaction revision CAS 和 Ledger sequence 决定。
+- 并发 retire/restore 的最终顺序由 Context transaction revision CAS 和 Event sequence 决定。
 
-因此，即使某个 Session 的所有 Observation 都被 retire，空查询结果也明确表示其当前 Projection 为空，而不是“尚未投影”。原子提交保证不存在 Ledger 已成功但 Projection 尚未处理的合法中间状态。
+因此，即使某个 Session 的所有 Observation 都被 retire，空查询结果也明确表示其当前 Projection 为空，而不是“尚未投影”。原子提交保证不存在 Event History 已成功但 Projection 尚未处理的合法中间状态。
 
 ### 6.2 正常 Context Encoding
 
@@ -427,7 +427,7 @@ COMMIT
 context_heads
   context_id, revision, projection_hash, head_event_id, updated_at
 
-events（Mind Transaction Ledger 也是 Event 的一种）
+events（Mind Transaction Event History 也是 Event 的一种）
   id, sequence, context_id, session_id, type, topic, payload
 
 mind_projections
@@ -440,7 +440,7 @@ mind_snapshots
   id, context_id, revision, state_blob, state_hash, created_at
 ```
 
-`mind_projections.state_json` 保存完整、开放的 MindState；当前实现没有把 Frame body 拆成 Runtime 固定的 `mind_frames` 业务表。这样既提供 O(当前状态) 的在线读取，也保留 Agent 自主形成 SExpr 结构的自由。这些都是可由 Ledger 重建的物理投影，不是对 Agent Mind body 的固定业务 schema。
+`mind_projections.state_json` 保存完整、开放的 MindState；当前实现没有把 Frame body 拆成 Runtime 固定的 `mind_frames` 业务表。这样既提供 O(当前状态) 的在线读取，也保留 Agent 自主形成 SExpr 结构的自由。这些都是可由 Event History 重建的物理投影，不是对 Agent Mind body 的固定业务 schema。
 
 ## 7. Context revision 与 Frame 级 MVCC（已实现）
 
@@ -482,7 +482,7 @@ relate a supersedes b         读 a/b，写 relation(a, supersedes, b)
 
 Frame revision 和 read/write set 由 Runtime 自动维护。模型仍然提交高层 SExpr，不需要手工书写数据库锁、分区或复杂版本向量。
 
-全局 Context revision 仍可作为 Ledger 审计顺序存在，但不必让所有不相干 Frame 写入互相冲突。
+全局 Context revision 仍可作为 Event History 审计顺序存在，但不必让所有不相干 Frame 写入互相冲突。
 
 ## 8. Snapshot、重放与完整性
 
@@ -504,7 +504,7 @@ Runtime 重启时：
 恢复在线 Projection
 ```
 
-当前实现把“Projection 与 Context Head 同时缺失”视为可重建状态：优先选择最新 Snapshot，验证 Snapshot state/revision/hash 与其 head Event，再仅查询该 Ledger sequence 之后的 `chat/context_tx_committed`，逐个验证 `before_hash`、`after_hash`、Diff 与 SExpr 确定性，最后通过数据库初始化边界安装 Projection。并发初始化者会收敛到同一已提交行。
+当前实现把“Projection 与 Context Head 同时缺失”视为可重建状态：优先选择最新 Snapshot，验证 Snapshot state/revision/hash 与其 head Event，再仅查询该 Event sequence 之后的 `chat/context_tx_committed`，逐个验证 `before_hash`、`after_hash`、Diff 与 SExpr 确定性，最后通过数据库初始化边界安装 Projection。并发初始化者会收敛到同一已提交行。
 
 如果只有 Projection 或 Context Head 单边缺失，或者二者 revision/hash 不一致，则视为损坏并显式报错，不会自动覆盖。显式审计同时比较：
 
@@ -520,7 +520,7 @@ Runtime 重启时：
 - 检查 Projection 漂移；
 - 发现损坏或被篡改的历史；
 - 重建任意历史版本；
-- 验证新 Runtime 版本与旧 Ledger 的兼容性。
+- 验证新 Runtime 版本与旧 Event History 的兼容性。
 
 ### 8.4 事务记录优化
 
@@ -537,15 +537,15 @@ Runtime 重启时：
 
 ### 8.5 v1 历史保留策略
 
-v1 采取“语义 Ledger 永久保留、在线读取有界、诊断大对象先压缩”的保守策略：
+v1 采取“语义 Event History 永久保留、在线读取有界、诊断大对象先压缩”的保守策略：
 
 - Context Seed、Mind Transaction、用户/Agent 消息、工具事实及其稳定 Event ID/sequence 不做自动删除；
-- Snapshot 是加速恢复的派生物，不构成删除其之前 Ledger 的授权；
+- Snapshot 是加速恢复的派生物，不构成删除其之前 Event History 的授权；
 - Context Encoding 与 Snapshot 增量恢复都使用有界 SQL 查询，历史增长不再等价于每轮 Prompt 或热路径扫描增长；
-- 物理模型请求的精确 Prompt 只通过临时 `runtime/model_request_snapshot` 提供给实时观察者，不进入 Ledger；有界压力、预算与请求形状归入既有 `runtime/model_attempt_state`；
+- 物理模型请求的精确 Prompt 只通过临时 `runtime/model_request_snapshot` 提供给实时观察者，不进入 Event History；有界压力、预算与请求形状归入既有 `runtime/model_attempt_state`；
 - 将来引入冷存储时必须保持 Event ID、原始 sequence、context/session 路由和 `find_event` 语义，并先由完整审计证明冷热两层联合重放一致。
 
-在尚无冷存储实现和真实容量数据前，Runtime 不进行“按时间删除旧消息”或“Snapshot 后截断 Ledger”。这是一项明确的安全策略，而不是遗漏的 GC。
+在尚无冷存储实现和真实容量数据前，Runtime 不进行“按时间删除旧消息”或“Snapshot 后截断 Event History”。这是一项明确的安全策略，而不是遗漏的 GC。
 
 ### 8.6 Model Request 可观测边界
 
@@ -557,10 +557,10 @@ v1 采取“语义 Ledger 永久保留、在线读取有界、诊断大对象先
 
 因此数据库增长不再与 Context 大小相乘，而只随 ModelAttempt 数量增加有界元数据。旧版 `chat/context_inspect` 仍可被读取和排除于 Mind 重放之外，但新 Runtime 不再生成它，也不依赖它判断 Signal 是否消费。
 
-如果将来真实诊断需求要求跨重启保留精确 Prompt，应评估独立 `DiagnosticStore`，而不是重新写回语义 Ledger：
+如果将来真实诊断需求要求跨重启保留精确 Prompt，应评估独立 `DiagnosticStore`，而不是重新写回语义 Event History：
 
-- 语义 Ledger 继续保持不可变、可重放，不因诊断保留策略而截断；
-- Diagnostic Store 保存精确 Inspect 或 compact Inspect，并以 Event ID、Attempt ID、Context/Session/Activation 路由和内容 hash 关联 Ledger；
+- 语义 Event History 继续保持不可变、可重放，不因诊断保留策略而截断；
+- Diagnostic Store 保存精确 Inspect 或 compact Inspect，并以 Event ID、Attempt ID、Context/Session/Activation 路由和内容 hash 关联 Event History；
 - 允许配置 TTL、每 Session/Activation 最大记录数、失败与超时记录的延长保留、手动导出与清理；
 - 诊断数据的缺失不得改变 Context Encoding、Projection、调度恢复或模型行为；
 - Dashboard 必须明确区分“实时精确请求”“历史精确请求”“有界元数据”和“当前 Context 回退”；
@@ -662,14 +662,14 @@ acknowledge Activation
 
 - 增加 `context_heads` 与 Mind Projection；
 - Context Encoding 直接读取 Projection；
-- Context transaction 在同一 SQLite transaction 中更新 Ledger 与 Projection；
+- Context transaction 在同一 SQLite transaction 中更新 Event History 与 Projection；
 - 正常路径不再完整重放；
 - 保留显式完整审计命令。
 
-### Phase 2：Ledger 分流、增量恢复与按需引用验证（已完成）
+### Phase 2：Event History 分流、增量恢复与按需引用验证（已完成）
 
 - 区分 Session Events 与 Mind Transactions 的查询路径；
-- 增加与 Ledger 原子维护的 `session_projections`；不引入 Projection Head、watermark 或 Session Snapshot；
+- 增加与 Event History 原子维护的 `session_projections`；不引入 Projection Head、watermark 或 Session Snapshot；
 - Context Encoding 只读取当前有界 Session Working Set 的有效 Projection（隔离模式下即当前 Session）；
 - `@eN` 只验证事务实际引用的 Observation；
 - 增加 Snapshot、hash chain 和 Snapshot + 后续事务增量恢复；
@@ -735,7 +735,7 @@ max_connections = 16
 - 对不相干 Frame 修改执行 revision-fenced 自动 rebase；
 - 对同一 Frame、来源变化和全局生命周期操作保持冲突拒绝；
 - 增加不同 Frame 自动 rebase、同 Frame 冲突与来源变化冲突的回归测试；
-- 保留 Context Head revision 作为不可变 Ledger 的全局提交顺序。
+- 保留 Context Head revision 作为不可变 Event History 的全局提交顺序。
 
 后续工作不再是“是否实现”，而是基于生产数据扩展复杂 Relation/Checkpoint 场景，并观测自动 rebase 的真实收益。
 
@@ -771,7 +771,7 @@ dialogue_turns_total 与 context_tx_per_turn_ratio
 full_replay_latency
 session_event_append_latency 分位数
 sqlite_busy_total
-ledger_bytes_by_event_type
+event_bytes_by_type
 snapshot_age_transactions
 按 Provider / Agent / Context 分组的时序与分位数
 ```
@@ -780,9 +780,9 @@ snapshot_age_transactions
 
 ## 13. 安全不变量
 
-1. Session Working Set 的裁剪不能删除 Ledger；
+1. Session Working Set 的裁剪不能删除 Event History；
 2. retired Frame 不进入活跃 Context Encoding，但可被审计和恢复；
-3. Projection 不能成为无法由 Ledger 重建的第二事实源；
+3. Projection 不能成为无法由 Event History 重建的第二事实源；
 4. Context transaction 必须原子应用全部 operation；
 5. 冲突事务不得只替换 `base-version` 后盲目重放，必须重新基于最新状态决策；
 6. 多 Worker 下不能依赖进程内 Mutex 保证共享 Context 一致性；
@@ -790,7 +790,7 @@ snapshot_age_transactions
 8. 对话和工具等待不能持有 Context 写锁；
 9. 其他 Session 的原始内容不能因为共享 Context 而自动进入当前 Session 的模型投影；
 10. 完整历史重放失败必须显式暴露，不得静默采用损坏 Projection。
-11. Observation Ledger append 与 Session Projection 插入必须原子；retire/restore 与对应 Mind revision CAS 必须原子。
+11. Observation Event append 与 Session Projection 插入必须原子；retire/restore 与对应 Mind revision CAS 必须原子。
 12. Session Projection 为空是一个完整当前态，不得依赖 Projection Head 才能区分“空”与“未处理”。
 13. Session Projection 的 retire/restore 必须同时按 `context_id` 约束；任何 Context transaction 都不能修改另一 Context 的投影行。
 
@@ -808,4 +808,4 @@ snapshot_age_transactions
 
 本文的核心方向是：
 
-> 保留 Agent-Owned Context 与可审计多版本 Ledger，把完整重放从在线热路径移到恢复和审计路径；用可重建 Projection 支撑读取，用数据库级 CAS 保证全局提交顺序，并以 Frame revision/read-write set 降低不相干认知修改之间的冲突。
+> 保留 Agent-Owned Context 与可审计多版本 Event History，把完整重放从在线热路径移到恢复和审计路径；用可重建 Projection 支撑读取，用数据库级 CAS 保证全局提交顺序，并以 Frame revision/read-write set 降低不相干认知修改之间的冲突。

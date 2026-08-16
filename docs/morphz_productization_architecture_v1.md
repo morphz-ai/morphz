@@ -23,7 +23,7 @@ Morphz 已经具备 Agent 主循环、Agent-owned Context、多 Session 挂载�
 `morphz` 核心库只拥有任何 Agent 都必须具备的机制：
 
 - Agent、Cognitive Context、Session、Delegation 生命周期；
-- Event Ledger 与 Context Encoding；
+- Event History 与 Context Encoding；
 - S-Expression VM、工具循环与标准回复协议；
 - Permission Profile、审批和 Sandbox Backend；
 - 文件、Shell、Skill discovery 等基础工具；
@@ -53,7 +53,7 @@ Server 是同一 Application API 的远程传输适配器，负责 HTTP/WebSocke
 
 ### 2.5 Inspector
 
-当前 Dashboard 降级为可选 Inspector。它不是 Core，也不决定 API。默认 Inspector 聚焦 Session、执行轨迹、审批、Context/Mind 和 Ledger；Graph 页面只能由 Graph 扩展提供。
+当前 Dashboard 降级为可选 Inspector。它不是 Core，也不决定 API。默认 Inspector 聚焦 Session、执行轨迹、审批、Context/Mind 和 Event History；Graph 页面只能由 Graph 扩展提供。
 
 ### 2.6 Eval
 
@@ -82,7 +82,7 @@ CLI 与 Server 使用同一套 `MorphzRuntime` Application API 和持久化语�
 - Vector 扩展负责幂等创建旧表，并兼容读取既有 Embedding BLOB。
 - 历史 LanceDB sidecar 不由 Core 删除。v1 扩展以 SQLite BLOB 为事实来源，后续如果重新引入 ANN Backend，应由扩展自身执行显式迁移。
 - 旧配置中的向量字段不再影响 Core；扩展配置进入独立配置域。
-- 迁移期间每一步都必须保持默认 Core 可编译、可测试，并保持 Ledger/Session 数据兼容。
+- 迁移期间每一步都必须保持默认 Core 可编译、可测试，并保持 Event History/Session 数据兼容。
 
 ## 5. 依赖方向
 

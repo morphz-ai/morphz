@@ -710,7 +710,7 @@ impl ActivationStore for PostgresStore {
             return Ok(None);
         }
         let primary = signal_from_row(&pending[0])?;
-        // Keep replayed user input in Ledger order, but let the newly arrived
+        // Keep replayed user input in event-sequence order, but let the newly arrived
         // Signal remain the unique cause of an interruption replacement.
         let trigger = pending
             .iter()

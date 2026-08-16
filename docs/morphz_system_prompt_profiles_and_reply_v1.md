@@ -181,7 +181,7 @@ MORPHZ_SYSTEM_PROMPT_MODE=agent_owned_context
 | `cognitive_sexpr_vm` | `COGNITIVE-PROMPT-REPLY-OK` | 1 | 0 | 0 |
 | `agent_owned_context` | `AGENT-PROMPT-REPLY-OK` | 1 | 0 | 0 |
 
-三次 Ledger 中的 `chat/assistant_call` 都记录了 `terminal_reply=true`、`reply_disposition=deliver` 和标准 reply Function Calling，随后才由 Runtime 发布 `chat/reply`。因此可确认旧两版与第三版使用的是同一个物理终止协议。
+三次 Event History 中的 `chat/assistant_call` 都记录了 `terminal_reply=true`、`reply_disposition=deliver` 和标准 reply Function Calling，随后才由 Runtime 发布 `chat/reply`。因此可确认旧两版与第三版使用的是同一个物理终止协议。
 
 ## 9. 旧长程基准回归
 

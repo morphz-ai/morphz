@@ -32,7 +32,7 @@ Function Calling Transcript
 (context
   (protocol ...)
   (evaluation-profile none | ... content-addressed profile ...)
-  (inbox ... canonical observations in ascending ledger sequence ...)
+  (inbox ... canonical observations in ascending Event Sequence ...)
   (observation-state ... mutable overlays by ref ...)
   (mind ...)
   (session-directory ...)
@@ -71,7 +71,7 @@ protocol → mind → session-directory → kernel → inbox → evaluate
 1. Inbox **会追加新事件**；
 2. Inbox **会原地修改已有历史**。
 
-追加并不会破坏既有前缀。只要 Observation 按 Ledger sequence 从旧到新稳定排列，新增内容只发生在既有历史末尾，Provider 可以命中此前的完整历史。真正破坏前缀的是在历史前面或中间修改已有字节。
+追加并不会破坏既有前缀。只要 Observation 按 Event sequence 从旧到新稳定排列，新增内容只发生在既有历史末尾，Provider 可以命中此前的完整历史。真正破坏前缀的是在历史前面或中间修改已有字节。
 
 ## 3. 真实 A/B 证据
 
@@ -215,7 +215,7 @@ Evaluation ID、当前时间、运行状态或 Principal。不同 Profile 形成
 
 Inbox 必须满足：
 
-1. 按 Event Ledger sequence 升序排列；
+1. 按 Event Sequence 升序排列；
 2. 已经渲染过的 Observation canonical body 不得原地变化；
 3. 新 Observation 只追加到既有 Observation 之后；
 4. 不允许把 HashMap 的不稳定遍历顺序带入序列化；
@@ -423,7 +423,7 @@ Retirement Rebuild Cost / Break-even Turns
 生产 Renderer 必须建立自动测试，保证：
 
 1. 相同逻辑状态输出完全相同的 UTF-8 字节；
-2. Observation 按 Ledger sequence 升序；
+2. Observation 按 Event sequence 升序；
 3. 新 Observation 不改变旧 Observation 结束前的任何字节；
 4. Mind revision 不改变 `inbox` 结束前的任何字节；
 5. Kernel、wake、timer、pressure 变化不改变 `inbox` 结束前的任何字节；

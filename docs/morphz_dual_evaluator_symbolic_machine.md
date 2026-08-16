@@ -151,7 +151,7 @@ Morphz 的逻辑机器由两个可以交错调用的求值器组成。
 - 已定义算子的确定性部分；
 - 类型、引用、作用域和结构校验；
 - Context Transaction 与 Frame MVCC；
-- Event Ledger 与 Projection；
+- Event History 与 Projection；
 - Scheduler、Thread、Objective、Signal 和 Activation；
 - Function Calling、Execution Job 和 Tool Result；
 - 权限、沙箱、预算、Execution Target；
@@ -191,7 +191,7 @@ Morphz 的逻辑机器由两个可以交错调用的求值器组成。
 - `E`：Yao / S-Expression 项；
 - `C`：当前 Context Encoding；
 - `M`：持久 Mind / Frame 状态；
-- `R`：Runtime 权威状态，包括 Ledger、Projection、Scheduler 和权限；
+- `R`：Runtime 权威状态，包括 Event History、Projection、Scheduler 和权限；
 - `O`：来自工具、用户、Timer 和外部环境的 Observation；
 - `V`：语义值，可以是回答、判断、Frame、计划、候选表达式或调度意图；
 - `P`：经过校验和 lowering 的 Typed Plan IR。

@@ -41,7 +41,7 @@ Morphz 是一台 **S-Expression Cognitive Machine（S 表达式认知机）**：
 - 捕获 Provider、模型精确标识、解码参数、上下文与输出预算；
 - 固定 fixture ID，并支持各 arm 配对执行和交错顺序；
 - 区分模型失败、Runtime 失败、评分失败和 Provider 故障；
-- 原始响应、工具调用、Context/Ledger 快照完整落盘；
+- 原始响应、工具调用、Context/Event History 快照完整落盘；
 - 汇总语义成功率、严格成功率、成本和错误分类；
 - 检验从原始产物重新评分能够得到相同结果。
 
@@ -140,7 +140,7 @@ ME-00 完成前可以继续做工程探针，但不得启动正式确认性批�
 
 - 先做一个不进入正式统计的接入样本；
 - 固定同一模型、工具环境和预算比较 Morphz 与基线；
-- 保留官方评分器结果，并增加 Morphz 的 Context/Ledger 因果分析；
+- 保留官方评分器结果，并增加 Morphz 的 Context/Event History 因果分析；
 - 报告适配改动，不能把改变任务语义后的结果称为官方同榜成绩；
 - 将公开 Benchmark 作为外部有效性证据，不替代 ME-01 的核心消融。
 

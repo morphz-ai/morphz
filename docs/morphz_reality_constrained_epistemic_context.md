@@ -3,7 +3,7 @@
 > 英文名称：Reality-Constrained Epistemic Context  
 > 状态：设计基线；Reality Contract v1 已按本文实现并完成首轮验证
 > 更新时间：2026-07-12  
-> 适用范围：Agent-Owned Context、Kernel/Protocol 自描述、Event Ledger、Context transaction、元认知评测与未来多会话共享  
+> 适用范围：Agent-Owned Context、Kernel/Protocol 自描述、Event History、Context transaction、元认知评测与未来多会话共享
 > 与其他文档的关系：[`morphz_agent_owned_context_design.md`](morphz_agent_owned_context_design.md) 定义 Agent 的 Context 主权；本文定义与之配对的 Runtime 现实约束与控制反馈；[`morphz_shared_context_multisession_architecture.md`](morphz_shared_context_multisession_architecture.md) 将这套分工扩展到多 Session、共享 Context 和多 Sub Agent。
 
 实现与真实回归结果见 [`morphz_reality_contract_v1_validation.md`](morphz_reality_contract_v1_validation.md)。
@@ -40,7 +40,7 @@ Runtime 不预定义固定的事实/假设/计划 Schema，也不根据相似度
 
 Runtime 决定并强制保证：
 
-- 事件实际写入 Ledger 的顺序；
+- 事件实际写入 Event History 的顺序；
 - 消息、工具调用、结果、事务和回复的身份与路由；
 - 可观察的直接因果关系；
 - Context、Frame 和资源的版本；
@@ -64,7 +64,7 @@ flowchart TD
     V["Validation & Execution\n物理校验与执行"]
 
     W -->|"Observation"| R
-    R -->|"Ledger / Kernel / Inbox"| E
+    R -->|"Event History / Kernel / Inbox"| E
     E -->|"Action / context_tx"| V
     V -->|"事务、权限、资源、因果校验"| W
     V -->|"结果、冲突、压力、错误信号"| R
@@ -90,7 +90,7 @@ Reality Contract（现实契约）是 Runtime 对模型做出的确定性承诺�
 
 Runtime 至少区分：
 
-- `sequence`：Ledger 单调写入顺序；
+- `sequence`：Event History 单调写入顺序；
 - `timestamp`：系统观察或记录事件的时间；
 - `turn`：事件所属用户回合；
 - `attempt`：回合内模型尝试；
@@ -265,7 +265,7 @@ Mind 不是只增不减的信念集合。Agent 应当：
 
 | 概念 | 中文解释 | 所有者 |
 | --- | --- | --- |
-| Observation | Runtime 确实接收到的原始输入或执行结果 | Runtime/Ledger |
+| Observation | Runtime 确实接收到的原始输入或执行结果 | Runtime/Event History |
 | Belief | Agent 当前采用的内部认识 | Agent/Mind |
 | Inference | Agent 从有限证据推导出的内容 | Agent/Mind |
 | Hypothesis | 尚待验证的可能解释 | Agent/Mind |
@@ -298,7 +298,7 @@ Agent 修订 Mind 和下一步行动
 - LLM 是自适应语义控制器；
 - Mind 是内部世界模型与工作状态；
 - Runtime 是传感器、执行器、安全联锁和事务系统；
-- Ledger 是不可变观测历史；
+- Event History 是不可变观测历史；
 - Context View 是当前反馈信号；
 - `context_tx` 是 Agent 修改内部控制状态的动作；
 - Tool Call 是 Agent 作用于外部环境的动作。
@@ -373,7 +373,7 @@ Runtime 不应反馈未经证明的业务答案，例如“正确版本一定是
 
 | 问题 | Runtime 可确定 | 必须由 Agent 判断 |
 | --- | --- | --- |
-| 顺序 | A 是否先于 B 写入 Ledger | A 是否在语义上导致 B |
+| 顺序 | A 是否先于 B 写入 Event History | A 是否在语义上导致 B |
 | 来源 | Frame 是否引用已存在 Event | 来源是否充分支持全部结论 |
 | 资源 | 文件 hash/version 是否变化 | 新内容是否更权威、更正确 |
 | 工具 | 调用是否成功、失败或未知 | 结果是否满足业务目标 |
@@ -391,7 +391,7 @@ Runtime 不应反馈未经证明的业务答案，例如“正确版本一定是
 
 现有 protocol v8 已经提供以下 Reality Contract 基础：
 
-- SQLite Ledger `sequence` 与稳定 `@eN`；
+- SQLite Event History `sequence` 与稳定 `@eN`；
 - `turn`、`attempt` 和 `caused-by`；
 - Observation `residency`；
 - resource identity/version 与 physical `freshness`；
@@ -441,7 +441,7 @@ EvidenceGate 已捕获未来证据问题，但当前主要集中于一个版本�
 
 ```lisp
 (reality-contract
-  (sequence "Ledger 物理写入顺序，不代表语义权威")
+  (sequence "Event History 物理写入顺序，不代表语义权威")
   (caused-by "可观察的直接因果，不代表完整业务因果")
   (resource-latest "同一资源的最新物理版本，不代表内容更正确")
   (tool-status "动作执行状态；empty success 不得视为未执行")
@@ -498,7 +498,7 @@ Reality-Constrained Epistemic Context 至少需要覆盖：
 - 主测 Gemini 至少 5 次配对；
 - 其他模型用于区分 Runtime 约束收益和模型能力上限；
 - 同时报告正确性、效率和维护成本；
-- 失败轨迹必须保留完整 Ledger 和 Context transaction。
+- 失败轨迹必须保留完整 Event History 和 Context transaction。
 
 ## 13. 与多会话共享架构的关系
 
@@ -524,7 +524,7 @@ Reality-Constrained Epistemic Context 至少需要覆盖：
 - 把较新、常用或最新资源版本直接等同于更正确；
 - 发现模型犯错后为当前 benchmark 写死业务补丁；
 - Runtime 静默修复 transaction BODY；
-- 用摘要覆盖原始 Ledger 并失去来源；
+- 用摘要覆盖原始 Event History 并失去来源；
 - 只看最终文件正确，忽略过程中错误 Mind；
 - 要求模型手工维护锁、MVCC、Raft 或消息路由；
 - 把评测器的 EvidenceGate 直接变成生产 Runtime 的业务真理。
@@ -551,7 +551,7 @@ Reality-Constrained Epistemic Context 至少需要覆盖：
 Morphz 的现实约束认识论可以用以下八句话定义：
 
 1. **Mind 是 Agent 的认识，不是 Runtime 的事实表。**
-2. **Ledger 记录系统观察与执行历史，不自动等同于外部真理。**
+2. **Event History 记录系统观察与执行历史，不自动等同于外部真理。**
 3. **Runtime 提供不可伪造的顺序、直接因果、身份、来源、版本、事务、权限和资源信号。**
 4. **Agent 在这些现实坐标内自由形成事实、假设、策略和目标结构。**
 5. **Runtime 可以验证来源存在，不能自动证明来源蕴含结论。**

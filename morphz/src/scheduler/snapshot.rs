@@ -2,7 +2,7 @@
 //!
 //! This module deliberately contains no persistence writes. Controllers and
 //! presentation layers consume these typed projections instead of rebuilding
-//! scheduler truth from Ledger topics or process-local task maps.
+//! scheduler truth from Event topics or process-local task maps.
 
 use super::{ObjectiveReadiness, SchedulerDependencyRecord, SchedulerInvariantViolation};
 use crate::memory::{

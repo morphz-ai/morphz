@@ -27,7 +27,7 @@ Reality Contract v1 没有给 Mind 增加固定事实/假设 Schema，仍由模�
 1. 不同 Session、Attempt 与压力状态生成的 Context，其首个动态 `(kernel ...)` 之前具有完全相同的字节前缀；
 2. System Prompt 的基础规则与生成契约确定不变，临时 phase 指令只出现在稳定前缀之后。
 
-本轮模型代理产物没有保留下可审计的 `cached_tokens` 数值，因此只能确认“请求编排具备前缀缓存条件”，不能声称已测得真实缓存命中率。后续应把 LLM usage 持久化进 Ledger 或评测报告，而不只写日志。
+本轮模型代理产物没有保留下可审计的 `cached_tokens` 数值，因此只能确认“请求编排具备前缀缓存条件”，不能声称已测得真实缓存命中率。后续应把 LLM usage 持久化进 Event History 或评测报告，而不只写日志。
 
 ## 3. 新跨领域隐藏套件
 

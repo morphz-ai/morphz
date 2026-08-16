@@ -77,7 +77,7 @@ protocol v8 已完成标准工具结果回传改造，并通过一次 Gemini 元
 
 “完全重复”按同一用户轮次内函数名和完整参数相同计算。10 条 v8 轨迹共有 195 次模型请求和 149 次物理工具调用，完全重复物理工具、同一轮同路径重读和 Read guard 均为 0。
 
-但 Context 维护仍有额外开销：Operations 有 11 次、Transfer 有 13 次空正文 standalone `context_tx`，合计占模型请求的 12.3%；Operations 另有 2 次事务因维护预算耗尽被拒绝。新评测器按 Ledger 顺序回放后确认，Operations 的策略修订阶段有 4/5 样本在热修复 read 证据出现前引入 `v3`；先前人工 SQL 只匹配 `service_v3/service-v3`，漏掉了 `release-v3`。真正读取 v3 证据后的首次 Mind 写入均引用了对应 read Event，来源完整性违规为 0。
+但 Context 维护仍有额外开销：Operations 有 11 次、Transfer 有 13 次空正文 standalone `context_tx`，合计占模型请求的 12.3%；Operations 另有 2 次事务因维护预算耗尽被拒绝。新评测器按 Event History 顺序回放后确认，Operations 的策略修订阶段有 4/5 样本在热修复 read 证据出现前引入 `v3`；先前人工 SQL 只匹配 `service_v3/service-v3`，漏掉了 `release-v3`。真正读取 v3 证据后的首次 Mind 写入均引用了对应 read Event，来源完整性违规为 0。
 
 长程报告现在把 `semantic_stage_pass_rate`（状态、Mind、工具约束、证据时序与来源）和 `reply_stage_pass_rate`（用户回复必需标记）分开，同时保留两者都通过才成立的 `strict_stage_pass_rate`。因此 Operations 在新标准下是语义 26/30、回复 29/30、严格完整运行 0/5；这比旧报告的 4/5 更严格，也更准确。
 

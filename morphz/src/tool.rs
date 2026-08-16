@@ -136,7 +136,7 @@ pub struct ToolOutputChunk {
 /// `text` is the durable, recallable observation. `model_attachments` are an
 /// ephemeral transport payload: the Orchestrator imports them into its
 /// content-addressed model-input store before the result Event is committed,
-/// then only stable references remain in the Ledger. This keeps binary data
+/// then only stable references remain in persisted Events. This keeps binary data
 /// out of Context while allowing the next model Attempt to receive native
 /// multimodal content. Keeping this result behind a `Box` also prevents rich
 /// tool payload support from enlarging every nested Runtime future.

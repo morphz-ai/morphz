@@ -1586,8 +1586,8 @@ impl SqliteStore {
         .execute(&pool)
         .await?;
 
-        // Objective reasons were originally present only in the immutable
-        // event ledger. Keep the current-state projection self-contained for
+        // Objective reasons were originally present only in immutable Events.
+        // Keep the current-state projection self-contained for
         // product surfaces while preserving those source events.
         let objective_columns = sqlx::query("PRAGMA table_info(objectives)")
             .fetch_all(&pool)
@@ -2331,7 +2331,7 @@ async fn migrate_event_causal_columns(
     }
     // This order matches the exact lookup used by `Runtime::thread_detail`.
     // It keeps a three-second Dashboard refresh bounded even when a Context
-    // has accumulated a large Event Ledger.
+    // has accumulated many Events.
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_events_context_session_topic_thread_time \
          ON events(context_id, session_id, topic, thread_id, timestamp)",
@@ -2411,7 +2411,7 @@ async fn migrate_recall_projection(
     // authoritative projection rowid as its identity, so updates delete by
     // rowid instead of scanning an FTS virtual table on UNINDEXED metadata.
     // Claim, collapse and rebuild in one transaction: interruption rolls the
-    // entire derived index migration back without touching Ledger truth.
+    // entire derived index migration back without touching persisted Event truth.
     let mut tx = pool.begin().await?;
     let claimed =
         sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
@@ -5152,7 +5152,7 @@ async fn append_event_in_transaction(
 }
 
 /// Commit the scheduler mailbox fact caused by one user message in the same
-/// transaction as the immutable Ledger Event.  A process crash after this
+/// transaction as the immutable persisted Event.  A process crash after this
 /// function commits can delay dispatch, but it cannot leave an Event without
 /// its authoritative Signal.
 async fn append_dialogue_signal_in_transaction(
@@ -5886,7 +5886,7 @@ async fn mutate_session_projection_in_transaction(
 /// Append the authoritative mailbox fact for an already-persisted internal
 /// scheduler Event.  Event, Signal and the projection transition which caused
 /// them share the caller's transaction, removing the former crash window
-/// between Ledger append and Signal Outbox materialization.
+/// between Event append and Signal Outbox materialization.
 async fn append_direct_thread_signal_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     event: &Event,
@@ -7733,7 +7733,7 @@ impl ActivationStore for SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         // A user may send several messages while the current DialogueTurn is
-        // still evaluating. They are distinct immutable Ledger facts, but
+        // still evaluating. They are distinct immutable persisted Event facts, but
         // they belong to one *next* model input batch. Serialize by Session
         // before choosing that queued batch so two Runtime workers cannot
         // create parallel DialogueTurns for consecutive input.
@@ -7811,7 +7811,7 @@ impl ActivationStore for SqliteStore {
         }
 
         // This first write serializes competing claims under SQLite WAL. The
-        // immutable Event has already crossed the Ledger boundary before the
+        // immutable Event has already crossed the durable Event boundary before the
         // Orchestrator asks the scheduler to materialize its mailbox Signal.
         let inserted_signal = sqlx::query(
             r#"INSERT OR IGNORE INTO thread_signals
@@ -18458,7 +18458,7 @@ impl ExecutionJobStore for SqliteStore {
 
         let mut tx = self.pool.begin().await?;
         // Serialize the projection repair with every other SQLite writer. The
-        // immutable Event is verified below; this no-op never changes Ledger.
+        // immutable Event is verified below; this no-op never changes persisted Events.
         sqlx::query("UPDATE execution_jobs SET revision = revision WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
@@ -18660,7 +18660,7 @@ async fn verify_existing_sqlite_event(
         && stored_payload == JsonValue::Object(event.payload.clone());
     if !same {
         return Err(format!(
-            "Execution Job 恢复引用的 Event '{}' 与 Ledger 内容不一致",
+            "Execution Job 恢复引用的 Event '{}' 与持久化事件内容不一致",
             event.id
         )
         .into());
@@ -19952,7 +19952,7 @@ impl EventStore for SqliteStore {
 
         let latest_k = filter.latest_k;
         if latest_k.is_some() {
-            // A Ledger tail is defined by immutable append sequence, never by
+            // An Event tail is defined by immutable append sequence, never by
             // producer timestamps (which can be stale or arrive out of order).
             // Limit that physical tail in SQLite, then restore append order
             // below.
@@ -20776,7 +20776,7 @@ impl RecallProjectionStore for SqliteStore {
         }
         let mut tx = self.pool.begin().await?;
         // `documents` is a snapshot assembled before this transaction. A
-        // Ledger/Mind commit may therefore enqueue a newer intent after the
+        // Event/Mind commit may therefore enqueue a newer intent after the
         // snapshot was read but before we acquire SQLite's Writer. Preserve
         // every transactional Outbox row: replay is idempotent and
         // updated-sequence/generation fencing prevents an older intent from
@@ -21157,7 +21157,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transient_retention_is_bounded_and_preserves_ledger_events() {
+    async fn transient_retention_is_bounded_and_preserves_events() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
@@ -21266,7 +21266,7 @@ mod tests {
             .await
             .unwrap(),
             2,
-            "transient cleanup must not delete immutable Ledger Events"
+            "transient cleanup must not delete immutable persisted Events"
         );
     }
 
@@ -22145,7 +22145,7 @@ mod tests {
             .await
             .unwrap(),
             0,
-            "Ledger append must not synchronously maintain the lexical projection"
+            "Event append must not synchronously maintain the lexical projection"
         );
         let batch = store
             .project_recall_outbox_batch("sqlite-recall-test", 8)
@@ -28822,7 +28822,7 @@ mod tests {
                 .map(|signal| signal.event_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["dialogue-batch-event-2", "dialogue-batch-event-3"],
-            "all unread messages must retain Ledger order in one next DialogueTurn",
+            "all unread messages must retain event-sequence order in one next DialogueTurn",
         );
         assert!(
             store
@@ -31716,7 +31716,7 @@ mod tests {
             "one Context transaction must not mutate another Context's Projection",
         );
 
-        // Idempotently writing an already committed Ledger Event must not
+        // Idempotently writing an already committed persisted Event must not
         // implicitly restore an Observation which the Agent retired later.
         store.append(observation.clone()).await.unwrap();
         assert!(store
@@ -31843,7 +31843,7 @@ mod tests {
             MindProjectionCommit::Committed { .. }
         ));
 
-        // Simulate a pre-migration database: the immutable Ledger and current
+        // Simulate a pre-migration database: immutable Events and current
         // Mind Projection exist, while the derived Session Projection does not.
         sqlx::query("DELETE FROM session_projections")
             .execute(&store.pool)

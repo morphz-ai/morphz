@@ -111,11 +111,11 @@ LLM Worker、工具进程和 Sub Agent 是计算单元，不拥有 Agent。它�
 
 长期看，常规 Evaluation 可以由经过专门训练的小型 Frame VM 承担，困难求值再升级到大模型或领域模型。具体知识、人格和经历继续存在于 Mind，而不是随某个模型权重绑定；详见 [Frame VM：模型、认知与算力解耦](./morphz_frame_vm_model_cognition_decoupling.md)。
 
-### 3.7 Ledger：不可变的物理事实账本
+### 3.7 Event History：不可变的物理持久化事件
 
-Ledger 保存消息、工具调用、工具结果、事务、回复、版本和因果关系。它是审计与恢复的事实来源，不等于每轮都要放入 Prompt 的工作记忆。
+Event History 保存消息、工具调用、工具结果、事务、回复、版本和因果关系。它是审计与恢复的事实来源，不等于每轮都要放入 Prompt 的工作记忆。
 
-Agent 可以 retire 某段信息，使其退出当前认知工作集；Runtime 仍保留 Ledger 事实，除非另行执行明确的物理 Purge。
+Agent 可以 retire 某段信息，使其退出当前认知工作集；Runtime 仍保留 Event History 事实，除非另行执行明确的物理 Purge。
 
 ## 4. 两种隔离不能混为一谈
 
@@ -222,7 +222,7 @@ Context 或 Session 的排他锁不得覆盖：
 Shared Mind + 全部 Session 历史
 ```
 
-如果共有 `N` 个注册 Session，本轮只处理 Session A，则 Prompt 大小不应随 `N` 线性增长。Session Registry、Ledger 和冷历史保存在数据库中，按需查询或 swap in。
+如果共有 `N` 个注册 Session，本轮只处理 Session A，则 Prompt 大小不应随 `N` 线性增长。Session Registry、Event History 和冷历史保存在数据库中，按需查询或 swap in。
 
 当 `K` 个 Session 同时到达事件时，可以创建 `K` 个 Evaluation，分布到多个 Worker：
 
@@ -237,7 +237,7 @@ Shared Mind + 全部 Session 历史
 
 规模增长后，真正增加的是：
 
-- Session Registry 和 Ledger 存储；
+- Session Registry 和 Event History 存储；
 - 消息队列与调度吞吐；
 - LLM 请求并发与成本；
 - Shared Mind 事务冲突率；
@@ -319,7 +319,7 @@ Runtime 可以可靠解决前两类，不能凭数据库规则替 Agent 解决�
 
 ### 8.5 Raft/Paxos 的正确位置
 
-早期单机阶段使用数据库事务、Append-only Ledger、Snapshot 和 MVCC 就足够。
+早期单机阶段使用数据库事务、Append-only Event History、Snapshot 和 MVCC 就足够。
 
 Raft/Paxos 在需要多副本、高可用和跨节点恢复时用于决定日志顺序与副本一致性；它们不判断两个 LLM 结论在语义上应该怎样合并。
 
@@ -347,7 +347,7 @@ Reply 也是一种面向指定 Session 的外部提交，而不是模型自由�
 - 执行租约、幂等键和重试去重；
 - 必要时由新 Evaluation 决定继续等待、取消或换方案。
 
-数据库事务无法普遍保证外部世界的 exactly-once。发送消息、部署和网络写入等操作应采用 Outbox、幂等 API、状态核验和补偿动作，把不确定性显式记录到 Ledger。
+数据库事务无法普遍保证外部世界的 exactly-once。发送消息、部署和网络写入等操作应采用 Outbox、幂等 API、状态核验和补偿动作，把不确定性显式记录到 Event History。
 
 ## 10. 共享认知不等于共享披露
 
@@ -383,7 +383,7 @@ Reply 也是一种面向指定 Session 的外部提交，而不是模型自由�
 Foundation Model
   = 先验知识、语言能力、推理能力和 SExpr 求值能力
 
-Event Ledger
+Event History
   = Agent 实际经历过的消息、行动、反馈和结果
 
 Mind Frames
@@ -413,7 +413,7 @@ Session C observations ─┤
 - 修订已有共享 Frame；
 - 建立支持、反驳、例外或 supersedes 关系；
 - 在证据不足时保留多个竞争假设；
-- 将已经失效的认识 retire，而不删除原始 Ledger。
+- 将已经失效的认识 retire，而不删除原始 Event History。
 
 因此，“一百万人影响同一个 Agent”不等于一百万人拥有它的数据库写权限。真正发生的是：同一个 Agent 对一百万条关系和经历进行解释，并自主决定哪些内容改变自己的长期认识。
 
@@ -493,7 +493,7 @@ Frame swap 不能继续复用 `retire/restore`，否则系统无法区分“认�
 | Semantic lifecycle | `active / retired` | Agent 是否仍认可它属于有效 Mind |
 | Residency | `resident / swapped_out` | Frame BODY 是否进入默认 Frame Working Set |
 | Per-evaluation activation | `included / recalled / excluded` | 本次求值是否实际看到 |
-| Physical retention | `stored / purged` | Ledger 和 Frame 历史是否仍物理保存 |
+| Physical retention | `stored / purged` | Event History 和 Frame 历史是否仍物理保存 |
 
 因此：
 
@@ -633,7 +633,7 @@ Runtime 应保存来源、身份、时间、授权、版本和使用反馈，但
 | 事件身份、时序和因果 | 确定性维护 | 读取和解释 |
 | Frame BODY 与 Mind 结构 | 不预定义业务 Schema | 自主创建和演化 |
 | Session 路由 | 强制正确 | 指定回复意图，不得伪造目标 |
-| Snapshot、锁、MVCC、Ledger | 实现 | 不需要理解物理细节 |
+| Snapshot、锁、MVCC、Event History | 实现 | 不需要理解物理细节 |
 | Context 是否有压力 | 测量并自描述 | 决定摘要、retire 和重组 |
 | Frame Residency 与检索 | 维护索引、容量、稳定引用和查询结果 | 决定何时 swap、recall、依赖和修订 |
 | Session 是否值得换出 | 提供客观状态并保证安全 | 作出语义决定 |
@@ -670,7 +670,7 @@ Morphz 已经拥有一部分重要基础：
 
 - Agent、Context、Session 和 Mount 的独立身份；
 - 多 Session 挂载共享 Context，以及创建继承 Mind 的独立 Session；
-- Ledger、Context revision、SExpr `context_tx` 和确定性 replay；
+- Event History、Context revision、SExpr `context_tx` 和确定性 replay；
 - Session 路由、Delegation、后台任务和标准 Tool Result；
 - 每个请求单 active Session 的独立并发求值；
 - Agent 自主维护 Frame、Relation、Observation 和 Context pressure；
@@ -739,7 +739,7 @@ Morphz 已经拥有一部分重要基础：
 - 无状态 Evaluation Worker；
 - Session/Task 分区调度；
 - Context 热点治理和缓存；
-- Ledger 多副本、Leader 与故障恢复；
+- Event History 多副本、Leader 与故障恢复；
 - 异构模型节点与成本/质量路由。
 
 ## 16. 必须通过的验证场景

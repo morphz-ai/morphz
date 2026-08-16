@@ -106,7 +106,7 @@ Morphz Runtime 确定性现实求值 eval
 | Execution Target | 动作最终发生的机器人、机械臂、车辆、设备或仿真环境 |
 | Execution Node | 承接 Target、运行本地策略、沙箱和安全控制的边缘计算节点 |
 | Action Group | 一组具有共同起因、可能并行执行的物理或认知动作 |
-| Event Ledger | 不可变的意图、决策、感知、行动、审批与结果证据链 |
+| Event History | 不可变的意图、决策、感知、行动、审批与结果证据链 |
 | Projection | 从事件流得到的当前世界状态、设备状态、任务状态和认知状态 |
 | Harness | 某类具身任务的执行纪律、技能组合和验证流程 |
 | Yao / S-Expression | LLM 与 Runtime 共同理解的语义计划和关系结构 |
@@ -151,7 +151,7 @@ Morphz Runtime 确定性现实求值 eval
 - 资源、时间、空间和安全约束是否满足；
 - Action Group、lease、fencing 和取消是否合法；
 - 物理副作用已经开始、完成、失败还是结果未知；
-- 新 Observation 如何原子进入 Ledger 和 Projection；
+- 新 Observation 如何原子进入 Event History 和 Projection；
 - 哪个 Thread、Objective 和 Session 应被唤醒。
 
 ### 5.3 VLA 和学习型策略属于哪一层
@@ -300,7 +300,7 @@ Yao 不应描述原始电机脉冲，而适合描述高层语义、组合关系�
 
 [SayCan](https://arxiv.org/abs/2204.01691) 使用语言模型提供高层程序知识，再由与机器人技能相关的价值函数判断动作在当前现实中是否可行。它已经体现出一个关键事实：语言上合理的计划不等于特定身体在当前环境中能够执行的计划。
 
-这与 Morphz 的 `infer/eval` 分权接近，但 Morphz 进一步把事务、并发、身份、权限、持久目标、事件账本和恢复纳入同一个 Runtime 领域模型。
+这与 Morphz 的 `infer/eval` 分权接近，但 Morphz 进一步把事务、并发、身份、权限、持久目标、事件历史和恢复纳入同一个 Runtime 领域模型。
 
 ### 9.2 PaLM-E：把具身 Observation 引入语言求值
 
@@ -543,7 +543,7 @@ Frame Exchange 在具身系统中仍然成立，但交换的不只是“知识�
 - Agent、Context 和 Session 分层；
 - Dialogue 与 Execution 并发；
 - Objective、Thread、Action Group、Timer 和 Delivery；
-- Event Ledger、Projection、事务与恢复；
+- Event History、Projection、事务与恢复；
 - Mind、Frame、Recall 和 Context Working Set；
 - S-Expression VM、Yao、`infer/eval` 和 Harness；
 - Execution Target、Execution Node、权限、审批和沙箱；

@@ -14,7 +14,7 @@ Morphz 是异步会话 Runtime。调用方应：
 3. 为每条用户消息生成唯一且可重试复用的 `client_message_id`。
 4. `POST /api/sessions/{session_id}/messages`；`202` 只表示消息已接受，不表示模型已回答。
 5. 使用事件轮询或 WebSocket 等待 `topic == "chat/reply"`，并读取 `payload.text`。
-6. WebSocket 断线、丢事件或进程重启后，以 HTTP Event Ledger 作为权威恢复来源。
+6. WebSocket 断线、丢事件或进程重启后，以 HTTP Event History 作为权威恢复来源。
 
 如果只需实现一个最小客户端，只实现以下四个调用即可：
 
@@ -145,7 +145,7 @@ Dashboard/Operator 管理令牌通过默认管理身份访问控制面，不允�
 }
 ```
 
-`sequence` 是持久 Event Ledger 中单调递增的游标。调用方不应依赖未知字段缺失，也不应拒绝未知 `topic`。
+`sequence` 是持久 Event History 中单调递增的游标。调用方不应依赖未知字段缺失，也不应拒绝未知 `topic`。
 
 对消息调用最重要的 topic：
 
@@ -357,9 +357,9 @@ POST /api/sessions/{session_id}/messages
 }
 ```
 
-`storage_path` 是 Runtime 内部路径，不是公共下载 URL；外部客户端不应依赖它。附件字节按摘要存到配置的 artifact 目录，Event Ledger 不保存附件原文。
+`storage_path` 是 Runtime 内部路径，不是公共下载 URL；外部客户端不应依赖它。附件字节按摘要存到配置的 artifact 目录，Event History 不保存附件原文。
 
-### 读取 Event Ledger
+### 读取 Event History
 
 向前增量读取：
 
@@ -401,7 +401,7 @@ ws://127.0.0.1:8080/ws?session_id=session_123
 正确恢复策略：
 
 - WebSocket 用于降低延迟。
-- Event Ledger 用于权威补漏和重连。
+- Event History 用于权威补漏和重连。
 - 连接关闭时丢弃未完成的 `runtime/model_stream` 草稿。
 - 以最后持久化的 `sequence` 调用 HTTP events 补齐，再重连。
 
@@ -539,7 +539,7 @@ Authorization: Bearer <dashboard-operator-token>
 - Context 和 Session 按“需要用户关注、正在执行、已排队、存在开放目标/线程、最近活动”依次排序，而不是仅按创建时间或标题排序。
 - `hidden_session_count` 表示该 Context 中未进入本次 Session 卡片窗口的数量；`has_more_contexts` 表示还有未进入本次 Context 窗口的数据。
 - `delegation` 非空表示该 Context 是副 Agent 的子 Context，并给出父 Context、父 Session、子 Session、任务和 Delegation 状态。Dashboard 可以据此把它收束到父 Context，但 API 保留完整记录。
-- Summary 和 Context 计数来自存储层权威投影；接口不会逐卡扫描 Event Ledger，也不会为每张卡片单独查询数据库。
+- Summary 和 Context 计数来自存储层权威投影；接口不会逐卡扫描 Event History，也不会为每张卡片单独查询数据库。
 - 该接口用于全局指挥台、运维控制台和管理 SDK，不属于 Principal-scoped Web App 接口。外部 Gateway 应继续使用自己的 Session 目录，不应调用该端点。
 - Rust SDK 对应方法为 `MorphzSdk::runtime_overview(RuntimeOverviewQuery)`；当前 TypeScript v1 Client 尚未封装该 Operator 端点。
 

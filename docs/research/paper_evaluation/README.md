@@ -79,7 +79,7 @@ ME-01-pilot-p1-full-morphz-gemini-3-flash-20260815-001
 manifest.json          # 环境、版本、模型、预算、fixture 与随机化信息
 episodes.jsonl         # 原始 episode 索引及状态
 requests/              # 原始模型请求和响应
-traces/                # 工具、Ledger、Context 和 Runtime 轨迹
+traces/                # 工具、Event History、Context 和 Runtime 轨迹
 scores.json            # 确定性评分器逐项输出
 summary.json           # 本 Run 汇总
 run_record.md          # 人类可读运行记录

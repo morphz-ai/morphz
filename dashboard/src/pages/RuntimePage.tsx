@@ -31,7 +31,7 @@ interface RuntimePageProps {
     completed_at?: string
   }
   projectionAudit: {
-    ledger_revision: number
+    replayed_event_revision: number
     projection_revision?: number
     snapshot_revision?: number
     events_scanned: number
@@ -254,7 +254,7 @@ export function RuntimePage(props: RuntimePageProps) {
         {props.projectionAudit ? (
           <dl>
             <dt>{t('runtime.auditResult')}</dt><dd>{props.projectionAudit.matches ? t('runtime.auditMatches') : t('runtime.auditMismatch')}</dd>
-            <dt>{t('runtime.auditRevisions')}</dt><dd>Ledger r{props.projectionAudit.ledger_revision} · Projection r{props.projectionAudit.projection_revision ?? '—'} · Snapshot r{props.projectionAudit.snapshot_revision ?? '—'}</dd>
+            <dt>{t('runtime.auditRevisions')}</dt><dd>Event Replay r{props.projectionAudit.replayed_event_revision} · Projection r{props.projectionAudit.projection_revision ?? '—'} · Snapshot r{props.projectionAudit.snapshot_revision ?? '—'}</dd>
             <dt>{t('runtime.auditScanned')}</dt><dd>{props.projectionAudit.events_scanned} / {props.projectionAudit.incremental_transactions_scanned ?? '—'}</dd>
             <dt>{t('runtime.auditLatency')}</dt><dd>{props.projectionAudit.full_replay_micros} / {props.projectionAudit.incremental_replay_micros ?? '—'} / {props.projectionAudit.projection_validation_micros} μs</dd>
           </dl>

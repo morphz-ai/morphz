@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ledger_score_tracks_tool_coverage_without_penalizing_it() {
+    async fn event_score_tracks_tool_coverage_without_penalizing_it() {
         let base = TempDir::new().unwrap();
         let environment = create_coding_eval_v1(Some(base.path())).unwrap();
         std::fs::write(

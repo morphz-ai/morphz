@@ -21,13 +21,13 @@ v1 必须同时建立以下语义：
 1. 工具调用与新用户消息可以并发；
 2. 不同 Session 可以并发求值；
 3. 同一 Session 的新消息不必等待旧工具结果；
-4. Ledger 保留真实事件顺序和因果关系；
+4. Event History 保留真实事件顺序和因果关系；
 5. Tool Result 只恢复原 continuation，不能混入其他 Turn；
 6. Shared Mind 继续被所有挂载 Session 共享；
 7. 本轮可见的 Session 集由时间窗口、最大数量和 Token Budget 共同约束；
 8. Agent 可以在 Context 压力下原子地提炼经验并 retire Session；
 9. retired Session 收到需要处理的新事件时由 Runtime 自动 restore；
-10. 所有排除都只是注意力或投影变化，不删除 Session、Ledger 或 Shared Mind。
+10. 所有排除都只是注意力或投影变化，不删除 Session、Event History 或 Shared Mind。
 
 ## 2. 实现前审计与解除结果
 
@@ -35,7 +35,7 @@ v1 必须同时建立以下语义：
 
 当前代码已经具备：
 
-- Event Ledger 的全局稳定 sequence；
+- Event History 的全局稳定 sequence；
 - `session_id/context_id` 路由；
 - 每个 Session 的 Dialogue Thread 顺序锁和 active counter；
 - Context 级 `context_tx` 单写锁与 `base-version` 检查；
@@ -207,7 +207,7 @@ v1 继续使用 `sessions.last_activity_at`，但只由具有认知或控制意�
 
 高频 stdout chunk、心跳和重复状态查询不更新 `last_activity_at`，否则一个沉默但持续输出日志的任务会永久占据 Working Set。
 
-所有更新时间必须由 Runtime 根据 Ledger Event 确定，模型不能伪造。
+所有更新时间必须由 Runtime 根据 persisted Event 确定，模型不能伪造。
 
 ## 7. 紧凑运行目录与完整 Session 投影
 
@@ -341,7 +341,7 @@ v1 直接拒绝当前 Session retire，返回可行动错误；`retire-after-rep
 逻辑顺序：
 
 ```text
-append directed event to Ledger
+append directed event to Event History
         ↓ caused-by
 mark Session attention active
 append runtime/session-restored audit event
@@ -429,7 +429,7 @@ T9  A2 读取最新 Shared Mind、A 根回合及同根后续事件；B 的独立
 T10 A2 继续、调整、取消旧计划或回复
 ```
 
-Ledger 必须满足：
+Event History 必须满足：
 
 ```text
 sequence(ToolCall A) < sequence(Message B) < sequence(ToolResult A)
@@ -464,7 +464,7 @@ sequence(ToolCall A) < sequence(Message B) < sequence(ToolResult A)
 1. Work Item B 调用 `kill_task(A)` 或更新 Objective；
 2. Runtime 记录 cancel intent 和时间；
 3. Tool A 尽力终止；
-4. 迟到 Result A 仍写 Ledger，但标记 `late_after_cancel/superseded`；
+4. 迟到 Result A 仍写 Event History，但标记 `late_after_cancel/superseded`；
 5. 迟到结果不得自动恢复已被 B 取代的计划；
 6. 是否需要再次求值由 Task/Objective 状态机决定。
 
@@ -512,13 +512,13 @@ Protocol 增加以下说明：
 ```lisp
 (session-concurrency-contract
   (identity "Agent 可同时运行多个 Evaluation；Session 只是路由和局部连续性")
-  (ordering "Ledger seq 表示物理写入顺序；caused-by 表示直接因果")
+  (ordering "Event History seq 表示物理写入顺序；caused-by 表示直接因果")
   (tool-wait "等待某个 Tool 不会阻塞其他 Session 或新用户消息")
   (late-result "迟到结果必须结合后续事件和最新 Mind 重新判断，不得恢复旧计划"))
 
 (session-attention-contract
   (working-set "时间窗口、数量和 token budget 只控制本轮投影")
-  (retire-session "Agent 主动移出自动认知候选；不删除 Session 或 Ledger")
+  (retire-session "Agent 主动移出自动认知候选；不删除 Session 或 Event History")
   (restore-session "重新允许进入自动候选")
   (auto-restore "新定向事件到达时 Runtime 确定性恢复"))
 ```
@@ -674,7 +674,7 @@ context_snapshot_version
 
 1. Tool A 至少运行 2 秒，100ms 后同 Session 输入 B；B 的 Evaluation 在 Tool A 完成前开始并回复；
 2. Tool A 运行时另一个 Session 输入 C；C 不等待 A；
-3. Ledger 满足 `call A < message B < result A`；
+3. Event History 满足 `call A < message B < result A`；
 4. Result A 的 `caused_by/work_item_id` 指向 A，不混入 B 的 Tool Transcript；
 5. B 取消 A 后，迟到结果不能恢复旧 Objective 或产生重复 Reply；
 6. 两个 Session 同时提交不相干 Context 修改时至少不会静默覆盖；全局 version 冲突可在 v1 显式重求值；
@@ -697,7 +697,7 @@ context_snapshot_version
 1. Agent 在一个事务中 derive Frame 并 retire 三个 Session，全部成功或全部回滚；
 2. retired Session 不进入自动 Working Set；
 3. Shared Mind 中由它产生的 Frame 不消失；
-4. Ledger 和 Session Registry 不删除；
+4. Event History 和 Session Registry 不删除；
 5. 新用户消息只触发一次自动 restore 和一次 Work Item；
 6. Tool Result、Delegation Result 和 Timer 也能确定性 restore；
 7. running task、active Objective、pending input 和当前 Evaluation 阻止 retire；
@@ -746,14 +746,14 @@ B 没有等待 A；A 的 continuation 保持 A 的 `root_turn_id`，其 Context 
 
 > 实施更新（2026-08-01）：本节描述的是 Session Working Set v1 当时的范围，不是整个 Runtime 的当前能力清单。Frame 级 MVCC 已在后续实现中落地，当前状态见 [Context 事务、Mind Projection 与分布式扩展](./morphz_context_transaction_scalability_and_mind_projection_v1.md)。
 
-- 不实现 Raft/Paxos 或多副本 Ledger；
+- 不实现 Raft/Paxos 或多副本 Event History；
 - 本阶段最初不包含 Frame 级 MVCC；后续 Runtime 已支持不相干 Frame 修改安全自动 rebase；
 - 不实现所有 Session 一次合并求值；该实验路径已从 Runtime 删除；
 - 不实现 Session 内部 Observation 分页换入；
 - 不让 Runtime 自动为旧 Session 生成业务摘要；
 - 不实现 `pin-session`、`retire-after-reply` 或复杂优先级；
 - 不把 retired 等同 archived；
-- 不物理删除任何 Session 或 Ledger；
+- 不物理删除任何 Session 或 Event History；
 - 不声称已经支持一百万真实并发用户；v1 只验证请求大小与 Registry 总数解耦；
 - 不解决 LLM 对并发事实的全部语义误判，只保证因果、版本和路由可见且正确。
 
@@ -766,7 +766,7 @@ B 没有等待 A；A 的 continuation 保持 A 的 `root_turn_id`，其 Context 
 3. Tool Result、Reply 和 Context Tx 在并发下不串线、不静默覆盖；
 4. 单次 Context Encoding 只包含有界 Session Working Set；
 5. `max_sessions=1` 能稳定提供共享 Mind 下的 Session 历史隔离；
-6. Agent 能在压力下 retire Session，并保留 Shared Mind 与 Ledger；
+6. Agent 能在压力下 retire Session，并保留 Shared Mind 与 Event History；
 7. 新定向事件能自动 restore 并继续原 Session；
 8. 所有关键状态在重启后可恢复；
 9. TUI 在 Agent 工作时仍允许并正确路由新输入；

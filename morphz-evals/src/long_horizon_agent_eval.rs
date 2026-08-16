@@ -41,7 +41,7 @@ pub struct FileInjection {
 /// Declares a generic evaluation gate requiring a fact to appear only after its evidence.
 ///
 /// A scenario describes only the fact marker and the Events that constitute evidence. The evaluator
-/// checks Ledger order without embedding business facts or version names in the runtime.
+/// checks event-sequence order without embedding business facts or version names in the runtime.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceGate {
     pub id: String,
@@ -206,7 +206,7 @@ pub struct LongHorizonEvalReport {
     pub total_provenance_violations: usize,
     pub peak_estimated_tokens: usize,
     pub final_pressure: ContextPressure,
-    pub ledger_events: usize,
+    pub event_count: usize,
     pub database_bytes: u64,
     pub success: bool,
     pub stages: Vec<LongHorizonStageResult>,
@@ -1426,7 +1426,7 @@ pub async fn inspect_long_horizon_eval(
         total_provenance_violations,
         peak_estimated_tokens,
         final_pressure: final_view.pressure,
-        ledger_events: events.len(),
+        event_count: events.len(),
         database_bytes: sqlite_storage_bytes(&manifest.database_path),
         success,
         stages,
@@ -1480,7 +1480,7 @@ fn operations_continuity_stages() -> Vec<LongHorizonStage> {
         LongHorizonStage {
             index: 4,
             id: "restart-recovery".to_string(),
-            prompt: "Morphz 进程刚刚重启。这一轮不得读取 workspace、召回 Ledger 或调用任何物理工具；只根据已恢复的 Mind 报告项目、当前端口、当前入口、保留期、时区和持续安全约束。".to_string(),
+            prompt: "Morphz 进程刚刚重启。这一轮不得读取 workspace、召回事件历史 或调用任何物理工具；只根据已恢复的 Mind 报告项目、当前端口、当前入口、保留期、时区和持续安全约束。".to_string(),
             restart_before: true,
             injections: Vec::new(),
             expected_reply_markers: markers(&["ORBIT-42", "9443", "/v3/events", "45", "Asia/Shanghai", "NEVER-LOG-SECRETS"]),
@@ -1846,7 +1846,7 @@ fn related_experience_training_stages() -> Vec<LongHorizonStage> {
         LongHorizonStage {
             index: 4,
             id: "training-related-restart-recovery".to_string(),
-            prompt: "Morphz 进程刚刚重启。本轮不得读取 workspace、召回 Ledger 或调用任何物理工具；只根据恢复后的 Mind，报告案例 A、B、C 的最终采用值以及形成这些决定时最重要的判断边界。".to_string(),
+            prompt: "Morphz 进程刚刚重启。本轮不得读取 workspace、召回事件历史 或调用任何物理工具；只根据恢复后的 Mind，报告案例 A、B、C 的最终采用值以及形成这些决定时最重要的判断边界。".to_string(),
             restart_before: true,
             injections: Vec::new(),
             expected_reply_markers: markers(&["ALPHA-17", "BETA-42", "CHARLIE-7"]),
@@ -1909,7 +1909,7 @@ fn unrelated_experience_training_stages() -> Vec<LongHorizonStage> {
         LongHorizonStage {
             index: 4,
             id: "training-unrelated-restart-recovery".to_string(),
-            prompt: "Morphz 进程刚刚重启。本轮不得读取 workspace、召回 Ledger 或调用任何物理工具；只根据恢复后的 Mind，报告 U1、U2、U3 的结果与单位。".to_string(),
+            prompt: "Morphz 进程刚刚重启。本轮不得读取 workspace、召回事件历史 或调用任何物理工具；只根据恢复后的 Mind，报告 U1、U2、U3 的结果与单位。".to_string(),
             restart_before: true,
             injections: Vec::new(),
             expected_reply_markers: markers(&["U1", "42", "U2", "3", "U3", "20"]),
@@ -1969,7 +1969,7 @@ fn experience_transfer_target_stages(start_index: usize) -> Vec<LongHorizonStage
         LongHorizonStage {
             index: start_index + 2,
             id: "target-restart-recovery".to_string(),
-            prompt: "Morphz 进程刚刚重启。本轮不得读取 workspace、召回 Ledger 或调用任何物理工具；只根据恢复后的 Mind，报告目标案例 D 与 E 的最终采用值、被拒绝值和判断边界。".to_string(),
+            prompt: "Morphz 进程刚刚重启。本轮不得读取 workspace、召回事件历史 或调用任何物理工具；只根据恢复后的 Mind，报告目标案例 D 与 E 的最终采用值、被拒绝值和判断边界。".to_string(),
             restart_before: true,
             injections: Vec::new(),
             expected_reply_markers: markers(&[
@@ -2093,7 +2093,7 @@ fn autonomous_transfer_stages() -> Vec<LongHorizonStage> {
         LongHorizonStage {
             index: 6,
             id: "restart-transfer-recovery".to_string(),
-            prompt: "Morphz 进程刚刚重启。这一轮禁止读取 workspace、召回 Ledger 或调用任何物理工具。只根据恢复的 Mind，完整报告策略 ID `EVIDENCE-AUTHORITY-BEFORE-RECENCY`、它的判断边界，以及案例 A/B/C 的正确结果 ALPHA-17、BETA-42、GAMMA-2。".to_string(),
+            prompt: "Morphz 进程刚刚重启。这一轮禁止读取 workspace、召回事件历史 或调用任何物理工具。只根据恢复的 Mind，完整报告策略 ID `EVIDENCE-AUTHORITY-BEFORE-RECENCY`、它的判断边界，以及案例 A/B/C 的正确结果 ALPHA-17、BETA-42、GAMMA-2。".to_string(),
             restart_before: true,
             injections: Vec::new(),
             expected_reply_markers: markers(&["EVIDENCE-AUTHORITY-BEFORE-RECENCY", "ALPHA-17", "BETA-42", "GAMMA-2"]),

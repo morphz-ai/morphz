@@ -3,7 +3,7 @@
 //! Policy layers decide what should happen. This module owns the typed facts
 //! used to decide whether that transition is legal and ready to run. Database
 //! backends implement the transactional commands in [`kernel`]; controllers
-//! must not rebuild these rules from Ledger events.
+//! must not rebuild these rules from persisted Events.
 
 #[path = "command.rs"]
 pub mod commands;

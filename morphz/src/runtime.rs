@@ -428,7 +428,7 @@ fn calculate_model_usage_cost(
 
 /// Bounded, authoritative summary used by every Context-level product surface.
 /// The overview deliberately contains projections and aggregate counts rather
-/// than the unbounded Ledger or the full Context Encoding S-expression.
+/// than the unbounded Event History or the full Context Encoding S-expression.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextOverview {
     pub context: CognitiveContextRecord,
@@ -659,11 +659,11 @@ pub struct ThreadDetail {
     pub model_attempt_events: Vec<Event>,
 }
 
-/// Transport-neutral Ledger query. Payload identity/causal filters are kept in
+/// Transport-neutral Event History query. Payload identity/causal filters are kept in
 /// this public contract even while a backend may satisfy them through a
 /// bounded post-filter; the response makes that scan boundary explicit.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LedgerQuery {
+pub struct EventHistoryQuery {
     pub context_id: String,
     pub session_id: Option<String>,
     pub principal_id: Option<String>,
@@ -681,7 +681,7 @@ pub struct LedgerQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LedgerQueryPage {
+pub struct EventHistoryPage {
     pub context_id: String,
     pub generated_at: chrono::DateTime<chrono::Utc>,
     pub events: Vec<Event>,
@@ -1968,7 +1968,7 @@ impl MorphzRuntime {
                         // `yield_now` can schedule this worker again
                         // immediately, allowing a rebuildable Recall
                         // Projection to repeatedly reclaim SQLite's
-                        // single-writer slot ahead of Ledger/Timer/Execution
+                        // single-writer slot ahead of Event, Timer, and Execution
                         // commits. Keep throughput high while giving the
                         // authoritative control plane a deterministic window.
                         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -6135,7 +6135,7 @@ impl MorphzRuntime {
 
     /// Lists the persisted operator dispositions for a Context. Attention
     /// cases themselves stay derived from authoritative scheduler state, so a
-    /// repaired source disappears automatically without mutating the Ledger.
+    /// repaired source disappears automatically without mutating any persisted Event.
     pub async fn attention_acknowledgements(
         &self,
         context_id: &str,
@@ -6265,7 +6265,7 @@ impl MorphzRuntime {
     ///
     /// The storage reads are deliberately bulk queries. Product surfaces must
     /// not turn a Context or Session card into a separate database round trip,
-    /// nor reconstruct scheduler state from the immutable Ledger.
+    /// nor reconstruct scheduler state from immutable Events.
     pub async fn runtime_overview(
         &self,
         query: RuntimeOverviewQuery,
@@ -7067,7 +7067,10 @@ impl MorphzRuntime {
         Ok(mutation)
     }
 
-    pub async fn query_ledger(&self, query: LedgerQuery) -> Result<LedgerQueryPage, RuntimeError> {
+    pub async fn query_event_history(
+        &self,
+        query: EventHistoryQuery,
+    ) -> Result<EventHistoryPage, RuntimeError> {
         if self
             .inner
             .store
@@ -7100,7 +7103,7 @@ impl MorphzRuntime {
             }
         };
         if has_search_term && event_ids.is_empty() {
-            return Ok(LedgerQueryPage {
+            return Ok(EventHistoryPage {
                 context_id: query.context_id,
                 generated_at: chrono::Utc::now(),
                 events: Vec::new(),
@@ -7153,7 +7156,7 @@ impl MorphzRuntime {
         let scanned_last_sequence = scanned.last().and_then(|event| event.sequence);
         let mut matching = scanned
             .into_iter()
-            .filter(|event| ledger_event_matches_causal_scope(event, &query))
+            .filter(|event| event_matches_causal_scope(event, &query))
             .collect::<Vec<_>>();
         let (events, next_after_sequence, next_before_sequence) = if forward_scan {
             let has_more_matches = matching.len() > limit;
@@ -7180,7 +7183,7 @@ impl MorphzRuntime {
             // cursor even though backward pagination uses next_before_sequence.
             (events, scanned_last_sequence, next_before)
         };
-        Ok(LedgerQueryPage {
+        Ok(EventHistoryPage {
             context_id: query.context_id,
             generated_at: chrono::Utc::now(),
             events,
@@ -7453,7 +7456,7 @@ fn runtime_overview_session(
     }
 }
 
-fn ledger_event_matches_causal_scope(event: &Event, query: &LedgerQuery) -> bool {
+fn event_matches_causal_scope(event: &Event, query: &EventHistoryQuery) -> bool {
     fn payload_string<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
         event
             .payload
@@ -8206,7 +8209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_attachments_store_bytes_outside_the_ledger_by_digest() {
+    async fn message_attachments_store_bytes_outside_events_by_digest() {
         let artifact_root = tempfile::tempdir().unwrap();
         let input = MessageAttachmentInput {
             name: "../diagram.png".to_string(),

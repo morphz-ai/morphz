@@ -179,7 +179,7 @@ impl Tool for ObjectiveCreateTool {
                     "source_refs": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Current Context Ledger refs, such as @e27 for the user request or evidence forming the objective. The Runtime verifies existence; pass an empty array when no suitable ref exists"
+                        "description": "Current Context Event refs, such as @e27 for the user request or evidence forming the objective. The Runtime verifies existence; pass an empty array when no suitable ref exists"
                     },
                     "parent_objective_id": {
                         "type": "string",
@@ -587,7 +587,7 @@ impl Tool for ObjectiveUpdateTool {
                     "evidence_refs": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Current Context Ledger refs such as @e27 supporting the decision. The Runtime verifies existence, not business sufficiency"
+                        "description": "Current Context Event refs such as @e27 supporting the decision. The Runtime verifies existence, not business sufficiency"
                     },
                     "wait_condition": {
                         "description": "A deterministic wake condition used only with status=active. The Runtime does not poll after submission and resumes automatically when the event is satisfied.",
@@ -901,7 +901,7 @@ impl Tool for ObjectiveAmendTool {
                     "evidence_refs": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional current Context Ledger refs supporting the correction"
+                        "description": "Optional current Context Event refs supporting the correction"
                     }
                 },
                 "required": ["objective_id", "base_revision", "stated_objective", "reason", "evidence_refs"],
@@ -1905,7 +1905,7 @@ impl ObjectiveSupervisor {
         // Event delivery is a latency hint, not the only way an Objective may
         // discover an already committed fact. Coalesce causal mutations by
         // Context so transient asynchronous-handler failures are repaired
-        // online without polling idle Contexts or replaying the whole Ledger.
+        // online without polling idle Contexts or replaying all persisted Events.
         let dirty_contexts = Arc::clone(&self.reconcile_dirty_contexts);
         let reconcile_wakeup = Arc::clone(&self.reconcile_wakeup);
         self.bus.subscribe(

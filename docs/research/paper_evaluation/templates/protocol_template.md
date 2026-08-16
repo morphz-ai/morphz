@@ -57,7 +57,7 @@
 
 - 请求数、工具数、输入/输出/cached tokens、延迟、成本；
 - 错误分类；
-- Context/Ledger/状态变化。
+- Context/Event History/状态变化。
 
 ## 5. 样本、顺序与统计
 

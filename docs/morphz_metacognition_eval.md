@@ -46,7 +46,7 @@
 | 摘要保真 | 5 | 项目、配置、约束和召回证据均完整 |
 | 执行效率 | 10 | 有最终回复、无事务失败、至多 2 次事务、至多 4 次模型调用、无无关物理工具 |
 
-通过线为 85 分，且 Runtime 四项、当前事实、持续约束、主动召回和执行效率均不得失败。关键能力采用硬门槛，避免用大量容易得分的项目抵消自我失忆、错误事实或失控循环。`supersedes` 只要曾在已提交事务中正确声明即可计入语义识别；评分器会同时报告关系是否仍驻留在当前 Mind，允许 Agent 在退休旧证据后主动撤销关系，但保留 Ledger 审计记录。
+通过线为 85 分，且 Runtime 四项、当前事实、持续约束、主动召回和执行效率均不得失败。关键能力采用硬门槛，避免用大量容易得分的项目抵消自我失忆、错误事实或失控循环。`supersedes` 只要曾在已提交事务中正确声明即可计入语义识别；评分器会同时报告关系是否仍驻留在当前 Mind，允许 Agent 在退休旧证据后主动撤销关系，但保留 Event History 审计记录。
 
 ## 4. 使用方法
 
@@ -156,13 +156,13 @@ OpenAI-compatible 响应的 `finish_reason`、token usage 和各工具参数字�
 
 随后通过通用配置 `MORPHZ_LLM_MAX_OUTPUT_TOKENS=131072`，在相同 GLM 路由、Runtime、fixture、Prompt 和评分器下重新运行 5 次。Chat Completions 请求显式发送 `max_tokens=131072`。结果由 4K 默认预算下的平均 56 分、标准差 29.56、严格通过率 0%，改善为平均 76 分、标准差 23.96、严格通过率 40%；5 次分数为 95、95、80、80、30。所有响应的 `finish_reason=length` 数量从 3 降为 0，证明输出预算是 GLM 稳定性的一个主要限制。唯一 30 分样本已经完整生成事务，但模型抄错一个很长的 recall Event ID，事务因引用不存在而原子回滚；这属于引用可用性问题，不是输出长度问题。
 
-protocol v4 随后把模型视口中的 Event 引用统一改为由 Ledger sequence 派生的 `@eN`，并保持 Ledger transaction/state 使用完整 canonical ID。GLM 128K 的 5 次真实回归中，模型工具调用共出现 14 次短引用、0 次完整 `output_attempt_...` 引用，且没有“引用不存在”失败；成功样本落盘事务不包含 `@eN`，重启重放一致。该组分数为 80、30、30、30、15，四条失败均来自既有的 SExpr body arity 错误（`create/derive` 提供多个 BODY），不是短引用解析错误。因此短引用已解决 Event ID 抄写问题，但同时把模型对 DSL 结构遵循不稳定的问题独立暴露出来；两者必须分项评估，不能用该组总分否定引用层的有效性。
+protocol v4 随后把模型视口中的 Event 引用统一改为由 Event Sequence 派生的 `@eN`，并保持 Context transaction 与 Mind state 使用完整 canonical ID。GLM 128K 的 5 次真实回归中，模型工具调用共出现 14 次短引用、0 次完整 `output_attempt_...` 引用，且没有“引用不存在”失败；成功样本落盘事务不包含 `@eN`，重启重放一致。该组分数为 80、30、30、30、15，四条失败均来自既有的 SExpr body arity 错误（`create/derive` 提供多个 BODY），不是短引用解析错误。因此短引用已解决 Event ID 抄写问题，但同时把模型对 DSL 结构遵循不稳定的问题独立暴露出来；两者必须分项评估，不能用该组总分否定引用层的有效性。
 
-protocol v5 将 `create/derive/revise` 的内容语法改为 `BODY...`：单 BODY 保持原样，多 BODY 在解析阶段确定性规范化为 `(context-body BODY...)`；`create` 仍不接受 `from`，`derive/revise` 的来源必须紧跟 ID。Context 自描述与 `context_tx` Function Calling 描述同步公开 body arity、规范化规则、来源位置和复合示例。同条件 GLM 128K + `@eN` 的 5 次回归由 protocol v4 的平均 37 分、标准差 22.27、1/5 事务成功，改善为平均 83 分、标准差 6、5/5 事务成功；分数为 95、80、80、80、80。五条 Ledger transaction 均包含 canonical `context-body`，事务失败和 `finish_reason=length` 均为 0。持续约束、主动召回、选择性遗忘、supersedes、摘要保真和执行效率全部 5/5；剩余扣分来自最终回复的当前事实报告，不是 DSL 或 Mind 维护失败。
+protocol v5 将 `create/derive/revise` 的内容语法改为 `BODY...`：单 BODY 保持原样，多 BODY 在解析阶段确定性规范化为 `(context-body BODY...)`；`create` 仍不接受 `from`，`derive/revise` 的来源必须紧跟 ID。Context 自描述与 `context_tx` Function Calling 描述同步公开 body arity、规范化规则、来源位置和复合示例。同条件 GLM 128K + `@eN` 的 5 次回归由 protocol v4 的平均 37 分、标准差 22.27、1/5 事务成功，改善为平均 83 分、标准差 6、5/5 事务成功；分数为 95、80、80、80、80。五条持久化 Context transaction 均包含 canonical `context-body`，事务失败和 `finish_reason=length` 均为 0。持续约束、主动召回、选择性遗忘、supersedes、摘要保真和执行效率全部 5/5；剩余扣分来自最终回复的当前事实报告，不是 DSL 或 Mind 维护失败。
 
 protocol v6 针对这一剩余失败收紧响应状态机。v5 回归中 GLM 的 Mind 和 supersedes 关系均为 5/5 正确，但 3 次把“现在提交事务，随后回复”的进度文本与 `context_tx final_reply=true` 一起返回，导致 Runtime 直接终止。v6 删除该工具参数和终止快速路径；旧客户即使仍携带该字段，Runtime 也会忽略它并继续循环。
 
-同条件 GLM 128K 的 protocol v6 真实回归已完成 5 次：分数全部为 95/95（当前评分上限），平均 95、标准差 0、严格成功率 100%；对比 v5 的平均 83、标准差 6、严格成功率 20%。Runtime 和 Agent 的 11 项现有准则全部 5/5 通过，其中 `current_fact` 由 1/5 升至 5/5；每次均为 1 次事务提交、1 次最终回复，旧 `final_reply` 参数出现 0 次。Ledger 中真实 `runtime/model_attempt_started` 均值由 3.6 增至 4.2，即用平均 0.6 次额外模型请求换取了这次稳定性提升。
+同条件 GLM 128K 的 protocol v6 真实回归已完成 5 次：分数全部为 95/95（当前评分上限），平均 95、标准差 0、严格成功率 100%；对比 v5 的平均 83、标准差 6、严格成功率 20%。Runtime 和 Agent 的 11 项现有准则全部 5/5 通过，其中 `current_fact` 由 1/5 升至 5/5；每次均为 1 次事务提交、1 次最终回复，旧 `final_reply` 参数出现 0 次。Event History 中真实 `runtime/model_attempt_started` 均值由 3.6 增至 4.2，即用平均 0.6 次额外模型请求换取了这次稳定性提升。
 
 人工复核还暴露了评分器的剩余宽松点：项目代号、当前端口、安全约束和验收口令在最终正文中均为 5/5，但“新版取代旧版”只有 4/5 最终正文明确重述，旧端口数字 `8080` 只有 3/5。现有 `current_fact` 只要 Mind 有 supersedes 且最终正文包含 `9090` 就会通过，因此 v6 已证明终止状态机收敛，但 Reply Fidelity 还应继续拆分为“当前事实”、“取代关系”和“旧值报告”三项。
 
@@ -172,7 +172,7 @@ protocol v6 针对这一剩余失败收紧响应状态机。v5 回归中 GLM 的
 
 protocol v8 将当前用户回合内的工具链改为临时标准 transcript：
 
-1. 工具结果先写入 Ledger，获得稳定 Observation ref；
+1. 工具结果先写入 Event History，获得稳定 Observation ref；
 2. 紧接着通过 `assistant(tool_calls) → tool(tool_call_id)` 返回；
 3. 同一模型请求的 Context View 排除这批结果正文，避免重复注入；
 4. 下一用户回合重新编译快照时，未 retire 的结果仍作为普通 Inbox Observation 出现；

@@ -57,7 +57,7 @@ id:    model_usage_{attempt_id}
 
 同一 Attempt 使用稳定 Event ID，因此重复收口不会重复计费。事件同时携带 Context、Session、Attempt、Thread、Activation、Objective 因果路由，以及本轮预请求估算元数据。
 
-SQLite 和 PostgreSQL 都通过同一 Event Ledger 接口保存该事件，不需要另建仅适用于某个数据库的用量表。
+SQLite 和 PostgreSQL 都通过同一 Event History 接口保存该事件，不需要另建仅适用于某个数据库的用量表。
 
 持久化成功后，Runtime 同时输出一条结构化运行日志：
 
@@ -136,7 +136,7 @@ Context + Session + model + local counter source
 
 共享 Mind 不代表不同 Session 的请求形状或工具转录完全相同，因此不能跨 Session 共用锚点。
 
-内存缓存用于快速读取；Runtime 重启后，从当前 Context/Session 最近的 `runtime/model_usage` 事件中恢复最新兼容锚点。恢复查询有界，不重放整个 Ledger。
+内存缓存用于快速读取；Runtime 重启后，从当前 Context/Session 最近的 `runtime/model_usage` 事件中恢复最新兼容锚点。恢复查询有界，不重放整个 Event History。
 
 ### 4.3 可信度
 
@@ -228,7 +228,7 @@ GET /api/contexts/{context_id}/model-usage
 - 按币种和价格版本分组的费用汇总；
 - 下一页游标。
 
-查询默认 100 条、最大 1000 条，并按 Context/Session 有界读取，不扫描完整 Event Ledger。
+查询默认 100 条、最大 1000 条，并按 Context/Session 有界读取，不扫描完整 Event History。
 
 `ContextOverview.attribution` 与 Context Inspect 中的 `attribution` 提供最新 Prompt 组件归因。Context Inspect 的大正文仍按 compact 策略持久化，而 attribution 本身是小型诊断结构，可直接保留。
 
@@ -275,7 +275,7 @@ Dashboard 必须用不同符号和文案表达两类数字：
 
 Morphz 不需要在核心路径追求“为所有模型安装完全一致的 tokenizer”。对一个将接入大量 Provider 的长程 Agent Runtime，更稳健的统一方案是：
 
-1. Provider usage 永远作为真实账本事实；
+1. Provider usage 永远作为真实的持久化 Event 事实；
 2. Context pressure 使用真实输入 usage 锚点加本地请求增量；
 3. Context 组件使用同一套稳定权重做比例归因；
 4. 费用只基于显式、版本化价格目录；

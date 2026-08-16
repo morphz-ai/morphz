@@ -241,7 +241,7 @@ trait AuthAdapter {
 }
 ```
 
-`RequestAuthorization` 只能进入物理 HTTP 请求，不能进入 Prompt、Session、Mind、Ledger 或普通日志。
+`RequestAuthorization` 只能进入物理 HTTP 请求，不能进入 Prompt、Session、Mind、Event History 或普通日志。
 
 #### 4.2.1 Device Authorization 的实际语义
 
@@ -465,7 +465,7 @@ PKCE verifier、Device Code 与回调 `state` 不属于值后端：v1 不恢复�
 ### 6.3 禁止保存的位置
 
 - `morphz.toml`；
-- Event Ledger payload；
+- Event History payload；
 - Context Encoding；
 - Mind Frame；
 - Dashboard Local Storage；
@@ -798,7 +798,7 @@ SQLite 的账号状态、亲和、刷新 fencing、Attempt Binding 与远端目�
 | 5 | 单账号失效不封锁其他账号 | 已通过 durable 账号禁用后的同 Alias failover 回归 |
 | 6 | 已收到流输出后不透明跨账号重放 | 已由 Attempt immutable binding 与现有流恢复边界保证 |
 | 7 | 新模型可手工配置、诊断并刷新远端目录 | 已实现 SDK/CLI/HTTP/Dashboard |
-| 8 | OAuth Token 不进入配置、Ledger、Prompt、Dashboard 或普通日志 | 已由类型边界、Secret Store 与错误脱敏实现；继续保留回归审计 |
+| 8 | OAuth Token 不进入配置、Event History、Prompt、Dashboard 或普通日志 | 已由类型边界、Secret Store 与错误脱敏实现；继续保留回归审计 |
 | 9 | 兼容 Gateway 仍作为普通 Provider 接入 | 已保留四协议配置入口 |
 | 10 | 内置 Adapter 确定性契约与真实端点冒烟 | Codex、Kimi、Claude、Antigravity、xAI 的确定性契约已通过；真实端点冒烟需要外部测试账号，未伪造完成 |
 

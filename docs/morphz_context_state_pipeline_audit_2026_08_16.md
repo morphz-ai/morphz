@@ -2,7 +2,7 @@
 
 > Status: complete — audit, repair and regression gates passed
 >
-> Scope: immutable Event Ledger, Mind Projection, Mind Snapshot, Session
+> Scope: immutable Event History, Mind Projection, Mind Snapshot, Session
 > Projection, Recall Projection, Context Working Set, Frame lifecycle and the
 > model-facing S-expression encoding.
 
@@ -17,16 +17,16 @@ a defect is not a terminal condition for this work.
 
 | ID | Invariant | Required evidence |
 | --- | --- | --- |
-| CTX-I01 | The immutable Ledger is the sole historical authority. Every derived state can be rebuilt from it. | Full replay equals online Mind Projection. |
-| CTX-I02 | A Context transaction is all-or-nothing across Ledger Event, Context Head, Mind Projection, Session Projection, attention mutation and Recall Outbox intents. | Store conformance and rollback tests on both backends. |
+| CTX-I01 | The immutable Event History is the sole historical authority. Every derived state can be rebuilt from it. | Full replay equals online Mind Projection. |
+| CTX-I02 | A Context transaction is all-or-nothing across persisted Event, Context Head, Mind Projection, Session Projection, attention mutation and Recall Outbox intents. | Store conformance and rollback tests on both backends. |
 | CTX-I03 | Context Head, materialized Mind revision/hash and transaction head Event always identify the same commit. | CAS conflict, corruption and restart tests. |
 | CTX-I04 | Latest Snapshot plus later Context transactions produces exactly the same Mind as Genesis replay. | Differential replay after periodic, checkpoint and rollback snapshots. |
 | CTX-I05 | Session Projection is exactly the active Observation set: append enters once, retire removes once, restore re-enters once, and no Context can mutate another Context's rows. | Stateful projection tests and backend conformance. |
-| CTX-I06 | Recall is eventually convergent. Rebuild or a stale worker may not lose a newer Ledger/Mind intent or overwrite a newer document generation. | Rebuild/outbox race, leased-claim and restart tests. |
+| CTX-I06 | Recall is eventually convergent. Rebuild or a stale worker may not lose a newer Events/Mind intent or overwrite a newer document generation. | Rebuild/outbox race, leased-claim and restart tests. |
 | CTX-I07 | Recall pagination remains valid across Runtime restart and across workers sharing one Store; cursors never expand authorization. | Restart/multi-worker cursor tests. |
 | CTX-I08 | One model request observes a causally valid Context: its own root and claimed Signal batch are stable, future turns do not leak backwards, and concurrent status is explicitly read-only. | Interruption and concurrent-session Context Encoding tests. |
 | CTX-I09 | Frame retirement is generation fenced. Revise, restore or protect cancels an older retirement, and an older finalizer cannot retire the successor state. | Stateful lifecycle and concurrent finalizer tests. |
-| CTX-I10 | Online work is bounded by the selected Working Set and physical prompt capacity; Ledger length does not re-enter ordinary hot paths. | Query-plan and long-run capacity tests. |
+| CTX-I10 | Online work is bounded by the selected Working Set and physical prompt capacity; Event History length does not re-enter ordinary hot paths. | Query-plan and long-run capacity tests. |
 | CTX-I11 | SQLite and PostgreSQL implement identical observable Context semantics. | Shared conformance suite, including every defect regression. |
 
 ## 3. Audit matrix
@@ -49,7 +49,7 @@ a defect is not a terminal condition for this work.
 - Invariant: CTX-I06, CTX-I11
 - Evidence: `replace_recall_documents` deleted all rows from
   `recall_projection_outbox` even though its input documents were assembled
-  before the replacement transaction. A Ledger Event committed after that
+  before the replacement transaction. A persisted Event committed after that
   snapshot could therefore lose its only pending Recall intent.
 - Regression: RuntimeStore conformance now commits an Event after the rebuild
   snapshot, performs the stale replacement, drains the Outbox and requires the
@@ -95,7 +95,7 @@ a defect is not a terminal condition for this work.
 - Severity: high
 - Invariant: CTX-I01, CTX-I03
 - Evidence: a deterministic test commits a Context transaction after the audit
-  has read Ledger but before it reads Projection. The previous implementation
+  has read Event History but before it reads Projection. The previous implementation
   compared different commit boundaries and returned `matches = false`.
 - Regression: `mind_projection_audit_retries_a_concurrent_commit_between_independent_reads`.
 - Repair: audit detects a forward Projection/Snapshot revision, yields, and

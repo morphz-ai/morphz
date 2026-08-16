@@ -26,7 +26,7 @@ test("requires publication metadata and avoids legacy terminology", async () => 
 });
 
 test("keeps product-domain prose in the page language", async () => {
-  const englishDomainTerms = /\b(?:Agent|Context|Session|Thread|Activation|Objective|Recall|Runtime|Provider|Dashboard|Setup|Sandbox|Principal|Gateway|Ledger|Prompt|Token|Execution Target|Harness)\b/;
+  const englishDomainTerms = /\b(?:Agent|Context|Session|Thread|Activation|Objective|Recall|Runtime|Provider|Dashboard|Setup|Sandbox|Principal|Gateway|Event History|Prompt|Token|Execution Target|Harness)\b/;
   for (const filename of await files("zh")) {
     const source = await readFile(new URL(`zh/${filename}`, contentRoot), "utf8");
     const prose = source

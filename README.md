@@ -8,9 +8,9 @@ Morphz 是一台由 Rust Runtime 承载、运行在大语言模型上的 **S-Exp
 
 - `kernel`：Runtime 拥有的只读 Context、当前求值的 active Session、version 和 Context pressure；
 - `mind`：LLM 拥有的自由格式 Context Frames；
-- `inbox`：Event Ledger 中尚未被 Agent 主动退役的原始 Observation。
+- `inbox`：持久化 Events 中尚未被 Agent 主动退役的原始 Observation。
 
-`context_tx` 提供 `create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint/retire-session/restore-session` 原语；`recall` 用于按稳定引用分页读取 Ledger 原文或恢复 Frame。主链路不会自动摘要历史、按轮数裁剪信息或把 Graph 检索结果静默注入 Mind。完整设计见 [Agent-Owned Context 设计文档](docs/morphz_agent_owned_context_design.md)。
+`context_tx` 提供 `create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint/retire-session/restore-session` 原语；`recall` 用于按稳定引用分页读取 Event History 原文或恢复 Frame。主链路不会自动摘要历史、按轮数裁剪信息或把 Graph 检索结果静默注入 Mind。完整设计见 [Agent-Owned Context 设计文档](docs/morphz_agent_owned_context_design.md)。
 
 长期架构把 Agent 视为持续存在的逻辑认知主体，把 Session 视为可多路复用的交互连接，把 Context 视为可共享、COW 分支、合并和重置的一等版本化对象；多个 Session 可以共享一个 Mind，一个 Session 也可以由多个 Sub Agent/算力节点并行推进。该方向不代表当前能力已经全部实现，完整边界见 [共享 Context、多会话与并行认知架构](docs/morphz_shared_context_multisession_architecture.md)。
 
@@ -32,7 +32,7 @@ Agent / Context / Session Lifecycle v1 在统一 Mount/Seed/Projection 底层上
 
 Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭环：`read` 返回 SHA-256 文件版本，`edit` 使用版本前提执行唯一匹配的原子局部修改，`write` 只允许显式 create 或带版本前提的 overwrite，所有成功修改都会产生带 Diff 的 `file_change` Observation。接口与安全边界见 [Coding Tools v1](docs/morphz_coding_tools_v1.md)。
 
-真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Ledger 评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
+真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Event 证据评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
 
 Scheduler Kernel v2 将物理工作与 Context transaction 分开控制。当前 Context Protocol v26 以 Thread、Activation、结构化 Dependency、Session Working Set、Session attention 和因果可见边界承载并发；每个模型请求只有一个 active Session，不再保留多 Session 合并求值。无工具非空文本是当前 Dialogue/Delivery Activation 的可投递终态，独占 `no_reply` 是静默终态；空响应或非法混用会有限纠错后安全收口。物理工具结果只恢复所属因果链，更晚到达的并发消息不会倒灌进旧 Thread。内部调度 Signal、终态与依赖推进由 Kernel 原子提交，不再依赖 Event → Signal Outbox 的二次翻译。完整现状见 [Scheduler Kernel v2 稳定化重构](docs/morphz_scheduler_kernel_stabilization_v2.md)。
 
@@ -110,7 +110,7 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    实际连接由 Runtime 的 OpenSSH 客户端完成，沿用宿主的 `Host`、`User`、`Port`、
    `IdentityFile`、`ProxyJump`、`SSH_AUTH_SOCK` 和 known-hosts 设置，同时强制
    严格 host-key 校验。默认 `key_only` 使用 `BatchMode=yes`。仅提供密码的主机可先把密码
-   保存到 Secret Store，再把 alias 绑定到 Target；密码值不会进入工具参数、Ledger、Target
+   保存到 Secret Store，再把 alias 绑定到 Target；密码值不会进入工具参数、Event Store、Target
    元数据或普通 Shell 环境：
 
    ```json
@@ -260,7 +260,7 @@ npm run build
 
 `list_files/search/read/edit/write/exec` 共享同一个 `PermissionProfile` 和 `PermissionBroker`。默认 `auto_review` 模式允许工作区读写、禁止网络，越界能力由独立 AI Reviewer 审查；Reviewer 无法判断时会进入可等待的人工审批通道。`permissions.auto_review_model` 可以指定一个独立的 Model Route（例如成本更低、延迟更小的审核模型）；未配置时才为向后兼容复用主模型。Dashboard 的“身份与模型”页面可从已启用路由中选择审核模型，保存后立即热切换并持久化，不改变对话模型。CLI 可直接批准或拒绝，Web 使用 `GET /api/approvals` 与 `POST /api/approvals/:id`。`edit/write` 另外使用 SHA-256 乐观并发校验及同目录原子替换。
 
-同一 Session 的新消息默认会打断尚未跨越 Execution 边界的在途 DialogueTurn，并把此前尚未回复的输入按 Ledger 顺序合并到替代求值中；一旦已经产生 Execution Thread，新消息会进入并发 DialogueTurn，而不会取消物理工作。需要严格 FIFO 时可设置 `orchestrator.interrupt_dialogue_on_new_message = false`。对应环境变量为 `MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE`；独立审核模型也可由 `MORPHZ_AUTO_REVIEW_MODEL` 覆盖。
+同一 Session 的新消息默认会打断尚未跨越 Execution 边界的在途 DialogueTurn，并把此前尚未回复的输入按 Event Sequence 合并到替代求值中；一旦已经产生 Execution Thread，新消息会进入并发 DialogueTurn，而不会取消物理工作。需要严格 FIFO 时可设置 `orchestrator.interrupt_dialogue_on_new_message = false`。对应环境变量为 `MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE`；独立审核模型也可由 `MORPHZ_AUTO_REVIEW_MODEL` 覆盖。
 
 `exec` 会把相同的路径、protected paths 和网络权限编译到操作系统原生沙箱：macOS Seatbelt 已经过真实越权测试；Linux 与 Windows 后端尚未实机实现，启用沙箱时会 fail-closed。高层模式为 `request_approval`、`auto_review`、`full_access` 和 `custom`；完全访问会关闭文件边界与 OS 沙箱并显示启动警告，但敏感环境变量是否传给 Shell 仍由独立环境策略控制。完整设计和当前边界见 [统一沙箱执行与可插拔审批架构](docs/morphz_sandbox_execution_and_approval_architecture.md)。
 

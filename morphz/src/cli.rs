@@ -241,7 +241,7 @@ pub fn morphz_command_for(locale: Locale) -> Command {
         ))
         .long_about(locale.text(
             "Morphz is an S-Expression Cognitive Machine with persistent Context, Sessions, Objectives and a fullscreen terminal UI. The language model is its nondeterministic semantic processor; the Runtime is its deterministic transactional kernel.\n\nText entered without a subcommand is sent directly to the selected Agent instance.",
-            "Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 S 表达式认知机。语言模型是它的非确定性语义处理器，Runtime 是确定性事务内核。\n\n不带子命令输入的文本会直接发送给所选 Agent 实例。",
+            "Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 S 表达式认知机。语言模型是它的非确定性语义处理器，运行时是确定性事务内核。\n\n不带子命令输入的文本会直接发送给所选代理实例。",
         ))
         .propagate_version(true)
         .next_line_help(true)
@@ -1471,8 +1471,8 @@ fn context_command(locale: Locale) -> Command {
                 locale,
                 Command::new("audit")
                     .about(locale.text(
-                        "Verify the Context Mind projection against its ledger",
-                        "对照账本验证上下文的认知投影",
+                        "Verify the Context Mind projection by replaying Events",
+                        "通过事件回放验证上下文的认知投影",
                     ))
                     .arg(prompt_arg("ID", 0, Some(1)).help(locale.text(
                         "Context ID; defaults to --context",
@@ -1503,8 +1503,8 @@ fn context_command(locale: Locale) -> Command {
                         locale,
                         Command::new("rebuild")
                             .about(locale.text(
-                                "Rebuild the derived Recall index from Ledger and Mind",
-                                "根据账本与认知重建派生的召回索引",
+                                "Rebuild the derived Recall index from Events and Mind",
+                                "根据持久化事件与认知重建派生的召回索引",
                             ))
                             .arg(prompt_arg("ID", 0, Some(1)).help(locale.text(
                                 "Context ID; defaults to --context",

@@ -13,7 +13,7 @@ Agent
 └── Cognitive Context（认知上下文）
     ├── Mind（唯一、共享、持久化）
     ├── Session Directory（多个输入输出连接）
-    └── Event Ledger（所有 Session 的完整事件账本）
+    └── Event History（所有 Session 的完整事件历史）
 ```
 
 - `agent_id`：持续存在的 Agent 逻辑身份；
@@ -21,7 +21,7 @@ Agent
 - `session_id`：Context 内的一条输入输出连接，负责消息进展与回复路由，不拥有 Mind；
 - `active_session_id`：只属于一次模型求值，表示这次输入来源和输出目标，不是 Context 的全局唯一活动状态。
 
-因此，同一个 Context 可以同时有多个活跃 Session。每条 Session 的消息分别触发一次求值，各自回复到原 Session；这些求值读取同一 Context Encoding，并共享其中的 Mind 与 Ledger。
+因此，同一个 Context 可以同时有多个活跃 Session。每条 Session 的消息分别触发一次求值，各自回复到原 Session；这些求值读取同一 Context Encoding，并共享其中的 Mind 与 Event History。
 
 ## 2. Context Encoding 与 Context Evaluation
 
@@ -70,7 +70,7 @@ SQLite 包含：
 - 修改 Mind：`context_tx` 使用 Context 级互斥锁串行提交；
 - 并发事务：提交时检查 `base-version`。先提交者成功，基于旧版本的后提交者收到版本冲突，不会覆盖新状态。
 
-Dialogue Lane 锁只覆盖同一 Session 用户消息的首次模型决策，并在执行物理工具前释放；工具执行和等待不持有该锁。每个 Thread 固定 `root_turn_id` 和根事件的 Ledger sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Activation；终态以 `activation_id` 唯一提交。共享 Mind 的修改仍只在事务提交临界区加 Context 锁。完整模型见 [`morphz_session_thread_model_v1.md`](./morphz_session_thread_model_v1.md)。
+Dialogue Lane 锁只覆盖同一 Session 用户消息的首次模型决策，并在执行物理工具前释放；工具执行和等待不持有该锁。每个 Thread 固定 `root_turn_id` 和根事件的 Event sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Activation；终态以 `activation_id` 唯一提交。共享 Mind 的修改仍只在事务提交临界区加 Context 锁。完整模型见 [`morphz_session_thread_model_v1.md`](./morphz_session_thread_model_v1.md)。
 
 每个模型请求只编译一个 active Session。多个 Session 即使共享同一个 Context，也各自发起独立且可并行的模型请求；它们共享已提交 Mind，但不会要求模型在一个响应里拆分多个回复。普通无工具文本投递给 active Session；跨 Session 主动消息使用 `send_message`。
 
@@ -128,7 +128,7 @@ Dashboard 先选择 Cognitive Context，再选择其中的 Session。用户可�
 
 该单样本证明 Gemini 能理解当前“共享认知、分路回复”的编码语义。它不替代更大规模的多模型、冲突事务和长期并发评测；真实并发重叠仍由上述确定性集成测试持续守护。
 
-2026-07-15 又完成同 Session 真实重叠测试：A 的 `exec` 前台运行 25 秒，期间 B 到达并先回复 `B_FINAL_OK`；随后 A 工具结果写入并回复 `A_FINAL_OK`。Ledger 顺序为 `call A < message B < reply B < result A < reply A`，两个 Reply 的 `root_turn_id` 各自正确。
+2026-07-15 又完成同 Session 真实重叠测试：A 的 `exec` 前台运行 25 秒，期间 B 到达并先回复 `B_FINAL_OK`；随后 A 工具结果写入并回复 `A_FINAL_OK`。Event History 顺序为 `call A < message B < reply B < result A < reply A`，两个 Reply 的 `root_turn_id` 各自正确。
 
 ## 8. 暂不实现
 

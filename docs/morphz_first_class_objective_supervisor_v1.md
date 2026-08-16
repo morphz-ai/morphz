@@ -53,7 +53,7 @@ Morphz 的基本层级扩展为：
 Agent
 ├── Cognitive Context
 │   ├── Shared Mind
-│   ├── Event Ledger
+│   ├── Event History
 │   ├── Session A
 │   ├── Session B
 │   ├── Objective O1 → coordinator Session A
@@ -103,7 +103,7 @@ ObjectiveRecord
 字段语义：
 
 - `stated_objective` 保存调用方明确声明的目标，是控制与产品展示所需的稳定输入，不是 Runtime 生成的任务摘要；
-- `source_event_id` 指向目标声明进入 Ledger 的原始事实；
+- `source_event_id` 指向目标声明进入 Event History 的原始事实；
 - 模型对目标的理解、拆解、当前结论和完成证据仍保存在自由格式 Mind 中，Runtime 不要求固定 Frame ID 或 BODY；
 - `revision` 用于目标修改、状态更新和并发控制；
 - `active_evaluation_id` 是执行租约，不表示目标语义状态；
@@ -294,7 +294,7 @@ Morphz 不提供通用业务“完成契约引擎”。完成判断分为三层�
 2. **Agent 认识判断**：LLM 对照 stated objective、约束和证据逐项审查；
 3. **Runtime 控制提交**：Agent 显式调用 `objective_update(completed)`，Runtime 校验身份、revision、权限、引用存在性和状态转换。
 
-Runtime 可以验证 `evidence_refs` 是否真实存在且时序合法，但不能声明这些证据在业务语义上足够。任务使用方仍可提供自己的测试、Hook 或评测器作为外部工具；这些验证结果进入 Ledger，供 Agent 判断，不进入 Runtime 的通用 Objective 规则。
+Runtime 可以验证 `evidence_refs` 是否真实存在且时序合法，但不能声明这些证据在业务语义上足够。任务使用方仍可提供自己的测试、Hook 或评测器作为外部工具；这些验证结果进入 Event History，供 Agent 判断，不进入 Runtime 的通用 Objective 规则。
 
 Supervisor 的 continuation 指令应强调：
 
@@ -340,7 +340,7 @@ Runtime 启动后扫描非终态 Objective：
 - 残留 running lease 超过有效期：记录 recovery event，转回 idle 后续跑；
 - completed/cancelled/failed：只恢复查询和审计，不调度。
 
-恢复行为必须产生 Ledger Event，不能静默篡改状态。
+恢复行为必须产生 persisted Event，不能静默篡改状态。
 
 ### 12.3 与 Delegation 的关系
 
@@ -464,7 +464,7 @@ Morphz 采用相同的依赖方向，但不复制 `ThreadGoal` 层级：
 | --- | --- |
 | Goal 绑定 Thread | Objective 绑定 Cognitive Context，并关联 Session 路由 |
 | Thread idle 后续跑 | Evaluation terminal/Context ready 后由 Supervisor 续跑 |
-| conversation context | Agent-Owned Shared Mind + Event Ledger |
+| conversation context | Agent-Owned Shared Mind + Event History |
 | `update_goal` | 独立 Runtime 控制原语 `objective_update` |
 | 普通 final assistant message 结束 turn | 标准 `reply` 结束 Evaluation |
 
@@ -490,7 +490,7 @@ Morphz 采用相同的依赖方向，但不复制 `ThreadGoal` 层级：
 - SQLite 持久化 `ObjectiveRecord`，支持 revision CAS、生命周期校验、等待条件、Evaluation 租约、continuation sequence、Prompt Token 本地计量与运行时间记账；
 - 内置 `ObjectiveSupervisor` 在普通文本或 `no_reply` 终态后依据最新状态自动续跑，内部 continuation 使用可审计的 `chat/tool_output` Runtime Event，不伪造 user message；
 - Evaluation 租约在认领时登记到期唤醒；过期后释放本地路由并可重新认领，旧定时器不能清除新租约；进程重启会恢复 active/waiting Objective，并清理非 active Objective 的残留 Evaluation；
-- 标准 `objective_update` Function Calling 只允许当前 coordinator Session 更新自身 Objective，验证 revision、状态转换和 Ledger evidence reference；模型可以提交 `completed`、真实 `blocked` 或带精确等待条件的 `active`；
+- 标准 `objective_update` Function Calling 只允许当前 coordinator Session 更新自身 Objective，验证 revision、状态转换和 persisted Event evidence reference；模型可以提交 `completed`、真实 `blocked` 或带精确等待条件的 `active`；
 - 标准 `objective_create` Function Calling 允许模型把真正需要跨 Evaluation、异步等待或重启恢复的当前工作升级为 Objective；Runtime 独占 Agent/Context/Session/ID 路由，审计创建原因和来源，并对同一非终态目标做串行幂等去重；
 - Context Encoding protocol version 14 固定说明 Objective/Context/Session/Evaluation 边界及自主创建纪律，动态 `kernel.objectives` 只注入紧凑控制状态；`objective/evaluation_started` 会确定性重置本 continuation cycle 的 Attempt 与 Context 事务预算；
 - 后台 task、Delegation、permission、user input、timer、external event 和 resource available 均有精确等待类型；task/timer 完成采用事件驱动唤醒，不通过模型轮询；

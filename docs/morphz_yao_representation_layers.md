@@ -23,7 +23,7 @@ Morphz 同时面对四类不同问题：
 | **Yao 语义源层** | 人与模型可读写的 S-Expression artifact | `manifest.yao`、`contract.yao`、`mind.yao`、`(eval ...)`、`(infer ...)`、`context_tx` |
 | **Typed IR 层** | Runtime 解析、校验后使用的强类型内部表示 | `PlanNode::Call`、`PlanNode::Infer`、程序计数器、bindings |
 | **传输信封层** | 一次请求或工具调用如何经过 Provider/API 送达 | Function Calling JSON、HTTP、SSE、Tool Result |
-| **Runtime 机制层** | 不依赖模型解释的物理保证 | Ledger、Scheduler、Execution Job、权限、沙箱、预算、MVCC、fencing |
+| **Runtime 机制层** | 不依赖模型解释的物理保证 | Event History、Scheduler、Execution Job、权限、沙箱、预算、MVCC、fencing |
 
 核心路径：
 

@@ -2558,7 +2558,7 @@ where
 }
 
 /// The online Session Projection is a current active-observation set, not a
-/// second history log. Ledger append and Projection insertion are atomic;
+/// second history log. Event append and Projection insertion are atomic;
 /// retire/restore follow the Context transaction CAS order. Re-appending an
 /// already persisted Event is idempotent and must not accidentally restore it.
 async fn assert_session_projection_conformance<S>(store: Arc<S>)
@@ -5792,7 +5792,7 @@ async fn assert_two_postgres_runtimes_deliver_one_dialogue_once(
             .unwrap()
             .len(),
         1,
-        "the shared Ledger must contain one reply fact"
+        "the shared Event Store must contain one reply Event"
     );
 }
 
@@ -6102,7 +6102,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .await
         .unwrap(),
         2,
-        "PostgreSQL transient cleanup must preserve Ledger Events"
+        "PostgreSQL transient cleanup must preserve persisted Events"
     );
     let installed_indexes = sqlx::query_scalar::<_, String>(
         "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()",

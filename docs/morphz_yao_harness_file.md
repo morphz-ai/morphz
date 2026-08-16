@@ -26,7 +26,7 @@ Typed Plan IR
         ▼
 Scheduler Kernel
   Objective · Evaluation · Activation · Execution Job
-  Permission · Sandbox · Timer · Ledger · Recovery · Fencing
+  Permission · Sandbox · Timer · Event History · Recovery · Fencing
 ```
 
 Yao 中必须显式保留两种求值入口：
@@ -471,7 +471,7 @@ Runtime 不应执行到一半才发现后续节点语法非法。
 - IR 是 Runtime 版本化的内部执行表示；
 - 同一种 Yao 语法未来可以 lowering 到升级后的 IR；
 - IR 升级不能悄悄改变已经运行中的 Plan Execution；
-- Ledger 应记录源 artifact hash、IR schema version 和 Harness binding，保证审计可追溯。
+- Event History 应记录源 artifact hash、IR schema version 和 Harness binding，保证审计可追溯。
 
 ## 6. 持久化 Plan Execution
 
@@ -706,7 +706,7 @@ Registry。
 - 规范化 package hash 不受单文件/目录形态及无意义空白影响；
 - Registry 以 `(harness_id, version)` 精确寻址，不存在隐式 `latest`，也不允许
   同版本内容被静默覆盖；
-- `.hns` 规范源码、Objective 默认 Binding 与 Evaluation 精确 Binding 已持久化到 Event Ledger，
+- `.hns` 规范源码、Objective 默认 Binding 与 Evaluation 精确 Binding 已持久化到 Event History，
   并能在 SQLite 重启后恢复；
 - 绑定后的 Evaluation 在 Context Encoding 中得到只读 Contract、默认 Mind、
   capability 与精确 package hash；不会把默认 Mind 隐式写入共享认知；
@@ -807,7 +807,7 @@ Runtime 进程级 fault injection。
 6. 包内命名 Process、静态调用图与 ProcessCall IR。
 
 当前状态：第 1～4 项的最小闭环已完成；第 5 项已完成规范化 package hash，
-签名和 migration 尚未实现。包目录和 Binding 目前以不可变 Ledger Event
+签名和 migration 尚未实现。包目录和 Binding 目前以不可变 persisted Event
 持久化，后续可增加可重建 Projection，但不改变其身份语义。顶层
 `eval/infer` 已按 Evaluation Binding 正式分派；Objective 可选默认值的原子
 创建、普通消息显式选择、模型按需发现与精确选择均已完成。本地 package 的

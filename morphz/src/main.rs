@@ -2656,11 +2656,11 @@ async fn audit_context(
         println!("{}", serde_json::to_string_pretty(&audit)?);
     } else {
         println!(
-            "{}  matches={}  ledger=r{}:{}  projection={}:{}  full_events={}  snapshot={}  incremental_transactions={}  incremental_matches={}  latency_us=full:{}/incremental:{}/projection:{}",
+            "{}  matches={}  replayed_events=r{}:{}  projection={}:{}  full_events={}  snapshot={}  incremental_transactions={}  incremental_matches={}  latency_us=full:{}/incremental:{}/projection:{}",
             audit.context_id,
             audit.matches,
-            audit.ledger_revision,
-            audit.ledger_hash,
+            audit.replayed_event_revision,
+            audit.replayed_state_hash,
             audit
                 .projection_revision
                 .map(|revision| format!("r{revision}"))
@@ -2688,7 +2688,7 @@ async fn audit_context(
         );
     }
     if !audit.matches {
-        return Err(format!("Context '{id}' 的 Mind Projection 与 Ledger 不一致").into());
+        return Err(format!("Context '{id}' 的 Mind Projection 与事件回放结果不一致").into());
     }
     Ok(())
 }

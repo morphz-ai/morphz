@@ -53,7 +53,7 @@ impl std::fmt::Display for RuntimeContextVersionConflict {
 
 impl std::error::Error for RuntimeContextVersionConflict {}
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 28;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 29;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 const FRAME_RECALL_CURSOR_DOMAIN: &[u8] = b"morphz/frame-recall-cursor/v1\0";
@@ -157,7 +157,7 @@ const CONTEXT_OPERATIONS: &[ContextOperationSpec] = &[
     ContextOperationSpec {
         name: "retire-session",
         syntax: "(retire-session SESSION-ID...)",
-        meaning: "remove a Session mount from the automatic cognitive working set without archiving it or deleting Ledger or Shared Mind; transaction-level reason is required, and a current or actively working Session is rejected",
+        meaning: "remove a Session mount from the automatic cognitive working set without archiving it or deleting persisted Events or Shared Mind; transaction-level reason is required, and a current or actively working Session is rejected",
     },
     ContextOperationSpec {
         name: "restore-session",
@@ -213,7 +213,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!(
-        "Atomically modify your Mind Context and Session attention. transaction is a versioned S-expression: (context-tx (base-version N) (reason \"...\") OP...). Mind version is the global physical commit sequence and Frame revision is the MVCC boundary for cognitive changes. The Runtime safely rebases concurrent transactions that touch different Frames; reread and semantic merge are required only when a target or source Frame changed after base-version. Supported operations: {operations}. Context observations use deterministic short refs such as @eN. Pass refs unchanged in from/retire/restore/protect/unprotect/relate/unrelate and the Runtime resolves full Ledger IDs before commit. A Session ID is not an observation ref; use the original ID from session-directory. create/derive/revise accept one or more BODY values; multiple values normalize to (context-body BODY...). revise completely replaces the frame body and never partially merges it, so restate every field that must remain. create does not accept from; evidence-backed creation uses (derive ID (from SOURCE...) BODY...). Before high-risk restructuring use (checkpoint ID), restore with reason-bearing (rollback ID), and remove obsolete snapshots with (drop-checkpoint ID...). One transaction may sequence different operations and atomically includes Mind changes with retire-session/restore-session. Do not issue parallel context_tx calls to express multiple changes. reason is transaction-level and is required for retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint; never place it inside operation arguments. Retiring an Observation releases its active encoding immediately; under pressure clean up consumed Observations no longer needed first. An undelivered root request of the current Activation is causally protected and cannot be retired; an independent trigger already consumed by the current Attempt may be summarized and retired in the same transaction. Retiring an ordinary Frame only enters the organizing window and releases zero tokens now. Judge by semantic value, validity, use, and relations rather than size. Prefer revise, derive, or a sources + supersedes successor; a safe successor may retire its source Frame immediately in the same transaction. Frame count alone is not a retirement reason. Retired content is not deleted and remains recallable by keyword, ID, and relation chain. Context changes are not user replies. BODY values must also follow the canonical epistemic contract: {}",
+        "Atomically modify your Mind Context and Session attention. transaction is a versioned S-expression: (context-tx (base-version N) (reason \"...\") OP...). Mind version is the global physical commit sequence and Frame revision is the MVCC boundary for cognitive changes. The Runtime safely rebases concurrent transactions that touch different Frames; reread and semantic merge are required only when a target or source Frame changed after base-version. Supported operations: {operations}. Context observations use deterministic short refs such as @eN. Pass refs unchanged in from/retire/restore/protect/unprotect/relate/unrelate and the Runtime resolves full Event IDs before commit. A Session ID is not an observation ref; use the original ID from session-directory. create/derive/revise accept one or more BODY values; multiple values normalize to (context-body BODY...). revise completely replaces the frame body and never partially merges it, so restate every field that must remain. create does not accept from; evidence-backed creation uses (derive ID (from SOURCE...) BODY...). Before high-risk restructuring use (checkpoint ID), restore with reason-bearing (rollback ID), and remove obsolete snapshots with (drop-checkpoint ID...). One transaction may sequence different operations and atomically includes Mind changes with retire-session/restore-session. Do not issue parallel context_tx calls to express multiple changes. reason is transaction-level and is required for retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint; never place it inside operation arguments. Retiring an Observation releases its active encoding immediately; under pressure clean up consumed Observations no longer needed first. An undelivered root request of the current Activation is causally protected and cannot be retired; an independent trigger already consumed by the current Attempt may be summarized and retired in the same transaction. Retiring an ordinary Frame only enters the organizing window and releases zero tokens now. Judge by semantic value, validity, use, and relations rather than size. Prefer revise, derive, or a sources + supersedes successor; a safe successor may retire its source Frame immediately in the same transaction. Frame count alone is not a retirement reason. Retired content is not deleted and remains recallable by keyword, ID, and relation chain. Context changes are not user replies. BODY values must also follow the canonical epistemic contract: {}",
         render_context_tx_epistemic_guidance()
     )
 }
@@ -350,7 +350,7 @@ pub struct MindCheckpoint {
 
 /// Persistent Mind state owned by the agent.
 ///
-/// `retired` may contain both frame IDs and observation IDs from the Event Ledger. Retirement affects
+/// `retired` may contain both frame IDs and observation IDs from persisted Events. Retirement affects
 /// only the current Context viewport and never deletes underlying facts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MindState {
@@ -417,7 +417,7 @@ pub struct MindSeedReceipt {
 /// Frozen active Session projection prepared before a child Context exists.
 ///
 /// The target Events are derived only from `session_projections`, never by
-/// replaying the immutable source Ledger. Keeping the prepared Events here
+/// replaying the immutable source Events. Keeping the prepared Events here
 /// also fences the child seed against concurrent retire/restore operations in
 /// the parent after delegation admission.
 #[derive(Debug, Clone)]
@@ -438,10 +438,10 @@ pub struct SessionProjectionSeedPlan {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MindProjectionAudit {
     pub context_id: String,
-    pub ledger_revision: u64,
+    pub replayed_event_revision: u64,
     pub projection_revision: Option<u64>,
     pub snapshot_revision: Option<u64>,
-    pub ledger_hash: String,
+    pub replayed_state_hash: String,
     pub projection_hash: Option<String>,
     pub events_scanned: usize,
     pub incremental_transactions_scanned: Option<usize>,
@@ -453,7 +453,7 @@ pub struct MindProjectionAudit {
 }
 
 /// Hot-path capacity counters for Context transactions and Context Encoding.
-/// These are process-local operational metrics; the Ledger and Projections
+/// These are process-local operational metrics; persisted Events and Projections
 /// remain the durable authority. The snapshot is exposed through the same
 /// Scheduler read model used by the Rust SDK, CLI and HTTP API.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -558,7 +558,7 @@ struct SnapshotMindRecovery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextObservation {
     pub id: String,
-    /// Deterministic short reference derived from Ledger sequence in the current Context, e.g. `@e27`.
+    /// Deterministic short reference derived from Event sequence in the current Context, e.g. `@e27`.
     pub reference: String,
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -870,7 +870,7 @@ pub struct ContextView {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sexpr: String,
     /// Cached while this view is alive so pressure re-rendering does not reload
-    /// and deserialize the whole Ledger a second time.
+    /// and deserialize all persisted Events a second time.
     #[serde(skip)]
     references: ContextReferences,
 }
@@ -923,7 +923,7 @@ pub struct RecallSearchPage {
     pub end_time: Option<DateTime<Utc>>,
     pub matches: Vec<RecallSearchHit>,
     /// Canonical model-facing Recall selector for Event hits. Observation
-    /// Events use their exact `@eN` ref; other searchable Ledger Events keep
+    /// Events use their exact `@eN` ref; other searchable Events keep
     /// their full immutable ID and must never be disguised as Observations.
     #[serde(default, skip)]
     pub event_references: BTreeMap<String, String>,
@@ -1130,7 +1130,7 @@ fn select_session_working_set(
 
 /// Sole state entry point for Agent-Owned Context v1.
 ///
-/// Context transactions are validated, committed, and written to the Event Ledger under each
+/// Context transactions are validated, committed, and persisted as Events under each
 /// Cognitive Context's mutex. The Orchestrator and `context_tx` tool share the same instance.
 pub struct ContextEngine {
     store: Arc<dyn EventStore>,
@@ -1467,7 +1467,7 @@ impl ContextEngine {
             })?;
         let snapshot_head_sequence = snapshot_head.sequence.ok_or_else(|| {
             format!(
-                "Mind Snapshot '{}' 指向的 head Event '{}' 没有持久化 Ledger sequence",
+                "Mind Snapshot '{}' 指向的 head Event '{}' 没有持久化 Event sequence",
                 snapshot.id, snapshot.head_event_id
             )
         })?;
@@ -1501,7 +1501,7 @@ impl ContextEngine {
             let observations = self.transaction_observations(context_id, &parsed).await?;
             let transaction_sequence = event.sequence.ok_or_else(|| {
                 format!(
-                    "Context transaction '{}' 没有持久化 Ledger sequence",
+                    "Context transaction '{}' 没有持久化 Event sequence",
                     event.id
                 )
             })?;
@@ -1528,7 +1528,7 @@ impl ContextEngine {
         }))
     }
 
-    /// Reads the online Projection. Existing Ledgers are replayed exactly once
+    /// Reads the online Projection. Existing Event Histories are replayed exactly once
     /// for lazy migration, then every hot-path read uses the materialized Mind.
     async fn load_current_mind(
         &self,
@@ -2187,7 +2187,7 @@ impl ContextEngine {
         let target_events = self.context_events(target_context_id).await?;
         if !target_events.is_empty() {
             return Err(format!(
-                "目标 Context '{}' 已有 Ledger Event，不能再次 Seed",
+                "目标 Context '{}' 已有持久化 Event，不能再次 Seed",
                 target_context_id
             )
             .into());
@@ -2322,7 +2322,7 @@ impl ContextEngine {
     ) -> Result<SessionProjectionSeedPlan, DynError> {
         let (budget_config, _) = self.effective_budget_config(source_context_id).await?;
         let projection_store = self.session_projection_store.as_ref().ok_or(
-            "current_session delegation 需要 SessionProjectionStore；禁止回退到 Ledger 全量重放",
+            "current_session delegation 需要 SessionProjectionStore；禁止回退到 Event 全量重放",
         )?;
         let source_state = self.load_current_mind(source_context_id, None).await?;
         let mut source_events = projection_store
@@ -2469,7 +2469,7 @@ impl ContextEngine {
     /// Compile the current Context while omitting observations that are being
     /// delivered through the standard turn-local `role=tool` channel.
     ///
-    /// The observations remain persisted in the Ledger and active in Mind
+    /// The observations remain persisted as Events and active in Mind
     /// lifecycle state. A later independent Context snapshot will include them
     /// unless the Agent explicitly retires them.
     pub async fn build_view_excluding(
@@ -2631,7 +2631,7 @@ impl ContextEngine {
                         )
                         .await?;
                     if snapshot.mind.is_none() {
-                        // Lazily migrate a legacy Ledger, then take a fresh
+                        // Lazily migrate legacy persisted Events, then take a fresh
                         // atomic snapshot. The steady-state path performs only
                         // the single snapshot read above.
                         self.load_current_mind(context_id, None).await?;
@@ -2653,7 +2653,7 @@ impl ContextEngine {
                 } else {
                     // Lightweight/legacy configurations must provide both
                     // materialized projections before they can use the atomic
-                    // snapshot path. Otherwise Mind still comes from Ledger
+                    // snapshot path. Otherwise Mind still comes from Event replay
                     // replay while active observations come from the optional
                     // Session Projection compatibility path.
                     let state = self.load_current_mind(context_id, None).await?;
@@ -3315,7 +3315,7 @@ impl ContextEngine {
     /// Replace an over-limit Inbox with a bounded semantic-maintenance slice.
     ///
     /// This is a projection only: omitted observations remain active in the
-    /// immutable Ledger and in Session Projection. The current causal root is
+    /// immutable Events and in Session Projection. The current causal root is
     /// always retained, while the remaining capacity is filled with the
     /// oldest unprotected observations so the model can summarize/retire them
     /// in deterministic batches. Runtime never decides their semantic value.
@@ -3423,7 +3423,7 @@ impl ContextEngine {
             Some(sequence) => QueryFilter {
                 context_id: Some(context_id.to_string()),
                 sequence: Some(sequence.parse::<u64>().map_err(|_| {
-                    format!("Context 短引用 '{event_id}' 不是有效的 Ledger sequence")
+                    format!("Context 短引用 '{event_id}' 不是有效的 Event sequence")
                 })?),
                 top_k: Some(1),
                 ..Default::default()
@@ -3754,7 +3754,7 @@ impl ContextEngine {
         Ok(self.load_current_mind(context_id, None).await?.version)
     }
 
-    /// Explicit integrity audit: replay the immutable Ledger and compare it
+    /// Explicit integrity audit: replay immutable Events and compare the result
     /// with the online Projection. This never runs on the Context hot path.
     pub async fn audit_mind_projection(
         &self,
@@ -3773,9 +3773,9 @@ impl ContextEngine {
             // corrupt row.
             let _ = self.load_current_mind(context_id, Some(&events)).await?;
             let full_replay_started = std::time::Instant::now();
-            let ledger = load_mind_from_events(&events)?;
+            let replayed_state = load_mind_from_events(&events)?;
             let full_replay_micros = full_replay_started.elapsed().as_micros() as u64;
-            let ledger_hash = mind_state_hash(&ledger)?;
+            let replayed_state_hash = mind_state_hash(&replayed_state)?;
             let projection_validation_started = std::time::Instant::now();
             let projection = projection_store.get_mind_projection(context_id).await?;
             let (projection_revision, projection_hash, valid_projection) = match projection {
@@ -3783,7 +3783,7 @@ impl ContextEngine {
                     let revision = projection.revision;
                     let stored_hash = projection.state_hash.clone();
                     let valid = Self::validate_mind_projection(context_id, projection)
-                        .map(|state| state == ledger)
+                        .map(|state| state == replayed_state)
                         .unwrap_or(false);
                     (Some(revision), Some(stored_hash), valid)
                 }
@@ -3792,15 +3792,15 @@ impl ContextEngine {
             let projection_validation_micros =
                 projection_validation_started.elapsed().as_micros() as u64;
 
-            // Ledger and Projection are committed atomically, but the audit
+            // Events and Projection are committed atomically, but the audit
             // reads them through independent Store capabilities. A writer may
-            // commit after the Ledger snapshot and before the Projection
+            // commit after the Event snapshot and before the Projection
             // read. That is a moving observation boundary, not corruption.
-            if projection_revision.is_some_and(|revision| revision > ledger.version) {
+            if projection_revision.is_some_and(|revision| revision > replayed_state.version) {
                 if attempt == MAX_STABLE_VIEW_RETRIES {
                     return Err(format!(
-                        "Mind Projection 审计无法在持续写入期间取得稳定视图：Ledger revision {}，Projection revision {:?}",
-                        ledger.version, projection_revision
+                        "Mind Projection 审计无法在持续写入期间取得稳定视图：Event replay revision {}，Projection revision {:?}",
+                        replayed_state.version, projection_revision
                     )
                     .into());
                 }
@@ -3815,12 +3815,12 @@ impl ContextEngine {
                 .map(|_| incremental_replay_started.elapsed().as_micros() as u64);
             if incremental
                 .as_ref()
-                .is_some_and(|recovery| recovery.state.version > ledger.version)
+                .is_some_and(|recovery| recovery.state.version > replayed_state.version)
             {
                 if attempt == MAX_STABLE_VIEW_RETRIES {
                     return Err(format!(
-                        "Mind Projection 审计无法在持续写入期间取得稳定 Snapshot 视图：Ledger revision {}，Snapshot recovery revision {:?}",
-                        ledger.version,
+                        "Mind Projection 审计无法在持续写入期间取得稳定 Snapshot 视图：Event replay revision {}，Snapshot recovery revision {:?}",
+                        replayed_state.version,
                         incremental.as_ref().map(|recovery| recovery.state.version)
                     )
                     .into());
@@ -3833,16 +3833,16 @@ impl ContextEngine {
                     Some(recovery) => (
                         Some(recovery.snapshot_revision),
                         Some(recovery.transactions_replayed),
-                        Some(recovery.state == ledger),
+                        Some(recovery.state == replayed_state),
                     ),
                     None => (None, None, None),
                 };
             return Ok(MindProjectionAudit {
                 context_id: context_id.to_string(),
-                ledger_revision: ledger.version,
+                replayed_event_revision: replayed_state.version,
                 projection_revision,
                 snapshot_revision,
-                ledger_hash: ledger_hash.clone(),
+                replayed_state_hash: replayed_state_hash.clone(),
                 projection_hash: projection_hash.clone(),
                 events_scanned: events.len(),
                 incremental_transactions_scanned,
@@ -3896,7 +3896,7 @@ impl ContextEngine {
         // In-memory test stores do not always install the rebuildable Recall
         // projection. Keep their compatibility behavior bounded and in Rust;
         // production storage must never run a payload LIKE scan on the Event
-        // Ledger.
+        // persisted Events.
         let candidates = self
             .store
             .query(QueryFilter {
@@ -4050,7 +4050,7 @@ impl ContextEngine {
         }
     }
 
-    /// Bounded online Ledger read for Context Encoding. Shared Mind state is
+    /// Bounded online Event read for Context Encoding. Shared Mind state is
     /// read from the Projection; only the selected Session working set and
     /// Context-wide observations are materialized here.
     async fn context_encoding_events(
@@ -4096,7 +4096,7 @@ impl ContextEngine {
         Ok(events)
     }
 
-    /// Full Context Ledger read reserved for lazy Projection migration,
+    /// Full Context Event read reserved for lazy Projection migration,
     /// integrity audit, seed export and explicit historical operations.
     async fn context_events(&self, context_id: &str) -> Result<Vec<Event>, DynError> {
         let mut events = self
@@ -4838,7 +4838,7 @@ fn resolve_transaction_references(
 
 /// Returns only identifiers that the transaction can semantically read or
 /// collide with. This keeps Observation validation proportional to the actual
-/// SExpr instead of the total Context Ledger size.
+/// SExpr instead of the total persisted Event count.
 fn transaction_reference_candidates(
     transaction: &ParsedTransaction,
 ) -> Result<BTreeSet<String>, String> {
@@ -4884,7 +4884,7 @@ fn transaction_reference_candidates(
                 candidates.insert(atom_at(items, 1, "frame ID")?.to_string());
             }
             // Session attention targets belong to SessionStore, not the Event
-            // Ledger, and therefore must never be interpreted as observations.
+            // Store, and therefore must never be interpreted as observations.
             "retire-session" | "restore-session" => {}
             _ => {}
         }
@@ -5058,7 +5058,7 @@ fn ensure_frame_read_is_current(
         return Ok(());
     }
     let Some(frame) = current.frames.iter().find(|frame| frame.id == id) else {
-        // Observation IDs are immutable Ledger references and are validated by
+        // Observation IDs are immutable Event references and are validated by
         // the normal transaction application path after rebase.
         return Ok(());
     };
@@ -5823,7 +5823,7 @@ fn render_current_activation(
                             atom(observation_reference.unwrap_or("none")),
                         ),
                     ];
-                    // Ledger sequence is useful for ordering visible
+                    // Event sequence is useful for ordering visible
                     // Observations, but exposing it for control-plane Events
                     // invites the invalid inference `sequence N => @eN`.
                     if observation_reference.is_some() {
@@ -7064,7 +7064,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         }
         inbox.push(list("observation", fields));
 
-        // Observation payload and causal identity are immutable Ledger facts.
+        // Observation payload and causal identity are immutable Event facts.
         // Mutable projection metadata lives after the long Inbox so changes
         // in protection, residency, freshness, or usage do not invalidate the
         // cached prefix containing earlier observations.
@@ -7243,7 +7243,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "prefix",
-                        atom("protocol and evaluation-profile define the current protocol and capability lineage; inbox is an append-only evidence prefix projected in Ledger order"),
+                        atom("protocol and evaluation-profile define the current protocol and capability lineage; inbox is an append-only evidence prefix projected in ascending event-sequence order"),
                     ),
                     pair(
                         "dynamic-tail",
@@ -7334,7 +7334,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "ordering",
-                        atom("Ledger seq records physical write order; thread, activation, and caused-by record computation and tool causality"),
+                        atom("Event seq records physical append order; thread, activation, and caused-by record computation and tool causality"),
                     ),
                     pair(
                         "tool-wait",
@@ -7342,7 +7342,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "late-result",
-                        atom("a late result must be reconsidered against later Ledger facts and the latest Shared Mind; never silently resume a superseded plan"),
+                        atom("a late result must be reconsidered against later persisted Events and the latest Shared Mind; never silently resume a superseded plan"),
                     ),
                     pair(
                         "reply-uniqueness",
@@ -7359,7 +7359,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "retire-session",
-                        atom("the Agent removes a Session from automatic cognitive candidates without deleting the Session, Ledger, or Shared Mind Frames"),
+                        atom("the Agent removes a Session from automatic cognitive candidates without deleting the Session, its persisted Events, or Shared Mind Frames"),
                     ),
                     pair(
                         "restore-session",
@@ -7386,9 +7386,9 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "ref",
-                        atom("@eN is a stable short reference derived from Ledger sequence; pass it unchanged to recall and context_tx and the Runtime resolves it to the full ID before commit"),
+                        atom("@eN is a stable short reference derived from Event sequence; pass it unchanged to recall and context_tx and the Runtime resolves it to the full ID before commit"),
                     ),
-                    pair("seq", atom("globally stable order; a larger value means written later to the Ledger")),
+                    pair("seq", atom("globally stable physical append order; a larger value means the Event was persisted later, not that it is a causal descendant")),
                     pair("turn", atom("the owning user turn, used to distinguish recent from historical input")),
                     pair("attempt", atom("the owning model evaluation attempt")),
                     pair("caused-by", atom("the call or event that produced this observation")),
@@ -7410,7 +7410,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "observation-state",
-                        atom("overlays mutable protection, residency, freshness, and usage by ref; causal identity and content in Inbox are Ledger projection facts"),
+                        atom("overlays mutable protection, residency, freshness, and usage by ref; causal identity and content in Inbox are projections of persisted Events"),
                     ),
                 ],
             ),
@@ -7455,7 +7455,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "evidence",
-                        atom("evidence_refs must name real Ledger events in the current Context; the Runtime verifies existence and ordering while the Agent judges semantic sufficiency"),
+                        atom("evidence_refs must name real persisted Events in the current Context; the Runtime verifies existence and ordering while the Agent judges semantic sufficiency"),
                     ),
                 ],
             ),
@@ -7671,7 +7671,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "persistence",
-                        atom("physical tool results are written to the Ledger before return and include observation_ref in the tool result"),
+                        atom("physical tool results are persisted as Events before return and include observation_ref in the tool result"),
                     ),
                     pair(
                         "no-duplicate",
@@ -8528,7 +8528,7 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
         {
             if seed_seen || state != MindState::default() || !observation_origins.is_empty() {
                 return Err(format!(
-                    "Context Seed '{}' 不是目标 Ledger 的唯一 Genesis",
+                    "Context Seed '{}' 不是目标 Context 的唯一 Genesis Event",
                     event.id
                 ));
             }
@@ -9592,7 +9592,7 @@ mod tests {
                     .apply_context_transaction(
                         "audit-race-context",
                         "audit-race-writer",
-                        "(context-tx (base-version 1) (create after-ledger-snapshot (fact concurrent)))",
+                        "(context-tx (base-version 1) (create after-event-snapshot (fact concurrent)))",
                     )
                     .await?;
             }
@@ -9620,8 +9620,11 @@ mod tests {
     fn runtime_context_protocol_and_context_tx_contract_are_english_only() {
         let protocol = render_protocol().to_string();
         assert!(!contains_cjk(&protocol), "protocol: {protocol}");
+        assert!(protocol.contains("event-sequence"));
+        assert!(protocol.contains("persisted Event"));
         let context_tx = context_tx_tool_description();
         assert!(!contains_cjk(&context_tx), "context_tx: {context_tx}");
+        assert!(context_tx.contains("full Event IDs before commit"));
     }
 
     #[test]
@@ -12968,7 +12971,7 @@ mod tests {
             .await
             .unwrap();
         assert!(audit.matches, "{audit:?}");
-        assert_eq!(audit.ledger_revision, 2);
+        assert_eq!(audit.replayed_event_revision, 2);
         assert_eq!(audit.projection_revision, Some(2));
     }
 
@@ -13314,7 +13317,7 @@ mod tests {
             .any(|frame| frame.id == "child-only"));
 
         // Simulate a rebuildable Projection being deliberately removed while
-        // retaining the immutable Ledger and its latest Snapshot. A new
+        // retaining immutable Events and the latest Snapshot. A new
         // Runtime must install r1 from Snapshot@0 plus exactly one transaction.
         let maintenance_pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -13636,7 +13639,7 @@ mod tests {
         assert_eq!(
             rebuilt.observations.len(),
             542,
-            "bounded recovery is a request projection and must not retire Ledger observations"
+            "bounded recovery is a request projection and must not retire persisted Event observations"
         );
     }
 
@@ -13794,7 +13797,7 @@ mod tests {
                     audit.matches,
                     "audit at revision {target_version}: {audit:?}"
                 );
-                assert_eq!(audit.ledger_revision, target_version);
+                assert_eq!(audit.replayed_event_revision, target_version);
                 assert_eq!(audit.projection_revision, Some(target_version));
             }
         }
@@ -13875,7 +13878,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        // Remove only rebuildable online state. The immutable Ledger and the
+        // Remove only rebuildable online state. Immutable Events and the
         // latest periodic/rollback Snapshot remain, so a fresh engine must
         // recover Snapshot + tail transactions to the identical Mind.
         let maintenance_pool = sqlx::sqlite::SqlitePoolOptions::new()

@@ -491,13 +491,13 @@ The Runtime supplies a self-describing Context on every evaluation. `protocol` i
 The logical Context has three permission domains:
 - kernel: Runtime-owned and read-only. It contains Context identity, the active-session for this evaluation, Context version, and physical pressure.
 - mind: your persistent working attention, represented by free-form frames with stable IDs.
-- inbox: raw observations from the Event Ledger that you have not retired. They are evidence, not conclusions formed by the Runtime.
+- inbox: raw observations from persisted Events that you have not retired. They are evidence, not conclusions formed by the Runtime.
 
 Physical encoding order differs from permission ownership and is fixed as `protocol → evaluation-profile → inbox → observation-state → mind → session-directory → kernel → evaluation-environment → evaluate`. The prefix stays stable for Prefix Cache reuse, while the tail describes current evaluation state. `observation-state` stores mutable protection, residency, freshness, and usage metadata by ref; it never overrides immutable source, causality, or content in inbox. `evaluation-profile` is the stable Harness definition, `evaluation-environment` contains current bindings and Runtime directives, and the final `evaluate` is always the only execution entry.
 
 One Cognitive Context has one shared Mind and may contain multiple Sessions. A Session is an IO connection and progress boundary, not a separate Mind. `kernel.active-session` identifies only the Session read and replied to by this evaluation; other Sessions may evaluate concurrently. Each inbox observation carries its source `session`. You may reuse information across Sessions in the shared Context, but the current response must route to active-session without conflating requests or progress. context_tx changes the shared Mind and the Runtime serializes and version-checks it per Context.
 
-Each Session has a durable Dialogue Lane that orders initial evaluation of ordinary dialogue. User messages are immutable input items, not inherently Threads. Consecutive inputs that have not been consumed by a model may form one bounded DialogueTurn Signal batch and be evaluated together in Ledger order. Work initiated by a dialogue turn and continued by tool results belongs to a separate Execution Thread. Tool results signal only their owning Thread; new user input enters the next Dialogue Lane batch and must not take over or duplicate an old Execution Thread. One model request belongs to one Thread Activation. The final `evaluate` expression is the authoritative entry that declares its active Thread, claimed Signal batch, root input, and Objective binding.
+Each Session has a durable Dialogue Lane that orders initial evaluation of ordinary dialogue. User messages are immutable input items, not inherently Threads. Consecutive inputs that have not been consumed by a model may form one bounded DialogueTurn Signal batch and be evaluated together in ascending event-sequence order. Work initiated by a dialogue turn and continued by tool results belongs to a separate Execution Thread. Tool results signal only their owning Thread; new user input enters the next Dialogue Lane batch and must not take over or duplicate an old Execution Thread. One model request belongs to one Thread Activation. The final `evaluate` expression is the authoritative entry that declares its active Thread, claimed Signal batch, root input, and Objective binding.
 
 You decide what the current objective warrants retaining, summarizing, revising, protecting, restoring, or forgetting. The Runtime does not automatically summarize history, trim old messages, or turn retrieval results into facts.
 
@@ -513,21 +513,21 @@ Each model request has exactly one kernel.active-session, and ordinary text rout
 Use context_tx for atomic Mind changes and follow `protocol.context-tx-contract` exactly. Use the current kernel version in every transaction. reason is a transaction-level item and never an argument of retire or unprotect. `revise` completely replaces a frame body rather than merging it, so restate every field that must remain. Create an explicit checkpoint before high-risk restructuring and use rollback with a reason if necessary.
 
 Important rules:
-1. Design each frame's internal structure for the task; do not assume a fixed goal/todo/history schema. In inbox metadata, seq is stable Ledger write order, turn is the user turn, attempt is a model attempt within that turn, and caused-by is observable causal origin. Newer is not necessarily correct. `content.representation` is full, preview, or recalled-chunk; full text behind a preview remains available through recall. `observation-state.residency` records projection visibility and recallability. freshness is a physical version relation; `(relate NEW supersedes OLD)` declares semantic replacement. Old information is not deleted automatically. `retire` changes visibility but does not invalidate relations. Do not unrelate supersedes merely because an endpoint was retired. A root request not yet delivered by the current Activation is causally protected; an independent trigger already consumed by the current Attempt may be summarized and retired in the same transaction. usage counts active recall and `(from ...)` references in derive/revise, not passive display. High counts mean frequent use, not greater truth or importance. Do not repeat recall when an active frame already contains the needed conclusion and there is no new question or conflict.
+1. Design each frame's internal structure for the task; do not assume a fixed goal/todo/history schema. In inbox metadata, seq is the stable physical Event append order, turn is the user turn, attempt is a model attempt within that turn, and caused-by is observable causal origin. Event sequence is not causal order, and newer is not necessarily correct. `content.representation` is full, preview, or recalled-chunk; full text behind a preview remains available through recall. `observation-state.residency` records projection visibility and recallability. freshness is a physical version relation; `(relate NEW supersedes OLD)` declares semantic replacement. Old information is not deleted automatically. `retire` changes visibility but does not invalidate relations. Do not unrelate supersedes merely because an endpoint was retired. A root request not yet delivered by the current Activation is causally protected; an independent trigger already consumed by the current Attempt may be summarized and retired in the same transaction. usage counts active recall and `(from ...)` references in derive/revise, not passive display. High counts mean frequent use, not greater truth or importance. Do not repeat recall when an active frame already contains the needed conclusion and there is no new question or conflict.
 2. Put important objectives, user constraints, key conclusions, and unfinished work into frames; protect them when appropriate. Persistent constraints such as “always,” “throughout this task,” “must not,” or “must” remain protected until explicitly revoked or the lifecycle truly ends.
 3. Derive a faithful summary of large observations before retiring them in the same transaction. Never write assumptions as facts. Completed process records that remain recallable and did not change objective, constraints, or conclusions should be retired directly rather than becoming one long-lived frame per batch.
 4. To verify a specific conclusion in a known file, use read.query for narrow line-numbered evidence and then start_line/end_line for exact contiguous pages. Do not read a long file wholesale first or repeatedly create large output through exec/grep. Observation refs such as `@e27` are stable short references supplied by the Runtime; pass them unchanged to recall and context_tx rather than guessing hidden Event IDs. Page truncated observations with recall. If recall returns next_offset, reuse that exact value rather than restarting at zero or guessing. Prefer query when keywords are known and use matched snippets or suggested_recall. If exec returns an artifact path, use read to inspect only the required archive portions. recall/read results enter inbox; you decide whether they belong in Mind.
-5. context_tx may accompany physical tools only when it is independent of their new results. If a new frame depends on tool output, wait for the result. Within a user turn, the Runtime returns physical results through standard assistant.tool_calls → role=tool/tool_call_id and persists them in the Ledger with observation_ref. The same request does not duplicate those result bodies in Context; later snapshots show them according to active/retired state. status=success with output_state=empty means execution completed with no text and must not be repeated merely for emptiness. Every response containing tool calls is intermediate: content is visible progress and the Runtime calls you again. A final reply is ordinary text without tools; no_reply is exclusive.
+5. context_tx may accompany physical tools only when it is independent of their new results. If a new frame depends on tool output, wait for the result. Within a user turn, the Runtime returns physical results through standard assistant.tool_calls → role=tool/tool_call_id and persists each result as an Event with observation_ref. The same request does not duplicate those result bodies in Context; later snapshots show them according to active/retired state. status=success with output_state=empty means execution completed with no text and must not be repeated merely for emptiness. Every response containing tool calls is intermediate: content is visible progress and the Runtime calls you again. A final reply is ordinary text without tools; no_reply is exclusive.
 6. Submit at most one context_tx per response and combine independent changes to avoid version conflicts. retire and unprotect require a transaction reason for auditability.
 7. At pressure=normal/notice, do not compress merely to reduce size; maintain only meaningful cross-turn objective, constraint, or conclusion changes. At warning, consider compression before final text or alongside act. At critical, first perform maintain-only work to release capacity.
 8. Before completion, verify that cross-turn objectives, constraints, conclusions, and open questions in Mind remain accurate. If physical results change task state, close it out with one context_tx before final text. The Runtime calls you again after the receipt; then return ordinary text or call no_reply exclusively.
-9. assistant_call and context_tx receipts are Runtime control traces stored only in the Ledger, not Inbox. Do not submit housekeeping transactions to clean their own records. Retire procedural recall/read observations when deriving evidence in the same transaction. Once the transaction succeeds and Mind is accurate, reply instead of recalling or cleaning again.
+9. assistant_call and context_tx receipts are Runtime control traces persisted only as Events, not projected into Inbox. Do not submit housekeeping transactions to clean their own records. Retire procedural recall/read observations when deriving evidence in the same transaction. Once the transaction succeeds and Mind is accurate, reply instead of recalling or cleaning again.
 10. The final `evaluate` is the only entry for this model request. Handle only its `root-input` and explicitly bound Thread; other DialogueTurn, Execution, and Delivery Threads are read-only background. Before every physical tool call, confirm that its new information is necessary for the current root-input. If Mind/inbox already suffice—especially for greetings, reminders, progress questions, or ordinary dialogue—reply immediately. Do not act for an unbound Objective or old Execution Thread, repeat verification, rescan the workspace, or invent follow-up objectives.
 11. kernel.turn-control reports model-evaluation progress for the current user turn. phase=soft-checkpoint is a periodic review, not an Attempt limit. Normal tools remain available. Continue when a reliable progress path exists, while checking alignment among objective, evidence, Mind, and next step. Parallel calls in one model response count as one Attempt.
 12. kernel.wake explains why this evaluation ran. A successful standalone context_tx produces context-transaction-result cooldown: unless pressure remains critical, context_tx is hidden and you must reply, call no_reply, or perform necessary physical work.
 13. For code tasks, prefer list_files/search to discover, read for content and sha256, and edit for version-guarded local changes. write is mainly for mode=create; do not bypass existing-file or expected_sha256 protections. Use exec for testing, compiling, and formatting rather than replacing constrained file tools with shell operations. file_change is auditable evidence of committed changes. Parallelize independent reads in one response and do not reread Inbox content whose sha256 has not changed. Modify and verify after locating enough evidence instead of repeatedly scanning.
-14. execution, process_status, exit_code, task_status, and effective_boundary in an exec receipt are physical Runtime facts. Do not replace them with command intent or expectations. If a nonzero result explicitly proves missing network, out-of-bound path access, or secret environment access and that capability is necessary, retry the same necessary command once with sandbox_permissions=require_escalated, request only minimal permissions, and explain the need in justification. Do not infer permission failure from an ordinary command error or override protected_paths, an explicit denial, or permission_request_available=false. If exec becomes a nonterminal background task, ordinary waiting uses no_reply(mode=wait); completion wakes the Runtime. Process terminal success/failed/cancelled/timeout rather than waiting again. Use check_task_after only for a real deadline or stall checkpoint, then inspect task_status, schedule another meaningful check, or kill_task. Never poll with sleep, ps, or repeated empty-log reads. Never place literal tokens or keys in commands, process arguments, Mind, or Ledger. Credentials belong in named Secret Store entries. Use list_secrets when aliases are unknown and request only alias names in requested_permissions.secret_env; never request, read, or echo values. Runtime Managed SSH passwords are Target-owned credentials: bind the alias with resolve_target.password_secret and an explicit auth_mode, then call physical tools on that Target without requesting the password alias again through exec.
-15. kernel.objectives and evaluate.objective-context expose physical Objective state, but visibility is not binding. Only evaluate.objective-binding makes this an Objective Evaluation that may advance the Objective through the current Execution Thread. With binding=none, use Objective state only for understanding or progress replies and never act for it. When a bound Objective still has work and is not waiting, report current progress normally; the Supervisor continues or restores its main Execution Thread. Register exact waits with objective_update(status=active, wait_condition=...). Use blocked only when neither an automatic wait nor a reliable path exists. Submit completed only after auditing every part of the stated objective against real Ledger evidence. A completed receipt opens a final-delivery Attempt in the same Activation; produce a complete ordinary report rather than a terse tool acknowledgement. The final reply and Objective, Activation, and Thread terminal states commit atomically.
+14. execution, process_status, exit_code, task_status, and effective_boundary in an exec receipt are physical Runtime facts. Do not replace them with command intent or expectations. If a nonzero result explicitly proves missing network, out-of-bound path access, or secret environment access and that capability is necessary, retry the same necessary command once with sandbox_permissions=require_escalated, request only minimal permissions, and explain the need in justification. Do not infer permission failure from an ordinary command error or override protected_paths, an explicit denial, or permission_request_available=false. If exec becomes a nonterminal background task, ordinary waiting uses no_reply(mode=wait); completion wakes the Runtime. Process terminal success/failed/cancelled/timeout rather than waiting again. Use check_task_after only for a real deadline or stall checkpoint, then inspect task_status, schedule another meaningful check, or kill_task. Never poll with sleep, ps, or repeated empty-log reads. Never place literal tokens or keys in commands, process arguments, Mind, or persisted Events. Credentials belong in named Secret Store entries. Use list_secrets when aliases are unknown and request only alias names in requested_permissions.secret_env; never request, read, or echo values. Runtime Managed SSH passwords are Target-owned credentials: bind the alias with resolve_target.password_secret and an explicit auth_mode, then call physical tools on that Target without requesting the password alias again through exec.
+15. kernel.objectives and evaluate.objective-context expose physical Objective state, but visibility is not binding. Only evaluate.objective-binding makes this an Objective Evaluation that may advance the Objective through the current Execution Thread. With binding=none, use Objective state only for understanding or progress replies and never act for it. When a bound Objective still has work and is not waiting, report current progress normally; the Supervisor continues or restores its main Execution Thread. Register exact waits with objective_update(status=active, wait_condition=...). Use blocked only when neither an automatic wait nor a reliable path exists. Submit completed only after auditing every part of the stated objective against persisted Event evidence. A completed receipt opens a final-delivery Attempt in the same Activation; produce a complete ordinary report rather than a terse tool acknowledgement. The final reply and Objective, Activation, and Thread terminal states commit atomically.
 16. Use objective_create to upgrade work that genuinely must span multiple Evaluations, asynchronous waits, or Runtime restart recovery. It is not a normal todo or a way to think longer. Do not create one for work this Evaluation can reliably finish. Preserve the user's full scope and completion criteria and explain why persistence is needed. The Runtime creates the ID and binds current Agent/Context/Session. Do not duplicate an existing or newly created Objective. parent_objective_id, when given, must be the Objective currently being evaluated. Continue after creation; ordinary text or no_reply ends only the adopted Evaluation while the Supervisor continues an unfinished Objective.
 17. You own scheduling decisions; the Runtime provides concurrency and timing mechanisms. Consecutive physical actions in the current Thread call tools directly and return to the same mailbox. Use schedule_tx.spawn for parallel work and schedule_tx.enqueue/after for work that waits on the current or named Thread. Inspect existing schedule state first and use only its latest revision for pause/resume/reschedule/cancel. A conflict means facts changed and must be re-observed. Multiple independent physical tool calls do not imply new Threads. Do not mix schedule_tx with context_tx or physical tools. A due schedule is a new observation, not a precomputed conclusion; decide from then-current Context.
 18. Physical actions must respect Execution Target. A Thread's first physical action creates the authoritative Target binding. Later omitted targets inherit it, while receipts still show the actual Target. Never switch hosts silently within one Thread. Use schedule_tx.spawn with target for cross-Target work or specify target on the first action of an unbound Thread.
@@ -548,13 +548,13 @@ Each model call is one nondeterministic execution cycle of this continuously run
 
 The Runtime is the deterministic transactional kernel responsible for versions, permissions, resource boundaries, tool execution, persistence, and recovery. You are the nondeterministic semantic processor responsible for understanding, reasoning, induction, planning, and symbolic restructuring. S-expressions carry both data and goals, rules, policies, and processes for you to interpret and execute; the Runtime does not define business evaluation semantics for free-form BODY values.
 
-The logical Context has three permission domains: kernel is privileged Runtime-owned read-only state; mind is your persistent symbolic program and cognitive state expressed as free-form stable-ID frames; inbox is unretired external input and observations from the Event Ledger. Inbox entries are evidence and interrupts, not Runtime-authored conclusions.
+The logical Context has three permission domains: kernel is privileged Runtime-owned read-only state; mind is your persistent symbolic program and cognitive state expressed as free-form stable-ID frames; inbox is unretired external input and observations from persisted Events. Inbox entries are evidence and interrupts, not Runtime-authored conclusions.
 
 The physical Context is one executable S-expression with fixed order: `protocol → evaluation-profile → inbox → observation-state → mind → session-directory → kernel → evaluation-environment → evaluate`. Its prefix is reusable stable program/evidence and its tail is current projection and evaluation state. observation-state contains only mutable projection attributes, evaluation-profile is a stable Harness program, evaluation-environment contains current bindings, and evaluate is the sole entry. Interpret and execute this structure rather than restating it as reference material.
 
 One Cognitive Context runs one shared Mind and may host concurrent Session evaluations. A Session is an IO route and local progress boundary, not the Mind owner. kernel.active-session selects this cycle's input and output route, while other Sessions may remain active. Every observation belongs to the shared Context and records a source session, enabling cross-Session knowledge transfer while the current reply stays strictly routed to active-session. The Runtime serializes and version-checks context_tx on the shared Mind.
 
-Each Session has a Dialogue Lane for initial ordinary-dialogue evaluation. User messages are independent Ledger input items; consecutive messages not yet read by a model form the next bounded DialogueTurn Signal batch in order. Computation initiated by that turn and continued by tool results becomes an Execution Thread. Objective is the durable control plane advanced by the Supervisor through its main Execution Thread, not a second kind of target thread. The final evaluate expression selects the only active Thread for this cycle; every other visible Thread is read-only state.
+Each Session has a Dialogue Lane for initial ordinary-dialogue evaluation. User messages are independent persisted Events; consecutive messages not yet read by a model form the next bounded DialogueTurn Signal batch in ascending event-sequence order. Computation initiated by that turn and continued by tool results becomes an Execution Thread. Objective is the durable control plane advanced by the Supervisor through its main Execution Thread, not a second kind of target thread. The final evaluate expression selects the only active Thread for this cycle; every other visible Thread is read-only state.
 
 Your responsibility is not merely to record information but to make Mind directly useful to future execution. When several completed tasks exhibit a recurring decision or execution structure that can alter future decisions, reduce repeated work, or lower errors, derive a reusable symbolic structure from multiple real sources. Preserve applicability, sources, counterexamples, and uncertainty. Do not overgeneralize from one case or force summaries for formal completeness.
 
@@ -1084,7 +1084,7 @@ const SOFT_CHECKPOINT_PROMPT: &str = r#"The Runtime is at a soft-checkpoint. Thi
 - Submit context_tx only for a state change worth retaining across turns; the checkpoint itself does not require maintenance."#;
 
 const CRITICAL_MAINTENANCE_PROMPT: &str = r#"The Runtime has entered critical-maintenance: this Context reached critical pressure and must release capacity before more external work.
-- To keep maintenance itself receivable, the Runtime may project only a bounded Inbox slice. kernel.context-pressure.active-observations is the complete active count; the current Inbox contains this batch's causal root plus the oldest unprotected maintenance candidates. Missing observations remain in the Ledger and are neither lost nor retired. After this batch commits, the Runtime reevaluates and supplies another batch if still over limit.
+- To keep maintenance itself receivable, the Runtime may project only a bounded Inbox slice. kernel.context-pressure.active-observations is the complete active count; the current Inbox contains this batch's causal root plus the oldest unprotected maintenance candidates. Missing observations remain persisted as Events and are neither lost nor retired. After this batch commits, the Runtime reevaluates and supplies another batch if still over limit.
 - Call only tools actually provided in this request. External physical tools are temporarily removed; do not repeat the previous physical call or assume it ran.
 - Prefer one accurate context_tx that compresses Mind/Inbox while preserving the current objective, user constraints, latest reliable facts, unfinished work, and evidence required to continue. Summarize or retire stale, duplicate, or superseded content.
 - Use recall only for source evidence truly missing before maintenance, not to begin new external work. The Runtime recalculates pressure and restores applicable physical tools after maintenance.
@@ -1919,7 +1919,7 @@ pub struct Orchestrator {
     /// must not overwrite the newer full-Prompt measurement with that fallback.
     prompt_pressure_measurements: DashMap<(String, String), PromptPressureMeasurement>,
     /// Last Provider-observed input usage paired with the exact local estimate
-    /// of that same attempt. Ledger restoration makes calibration survive a
+    /// of that same attempt. Event restoration makes calibration survive a
     /// process restart; the key prevents one Context, Session or model from
     /// calibrating another.
     prompt_usage_anchors: DashMap<(String, String, String, String), DurablePromptUsageAnchor>,
@@ -2074,7 +2074,7 @@ fn apply_prompt_estimate_delta(
     }
 }
 
-/// Commit the provider-authored reasoning summary as one independent Ledger
+/// Commit the provider-authored reasoning summary as one independent Event
 /// artifact. Deltas remain ephemeral; this helper is also used after timeout
 /// so a partial summary can survive without waiting for a stuck provider.
 async fn persist_model_reasoning_summary(
@@ -2129,7 +2129,7 @@ async fn persist_model_reasoning_summary(
 
 /// Persist Provider usage independently from reasoning, public text, tool
 /// calls and reply semantics. Every attempt that received usage therefore
-/// leaves one stable, auditable Ledger fact even when its reasoning summary
+/// leaves one stable, auditable Event fact even when its reasoning summary
 /// is empty or the response later fails.
 async fn persist_model_usage(
     bus: &Arc<InMemoryEventBus>,
@@ -4200,11 +4200,7 @@ impl Orchestrator {
                 .into_iter()
                 .find(|event| event.id == entry.event_id)
             else {
-                return Err(format!(
-                    "Signal Outbox Event '{}' 在 Ledger 中不存在",
-                    entry.event_id
-                )
-                .into());
+                return Err(format!("Signal Outbox Event '{}' 未持久化", entry.event_id).into());
             };
             let routable = event
                 .payload
@@ -4219,7 +4215,7 @@ impl Orchestrator {
             if !routable || self.is_legacy_internal_plan_output(&event).await? {
                 // Older Runtime builds could enqueue Plan-internal tool
                 // outputs as ordinary chat wakeups. They remain observable
-                // Ledger facts, but routing them back through the parent
+                // persisted Event facts, but routing them back through the parent
                 // Thread gate can deadlock the Plan that owns them. Discard
                 // only the invalid Outbox entry; real Plan infer requests
                 // remain routable child-evaluation inputs.
@@ -4228,7 +4224,7 @@ impl Orchestrator {
                     event_type = %event.event_type,
                     topic = %event.topic,
                     event_code = "orchestrator.signal_outbox.unroutable_legacy_entry_dropped",
-                    "One-time migration dropped an unroutable legacy Signal Outbox entry while preserving the Ledger Event"
+                    "One-time migration dropped an unroutable legacy Signal Outbox entry while preserving the Event"
                 );
                 session_store.discard_signal_outbox(&event.id).await?;
                 continue;
@@ -4351,7 +4347,7 @@ impl Orchestrator {
                         signal_id = %signal.id,
                         event_id = %signal.event_id,
                         event_code = "orchestrator.thread_signal.recovery_event_missing",
-                        "Cannot recover pending Thread Signal because its Event is absent from the Ledger"
+                        "Cannot recover pending Thread Signal because its Event was not persisted"
                     );
                     continue;
                 };
@@ -4564,7 +4560,7 @@ impl Orchestrator {
                     signal_id = %signal.id,
                     event_id = %signal.event_id,
                     event_code = "orchestrator.thread_signal.runtime_recovery_event_missing",
-                    "Cannot recover runnable Thread Signal because its Event is absent from the Ledger"
+                    "Cannot recover runnable Thread Signal because its Event was not persisted"
                 );
                 continue;
             };
@@ -4643,7 +4639,7 @@ impl Orchestrator {
                     activation_id = %activation.id,
                     trigger_event_id = %activation.trigger_event_id,
                     event_code = "orchestrator.activation.rescan_trigger_missing",
-                    "Cannot rescan queued Activation because its Trigger Event is absent from the Ledger"
+                    "Cannot rescan queued Activation because its Trigger Event was not persisted"
                 );
                 continue;
             };
@@ -4704,7 +4700,7 @@ impl Orchestrator {
                         activation_id = %activation.id,
                         trigger_event_id = %activation.trigger_event_id,
                         event_code = "orchestrator.activation.recovery_trigger_missing",
-                        "Cannot recover Thread Activation because its Trigger Event is absent from the Ledger"
+                        "Cannot recover Thread Activation because its Trigger Event was not persisted"
                     );
                     continue;
                 };
@@ -5309,7 +5305,7 @@ impl Orchestrator {
         // Freeze and bound the active parent Session projection before any
         // child rows are created. A failed preflight must not leave an empty
         // Context/Session behind, and current_session must never fall back to
-        // replaying the parent's immutable Ledger.
+        // replaying the parent's immutable Events.
         let session_projection = if context_scope == "current_session" {
             Some(
                 self.context_engine
@@ -6152,7 +6148,7 @@ impl Orchestrator {
                 .and_then(|stored| stored.sequence)
                 .ok_or_else(|| {
                     format!(
-                        "Trigger Event '{}' 尚未进入 Ledger，不能创建 Thread Activation",
+                        "Trigger Event '{}' 尚未持久化，不能创建 Thread Activation",
                         event.id
                     )
                 })?,
@@ -6647,7 +6643,7 @@ impl Orchestrator {
             let calls_value = event
                 .payload
                 .get("continuation_tool_calls")
-                // Backward-compatible read for Ledger events written before
+                // Read Events written before
                 // the one-shot continuation envelope replaced turn transcripts.
                 .or_else(|| event.payload.get("transcript_tool_calls"))
                 .or_else(|| event.payload.get("tool_calls"));
@@ -9771,7 +9767,7 @@ impl Orchestrator {
         self.publish_reply(
             session_id,
             attempt_id,
-            "模型连续三次没有返回合法的普通文本或 no_reply，Runtime 已安全熔断本回合；已提交的 Mind、文件修改和 Ledger 均已保留。".to_string(),
+            "模型连续三次没有返回合法的普通文本或 no_reply，Runtime 已安全熔断本回合；已提交的 Mind、文件修改和 Events 均已保留。".to_string(),
             parent_session_id,
         )
         .await
@@ -12453,7 +12449,7 @@ impl Orchestrator {
                 // A persisted request is an immutable fact, but UI delivery is
                 // process-local. Re-dispatch an exact still-pending replay so
                 // restart never leaves a human Approval invisible merely
-                // because its Event already existed in the Ledger.
+                // because its Event was already persisted.
                 if created || approval.status.is_pending() {
                     self.bus.dispatch_persisted(request_event).await?;
                 }
@@ -17552,6 +17548,16 @@ mod tests {
         assert!(first.contains("protocol.skill-discovery-contract fallback"));
         assert!(first.contains("do not preload all Skills"));
         assert!(!contains_cjk(first));
+        for prompt in [
+            first,
+            cognitive_sexpr_vm_system_prompt(),
+            semantic_sexpr_vm_system_prompt(),
+        ] {
+            assert!(
+                prompt.contains("persisted Event") || prompt.contains("event-sequence"),
+                "system prompt lost durable Event semantics"
+            );
+        }
     }
 
     #[test]

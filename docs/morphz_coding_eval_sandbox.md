@@ -1,7 +1,7 @@
 # Morphz Coding Eval Sandbox
 
 当前每个 Coding Eval 夹具都会生成独立且不同的 `context_id`、`session_id`、SQLite 和 Workspace，
-并把两项路由同时写入环境变量。Ledger 评分将 `context_tx/no_reply` 视为 Runtime 控制调用，
+并把两项路由同时写入环境变量。Event History 评分将 `context_tx/no_reply` 视为 Runtime 控制调用，
 不会把它们误计为代码开发的物理 work Attempt。
 
 Coding Eval Sandbox 为每次真实模型代码修复测试创建独立、可审计的运行环境，避免把主仓库直接暴露给 Agent 或让测试命令以无限制宿主 Shell 运行。
@@ -13,7 +13,7 @@ Coding Eval Sandbox 为每次真实模型代码修复测试创建独立、可审
 ```text
 /private/tmp/morphz-eval-runs/<run-id>/
 ├── manifest.json       # Runtime/evaluator 可见，Agent 不可见
-├── morphz.db           # 独立 Event Ledger
+├── morphz.db           # 独立 Event History
 ├── artifacts/          # 仅允许 Agent 只读的 exec 输出
 ├── verifier/           # 独立验证副本与 verifier-only 测试，Agent 不可见
 └── workspace/          # Agent 唯一可读写的任务文件系统
@@ -85,7 +85,7 @@ cargo run -p morphz-evals --bin coding_eval_env -- verify RUN_ROOT
 cargo run -p morphz-evals --bin coding_eval_env -- audit RUN_ROOT
 ```
 
-## Ledger 评分
+## Event History 评分
 
 ```bash
 cargo run -p morphz-evals --bin coding_eval_env -- score RUN_ROOT
@@ -165,7 +165,7 @@ Agent 先复现了失败测试，再修复 `parse_retry_after` 对首尾 SP/HTAB
 | 最终回复 | 1 | 1 |
 | Context commit | 1 | 不适用 |
 | Morphz Attempt | 11 次 assistant call，随后强制 final | 不适用 |
-| Morphz Ledger 评分 | 83 / 100 | 不可直接套用 |
+| Morphz Event History 评分 | 83 / 100 | 不可直接套用 |
 
 Morphz 得到完整的正确性、范围和失败恢复分，但只在开头提交了一次 Mind：目标与约束受到保护，状态仍停留在 `planning`，没有在最终测试后写入根因、修改和验证结论。逐个 tool-output 唤醒耗尽了 12 次 Turn Attempt Budget，导致 final reply 被强制执行；因此 Context 自治为 8/20、效率为 5/10。`search` 未调用只作为遥测，不扣分。
 

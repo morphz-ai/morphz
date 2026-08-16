@@ -53,13 +53,13 @@ SExpr 只是 Agent 操作自身 Context 的控制语言。它提供可组合、�
 
 只有正在推理的 LLM 能够结合目标、证据、风险和后续计划判断这些信息的作用。因此，Runtime 可以报告资源压力，却不应冒充 Agent 做语义决策。
 
-## 3. 三种状态：Ledger、Kernel 与 Mind
+## 3. 三种状态：Event History、Kernel 与 Mind
 
 Morphz 应明确区分三种性质完全不同的状态。
 
 ```mermaid
 flowchart LR
-    W["外部世界：用户、工具、文件、子 Agent"] --> L["Event Ledger\n不可变事实与原始结果"]
+    W["外部世界：用户、工具、文件、子 Agent"] --> L["Event History\n不可变事实与原始结果"]
     L --> R["Recall / Archive\n按需读取与恢复"]
     R --> M["Mind Context\nLLM 自主管理的工作心智"]
     K["Kernel Context\n身份、权限、预算、运行状态"] --> M
@@ -69,7 +69,7 @@ flowchart LR
     A -->|"产生事件"| L
 ```
 
-在单次模型请求中，可以把 Runtime 提供的可见状态划分为三个权限域。`inbox` 是从 Ledger 向 Agent 交付尚未消化事件的暂存区，不是 Runtime 已经替 Agent 形成的认知：
+在单次模型请求中，可以把 Runtime 提供的可见状态划分为三个权限域。`inbox` 是从 Event History 向 Agent 交付尚未消化事件的暂存区，不是 Runtime 已经替 Agent 形成的认知：
 
 ```lisp
 (context
@@ -78,9 +78,9 @@ flowchart LR
   (inbox ...))  ; Runtime 投递，Agent 读取并确认消费
 ```
 
-### 3.1 Event Ledger：不可变事实账本
+### 3.1 Event History：不可变持久化事件
 
-Event Ledger 保存系统真正发生过的事情，包括：
+Event History 保存系统真正发生过的事情，包括：
 
 - 用户原始消息；
 - LLM 回复与工具调用；
@@ -90,9 +90,9 @@ Event Ledger 保存系统真正发生过的事情，包括：
 - 子 Agent 的创建、回传和终止；
 - Checkpoint、恢复和分支行为。
 
-Ledger 是审计与恢复依据，不等于 LLM 每轮都要看到的 Context。Agent 从 Mind 中清除一段信息，不代表物理删除 Ledger 中的事实。
+Event History 是审计与恢复依据，不等于 LLM 每轮都要看到的 Context。Agent 从 Mind 中清除一段信息，不代表物理删除 Event History 中的事实。
 
-Ledger 的职责是“发生过什么”，不负责回答“现在应该想什么”。
+Event History 的职责是“发生过什么”，不负责回答“现在应该想什么”。
 
 ### 3.2 Kernel Context：Runtime 掌握的最小运行状态
 
@@ -103,7 +103,7 @@ Kernel Context 是 Runtime 必须维护、LLM 可以感知但不能任意篡改�
 - 工具权限和安全边界；
 - Token、时间、成本与 Context 容量预算；
 - 当前未完成工具进程；
-- Ledger 游标和 Checkpoint 标识；
+- Event History 游标和 Checkpoint 标识；
 - Context 压力信号；
 - 当前用户回合的 Attempt 预算与剩余额度；
 - 必须遵守的系统级约束。
@@ -165,7 +165,7 @@ Mind 应当是 **schema-light** 的。v1 不把 Mind 实现成一棵带固定路
 | 信息的语义重要性 | 决定 | 不评分、不改写 |
 | 哪些内容应摘要 | 决定摘要范围与结果 | 提供原文引用、事务提交 |
 | 哪些内容应从 Mind 清除 | 决定 | 执行并记录 Diff |
-| 哪些历史应召回 | 主动请求或确认候选 | 查询 Ledger / Archive |
+| 哪些历史应召回 | 主动请求或确认候选 | 查询 Event History / Archive |
 | Mind 的内部结构 | 动态设计 | 做最小语法与资源校验 |
 | Token、成本、时间压力 | 响应并采取维护动作 | 精确测量并发出信号 |
 | 安全、权限和不可变元数据 | 不可绕过 | 强制执行 |
@@ -200,7 +200,7 @@ v1 放弃以 `set/push/pop/clear` 作为正式认知接口。它们暴露的是�
 | `create` | 创建一个具有稳定 ID、自由格式 body 的 Frame |
 | `derive` | 基于 Observation / Frame 创建新 Frame，并记录来源血缘 |
 | `revise` | 修订既有 Frame，保留稳定 ID 并递增 revision |
-| `retire` | 将 Frame 或 Observation 移出活跃 Context，但不删除 Ledger |
+| `retire` | 将 Frame 或 Observation 移出活跃 Context，但不删除 Event History |
 | `restore` | 恢复被 retire 的 Frame 或 Observation |
 | `protect` / `unprotect` | 建立或解除由 Kernel 强制执行的遗忘保护 |
 | `place` | 调整 Frame 的注意力顺序 |
@@ -233,7 +233,7 @@ v1 放弃以 `set/push/pop/clear` 作为正式认知接口。它们暴露的是�
 3. 校验语法、权限、容量、引用及 Pin 约束；
 4. 生成 `before_version`、`after_version` 与结构化 Diff；
 5. 全部成功后原子提交，否则完整回滚；
-6. 将提案、结果和错误写入 Event Ledger；
+6. 将提案、结果和错误写入 Event History；
 7. 下一轮向 LLM 明确反馈提交结果。
 
 `reason` 是事务级审计元数据。普通创建或修订可以省略，但 `retire` 与 `unprotect` 必须给出 reason，确保系统不仅知道 Agent 忘记了什么，也知道它为什么做出这一决定。
@@ -258,8 +258,8 @@ Agent 负责语义判断，不等于 Runtime 应让它在信息不完备的情�
 
 | 英文属性 | 中文解释 | 所有者与用途 |
 | --- | --- | --- |
-| `ref` | 稳定短引用 | Runtime 从 Ledger sequence 确定性派生，例如 `@e27`；Agent 在 recall/context_tx 中原样使用，提交前解析为完整 Event ID |
-| `seq` / sequence | 账本写入顺序 | Runtime 生成的单调顺序，帮助 Agent 判断物理先后 |
+| `ref` | 稳定短引用 | Runtime 从 Event sequence 确定性派生，例如 `@e27`；Agent 在 recall/context_tx 中原样使用，提交前解析为完整 Event ID |
+| `seq` / sequence | 事件写入顺序 | Runtime 生成的单调顺序，帮助 Agent 判断物理先后 |
 | `turn` | 用户回合 | 该 Observation 属于第几个用户回合 |
 | `attempt` | 回合内尝试次数 | 该 Observation 来自本回合第几次模型执行 |
 | `caused-by` | 可观察的因果来源 | 例如产生工具结果的 tool call 或 attempt |
@@ -273,7 +273,7 @@ Agent 负责语义判断，不等于 Runtime 应让它在信息不完备的情�
 1. `latest` 只表示“物理上较新”，不表示“语义上必然正确”；Agent 仍需结合证据判断。
 2. Observation 只是被呈现在 Context 中，不计为“使用”。只有 Agent 主动召回或把它作为推导/修订来源，才增加 usage。
 3. usage 次数高不等于更重要、更可信；它只让 Agent 感知自己过去是否反复依赖过该证据。
-4. `relate SUBJECT supersedes OBJECT` 只声明新内容取代旧内容。旧内容仍留在 Ledger 和当前 Context，除非 Agent 另行 `retire`。
+4. `relate SUBJECT supersedes OBJECT` 只声明新内容取代旧内容。旧内容仍留在 Event History 和当前 Context，除非 Agent 另行 `retire`。
 5. 除 `supersedes` 外，`relate` 的 relation 名称保持开放，Runtime 不解释业务含义，避免形成固定心智本体。
 
 这套分工的目的不是用更多字段替 Agent 思考，而是让它能看到时间、驻留、血缘、物理版本与真实使用历史，从而做出更有根据的自主维护决策。
@@ -290,7 +290,7 @@ Agent 负责语义判断，不等于 Runtime 应让它在信息不完备的情�
 
 protocol v6 不再向模型暴露 `context_tx.final_reply` 布尔参数，也不再提供“事务与最终正文同响应终止”的快速路径。Protocol v16 采用“有工具则继续、无工具非空文本结束当前 active Session”的响应形态；空响应会触发有限纠错，明确静默必须调用 `no_reply`。
 
-Context 修改继续只暴露一个标准 Function Calling 工具：`context_tx(transaction: string)`。外层遵循模型训练过的标准工具调用接口，内部参数保留 canonical SExpr；暂不把 operations 改成结构化 JSON。真实测试发现，多种模型会自然地把 goal、status、source 等多个字段写成并列 BODY；这些表达语义明确，没有必要要求模型添加无业务含义的 `record/frame` 外壳。protocol v5 因此正式接受 `BODY...`，由 Runtime 规范化为单一 `(context-body ...)` 后写入 Ledger。来源语义仍保持严格：`create` 不接受 `from`，有来源时使用 `derive`，避免容错吞掉证据血缘。
+Context 修改继续只暴露一个标准 Function Calling 工具：`context_tx(transaction: string)`。外层遵循模型训练过的标准工具调用接口，内部参数保留 canonical SExpr；暂不把 operations 改成结构化 JSON。真实测试发现，多种模型会自然地把 goal、status、source 等多个字段写成并列 BODY；这些表达语义明确，没有必要要求模型添加无业务含义的 `record/frame` 外壳。protocol v5 因此正式接受 `BODY...`，由 Runtime 规范化为单一 `(context-body ...)` 后写入 Event History。来源语义仍保持严格：`create` 不接受 `from`，有来源时使用 `derive`，避免容错吞掉证据血缘。
 
 Operations Continuity 长程基线暴露了 `revise` 契约歧义：Runtime 一直执行完整 body 替换，而模型将“修订”理解为局部 merge，导致稳定字段在后续 revision 中消失。protocol v7 因此把“完整替换，仍需的旧字段必须重述”写入 System Prompt、Context 自描述和工具描述。v7 还增加 `checkpoint/rollback/drop-checkpoint`：快照由 Agent 显式建立，回滚必须提供 reason，Runtime 只负责确定性恢复和审计。
 
@@ -421,7 +421,7 @@ Agent 可以明确处理候选：
 
 Runtime 不应在 LLM 看见之前擅自把工具输出改写成语义摘要。正确模型是：
 
-- 原始输出完整写入 Ledger 或内容寻址存储；
+- 原始输出完整写入 Event History 或内容寻址存储；
 - 当前轮返回容量受控的 preview、元数据和原文引用；
 - LLM 可以按 range、pattern 或分页继续读取原文；
 - LLM 观察后决定把什么结论写入 Mind；
@@ -451,7 +451,7 @@ Agent 可能错误删除关键约束、目标或尚未完成的工作。
 
 应对机制：
 
-- 所有修改保留 Ledger 与 Diff；
+- 所有修改保留 Event History 与 Diff；
 - 支持 Pin、Checkpoint、undo 和 restore；
 - 用户原始指令默认保留可追溯引用；
 - 删除被 Pin 内容必须使用更高显式级别的操作并说明理由；
@@ -513,7 +513,7 @@ Agent 可能错误删除关键约束、目标或尚未完成的工作。
 - delegated goal；
 - success criteria；
 - 必要约束；
-- 精选证据或可读取的 Ledger 引用；
+- 精选证据或可读取的 Event History 引用；
 - 权限、预算和回传协议。
 
 子 Agent 完成后回传的是结果、证据引用、未解决问题和可选的 Context patch proposal。父 Agent 自己决定是否把这些内容写进自己的 Mind。
@@ -531,7 +531,7 @@ Snapshot 的作用是加速恢复和支持时间旅行，不是把 Runtime 计�
 - 在错误清理后回滚到指定 Checkpoint；
 - 从历史版本创建 Context branch，比较不同决策路径；
 - 恢复后保留“为何回滚”的新事件，不能改写历史；
-- Snapshot 只是一份物化视图，Ledger 才是最终审计依据。
+- Snapshot 只是一份物化视图，Event History 才是最终审计依据。
 
 ## 13. Prompt 装配原则
 
@@ -575,7 +575,7 @@ Mind Inspector 至少应支持：
 | RAG 结果 | 自动注入 Prompt | 主动召回或候选 Inbox |
 | 工具输出 | 框架先截断/压缩 | 原文归档 + preview + 按需读取 |
 | Context Schema | 框架预定义 | 最小 Kernel + 动态 Mind |
-| 错误恢复 | 依赖压缩前备份或无恢复 | Ledger、Diff、Checkpoint、restore |
+| 错误恢复 | 依赖压缩前备份或无恢复 | Event History、Diff、Checkpoint、restore |
 | 可解释性 | 只能看到最终 Prompt | 能看到每次心智变化及原因 |
 | 核心能力 | Runtime 管理历史 | Agent 管理自己的注意力 |
 
@@ -589,29 +589,29 @@ Mind Inspector 至少应支持：
 4. `create/derive/revise/retire/restore/protect/unprotect/place` 已成为正式 v1 原语；
 5. 对话、工具、回复和子 Agent 结果作为 Observation 进入 Inbox，不再自动 Fold 成固定历史；
 6. 主链路已移除自动消息摘要、硬历史裁剪和 Graph facts 自动注入；
-7. `recall` 可以按 `@eN` 稳定短引用分页读取 Event 原文、搜索 Ledger 或读取已退役 Frame，并向后兼容完整 Event ID；
+7. `recall` 可以按 `@eN` 稳定短引用分页读取 Event 原文、搜索 Event History 或读取已退役 Frame，并向后兼容完整 Event ID；
 8. 同一 session 的 Attempt 与 Context transaction 均具有 single-writer 保护；
-9. Context transaction 作为 Event Ledger 事件保存完整 state-after、version 和 Diff；
+9. Context transaction 作为 Event History 事件保存完整 state-after、version 和 Diff；
 10. Dashboard 已能直接观察 Mind Frames、来源、revision、保护状态、Inbox 和 Pressure；
 11. Kernel 已分离物理 Attempt 与 Context transaction 预算，并强制执行一次性 Context closure 和最终回复，防止模型无界探索或元认知循环；
 12. 每轮 Context 已自描述 response contract、工具结果回传契约、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v16 同时说明稳定短引用、多 BODY 规范化、完整 revise 替换、恢复点、标准工具回传、普通文本/`no_reply`/`send_message`、Session Working Set、attention 与并发因果边界。
 13. `read` 已支持带行号的文本查询与行范围读取，减少长文件证据在 Inbox 中的重复膨胀。
 14. Coding Tools v1 已提供 `list_files/search/read/edit/write/exec` 最小闭环；文件修改带 SHA-256 版本前提、原子提交、Diff 和 `file_change` Observation。
-15. Event Ledger 通过 SQLite `rowid` 暴露稳定写入 `sequence`，并为 Observation 提供 turn、attempt、caused-by、residency、resource、freshness 与 usage。
+15. Event History 通过 SQLite `rowid` 暴露稳定写入 `sequence`，并为 Observation 提供 turn、attempt、caused-by、residency、resource、freshness 与 usage。
 16. DSL 已增加开放的 `relate/unrelate`；Runtime 只对 `supersedes` 建立新旧解释，旧证据不会被自动删除。
 17. 已建立 `context_metacognition_eval` 黑盒评测，分别评分 Runtime 契约与 Agent 元认知策略，并支持基线/候选对比。
-18. Observation、wake、frame sources、freshness 与 relation 在模型视口中统一使用 `@eN`；Runtime 只解析操作参数中的引用位，Ledger transaction 与 Mind state 始终保存完整 canonical ID，保证确定性重放与旧数据兼容。
+18. Observation、wake、frame sources、freshness 与 relation 在模型视口中统一使用 `@eN`；Runtime 只解析操作参数中的引用位，Context transaction 与 Mind state 始终保存完整 canonical ID，保证确定性重放与旧数据兼容。
 19. `create/derive/revise` 正式接受 `BODY...`；多项由 Runtime 确定性规范化为 `(context-body BODY...)`，单项保持原样。`create` 不接受 `from`，`derive/revise` 的来源必须紧跟 ID，避免容错掩盖证据血缘错误。
 20. `context_tx.final_reply` 与 `reply(deliver/suppress)` 已从 Function Calling schema 和 Runtime 终止逻辑中移除；物理工具和 `context_tx` 响应展示为进度并续跑，无工具非空文本或独占 `no_reply` 形成正常终态。
 21. `revise` 的完整替换语义已在三层契约中显式公开；`checkpoint/rollback/drop-checkpoint` 提供 Agent 可控、可重放的 Mind 恢复。
-22. 当前用户回合内建立临时标准 Function Calling transcript：工具输出先写 Ledger，再以匹配原始 `tool_call_id` 的 `role=tool` message 返回；同一请求从 Inbox 排除这批结果正文，下一独立 Context 快照再按 active/retired 状态恢复为 Observation。空输出使用显式 `status=success, output_state=empty`，避免模型把沉默误判为未执行。
+22. 当前用户回合内建立临时标准 Function Calling transcript：工具输出先写 Event History，再以匹配原始 `tool_call_id` 的 `role=tool` message 返回；同一请求从 Inbox 排除这批结果正文，下一独立 Context 快照再按 active/retired 状态恢复为 Observation。空输出使用显式 `status=success, output_state=empty`，避免模型把沉默误判为未执行。
 
 v1 有意尚未覆盖的边界：
 
 - exec 已将完整原始输出持续归档到独立文件，Context 只展示受控 preview 与路径；后续仍需把本地文件归档升级为内容寻址、可迁移的 Artifact Store；
 - branch、一般化跨版本 undo 和摘要血缘可视化尚未实现；checkpoint/rollback 已实现为 Agent 显式原语；
 - Prompt Token 计量已拆为无网络的本地可插拔能力；当前 OpenAI-compatible 主链使用完整请求估算与 completion usage 校准。本地 tokenizer/chat-template 尚未接入 profile，远程 Token 计数不会进入 Agent loop；
-- v1 为简化重启恢复，在每条 Context transaction 事件中保存完整 `state_after`；长期运行后应改为增量 transaction + 周期物化快照，避免账本体积呈二次增长；
+- v1 为简化重启恢复，在每条 Context transaction 事件中保存完整 `state_after`；长期运行后应改为增量 transaction + 周期物化快照，避免事件历史体积呈二次增长；
 - GraphMemory 尚未重构为纯候选 Recall Provider；v1 主链路暂时完全不自动使用它；
 - Context 自治效果尚需通过长程任务基准验证。
 
@@ -622,7 +622,7 @@ v1 有意尚未覆盖的边界：
 - Context 顶层改为 `kernel` + `mind` + `inbox`；
 - Kernel 路径严格只读，Mind 路径由 Agent 可写；
 - 移除根 Context 的修改旁路；
-- 为 Context transaction 增加 version、Diff 和 Ledger 事件；
+- 为 Context transaction 增加 version、Diff 和 Event History 事件；
 - 同一 session 建立 single-writer 保证。
 
 ### Phase 2：停止 Runtime 替 Agent 做语义维护（v1 主链路已完成）
@@ -681,7 +681,7 @@ Morphz 是否优于 OpenClaw、Hermes 或传统 Agent，不应以“支持 SExpr
 - 用越来越复杂的固定 Schema 预定义 Agent 应如何思考；
 - 允许多个执行流并发覆盖同一 Mind；
 - Context 修改不可追踪、不可回滚或无法说明来源；
-- 把 Event Ledger、长期记忆、Prompt 和 Mind Context 混为同一概念。
+- 把 Event History、长期记忆、Prompt 和 Mind Context 混为同一概念。
 
 ## 20. 与当前研究的关系
 
@@ -690,9 +690,9 @@ Morphz 的方向与近年的 Agent Memory 研究一致，但组合方式不同�
 - [MemGPT](https://arxiv.org/abs/2310.08560) 把长上下文建模为由模型管理的分层虚拟内存，支持显式换入换出；Morphz 进一步把可审计的 Mind 修改收口为事务 DSL。
 - [Reflexion](https://papers.neurips.cc/paper_files/paper/2023/hash/1b44b878bb782e6954cd888628510e90-Abstract-Conference.html) 证明语言反思写入 episodic memory 能改善后续决策；Morphz 将“写入什么、何时修订/退休”扩展成通用元认知控制面。
 - [A-MEM](https://arxiv.org/abs/2502.12110) 使用动态 note 属性、链接与记忆演化；Morphz 的开放 Frame 与 `relate` 与其方向相近，但刻意不让 Runtime 固化语义 schema。
-- [MemInsight](https://aclanthology.org/2025.emnlp-main.1683/) 强调自主语义增强；Morphz 让 Agent 自己形成 body、来源与关系，同时保留 Ledger 原始证据。
+- [MemInsight](https://aclanthology.org/2025.emnlp-main.1683/) 强调自主语义增强；Morphz 让 Agent 自己形成 body、来源与关系，同时保留 Event History 原始证据。
 - [AgeMem](https://aclanthology.org/2026.acl-long.981/) 把记忆操作作为工具行为，并通过分阶段强化学习训练策略；这表明“有操作接口”并不足够，后续仍需训练或优化 Morphz 的维护策略。
-- [MMPO](https://arxiv.org/abs/2605.30159) 指出递归摘要会丢失任务状态，并用 belief entropy 评估记忆质量；这支持 Morphz 保留原始 Ledger、来源血缘和避免摘要套摘要的原则。
+- [MMPO](https://arxiv.org/abs/2605.30159) 指出递归摘要会丢失任务状态，并用 belief entropy 评估记忆质量；这支持 Morphz 保留原始 Event History、来源血缘和避免摘要套摘要的原则。
 - [MemBench](https://arxiv.org/abs/2506.21605) 把记忆评测拆为效果、效率和容量；Morphz 的评测同样分开报告 Runtime 可观测性、Agent 保真/选择策略与执行开销。
 
 因此，Morphz 当前可以称为“研究方向先进、机制组合有独特性”，但不能仅凭架构自称领先。真正需要证明的是：在相同模型、任务和预算下，它是否比滑动窗口、Runtime 自动摘要和自动 RAG 获得更高的长期成功率、更低的自我失忆率以及可接受的维护开销。
@@ -701,7 +701,7 @@ Morphz 的方向与近年的 Agent Memory 研究一致，但组合方式不同�
 
 Morphz 的 Context 系统可以用下面四句话定义：
 
-1. **Ledger 保存世界发生过什么。**
+1. **Event History 保存世界发生过什么。**
 2. **Kernel 保证 Agent 在现实边界内运行。**
 3. **Mind 表达 Agent 此刻选择关注什么。**
 4. **SExpr 让 Agent 能够可靠地改造自己的 Mind。**

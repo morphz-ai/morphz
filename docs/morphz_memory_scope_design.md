@@ -51,7 +51,7 @@
 - `revise`：只修改目标 scope 内的 frame，仍是完整 body 替换；
 - `relate`：可以声明宽 scope 经验取代旧经验；
 - `checkpoint/rollback`：只作用于当前目标 scope；
-- `retire`：只改变目标 scope 的当前可见性，不删除来源 Ledger。
+- `retire`：只改变目标 scope 的当前可见性，不删除来源 Event History。
 
 晋升不是复制原文。Agent 必须形成对新作用域仍然成立的表达，并保留来源。project 事实不能直接晋升为 agent 规律，除非有跨项目证据或用户明确授权。
 

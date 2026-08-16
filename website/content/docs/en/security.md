@@ -10,7 +10,7 @@ Morphz treats model output as an untrusted proposal. Every real-world side effec
 
 ## Secret Store
 
-OAuth tokens, API keys, and refresh credentials belong only in the Secret Store. Ordinary configuration contains references, not token values. Credentials must never enter Prompt, Context, Session, Ledger, or ordinary logs.
+OAuth tokens, API keys, and refresh credentials belong only in the Secret Store. Ordinary configuration contains references, not token values. Credentials must never enter Prompt, Context, Session, Event History, or ordinary logs.
 
 ## Dashboard management credential
 

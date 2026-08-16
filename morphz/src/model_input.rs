@@ -1,6 +1,6 @@
 //! Content-addressed storage for model-visible binary inputs.
 //!
-//! Ledger Events retain only metadata and a storage reference. Bytes are
+//! persisted Events retain only metadata and a storage reference. Bytes are
 //! loaded, digest-checked, and converted to Provider-native content parts only
 //! while assembling a model request.
 
@@ -27,7 +27,7 @@ pub struct ModelInputUsage {
 }
 
 /// A message-input import which has durable bytes but is not yet owned by an
-/// immutable Ledger Event. The pending manifest is deliberately filesystem
+/// immutable persisted Event. The pending manifest is deliberately filesystem
 /// durable: a Runtime crash between preparing bytes and `claim_message` can be
 /// reconciled against the Event Store on the next start.
 #[derive(Debug)]
@@ -432,7 +432,7 @@ async fn create_pending_manifest(
 /// Reconciles only pending manifests; accepted Event directories are never
 /// scanned. This keeps restart work proportional to interrupted imports, not
 /// total retained attachment history. `event_exists` must query the immutable
-/// Ledger by exact Event id.
+/// Event Store by exact Event id.
 pub async fn recover_pending_message_attachments<F, Fut>(
     configured_root: impl AsRef<Path>,
     grace: Duration,

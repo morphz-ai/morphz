@@ -14,7 +14,7 @@ An Agent is an instance of the machine with a loaded identity, cognitive policy,
 
 ## Context
 
-A Context is the long-lived cognitive scope owned by an Agent. It holds current cognition, cognitive frames, observations, relations, and a recallable ledger. Multiple Sessions may share one Context, so starting a new Session does not imply amnesia.
+A Context is the long-lived cognitive scope owned by an Agent. It holds current cognition, cognitive frames, observations, relations, and a recallable event history. Multiple Sessions may share one Context, so starting a new Session does not imply amnesia.
 
 ## Session
 
@@ -22,7 +22,7 @@ A Session is an ordered communication stream between a user, an Agent, or an ext
 
 ## Cognitive frame
 
-A cognitive frame is an addressable, versioned unit of cognition. It can represent a fact, constraint, plan, or developing understanding and carries provenance and lifecycle state. Retirement removes a frame from the active working set without erasing it from the ledger.
+A cognitive frame is an addressable, versioned unit of cognition. It can represent a fact, constraint, plan, or developing understanding and carries provenance and lifecycle state. Retirement removes a frame from the active working set without erasing it from the event history.
 
 ## Thread and Activation
 

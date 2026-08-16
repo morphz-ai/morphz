@@ -252,7 +252,7 @@ export function summarizeToolCall(name: string, rawArguments: string, t: TFuncti
     case 'list_files':
       return { title: t('toolCall.listFiles'), target: path || stringField(argumentsValue, 'glob') || t('toolCall.workspace'), detail: name }
     case 'recall':
-      return { title: t('toolCall.recall'), target: query || stringField(argumentsValue, 'ref') || t('toolCall.contextLedger'), detail: name }
+      return { title: t('toolCall.recall'), target: query || stringField(argumentsValue, 'ref') || t('toolCall.contextEvents'), detail: name }
     case 'context_tx':
       return { title: t('toolCall.contextTx'), target: 'Context Transaction', detail: name }
     case 'delegate':
