@@ -628,6 +628,63 @@ where
                     JobReceipt::NotFound { .. } => continue,
                 }
             }
+            if same_host_cancelled_background_exit_is_proven(&job, coordination) {
+                let reason = "cancellation was requested and the owning host confirms that the managed process group no longer exists";
+                let event = restart_cancelled_background_event(&job, reason);
+                let result_refs = job
+                    .request
+                    .get("artifact_path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let receipt = self
+                    .finish_with_event(
+                        &job.id,
+                        job.revision,
+                        None,
+                        JobOutcome::Cancelled {
+                            result_event_id: Some(event.id.clone()),
+                            result_refs,
+                            reason: Some(reason.to_string()),
+                            exit_code: None,
+                        },
+                        &event,
+                        false,
+                    )
+                    .await?;
+                match &receipt {
+                    JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {
+                        report.recovered_receipts.push(receipt);
+                        continue;
+                    }
+                    JobReceipt::Conflict { current, .. } if current.status.is_terminal() => {
+                        report.preserved_job_ids.push(current.id.clone());
+                        continue;
+                    }
+                    JobReceipt::Rejected {
+                        current, reason, ..
+                    } => {
+                        return Err(format!(
+                            "Execution Job '{}' 的本地进程组已经消失，但 cancelled 恢复被拒绝（{}）：{}",
+                            current.id,
+                            current.status.as_str(),
+                            reason
+                        )
+                        .into());
+                    }
+                    JobReceipt::Conflict { current, .. } => {
+                        return Err(format!(
+                            "Execution Job '{}' 的本地进程组已经消失，但 cancelled 恢复发生 revision 冲突（当前 r{} / {}）",
+                            current.id,
+                            current.revision,
+                            current.status.as_str()
+                        )
+                        .into());
+                    }
+                    JobReceipt::NotFound { .. } => continue,
+                }
+            }
             let plan = startup_recovery_plan(&job, coordination, now);
             match &plan.action {
                 RestartAction::Preserve => report.preserved_job_ids.push(job.id),
@@ -688,6 +745,44 @@ fn direct_thread_wake_for_job(
         // Their only supported non-direct routes had stable dedicated tool
         // names handled above; preserve the old standalone continuation.
         None => Ok(true),
+    }
+}
+
+/// SQLite workers share one physical host, so the operating system can close
+/// the restart gap for a cancelled managed process without waiting for a stale
+/// database lease. Distributed stores deliberately skip this probe: a local
+/// `ESRCH` says nothing about a process owned by another machine.
+fn same_host_cancelled_background_exit_is_proven(
+    job: &ExecutionJobRecord,
+    coordination: WorkerCoordinationMode,
+) -> bool {
+    if coordination != WorkerCoordinationMode::SharedHostLeases
+        || job.status != ExecutionJobStatus::Running
+        || job.cancel_requested_at.is_none()
+        || job.tool_name != "exec/background"
+    {
+        return false;
+    }
+    let Some(process_group_id) = job
+        .request
+        .get("process_group_id")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+        .filter(|value| *value > 0)
+    else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        matches!(
+            nix::sys::signal::killpg(nix::unistd::Pid::from_raw(process_group_id), None),
+            Err(nix::errno::Errno::ESRCH)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = process_group_id;
+        false
     }
 }
 
@@ -907,6 +1002,48 @@ fn restart_lost_event(
     )
 }
 
+fn restart_cancelled_background_event(job: &ExecutionJobRecord, reason: &str) -> Event {
+    let mut payload = serde_json::Map::from_iter([
+        ("context_id".to_string(), serde_json::json!(job.context_id)),
+        ("session_id".to_string(), serde_json::json!(job.session_id)),
+        (
+            "attempt_id".to_string(),
+            serde_json::json!(job.activation_id),
+        ),
+        (
+            "activation_id".to_string(),
+            serde_json::json!(job.activation_id),
+        ),
+        ("thread_id".to_string(), serde_json::json!(job.thread_id)),
+        (
+            "tool_call_id".to_string(),
+            serde_json::json!(job.tool_call_id),
+        ),
+        ("caused_by".to_string(), serde_json::json!(job.tool_call_id)),
+        ("tool_name".to_string(), serde_json::json!(job.tool_name)),
+        ("tool_status".to_string(), serde_json::json!("cancelled")),
+        ("wake_policy".to_string(), serde_json::json!("none")),
+        ("output_empty".to_string(), serde_json::json!(false)),
+        ("task_id".to_string(), serde_json::json!(job.id)),
+        ("task_status".to_string(), serde_json::json!("cancelled")),
+        ("process_status".to_string(), serde_json::json!("cancelled")),
+        ("text".to_string(), serde_json::json!(reason)),
+    ]);
+    if let Some(effective_boundary) = job.request.get("effective_boundary") {
+        payload.insert("effective_boundary".to_string(), effective_boundary.clone());
+    }
+    if let Some(artifact_path) = job.request.get("artifact_path") {
+        payload.insert("artifact_path".to_string(), artifact_path.clone());
+    }
+    Event::new(
+        format!("background_output_{}", job.id),
+        "Runtime-ExecutionReconciler".to_string(),
+        TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        payload,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
@@ -1081,6 +1218,31 @@ mod tests {
             startup_recovery_plan(&job, WorkerCoordinationMode::SharedLeases, now).action,
             RestartAction::Requeue { .. }
         ));
+    }
+
+    #[test]
+    fn same_host_absent_process_group_proves_cancelled_background_exit() {
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::ReconcileRequired,
+        );
+        job.tool_name = "exec/background".to_string();
+        job.cancel_requested_at = Some(job.updated_at);
+        job.request = json!({ "process_group_id": i32::MAX });
+
+        assert!(same_host_cancelled_background_exit_is_proven(
+            &job,
+            WorkerCoordinationMode::SharedHostLeases,
+        ));
+        assert!(!same_host_cancelled_background_exit_is_proven(
+            &job,
+            WorkerCoordinationMode::SharedLeases,
+        ));
+
+        let event = restart_cancelled_background_event(&job, "process group absent");
+        assert_eq!(event.id, format!("background_output_{}", job.id));
+        assert_eq!(event.payload["task_status"], "cancelled");
+        assert_eq!(event.payload["wake_policy"], "none");
     }
 
     #[test]

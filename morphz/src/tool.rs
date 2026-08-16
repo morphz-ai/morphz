@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{OpenOptions, Permissions};
+use std::future::Future;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +46,54 @@ use walkdir::WalkDir;
 
 const MAX_SCHEDULE_OPERATIONS: usize = 32;
 const MAX_SCHEDULE_INTENT_CHARS: usize = 1_000_000;
+const BACKGROUND_TERMINAL_COMMIT_RETRY_INITIAL: std::time::Duration =
+    std::time::Duration::from_millis(100);
+const BACKGROUND_TERMINAL_COMMIT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A physical process exit is an irreversible fact. Once the watcher has
+/// observed it, losing one Store transaction must not strand the durable Job
+/// in `running`/`kill_requested`. Keep the observation alive and retry the
+/// atomic Job + Event + Thread Signal commit until it is durable.
+async fn retry_background_terminal_commit<F, Fut>(
+    task_id: &str,
+    initial_delay: std::time::Duration,
+    mut commit: F,
+) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<bool, Box<dyn std::error::Error + Send + Sync>>>,
+{
+    let mut failures = 0u64;
+    let mut delay = initial_delay.max(std::time::Duration::from_millis(1));
+    loop {
+        match commit().await {
+            Ok(committed) => return committed,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                tracing::warn!(
+                    task_id,
+                    failures,
+                    retry_delay_ms = delay.as_millis(),
+                    %error,
+                    event_code = "tool.background_job.terminal_commit_retry",
+                    "Retrying the durable terminal commit for an observed background-process exit"
+                );
+                tokio::time::sleep(delay).await;
+                delay = delay
+                    .saturating_mul(2)
+                    .min(BACKGROUND_TERMINAL_COMMIT_RETRY_MAX);
+            }
+        }
+    }
+}
+
+fn should_renew_background_execution(
+    status: ExecutionJobStatus,
+    claim_matches: bool,
+    cancellation_requested: bool,
+) -> bool {
+    status == ExecutionJobStatus::Running && claim_matches && !cancellation_requested
+}
 
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
@@ -848,9 +897,11 @@ impl BackgroundTaskScheduler {
                 let Ok(Some(job)) = manager.store().get_execution_job(&job_id).await else {
                     break;
                 };
-                if job.status != ExecutionJobStatus::Running
-                    || job.claim_token.as_deref() != Some(claim_token.as_str())
-                {
+                if !should_renew_background_execution(
+                    job.status,
+                    job.claim_token.as_deref() == Some(claim_token.as_str()),
+                    job.cancel_requested_at.is_some(),
+                ) {
                     break;
                 }
                 let progress_ref = job
@@ -6595,23 +6646,32 @@ impl Tool for ExecuteCommandTool {
                     };
                     if let Some(scheduler) = &background_scheduler_cleanup {
                         if scheduler.execution_jobs.is_some() {
-                            match scheduler
-                                .finish_background_execution(
-                                    &task_id_cleanup,
-                                    code,
-                                    &output_str,
-                                    residual_note,
-                                )
-                                .await
-                            {
-                                Ok(_) => scheduler.cancel(&task_id_cleanup).await,
-                                Err(error) => tracing::error!(
-                                        task_id = %task_id_cleanup,
-                                        %error,
-                                event_code = "tool.background_job.terminal_commit_failed",
-                                "Background process exited but the durable ExecutionJob terminal state could not be committed"
-                                    ),
-                            }
+                            let scheduler_for_commit = Arc::clone(scheduler);
+                            let retry_task_id = task_id_cleanup.clone();
+                            let retry_output = Arc::<str>::from(output_str);
+                            let retry_residual_note = Arc::<str>::from(residual_note);
+                            retry_background_terminal_commit(
+                                &task_id_cleanup,
+                                BACKGROUND_TERMINAL_COMMIT_RETRY_INITIAL,
+                                move || {
+                                    let scheduler = Arc::clone(&scheduler_for_commit);
+                                    let task_id = retry_task_id.clone();
+                                    let output = Arc::clone(&retry_output);
+                                    let residual_note = Arc::clone(&retry_residual_note);
+                                    async move {
+                                        scheduler
+                                            .finish_background_execution(
+                                                &task_id,
+                                                code,
+                                                output.as_ref(),
+                                                residual_note.as_ref(),
+                                            )
+                                            .await
+                                    }
+                                },
+                            )
+                            .await;
+                            scheduler.cancel(&task_id_cleanup).await;
                             prune_background_task_history();
                             return;
                         }
@@ -7654,7 +7714,6 @@ mod tests {
         TimerStore,
     };
     use crate::permission::PermissionMode;
-    #[cfg(target_os = "macos")]
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Weak;
     use tempfile::{NamedTempFile, TempDir};
@@ -7662,6 +7721,55 @@ mod tests {
     #[cfg(target_os = "macos")]
     static MACOS_SANDBOX_EXEC_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static SECRET_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn observed_background_exit_retries_terminal_commit_until_durable() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_commit = Arc::clone(&attempts);
+        let committed = retry_background_terminal_commit(
+            "job-terminal-retry",
+            std::time::Duration::from_millis(1),
+            move || {
+                let attempts = Arc::clone(&attempts_for_commit);
+                async move {
+                    if attempts.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+                        return Err::<bool, Box<dyn std::error::Error + Send + Sync>>(
+                            std::io::Error::other("transient Store failure").into(),
+                        );
+                    }
+                    Ok(true)
+                }
+            },
+        )
+        .await;
+
+        assert!(committed);
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 2);
+    }
+
+    #[test]
+    fn cancellation_request_stops_background_execution_heartbeat() {
+        assert!(should_renew_background_execution(
+            ExecutionJobStatus::Running,
+            true,
+            false,
+        ));
+        assert!(!should_renew_background_execution(
+            ExecutionJobStatus::Running,
+            true,
+            true,
+        ));
+        assert!(!should_renew_background_execution(
+            ExecutionJobStatus::Running,
+            false,
+            false,
+        ));
+        assert!(!should_renew_background_execution(
+            ExecutionJobStatus::Cancelled,
+            true,
+            false,
+        ));
+    }
 
     #[test]
     fn noninteractive_child_probe() {
@@ -11360,12 +11468,14 @@ Body
                 .unwrap(),
             1
         );
-        // Recovery replay may try to arm delivery again, but Event/Outbox
-        // identities remain deterministic and physically unique.
-        scheduler
-            .recover_terminal_background_outboxes()
-            .await
-            .unwrap();
+        assert_eq!(
+            scheduler
+                .recover_terminal_background_outboxes()
+                .await
+                .unwrap(),
+            0,
+            "replaying startup recovery must not arm a duplicate Thread Signal"
+        );
         let owner = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
         let owner = match store
             .update_thread(
@@ -11504,6 +11614,176 @@ Body
                 .await
                 .is_err(),
             "lost Job 的陈旧 wait timer 不得伪造仍在运行 observation"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_closes_cancel_requested_background_when_local_process_is_absent() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let manager = Arc::new(ExecutionJobManager::new(
+            Arc::clone(&store) as Arc<dyn ExecutionJobStore>
+        ));
+        let scheduler = Arc::new(
+            BackgroundTaskScheduler::new_with_execution_jobs(
+                Arc::clone(&bus),
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                timers,
+                Arc::clone(&manager),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+        );
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-cancelled-restart-background",
+                "exec-call-cancelled-restart-background",
+            )
+            .unwrap(),
+            activation_id: "activation-cancelled-restart-background".to_string(),
+            thread_id: "thread-cancelled-restart-background".to_string(),
+            agent_id: "agent-cancelled-restart-background".to_string(),
+            context_id: "context-cancelled-restart-background".to_string(),
+            session_id: "session-cancelled-restart-background".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "exec-call-cancelled-restart-background".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-cancelled-restart-background",
+            "trigger-cancelled-restart-background",
+        )
+        .await;
+        let child_call_id = format!("{}:background", parent.tool_call_id);
+        let task_id = deterministic_job_id(&parent.activation_id, &child_call_id).unwrap();
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
+                target_id: parent.target_id.clone(),
+                tool_call_id: child_call_id,
+                tool_name: "exec/background".to_string(),
+                request: serde_json::json!({
+                    "kind": "background_exec",
+                    "task_id": task_id,
+                    "command": "cancelled-before-restart",
+                    "process_group_id": i32::MAX,
+                    "artifact_path": "/tmp/cancelled-restart-background.log",
+                    "started_at": chrono::Utc::now(),
+                    "effective_boundary": {}
+                }),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let claim_token = "cancelled-restart-background-claim";
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "dead-runtime",
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "claim",
+        )
+        .unwrap();
+        job = applied_background_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(chrono::Utc::now()),
+                        progress_ref: Some("/tmp/cancelled-restart-background.log"),
+                    },
+                )
+                .await
+                .unwrap(),
+            "side-effect boundary",
+        )
+        .unwrap();
+        job = applied_background_job(
+            manager
+                .request_cancel(&job.id, job.revision, Some("cancel before restart"))
+                .await
+                .unwrap(),
+            "cancel request",
+        )
+        .unwrap();
+        assert_eq!(job.status, ExecutionJobStatus::Running);
+        assert!(job.cancel_requested_at.is_some());
+        assert!(job
+            .lease_expires_at
+            .is_some_and(|lease| lease > chrono::Utc::now()));
+
+        let recovery = manager
+            .reconcile_startup(
+                crate::memory::WorkerCoordinationMode::SharedHostLeases,
+                store.as_ref(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovery.recovered_receipts.len(), 1);
+        let terminal = store.get_execution_job(&task_id).await.unwrap().unwrap();
+        assert_eq!(terminal.status, ExecutionJobStatus::Cancelled);
+        assert_eq!(
+            scheduler
+                .recover_terminal_background_outboxes()
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            scheduler
+                .recover_terminal_background_outboxes()
+                .await
+                .unwrap(),
+            0,
+            "replaying cancelled recovery must not arm a duplicate Thread Signal"
+        );
+        let event_id = terminal.result_event_id.unwrap();
+        let event = store
+            .query(QueryFilter {
+                event_id: Some(event_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .expect("cancelled recovery event");
+        assert_eq!(event.payload["task_status"], "cancelled");
+        assert_eq!(
+            store
+                .list_context_thread_signals(&parent.context_id, None)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.event_id == event_id)
+                .count(),
+            1,
+            "the repaired terminal fact must release the exact owning Thread wait"
         );
     }
 
