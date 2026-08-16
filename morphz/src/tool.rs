@@ -1064,6 +1064,28 @@ impl BackgroundTaskScheduler {
                     exit_code: Some(exit_code),
                 }
             };
+            // A detached service may legitimately outlive the Execution
+            // Thread that launched it. Its physical terminal fact and result
+            // Event must still commit, but a terminal (or deleted) owner can
+            // no longer accept a Direct Signal. Re-evaluate on every retry so
+            // a Thread racing to terminal state cannot permanently strand the
+            // Job in running + cancel_requested.
+            let wake_thread = if let Some(sessions) = self.sessions.as_ref() {
+                match sessions.get_thread(&job.thread_id).await? {
+                    Some(thread) => !thread.lifecycle.is_terminal(),
+                    None => {
+                        tracing::warn!(
+                            execution_job_id = %job.id,
+                            thread_id = %job.thread_id,
+                            event_code = "tool.background_result.owner_missing",
+                            "Committing a background result without a Direct Signal because its Thread owner is missing"
+                        );
+                        false
+                    }
+                }
+            } else {
+                true
+            };
             match manager
                 .finish_with_event(
                     &job.id,
@@ -1071,7 +1093,7 @@ impl BackgroundTaskScheduler {
                     job.claim_token.as_deref(),
                     outcome,
                     &event,
-                    true,
+                    wake_thread,
                 )
                 .await?
             {
@@ -8015,12 +8037,15 @@ Body
         let execution_jobs = Arc::new(ExecutionJobManager::new(
             Arc::clone(&store) as Arc<dyn ExecutionJobStore>
         ));
-        let scheduler = Arc::new(BackgroundTaskScheduler::new_with_execution_jobs(
-            bus,
-            store as Arc<dyn EventStore>,
-            Arc::clone(&timers),
-            execution_jobs,
-        ));
+        let scheduler = Arc::new(
+            BackgroundTaskScheduler::new_with_execution_jobs(
+                bus,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::clone(&timers),
+                execution_jobs,
+            )
+            .with_session_store(store as Arc<dyn SessionStore>),
+        );
         scheduler.register_timer_handler().unwrap();
         timers.start();
         scheduler
@@ -11048,6 +11073,169 @@ Body
             "one physical completion must not produce duplicate wakes"
         );
         get_tasks_map().remove(&task_id);
+    }
+
+    #[tokio::test]
+    async fn background_completion_skips_signal_after_owner_thread_is_terminal() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/tool_output".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let scheduler =
+            start_test_durable_background_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-terminal-owner-background",
+                "exec-call-terminal-owner-background",
+            )
+            .unwrap(),
+            activation_id: "activation-terminal-owner-background".to_string(),
+            thread_id: "thread-terminal-owner-background".to_string(),
+            agent_id: "agent-terminal-owner-background".to_string(),
+            context_id: "context-terminal-owner-background".to_string(),
+            session_id: "session-terminal-owner-background".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "exec-call-terminal-owner-background".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-terminal-owner-background",
+            "trigger-terminal-owner-background",
+        )
+        .await;
+
+        let manager = scheduler.execution_jobs.as_ref().unwrap();
+        let child_call_id = format!("{}:background", parent.tool_call_id);
+        let task_id = deterministic_job_id(&parent.activation_id, &child_call_id).unwrap();
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
+                target_id: parent.target_id.clone(),
+                tool_call_id: child_call_id,
+                tool_name: "exec/background".to_string(),
+                request: serde_json::json!({
+                    "kind": "background_exec",
+                    "task_id": task_id,
+                    "command": "service-owned-by-terminal-thread",
+                    "process_group_id": 424242,
+                    "artifact_path": "/tmp/terminal-owner-background.log",
+                    "started_at": chrono::Utc::now(),
+                    "effective_boundary": {}
+                }),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let claim_token = "terminal-owner-background-claim";
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "terminal-owner-background-worker",
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "claim",
+        )
+        .unwrap();
+        job = applied_background_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(chrono::Utc::now()),
+                        progress_ref: Some("/tmp/terminal-owner-background.log"),
+                    },
+                )
+                .await
+                .unwrap(),
+            "side-effect boundary",
+        )
+        .unwrap();
+        job = applied_background_job(
+            manager
+                .request_cancel(&job.id, job.revision, Some("owner already terminal"))
+                .await
+                .unwrap(),
+            "cancel request",
+        )
+        .unwrap();
+        assert!(job.cancel_requested_at.is_some());
+
+        let owner = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        let owner = match store
+            .update_thread(
+                &owner.id,
+                owner.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected Thread mutation: {other:?}"),
+        };
+        assert_eq!(owner.lifecycle, ThreadLifecycle::Completed);
+
+        assert!(scheduler
+            .finish_background_execution(&task_id, -9, "", "")
+            .await
+            .unwrap());
+        let completion = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("terminal result Event must still be dispatched")
+            .expect("completion channel must remain open");
+        assert_eq!(completion.payload["task_status"], "cancelled");
+        let terminal = store.get_execution_job(&task_id).await.unwrap().unwrap();
+        assert_eq!(terminal.status, ExecutionJobStatus::Cancelled);
+        assert_eq!(
+            terminal.result_event_id.as_deref(),
+            Some(completion.id.as_str())
+        );
+        assert_eq!(
+            store
+                .list_context_thread_signals(&parent.context_id, None)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.event_id == completion.id)
+                .count(),
+            0,
+            "a terminal owner Thread must not receive a new Direct Signal"
+        );
     }
 
     #[tokio::test]
