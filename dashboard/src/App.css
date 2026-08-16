@@ -588,7 +588,6 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 
 .message-thread-capsules { display: grid; width: min(720px, 100%); justify-items: end; gap: 7px; margin-top: 12px; }
 .message-thread-reference { position: relative; width: min(100%, 500px); }
-.message-thread-reference::after { position: absolute; right: 0; bottom: 100%; width: min(440px, 100%); height: 10px; content: ''; }
 .message-thread-capsule {
   position: relative;
   display: grid;
@@ -629,14 +628,14 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .message-thread-open { color: var(--faint); transition: color .15s ease, transform .15s ease; }
 .message-thread-capsule:hover .message-thread-open,
 .message-thread-capsule:focus-visible .message-thread-open { color: var(--accent); transform: translateX(2px); }
-.message-thread-toolchain { position: absolute; right: 0; bottom: calc(100% + 9px); z-index: 40; width: min(440px, calc(100vw - 44px)); overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line)); border-radius: 13px; background: color-mix(in srgb, var(--surface-strong) 97%, transparent); color: var(--text-soft); box-shadow: 0 20px 60px color-mix(in srgb, #000 34%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent); opacity: 0; pointer-events: none; transform: translateY(6px) scale(.985); transform-origin: bottom right; visibility: hidden; transition: opacity .14s ease, transform .14s ease, visibility .14s; backdrop-filter: blur(18px); }
-.message-thread-reference:hover .message-thread-toolchain,
-.message-thread-reference:focus-within .message-thread-toolchain { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); visibility: visible; }
+.message-thread-toolchain { position: fixed; inset: auto; z-index: 40; width: min(440px, calc(100vw - 24px)); max-width: calc(100vw - 24px); margin: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line)); border-radius: 13px; background: color-mix(in srgb, var(--surface-strong) 97%, transparent); color: var(--text-soft); box-shadow: 0 20px 60px color-mix(in srgb, #000 34%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent); opacity: 0; pointer-events: none; transform: translateY(6px) scale(.985); transform-origin: bottom right; visibility: hidden; transition: opacity .14s ease, transform .14s ease, visibility .14s; backdrop-filter: blur(18px); }
+.message-thread-toolchain[data-placement="below"] { transform: translateY(-6px) scale(.985); transform-origin: top right; }
+.message-thread-toolchain:popover-open.is-positioned { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); visibility: visible; }
 .message-thread-toolchain > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent-soft) 32%, transparent); }
 .message-thread-toolchain > header span { display: flex; align-items: center; gap: 7px; color: var(--text); font-size: 10px; font-weight: 700; }
 .message-thread-toolchain > header span svg { color: var(--accent); }
 .message-thread-toolchain > header small { color: var(--muted); font: 500 8px/1.3 var(--mono); }
-.message-thread-toolchain ol { max-height: 260px; margin: 0; padding: 6px 0; overflow: auto; list-style: none; }
+.message-thread-toolchain ol { max-height: var(--thread-toolchain-list-max-height, 260px); margin: 0; padding: 6px 0; overflow: auto; overscroll-behavior: contain; list-style: none; }
 .message-thread-toolchain li { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 42px; padding: 5px 12px; }
 .message-thread-toolchain li:not(:last-child)::after { position: absolute; top: 31px; bottom: -11px; left: 23px; width: 1px; background: var(--line-strong); content: ''; }
 .toolchain-step { z-index: 1; display: flex; width: 22px; height: 22px; align-items: center; justify-content: center; border-radius: 50%; background: var(--surface-strong); color: var(--muted); box-shadow: 0 0 0 1px var(--line); }
@@ -3173,7 +3172,7 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
   .message-thread-reference { width: 100%; }
   .message-thread-capsule { grid-template-columns: 26px minmax(0, 1fr) auto; gap: 8px; }
   .message-thread-capsule code { display: none; }
-  .message-thread-toolchain { right: auto; left: 0; width: min(420px, calc(100vw - 28px)); transform-origin: bottom left; }
+  .message-thread-toolchain { width: min(420px, calc(100vw - 24px)); }
   .runtime-header {
     grid-template-columns: minmax(76px, 1fr) auto;
     grid-template-rows: 34px auto;

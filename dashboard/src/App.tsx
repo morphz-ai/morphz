@@ -206,6 +206,9 @@ function MessageThreadReference({
   onOpen: () => void
   t: TFunction
 }) {
+  const referenceRef = useRef<HTMLDivElement>(null)
+  const toolchainRef = useRef<HTMLElement>(null)
+  const toolchainHideTimerRef = useRef<number | null>(null)
   const jobs = snapshot.activations
     .flatMap((activation, activationIndex) => activation.jobs.map((job, jobIndex) => ({
       snapshot: job,
@@ -218,10 +221,82 @@ function MessageThreadReference({
   // resolves and the card needs no knowledge of which dimension that is.
   const threadTint = tintStyleFor(snapshot.thread.id) ?? tintStyleFor(objectiveIds[0])
 
+  const cancelToolchainHide = () => {
+    if (toolchainHideTimerRef.current === null) return
+    window.clearTimeout(toolchainHideTimerRef.current)
+    toolchainHideTimerRef.current = null
+  }
+
+  const hideToolchain = () => {
+    cancelToolchainHide()
+    const toolchain = toolchainRef.current
+    if (!toolchain?.matches(':popover-open')) return
+    toolchain.hidePopover()
+    toolchain.classList.remove('is-positioned')
+  }
+
+  const scheduleToolchainHide = () => {
+    cancelToolchainHide()
+    toolchainHideTimerRef.current = window.setTimeout(hideToolchain, 120)
+  }
+
+  const showToolchain = () => {
+    cancelToolchainHide()
+    const reference = referenceRef.current
+    const toolchain = toolchainRef.current
+    if (!reference || !toolchain) return
+
+    if (!toolchain.matches(':popover-open')) toolchain.showPopover()
+    toolchain.classList.remove('is-positioned')
+    toolchain.style.setProperty('--thread-toolchain-list-max-height', '260px')
+
+    const anchor = reference.getBoundingClientRect()
+    const scrollBoundary = reference.closest('.view-frame')?.getBoundingClientRect()
+    const boundaryTop = Math.max(12, (scrollBoundary?.top ?? 0) + 10)
+    const boundaryBottom = Math.min(window.innerHeight - 12, (scrollBoundary?.bottom ?? window.innerHeight) - 10)
+    const gap = 9
+    const availableAbove = Math.max(0, anchor.top - boundaryTop - gap)
+    const availableBelow = Math.max(0, boundaryBottom - anchor.bottom - gap)
+    const naturalHeight = toolchain.scrollHeight
+    const placement = availableBelow >= naturalHeight || availableBelow > availableAbove ? 'below' : 'above'
+    const availableHeight = placement === 'below' ? availableBelow : availableAbove
+    const headerHeight = toolchain.querySelector(':scope > header')?.getBoundingClientRect().height ?? 0
+    const footerHeight = toolchain.querySelector(':scope > footer')?.getBoundingClientRect().height ?? 0
+    const listMaxHeight = Math.max(42, Math.min(260, availableHeight - headerHeight - footerHeight - 2))
+    toolchain.style.setProperty('--thread-toolchain-list-max-height', `${listMaxHeight}px`)
+
+    const measured = toolchain.getBoundingClientRect()
+    const top = placement === 'below'
+      ? Math.min(anchor.bottom + gap, boundaryBottom - measured.height)
+      : Math.max(boundaryTop, anchor.top - gap - measured.height)
+    const left = Math.min(
+      Math.max(12, anchor.right - measured.width),
+      window.innerWidth - measured.width - 12,
+    )
+    toolchain.style.top = `${Math.max(boundaryTop, top)}px`
+    toolchain.style.left = `${Math.max(12, left)}px`
+    toolchain.dataset.placement = placement
+    toolchain.classList.add('is-positioned')
+  }
+
+  useEffect(() => () => cancelToolchainHide(), [])
+
   return (
     <div
+      ref={referenceRef}
       className={`message-thread-reference phase-${snapshot.phase} ${threadTint ? 'objective-tinted' : ''}`}
       style={threadTint}
+      onPointerEnter={showToolchain}
+      onPointerLeave={scheduleToolchainHide}
+      onFocusCapture={showToolchain}
+      onBlurCapture={event => {
+        const nextTarget = event.relatedTarget
+        if (nextTarget instanceof Node && (referenceRef.current?.contains(nextTarget) || toolchainRef.current?.contains(nextTarget))) return
+        scheduleToolchainHide()
+      }}
+      onKeyDownCapture={event => {
+        if (event.key === 'Escape') hideToolchain()
+      }}
     >
       <button
         className="message-thread-capsule"
@@ -244,7 +319,15 @@ function MessageThreadReference({
         <ChevronRight className="message-thread-open" size={13} aria-hidden="true" />
       </button>
 
-      <aside className="message-thread-toolchain" id={previewId} role="tooltip">
+      <aside
+        ref={toolchainRef}
+        className="message-thread-toolchain"
+        id={previewId}
+        role="tooltip"
+        popover="auto"
+        onPointerEnter={cancelToolchainHide}
+        onPointerLeave={scheduleToolchainHide}
+      >
         <header>
           <span><GitBranch size={12} />{t('conversation.threadToolChain')}</span>
           <small>{t('conversation.threadJobs', { count: jobs.length })}</small>

@@ -43,6 +43,25 @@ test('live model output uses the same causal tint as its durable message', () =>
   )
 })
 
+test('execution Thread toolchain escapes scroll clipping and flips into available viewport space', () => {
+  assert.match(
+    appSource,
+    /className="message-thread-toolchain"[\s\S]*?popover="auto"/s,
+    'the hover detail must enter the browser top layer instead of remaining clipped by the conversation scroller',
+  )
+  assert.match(
+    appSource,
+    /availableBelow >= naturalHeight \|\| availableBelow > availableAbove \? 'below' : 'above'/,
+    'the hover detail must choose the side with usable viewport space',
+  )
+  assert.match(
+    appCss,
+    /\.message-thread-toolchain\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*auto;/s,
+    'the top-layer toolchain must use viewport coordinates',
+  )
+  assert.match(appCss, /\.message-thread-toolchain:popover-open\.is-positioned/)
+})
+
 test('laptop viewports keep both dashboard chrome bands on one row', () => {
   assert.match(
     appSource,
