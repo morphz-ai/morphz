@@ -13,15 +13,15 @@ use crate::memory::{
     ContextCognitiveClock, ContextEncodingProjectionSnapshot, EventAppend, EventStore,
     MindProjectionCommit, MindProjectionHead, MindProjectionRecord, MindProjectionStore,
     MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, NewThread,
-    ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveRecord, ObjectiveRecoveryCursor,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
-    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
-    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
-    SessionProjectionMutation, SessionProjectionStore, StorageMaintenanceReport,
-    StorageMaintenanceStore, TimerStore, TransientStorageRetention,
+    ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveReadinessCounts, ObjectiveRecord,
+    ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    ProviderAccountAffinityRecord, ProviderAccountStateRecord, ProviderAccountStateStore,
+    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
+    ProviderRefreshLeaseRecord, QueryFilter, RecallDocument, RecallDocumentKind,
+    RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
+    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
+    RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore,
+    StorageMaintenanceReport, StorageMaintenanceStore, TimerStore, TransientStorageRetention,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -282,6 +282,12 @@ impl PostgresStore {
                     store.migrate_core_domain_constraints(),
                 )
                 .await?;
+            store
+                .run_versioned_migration(
+                    "20260816_05_bounded_read_model",
+                    store.migrate_bounded_read_model(),
+                )
+                .await?;
             // Index creation is retried outside the versioned migration so a
             // deployment that failed to build it once recovers on a later
             // start without editing migration history.
@@ -370,6 +376,46 @@ impl PostgresStore {
         )
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    async fn migrate_bounded_read_model(&self) -> Result<(), StoreError> {
+        for statement in [
+            r#"ALTER TABLE thread_activations
+               ADD COLUMN IF NOT EXISTS admission_rank SMALLINT NOT NULL DEFAULT 3
+               CHECK(admission_rank BETWEEN 0 AND 4)"#,
+            r#"UPDATE thread_activations AS activation
+               SET admission_rank = CASE
+                 WHEN event.type = 'user_message' THEN 0
+                 WHEN activation.trigger_kind = 'chat/thread_completion_ready' THEN 1
+                 WHEN event.objective_id IS NOT NULL
+                   OR event.payload ? 'objective_evaluation_id'
+                   OR left(event.topic, 10) = 'objective/' THEN 2
+                 WHEN event.payload @> '{"runtime_maintenance": true}'::jsonb
+                   OR event.topic IN ('runtime/context_maintenance', 'chat/context_maintenance') THEN 4
+                 ELSE 3
+               END
+               FROM events AS event
+               WHERE event.id = activation.trigger_event_id"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_admission_queue
+               ON thread_activations(admission_rank, created_at, id)
+               WHERE status = 'queued'"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_action_groups_running_recovery
+               ON action_groups(created_at, id) WHERE status = 'running'"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_delegations_parent_context_updated
+               ON delegations(parent_context_id, updated_at DESC, id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_delegations_child_context_updated
+               ON delegations(child_context_id, updated_at DESC, id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_delegations_status
+               ON delegations(status, updated_at, id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_delegations_active_updated
+               ON delegations(updated_at, id)
+               WHERE status IN ('queued', 'running')"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_attention_ack_context_sequence
+               ON attention_acknowledgements(context_id, event_sequence, key)"#,
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
         Ok(())
     }
 
@@ -929,6 +975,8 @@ impl PostgresStore {
                )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_attention_ack_context_time
                ON attention_acknowledgements(context_id, acknowledged_at DESC, event_sequence DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_attention_ack_context_sequence
+               ON attention_acknowledgements(context_id, event_sequence, key)"#,
             r#"INSERT INTO attention_acknowledgements
                (context_id, key, event_id, event_sequence, source_kind, source_id,
                 source_revision, acknowledged_by, rationale, acknowledged_at)
@@ -3031,7 +3079,7 @@ impl EventStore for PostgresStore {
         context_id: &str,
     ) -> Result<Vec<AttentionAcknowledgementRecord>, StoreError> {
         let rows = sqlx::query(
-            r#"SELECT event_id, context_id, key, source_kind, source_id,
+            r#"SELECT event_id, event_sequence, context_id, key, source_kind, source_id,
                       source_revision, acknowledged_by, rationale, acknowledged_at
                FROM attention_acknowledgements
                WHERE context_id = $1
@@ -3044,6 +3092,117 @@ impl EventStore for PostgresStore {
             .map(|row| {
                 Ok(AttentionAcknowledgementRecord {
                     event_id: row.get("event_id"),
+                    event_sequence: u64::try_from(row.get::<i64, _>("event_sequence"))?,
+                    context_id: row.get("context_id"),
+                    key: row.get("key"),
+                    source_kind: row.get("source_kind"),
+                    source_id: row.get("source_id"),
+                    source_revision: u64::try_from(row.get::<i64, _>("source_revision"))?,
+                    acknowledged_by: row.get("acknowledged_by"),
+                    rationale: row.get("rationale"),
+                    acknowledged_at: parse_time(&row.get::<String, _>("acknowledged_at"))?,
+                })
+            })
+            .collect()
+    }
+
+    async fn get_attention_acknowledgement(
+        &self,
+        context_id: &str,
+        key: &str,
+    ) -> Result<Option<AttentionAcknowledgementRecord>, StoreError> {
+        sqlx::query(
+            r#"SELECT event_id, event_sequence, context_id, key, source_kind, source_id,
+                      source_revision, acknowledged_by, rationale, acknowledged_at
+               FROM attention_acknowledgements
+               WHERE context_id = $1 AND key = $2"#,
+        )
+        .bind(context_id)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| {
+            Ok(AttentionAcknowledgementRecord {
+                event_id: row.get("event_id"),
+                event_sequence: u64::try_from(row.get::<i64, _>("event_sequence"))?,
+                context_id: row.get("context_id"),
+                key: row.get("key"),
+                source_kind: row.get("source_kind"),
+                source_id: row.get("source_id"),
+                source_revision: u64::try_from(row.get::<i64, _>("source_revision"))?,
+                acknowledged_by: row.get("acknowledged_by"),
+                rationale: row.get("rationale"),
+                acknowledged_at: parse_time(&row.get::<String, _>("acknowledged_at"))?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn list_attention_acknowledgements_bounded(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AttentionAcknowledgementRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT event_id, event_sequence, context_id, key, source_kind, source_id,
+                      source_revision, acknowledged_by, rationale, acknowledged_at
+               FROM attention_acknowledgements
+               WHERE context_id = $1
+               ORDER BY acknowledged_at DESC, event_sequence DESC
+               LIMIT $2"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AttentionAcknowledgementRecord {
+                    event_id: row.get("event_id"),
+                    event_sequence: u64::try_from(row.get::<i64, _>("event_sequence"))?,
+                    context_id: row.get("context_id"),
+                    key: row.get("key"),
+                    source_kind: row.get("source_kind"),
+                    source_id: row.get("source_id"),
+                    source_revision: u64::try_from(row.get::<i64, _>("source_revision"))?,
+                    acknowledged_by: row.get("acknowledged_by"),
+                    rationale: row.get("rationale"),
+                    acknowledged_at: parse_time(&row.get::<String, _>("acknowledged_at"))?,
+                })
+            })
+            .collect()
+    }
+
+    async fn list_attention_acknowledgements_after(
+        &self,
+        context_id: &str,
+        after_event_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<AttentionAcknowledgementRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT event_id, event_sequence, context_id, key, source_kind, source_id,
+                      source_revision, acknowledged_by, rationale, acknowledged_at
+               FROM attention_acknowledgements
+               WHERE context_id = $1 AND event_sequence > $2
+               ORDER BY event_sequence, key
+               LIMIT $3"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(after_event_sequence)?)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AttentionAcknowledgementRecord {
+                    event_id: row.get("event_id"),
+                    event_sequence: u64::try_from(row.get::<i64, _>("event_sequence"))?,
                     context_id: row.get("context_id"),
                     key: row.get("key"),
                     source_kind: row.get("source_kind"),
@@ -3918,6 +4077,81 @@ impl ObjectiveStore for PostgresStore {
         rows.iter().map(objective_from_row).collect()
     }
 
+    async fn list_context_objectives_bounded(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let predicate = if include_terminal {
+            "context_id = $1"
+        } else {
+            "context_id = $1 AND status IN ('active', 'paused', 'blocked')"
+        };
+        let rows = sqlx::query(&format!(
+            "{OBJECTIVE_SELECT} WHERE {predicate} ORDER BY updated_at DESC, id LIMIT $2"
+        ))
+        .bind(context_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn count_context_objective_readiness(
+        &self,
+        context_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<ObjectiveReadinessCounts, StoreError> {
+        let now = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let row = sqlx::query(
+            r#"SELECT
+                 COUNT(*) AS live_objectives,
+                 COALESCE(SUM(CASE WHEN objective.status = 'active'
+                   AND NOT (
+                     objective.active_evaluation_id IS NOT NULL
+                     AND objective.evaluation_lease_expires_at IS NOT NULL
+                     AND objective.evaluation_lease_expires_at > $1
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM scheduler_dependencies dependency
+                     WHERE dependency.owner_kind = 'objective'
+                       AND dependency.owner_id = objective.id
+                       AND dependency.owner_generation = objective.generation
+                       AND dependency.required = TRUE
+                       AND dependency.status = 'pending'
+                   ) THEN 1 ELSE 0 END), 0) AS runnable_objectives,
+                 COALESCE(SUM(CASE WHEN objective.status = 'active' AND (
+                   (objective.active_evaluation_id IS NOT NULL
+                    AND objective.evaluation_lease_expires_at IS NOT NULL
+                    AND objective.evaluation_lease_expires_at > $1)
+                   OR EXISTS (
+                     SELECT 1 FROM scheduler_dependencies dependency
+                     WHERE dependency.owner_kind = 'objective'
+                       AND dependency.owner_id = objective.id
+                       AND dependency.owner_generation = objective.generation
+                       AND dependency.required = TRUE
+                       AND dependency.status = 'pending'
+                   )
+                 ) THEN 1 ELSE 0 END), 0) AS waiting_objectives
+               FROM objectives objective
+               WHERE objective.context_id = $2
+                 AND objective.status IN ('active', 'paused', 'blocked')"#,
+        )
+        .bind(now)
+        .bind(context_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(ObjectiveReadinessCounts {
+            live_objectives: usize::try_from(row.get::<i64, _>("live_objectives"))?,
+            runnable_objectives: usize::try_from(row.get::<i64, _>("runnable_objectives"))?,
+            waiting_objectives: usize::try_from(row.get::<i64, _>("waiting_objectives"))?,
+        })
+    }
+
     async fn list_recoverable_objectives(&self) -> Result<Vec<ObjectiveRecord>, StoreError> {
         let rows = sqlx::query(&format!(
             "{OBJECTIVE_SELECT} WHERE status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL ORDER BY updated_at"
@@ -3941,6 +4175,33 @@ impl ObjectiveStore for PostgresStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn list_recoverable_objectives_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, StoreError> {
+        if context_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query: QueryBuilder<'_, Postgres> = QueryBuilder::new(OBJECTIVE_SELECT);
+        query.push(
+            " WHERE (status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL) AND context_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for context_id in context_ids {
+            separated.push_bind(context_id);
+        }
+        separated.push_unseparated(") ORDER BY updated_at DESC, id LIMIT ");
+        query.push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(objective_from_row)
+            .collect()
     }
 
     async fn list_recoverable_objectives_page(

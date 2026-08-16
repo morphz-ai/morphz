@@ -27,21 +27,21 @@ use crate::llm::{
     ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
 };
 use crate::memory::{
-    stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberStatus,
-    ActionGroupRecord, ActionGroupStore, ActivationOutcomeCommit, ApprovalFilter, ApprovalMutation,
-    ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore, CapabilityLeaseFilter,
-    CapabilityLeaseMutation, CapabilityLeaseStore, DelegationStatus, DeliveryFlushCommit,
-    EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, NewActionGroup,
-    NewActionGroupMember, NewApprovalRequest, NewCapabilityLease, NewCognitiveContext,
-    NewDelegation, NewExecutionJob, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation,
-    NewThreadSignal, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
-    PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
-    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus,
-    SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSupervision,
-    ThreadSupervisorKind,
+    stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberRecord,
+    ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStore, ActivationOutcomeCommit,
+    ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus,
+    ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStore,
+    DelegationFilter, DelegationStatus, DeliveryFlushCommit, EventAppend, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, NewActionGroup, NewActionGroupMember,
+    NewApprovalRequest, NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob,
+    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
+    PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus,
+    PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduleStatus,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore,
+    SessionUpdate, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter, ThreadKind, ThreadLifecycle,
+    ThreadMutation, ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
@@ -439,6 +439,7 @@ const PENDING_SIGNAL_RECONCILE_INTERVAL: std::time::Duration = std::time::Durati
 const PENDING_SIGNAL_RECONCILE_BATCH: usize = 128;
 const ACTION_GROUP_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const ACTION_GROUP_RECONCILE_DIRTY_BATCH: usize = 128;
+const ACTION_GROUP_RECONCILE_PAGE: usize = 128;
 const PROVIDER_DELIVERY_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const PROVIDER_DELIVERY_IDLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const PROVIDER_DELIVERY_BATCH: usize = 128;
@@ -1984,6 +1985,10 @@ pub struct Orchestrator {
     plan_reconcile_wakeup: Arc<Notify>,
     action_group_reconcile_dirty: Arc<DashMap<String, ()>>,
     action_group_reconcile_wakeup: Arc<Notify>,
+    /// Rotating keyset cursor for the slow lost-notification fallback. A
+    /// permanently incomplete old Group must not make every 30-second pass
+    /// reread the same prefix or starve newer Groups.
+    action_group_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
     delegation_start_lock: Mutex<()>,
     objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
     objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
@@ -2811,6 +2816,7 @@ impl Orchestrator {
             plan_reconcile_wakeup: Arc::new(Notify::new()),
             action_group_reconcile_dirty: Arc::new(DashMap::new()),
             action_group_reconcile_wakeup: Arc::new(Notify::new()),
+            action_group_reconcile_cursor: Mutex::new(None),
             delegation_start_lock: Mutex::new(()),
             objective_evaluations,
             objective_supervisor,
@@ -3425,10 +3431,19 @@ impl Orchestrator {
         let orchestrator = Arc::downgrade(self);
         let wakeup = Arc::clone(&self.action_group_reconcile_wakeup);
         tokio::spawn(async move {
+            let mut continue_full_scan = false;
             loop {
-                let full_reconcile = tokio::select! {
-                    _ = wakeup.notified() => false,
-                    _ = tokio::time::sleep(ACTION_GROUP_RECONCILE_INTERVAL) => true,
+                let full_reconcile = if continue_full_scan {
+                    // One recovery operation remains bounded, but a large
+                    // durable backlog must not take 30 seconds per page.
+                    // Yield between pages so normal Runtime work stays fair.
+                    tokio::task::yield_now().await;
+                    true
+                } else {
+                    tokio::select! {
+                        _ = wakeup.notified() => false,
+                        _ = tokio::time::sleep(ACTION_GROUP_RECONCILE_INTERVAL) => true,
+                    }
                 };
                 let Some(orchestrator) = orchestrator.upgrade() else {
                     break;
@@ -3438,6 +3453,7 @@ impl Orchestrator {
                 } else {
                     orchestrator.recover_dirty_action_groups().await
                 };
+                let reconcile_succeeded = result.is_ok();
                 match result {
                     Ok(0) => {}
                     Ok(committed) => tracing::warn!(
@@ -3451,6 +3467,13 @@ impl Orchestrator {
                         "Action Group convergence failed; durable result Events will be retried"
                     ),
                 }
+                continue_full_scan = reconcile_succeeded
+                    && full_reconcile
+                    && orchestrator
+                        .action_group_reconcile_cursor
+                        .lock()
+                        .await
+                        .is_some();
             }
         });
     }
@@ -4342,19 +4365,90 @@ impl Orchestrator {
         let Some(groups) = self.action_groups.as_ref() else {
             return Ok(0);
         };
+        let cursor = self.action_group_reconcile_cursor.lock().await.clone();
         let running = groups
             .list_action_groups(ActionGroupFilter {
                 include_terminal: false,
                 newest_first: false,
+                after_created_at: cursor.as_ref().map(|(created_at, _)| *created_at),
+                after_id: cursor.as_ref().map(|(_, id)| id.clone()),
+                limit: Some(ACTION_GROUP_RECONCILE_PAGE),
                 ..Default::default()
             })
             .await?;
+        if running.is_empty() {
+            *self.action_group_reconcile_cursor.lock().await = None;
+            return Ok(0);
+        }
+
+        let next_cursor = running
+            .last()
+            .map(|group| (group.created_at, group.id.clone()));
+        *self.action_group_reconcile_cursor.lock().await = (running.len()
+            == ACTION_GROUP_RECONCILE_PAGE)
+            .then_some(next_cursor)
+            .flatten();
+
+        let group_ids = running
+            .iter()
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        let members = groups
+            .list_action_group_members_for_groups(&group_ids)
+            .await?;
+        let mut members_by_group = HashMap::<String, Vec<ActionGroupMemberRecord>>::new();
+        for member in members {
+            members_by_group
+                .entry(member.group_id.clone())
+                .or_default()
+                .push(member);
+        }
+
+        let mut evidence_ids = running
+            .iter()
+            .filter_map(|group| {
+                group
+                    .assistant_call_event_id
+                    .strip_prefix("call_")
+                    .map(|attempt_id| format!("tool_calls_selected_{attempt_id}"))
+            })
+            .collect::<Vec<_>>();
+        for group in &running {
+            if let Some(members) = members_by_group.get(&group.id) {
+                evidence_ids.extend(
+                    members
+                        .iter()
+                        .filter(|member| !member.status.is_terminal())
+                        .map(|member| {
+                            format!("output_{}_{}", group.activation_id, member.tool_call_id)
+                        }),
+                );
+            }
+        }
+        evidence_ids.sort();
+        evidence_ids.dedup();
+        let mut evidence_by_id = HashMap::new();
+        for event_ids in evidence_ids.chunks(500) {
+            for event in self
+                .store
+                .query(QueryFilter {
+                    event_ids: event_ids.to_vec(),
+                    ..Default::default()
+                })
+                .await?
+            {
+                evidence_by_id.insert(event.id.clone(), event);
+            }
+        }
+
         let mut committed = 0usize;
         for group in running {
-            match recover_action_group_from_durable_events(
-                self.context_engine.as_ref(),
+            let members = members_by_group.remove(&group.id).unwrap_or_default();
+            match recover_action_group_from_prefetched_events(
                 &group,
                 groups.as_ref(),
+                &members,
+                &evidence_by_id,
             )
             .await
             {
@@ -4926,55 +5020,80 @@ impl Orchestrator {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
         };
-        for delegation in session_store.list_delegations().await? {
-            if !matches!(
-                delegation.status,
-                DelegationStatus::Queued | DelegationStatus::Running
-            ) {
-                continue;
-            }
-            let activations = session_store
-                .list_context_thread_activations(&delegation.child_context_id, false)
-                .await?;
-            if activations
-                .iter()
-                .any(|item| item.session_id == delegation.child_session_id)
-            {
-                continue;
-            }
-
-            let terminal = self
-                .store
-                .query(QueryFilter {
-                    session_id: Some(delegation.child_session_id.clone()),
-                    types: vec![TYPE_AGENT_CALL.to_string()],
-                    latest_k: Some(100),
-                    excluded_topics: vec!["chat/context_inspect".to_string()],
+        const PAGE_SIZE: usize = 128;
+        let mut cursor: Option<(chrono::DateTime<Utc>, String)> = None;
+        loop {
+            let page = session_store
+                .list_delegations(DelegationFilter {
+                    include_terminal: false,
+                    newest_first: false,
+                    after_updated_at: cursor.as_ref().map(|(updated_at, _)| *updated_at),
+                    after_id: cursor.as_ref().map(|(_, id)| id.clone()),
+                    limit: Some(PAGE_SIZE),
                     ..Default::default()
                 })
-                .await?
-                .into_iter()
-                .rev()
-                .find(|event| matches!(event.topic.as_str(), "chat/reply" | "chat/no_reply"));
-            if let Some(terminal) = terminal {
-                self.complete_delegation_if_needed(&terminal, &delegation.child_session_id)
-                    .await?;
-                continue;
-            }
-
-            let failure_id = format!(
-                "delegation_recovery_failed_{}_{}",
-                delegation.id,
-                Utc::now().timestamp_nanos_opt().unwrap_or(0)
-            );
-            session_store
-                .update_delegation_status(
-                    &delegation.id,
-                    DelegationStatus::Failed,
-                    Some(&failure_id),
-                )
                 .await?;
-            let mut failure_event = Event::new(
+            if page.is_empty() {
+                break;
+            }
+            cursor = page
+                .last()
+                .map(|delegation| (delegation.updated_at, delegation.id.clone()));
+            let page_len = page.len();
+            for delegation in page {
+                self.recover_delegation(session_store.as_ref(), delegation)
+                    .await?;
+            }
+            if page_len < PAGE_SIZE {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn recover_delegation(
+        &self,
+        session_store: &dyn SessionStore,
+        delegation: crate::memory::DelegationRecord,
+    ) -> Result<(), DynError> {
+        if session_store
+            .has_active_thread_activation_for_session(
+                &delegation.child_context_id,
+                &delegation.child_session_id,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+
+        let terminal = self
+            .store
+            .query(QueryFilter {
+                session_id: Some(delegation.child_session_id.clone()),
+                types: vec![TYPE_AGENT_CALL.to_string()],
+                latest_k: Some(100),
+                excluded_topics: vec!["chat/context_inspect".to_string()],
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .rev()
+            .find(|event| matches!(event.topic.as_str(), "chat/reply" | "chat/no_reply"));
+        if let Some(terminal) = terminal {
+            self.complete_delegation_if_needed(&terminal, &delegation.child_session_id)
+                .await?;
+            return Ok(());
+        }
+
+        let failure_id = format!(
+            "delegation_recovery_failed_{}_{}",
+            delegation.id,
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        session_store
+            .update_delegation_status(&delegation.id, DelegationStatus::Failed, Some(&failure_id))
+            .await?;
+        let mut failure_event = Event::new(
                     failure_id,
                     "System-Delegation".to_string(),
                     TYPE_TOOL_OUTPUT.to_string(),
@@ -5004,13 +5123,12 @@ impl Orchestrator {
                     .into_iter()
                     .collect(),
                 );
-            if let Some(principal_id) = &delegation.initiating_principal_id {
-                failure_event
-                    .payload
-                    .insert("principal_id".to_string(), json!(principal_id));
-            }
-            self.bus.publish(failure_event).await?;
+        if let Some(principal_id) = &delegation.initiating_principal_id {
+            failure_event
+                .payload
+                .insert("principal_id".to_string(), json!(principal_id));
         }
+        self.bus.publish(failure_event).await?;
         Ok(())
     }
 
@@ -5145,22 +5263,19 @@ impl Orchestrator {
             )
             .into());
         }
-        let active_delegations = session_store
-            .list_delegations()
-            .await?
-            .into_iter()
-            .filter(|delegation| {
-                delegation.agent_id == parent.agent_id
-                    && matches!(
-                        delegation.status,
-                        DelegationStatus::Queued | DelegationStatus::Running
-                    )
-            })
-            .count();
         let active_limit = self
             .orchestrator_config
             .max_active_delegations_per_agent
             .max(1);
+        let active_delegations = session_store
+            .list_delegations(DelegationFilter {
+                agent_id: Some(parent.agent_id.clone()),
+                include_terminal: false,
+                limit: Some(active_limit),
+                ..Default::default()
+            })
+            .await?
+            .len();
         if active_delegations >= active_limit {
             return Err(format!(
                 "DELEGATION_CAPACITY_EXCEEDED：Agent '{}' 已有 {} 个活跃 Sub Agent，配置上限为 {}。请等待现有任务完成或显式取消后再委派。",
@@ -16229,6 +16344,45 @@ async fn recover_action_group_from_durable_events(
         )
         .into());
     };
+    let members = groups.list_action_group_members(&group.id).await?;
+    let mut evidence = HashMap::from([(selected.id.clone(), selected)]);
+    for member in &members {
+        if member.status.is_terminal() {
+            continue;
+        }
+        let result_id = format!("output_{}_{}", group.activation_id, member.tool_call_id);
+        if let Some(result) = context_engine
+            .find_event(&group.context_id, &result_id)
+            .await?
+        {
+            evidence.insert(result.id.clone(), result);
+        }
+    }
+    recover_action_group_from_prefetched_events(group, groups, &members, &evidence).await
+}
+
+async fn recover_action_group_from_prefetched_events(
+    group: &ActionGroupRecord,
+    groups: &dyn ActionGroupStore,
+    members: &[ActionGroupMemberRecord],
+    evidence: &HashMap<String, Event>,
+) -> Result<usize, DynError> {
+    let durable_attempt_id = group
+        .assistant_call_event_id
+        .strip_prefix("call_")
+        .ok_or_else(|| {
+            format!(
+                "Action Group '{}' 的 assistant_call_event_id '{}' 不符合确定性格式",
+                group.id, group.assistant_call_event_id
+            )
+        })?;
+    let selected_event_id = format!("tool_calls_selected_{durable_attempt_id}");
+    let selected = evidence.get(&selected_event_id).ok_or_else(|| {
+        format!(
+            "Action Group '{}' 缺少工具选择 Event '{}'",
+            group.id, selected_event_id
+        )
+    })?;
     let Some(wake_policy) = selected
         .payload
         .get("action_group_wake_policy")
@@ -16242,25 +16396,22 @@ async fn recover_action_group_from_durable_events(
         );
         return Ok(0);
     };
-    let settled = recovered_action_group_settled_event(group, &selected, wake_policy)?;
+    let settled = recovered_action_group_settled_event(group, selected, wake_policy)?;
     let mut committed = 0usize;
-    for member in groups.list_action_group_members(&group.id).await? {
+    for member in members {
         if member.status.is_terminal() {
             continue;
         }
         let result_id = format!("output_{}_{}", group.activation_id, member.tool_call_id);
-        let Some(result) = context_engine
-            .find_event(&group.context_id, &result_id)
-            .await?
-        else {
+        let Some(result) = evidence.get(&result_id) else {
             continue;
         };
         let commit = groups
             .commit_action_group_member_result(
                 &group.id,
                 &member.tool_call_id,
-                action_group_member_status(&result),
-                &result,
+                action_group_member_status(result),
+                result,
                 &settled,
             )
             .await?;

@@ -1,10 +1,18 @@
 import type {
   ApprovalRecord,
   ScheduleRecord,
+  SchedulerDetailBounds,
   SchedulerJobSnapshot,
   SchedulerSnapshot,
   SchedulerThreadSnapshot,
 } from './types'
+
+export function schedulerDetailsTruncated(
+  detailBounds: SchedulerDetailBounds | null | undefined,
+): boolean {
+  if (!detailBounds) return false
+  return Object.entries(detailBounds).some(([key, value]) => key !== 'limit' && value === true)
+}
 
 export function schedulerJobs(snapshot: SchedulerSnapshot | null): SchedulerJobSnapshot[] {
   if (!snapshot) return []

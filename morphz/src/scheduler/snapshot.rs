@@ -135,11 +135,28 @@ pub struct SchedulerSummary {
     pub invariant_violations: usize,
 }
 
+/// Disclosure for every collection whose detail is intentionally capped.
+/// Summary counters remain exact; callers can open a focused aggregate or a
+/// cursor-based diagnostic view when one of these flags is true.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SchedulerDetailBounds {
+    pub limit: usize,
+    pub has_more_sessions: bool,
+    pub has_more_objectives: bool,
+    pub has_more_threads: bool,
+    pub has_more_activations: bool,
+    pub has_more_signals: bool,
+    pub has_more_jobs: bool,
+    pub has_more_approvals: bool,
+    pub has_more_thread_groups: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerSnapshot {
     pub context_id: String,
     pub generated_at: chrono::DateTime<chrono::Utc>,
     pub summary: SchedulerSummary,
+    pub detail_bounds: SchedulerDetailBounds,
     pub admission: SchedulerAdmissionSnapshot,
     pub event_writer: crate::orchestrator::orchestrator::DurableEventWriterMetricsSnapshot,
     pub model_provider: crate::orchestrator::orchestrator::ModelProviderMetricsSnapshot,

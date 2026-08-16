@@ -252,6 +252,18 @@ export interface SchedulerSummary {
   invariant_violations: number
 }
 
+export interface SchedulerDetailBounds {
+  limit: number
+  has_more_sessions: boolean
+  has_more_objectives: boolean
+  has_more_threads: boolean
+  has_more_activations: boolean
+  has_more_signals: boolean
+  has_more_jobs: boolean
+  has_more_approvals: boolean
+  has_more_thread_groups: boolean
+}
+
 export interface SchedulerContextRecord {
   id: string
   agent_id: string
@@ -355,6 +367,7 @@ export interface SchedulerSnapshot {
   context_id: string
   generated_at: string
   summary: SchedulerSummary
+  detail_bounds: SchedulerDetailBounds
   admission: SchedulerAdmissionSnapshot
   event_writer: Record<string, unknown>
   model_provider: Record<string, unknown>

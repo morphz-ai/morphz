@@ -81,6 +81,7 @@ import {
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
   schedulerAttentionJobs,
+  schedulerDetailsTruncated,
   threadCarriesExecution,
   retryableDialogueThread,
 } from './scheduler/model'
@@ -431,6 +432,7 @@ type AppDialogRequest = AppConfirmDialog | AppPromptDialog
 
 interface AttentionAcknowledgement {
   event_id: string
+  event_sequence: number
   context_id: string
   key: string
   source_kind: string
@@ -439,6 +441,12 @@ interface AttentionAcknowledgement {
   acknowledged_by: string
   rationale?: string
   acknowledged_at: string
+}
+
+interface AttentionAcknowledgementsPage {
+  acknowledgements?: AttentionAcknowledgement[]
+  latest_sequence?: number
+  has_more?: boolean
 }
 
 const accentThemes: Array<{ id: AccentTheme; labelKey: string; descKey: string }> = [
@@ -1447,6 +1455,7 @@ interface DialogueHistorySearchHit {
 interface SessionEventsPage {
   events: MorphzEvent[]
   next_before_sequence?: number
+  latest_sequence?: number
 }
 
 function mergeSessionEvents(left: MorphzEvent[], right: MorphzEvent[]) {
@@ -2688,6 +2697,16 @@ export default function App() {
     sessionId: '',
     nextBeforeSequence: null,
   })
+  const eventDeltaCursorRef = useRef<{ sessionId: string, initialized: boolean, latestSequence: number }>({
+    sessionId: '',
+    initialized: false,
+    latestSequence: 0,
+  })
+  const attentionDeltaCursorRef = useRef<{ contextId: string, initialized: boolean, latestSequence: number }>({
+    contextId: '',
+    initialized: false,
+    latestSequence: 0,
+  })
   const locatingDialogueSearchEvent = useRef('')
   const pendingScrollRestore = useRef<PendingScrollRestore | null>(null)
   const wasSending = useRef(false)
@@ -3124,17 +3143,44 @@ export default function App() {
         applySchedulerSnapshot(scheduler)
       })
       const requests = [
-        DASHBOARD_API.tryGet<{ acknowledgements?: AttentionAcknowledgement[] }>(
-          `/api/contexts/${encodeURIComponent(contextId)}/attention/acknowledgements`,
+        DASHBOARD_API.tryGet<AttentionAcknowledgementsPage>(
+          (() => {
+            const delta = attentionDeltaCursorRef.current
+            const base = `/api/contexts/${encodeURIComponent(contextId)}/attention/acknowledgements?limit=250`
+            return delta.contextId === contextId && delta.initialized
+              ? `${base}&after_sequence=${delta.latestSequence}`
+              : base
+          })(),
         ).then(result => {
           if (result && isCurrentScope()) {
-            setAttentionAcknowledgements(result.acknowledgements ?? [])
+            const next = result.acknowledgements ?? []
+            const previousDelta = attentionDeltaCursorRef.current
+            const isDelta = previousDelta.contextId === contextId && previousDelta.initialized
+            setAttentionAcknowledgements(current => {
+              if (!isDelta) return next
+              const byKey = new Map(current.map(record => [record.key, record]))
+              for (const record of next) byKey.set(record.key, record)
+              return Array.from(byKey.values()).sort((left, right) =>
+                right.acknowledged_at.localeCompare(left.acknowledged_at))
+            })
+            const latestSequence = result.latest_sequence
+              ?? next.reduce((latest, record) => Math.max(latest, record.event_sequence ?? 0), 0)
+            attentionDeltaCursorRef.current = {
+              contextId,
+              initialized: true,
+              latestSequence: isDelta
+                ? Math.max(previousDelta.latestSequence, latestSequence)
+                : latestSequence,
+            }
           }
         }),
-        DASHBOARD_API.tryGet<SessionEventsPage>(scopedSessionReadPath(
-          `/api/sessions/${encodeURIComponent(sessionId)}/events?conversation_only=true&limit=1000`,
-          principalScopeRef.current?.principal.id,
-        ))
+        DASHBOARD_API.tryGet<SessionEventsPage>(scopedSessionReadPath((() => {
+          const delta = eventDeltaCursorRef.current
+          const base = `/api/sessions/${encodeURIComponent(sessionId)}/events?conversation_only=true&limit=250`
+          return delta.sessionId === sessionId && delta.initialized
+            ? `${base}&after_sequence=${delta.latestSequence}`
+            : base
+        })(), principalScopeRef.current?.principal.id))
           .then(eventsResult => {
             if (!eventsResult || !isCurrentScope()) return
             const nextEvents = eventsResult.events ?? []
@@ -3147,6 +3193,16 @@ export default function App() {
               const nextCursor = eventsResult.next_before_sequence ?? null
               eventHistoryCursorRef.current = { sessionId, nextBeforeSequence: nextCursor }
               setEventHistoryCursor(nextCursor)
+            }
+            const latestSequence = eventsResult.latest_sequence
+              ?? nextEvents.reduce((latest, event) => Math.max(latest, event.sequence ?? 0), 0)
+            const previousDelta = eventDeltaCursorRef.current
+            eventDeltaCursorRef.current = {
+              sessionId,
+              initialized: true,
+              latestSequence: previousDelta.sessionId === sessionId
+                ? Math.max(previousDelta.latestSequence, latestSequence)
+                : latestSequence,
             }
             for (const summary of selectDurableReasoningSummaries(nextEvents)) {
               dispatchModelStream({ type: 'persisted', sessionId, causalId: summary.attemptId })
@@ -3163,7 +3219,9 @@ export default function App() {
               `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&limit=${schedulerLimit}`,
             ).then(applySchedulerSnapshot)]
           : []),
-        DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>('/api/delegations')
+        DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>(
+          `/api/delegations?context_id=${encodeURIComponent(contextId)}&include_terminal=true&limit=200`,
+        )
           .then(delegationsResult => {
             if (delegationsResult && isCurrentScope()) {
               const nextDelegations = delegationsResult.delegations ?? []
@@ -3587,6 +3645,8 @@ export default function App() {
 
   useEffect(() => {
     const reset = window.setTimeout(() => {
+      attentionDeltaCursorRef.current = { contextId: '', initialized: false, latestSequence: 0 }
+      setAttentionAcknowledgements([])
       setLedgerPage(null)
       setLedgerBeforeSequence('')
       setLedgerCursorHistory([])
@@ -3602,6 +3662,7 @@ export default function App() {
     const resetTimer = window.setTimeout(() => {
       dispatchModelStream({ type: 'reset_session', sessionId: selectedSessionId })
       eventHistoryCursorRef.current = { sessionId: '', nextBeforeSequence: null }
+      eventDeltaCursorRef.current = { sessionId: '', initialized: false, latestSequence: 0 }
       locatingDialogueSearchEvent.current = ''
       setEventHistoryCursor(null)
       setLoadingOlderEvents(false)
@@ -4717,6 +4778,8 @@ export default function App() {
   const activeWorkCount = schedulerSnapshot
     ? schedulerSnapshot.summary.running_activations + schedulerSnapshot.summary.queued_activations
     : 0
+  const schedulerDetailBounds = schedulerSnapshot?.detail_bounds
+  const hasTruncatedSchedulerDetails = schedulerDetailsTruncated(schedulerDetailBounds)
   const waitingCount = schedulerSnapshot
     ? schedulerThreads.filter(item => item.phase === 'waiting').length
     : runningObjectives.filter(item => Boolean(item.wait_condition)).length
@@ -7271,6 +7334,12 @@ export default function App() {
               )}
 
               {!route.threadId && (<>
+
+              {hasTruncatedSchedulerDetails && schedulerDetailBounds && (
+                <p className="scheduler-boundary-note">
+                  {t('work.detailBoundsNotice', { limit: schedulerDetailBounds.limit })}
+                </p>
+              )}
 
               <div className="work-metrics">
                 <div><CircleDot size={17} /><span><small>{t('work.metrics.active').toUpperCase()}</small><strong>{activeWorkCount}</strong></span></div>

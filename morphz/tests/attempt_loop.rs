@@ -9,10 +9,11 @@ use morphz::llm::{
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     ActionGroupFilter, ActionGroupStatus, ActionGroupStore as _, ActivationStore as _,
-    DelegationStatus, DelegationStore as _, EventStore, NewAgent, NewCognitiveContext, NewSession,
-    NewThread, NewThreadActivation, QueryFilter, SessionDirectoryStore as _, SessionMountKind,
-    SessionProjectionStore, SessionStore, ThreadActivationMutation, ThreadActivationStatus,
-    ThreadKind, ThreadLifecycle, ThreadSignalStatus, ThreadStore as _, TimerStore,
+    DelegationFilter, DelegationStatus, DelegationStore as _, EventStore, NewAgent,
+    NewCognitiveContext, NewSession, NewThread, NewThreadActivation, QueryFilter,
+    SessionDirectoryStore as _, SessionMountKind, SessionProjectionStore, SessionStore,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle,
+    ThreadSignalStatus, ThreadStore as _, TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -1095,7 +1096,12 @@ async fn wait_for_topic_count(
     session_id: &str,
     expected: usize,
 ) -> Vec<Event> {
-    for _ in 0..200 {
+    // The complete integration binary starts dozens of independent SQLite
+    // Runtimes concurrently, including deliberate blocking/deadline probes.
+    // Keep the assertion event-driven but allow enough wall time for those
+    // isolated runtimes to be scheduled on a busy CI host. Individual tests
+    // still finish as soon as their durable Event appears.
+    for _ in 0..600 {
         let events = store
             .query(QueryFilter {
                 session_id: Some(session_id.to_string()),
@@ -4745,7 +4751,17 @@ async fn attached_delegate_waits_for_result_without_model_polling() {
         Some("PARENT-VERIFIED-CHILD-DONE")
     );
     assert_eq!(client.messages_seen().len(), 3);
-    assert_eq!(store.list_delegations().await.unwrap().len(), 1);
+    assert_eq!(
+        store
+            .list_delegations(DelegationFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", "attached-parent").await;
     assert!(assistant_calls.iter().any(|event| {
         event

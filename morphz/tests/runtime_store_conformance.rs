@@ -14,7 +14,7 @@ use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
     ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, DelegationStatus, DelegationStore, DeliveryFlushCommit,
+    CognitiveClockStore, DelegationFilter, DelegationStatus, DelegationStore, DeliveryFlushCommit,
     DeliveryIngressStore, DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation,
     ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore,
     ExecutionJobTerminal, ExecutionRetrySafety, ExecutionTargetAuthorizationFilter,
@@ -2275,11 +2275,44 @@ where
         created.id
     );
     assert!(store
-        .list_delegations()
+        .list_delegations(Default::default())
         .await
         .unwrap()
         .iter()
         .any(|delegation| delegation.id == created.id));
+    let related = store
+        .list_delegations(DelegationFilter {
+            related_context_id: Some(created.parent_context_id.clone()),
+            include_terminal: false,
+            newest_first: false,
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(related, vec![created.clone()]);
+    assert!(store
+        .list_delegations(DelegationFilter {
+            related_context_id: Some("unrelated-context".to_string()),
+            include_terminal: true,
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .list_delegations(DelegationFilter {
+            include_terminal: false,
+            newest_first: false,
+            after_updated_at: Some(created.updated_at),
+            after_id: Some(created.id.clone()),
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
     let running = store
         .update_delegation_status(&created.id, DelegationStatus::Running, None)
         .await
@@ -4027,7 +4060,7 @@ where
         "_morphz_action_group_id": "conformance-action-group-recovery"
     });
     let recovery_job = store.create_execution_job(recovery_job).await.unwrap();
-    store
+    let recovery_group = store
         .create_action_group(
             NewActionGroup {
                 id: "conformance-action-group-recovery".to_string(),
@@ -4058,6 +4091,42 @@ where
         )
         .await
         .unwrap();
+    let recovery_members = store
+        .list_action_group_members_for_groups(&[
+            "conformance-action-group".to_string(),
+            recovery_group.id.clone(),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(
+        recovery_members
+            .iter()
+            .filter(|member| member.group_id == recovery_group.id)
+            .count(),
+        2
+    );
+    let running_page = store
+        .list_action_groups(ActionGroupFilter {
+            include_terminal: false,
+            newest_first: false,
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(running_page, vec![recovery_group.clone()]);
+    assert!(store
+        .list_action_groups(ActionGroupFilter {
+            include_terminal: false,
+            newest_first: false,
+            after_created_at: Some(recovery_group.created_at),
+            after_id: Some(recovery_group.id.clone()),
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
     let recovery_job = match store
         .claim_execution_job(
             &recovery_job.id,

@@ -400,6 +400,46 @@ impl ThreadStore for PostgresStore {
         rows.iter().map(thread_from_row).collect()
     }
 
+    async fn list_context_threads_bounded(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = if include_terminal {
+            sqlx::query(
+                "SELECT * FROM threads WHERE context_id = $1 ORDER BY updated_at DESC, id LIMIT $2",
+            )
+            .bind(context_id)
+            .bind(i64::try_from(limit)?)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT * FROM threads WHERE context_id = $1 AND status = 'open' ORDER BY updated_at DESC, id LIMIT $2",
+            )
+            .bind(context_id)
+            .bind(i64::try_from(limit)?)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter().map(thread_from_row).collect()
+    }
+
+    async fn count_context_open_threads(&self, context_id: &str) -> Result<usize, StoreError> {
+        Ok(usize::try_from(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM threads WHERE context_id = $1 AND status = 'open'",
+            )
+            .bind(context_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )?)
+    }
+
     async fn list_recent_terminal_threads(
         &self,
         context_id: &str,
@@ -436,6 +476,31 @@ impl ThreadStore for PostgresStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(thread_from_row).collect()
+    }
+
+    async fn list_open_threads_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        if context_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query: QueryBuilder<'_, Postgres> =
+            QueryBuilder::new("SELECT * FROM threads WHERE status = 'open' AND context_id IN (");
+        let mut separated = query.separated(", ");
+        for context_id in context_ids {
+            separated.push_bind(context_id);
+        }
+        separated.push_unseparated(") ORDER BY updated_at DESC, id LIMIT ");
+        query.push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(thread_from_row)
+            .collect()
     }
 
     async fn list_session_delivery_threads(

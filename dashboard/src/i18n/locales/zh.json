@@ -859,6 +859,7 @@
     "heading": "任务与执行",
     "description": "这里只展示运行时可验证的目标、求值、后台进程和委派；普通认知不会被猜成任务。",
     "kernelDiagnostics": "内核诊断",
+    "detailBoundsNotice": "汇总数量完整；各类明细仅展示最近 {{limit}} 条有界记录。",
     "refresh": "刷新",
     "backToChat": "返回对话",
     "executingCount": "{{count}} 执行中",

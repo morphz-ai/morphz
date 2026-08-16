@@ -50,11 +50,11 @@ use crate::provider::control::{
 };
 use crate::provider::routing::EffectiveProviderCatalog;
 use crate::runtime::{
-    AcknowledgeAttentionCommand, AttentionAcknowledgement, ContextOverview, ContextOverviewQuery,
-    ContextTokenBudgetUpdate, DialogueTurnRetryReceipt, LedgerQuery, LedgerQueryPage,
-    MessageIngressError, MessageIngressErrorKind, MessageReceipt, ModelUsagePage, ModelUsageQuery,
-    MorphzRuntime, RuntimeEventStream, RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus,
-    SchedulerQuery, SchedulerSnapshot, ThreadDetail,
+    AcknowledgeAttentionCommand, AttentionAcknowledgement, AttentionAcknowledgementsPage,
+    ContextOverview, ContextOverviewQuery, ContextTokenBudgetUpdate, DialogueTurnRetryReceipt,
+    LedgerQuery, LedgerQueryPage, MessageIngressError, MessageIngressErrorKind, MessageReceipt,
+    ModelUsagePage, ModelUsageQuery, MorphzRuntime, RuntimeEventStream, RuntimeOverview,
+    RuntimeOverviewQuery, RuntimeStatus, SchedulerQuery, SchedulerSnapshot, ThreadDetail,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -606,6 +606,18 @@ impl MorphzSdk {
     ) -> SdkResult<Vec<AttentionAcknowledgement>> {
         self.runtime
             .attention_acknowledgements(context_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn attention_acknowledgements_page(
+        &self,
+        context_id: &str,
+        after_sequence: Option<u64>,
+        limit: usize,
+    ) -> SdkResult<AttentionAcknowledgementsPage> {
+        self.runtime
+            .attention_acknowledgements_page(context_id, after_sequence, limit)
             .await
             .map_err(SdkError::internal)
     }

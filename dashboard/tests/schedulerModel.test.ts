@@ -14,12 +14,39 @@ import {
   schedulerApprovalAnomalies,
   schedulerAttentionJobs,
   schedulerAttentionCount,
+  schedulerDetailsTruncated,
   schedulerJobs,
   schedulerSchedules,
   threadCarriesExecution,
   retryableDialogueThread,
 } from '../src/scheduler/model.ts'
 import type { SchedulerSnapshot } from '../src/scheduler/types.ts'
+
+test('scheduler detail bounds tolerate an older Runtime snapshot during rolling upgrades', () => {
+  assert.equal(schedulerDetailsTruncated(undefined), false)
+  assert.equal(schedulerDetailsTruncated({
+    limit: 200,
+    has_more_sessions: false,
+    has_more_objectives: false,
+    has_more_threads: false,
+    has_more_activations: false,
+    has_more_signals: false,
+    has_more_jobs: false,
+    has_more_approvals: false,
+    has_more_thread_groups: false,
+  }), false)
+  assert.equal(schedulerDetailsTruncated({
+    limit: 200,
+    has_more_sessions: false,
+    has_more_objectives: false,
+    has_more_threads: true,
+    has_more_activations: false,
+    has_more_signals: false,
+    has_more_jobs: false,
+    has_more_approvals: false,
+    has_more_thread_groups: false,
+  }), true)
+})
 
 function fixture(): SchedulerSnapshot {
   const now = '2026-07-17T00:00:00Z'
@@ -36,6 +63,20 @@ function fixture(): SchedulerSnapshot {
       pending_approvals: 1,
       active_schedules: 1,
       deferred_activations: 0,
+      runnable_objectives: 0,
+      waiting_objectives: 0,
+      invariant_violations: 0,
+    },
+    detail_bounds: {
+      limit: 200,
+      has_more_sessions: false,
+      has_more_objectives: false,
+      has_more_threads: false,
+      has_more_activations: false,
+      has_more_signals: false,
+      has_more_jobs: false,
+      has_more_approvals: false,
+      has_more_thread_groups: false,
     },
     admission: {
       total_slots: 4,

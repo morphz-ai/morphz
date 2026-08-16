@@ -1166,6 +1166,20 @@ impl ScheduleStore for PostgresStore {
         rows.iter().map(schedule_from_row).collect()
     }
 
+    async fn count_context_active_schedules(&self, context_id: &str) -> Result<usize, StoreError> {
+        Ok(usize::try_from(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM schedules
+                   INNER JOIN threads ON threads.id = schedules.thread_id
+                   WHERE threads.context_id = $1 AND threads.status = 'open'
+                     AND schedules.status IN ('queued', 'paused')"#,
+            )
+            .bind(context_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )?)
+    }
+
     async fn list_thread_schedules(
         &self,
         context_id: &str,

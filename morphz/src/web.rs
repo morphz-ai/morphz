@@ -9,10 +9,10 @@ use crate::execution_target::EdgeArtifactDataDirection;
 use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
-    ContextUpdate, DelegationStatus, ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent,
-    NewCognitiveContext, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    QueryFilter, ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
-    ThreadControlAction, ThreadMutation,
+    ContextUpdate, DelegationFilter, DelegationStatus, ExecutionTargetRegistration,
+    ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, QueryFilter, ScheduleMutation, SessionMountKind,
+    SessionStatus, SessionUpdate, ThreadControlAction, ThreadMutation,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
 use crate::provider::auth::{
@@ -107,6 +107,13 @@ struct AuthQuery {
     principal_id: Option<String>,
     #[serde(default)]
     observe_model_requests: bool,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct AttentionAcknowledgementsQuery {
+    token: Option<String>,
+    after_sequence: Option<u64>,
+    limit: Option<usize>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -567,6 +574,16 @@ struct RuntimeOverviewHttpQuery {
     context_limit: Option<usize>,
     sessions_per_context: Option<usize>,
     context_id: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct DelegationHttpQuery {
+    token: Option<String>,
+    context_id: Option<String>,
+    session_id: Option<String>,
+    #[serde(default)]
+    include_terminal: bool,
+    limit: Option<usize>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -4657,15 +4674,25 @@ async fn handle_list_attention_acknowledgements(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
+    Query(query): Query<AttentionAcknowledgementsQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    match state.sdk.attention_acknowledgements(&context_id).await {
-        Ok(acknowledgements) => Json(json!({
+    match state
+        .sdk
+        .attention_acknowledgements_page(
+            &context_id,
+            query.after_sequence,
+            query.limit.unwrap_or(250),
+        )
+        .await
+    {
+        Ok(page) => Json(json!({
             "context_id": context_id,
-            "acknowledgements": acknowledgements,
+            "acknowledgements": page.acknowledgements,
+            "latest_sequence": page.latest_sequence,
+            "has_more": page.has_more,
         }))
         .into_response(),
         Err(error) => sdk_error_response(error),
@@ -5451,9 +5478,11 @@ async fn handle_get_session_events(
             let next_before_sequence = (events.len() == limit)
                 .then(|| events.first().and_then(|event| event.sequence))
                 .flatten();
+            let latest_sequence = events.iter().filter_map(|event| event.sequence).max();
             Json(json!({
                 "events": events,
                 "next_before_sequence": next_before_sequence,
+                "latest_sequence": latest_sequence,
             }))
             .into_response()
         }
@@ -5625,13 +5654,29 @@ async fn handle_cancel_session(
 async fn handle_list_delegations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
+    Query(query): Query<DelegationHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    match state.runtime.list_delegations().await {
-        Ok(delegations) => Json(json!({ "delegations": delegations })).into_response(),
+    let limit = query.limit.unwrap_or(200).clamp(1, 500);
+    match state
+        .runtime
+        .query_delegations(DelegationFilter {
+            related_context_id: query.context_id,
+            related_session_id: query.session_id,
+            include_terminal: query.include_terminal,
+            newest_first: true,
+            limit: Some(limit.saturating_add(1)),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(mut delegations) => {
+            let has_more = delegations.len() > limit;
+            delegations.truncate(limit);
+            Json(json!({ "delegations": delegations, "has_more": has_more })).into_response()
+        }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }

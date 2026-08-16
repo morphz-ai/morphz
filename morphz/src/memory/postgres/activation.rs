@@ -5,12 +5,13 @@ use super::{
 use crate::admission::AdmissionClass;
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
-    evaluate_thread_completion_contract, evaluate_thread_group_contract, ActivationOutcomeCommit,
-    ActivationStore, DialogueTurnRetryMutation, DialogueTurnRetryRequest, NewThreadActivation,
-    NewThreadSignal, ObjectiveCompletionIntent, ObjectiveStatus, ObjectiveWaitCondition,
-    SessionAttentionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadGroupPolicy, ThreadGroupStatus,
-    ThreadKind, ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervisorKind,
+    evaluate_thread_completion_contract, evaluate_thread_group_contract, ActivationContextCounts,
+    ActivationOutcomeCommit, ActivationStore, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
+    NewThreadActivation, NewThreadSignal, ObjectiveCompletionIntent, ObjectiveStatus,
+    ObjectiveWaitCondition, SessionAttentionUpdate, SignalOutboxRecord, SignalOutboxStatus,
+    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadGroupPolicy,
+    ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus,
+    ThreadSupervisorKind,
 };
 use crate::scheduler::{
     stable_scheduler_dependency_id, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
@@ -746,8 +747,19 @@ impl ActivationStore for PostgresStore {
             r#"INSERT INTO thread_activations
                (id, revision, generation, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
-                status, created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'queued', $12, $12)"#,
+                admission_rank, status, created_at, updated_at)
+               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 COALESCE((SELECT CASE
+                   WHEN event.type = 'user_message' THEN 0
+                   WHEN $9 = 'chat/thread_completion_ready' THEN 1
+                   WHEN event.objective_id IS NOT NULL
+                     OR event.payload ? 'objective_evaluation_id'
+                     OR left(event.topic, 10) = 'objective/' THEN 2
+                   WHEN event.payload @> '{"runtime_maintenance": true}'::jsonb
+                     OR event.topic IN ('runtime/context_maintenance', 'chat/context_maintenance') THEN 4
+                   ELSE 3 END
+                 FROM events AS event WHERE event.id = $7), 3),
+                 'queued', $12, $12)"#,
         )
         .bind(&activation.id)
         .bind(i64::try_from(thread.generation)?)
@@ -897,6 +909,78 @@ impl ActivationStore for PostgresStore {
             .await?
         };
         rows.iter().map(signal_from_row).collect()
+    }
+
+    async fn list_context_thread_signals_bounded(
+        &self,
+        context_id: &str,
+        status: Option<ThreadSignalStatus>,
+        limit: usize,
+    ) -> Result<Vec<ThreadSignalRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<Postgres>::new(
+            "SELECT signals.* FROM thread_signals signals INNER JOIN threads ON threads.id = signals.thread_id WHERE threads.context_id = ",
+        );
+        query.push_bind(context_id);
+        if let Some(status) = status {
+            query
+                .push(" AND signals.status = ")
+                .push_bind(status.as_str());
+        }
+        query
+            .push(" ORDER BY signals.sequence, signals.id LIMIT ")
+            .push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(signal_from_row)
+            .collect()
+    }
+
+    async fn count_context_activation_authority(
+        &self,
+        context_id: &str,
+    ) -> Result<ActivationContextCounts, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT
+                 (SELECT COUNT(*) FROM thread_signals signals
+                  INNER JOIN threads ON threads.id = signals.thread_id
+                  WHERE threads.context_id = $1 AND signals.status = 'pending') AS pending_signals,
+                 (SELECT COUNT(*) FROM thread_activations
+                  WHERE context_id = $1 AND status = 'queued') AS queued_activations,
+                 (SELECT COUNT(*) FROM thread_activations
+                  WHERE context_id = $1 AND status = 'running') AS running_activations"#,
+        )
+        .bind(context_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(ActivationContextCounts {
+            pending_signals: usize::try_from(row.get::<i64, _>("pending_signals"))?,
+            queued_activations: usize::try_from(row.get::<i64, _>("queued_activations"))?,
+            running_activations: usize::try_from(row.get::<i64, _>("running_activations"))?,
+        })
+    }
+
+    async fn has_active_thread_activation_for_session(
+        &self,
+        context_id: &str,
+        session_id: &str,
+    ) -> Result<bool, StoreError> {
+        Ok(sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM thread_activations
+                 WHERE context_id = $1 AND session_id = $2
+                   AND status IN ('queued', 'running')
+               )"#,
+        )
+        .bind(context_id)
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     async fn list_runnable_pending_thread_signals(
@@ -1181,8 +1265,19 @@ impl ActivationStore for PostgresStore {
             r#"INSERT INTO thread_activations
                (id, revision, generation, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
-                status, created_at, updated_at)
-               VALUES ($1, 1, (SELECT generation FROM threads WHERE root_turn_id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $2, 'queued', $11, $11)
+                admission_rank, status, created_at, updated_at)
+               VALUES ($1, 1, (SELECT generation FROM threads WHERE root_turn_id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $2,
+                 COALESCE((SELECT CASE
+                   WHEN event.type = 'user_message' THEN 0
+                   WHEN $9 = 'chat/thread_completion_ready' THEN 1
+                   WHEN event.objective_id IS NOT NULL
+                     OR event.payload ? 'objective_evaluation_id'
+                     OR left(event.topic, 10) = 'objective/' THEN 2
+                   WHEN event.payload @> '{"runtime_maintenance": true}'::jsonb
+                     OR event.topic IN ('runtime/context_maintenance', 'chat/context_maintenance') THEN 4
+                   ELSE 3 END
+                 FROM events AS event WHERE event.id = $7), 3),
+                 'queued', $11, $11)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&activation.id)
@@ -1429,6 +1524,32 @@ impl ActivationStore for PostgresStore {
         rows.iter().map(activation_from_row).collect()
     }
 
+    async fn list_active_thread_activations_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, StoreError> {
+        if context_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query: QueryBuilder<'_, Postgres> = QueryBuilder::new(
+            "SELECT * FROM thread_activations WHERE status IN ('queued', 'running') AND context_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for context_id in context_ids {
+            separated.push_bind(context_id);
+        }
+        separated.push_unseparated(") ORDER BY updated_at DESC, id LIMIT ");
+        query.push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(activation_from_row)
+            .collect()
+    }
+
     async fn list_queued_thread_activations_for_admission(
         &self,
         limit: usize,
@@ -1438,32 +1559,36 @@ impl ActivationStore for PostgresStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let candidate_limit = i64::try_from(limit.saturating_mul(4).max(32))?;
         let limit_i64 = i64::try_from(limit)?;
         let reserved = dialogue_delivery_reserved_queue_slots.min(limit.saturating_sub(1));
         let general_limit = limit_i64.saturating_sub(i64::try_from(reserved)?);
         let rows = sqlx::query(
-            r#"WITH classified AS (
-                 SELECT activations.*,
-                   CASE
-                     WHEN events.type = 'user_message' THEN 0
-                     WHEN activations.trigger_kind = 'chat/thread_completion_ready' THEN 1
-                     -- objective_id is projected on append, but Objective
-                     -- entry Events such as `objective/requested` carry only
-                     -- `requested_objective_id`. Keep the topic prefix so they
-                     -- are not admitted as background work.
-                     WHEN events.objective_id IS NOT NULL
-                       OR events.payload ? 'objective_evaluation_id'
-                       OR left(events.topic, 10) = 'objective/' THEN 2
-                     WHEN events.payload @> '{"runtime_maintenance": true}'::jsonb
-                       OR events.topic IN ('runtime/context_maintenance', 'chat/context_maintenance')
-                       THEN 4
-                     ELSE 3
-                   END AS admission_rank
-                 FROM thread_activations activations
-                 JOIN events ON events.id = activations.trigger_event_id
+            r#"WITH raw_candidates AS (
+                 (SELECT * FROM thread_activations
+                  WHERE status = 'queued' AND admission_rank = 0
+                  ORDER BY created_at, id LIMIT $1)
+                 UNION ALL
+                 (SELECT * FROM thread_activations
+                  WHERE status = 'queued' AND admission_rank = 1
+                  ORDER BY created_at, id LIMIT $1)
+                 UNION ALL
+                 (SELECT * FROM thread_activations
+                  WHERE status = 'queued' AND admission_rank = 2
+                  ORDER BY created_at, id LIMIT $1)
+                 UNION ALL
+                 (SELECT * FROM thread_activations
+                  WHERE status = 'queued' AND admission_rank = 3
+                  ORDER BY created_at, id LIMIT $1)
+                 UNION ALL
+                 (SELECT * FROM thread_activations
+                  WHERE status = 'queued' AND admission_rank = 4
+                  ORDER BY created_at, id LIMIT $1)
+               ), eligible AS (
+                 SELECT activations.*
+                 FROM raw_candidates activations
                  JOIN threads ON threads.root_turn_id = activations.root_turn_id
-                 WHERE activations.status = 'queued'
-                   AND threads.executor_kind != 'artifact_transfer'
+                 WHERE threads.executor_kind != 'artifact_transfer'
                    AND (
                      threads.kind != 'dialogue_turn'
                      OR (
@@ -1509,23 +1634,24 @@ impl ActivationStore for PostgresStore {
                      )
                    )
                ), aged AS (
-                 SELECT classified.*,
+                 SELECT eligible.*,
                    GREATEST(0, admission_rank - FLOOR(
                      GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at::timestamptz)) * 1000)
-                     / $1
+                     / $2
                    )::BIGINT) AS effective_rank
-                 FROM classified
+                 FROM eligible
                ), reserved_candidates AS (
                  SELECT * FROM aged WHERE admission_rank IN (0, 1)
-                 ORDER BY effective_rank, created_at, id LIMIT $2
+                 ORDER BY effective_rank, created_at, id LIMIT $3
                ), general_candidates AS (
                  SELECT * FROM aged WHERE admission_rank NOT IN (0, 1)
-                 ORDER BY effective_rank, created_at, id LIMIT $3
+                 ORDER BY effective_rank, created_at, id LIMIT $4
                ), candidates AS (
                  SELECT * FROM reserved_candidates UNION ALL SELECT * FROM general_candidates
                )
-               SELECT * FROM candidates ORDER BY effective_rank, created_at, id LIMIT $2"#,
+               SELECT * FROM candidates ORDER BY effective_rank, created_at, id LIMIT $3"#,
         )
+        .bind(candidate_limit)
         .bind(aging_promotion_interval_ms.max(1) as f64)
         .bind(limit_i64)
         .bind(general_limit)
@@ -1534,7 +1660,7 @@ impl ActivationStore for PostgresStore {
         rows.iter()
             .map(|row| {
                 let activation = activation_from_row(row)?;
-                let class = match row.get::<i32, _>("admission_rank") {
+                let class = match row.get::<i16, _>("admission_rank") {
                     0 => AdmissionClass::InteractiveControl,
                     1 => AdmissionClass::Delivery,
                     2 => AdmissionClass::Objective,

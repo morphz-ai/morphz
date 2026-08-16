@@ -49,6 +49,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON action_groups(session_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_action_groups_activation
            ON action_groups(activation_id, created_at, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_action_groups_running_recovery
+           ON action_groups(created_at, id) WHERE status = 'running'"#,
         r#"CREATE TABLE IF NOT EXISTS action_group_members (
             group_id TEXT NOT NULL REFERENCES action_groups(id) ON DELETE CASCADE,
             ordinal BIGINT NOT NULL,
@@ -300,6 +302,32 @@ impl ActionGroupStore for PostgresStore {
         } else if !filter.include_terminal {
             query.push(" AND status = 'running'");
         }
+        match (filter.after_created_at, filter.after_id) {
+            (Some(created_at), Some(id)) => {
+                let created_at = created_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                if filter.newest_first {
+                    query
+                        .push(" AND (created_at < ")
+                        .push_bind(created_at.clone())
+                        .push(" OR (created_at = ")
+                        .push_bind(created_at)
+                        .push(" AND id < ")
+                        .push_bind(id)
+                        .push("))");
+                } else {
+                    query
+                        .push(" AND (created_at > ")
+                        .push_bind(created_at.clone())
+                        .push(" OR (created_at = ")
+                        .push_bind(created_at)
+                        .push(" AND id > ")
+                        .push_bind(id)
+                        .push("))");
+                }
+            }
+            (None, None) => {}
+            _ => return Err("Action Group keyset cursor 必须同时包含 created_at 与 id".into()),
+        }
         query.push(if filter.newest_first {
             " ORDER BY created_at DESC, id DESC"
         } else {
@@ -330,6 +358,29 @@ impl ActionGroupStore for PostgresStore {
         .iter()
         .map(member_from_row)
         .collect()
+    }
+
+    async fn list_action_group_members_for_groups(
+        &self,
+        group_ids: &[String],
+    ) -> Result<Vec<ActionGroupMemberRecord>, StoreError> {
+        if group_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query: QueryBuilder<'_, Postgres> =
+            QueryBuilder::new("SELECT * FROM action_group_members WHERE group_id IN (");
+        let mut separated = query.separated(", ");
+        for group_id in group_ids {
+            separated.push_bind(group_id);
+        }
+        separated.push_unseparated(") ORDER BY group_id, ordinal, tool_call_id");
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(member_from_row)
+            .collect()
     }
 
     async fn commit_action_group_member_result(

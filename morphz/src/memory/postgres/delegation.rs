@@ -4,12 +4,12 @@ use super::{
 };
 use crate::event::Event;
 use crate::memory::{
-    stable_thread_id, DelegationRecord, DelegationStatus, DelegationStore, NewDelegation,
-    NewThread, SessionDirectoryStore, ThreadKind, ThreadSupervision,
+    stable_thread_id, DelegationFilter, DelegationRecord, DelegationStatus, DelegationStore,
+    NewDelegation, NewThread, SessionDirectoryStore, ThreadKind, ThreadSupervision,
 };
 use serde_json::Value as JsonValue;
-use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Row};
+use sqlx::postgres::{PgRow, Postgres};
+use sqlx::{PgPool, QueryBuilder, Row};
 
 const COLUMNS: &str = "id, agent_id, parent_context_id, parent_session_id, child_context_id, \
 child_session_id, initiating_principal_id, task, success_when, context_scope, status, \
@@ -39,6 +39,10 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON delegations(parent_session_id, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_delegations_status
            ON delegations(status, updated_at, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_delegations_parent_context_updated
+           ON delegations(parent_context_id, updated_at DESC, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_delegations_child_context_updated
+           ON delegations(child_context_id, updated_at DESC, id)"#,
         r#"ALTER TABLE delegations
            ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
     ] {
@@ -148,33 +152,111 @@ impl DelegationStore for PostgresStore {
         .transpose()
     }
 
-    async fn list_delegations(&self) -> Result<Vec<DelegationRecord>, StoreError> {
-        sqlx::query(&format!(
-            "SELECT {COLUMNS} FROM delegations ORDER BY updated_at DESC, id"
-        ))
-        .fetch_all(&self.pool)
-        .await?
-        .iter()
-        .map(delegation_from_row)
-        .collect()
-    }
-
-    async fn list_recent_delegations(
+    async fn list_delegations(
         &self,
-        limit: usize,
+        filter: DelegationFilter,
     ) -> Result<Vec<DelegationRecord>, StoreError> {
-        if limit == 0 {
-            return Ok(Vec::new());
+        let mut query: QueryBuilder<'_, Postgres> =
+            QueryBuilder::new(format!("SELECT {COLUMNS} FROM delegations WHERE TRUE"));
+        if let Some(value) = filter.agent_id {
+            query.push(" AND agent_id = ").push_bind(value);
         }
-        sqlx::query(&format!(
-            "SELECT {COLUMNS} FROM delegations ORDER BY updated_at DESC, id LIMIT $1"
-        ))
-        .bind(i64::try_from(limit)?)
-        .fetch_all(&self.pool)
-        .await?
-        .iter()
-        .map(delegation_from_row)
-        .collect()
+        if let Some(value) = filter.parent_context_id {
+            query.push(" AND parent_context_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.parent_session_id {
+            query.push(" AND parent_session_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.child_context_id {
+            query.push(" AND child_context_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.child_session_id {
+            query.push(" AND child_session_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.related_context_id {
+            query
+                .push(" AND (parent_context_id = ")
+                .push_bind(value.clone())
+                .push(" OR child_context_id = ")
+                .push_bind(value)
+                .push(")");
+        }
+        if let Some(value) = filter.related_session_id {
+            query
+                .push(" AND (parent_session_id = ")
+                .push_bind(value.clone())
+                .push(" OR child_session_id = ")
+                .push_bind(value)
+                .push(")");
+        }
+        if !filter.related_context_ids.is_empty() {
+            query.push(" AND (parent_context_id IN (");
+            {
+                let mut separated = query.separated(", ");
+                for context_id in &filter.related_context_ids {
+                    separated.push_bind(context_id);
+                }
+            }
+            query.push(") OR child_context_id IN (");
+            {
+                let mut separated = query.separated(", ");
+                for context_id in &filter.related_context_ids {
+                    separated.push_bind(context_id);
+                }
+            }
+            query.push("))");
+        }
+        if !filter.statuses.is_empty() {
+            query.push(" AND status IN (");
+            let mut separated = query.separated(", ");
+            for status in filter.statuses {
+                separated.push_bind(status.as_str());
+            }
+            separated.push_unseparated(")");
+        } else if !filter.include_terminal {
+            query.push(" AND status IN ('queued', 'running')");
+        }
+        match (filter.after_updated_at, filter.after_id) {
+            (Some(updated_at), Some(id)) => {
+                let updated_at = updated_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                if filter.newest_first {
+                    query
+                        .push(" AND (updated_at < ")
+                        .push_bind(updated_at.clone())
+                        .push(" OR (updated_at = ")
+                        .push_bind(updated_at)
+                        .push(" AND id > ")
+                        .push_bind(id)
+                        .push("))");
+                } else {
+                    query
+                        .push(" AND (updated_at > ")
+                        .push_bind(updated_at.clone())
+                        .push(" OR (updated_at = ")
+                        .push_bind(updated_at)
+                        .push(" AND id > ")
+                        .push_bind(id)
+                        .push("))");
+                }
+            }
+            (None, None) => {}
+            _ => return Err("Delegation keyset cursor 必须同时包含 updated_at 与 id".into()),
+        }
+        query.push(if filter.newest_first {
+            " ORDER BY updated_at DESC, id"
+        } else {
+            " ORDER BY updated_at, id"
+        });
+        if let Some(limit) = filter.limit {
+            query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
+        }
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(delegation_from_row)
+            .collect()
     }
 
     async fn update_delegation_status(

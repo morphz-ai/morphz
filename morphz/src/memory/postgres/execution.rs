@@ -10,9 +10,10 @@ use super::{
 };
 use crate::event::Event;
 use crate::memory::{
-    ArtifactTransferExecutionRecord, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety,
-    NewArtifactTransferExecution, NewExecutionJob, ThreadKind,
+    ArtifactTransferExecutionRecord, ExecutionJobContextCounts, ExecutionJobFilter,
+    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionRetrySafety, NewArtifactTransferExecution, NewExecutionJob,
+    ThreadKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -65,6 +66,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             parent_activation_id TEXT REFERENCES thread_activations(id),
             root_turn_id TEXT NOT NULL,
             context_snapshot_version BIGINT,
+            admission_rank SMALLINT NOT NULL DEFAULT 3 CHECK(admission_rank BETWEEN 0 AND 4),
             status TEXT NOT NULL,
             claimed_by TEXT,
             lease_expires_at TEXT,
@@ -92,6 +94,10 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS dialogue_lane_released_at TEXT"#,
+        r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS admission_rank SMALLINT NOT NULL DEFAULT 3 CHECK(admission_rank BETWEEN 0 AND 4)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_admission_queue
+           ON thread_activations(admission_rank, created_at, id)
+           WHERE status = 'queued'"#,
         r#"CREATE TABLE IF NOT EXISTS execution_jobs (
             id TEXT PRIMARY KEY,
             revision BIGINT NOT NULL DEFAULT 1,
@@ -610,6 +616,31 @@ impl ExecutionJobStore for PostgresStore {
         }
         let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(execution_job_from_row).collect()
+    }
+
+    async fn count_context_active_execution_jobs(
+        &self,
+        context_id: &str,
+    ) -> Result<ExecutionJobContextCounts, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT COUNT(*) AS active_jobs,
+                      COALESCE(SUM(CASE WHEN job.status = 'waiting_approval' THEN 1 ELSE 0 END), 0)
+                        AS waiting_approval_jobs
+               FROM execution_jobs job
+               INNER JOIN thread_activations activation ON activation.id = job.activation_id
+               INNER JOIN threads thread ON thread.id = job.thread_id
+               WHERE job.context_id = $1
+                 AND job.status IN ('queued', 'waiting_approval', 'running')
+                 AND activation.status IN ('queued', 'running')
+                 AND thread.status = 'open'"#,
+        )
+        .bind(context_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(ExecutionJobContextCounts {
+            active_jobs: usize::try_from(row.get::<i64, _>("active_jobs"))?,
+            waiting_approval_jobs: usize::try_from(row.get::<i64, _>("waiting_approval_jobs"))?,
+        })
     }
 
     async fn list_execution_jobs_for_activations(

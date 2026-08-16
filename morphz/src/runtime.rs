@@ -36,8 +36,8 @@ use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalResolution,
     ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
-    ContextTokenBudgetMutation, ContextUpdate, DelegationRecord, DelegationStatus,
-    DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
+    ContextTokenBudgetMutation, ContextUpdate, DelegationFilter, DelegationRecord,
+    DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
     EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore,
     ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
@@ -50,12 +50,11 @@ use crate::memory::{
     NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
     RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore,
-    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
-    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle,
-    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
-    TransientStorageRetention,
+    SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore, SessionUpdate,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
+    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
+    ThreadSupervision, ThreadSupervisorKind, TimerStore, TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -90,9 +89,9 @@ use crate::scheduler::{
 };
 pub use crate::scheduler::{
     SchedulerActivationSnapshot, SchedulerAdmissionSnapshot, SchedulerDeliverySnapshot,
-    SchedulerExternalOutboxSnapshot, SchedulerJobSnapshot, SchedulerObjectiveSnapshot,
-    SchedulerQuery, SchedulerResultSnapshot, SchedulerSnapshot, SchedulerSummary,
-    SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
+    SchedulerDetailBounds, SchedulerExternalOutboxSnapshot, SchedulerJobSnapshot,
+    SchedulerObjectiveSnapshot, SchedulerQuery, SchedulerResultSnapshot, SchedulerSnapshot,
+    SchedulerSummary, SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
 };
 use crate::secret_store::{
     ManagedSecret, SecretBackendStatus, SecretImportCandidate, SecretScopeKind, SecretStore,
@@ -325,6 +324,13 @@ fn default_runtime_principal_id() -> String {
 /// failure only removes that exact fingerprint from the operator inbox. A new
 /// source revision produces a new fingerprint and therefore reopens attention.
 pub type AttentionAcknowledgement = AttentionAcknowledgementRecord;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttentionAcknowledgementsPage {
+    pub acknowledgements: Vec<AttentionAcknowledgement>,
+    pub latest_sequence: u64,
+    pub has_more: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AcknowledgeAttentionCommand {
@@ -4579,7 +4585,20 @@ impl MorphzRuntime {
     }
 
     pub async fn list_delegations(&self) -> Result<Vec<DelegationRecord>, RuntimeError> {
-        self.inner.store.list_delegations().await
+        self.query_delegations(DelegationFilter {
+            include_terminal: true,
+            newest_first: true,
+            limit: Some(500),
+            ..Default::default()
+        })
+        .await
+    }
+
+    pub async fn query_delegations(
+        &self,
+        filter: DelegationFilter,
+    ) -> Result<Vec<DelegationRecord>, RuntimeError> {
+        self.inner.store.list_delegations(filter).await
     }
 
     pub async fn update_delegation_status(
@@ -4873,25 +4892,48 @@ impl MorphzRuntime {
         &self,
         id: &str,
     ) -> Result<Vec<DelegationRecord>, RuntimeError> {
-        let delegations = self.inner.store.list_delegations().await?;
-        let root = delegations
-            .iter()
-            .find(|delegation| delegation.id == id)
-            .cloned()
+        let root = self
+            .inner
+            .store
+            .get_delegation(id)
+            .await?
             .ok_or_else(|| format!("Delegation '{}' 不存在", id))?;
         let mut pending_sessions = vec![root.child_session_id.clone()];
-        let mut selected = Vec::new();
+        let mut selected = vec![root.clone()];
         let mut visited = std::collections::HashSet::new();
         while let Some(parent_session_id) = pending_sessions.pop() {
-            for delegation in delegations.iter().filter(|delegation| {
-                delegation.child_session_id == parent_session_id
-                    || delegation.parent_session_id == parent_session_id
-            }) {
-                if !visited.insert(delegation.id.clone()) {
-                    continue;
+            let mut cursor: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
+            loop {
+                let delegations = self
+                    .inner
+                    .store
+                    .list_delegations(DelegationFilter {
+                        parent_session_id: Some(parent_session_id.clone()),
+                        include_terminal: true,
+                        newest_first: true,
+                        after_updated_at: cursor.as_ref().map(|(updated_at, _)| *updated_at),
+                        after_id: cursor.as_ref().map(|(_, id)| id.clone()),
+                        limit: Some(500),
+                        ..Default::default()
+                    })
+                    .await?;
+                if delegations.is_empty() {
+                    break;
                 }
-                pending_sessions.push(delegation.child_session_id.clone());
-                selected.push(delegation.clone());
+                cursor = delegations
+                    .last()
+                    .map(|delegation| (delegation.updated_at, delegation.id.clone()));
+                let page_is_full = delegations.len() == 500;
+                for delegation in delegations {
+                    if !visited.insert(delegation.id.clone()) {
+                        continue;
+                    }
+                    pending_sessions.push(delegation.child_session_id.clone());
+                    selected.push(delegation);
+                }
+                if !page_is_full {
+                    break;
+                }
             }
         }
 
@@ -5318,16 +5360,48 @@ impl MorphzRuntime {
             .ok_or_else(|| format!("Context '{context_id}' 不存在"))?;
         let include_terminal = query.include_terminal;
         let limit = query.limit.clamp(1, 2_000);
-        let sessions = self
+        let detail_fetch_limit = limit.saturating_add(1);
+        let count_at = chrono::Utc::now();
+        let (
+            exact_open_threads,
+            exact_activation_counts,
+            exact_job_counts,
+            exact_pending_approvals,
+            exact_active_schedules,
+            exact_objective_counts,
+            exact_active_thread_groups,
+        ) = tokio::try_join!(
+            self.inner.store.count_context_open_threads(context_id),
+            self.inner
+                .store
+                .count_context_activation_authority(context_id),
+            self.inner
+                .store
+                .count_context_active_execution_jobs(context_id),
+            self.inner.store.count_context_pending_approvals(context_id),
+            self.inner.store.count_context_active_schedules(context_id),
+            self.inner
+                .store
+                .count_context_objective_readiness(context_id, count_at),
+            self.inner
+                .store
+                .count_context_active_thread_groups(context_id),
+        )?;
+        let mut sessions = self
             .inner
             .store
-            .list_context_sessions(context_id, true)
+            .list_context_sessions_bounded(&[context_id.to_string()], true, detail_fetch_limit)
             .await?;
+        let has_more_sessions = sessions.len() > limit;
+        sessions.truncate(limit);
         let mut authority_objectives = self
             .inner
             .store
-            .list_context_objectives(context_id, include_terminal)
+            .list_context_objectives_bounded(context_id, include_terminal, detail_fetch_limit)
             .await?;
+        let has_more_objectives =
+            authority_objectives.len() > limit || exact_objective_counts.live_objectives > limit;
+        authority_objectives.truncate(limit);
         authority_objectives.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
@@ -5336,8 +5410,10 @@ impl MorphzRuntime {
         let mut context_threads = self
             .inner
             .store
-            .list_context_threads(context_id, false)
+            .list_context_threads_bounded(context_id, false, detail_fetch_limit)
             .await?;
+        let mut has_more_threads = context_threads.len() > limit || exact_open_threads > limit;
+        context_threads.truncate(limit);
         if include_terminal {
             let active_ids = context_threads
                 .iter()
@@ -5358,6 +5434,10 @@ impl MorphzRuntime {
                 .cmp(&left.updated_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
+        if context_threads.len() > limit {
+            has_more_threads = true;
+            context_threads.truncate(limit);
+        }
         let authority_threads = context_threads.clone();
         let all_context_thread_ids = context_threads
             .iter()
@@ -5401,27 +5481,46 @@ impl MorphzRuntime {
             .iter()
             .map(|activation| activation.id.clone())
             .collect::<HashSet<_>>();
-        all_context_activations.extend(
-            self.inner
-                .store
-                .list_context_thread_activations(context_id, false)
-                .await?
-                .into_iter()
-                .filter(|activation| !aggregate_activation_ids.contains(&activation.id)),
-        );
+        let active_activation_count = exact_activation_counts
+            .queued_activations
+            .saturating_add(exact_activation_counts.running_activations);
+        let active_activation_candidates = self
+            .inner
+            .store
+            .list_active_thread_activations_for_contexts(
+                &[context_id.to_string()],
+                detail_fetch_limit,
+            )
+            .await?;
+        let has_more_activations =
+            active_activation_candidates.len() > limit || active_activation_count > limit;
+        let candidate_parent_roots = active_activation_candidates
+            .iter()
+            .filter(|activation| !aggregate_activation_ids.contains(&activation.id))
+            .map(|activation| activation.root_turn_id.clone())
+            .collect::<Vec<_>>();
+        let existing_candidate_roots = self
+            .inner
+            .store
+            .list_threads_by_roots(context_id, &candidate_parent_roots)
+            .await?
+            .into_iter()
+            .filter(|thread| !thread.lifecycle.is_terminal())
+            .map(|thread| thread.root_turn_id)
+            .collect::<HashSet<_>>();
+        // Only broken live routes are merged outside the bounded Thread root
+        // page. Healthy Activations belonging to a displaced Thread remain
+        // represented by exact summary counts and are loaded through focused
+        // Thread detail, avoiding false orphan diagnostics.
+        all_context_activations.extend(active_activation_candidates.into_iter().filter(
+            |activation| {
+                !aggregate_activation_ids.contains(&activation.id)
+                    && !existing_candidate_roots.contains(&activation.root_turn_id)
+            },
+        ));
         if !include_terminal {
             all_context_activations.retain(|activation| !activation.status.is_terminal());
         }
-        let durable_queued_ids = all_context_activations
-            .iter()
-            .filter(|activation| activation.status == ThreadActivationStatus::Queued)
-            .map(|activation| activation.id.clone())
-            .collect::<HashSet<_>>();
-        let durable_running_ids = all_context_activations
-            .iter()
-            .filter(|activation| activation.status == ThreadActivationStatus::Running)
-            .map(|activation| activation.id.clone())
-            .collect::<HashSet<_>>();
         let mut sorted_activations = all_context_activations.clone();
         sorted_activations.sort_by(|left, right| {
             right
@@ -5440,8 +5539,15 @@ impl MorphzRuntime {
         let mut all_signals = self
             .inner
             .store
-            .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
+            .list_context_thread_signals_bounded(
+                context_id,
+                Some(ThreadSignalStatus::Pending),
+                detail_fetch_limit,
+            )
             .await?;
+        let has_more_signals =
+            all_signals.len() > limit || exact_activation_counts.pending_signals > limit;
+        all_signals.truncate(limit);
         all_signals.sort_by(|left, right| {
             left.sequence
                 .cmp(&right.sequence)
@@ -5456,27 +5562,57 @@ impl MorphzRuntime {
         let mut jobs = self
             .inner
             .store
+            .list_execution_jobs_for_activations(context_id, &activation_id_list)
+            .await?;
+        if !include_terminal {
+            jobs.retain(|job| !job.status.is_terminal());
+        }
+        let aggregate_job_ids = jobs
+            .iter()
+            .map(|job| job.id.clone())
+            .collect::<HashSet<_>>();
+        let live_job_candidates = self
+            .inner
+            .store
             .list_execution_jobs(ExecutionJobFilter {
                 context_id: Some(context_id.to_string()),
                 include_terminal: false,
-                limit: None,
+                newest_first: true,
+                limit: Some(detail_fetch_limit),
                 ..ExecutionJobFilter::default()
             })
             .await?;
-        if include_terminal {
-            let live_ids = jobs
-                .iter()
-                .map(|job| job.id.clone())
-                .collect::<HashSet<_>>();
-            jobs.extend(
-                self.inner
-                    .store
-                    .list_execution_jobs_for_activations(context_id, &activation_id_list)
-                    .await?
-                    .into_iter()
-                    .filter(|job| job.status.is_terminal() && !live_ids.contains(&job.id)),
-            );
-        }
+        let has_more_jobs =
+            live_job_candidates.len() > limit || exact_job_counts.active_jobs > limit;
+        let displaced_job_activation_ids = live_job_candidates
+            .iter()
+            .filter(|job| {
+                !aggregate_job_ids.contains(&job.id) && !activation_ids.contains(&job.activation_id)
+            })
+            .map(|job| job.activation_id.clone())
+            .collect::<Vec<_>>();
+        let valid_displaced_job_activations = self
+            .inner
+            .store
+            .list_thread_activations_by_ids(context_id, &displaced_job_activation_ids)
+            .await?
+            .into_iter()
+            .filter(|activation| !activation.status.is_terminal())
+            .map(|activation| activation.id)
+            .collect::<HashSet<_>>();
+        let valid_displaced_job_ids = live_job_candidates
+            .iter()
+            .filter(|job| {
+                !activation_ids.contains(&job.activation_id)
+                    && valid_displaced_job_activations.contains(&job.activation_id)
+            })
+            .map(|job| job.id.clone())
+            .collect::<HashSet<_>>();
+        jobs.extend(live_job_candidates.into_iter().filter(|job| {
+            !aggregate_job_ids.contains(&job.id)
+                && (activation_ids.contains(&job.activation_id)
+                    || !valid_displaced_job_activations.contains(&job.activation_id))
+        }));
         jobs.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
@@ -5498,13 +5634,17 @@ impl MorphzRuntime {
             .map(|approval| (approval.job_id.clone(), approval))
             .collect::<HashMap<_, _>>();
         let mut orphan_approvals = Vec::new();
-        for approval in self
+        let pending_approval_candidates = self
             .inner
             .store
-            .list_context_pending_approvals(context_id)
-            .await?
-        {
-            if !live_job_ids.contains(&approval.job_id) {
+            .list_context_pending_approvals_bounded(context_id, detail_fetch_limit)
+            .await?;
+        let has_more_approvals =
+            pending_approval_candidates.len() > limit || exact_pending_approvals > limit;
+        for approval in pending_approval_candidates.into_iter().take(limit) {
+            if !live_job_ids.contains(&approval.job_id)
+                && !valid_displaced_job_ids.contains(&approval.job_id)
+            {
                 orphan_approvals.push(approval.clone());
             }
             if selected_job_ids.contains(&approval.job_id) {
@@ -5572,13 +5712,27 @@ impl MorphzRuntime {
 
         let mut pending_signals_by_thread = HashMap::<String, Vec<ThreadSignalRecord>>::new();
         let mut orphan_signals = Vec::new();
+        let nonselected_signal_thread_ids = all_signals
+            .iter()
+            .filter(|signal| !thread_ids.contains(&signal.thread_id))
+            .map(|signal| signal.thread_id.clone())
+            .collect::<Vec<_>>();
+        let live_nonselected_signal_threads = self
+            .inner
+            .store
+            .list_threads_by_ids(context_id, &nonselected_signal_thread_ids)
+            .await?
+            .into_iter()
+            .filter(|thread| !thread.lifecycle.is_terminal())
+            .map(|thread| thread.id)
+            .collect::<HashSet<_>>();
         for signal in all_signals {
             if thread_ids.contains(&signal.thread_id) {
                 pending_signals_by_thread
                     .entry(signal.thread_id.clone())
                     .or_default()
                     .push(signal);
-            } else {
+            } else if !live_nonselected_signal_threads.contains(&signal.thread_id) {
                 orphan_signals.push(signal);
             }
         }
@@ -5605,10 +5759,13 @@ impl MorphzRuntime {
                 context_id: Some(context_id.to_string()),
                 include_terminal: false,
                 newest_first: false,
-                limit: None,
+                limit: Some(detail_fetch_limit),
                 ..ThreadGroupFilter::default()
             })
             .await?;
+        let mut has_more_thread_groups =
+            authority_groups.len() > limit || exact_active_thread_groups > limit;
+        authority_groups.truncate(limit);
         if include_terminal {
             let active_ids = authority_groups
                 .iter()
@@ -5621,7 +5778,7 @@ impl MorphzRuntime {
                         context_id: Some(context_id.to_string()),
                         include_terminal: true,
                         newest_first: true,
-                        limit: Some(limit),
+                        limit: Some(detail_fetch_limit),
                         ..ThreadGroupFilter::default()
                     })
                     .await?
@@ -5633,6 +5790,10 @@ impl MorphzRuntime {
                     .cmp(&right.created_at)
                     .then_with(|| left.id.cmp(&right.id))
             });
+            if authority_groups.len() > limit {
+                has_more_thread_groups = true;
+                authority_groups.truncate(limit);
+            }
         }
         let mut authority_group_members = Vec::new();
         let mut thread_groups = Vec::new();
@@ -5736,67 +5897,34 @@ impl MorphzRuntime {
         );
 
         let process_admission = self.inner.orchestrator.activation_admission_snapshot();
+        let process_activation_ids = process_admission
+            .queued_activation_ids
+            .iter()
+            .chain(process_admission.in_flight_activation_ids.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let process_context_activations = self
+            .inner
+            .store
+            .list_thread_activations_by_ids(context_id, &process_activation_ids)
+            .await?;
+        let process_context_activation_ids = process_context_activations
+            .iter()
+            .map(|activation| activation.id.as_str())
+            .collect::<HashSet<_>>();
         let context_loaded_queued = process_admission
             .queued_activation_ids
             .iter()
-            .filter(|id| durable_queued_ids.contains(*id))
+            .filter(|id| process_context_activation_ids.contains(id.as_str()))
             .count();
         let context_in_flight = process_admission
             .in_flight_activation_ids
             .iter()
-            .filter(|id| durable_running_ids.contains(*id))
+            .filter(|id| process_context_activation_ids.contains(id.as_str()))
             .count();
-        let context_deferred = durable_queued_ids
-            .len()
+        let context_deferred = exact_activation_counts
+            .queued_activations
             .saturating_sub(context_loaded_queued);
-        let pending_signals = threads
-            .iter()
-            .flat_map(|thread| thread.pending_signals.iter())
-            .filter(|signal| signal.status == ThreadSignalStatus::Pending)
-            .count()
-            + orphan_signals
-                .iter()
-                .filter(|signal| signal.status == ThreadSignalStatus::Pending)
-                .count();
-        // Summary counters describe executable work, not merely non-terminal
-        // child rows. A legacy/inconsistent Job whose Activation or Thread is
-        // already terminal must remain visible in the causal history, but it
-        // must not make the Runtime appear active or ask the user to approve an
-        // Action which no longer has a live result route.
-        let live_job_snapshots = threads
-            .iter()
-            .filter(|thread| !thread.thread.lifecycle.is_terminal())
-            .flat_map(|thread| thread.activations.iter())
-            .filter(|activation| !activation.activation.status.is_terminal())
-            .flat_map(|activation| activation.jobs.iter());
-        let mut active_jobs = 0;
-        let mut waiting_approval_jobs = 0;
-        let mut pending_approvals = 0;
-        for job in live_job_snapshots {
-            if !job.job.status.is_terminal() {
-                active_jobs += 1;
-            }
-            if job.job.status == ExecutionJobStatus::WaitingApproval {
-                waiting_approval_jobs += 1;
-            }
-            if job
-                .approval
-                .as_ref()
-                .is_some_and(|approval| approval.status.is_pending())
-            {
-                pending_approvals += 1;
-            }
-        }
-        let active_schedules = threads
-            .iter()
-            .flat_map(|thread| thread.schedules.iter())
-            .filter(|schedule| {
-                matches!(
-                    schedule.status,
-                    ScheduleStatus::Queued | ScheduleStatus::Paused
-                )
-            })
-            .count();
         let objective_ids = authority_objectives
             .iter()
             .map(|objective| objective.id.clone())
@@ -5946,50 +6074,39 @@ impl MorphzRuntime {
                 updated_at: thread.updated_at,
             })
             .collect::<Vec<_>>();
-        let runnable_objectives = objective_snapshots
-            .iter()
-            .filter(|objective| {
-                matches!(
-                    objective.readiness,
-                    crate::scheduler::ObjectiveReadiness::Runnable
-                )
-            })
-            .count();
-        let waiting_objectives = objective_snapshots
-            .iter()
-            .filter(|objective| {
-                matches!(
-                    objective.readiness,
-                    crate::scheduler::ObjectiveReadiness::Waiting { .. }
-                        | crate::scheduler::ObjectiveReadiness::Leased { .. }
-                )
-            })
-            .count();
         let summary = SchedulerSummary {
-            open_threads: threads
-                .iter()
-                .filter(|thread| !thread.thread.lifecycle.is_terminal())
-                .count(),
-            pending_signals,
-            queued_activations: durable_queued_ids.len(),
-            running_activations: durable_running_ids.len(),
-            active_jobs,
-            waiting_approval_jobs,
-            pending_approvals,
-            active_schedules,
+            open_threads: exact_open_threads,
+            pending_signals: exact_activation_counts.pending_signals,
+            queued_activations: exact_activation_counts.queued_activations,
+            running_activations: exact_activation_counts.running_activations,
+            active_jobs: exact_job_counts.active_jobs,
+            waiting_approval_jobs: exact_job_counts.waiting_approval_jobs,
+            pending_approvals: exact_pending_approvals,
+            active_schedules: exact_active_schedules,
             deferred_activations: context_deferred,
-            runnable_objectives,
-            waiting_objectives,
+            runnable_objectives: exact_objective_counts.runnable_objectives,
+            waiting_objectives: exact_objective_counts.waiting_objectives,
             invariant_violations: invariant_violations.len(),
         };
         Ok(SchedulerSnapshot {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             summary,
+            detail_bounds: SchedulerDetailBounds {
+                limit,
+                has_more_sessions,
+                has_more_objectives,
+                has_more_threads,
+                has_more_activations,
+                has_more_signals,
+                has_more_jobs,
+                has_more_approvals,
+                has_more_thread_groups,
+            },
             admission: SchedulerAdmissionSnapshot {
                 process: process_admission,
-                context_durable_queued: durable_queued_ids.len(),
-                context_durable_running: durable_running_ids.len(),
+                context_durable_queued: exact_activation_counts.queued_activations,
+                context_durable_running: exact_activation_counts.running_activations,
                 context_loaded_queued,
                 context_in_flight,
                 context_deferred,
@@ -6028,8 +6145,46 @@ impl MorphzRuntime {
         }
         self.inner
             .store
-            .list_attention_acknowledgements(context_id)
+            .list_attention_acknowledgements_bounded(context_id, 500)
             .await
+    }
+
+    /// Reads a bounded acknowledgement page. Once the caller has an Event
+    /// sequence cursor, only projection rows advanced after that cursor are
+    /// returned; this keeps Dashboard polling independent of Context age.
+    pub async fn attention_acknowledgements_page(
+        &self,
+        context_id: &str,
+        after_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<AttentionAcknowledgementsPage, RuntimeError> {
+        if self.inner.store.get_context(context_id).await?.is_none() {
+            return Err(format!("Context '{context_id}' 不存在").into());
+        }
+        let limit = limit.clamp(1, 500);
+        let mut acknowledgements = if let Some(sequence) = after_sequence {
+            self.inner
+                .store
+                .list_attention_acknowledgements_after(context_id, sequence, limit + 1)
+                .await?
+        } else {
+            self.inner
+                .store
+                .list_attention_acknowledgements_bounded(context_id, limit + 1)
+                .await?
+        };
+        let has_more = acknowledgements.len() > limit;
+        acknowledgements.truncate(limit);
+        let latest_sequence = acknowledgements
+            .iter()
+            .map(|record| record.event_sequence)
+            .max()
+            .unwrap_or_else(|| after_sequence.unwrap_or(0));
+        Ok(AttentionAcknowledgementsPage {
+            acknowledgements,
+            latest_sequence,
+            has_more,
+        })
     }
 
     /// Acknowledges one exact attention fingerprint without altering the
@@ -6064,6 +6219,7 @@ impl MorphzRuntime {
             .filter(|value| !value.is_empty());
         let record = AttentionAcknowledgement {
             event_id: event_id.clone(),
+            event_sequence: 0,
             context_id: context_id.to_string(),
             key: key.to_string(),
             source_kind: source_kind.to_string(),
@@ -6092,7 +6248,17 @@ impl MorphzRuntime {
         );
         event.timestamp = acknowledged_at;
         self.publish(event).await?;
-        Ok(record)
+        self.inner
+            .store
+            .get_attention_acknowledgement(context_id, key)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "关注确认 Event '{}' 已提交，但投影尚未收敛",
+                    record.event_id
+                )
+                .into()
+            })
     }
 
     /// Returns one bounded Runtime-wide command-board projection.
@@ -6177,14 +6343,22 @@ impl MorphzRuntime {
             ),
             self.inner.store.count_context_sessions(&context_ids),
             self.inner.store.list_mind_projection_heads(&context_ids),
-            self.inner.store.list_open_threads(activity_limit),
             self.inner
                 .store
-                .list_active_thread_activations(activity_limit),
+                .list_open_threads_for_contexts(&context_ids, activity_limit),
             self.inner
                 .store
-                .list_recoverable_objectives_bounded(activity_limit),
-            self.inner.store.list_recent_delegations(activity_limit),
+                .list_active_thread_activations_for_contexts(&context_ids, activity_limit),
+            self.inner
+                .store
+                .list_recoverable_objectives_for_contexts(&context_ids, activity_limit),
+            self.inner.store.list_delegations(DelegationFilter {
+                related_context_ids: context_ids.clone(),
+                include_terminal: true,
+                newest_first: true,
+                limit: Some(activity_limit),
+                ..Default::default()
+            }),
         )?;
 
         let displayed_session_ids = sessions
@@ -7952,7 +8126,7 @@ mod tests {
     use super::*;
     use crate::config::{ProviderConfig, ProviderModelConfig};
     use crate::llm::{Message, Response, ToolCallRepr, ToolDefinition};
-    use crate::memory::{ActivationStore as _, SessionDirectoryStore as _};
+    use crate::memory::{ActivationStore as _, ScheduleStatus, SessionDirectoryStore as _};
     use crate::permission::PermissionMode;
     use crate::sdk::MessageAttachmentInput;
     use tempfile::NamedTempFile;
@@ -8880,7 +9054,41 @@ mod tests {
             .attention_acknowledgements(&context_id)
             .await
             .unwrap();
-        assert_eq!(records, vec![acknowledged]);
+        assert!(acknowledged.event_sequence > 0);
+        assert_eq!(records, vec![acknowledged.clone()]);
+        let empty_delta = runtime
+            .attention_acknowledgements_page(&context_id, Some(acknowledged.event_sequence), 10)
+            .await
+            .unwrap();
+        assert!(empty_delta.acknowledgements.is_empty());
+        assert_eq!(empty_delta.latest_sequence, acknowledged.event_sequence);
+
+        let second = runtime
+            .acknowledge_attention(
+                &context_id,
+                AcknowledgeAttentionCommand {
+                    key: "thread:thread-2:r1:failed".to_string(),
+                    source_kind: "thread".to_string(),
+                    source_id: "thread-2".to_string(),
+                    source_revision: 1,
+                    rationale: None,
+                },
+            )
+            .await
+            .unwrap();
+        let delta = runtime
+            .attention_acknowledgements_page(&context_id, Some(acknowledged.event_sequence), 10)
+            .await
+            .unwrap();
+        assert_eq!(delta.acknowledgements, vec![second.clone()]);
+        assert_eq!(delta.latest_sequence, second.event_sequence);
+        assert!(!delta.has_more);
+        let initial_page = runtime
+            .attention_acknowledgements_page(&context_id, None, 1)
+            .await
+            .unwrap();
+        assert_eq!(initial_page.acknowledgements, vec![second]);
+        assert!(initial_page.has_more);
 
         let after = runtime
             .scheduler_snapshot(&context_id, SchedulerQuery::default())
@@ -10846,6 +11054,67 @@ mod tests {
         assert_eq!(snapshot.summary.pending_signals, 0);
         assert!(snapshot.orphan_activations.is_empty());
         assert!(snapshot.orphan_jobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scheduler_snapshot_keeps_exact_counts_when_detail_is_bounded() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-scheduler-bounds".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Scheduler bounds".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        for index in 0..3 {
+            runtime
+                .inner
+                .store
+                .ensure_thread(crate::memory::NewThread {
+                    id: format!("thread-scheduler-bounds-{index}"),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "session-scheduler-bounds".to_string(),
+                    initiating_principal_id: None,
+                    root_turn_id: format!("root-scheduler-bounds-{index}"),
+                    kind: crate::memory::ThreadKind::Execution,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let snapshot = runtime
+            .scheduler_snapshot(
+                runtime.identity().context_id.as_str(),
+                SchedulerQuery {
+                    include_terminal: false,
+                    limit: 1,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.summary.open_threads, 3);
+        assert_eq!(snapshot.threads.len(), 1);
+        assert_eq!(snapshot.detail_bounds.limit, 1);
+        assert!(snapshot.detail_bounds.has_more_threads);
     }
 
     #[tokio::test]

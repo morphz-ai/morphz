@@ -861,6 +861,7 @@
     "heading": "Tasks & Execution",
     "description": "Only Runtime-verifiable Objectives, evaluations, background processes and Delegations are shown; ordinary Frames are not guessed as tasks.",
     "kernelDiagnostics": "Kernel diagnostics",
+    "detailBoundsNotice": "Totals are complete; details show a bounded recent window of {{limit}} records per category.",
     "refresh": "Refresh",
     "backToChat": "Back to chat",
     "executingCount": "{{count}} running",

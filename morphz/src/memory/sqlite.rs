@@ -8,45 +8,45 @@ use crate::memory::{
     message_request_fingerprint, stable_thread_id, stable_thread_signal_id,
     thread_cancellation_event, thread_group_barrier_event, thread_terminal_barrier_event,
     ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus,
-    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
-    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
-    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
-    CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
+    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationContextCounts,
+    ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
+    ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
+    ApprovalStatus, ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
+    CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
     ContextEncodingProjectionSnapshot, ContextSessionCount, ContextTokenBudgetMutation,
-    ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit,
-    DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore,
-    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
-    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
-    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
-    ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
-    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
-    ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
-    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore,
-    InterruptedDialogueTurn, MessageClaim, MindProjectionCommit, MindProjectionHead,
-    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewActionGroup,
-    NewActionGroupMember, NewAgent, NewApprovalRequest, NewArtifactTransferExecution,
-    NewCapabilityLease, NewCognitiveContext, NewDelegation, NewEdgeCommand, NewExecutionJob,
-    NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
-    NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer, NewSchedule,
-    NewScheduledObjective, NewSession, NewThread, NewThreadActivation, NewThreadGroupPlan,
-    NewThreadSignal, ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveRecord,
-    ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    PairExecutionNode, PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
-    ProviderAccountAffinityRecord, ProviderAccountStateRecord, ProviderAccountStateStore,
-    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
-    ProviderRefreshLeaseRecord, QueryFilter, RecallDocument, RecallDocumentKind,
-    RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
-    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
-    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
-    ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
-    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, StorageMaintenanceReport, StorageMaintenanceStore,
+    ContextUpdate, DelegationFilter, DelegationRecord, DelegationStatus, DelegationStore,
+    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
+    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
+    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobContextCounts,
+    ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord,
+    ExecutionNodeStatus, ExecutionRetrySafety, ExecutionTargetAuthorizationFilter,
+    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
+    ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
+    ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetKind,
+    ExecutionTargetMutation, ExecutionTargetRecord, ExecutionTargetRegistration,
+    ExecutionTargetStatus, ExecutionTargetStore, InterruptedDialogueTurn, MessageClaim,
+    MindProjectionCommit, MindProjectionHead, MindProjectionRecord, MindProjectionStore,
+    MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
+    NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext, NewDelegation,
+    NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
+    NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
+    NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
+    NewThreadGroupPlan, NewThreadSignal, ObjectiveCompletionIntent, ObjectiveMutation,
+    ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
+    PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
+    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
+    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
+    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
+    ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
+    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
+    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate,
+    SignalOutboxRecord, SignalOutboxStatus, StorageMaintenanceReport, StorageMaintenanceStore,
     ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
     ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus,
     ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind,
@@ -341,6 +341,8 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_attention_ack_context_time
             ON attention_acknowledgements(context_id, acknowledged_at DESC, event_sequence DESC);
+        CREATE INDEX IF NOT EXISTS idx_attention_ack_context_sequence
+            ON attention_acknowledgements(context_id, event_sequence, key);
 
         CREATE TABLE IF NOT EXISTS session_projections (
             event_id TEXT PRIMARY KEY,
@@ -594,6 +596,15 @@ impl SqliteStore {
             ON delegations(parent_session_id, updated_at DESC);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_delegations_child
             ON delegations(child_session_id);
+        CREATE INDEX IF NOT EXISTS idx_delegations_status_updated
+            ON delegations(status, updated_at DESC, id);
+        CREATE INDEX IF NOT EXISTS idx_delegations_active_updated
+            ON delegations(updated_at, id)
+            WHERE status IN ('queued', 'running');
+        CREATE INDEX IF NOT EXISTS idx_delegations_parent_context_updated
+            ON delegations(parent_context_id, updated_at DESC, id);
+        CREATE INDEX IF NOT EXISTS idx_delegations_child_context_updated
+            ON delegations(child_context_id, updated_at DESC, id);
 
         CREATE TABLE IF NOT EXISTS objectives (
             id TEXT PRIMARY KEY,
@@ -659,6 +670,7 @@ impl SqliteStore {
             parent_activation_id TEXT,
             root_turn_id TEXT NOT NULL,
             context_snapshot_version INTEGER,
+            admission_rank INTEGER NOT NULL DEFAULT 3 CHECK(admission_rank BETWEEN 0 AND 4),
             status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'cancelled', 'failed')),
             claimed_by TEXT,
             lease_expires_at TEXT,
@@ -1035,6 +1047,8 @@ impl SqliteStore {
             ON action_groups(session_id, status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_action_groups_activation
             ON action_groups(activation_id, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_action_groups_running_recovery
+            ON action_groups(created_at, id) WHERE status = 'running';
 
         CREATE TABLE IF NOT EXISTS action_group_members (
             group_id TEXT NOT NULL,
@@ -1586,6 +1600,21 @@ impl SqliteStore {
                 .execute(&pool)
                 .await?;
         }
+
+        let activation_columns = sqlx::query("PRAGMA table_info(thread_activations)")
+            .fetch_all(&pool)
+            .await?;
+        if !activation_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "admission_rank")
+        {
+            sqlx::query(
+                "ALTER TABLE thread_activations ADD COLUMN admission_rank INTEGER NOT NULL DEFAULT 3 CHECK(admission_rank BETWEEN 0 AND 4)",
+            )
+            .execute(&pool)
+            .await?;
+        }
+        migrate_bounded_read_model(&pool).await?;
         if !objective_columns
             .iter()
             .any(|row| row.get::<String, _>("name") == "status_reason")
@@ -1655,6 +1684,7 @@ const THREAD_OUTCOME_ID_BACKFILL_MIGRATION: &str = "20260815_08_thread_outcome_i
 const SCHEDULE_DEPENDENCY_BACKFILL_MIGRATION: &str = "20260815_06_schedule_dependency_backfill";
 const LEGACY_ACTIVATION_WAIT_STATUS_MIGRATION: &str = "20260815_07_legacy_activation_wait_status";
 const DIRECTORY_FOREIGN_KEYS_MIGRATION: &str = "20260816_04_directory_foreign_keys";
+const BOUNDED_READ_MODEL_MIGRATION: &str = "20260816_05_bounded_read_model";
 const RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION: &str = "20260815_01_recall_whole_document_index";
 const RECALL_WHOLE_DOCUMENT_EVENT_BACKFILL_MIGRATION: &str =
     "20260815_02_recall_whole_document_event_backfill";
@@ -1681,6 +1711,54 @@ async fn mark_sqlite_migration(
         .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+async fn migrate_bounded_read_model(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if !sqlite_migration_applied(pool, BOUNDED_READ_MODEL_MIGRATION).await? {
+        sqlx::query(
+            r#"UPDATE thread_activations AS activation
+               SET admission_rank = COALESCE((
+                 SELECT CASE
+                   WHEN event.type = 'user_message' THEN 0
+                   WHEN activation.trigger_kind = 'chat/thread_completion_ready' THEN 1
+                   WHEN event.objective_id IS NOT NULL
+                     OR json_type(event.payload, '$.objective_evaluation_id') IS NOT NULL
+                     OR substr(event.topic, 1, 10) = 'objective/' THEN 2
+                   WHEN json_extract(event.payload, '$.runtime_maintenance') = 1
+                     OR event.topic IN ('runtime/context_maintenance', 'chat/context_maintenance') THEN 4
+                   ELSE 3
+                 END
+                 FROM events AS event
+                 WHERE event.id = activation.trigger_event_id
+               ), 3)"#,
+        )
+        .execute(pool)
+        .await?;
+        mark_sqlite_migration(pool, BOUNDED_READ_MODEL_MIGRATION).await?;
+    }
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_thread_activations_admission_queue
+           ON thread_activations(admission_rank, created_at, id)
+           WHERE status = 'queued'"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_attention_ack_context_sequence
+           ON attention_acknowledgements(context_id, event_sequence, key)"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_delegations_active_updated
+           ON delegations(updated_at, id)
+           WHERE status IN ('queued', 'running')"#,
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -2009,6 +2087,26 @@ async fn migrate_directory_foreign_keys(
         sqlx::query("CREATE UNIQUE INDEX idx_delegations_child ON delegations(child_session_id)")
             .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "CREATE INDEX idx_delegations_status_updated ON delegations(status, updated_at DESC, id)",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX idx_delegations_active_updated ON delegations(updated_at, id) WHERE status IN ('queued', 'running')",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX idx_delegations_parent_context_updated ON delegations(parent_context_id, updated_at DESC, id)",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX idx_delegations_child_context_updated ON delegations(child_context_id, updated_at DESC, id)",
+        )
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
@@ -8142,8 +8240,19 @@ impl ActivationStore for SqliteStore {
             r#"INSERT INTO thread_activations
                (id, revision, generation, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
-                status, created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+                admission_rank, status, created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 COALESCE((SELECT CASE
+                   WHEN event.type = 'user_message' THEN 0
+                   WHEN ? = 'chat/thread_completion_ready' THEN 1
+                   WHEN event.objective_id IS NOT NULL
+                     OR json_type(event.payload, '$.objective_evaluation_id') IS NOT NULL
+                     OR substr(event.topic, 1, 10) = 'objective/' THEN 2
+                   WHEN json_extract(event.payload, '$.runtime_maintenance') = 1
+                     OR event.topic IN ('runtime/context_maintenance', 'chat/context_maintenance') THEN 4
+                   ELSE 3 END
+                 FROM events AS event WHERE event.id = ?), 3),
+                 'queued', ?, ?)"#,
         )
         .bind(&activation.id)
         .bind(i64::try_from(thread.generation).map_err(|_| "Thread generation 超出 SQLite INTEGER 范围")?)
@@ -8156,6 +8265,8 @@ impl ActivationStore for SqliteStore {
         .bind(&trigger.kind)
         .bind(&trigger.parent_activation_id)
         .bind(&activation.root_turn_id)
+        .bind(&trigger.kind)
+        .bind(&trigger.event_id)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -8301,6 +8412,81 @@ impl ActivationStore for SqliteStore {
             .await?
         };
         rows.iter().map(thread_signal_from_row).collect()
+    }
+
+    async fn list_context_thread_signals_bounded(
+        &self,
+        context_id: &str,
+        status: Option<ThreadSignalStatus>,
+        limit: usize,
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT signals.* FROM thread_signals signals INNER JOIN threads ON threads.id = signals.thread_id WHERE threads.context_id = ",
+        );
+        query.push_bind(context_id);
+        if let Some(status) = status {
+            query
+                .push(" AND signals.status = ")
+                .push_bind(status.as_str());
+        }
+        query
+            .push(" ORDER BY signals.sequence, signals.id LIMIT ")
+            .push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(thread_signal_from_row)
+            .collect()
+    }
+
+    async fn count_context_activation_authority(
+        &self,
+        context_id: &str,
+    ) -> Result<ActivationContextCounts, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(
+            r#"SELECT
+                 (SELECT COUNT(*) FROM thread_signals signals
+                  INNER JOIN threads ON threads.id = signals.thread_id
+                  WHERE threads.context_id = ? AND signals.status = 'pending') AS pending_signals,
+                 (SELECT COUNT(*) FROM thread_activations
+                  WHERE context_id = ? AND status = 'queued') AS queued_activations,
+                 (SELECT COUNT(*) FROM thread_activations
+                  WHERE context_id = ? AND status = 'running') AS running_activations"#,
+        )
+        .bind(context_id)
+        .bind(context_id)
+        .bind(context_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(ActivationContextCounts {
+            pending_signals: usize::try_from(row.get::<i64, _>("pending_signals"))?,
+            queued_activations: usize::try_from(row.get::<i64, _>("queued_activations"))?,
+            running_activations: usize::try_from(row.get::<i64, _>("running_activations"))?,
+        })
+    }
+
+    async fn has_active_thread_activation_for_session(
+        &self,
+        context_id: &str,
+        session_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM thread_activations
+                 WHERE context_id = ? AND session_id = ?
+                   AND status IN ('queued', 'running')
+               )"#,
+        )
+        .bind(context_id)
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await?
+            != 0)
     }
 
     async fn list_runnable_pending_thread_signals(
@@ -8479,8 +8665,19 @@ impl ActivationStore for SqliteStore {
             r#"INSERT OR IGNORE INTO thread_activations
                (id, revision, generation, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
-                status, created_at, updated_at)
-               VALUES (?, 1, (SELECT generation FROM threads WHERE root_turn_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+                admission_rank, status, created_at, updated_at)
+               VALUES (?, 1, (SELECT generation FROM threads WHERE root_turn_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 COALESCE((SELECT CASE
+                   WHEN event.type = 'user_message' THEN 0
+                   WHEN ? = 'chat/thread_completion_ready' THEN 1
+                   WHEN event.objective_id IS NOT NULL
+                     OR json_type(event.payload, '$.objective_evaluation_id') IS NOT NULL
+                     OR substr(event.topic, 1, 10) = 'objective/' THEN 2
+                   WHEN json_extract(event.payload, '$.runtime_maintenance') = 1
+                     OR event.topic IN ('runtime/context_maintenance', 'chat/context_maintenance') THEN 4
+                   ELSE 3 END
+                 FROM events AS event WHERE event.id = ?), 3),
+                 'queued', ?, ?)"#,
         )
         .bind(&activation.id)
         .bind(&activation.root_turn_id)
@@ -8493,6 +8690,8 @@ impl ActivationStore for SqliteStore {
         .bind(&activation.trigger_kind)
         .bind(&activation.parent_activation_id)
         .bind(&activation.root_turn_id)
+        .bind(&activation.trigger_kind)
+        .bind(&activation.trigger_event_id)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -8729,6 +8928,32 @@ impl ActivationStore for SqliteStore {
         rows.iter().map(thread_activation_from_row).collect()
     }
 
+    async fn list_active_thread_activations_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if context_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::new(
+            "SELECT * FROM thread_activations WHERE status IN ('queued', 'running') AND context_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for context_id in context_ids {
+            separated.push_bind(context_id);
+        }
+        separated.push_unseparated(") ORDER BY updated_at DESC, id LIMIT ");
+        query.push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(thread_activation_from_row)
+            .collect()
+    }
+
     async fn list_queued_thread_activations_for_admission(
         &self,
         limit: usize,
@@ -8741,6 +8966,8 @@ impl ActivationStore for SqliteStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let candidate_limit = i64::try_from(limit.saturating_mul(4).max(32))
+            .map_err(|_| "Activation admission 候选窗口超出 SQLite INTEGER 范围")?;
         let limit = i64::try_from(limit)
             .map_err(|_| "Activation admission 查询上限超出 SQLite INTEGER 范围")?;
         let reserved_queue_slots =
@@ -8748,32 +8975,42 @@ impl ActivationStore for SqliteStore {
         let general_limit =
             limit.saturating_sub(i64::try_from(reserved_queue_slots).unwrap_or(i64::MAX));
         let aging_promotion_interval_ms = aging_promotion_interval_ms.max(1) as f64;
-        // Keep the DB read proportional to the configured in-memory window.
-        // The CASE expression mirrors the Runtime-owned fixed classifier; no
-        // model-provided priority enters this ordering.
+        // Read a bounded oldest slice from every materialized class. The
+        // oversampling absorbs dialogue rows temporarily blocked by their
+        // per-Session lane without letting total DB work depend on the full
+        // durable queue size.
         let rows = sqlx::query(
-            r#"WITH classified AS (
-                 SELECT activations.*,
-                      CASE
-                        WHEN events.type = 'user_message' THEN 0
-                        WHEN activations.trigger_kind = 'chat/thread_completion_ready' THEN 1
-                        -- objective_id is projected on append, but Objective
-                        -- entry Events such as `objective/requested` carry
-                        -- only `requested_objective_id`. Keep the topic prefix
-                        -- so they are not admitted as background work.
-                        WHEN events.objective_id IS NOT NULL
-                          OR json_type(events.payload, '$.objective_evaluation_id') IS NOT NULL
-                          OR substr(events.topic, 1, 10) = 'objective/' THEN 2
-                        WHEN json_extract(events.payload, '$.runtime_maintenance') = 1
-                          OR events.topic IN ('runtime/context_maintenance', 'chat/context_maintenance')
-                          THEN 4
-                        ELSE 3
-                      END AS admission_rank
-                 FROM thread_activations activations
-                 JOIN events ON events.id = activations.trigger_event_id
+            r#"WITH raw_candidates AS (
+                 SELECT * FROM (
+                   SELECT * FROM thread_activations
+                   WHERE status = 'queued' AND admission_rank = 0
+                   ORDER BY created_at, id LIMIT ?
+                 )
+                 UNION ALL SELECT * FROM (
+                   SELECT * FROM thread_activations
+                   WHERE status = 'queued' AND admission_rank = 1
+                   ORDER BY created_at, id LIMIT ?
+                 )
+                 UNION ALL SELECT * FROM (
+                   SELECT * FROM thread_activations
+                   WHERE status = 'queued' AND admission_rank = 2
+                   ORDER BY created_at, id LIMIT ?
+                 )
+                 UNION ALL SELECT * FROM (
+                   SELECT * FROM thread_activations
+                   WHERE status = 'queued' AND admission_rank = 3
+                   ORDER BY created_at, id LIMIT ?
+                 )
+                 UNION ALL SELECT * FROM (
+                   SELECT * FROM thread_activations
+                   WHERE status = 'queued' AND admission_rank = 4
+                   ORDER BY created_at, id LIMIT ?
+                 )
+               ), eligible AS (
+                 SELECT activations.*
+                 FROM raw_candidates activations
                  JOIN threads ON threads.root_turn_id = activations.root_turn_id
-                 WHERE activations.status = 'queued'
-                   AND threads.executor_kind != 'artifact_transfer'
+                 WHERE threads.executor_kind != 'artifact_transfer'
                    AND (
                      threads.kind != 'dialogue_turn'
                      OR (
@@ -8819,7 +9056,7 @@ impl ActivationStore for SqliteStore {
                      )
                    )
                ), aged AS (
-                 SELECT classified.*,
+                 SELECT eligible.*,
                         MAX(
                           0,
                           admission_rank - CAST(
@@ -8829,7 +9066,7 @@ impl ActivationStore for SqliteStore {
                             ) / ? AS INTEGER
                           )
                         ) AS effective_rank
-                 FROM classified
+                 FROM eligible
                ), reserved_candidates AS (
                  SELECT * FROM aged
                  WHERE admission_rank IN (0, 1)
@@ -8849,6 +9086,11 @@ impl ActivationStore for SqliteStore {
                ORDER BY effective_rank, created_at, id
                LIMIT ?"#,
         )
+        .bind(candidate_limit)
+        .bind(candidate_limit)
+        .bind(candidate_limit)
+        .bind(candidate_limit)
+        .bind(candidate_limit)
         .bind(aging_promotion_interval_ms)
         // Reserved work may use any slot, so keep up to the total window. The
         // general candidate set is the one capped to preserve reserved room.
@@ -10510,6 +10752,20 @@ impl ThreadGroupStore for SqliteStore {
         rows.iter().map(thread_group_from_row).collect()
     }
 
+    async fn count_context_active_thread_groups(
+        &self,
+        context_id: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(usize::try_from(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM thread_groups WHERE context_id = ? AND status = 'open'",
+            )
+            .bind(context_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )?)
+    }
+
     async fn list_thread_groups_by_ids(
         &self,
         context_id: &str,
@@ -10844,6 +11100,49 @@ impl ThreadStore for SqliteStore {
         rows.iter().map(thread_from_row).collect()
     }
 
+    async fn list_context_threads_bounded(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = if include_terminal {
+            sqlx::query(
+                "SELECT * FROM threads WHERE context_id = ? ORDER BY updated_at DESC, id LIMIT ?",
+            )
+            .bind(context_id)
+            .bind(i64::try_from(limit)?)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT * FROM threads WHERE context_id = ? AND status = 'open' ORDER BY updated_at DESC, id LIMIT ?",
+            )
+            .bind(context_id)
+            .bind(i64::try_from(limit)?)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter().map(thread_from_row).collect()
+    }
+
+    async fn count_context_open_threads(
+        &self,
+        context_id: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(usize::try_from(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM threads WHERE context_id = ? AND status = 'open'",
+            )
+            .bind(context_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )?)
+    }
+
     async fn list_recent_terminal_threads(
         &self,
         context_id: &str,
@@ -10885,6 +11184,31 @@ impl ThreadStore for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(thread_from_row).collect()
+    }
+
+    async fn list_open_threads_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if context_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query =
+            QueryBuilder::new("SELECT * FROM threads WHERE status = 'open' AND context_id IN (");
+        let mut separated = query.separated(", ");
+        for context_id in context_ids {
+            separated.push_bind(context_id);
+        }
+        separated.push_unseparated(") ORDER BY updated_at DESC, id LIMIT ");
+        query.push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(thread_from_row)
+            .collect()
     }
 
     async fn list_session_delivery_threads(
@@ -13358,6 +13682,23 @@ impl ScheduleStore for SqliteStore {
         rows.iter().map(schedule_from_row).collect()
     }
 
+    async fn count_context_active_schedules(
+        &self,
+        context_id: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(usize::try_from(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM schedules
+                   INNER JOIN threads ON threads.id = schedules.thread_id
+                   WHERE threads.context_id = ? AND threads.status = 'open'
+                     AND schedules.status IN ('queued', 'paused')"#,
+            )
+            .bind(context_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )?)
+    }
+
     async fn list_thread_schedules(
         &self,
         context_id: &str,
@@ -13822,29 +14163,132 @@ impl DelegationStore for SqliteStore {
 
     async fn list_delegations(
         &self,
+        filter: DelegationFilter,
     ) -> Result<Vec<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let rows = sqlx::query(
-            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, initiating_principal_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations ORDER BY updated_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.iter().map(delegation_from_row).collect())
-    }
-
-    async fn list_recent_delegations(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if limit == 0 {
-            return Ok(Vec::new());
+        // SQLite otherwise prefers the older status-leading index for the unscoped
+        // startup recovery query and sorts both active status ranges in a temporary
+        // B-tree. This exact query is the only caller that intentionally walks the
+        // complete active lifecycle in ascending keyset order, so select its partial
+        // ordered index explicitly. Scoped product queries remain free to choose the
+        // parent/child/status indexes.
+        let use_active_recovery_index = filter.agent_id.is_none()
+            && filter.parent_context_id.is_none()
+            && filter.parent_session_id.is_none()
+            && filter.child_context_id.is_none()
+            && filter.child_session_id.is_none()
+            && filter.related_context_id.is_none()
+            && filter.related_session_id.is_none()
+            && filter.related_context_ids.is_empty()
+            && filter.statuses.is_empty()
+            && !filter.include_terminal
+            && !filter.newest_first;
+        let from = if use_active_recovery_index {
+            " FROM delegations INDEXED BY idx_delegations_active_updated WHERE 1=1"
+        } else {
+            " FROM delegations WHERE 1=1"
+        };
+        let mut query = QueryBuilder::new(format!(
+            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, initiating_principal_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at{from}"
+        ));
+        if let Some(value) = filter.agent_id {
+            query.push(" AND agent_id = ").push_bind(value);
         }
-        let rows = sqlx::query(
-            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, initiating_principal_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations ORDER BY updated_at DESC, id LIMIT ?",
-        )
-        .bind(i64::try_from(limit).map_err(|_| "Delegation 查询上限超出 SQLite INTEGER 范围")?)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.iter().map(delegation_from_row).collect())
+        if let Some(value) = filter.parent_context_id {
+            query.push(" AND parent_context_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.parent_session_id {
+            query.push(" AND parent_session_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.child_context_id {
+            query.push(" AND child_context_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.child_session_id {
+            query.push(" AND child_session_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.related_context_id {
+            query
+                .push(" AND (parent_context_id = ")
+                .push_bind(value.clone())
+                .push(" OR child_context_id = ")
+                .push_bind(value)
+                .push(")");
+        }
+        if let Some(value) = filter.related_session_id {
+            query
+                .push(" AND (parent_session_id = ")
+                .push_bind(value.clone())
+                .push(" OR child_session_id = ")
+                .push_bind(value)
+                .push(")");
+        }
+        if !filter.related_context_ids.is_empty() {
+            query.push(" AND (parent_context_id IN (");
+            {
+                let mut separated = query.separated(", ");
+                for context_id in &filter.related_context_ids {
+                    separated.push_bind(context_id);
+                }
+            }
+            query.push(") OR child_context_id IN (");
+            {
+                let mut separated = query.separated(", ");
+                for context_id in &filter.related_context_ids {
+                    separated.push_bind(context_id);
+                }
+            }
+            query.push("))");
+        }
+        if !filter.statuses.is_empty() {
+            query.push(" AND status IN (");
+            let mut separated = query.separated(", ");
+            for status in filter.statuses {
+                separated.push_bind(status.as_str());
+            }
+            separated.push_unseparated(")");
+        } else if !filter.include_terminal {
+            query.push(" AND status IN ('queued', 'running')");
+        }
+        match (filter.after_updated_at, filter.after_id) {
+            (Some(updated_at), Some(id)) => {
+                let updated_at = updated_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                if filter.newest_first {
+                    query
+                        .push(" AND (updated_at < ")
+                        .push_bind(updated_at.clone())
+                        .push(" OR (updated_at = ")
+                        .push_bind(updated_at)
+                        .push(" AND id > ")
+                        .push_bind(id)
+                        .push("))");
+                } else {
+                    query
+                        .push(" AND (updated_at > ")
+                        .push_bind(updated_at.clone())
+                        .push(" OR (updated_at = ")
+                        .push_bind(updated_at)
+                        .push(" AND id > ")
+                        .push_bind(id)
+                        .push("))");
+                }
+            }
+            (None, None) => {}
+            _ => return Err("Delegation keyset cursor 必须同时包含 updated_at 与 id".into()),
+        }
+        query.push(if filter.newest_first {
+            " ORDER BY updated_at DESC, id"
+        } else {
+            " ORDER BY updated_at, id"
+        });
+        if let Some(limit) = filter.limit {
+            query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
+        }
+        Ok(query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(delegation_from_row)
+            .collect())
     }
 
     async fn update_delegation_status(
@@ -14153,6 +14597,82 @@ impl ObjectiveStore for SqliteStore {
         rows.iter().map(objective_from_row).collect()
     }
 
+    async fn list_context_objectives_bounded(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let predicate = if include_terminal {
+            "context_id = ?"
+        } else {
+            "context_id = ? AND status IN ('active', 'paused', 'blocked')"
+        };
+        let rows = sqlx::query(&format!(
+            "{OBJECTIVE_SELECT} WHERE {predicate} ORDER BY updated_at DESC, id LIMIT ?"
+        ))
+        .bind(context_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn count_context_objective_readiness(
+        &self,
+        context_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<ObjectiveReadinessCounts, Box<dyn std::error::Error + Send + Sync>> {
+        let now = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let row = sqlx::query(
+            r#"SELECT
+                 COUNT(*) AS live_objectives,
+                 COALESCE(SUM(CASE WHEN objective.status = 'active'
+                   AND NOT (
+                     objective.active_evaluation_id IS NOT NULL
+                     AND objective.evaluation_lease_expires_at IS NOT NULL
+                     AND objective.evaluation_lease_expires_at > ?
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM scheduler_dependencies dependency
+                     WHERE dependency.owner_kind = 'objective'
+                       AND dependency.owner_id = objective.id
+                       AND dependency.owner_generation = objective.generation
+                       AND dependency.required = 1
+                       AND dependency.status = 'pending'
+                   ) THEN 1 ELSE 0 END), 0) AS runnable_objectives,
+                 COALESCE(SUM(CASE WHEN objective.status = 'active' AND (
+                   (objective.active_evaluation_id IS NOT NULL
+                    AND objective.evaluation_lease_expires_at IS NOT NULL
+                    AND objective.evaluation_lease_expires_at > ?)
+                   OR EXISTS (
+                     SELECT 1 FROM scheduler_dependencies dependency
+                     WHERE dependency.owner_kind = 'objective'
+                       AND dependency.owner_id = objective.id
+                       AND dependency.owner_generation = objective.generation
+                       AND dependency.required = 1
+                       AND dependency.status = 'pending'
+                   )
+                 ) THEN 1 ELSE 0 END), 0) AS waiting_objectives
+               FROM objectives objective
+               WHERE objective.context_id = ?
+                 AND objective.status IN ('active', 'paused', 'blocked')"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(context_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(ObjectiveReadinessCounts {
+            live_objectives: usize::try_from(row.get::<i64, _>("live_objectives"))?,
+            runnable_objectives: usize::try_from(row.get::<i64, _>("runnable_objectives"))?,
+            waiting_objectives: usize::try_from(row.get::<i64, _>("waiting_objectives"))?,
+        })
+    }
+
     async fn list_recoverable_objectives(
         &self,
     ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
@@ -14178,6 +14698,33 @@ impl ObjectiveStore for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn list_recoverable_objectives_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if context_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::new(OBJECTIVE_SELECT);
+        query.push(
+            " WHERE (status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL) AND context_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for context_id in context_ids {
+            separated.push_bind(context_id);
+        }
+        separated.push_unseparated(") ORDER BY updated_at DESC, id LIMIT ");
+        query.push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(objective_from_row)
+            .collect()
     }
 
     async fn list_recoverable_objectives_page(
@@ -15353,6 +15900,32 @@ impl ActionGroupStore for SqliteStore {
         } else if !filter.include_terminal {
             query.push(" AND status = 'running'");
         }
+        match (filter.after_created_at, filter.after_id) {
+            (Some(created_at), Some(id)) => {
+                let created_at = created_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                if filter.newest_first {
+                    query
+                        .push(" AND (created_at < ")
+                        .push_bind(created_at.clone())
+                        .push(" OR (created_at = ")
+                        .push_bind(created_at)
+                        .push(" AND id < ")
+                        .push_bind(id)
+                        .push("))");
+                } else {
+                    query
+                        .push(" AND (created_at > ")
+                        .push_bind(created_at.clone())
+                        .push(" OR (created_at = ")
+                        .push_bind(created_at)
+                        .push(" AND id > ")
+                        .push_bind(id)
+                        .push("))");
+                }
+            }
+            (None, None) => {}
+            _ => return Err("Action Group keyset cursor 必须同时包含 created_at 与 id".into()),
+        }
         query.push(if filter.newest_first {
             " ORDER BY created_at DESC, id DESC"
         } else {
@@ -15383,6 +15956,28 @@ impl ActionGroupStore for SqliteStore {
         .iter()
         .map(action_group_member_from_row)
         .collect()
+    }
+
+    async fn list_action_group_members_for_groups(
+        &self,
+        group_ids: &[String],
+    ) -> Result<Vec<ActionGroupMemberRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if group_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::new("SELECT * FROM action_group_members WHERE group_id IN (");
+        let mut separated = query.separated(", ");
+        for group_id in group_ids {
+            separated.push_bind(group_id);
+        }
+        separated.push_unseparated(") ORDER BY group_id, ordinal, tool_call_id");
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(action_group_member_from_row)
+            .collect()
     }
 
     async fn commit_action_group_member_result(
@@ -17180,6 +17775,31 @@ impl ExecutionJobStore for SqliteStore {
         rows.iter().map(execution_job_from_row).collect()
     }
 
+    async fn count_context_active_execution_jobs(
+        &self,
+        context_id: &str,
+    ) -> Result<ExecutionJobContextCounts, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(
+            r#"SELECT COUNT(*) AS active_jobs,
+                      COALESCE(SUM(CASE WHEN job.status = 'waiting_approval' THEN 1 ELSE 0 END), 0)
+                        AS waiting_approval_jobs
+               FROM execution_jobs job
+               INNER JOIN thread_activations activation ON activation.id = job.activation_id
+               INNER JOIN threads thread ON thread.id = job.thread_id
+               WHERE job.context_id = ?
+                 AND job.status IN ('queued', 'waiting_approval', 'running')
+                 AND activation.status IN ('queued', 'running')
+                 AND thread.status = 'open'"#,
+        )
+        .bind(context_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(ExecutionJobContextCounts {
+            active_jobs: usize::try_from(row.get::<i64, _>("active_jobs"))?,
+            waiting_approval_jobs: usize::try_from(row.get::<i64, _>("waiting_approval_jobs"))?,
+        })
+    }
+
     async fn list_execution_jobs_for_activations(
         &self,
         context_id: &str,
@@ -18282,6 +18902,51 @@ impl ApprovalStore for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(approval_from_row).collect()
+    }
+
+    async fn list_context_pending_approvals_bounded(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT approval_requests.*
+               FROM approval_requests
+               INNER JOIN execution_jobs ON execution_jobs.id = approval_requests.job_id
+               WHERE execution_jobs.context_id = ?
+                 AND approval_requests.status IN ('pending_auto', 'pending_human')
+               ORDER BY approval_requests.created_at, approval_requests.id LIMIT ?"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(approval_from_row).collect()
+    }
+
+    async fn count_context_pending_approvals(
+        &self,
+        context_id: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(usize::try_from(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM approval_requests
+                   INNER JOIN execution_jobs ON execution_jobs.id = approval_requests.job_id
+                   INNER JOIN thread_activations ON thread_activations.id = execution_jobs.activation_id
+                   INNER JOIN threads ON threads.id = execution_jobs.thread_id
+                   WHERE execution_jobs.context_id = ?
+                     AND approval_requests.status IN ('pending_auto', 'pending_human')
+                     AND execution_jobs.status IN ('queued', 'waiting_approval', 'running')
+                     AND thread_activations.status IN ('queued', 'running')
+                     AND threads.status = 'open'"#,
+            )
+            .bind(context_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )?)
     }
 
     async fn list_job_approvals(
@@ -19449,7 +20114,7 @@ impl EventStore for SqliteStore {
         context_id: &str,
     ) -> Result<Vec<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = sqlx::query(
-            r#"SELECT event_id, context_id, key, source_kind, source_id,
+            r#"SELECT event_id, event_sequence, context_id, key, source_kind, source_id,
                       source_revision, acknowledged_by, rationale, acknowledged_at
                FROM attention_acknowledgements
                WHERE context_id = ?
@@ -19462,6 +20127,118 @@ impl EventStore for SqliteStore {
             .map(|row| {
                 Ok(AttentionAcknowledgementRecord {
                     event_id: row.get("event_id"),
+                    event_sequence: u64::try_from(row.get::<i64, _>("event_sequence"))?,
+                    context_id: row.get("context_id"),
+                    key: row.get("key"),
+                    source_kind: row.get("source_kind"),
+                    source_id: row.get("source_id"),
+                    source_revision: u64::try_from(row.get::<i64, _>("source_revision"))?,
+                    acknowledged_by: row.get("acknowledged_by"),
+                    rationale: row.get("rationale"),
+                    acknowledged_at: parse_time(&row.get::<String, _>("acknowledged_at")),
+                })
+            })
+            .collect()
+    }
+
+    async fn get_attention_acknowledgement(
+        &self,
+        context_id: &str,
+        key: &str,
+    ) -> Result<Option<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        sqlx::query(
+            r#"SELECT event_id, event_sequence, context_id, key, source_kind, source_id,
+                      source_revision, acknowledged_by, rationale, acknowledged_at
+               FROM attention_acknowledgements
+               WHERE context_id = ? AND key = ?"#,
+        )
+        .bind(context_id)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| {
+            Ok(AttentionAcknowledgementRecord {
+                event_id: row.get("event_id"),
+                event_sequence: u64::try_from(row.get::<i64, _>("event_sequence"))?,
+                context_id: row.get("context_id"),
+                key: row.get("key"),
+                source_kind: row.get("source_kind"),
+                source_id: row.get("source_id"),
+                source_revision: u64::try_from(row.get::<i64, _>("source_revision"))?,
+                acknowledged_by: row.get("acknowledged_by"),
+                rationale: row.get("rationale"),
+                acknowledged_at: parse_time(&row.get::<String, _>("acknowledged_at")),
+            })
+        })
+        .transpose()
+    }
+
+    async fn list_attention_acknowledgements_bounded(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT event_id, event_sequence, context_id, key, source_kind, source_id,
+                      source_revision, acknowledged_by, rationale, acknowledged_at
+               FROM attention_acknowledgements
+               WHERE context_id = ?
+               ORDER BY acknowledged_at DESC, event_sequence DESC
+               LIMIT ?"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AttentionAcknowledgementRecord {
+                    event_id: row.get("event_id"),
+                    event_sequence: u64::try_from(row.get::<i64, _>("event_sequence"))?,
+                    context_id: row.get("context_id"),
+                    key: row.get("key"),
+                    source_kind: row.get("source_kind"),
+                    source_id: row.get("source_id"),
+                    source_revision: u64::try_from(row.get::<i64, _>("source_revision"))?,
+                    acknowledged_by: row.get("acknowledged_by"),
+                    rationale: row.get("rationale"),
+                    acknowledged_at: parse_time(&row.get::<String, _>("acknowledged_at")),
+                })
+            })
+            .collect()
+    }
+
+    async fn list_attention_acknowledgements_after(
+        &self,
+        context_id: &str,
+        after_event_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT event_id, event_sequence, context_id, key, source_kind, source_id,
+                      source_revision, acknowledged_by, rationale, acknowledged_at
+               FROM attention_acknowledgements
+               WHERE context_id = ? AND event_sequence > ?
+               ORDER BY event_sequence, key
+               LIMIT ?"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(after_event_sequence)?)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AttentionAcknowledgementRecord {
+                    event_id: row.get("event_id"),
+                    event_sequence: u64::try_from(row.get::<i64, _>("event_sequence"))?,
                     context_id: row.get("context_id"),
                     key: row.get("key"),
                     source_kind: row.get("source_kind"),
@@ -28753,6 +29530,50 @@ mod tests {
             .unwrap();
         assert_eq!(incremental.len(), 1);
         assert_eq!(incremental[0].id, "bounded-3");
+    }
+
+    #[tokio::test]
+    async fn bounded_read_model_hot_queries_use_ordered_indexes() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        for (sql, expected_index) in [
+            (
+                "EXPLAIN QUERY PLAN SELECT id FROM thread_activations WHERE status = 'queued' AND admission_rank = 3 ORDER BY created_at, id LIMIT 32",
+                "idx_thread_activations_admission_queue",
+            ),
+            (
+                "EXPLAIN QUERY PLAN SELECT id FROM action_groups WHERE status = 'running' ORDER BY created_at, id LIMIT 128",
+                "idx_action_groups_running_recovery",
+            ),
+            (
+                "EXPLAIN QUERY PLAN SELECT id FROM delegations INDEXED BY idx_delegations_active_updated WHERE status IN ('queued', 'running') ORDER BY updated_at, id LIMIT 128",
+                "idx_delegations_active_updated",
+            ),
+            (
+                "EXPLAIN QUERY PLAN SELECT key FROM attention_acknowledgements WHERE context_id = 'context' AND event_sequence > 10 ORDER BY event_sequence, key LIMIT 250",
+                "idx_attention_ack_context_sequence",
+            ),
+        ] {
+            let details = sqlx::query(sql)
+                .fetch_all(&store.pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| row.get::<String, _>("detail"))
+                .collect::<Vec<_>>();
+            assert!(
+                details.iter().any(|detail| detail.contains(expected_index)),
+                "expected {expected_index} in query plan: {details:?}"
+            );
+            assert!(
+                details
+                    .iter()
+                    .all(|detail| !detail.contains("USE TEMP B-TREE FOR ORDER BY")),
+                "bounded hot query must not sort the complete candidate set: {details:?}"
+            );
+        }
     }
 
     #[tokio::test]

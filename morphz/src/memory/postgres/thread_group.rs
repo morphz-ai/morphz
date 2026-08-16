@@ -266,6 +266,20 @@ impl ThreadGroupStore for PostgresStore {
         rows.iter().map(group_from_row).collect()
     }
 
+    async fn count_context_active_thread_groups(
+        &self,
+        context_id: &str,
+    ) -> Result<usize, StoreError> {
+        Ok(usize::try_from(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM thread_groups WHERE context_id = $1 AND status = 'open'",
+            )
+            .bind(context_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )?)
+    }
+
     async fn list_thread_groups_by_ids(
         &self,
         context_id: &str,

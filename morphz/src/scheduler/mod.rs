@@ -31,9 +31,9 @@ pub use domain::{
 pub use kernel::{KernelError, SchedulerKernel};
 pub use snapshot::{
     job_snapshot, thread_phase, SchedulerActivationSnapshot, SchedulerAdmissionSnapshot,
-    SchedulerDeliverySnapshot, SchedulerExternalOutboxSnapshot, SchedulerJobSnapshot,
-    SchedulerObjectiveSnapshot, SchedulerQuery, SchedulerResultSnapshot, SchedulerSnapshot,
-    SchedulerSummary, SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
+    SchedulerDeliverySnapshot, SchedulerDetailBounds, SchedulerExternalOutboxSnapshot,
+    SchedulerJobSnapshot, SchedulerObjectiveSnapshot, SchedulerQuery, SchedulerResultSnapshot,
+    SchedulerSnapshot, SchedulerSummary, SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
 };
 pub use store::{
     NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyStore,

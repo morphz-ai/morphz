@@ -399,6 +399,47 @@ impl ApprovalStore for PostgresStore {
         rows.iter().map(approval_from_row).collect()
     }
 
+    async fn list_context_pending_approvals_bounded(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ApprovalRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT approvals.* FROM approval_requests approvals
+               INNER JOIN execution_jobs jobs ON jobs.id = approvals.job_id
+               WHERE jobs.context_id = $1
+                 AND approvals.status IN ('pending_auto', 'pending_human')
+               ORDER BY approvals.created_at, approvals.id LIMIT $2"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(approval_from_row).collect()
+    }
+
+    async fn count_context_pending_approvals(&self, context_id: &str) -> Result<usize, StoreError> {
+        Ok(usize::try_from(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM approval_requests approvals
+                   INNER JOIN execution_jobs jobs ON jobs.id = approvals.job_id
+                   INNER JOIN thread_activations activations ON activations.id = jobs.activation_id
+                   INNER JOIN threads ON threads.id = jobs.thread_id
+                   WHERE jobs.context_id = $1
+                     AND approvals.status IN ('pending_auto', 'pending_human')
+                     AND jobs.status IN ('queued', 'waiting_approval', 'running')
+                     AND activations.status IN ('queued', 'running')
+                     AND threads.status = 'open'"#,
+            )
+            .bind(context_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )?)
+    }
+
     async fn list_job_approvals(
         &self,
         context_id: &str,

@@ -312,6 +312,11 @@ pub struct RecallProjectionBatch {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttentionAcknowledgementRecord {
     pub event_id: String,
+    /// Immutable Ledger sequence that advanced this projection key. A zero
+    /// value is used only by the synchronous command response before the
+    /// committed projection is read back.
+    #[serde(default)]
+    pub event_sequence: u64,
     pub context_id: String,
     pub key: String,
     pub source_kind: String,
@@ -2551,6 +2556,11 @@ pub struct ActionGroupFilter {
     pub status: Option<ActionGroupStatus>,
     pub include_terminal: bool,
     pub newest_first: bool,
+    /// Exclusive keyset cursor in the same direction as `newest_first`.
+    /// Recovery callers must advance this cursor instead of repeatedly
+    /// rescanning every live Group or using an unstable OFFSET.
+    pub after_created_at: Option<DateTime<Utc>>,
+    pub after_id: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -4020,6 +4030,30 @@ pub struct NewDelegation {
     pub context_scope: String,
 }
 
+/// Bounded Delegation read model. Lifecycle recovery, operator APIs and
+/// per-Session Dashboard views must state their scope explicitly instead of
+/// materializing the complete historical table and filtering it in memory.
+#[derive(Debug, Clone, Default)]
+pub struct DelegationFilter {
+    pub agent_id: Option<String>,
+    pub parent_context_id: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub child_context_id: Option<String>,
+    pub child_session_id: Option<String>,
+    /// Match either side of the delegation edge. Intended for product views
+    /// that show work related to one selected Context/Session.
+    pub related_context_id: Option<String>,
+    pub related_session_id: Option<String>,
+    pub related_context_ids: Vec<String>,
+    /// Empty means every non-terminal status unless `include_terminal` is set.
+    pub statuses: Vec<DelegationStatus>,
+    pub include_terminal: bool,
+    pub newest_first: bool,
+    pub after_updated_at: Option<DateTime<Utc>>,
+    pub after_id: Option<String>,
+    pub limit: Option<usize>,
+}
+
 /// Runtime-owned lifecycle state for a persistent Objective. This is control
 /// state, not the Agent's free-form semantic task representation in Mind.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -4155,6 +4189,29 @@ pub struct ObjectiveRecoveryCursor {
     /// rows indefinitely.
     pub created_at: DateTime<Utc>,
     pub id: String,
+}
+
+/// Exact lightweight counters for the Scheduler read model. Detail pages are
+/// intentionally bounded; these values let operator surfaces report the
+/// complete durable backlog without deserializing every authority row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ActivationContextCounts {
+    pub pending_signals: usize,
+    pub queued_activations: usize,
+    pub running_activations: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExecutionJobContextCounts {
+    pub active_jobs: usize,
+    pub waiting_approval_jobs: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ObjectiveReadinessCounts {
+    pub live_objectives: usize,
+    pub runnable_objectives: usize,
+    pub waiting_objectives: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -4388,6 +4445,47 @@ pub trait EventStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<Vec<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_attention_acknowledgement(
+        &self,
+        context_id: &str,
+        key: &str,
+    ) -> Result<Option<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        Ok(self
+            .list_attention_acknowledgements(context_id)
+            .await?
+            .into_iter()
+            .find(|record| record.key == key))
+    }
+    async fn list_attention_acknowledgements_bounded(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = self.list_attention_acknowledgements(context_id).await?;
+        records.truncate(limit);
+        Ok(records)
+    }
+
+    /// Reads acknowledgement changes strictly after one immutable Ledger
+    /// sequence. Implementations return ascending sequence order so callers
+    /// can advance a durable incremental cursor without gaps.
+    async fn list_attention_acknowledgements_after(
+        &self,
+        context_id: &str,
+        after_event_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = self.list_attention_acknowledgements(context_id).await?;
+        records.retain(|record| record.event_sequence > after_event_sequence);
+        records.sort_by(|left, right| {
+            left.event_sequence
+                .cmp(&right.event_sequence)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+        records.truncate(limit);
+        Ok(records)
+    }
 }
 
 /// Rebuildable lexical projection shared by Tool, CLI, HTTP and Dashboard.
@@ -4561,6 +4659,25 @@ pub trait ExecutionJobStore: Send + Sync {
         &self,
         filter: ExecutionJobFilter,
     ) -> Result<Vec<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn count_context_active_execution_jobs(
+        &self,
+        context_id: &str,
+    ) -> Result<ExecutionJobContextCounts, Box<dyn std::error::Error + Send + Sync>> {
+        let jobs = self
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: Some(context_id.to_string()),
+                include_terminal: false,
+                ..ExecutionJobFilter::default()
+            })
+            .await?;
+        Ok(ExecutionJobContextCounts {
+            active_jobs: jobs.len(),
+            waiting_approval_jobs: jobs
+                .iter()
+                .filter(|job| job.status == ExecutionJobStatus::WaitingApproval)
+                .count(),
+        })
+    }
     /// Exact Job projection for a bounded Activation aggregate. Production
     /// stores override this with one indexed `IN` query.
     async fn list_execution_jobs_for_activations(
@@ -4707,6 +4824,13 @@ pub trait ActionGroupStore: Send + Sync {
         &self,
         group_id: &str,
     ) -> Result<Vec<ActionGroupMemberRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bulk member projection for bounded recovery pages. Implementations must
+    /// return rows ordered by `(group_id, ordinal, tool_call_id)` so callers
+    /// can group them without one database round trip per Action Group.
+    async fn list_action_group_members_for_groups(
+        &self,
+        group_ids: &[String],
+    ) -> Result<Vec<ActionGroupMemberRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Commits one member's immutable result. The result Event may already
     /// exist because a physical ExecutionJob commits its terminal fact and
     /// Event first; exact Event replay is therefore required to be idempotent.
@@ -4762,6 +4886,21 @@ pub trait ApprovalStore: Send + Sync {
             .into_iter()
             .filter(|approval| approval.status.is_pending())
             .collect())
+    }
+    async fn list_context_pending_approvals_bounded(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = self.list_context_pending_approvals(context_id).await?;
+        records.truncate(limit);
+        Ok(records)
+    }
+    async fn count_context_pending_approvals(
+        &self,
+        context_id: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.list_context_pending_approvals(context_id).await?.len())
     }
     /// Approval authorities for an already selected Job aggregate.
     async fn list_job_approvals(
@@ -5073,6 +5212,50 @@ pub trait ActivationStore: Send + Sync {
         context_id: &str,
         status: Option<ThreadSignalStatus>,
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_thread_signals_bounded(
+        &self,
+        context_id: &str,
+        status: Option<ThreadSignalStatus>,
+        limit: usize,
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = self.list_context_thread_signals(context_id, status).await?;
+        records.truncate(limit);
+        Ok(records)
+    }
+    async fn count_context_activation_authority(
+        &self,
+        context_id: &str,
+    ) -> Result<ActivationContextCounts, Box<dyn std::error::Error + Send + Sync>> {
+        let pending_signals = self
+            .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
+            .await?
+            .len();
+        let activations = self
+            .list_context_thread_activations(context_id, false)
+            .await?;
+        Ok(ActivationContextCounts {
+            pending_signals,
+            queued_activations: activations
+                .iter()
+                .filter(|activation| activation.status == ThreadActivationStatus::Queued)
+                .count(),
+            running_activations: activations
+                .iter()
+                .filter(|activation| activation.status == ThreadActivationStatus::Running)
+                .count(),
+        })
+    }
+    async fn has_active_thread_activation_for_session(
+        &self,
+        context_id: &str,
+        session_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_context_thread_activations(context_id, false)
+            .await?
+            .iter()
+            .any(|activation| activation.session_id == session_id))
+    }
     /// Bounded cross-Context recovery view for mailbox work which has no
     /// queued/running Activation owner. Immediate EventBus dispatch remains
     /// the normal path; this query closes transient handler failures and
@@ -5274,6 +5457,21 @@ pub trait ActivationStore: Send + Sync {
         &self,
         limit: usize,
     ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded active rows for an already selected operator Context set. The
+    /// Context predicate must be applied before LIMIT in production stores.
+    async fn list_active_thread_activations_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let selected = context_ids.iter().collect::<std::collections::HashSet<_>>();
+        Ok(self
+            .list_active_thread_activations(limit)
+            .await?
+            .into_iter()
+            .filter(|record| selected.contains(&record.context_id))
+            .collect())
+    }
     /// Bounded, globally ordered durable admission source. The returned class
     /// is derived from the immutable Trigger Event by the Runtime-owned policy;
     /// durable age participates in the DB ordering so overflow cannot starve
@@ -5494,6 +5692,19 @@ pub trait ThreadGroupStore: Send + Sync {
         &self,
         filter: ThreadGroupFilter,
     ) -> Result<Vec<ThreadGroupRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn count_context_active_thread_groups(
+        &self,
+        context_id: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_thread_groups(ThreadGroupFilter {
+                context_id: Some(context_id.to_string()),
+                include_terminal: false,
+                ..ThreadGroupFilter::default()
+            })
+            .await?
+            .len())
+    }
     async fn list_thread_groups_by_ids(
         &self,
         context_id: &str,
@@ -5620,6 +5831,24 @@ pub trait ThreadStore: Send + Sync {
         context_id: &str,
         include_terminal: bool,
     ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_threads_bounded(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = self
+            .list_context_threads(context_id, include_terminal)
+            .await?;
+        records.truncate(limit);
+        Ok(records)
+    }
+    async fn count_context_open_threads(
+        &self,
+        context_id: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.list_context_threads(context_id, false).await?.len())
+    }
     /// Newest terminal Thread history for one Context. This is deliberately
     /// separate from the live projection so idle Contexts do not repeatedly
     /// deserialize their entire lifetime.
@@ -5652,6 +5881,21 @@ pub trait ThreadStore: Send + Sync {
         &self,
         limit: usize,
     ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded open rows for an already selected operator Context set. The
+    /// Context predicate must be applied before LIMIT in production stores.
+    async fn list_open_threads_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let selected = context_ids.iter().collect::<std::collections::HashSet<_>>();
+        Ok(self
+            .list_open_threads(limit)
+            .await?
+            .into_iter()
+            .filter(|record| selected.contains(&record.context_id))
+            .collect())
+    }
     /// Narrow indexed read for completion delivery; avoids scanning every
     /// Thread in a shared Cognitive Context.
     async fn list_session_delivery_threads(
@@ -5812,6 +6056,22 @@ pub trait ScheduleStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn count_context_active_schedules(
+        &self,
+        context_id: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_context_schedules(context_id)
+            .await?
+            .into_iter()
+            .filter(|schedule| {
+                matches!(
+                    schedule.status,
+                    ScheduleStatus::Queued | ScheduleStatus::Paused
+                )
+            })
+            .count())
+    }
     /// Schedule projection for an already selected Thread aggregate.
     async fn list_thread_schedules(
         &self,
@@ -5891,11 +6151,20 @@ pub trait DelegationStore: Send + Sync {
     ) -> Result<Option<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_delegations(
         &self,
+        filter: DelegationFilter,
     ) -> Result<Vec<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_recent_delegations(
         &self,
         limit: usize,
-    ) -> Result<Vec<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Vec<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.list_delegations(DelegationFilter {
+            include_terminal: true,
+            newest_first: true,
+            limit: Some(limit),
+            ..Default::default()
+        })
+        .await
+    }
     async fn update_delegation_status(
         &self,
         id: &str,
@@ -5980,6 +6249,41 @@ pub trait ObjectiveStore: Send + Sync {
         context_id: &str,
         include_terminal: bool,
     ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_objectives_bounded(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = self
+            .list_context_objectives(context_id, include_terminal)
+            .await?;
+        records.truncate(limit);
+        Ok(records)
+    }
+    async fn count_context_objective_readiness(
+        &self,
+        context_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<ObjectiveReadinessCounts, Box<dyn std::error::Error + Send + Sync>> {
+        let objectives = self.list_context_objectives(context_id, false).await?;
+        let live_objectives = objectives.len();
+        let waiting_objectives = objectives
+            .iter()
+            .filter(|objective| {
+                objective.status == ObjectiveStatus::Active
+                    && objective.active_evaluation_id.is_some()
+                    && objective
+                        .evaluation_lease_expires_at
+                        .is_some_and(|expires_at| expires_at > now)
+            })
+            .count();
+        Ok(ObjectiveReadinessCounts {
+            live_objectives,
+            runnable_objectives: live_objectives.saturating_sub(waiting_objectives),
+            waiting_objectives,
+        })
+    }
     async fn list_recoverable_objectives(
         &self,
     ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
@@ -5987,6 +6291,21 @@ pub trait ObjectiveStore: Send + Sync {
         &self,
         limit: usize,
     ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded live Objective rows for an already selected operator Context
+    /// set. Production implementations push the Context predicate into SQL.
+    async fn list_recoverable_objectives_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let selected = context_ids.iter().collect::<std::collections::HashSet<_>>();
+        Ok(self
+            .list_recoverable_objectives_bounded(limit)
+            .await?
+            .into_iter()
+            .filter(|record| selected.contains(&record.context_id))
+            .collect())
+    }
     /// Keyset page over live Objective authority for continuous convergence.
     /// Unlike Dashboard's newest-first bounded view, this cursor eventually
     /// visits every active/waiting/leased Objective without lifetime scans,
