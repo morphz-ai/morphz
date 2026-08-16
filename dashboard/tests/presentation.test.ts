@@ -10,12 +10,18 @@ import {
   tintIdForLineage,
   toneForSlot,
 } from '../src/app/objectiveLineage.ts'
-import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, formatLocalRfc3339, newestConversationEventsForLane, objectiveDisplayStatus, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
+import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, formatLocalRfc3339, newestConversationEventsForLane, objectiveDisplayStatus, objectiveWaitRepresentsExecution, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
 
-test('active Objectives with an exact wait render as waiting in collapsed summaries', () => {
+test('Objective presentation distinguishes supervised execution from external waiting', () => {
+  assert.equal(objectiveDisplayStatus({ status: 'active', wait_condition: { kind: 'thread_group' } }), 'running')
+  assert.equal(objectiveDisplayStatus({ status: 'active', wait_condition: { kind: 'tool_task' } }), 'running')
+  assert.equal(objectiveDisplayStatus({ status: 'active', wait_condition: { kind: 'delegation' } }), 'running')
   assert.equal(objectiveDisplayStatus({ status: 'active', wait_condition: { kind: 'timer' } }), 'waiting')
+  assert.equal(objectiveDisplayStatus({ status: 'active', wait_condition: { kind: 'user_input' } }), 'waiting')
   assert.equal(objectiveDisplayStatus({ status: 'active' }), 'active')
   assert.equal(objectiveDisplayStatus({ status: 'blocked', wait_condition: { kind: 'timer' } }), 'blocked')
+  assert.equal(objectiveWaitRepresentsExecution({ kind: 'thread_group' }), true)
+  assert.equal(objectiveWaitRepresentsExecution({ kind: 'external_event' }), false)
 })
 
 const translations: Record<string, string> = {

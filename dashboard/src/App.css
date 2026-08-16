@@ -1038,6 +1038,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .objective-card-details > footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--faint); font-family: var(--mono); font-size: 8px; }
 .objective-card-details > footer span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dialogue-objective-wait { margin: 8px 0; padding: 6px 7px; border-left: 2px solid var(--yellow); background: var(--yellow-soft); color: var(--yellow); font-size: 8px; }
+.dialogue-objective-wait.is-executing { border-left-color: var(--green); background: var(--green-soft); color: var(--green); }
 .activity-status { display: inline-flex; min-width: 0; align-items: center; gap: 5px; color: var(--muted); font-family: var(--mono); font-size: 8px; font-weight: 700; text-transform: uppercase; }
 .activity-status i { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .activity-status.running, .activity-status.active, .activity-status.runnable, .activity-status.succeeded { color: var(--green); }

@@ -888,6 +888,7 @@
       "deleting": "Deleting",
       "expand": "Expand Objective",
       "collapse": "Collapse Objective",
+      "executionCondition": "Running · {{kind}}",
       "waitCondition": "Waiting · {{kind}}",
       "revision": "r{{revision}}",
       "tokens": "{{tokens}} tok",

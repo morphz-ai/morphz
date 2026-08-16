@@ -142,6 +142,7 @@ import {
   threadKindLabel,
   newestConversationEventsForLane,
   objectiveDisplayStatus,
+  objectiveWaitRepresentsExecution,
   type ConversationWindowLane,
 } from './app/presentation'
 import {
@@ -1828,7 +1829,13 @@ function DialogueActivityDock({
                     {expanded && (
                       <div className="objective-card-details">
                         {objective.status_reason && <p>{objective.status_reason}</p>}
-                        {objective.wait_condition && <div className="dialogue-objective-wait">{t('work.objectives.waitCondition', { kind: objective.wait_condition.kind })}</div>}
+                        {objective.wait_condition && (
+                          <div className={`dialogue-objective-wait ${objectiveWaitRepresentsExecution(objective.wait_condition) ? 'is-executing' : ''}`}>
+                            {t(objectiveWaitRepresentsExecution(objective.wait_condition)
+                              ? 'work.objectives.executionCondition'
+                              : 'work.objectives.waitCondition', { kind: objective.wait_condition.kind })}
+                          </div>
+                        )}
                         <footer>
                           <code>r{objective.revision}</code>
                           <span>{currentSession ? t('conversation.activity.currentSession') : t('conversation.activity.otherSession', { id: shortId(objective.coordinator_session_id, 14) })}</span>
@@ -7463,7 +7470,13 @@ export default function App() {
                           <div className="objective-work-details">
                             {objective.status_reason && <p title={objective.status_reason}><MarkdownInline>{objective.status_reason}</MarkdownInline></p>}
                             <footer><span>{t('work.objectives.revision', { revision: objective.revision })}</span><span>{t('work.objectives.tokens', { tokens: compactTokens(objective.tokens_used) })}</span><span>{t('work.objectives.seconds', { seconds: objective.time_used_seconds })}</span><span>{shortId(objective.coordinator_session_id)}</span></footer>
-                            {objective.wait_condition && <div className="wait-condition">{t('work.objectives.waitCondition', { kind: objective.wait_condition.kind })}</div>}
+                            {objective.wait_condition && (
+                              <div className="wait-condition">
+                                {t(objectiveWaitRepresentsExecution(objective.wait_condition)
+                                  ? 'work.objectives.executionCondition'
+                                  : 'work.objectives.waitCondition', { kind: objective.wait_condition.kind })}
+                              </div>
+                            )}
                           </div>
                         )}
                       </article>

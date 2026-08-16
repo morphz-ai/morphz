@@ -886,6 +886,7 @@
       "deleting": "正在删除",
       "expand": "展开目标",
       "collapse": "收起目标",
+      "executionCondition": "执行 · {{kind}}",
       "waitCondition": "等待 · {{kind}}",
       "revision": "r{{revision}}",
       "tokens": "{{tokens}} 个词元",

@@ -28,11 +28,20 @@ export interface DelegatedContextReference {
   child_context_id?: string
 }
 
+const objectiveExecutionWaitKinds = new Set(['thread_group', 'tool_task', 'delegation'])
+
+export function objectiveWaitRepresentsExecution(
+  waitCondition?: { kind?: string } | null,
+): boolean {
+  return objectiveExecutionWaitKinds.has(waitCondition?.kind ?? '')
+}
+
 export function objectiveDisplayStatus(objective: {
   status: string
   wait_condition?: { kind?: string } | null
 }): string {
-  return objective.status === 'active' && objective.wait_condition ? 'waiting' : objective.status
+  if (objective.status !== 'active' || !objective.wait_condition) return objective.status
+  return objectiveWaitRepresentsExecution(objective.wait_condition) ? 'running' : 'waiting'
 }
 
 export function delegatedContextIds(
