@@ -11,8 +11,8 @@ use crate::approval::{
 use crate::approval_authority::stable_approval_identity;
 use crate::config::OrchestratorConfig;
 use crate::event::{
-    Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT,
-    TYPE_USER_MESSAGE,
+    DurableEventDeliveryQueue, Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_INFER_REQUEST,
+    TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::execution::{
     ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
@@ -437,6 +437,11 @@ const PLAN_RECONCILE_FALLBACK_INTERVAL: std::time::Duration = std::time::Duratio
 const PLAN_RECONCILE_BATCH: usize = 128;
 const PENDING_SIGNAL_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const PENDING_SIGNAL_RECONCILE_BATCH: usize = 128;
+const ACTION_GROUP_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const ACTION_GROUP_RECONCILE_DIRTY_BATCH: usize = 128;
+const PROVIDER_DELIVERY_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const PROVIDER_DELIVERY_IDLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const PROVIDER_DELIVERY_BATCH: usize = 128;
 const SUPERVISION_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn scheduler_audit_event(event: &Event) -> bool {
@@ -456,6 +461,26 @@ fn scheduler_audit_event(event: &Event) -> bool {
             | "runtime/model_attempt_state"
             | "runtime/model_usage"
     )
+}
+
+fn action_group_reconcile_id(event: &Event) -> Option<&str> {
+    if !event.payload.contains_key("tool_call_id") || !event.id.starts_with("output_") {
+        return None;
+    }
+    event
+        .payload
+        .get("action_group_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|group_id| !group_id.is_empty())
+}
+
+fn provider_delivery_retry_delay(retry_round: u32) -> std::time::Duration {
+    // `retry_round` counts failed delivery rounds. The first failure waits the
+    // base interval, then subsequent failures back off exponentially.
+    let multiplier = 1_u32 << retry_round.saturating_sub(1).min(5);
+    PROVIDER_DELIVERY_RETRY_INTERVAL
+        .saturating_mul(multiplier)
+        .min(PROVIDER_DELIVERY_IDLE_INTERVAL)
 }
 
 const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"Morphz is an S-Expression Cognitive Machine running on a large language model. You are its nondeterministic semantic processor and manage the machine's working Context. When identifying the integrated system to a Session, identify it as Morphz, an S-Expression Cognitive Machine; "semantic processor" names this model call's internal execution role, not the product's public identity.
@@ -1902,6 +1927,12 @@ pub struct Orchestrator {
     /// retries are request-local; this circuit prevents many independent
     /// Activations from amplifying the same outage after those retries fail.
     provider_circuits: DashMap<String, Arc<std::sync::Mutex<ProviderCircuitState>>>,
+    /// Resource-availability Events are durable facts, while their dependency
+    /// satisfaction handlers may transiently fail after Event commit. Keep a
+    /// fair live retry queue; restart recovery re-derives the same work from
+    /// pending resource dependencies and a fresh Provider probe.
+    provider_delivery_retries: Arc<DurableEventDeliveryQueue>,
+    provider_delivery_wakeup: Arc<Notify>,
     /// Provider-observed Context overflow may be discovered by many
     /// Activations at once. Exactly one owner is allowed to run the semantic
     /// maintenance request; waiters restart from the newer projection after
@@ -1955,6 +1986,8 @@ pub struct Orchestrator {
     /// slow fallback exists only for shared-store mutations from another
     /// process and the commit-before-notify crash window.
     plan_reconcile_wakeup: Arc<Notify>,
+    action_group_reconcile_dirty: Arc<DashMap<String, ()>>,
+    action_group_reconcile_wakeup: Arc<Notify>,
     delegation_start_lock: Mutex<()>,
     objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
     objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
@@ -2493,6 +2526,7 @@ impl Orchestrator {
                 ..Default::default()
             })
             .await?;
+        let mut deferred_errors = Vec::new();
         for dependency in dependencies {
             let Some(thread) = session_store.get_thread(&dependency.owner_id).await? else {
                 tracing::warn!(
@@ -2575,6 +2609,7 @@ impl Orchestrator {
             let commit = match commit_result {
                 Ok(commit) => commit,
                 Err(error) => {
+                    deferred_errors.push(format!("{}: {error}", dependency.id));
                     tracing::warn!(
                         dependency_id = %dependency.id,
                         thread_id = %dependency.owner_id,
@@ -2598,6 +2633,14 @@ impl Orchestrator {
             // wakes the live executor; replay is safe because Signal claim is
             // fenced by Thread generation and Activation ownership.
             self.bus.dispatch_persisted(commit.wake_event).await?;
+        }
+        if !deferred_errors.is_empty() {
+            return Err(format!(
+                "{} Provider recovery dependencies remain pending after transient commit failures: {}",
+                deferred_errors.len(),
+                deferred_errors.join("; ")
+            )
+            .into());
         }
         Ok(())
     }
@@ -2752,6 +2795,8 @@ impl Orchestrator {
             prompt_usage_anchors: DashMap::new(),
             model_provider_metrics: Arc::new(ModelProviderMetrics::default()),
             provider_circuits: DashMap::new(),
+            provider_delivery_retries: Arc::new(DurableEventDeliveryQueue::default()),
+            provider_delivery_wakeup: Arc::new(Notify::new()),
             context_maintenance_gates: DashMap::new(),
             runtime_failure_incidents: DashMap::new(),
             model_provider_semaphore,
@@ -2769,6 +2814,8 @@ impl Orchestrator {
             session_contexts: DashMap::new(),
             supervision_audit_dirty_contexts: Arc::new(DashMap::new()),
             plan_reconcile_wakeup: Arc::new(Notify::new()),
+            action_group_reconcile_dirty: Arc::new(DashMap::new()),
+            action_group_reconcile_wakeup: Arc::new(Notify::new()),
             delegation_start_lock: Mutex::new(()),
             objective_evaluations,
             objective_supervisor,
@@ -3170,11 +3217,15 @@ impl Orchestrator {
         // process-local and writes no business state.
         let dirty_contexts = Arc::clone(&self.supervision_audit_dirty_contexts);
         let plan_reconcile_wakeup = Arc::clone(&self.plan_reconcile_wakeup);
+        let action_group_reconcile_dirty = Arc::clone(&self.action_group_reconcile_dirty);
+        let action_group_reconcile_wakeup = Arc::clone(&self.action_group_reconcile_wakeup);
         self.bus.subscribe(
             "*".to_string(),
             Arc::new(move |event| {
                 let dirty_contexts = Arc::clone(&dirty_contexts);
                 let plan_reconcile_wakeup = Arc::clone(&plan_reconcile_wakeup);
+                let action_group_reconcile_dirty = Arc::clone(&action_group_reconcile_dirty);
+                let action_group_reconcile_wakeup = Arc::clone(&action_group_reconcile_wakeup);
                 Box::pin(async move {
                     if scheduler_audit_event(&event) {
                         plan_reconcile_wakeup.notify_one();
@@ -3185,6 +3236,10 @@ impl Orchestrator {
                         {
                             dirty_contexts.insert(context_id.to_string(), ());
                         }
+                    }
+                    if let Some(group_id) = action_group_reconcile_id(&event) {
+                        action_group_reconcile_dirty.insert(group_id.to_string(), ());
+                        action_group_reconcile_wakeup.notify_one();
                     }
                     Ok(())
                 })
@@ -3222,9 +3277,12 @@ impl Orchestrator {
                 "runtime/resource_available".to_string(),
                 Arc::new(move |event| {
                     let orchestrator = Arc::clone(&orchestrator);
-                    Box::pin(
-                        async move { orchestrator.handle_thread_resource_available(event).await },
-                    )
+                    Box::pin(async move {
+                        if orchestrator.provider_delivery_retries.enqueue(event) {
+                            orchestrator.provider_delivery_wakeup.notify_one();
+                        }
+                        Ok(())
+                    })
                 }),
             );
             let orchestrator = Arc::clone(&self);
@@ -3260,6 +3318,8 @@ impl Orchestrator {
         self.start_activation_admission_refill();
         self.start_plan_reconciler();
         self.start_pending_signal_reconciler();
+        self.start_action_group_reconciler();
+        self.start_provider_delivery_reconciler();
         self.start_supervision_invariant_auditor();
         Ok(())
     }
@@ -3358,6 +3418,103 @@ impl Orchestrator {
                         event_code = "orchestrator.thread_signal.runtime_recovery_failed",
                         "Runnable Thread Signal recovery failed; retaining durable mailbox work for the next bounded retry"
                     ),
+                }
+            }
+        });
+    }
+
+    fn start_action_group_reconciler(self: &Arc<Self>) {
+        if self.action_groups.is_none() {
+            return;
+        }
+        let orchestrator = Arc::downgrade(self);
+        let wakeup = Arc::clone(&self.action_group_reconcile_wakeup);
+        tokio::spawn(async move {
+            loop {
+                let full_reconcile = tokio::select! {
+                    _ = wakeup.notified() => false,
+                    _ = tokio::time::sleep(ACTION_GROUP_RECONCILE_INTERVAL) => true,
+                };
+                let Some(orchestrator) = orchestrator.upgrade() else {
+                    break;
+                };
+                let result = if full_reconcile {
+                    orchestrator.recover_action_groups().await
+                } else {
+                    orchestrator.recover_dirty_action_groups().await
+                };
+                match result {
+                    Ok(0) => {}
+                    Ok(committed) => tracing::warn!(
+                        committed_members = committed,
+                        event_code = "orchestrator.action_group.runtime_recovered",
+                        "Recovered Action Group members from immutable result Events without requiring a Runtime restart"
+                    ),
+                    Err(error) => tracing::error!(
+                        %error,
+                        event_code = "orchestrator.action_group.runtime_recovery_failed",
+                        "Action Group convergence failed; durable result Events will be retried"
+                    ),
+                }
+            }
+        });
+    }
+
+    fn start_provider_delivery_reconciler(self: &Arc<Self>) {
+        if self.plan_store.is_none() {
+            return;
+        }
+        let orchestrator = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut retry_round = 0_u32;
+            loop {
+                let Some(current) = orchestrator.upgrade() else {
+                    break;
+                };
+                let delay = if current.provider_delivery_retries.is_empty() {
+                    PROVIDER_DELIVERY_IDLE_INTERVAL
+                } else {
+                    provider_delivery_retry_delay(retry_round)
+                };
+                let wakeup = Arc::clone(&current.provider_delivery_wakeup);
+                drop(current);
+                tokio::select! {
+                    _ = wakeup.notified() => {}
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                let Some(current) = orchestrator.upgrade() else {
+                    break;
+                };
+                let mut failed = false;
+                for event in current
+                    .provider_delivery_retries
+                    .take_batch(PROVIDER_DELIVERY_BATCH)
+                {
+                    match current
+                        .handle_thread_resource_available(event.clone())
+                        .await
+                    {
+                        Ok(()) => current.provider_delivery_retries.acknowledge(&event.id),
+                        Err(error) => {
+                            failed = true;
+                            tracing::warn!(
+                                event_id = %event.id,
+                                %error,
+                                event_code = "orchestrator.provider_recovery.delivery_retry_deferred",
+                                "Provider recovery Event delivery failed; retaining it for fair retry"
+                            );
+                            current.provider_delivery_retries.retry(event);
+                        }
+                    }
+                }
+                if current.provider_delivery_retries.is_empty() {
+                    retry_round = 0;
+                } else if failed {
+                    retry_round = retry_round.saturating_add(1);
+                } else {
+                    // More than one bounded batch was ready. Continue at the
+                    // base cadence rather than treating backlog as failure.
+                    retry_round = 0;
                 }
             }
         });
@@ -4199,73 +4356,81 @@ impl Orchestrator {
             .await?;
         let mut committed = 0usize;
         for group in running {
-            let durable_attempt_id = group
-                .assistant_call_event_id
-                .strip_prefix("call_")
-                .ok_or_else(|| {
-                    format!(
-                        "Action Group '{}' 的 assistant_call_event_id '{}' 不符合确定性格式",
-                        group.id, group.assistant_call_event_id
-                    )
-                })?;
-            let selected_event_id = format!("tool_calls_selected_{durable_attempt_id}");
-            let Some(selected) = self
-                .context_engine
-                .find_event(&group.context_id, &selected_event_id)
-                .await?
-            else {
-                return Err(format!(
-                    "Action Group '{}' 缺少工具选择 Event '{}'",
-                    group.id, selected_event_id
-                )
-                .into());
-            };
-            let Some(wake_policy) = selected
-                .payload
-                .get("action_group_wake_policy")
-                .and_then(serde_json::Value::as_str)
-            else {
-                tracing::warn!(
+            match recover_action_group_from_durable_events(
+                self.context_engine.as_ref(),
+                &group,
+                groups.as_ref(),
+            )
+            .await
+            {
+                Ok(recovered) => committed = committed.saturating_add(recovered),
+                Err(error) => tracing::error!(
                     action_group_id = %group.id,
-                    selected_event_id = %selected.id,
-                    event_code = "orchestrator.action_group.legacy_recovery_deferred",
-                    "Legacy Action Group lacks an explicit durable wake policy; leaving it for Activation replay rather than guessing its continuation semantics"
-                );
+                    %error,
+                    event_code = "orchestrator.action_group.recovery_item_failed",
+                    "One Action Group could not converge; continuing with independent Groups"
+                ),
+            }
+        }
+        Ok(committed)
+    }
+
+    async fn recover_dirty_action_groups(&self) -> Result<usize, DynError> {
+        let Some(groups) = self.action_groups.as_ref() else {
+            return Ok(0);
+        };
+        let group_ids = self
+            .action_group_reconcile_dirty
+            .iter()
+            .take(ACTION_GROUP_RECONCILE_DIRTY_BATCH)
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        let mut committed = 0usize;
+        for group_id in group_ids {
+            if self
+                .action_group_reconcile_dirty
+                .remove(&group_id)
+                .is_none()
+            {
                 continue;
-            };
-            let settled = recovered_action_group_settled_event(&group, &selected, wake_policy)?;
-            for member in groups.list_action_group_members(&group.id).await? {
-                if member.status.is_terminal() {
+            }
+            let group = match groups.get_action_group(&group_id).await {
+                Ok(Some(group)) if !group.status.is_terminal() => group,
+                Ok(_) => continue,
+                Err(error) => {
+                    self.action_group_reconcile_dirty
+                        .insert(group_id.clone(), ());
+                    tracing::error!(
+                        action_group_id = %group_id,
+                        %error,
+                        event_code = "orchestrator.action_group.dirty_read_failed",
+                        "Could not read a dirty Action Group; retaining it for retry"
+                    );
                     continue;
                 }
-                let result_id = format!("output_{}_{}", group.activation_id, member.tool_call_id);
-                let Some(result) = self
-                    .context_engine
-                    .find_event(&group.context_id, &result_id)
-                    .await?
-                else {
-                    continue;
-                };
-                let commit = groups
-                    .commit_action_group_member_result(
-                        &group.id,
-                        &member.tool_call_id,
-                        action_group_member_status(&result),
-                        &result,
-                        &settled,
-                    )
-                    .await?;
-                if !commit.existing {
-                    committed = committed.saturating_add(1);
+            };
+            match recover_action_group_from_durable_events(
+                self.context_engine.as_ref(),
+                &group,
+                groups.as_ref(),
+            )
+            .await
+            {
+                Ok(recovered) => committed = committed.saturating_add(recovered),
+                Err(error) => {
+                    self.action_group_reconcile_dirty
+                        .insert(group_id.clone(), ());
+                    tracing::error!(
+                        action_group_id = %group_id,
+                        %error,
+                        event_code = "orchestrator.action_group.dirty_recovery_failed",
+                        "One dirty Action Group could not converge; retaining it for retry"
+                    );
                 }
             }
         }
-        if committed > 0 {
-            tracing::info!(
-                committed_members = committed,
-                event_code = "orchestrator.action_group.startup_recovery_completed",
-                "Recovered durable Action Group members from their immutable result Events"
-            );
+        if !self.action_group_reconcile_dirty.is_empty() {
+            self.action_group_reconcile_wakeup.notify_one();
         }
         Ok(committed)
     }
@@ -16100,6 +16265,73 @@ fn action_group_member_status(output: &Event) -> ActionGroupMemberStatus {
     }
 }
 
+async fn recover_action_group_from_durable_events(
+    context_engine: &ContextEngine,
+    group: &ActionGroupRecord,
+    groups: &dyn ActionGroupStore,
+) -> Result<usize, DynError> {
+    let durable_attempt_id = group
+        .assistant_call_event_id
+        .strip_prefix("call_")
+        .ok_or_else(|| {
+            format!(
+                "Action Group '{}' 的 assistant_call_event_id '{}' 不符合确定性格式",
+                group.id, group.assistant_call_event_id
+            )
+        })?;
+    let selected_event_id = format!("tool_calls_selected_{durable_attempt_id}");
+    let Some(selected) = context_engine
+        .find_event(&group.context_id, &selected_event_id)
+        .await?
+    else {
+        return Err(format!(
+            "Action Group '{}' 缺少工具选择 Event '{}'",
+            group.id, selected_event_id
+        )
+        .into());
+    };
+    let Some(wake_policy) = selected
+        .payload
+        .get("action_group_wake_policy")
+        .and_then(serde_json::Value::as_str)
+    else {
+        tracing::warn!(
+            action_group_id = %group.id,
+            selected_event_id = %selected.id,
+            event_code = "orchestrator.action_group.legacy_recovery_deferred",
+            "Legacy Action Group lacks an explicit durable wake policy; leaving it for Activation replay rather than guessing its continuation semantics"
+        );
+        return Ok(0);
+    };
+    let settled = recovered_action_group_settled_event(group, &selected, wake_policy)?;
+    let mut committed = 0usize;
+    for member in groups.list_action_group_members(&group.id).await? {
+        if member.status.is_terminal() {
+            continue;
+        }
+        let result_id = format!("output_{}_{}", group.activation_id, member.tool_call_id);
+        let Some(result) = context_engine
+            .find_event(&group.context_id, &result_id)
+            .await?
+        else {
+            continue;
+        };
+        let commit = groups
+            .commit_action_group_member_result(
+                &group.id,
+                &member.tool_call_id,
+                action_group_member_status(&result),
+                &result,
+                &settled,
+            )
+            .await?;
+        if !commit.existing {
+            committed = committed.saturating_add(1);
+        }
+    }
+    Ok(committed)
+}
+
 // Event construction lists all causal coordinates explicitly to prevent accidental ambient routing.
 #[allow(clippy::too_many_arguments)]
 fn action_group_settled_event(
@@ -16586,14 +16818,15 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        activation_admission_class, apply_prompt_estimate_delta, baseline_system_prompt,
-        classify_terminal_response, cognitive_sexpr_vm_system_prompt,
+        action_group_reconcile_id, activation_admission_class, apply_prompt_estimate_delta,
+        baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         completed_objective_update_call, compose_context_encoding,
         critical_maintenance_transaction_available, derived_thread_kind, extend_exec_output_facts,
         harness_entry_callable_tools, legacy_plan_effect_sequence,
         model_visible_attachment_references, objective_supervision_matches_state,
         persist_model_reasoning_summary, persist_model_usage, plan_infer_tool_scope,
-        production_system_prompt_inspection, recovered_action_group_settled_event,
+        production_system_prompt_inspection, provider_delivery_retry_delay,
+        recover_action_group_from_durable_events, recovered_action_group_settled_event,
         recovery_owns_activation, render_harness_context, render_system_contract,
         restrict_tools_to_scope, retain_context_maintenance_tools,
         retain_final_reply_control_tools, retain_pending_continuation_calls, runtime_claimant_id,
@@ -16601,10 +16834,11 @@ mod tests {
         should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
         tool_call_activity_preview, validate_final_reply_response,
         validate_objective_closure_review_response, validate_objective_completion_call,
-        DialogueThreadGate, DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics,
-        DynError, EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
-        ModelReasoningSummaryAccumulator, ModelVisibleAttachmentReference, NoReplyMode,
-        TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        ContextEngine, DialogueThreadGate, DialogueThreadLease, DurableEventWriter,
+        DurableEventWriterMetrics, DynError, EvaluationContextOverlay, ModelCompletionError,
+        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        ModelVisibleAttachmentReference, NoReplyMode, TerminalDecision,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -16617,8 +16851,12 @@ mod tests {
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        ActionGroupRecord, AttentionAcknowledgementRecord, EventAppend, EventStore, QueryFilter,
-        ThreadActivationRecord, ThreadActivationStatus, WorkerCoordinationMode,
+        ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationStore,
+        AttentionAcknowledgementRecord, EventAppend, EventStore, NewActionGroup,
+        NewActionGroupMember, NewAgent, NewCognitiveContext, NewSession, NewThread,
+        NewThreadActivation, QueryFilter, SessionDirectoryStore, SessionMountKind,
+        ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadStore,
+        WorkerCoordinationMode,
     };
     use std::collections::{BTreeSet, HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16654,9 +16892,30 @@ mod tests {
         assert!(scheduler_audit_event(&event("chat/user_message")));
         assert!(scheduler_audit_event(&event("runtime/thread_terminal")));
 
+        let mut group_result = event("chat/tool_output");
+        group_result.id = "output_activation-a_call-a".to_string();
+        group_result
+            .payload
+            .insert("action_group_id".to_string(), json!("group-a"));
+        group_result
+            .payload
+            .insert("tool_call_id".to_string(), json!("call-a"));
+        assert_eq!(action_group_reconcile_id(&group_result), Some("group-a"));
+        assert_eq!(action_group_reconcile_id(&event("chat/user_message")), None);
+
         let mut missing_context = event("runtime/thread_terminal");
         missing_context.payload.remove("context_id");
         assert!(!scheduler_audit_event(&missing_context));
+    }
+
+    #[test]
+    fn provider_delivery_retry_uses_bounded_exponential_backoff() {
+        assert_eq!(provider_delivery_retry_delay(0).as_secs(), 1);
+        assert_eq!(provider_delivery_retry_delay(1).as_secs(), 1);
+        assert_eq!(provider_delivery_retry_delay(2).as_secs(), 2);
+        assert_eq!(provider_delivery_retry_delay(5).as_secs(), 16);
+        assert_eq!(provider_delivery_retry_delay(6).as_secs(), 30);
+        assert_eq!(provider_delivery_retry_delay(u32::MAX).as_secs(), 30);
     }
 
     #[derive(Default)]
@@ -17975,5 +18234,187 @@ mod tests {
         assert_eq!(settled.payload["thread_id"], group.thread_id);
         assert_eq!(settled.payload["wake_policy"], "direct_signal");
         assert_eq!(settled.payload["objective_revision"], 7);
+    }
+
+    #[tokio::test]
+    async fn action_group_recovery_converges_from_durable_member_results_without_restart() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("group-recovery.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let context_engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            crate::config::OrchestratorConfig::default(),
+        );
+        let group_id = "group-live-recovery";
+        let activation_id = "activation-live-recovery";
+        let context_id = "context-live-recovery";
+        let session_id = "session-live-recovery";
+        let thread_id = "thread-live-recovery";
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "agent-live-recovery".to_string(),
+                    title: "Recovery Agent".to_string(),
+                    root_context_id: context_id.to_string(),
+                },
+                NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: "agent-live-recovery".to_string(),
+                    title: "Recovery Context".to_string(),
+                },
+                NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "agent-live-recovery".to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: "Recovery Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let selected = Event::new(
+            "tool_calls_selected_attempt-live-recovery".to_string(),
+            "test".to_string(),
+            "runtime_control".to_string(),
+            "runtime/tool_calls_selected".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!(context_id)),
+                ("session_id".to_string(), json!(session_id)),
+                ("activation_id".to_string(), json!(activation_id)),
+                ("thread_id".to_string(), json!(thread_id)),
+                ("root_turn_id".to_string(), json!("root-live-recovery")),
+                (
+                    "trigger_event_id".to_string(),
+                    json!("trigger-live-recovery"),
+                ),
+                ("trigger_sequence".to_string(), json!(17)),
+                ("action_group_wake_policy".to_string(), json!("none")),
+            ]),
+        );
+        store.append(selected.clone()).await.unwrap();
+        let selected_sequence = store
+            .query(QueryFilter {
+                event_id: Some(selected.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: thread_id.to_string(),
+                agent_id: "agent-live-recovery".to_string(),
+                context_id: context_id.to_string(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-live-recovery".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_thread_activation(NewThreadActivation {
+                id: activation_id.to_string(),
+                agent_id: "agent-live-recovery".to_string(),
+                context_id: context_id.to_string(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: selected.id.clone(),
+                trigger_sequence: selected_sequence,
+                trigger_kind: selected.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: "root-live-recovery".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                "call_attempt-live-recovery".to_string(),
+                "test".to_string(),
+                crate::event::TYPE_AGENT_CALL.to_string(),
+                "chat/assistant_call".to_string(),
+                serde_json::Map::from_iter([
+                    ("context_id".to_string(), json!(context_id)),
+                    ("session_id".to_string(), json!(session_id)),
+                    ("activation_id".to_string(), json!(activation_id)),
+                    ("thread_id".to_string(), json!(thread_id)),
+                ]),
+            ))
+            .await
+            .unwrap();
+        let group = store
+            .create_action_group(
+                NewActionGroup {
+                    id: group_id.to_string(),
+                    activation_id: activation_id.to_string(),
+                    thread_id: thread_id.to_string(),
+                    agent_id: "agent-live-recovery".to_string(),
+                    context_id: context_id.to_string(),
+                    session_id: session_id.to_string(),
+                    assistant_call_event_id: "call_attempt-live-recovery".to_string(),
+                    objective_id: None,
+                    objective_evaluation_id: None,
+                    objective_revision: None,
+                },
+                vec![
+                    NewActionGroupMember {
+                        ordinal: 0,
+                        tool_call_id: "call-a".to_string(),
+                        tool_name: "read".to_string(),
+                        execution_job_id: None,
+                    },
+                    NewActionGroupMember {
+                        ordinal: 1,
+                        tool_call_id: "call-b".to_string(),
+                        tool_name: "search".to_string(),
+                        execution_job_id: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        for tool_call_id in ["call-a", "call-b"] {
+            store
+                .append(Event::new(
+                    format!("output_{activation_id}_{tool_call_id}"),
+                    "test".to_string(),
+                    TYPE_TOOL_OUTPUT.to_string(),
+                    "chat/tool_output".to_string(),
+                    serde_json::Map::from_iter([
+                        ("context_id".to_string(), json!(context_id)),
+                        ("action_group_id".to_string(), json!(group_id)),
+                        ("tool_call_id".to_string(), json!(tool_call_id)),
+                        ("tool_status".to_string(), json!("success")),
+                    ]),
+                ))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            recover_action_group_from_durable_events(&context_engine, &group, store.as_ref(),)
+                .await
+                .unwrap(),
+            2
+        );
+        let recovered = store.get_action_group(group_id).await.unwrap().unwrap();
+        assert_eq!(recovered.status, ActionGroupStatus::Settled);
+        assert_eq!(recovered.terminal_member_count, 2);
+        assert_eq!(
+            recover_action_group_from_durable_events(&context_engine, &recovered, store.as_ref(),)
+                .await
+                .unwrap(),
+            0,
+            "convergence replay must be idempotent"
+        );
     }
 }

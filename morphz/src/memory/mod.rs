@@ -4147,6 +4147,16 @@ pub struct ObjectiveRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectiveRecoveryCursor {
+    /// Stable creation coordinate. Recovery may update the Objective while it
+    /// is being visited, so mutable `updated_at` is not a valid keyset cursor:
+    /// it can move a just-processed row behind the cursor and starve later
+    /// rows indefinitely.
+    pub created_at: DateTime<Utc>,
+    pub id: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewObjective {
     pub id: String,
@@ -5961,6 +5971,15 @@ pub trait ObjectiveStore: Send + Sync {
     ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_recoverable_objectives_bounded(
         &self,
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Keyset page over live Objective authority for continuous convergence.
+    /// Unlike Dashboard's newest-first bounded view, this cursor eventually
+    /// visits every active/waiting/leased Objective without lifetime scans,
+    /// OFFSET growth, or starvation behind frequently updated rows.
+    async fn list_recoverable_objectives_page(
+        &self,
+        after: Option<&ObjectiveRecoveryCursor>,
         limit: usize,
     ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn edit_objective(

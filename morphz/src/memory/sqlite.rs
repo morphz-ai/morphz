@@ -35,8 +35,8 @@ use crate::memory::{
     NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer, NewSchedule,
     NewScheduledObjective, NewSession, NewThread, NewThreadActivation, NewThreadGroupPlan,
     NewThreadSignal, ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveRecord,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
-    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
+    ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    PairExecutionNode, PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
     ProviderAccountAffinityRecord, ProviderAccountStateRecord, ProviderAccountStateStore,
     ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
     ProviderRefreshLeaseRecord, QueryFilter, RecallDocument, RecallDocumentKind,
@@ -619,6 +619,10 @@ impl SqliteStore {
             ON objectives(coordinator_session_id, status);
         CREATE INDEX IF NOT EXISTS idx_objectives_delivery_status
             ON objectives(delivery_session_id, status);
+        CREATE INDEX IF NOT EXISTS idx_objectives_recoverable_created
+            ON objectives(created_at, id)
+            WHERE status IN ('active', 'paused', 'blocked')
+               OR active_evaluation_id IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS session_message_requests (
             session_id TEXT NOT NULL,
@@ -13718,6 +13722,43 @@ impl ObjectiveStore for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn list_recoverable_objectives_page(
+        &self,
+        after: Option<&ObjectiveRecoveryCursor>,
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::new(OBJECTIVE_SELECT);
+        query.push(
+            " WHERE (status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL)",
+        );
+        if let Some(after) = after {
+            let created_at = after
+                .created_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            query
+                .push(" AND (created_at > ")
+                .push_bind(created_at.clone())
+                .push(" OR (created_at = ")
+                .push_bind(created_at)
+                .push(" AND id > ")
+                .push_bind(after.id.clone())
+                .push("))");
+        }
+        query
+            .push(" ORDER BY created_at, id LIMIT ")
+            .push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(objective_from_row)
+            .collect()
     }
 
     async fn edit_objective(
@@ -30567,6 +30608,12 @@ mod tests {
                 "waiting plan kind",
                 "EXPLAIN QUERY PLAN SELECT * FROM plan_executions WHERE status = 'waiting' AND pending_kind = 'evaluation' ORDER BY updated_at DESC, id LIMIT 128",
                 "idx_plan_executions_wait_kind",
+                false,
+            ),
+            (
+                "recoverable objectives",
+                "EXPLAIN QUERY PLAN SELECT * FROM objectives WHERE (status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL) ORDER BY created_at, id LIMIT 128",
+                "idx_objectives_recoverable_created",
                 false,
             ),
             (

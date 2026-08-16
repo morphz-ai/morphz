@@ -2,10 +2,11 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub const TYPE_USER_MESSAGE: &str = "user_message";
 pub const TYPE_AGENT_CALL: &str = "agent_call";
@@ -58,6 +59,75 @@ impl Event {
             topic,
             payload,
         }
+    }
+}
+
+/// Fair process-local retry queue for business delivery of already durable
+/// Events. The Event ledger remains the crash-recovery authority; this queue
+/// only closes the live-process window where an asynchronous subscriber sees
+/// a transient Store error after the Event itself has committed.
+///
+/// IDs stay reserved while an Event is in flight, so duplicate EventBus
+/// dispatch cannot create parallel retries. A failed delivery is appended to
+/// the tail, allowing later Events to make progress instead of being starved
+/// behind one persistently failing owner.
+#[derive(Debug, Default)]
+pub(crate) struct DurableEventDeliveryQueue {
+    state: Mutex<DurableEventDeliveryState>,
+}
+
+#[derive(Debug, Default)]
+struct DurableEventDeliveryState {
+    queue: VecDeque<Event>,
+    known_ids: HashSet<String>,
+}
+
+impl DurableEventDeliveryQueue {
+    pub(crate) fn enqueue(&self, event: Event) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.known_ids.insert(event.id.clone()) {
+            return false;
+        }
+        state.queue.push_back(event);
+        true
+    }
+
+    pub(crate) fn take_batch(&self, limit: usize) -> Vec<Event> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = limit.min(state.queue.len());
+        state.queue.drain(..count).collect()
+    }
+
+    pub(crate) fn acknowledge(&self, event_id: &str) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .known_ids
+            .remove(event_id);
+    }
+
+    pub(crate) fn retry(&self, event: Event) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.known_ids.contains(&event.id) {
+            state.queue.push_back(event);
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .known_ids
+            .is_empty()
     }
 }
 
@@ -534,6 +604,37 @@ mod tests {
         // Should contain `audit:chat/msg` (synchronous) and `chat/msg` (asynchronous).
         assert!(recs.contains(&"audit:chat/msg".to_string()));
         assert!(recs.contains(&"chat/msg".to_string()));
+    }
+
+    #[test]
+    fn durable_delivery_queue_deduplicates_and_retries_fairly() {
+        let queue = DurableEventDeliveryQueue::default();
+        let event = |id: &str| {
+            Event::new(
+                id.to_string(),
+                "runtime".to_string(),
+                "runtime_control".to_string(),
+                "runtime/test".to_string(),
+                serde_json::Map::new(),
+            )
+        };
+
+        assert!(queue.enqueue(event("event-a")));
+        assert!(!queue.enqueue(event("event-a")));
+        assert!(queue.enqueue(event("event-b")));
+
+        let mut first = queue.take_batch(1);
+        assert_eq!(first[0].id, "event-a");
+        queue.retry(first.remove(0));
+
+        let mut second = queue.take_batch(1);
+        assert_eq!(second[0].id, "event-b");
+        queue.acknowledge(&second.remove(0).id);
+
+        let mut retry = queue.take_batch(1);
+        assert_eq!(retry[0].id, "event-a");
+        queue.acknowledge(&retry.remove(0).id);
+        assert!(queue.is_empty());
     }
 
     #[test]

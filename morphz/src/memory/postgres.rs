@@ -13,14 +13,14 @@ use crate::memory::{
     ContextCognitiveClock, ContextEncodingProjectionSnapshot, EventAppend, EventStore,
     MindProjectionCommit, MindProjectionHead, MindProjectionRecord, MindProjectionStore,
     MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, NewThread,
-    ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, ProviderAccountAffinityRecord, ProviderAccountStateRecord,
-    ProviderAccountStateStore, ProviderAccountStatus, ProviderModelCatalogRecord,
-    ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter, RecallDocument,
-    RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability,
-    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
-    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
-    SessionProjectionStore, TimerStore,
+    ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveRecord, ObjectiveRecoveryCursor,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
+    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
+    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
+    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
+    SessionProjectionMutation, SessionProjectionStore, TimerStore,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -631,6 +631,10 @@ impl PostgresStore {
                ON objectives(delivery_session_id, status)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_objectives_recovery
                ON objectives(status, evaluation_lease_expires_at, updated_at)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_objectives_recoverable_created
+               ON objectives(created_at, id)
+               WHERE status IN ('active', 'paused', 'blocked')
+                  OR active_evaluation_id IS NOT NULL"#,
             r#"ALTER TABLE objectives
                ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
             r#"ALTER TABLE objectives
@@ -3527,6 +3531,43 @@ impl ObjectiveStore for PostgresStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn list_recoverable_objectives_page(
+        &self,
+        after: Option<&ObjectiveRecoveryCursor>,
+        limit: usize,
+    ) -> Result<Vec<ObjectiveRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query: QueryBuilder<'_, Postgres> = QueryBuilder::new(OBJECTIVE_SELECT);
+        query.push(
+            " WHERE (status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL)",
+        );
+        if let Some(after) = after {
+            let created_at = after
+                .created_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            query
+                .push(" AND (created_at > ")
+                .push_bind(created_at.clone())
+                .push(" OR (created_at = ")
+                .push_bind(created_at)
+                .push(" AND id > ")
+                .push_bind(after.id.clone())
+                .push("))");
+        }
+        query
+            .push(" ORDER BY created_at, id LIMIT ")
+            .push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(objective_from_row)
+            .collect()
     }
 
     async fn edit_objective(

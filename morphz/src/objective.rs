@@ -5,10 +5,10 @@ use crate::llm::ToolDefinition;
 use crate::memory::{
     stable_thread_id, ActivationStore, DelegationStatus, DelegationStore, EventStore,
     ExecutionJobRecord, ExecutionJobStore, NewObjective, NewRuntimeTimer, NewThread,
-    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadGroupFilter, ThreadGroupStore, ThreadKind, ThreadSupervision,
-    ThreadSupervisorKind,
+    ObjectiveMutation, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadGroupFilter, ThreadGroupStore,
+    ThreadKind, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::scheduler::{
@@ -27,12 +27,31 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 pub const TYPE_OBJECTIVE_CONTROL: &str = "objective_control";
 const OBJECTIVE_CONTINUATION_INSTRUCTION: &str = "Continue the stated objective autonomously. Audit remaining requirements against current evidence. If complete, call objective_update before the final reply; if waiting, record a precise wait condition; otherwise make new progress.";
+const OBJECTIVE_RECONCILE_BATCH: usize = 128;
+const OBJECTIVE_RECONCILE_DIRTY_CONTEXT_BATCH: usize = 32;
+const OBJECTIVE_RECONCILE_FALLBACK_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(30);
+const OBJECTIVE_ORPHAN_SCHEDULE_GRACE: Duration = Duration::seconds(2);
+
+fn objective_reconcile_event(event: &Event) -> bool {
+    event.payload.contains_key("context_id")
+        && !matches!(
+            event.topic.as_str(),
+            "chat/progress"
+                | "chat/context_inspect"
+                | "runtime/model_stream"
+                | "runtime/model_request_snapshot"
+                | "runtime/model_attempt_snapshot"
+                | "runtime/model_attempt_state"
+                | "runtime/model_usage"
+        )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ObjectiveClosureReview {
@@ -1234,6 +1253,10 @@ pub struct ObjectiveSupervisor {
     lease_duration: Duration,
     schedule_locks: DashMap<String, Arc<Mutex<()>>>,
     external_wait_subscriptions: DashMap<String, (u64, String, String)>,
+    reconcile_dirty_contexts: Arc<DashMap<String, ()>>,
+    reconcile_wakeup: Arc<Notify>,
+    reconcile_cursor: std::sync::Mutex<Option<ObjectiveRecoveryCursor>>,
+    reconcile_full_sweep_pending: AtomicBool,
     started: AtomicBool,
 }
 
@@ -1356,6 +1379,10 @@ impl ObjectiveSupervisor {
             lease_duration,
             schedule_locks: DashMap::new(),
             external_wait_subscriptions: DashMap::new(),
+            reconcile_dirty_contexts: Arc::new(DashMap::new()),
+            reconcile_wakeup: Arc::new(Notify::new()),
+            reconcile_cursor: std::sync::Mutex::new(None),
+            reconcile_full_sweep_pending: AtomicBool::new(false),
             started: AtomicBool::new(false),
         }
     }
@@ -1875,6 +1902,28 @@ impl ObjectiveSupervisor {
                 Box::pin(async move { supervisor.handle_objective_event(event).await })
             }),
         );
+        // Event delivery is a latency hint, not the only way an Objective may
+        // discover an already committed fact. Coalesce causal mutations by
+        // Context so transient asynchronous-handler failures are repaired
+        // online without polling idle Contexts or replaying the whole Ledger.
+        let dirty_contexts = Arc::clone(&self.reconcile_dirty_contexts);
+        let reconcile_wakeup = Arc::clone(&self.reconcile_wakeup);
+        self.bus.subscribe(
+            "*".to_string(),
+            Arc::new(move |event| {
+                if objective_reconcile_event(&event) {
+                    if let Some(context_id) = event
+                        .payload
+                        .get("context_id")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        dirty_contexts.insert(context_id.to_string(), ());
+                        reconcile_wakeup.notify_one();
+                    }
+                }
+                Box::pin(async { Ok(()) })
+            }),
+        );
         for mut objective in self.store.list_recoverable_objectives().await? {
             self.publish_recovery_observation(&objective).await?;
             if let Some(intent) = objective.completion_intent.clone() {
@@ -2018,6 +2067,203 @@ impl ObjectiveSupervisor {
                 }
             }
             self.reconcile(objective).await?;
+        }
+        self.start_continuous_reconciler();
+        Ok(())
+    }
+
+    fn start_continuous_reconciler(self: &Arc<Self>) {
+        let supervisor = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut next_fallback =
+                tokio::time::Instant::now() + OBJECTIVE_RECONCILE_FALLBACK_INTERVAL;
+            loop {
+                let Some(current) = supervisor.upgrade() else {
+                    break;
+                };
+                let wakeup = Arc::clone(&current.reconcile_wakeup);
+                drop(current);
+                let full_reconcile = tokio::select! {
+                    _ = wakeup.notified() => supervisor.upgrade().is_some_and(|current| {
+                        current
+                            .reconcile_full_sweep_pending
+                            .swap(false, Ordering::AcqRel)
+                    }),
+                    _ = tokio::time::sleep_until(next_fallback) => true,
+                };
+                if full_reconcile {
+                    next_fallback =
+                        tokio::time::Instant::now() + OBJECTIVE_RECONCILE_FALLBACK_INTERVAL;
+                }
+                let Some(current) = supervisor.upgrade() else {
+                    break;
+                };
+                if let Err(error) = current.reconcile_continuous_batch(full_reconcile).await {
+                    tracing::error!(
+                        %error,
+                        event_code = "objective.continuous_reconcile.failed",
+                        "Continuous Objective convergence failed; durable state will be retried"
+                    );
+                }
+            }
+        });
+    }
+
+    async fn reconcile_continuous_batch(
+        self: &Arc<Self>,
+        full_reconcile: bool,
+    ) -> Result<usize, DynError> {
+        let dirty_context_ids = self
+            .reconcile_dirty_contexts
+            .iter()
+            .take(OBJECTIVE_RECONCILE_DIRTY_CONTEXT_BATCH)
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        let mut reconciled = 0usize;
+        for context_id in dirty_context_ids {
+            if self.reconcile_dirty_contexts.remove(&context_id).is_none() {
+                continue;
+            }
+            match self.store.list_context_objectives(&context_id, false).await {
+                Ok(objectives) => {
+                    for objective in objectives {
+                        if let Err(error) = self
+                            .reconcile_durable_objective(objective, full_reconcile)
+                            .await
+                        {
+                            tracing::warn!(
+                                context_id,
+                                %error,
+                                event_code = "objective.continuous_reconcile.context_failed",
+                                "Objective convergence for a dirty Context failed; retaining the invalidation"
+                            );
+                            self.reconcile_dirty_contexts.insert(context_id.clone(), ());
+                            break;
+                        }
+                        reconciled = reconciled.saturating_add(1);
+                    }
+                }
+                Err(error) => {
+                    self.reconcile_dirty_contexts.insert(context_id.clone(), ());
+                    tracing::warn!(
+                        context_id,
+                        %error,
+                        event_code = "objective.continuous_reconcile.context_read_failed",
+                        "Could not read a dirty Objective Context; retaining it for retry"
+                    );
+                }
+            }
+        }
+
+        if !full_reconcile {
+            return Ok(reconciled);
+        }
+
+        let cursor = self
+            .reconcile_cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let page = self
+            .store
+            .list_recoverable_objectives_page(cursor.as_ref(), OBJECTIVE_RECONCILE_BATCH)
+            .await?;
+        if page.is_empty() {
+            *self
+                .reconcile_cursor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        } else {
+            for objective in &page {
+                if let Err(error) = self
+                    .reconcile_durable_objective(objective.clone(), full_reconcile)
+                    .await
+                {
+                    tracing::warn!(
+                        objective_id = %objective.id,
+                        context_id = %objective.context_id,
+                        %error,
+                        event_code = "objective.continuous_reconcile.objective_failed",
+                        "One Objective failed continuous convergence; the round-robin cursor will revisit it"
+                    );
+                    self.reconcile_dirty_contexts
+                        .insert(objective.context_id.clone(), ());
+                } else {
+                    reconciled = reconciled.saturating_add(1);
+                }
+            }
+            if page.len() == OBJECTIVE_RECONCILE_BATCH {
+                let last = page
+                    .last()
+                    .expect("a full Objective recovery page cannot be empty");
+                *self
+                    .reconcile_cursor
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(ObjectiveRecoveryCursor {
+                        created_at: last.created_at,
+                        id: last.id.clone(),
+                    });
+            } else {
+                *self
+                    .reconcile_cursor
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
+        }
+        if page.len() == OBJECTIVE_RECONCILE_BATCH {
+            self.reconcile_full_sweep_pending
+                .store(true, Ordering::Release);
+            self.reconcile_wakeup.notify_one();
+        }
+        Ok(reconciled)
+    }
+
+    async fn reconcile_durable_objective(
+        self: &Arc<Self>,
+        objective: ObjectiveRecord,
+        full_reconcile: bool,
+    ) -> Result<(), DynError> {
+        // The page/Context snapshot is only a candidate set. Re-read the row
+        // before any Timer or scheduling side effect so a concurrent cancel,
+        // pause, wait transition, or Evaluation claim cannot be undone by a
+        // stale continuous-recovery snapshot.
+        let Some(objective) = self.store.get_objective(&objective.id).await? else {
+            return Ok(());
+        };
+        if objective.status == ObjectiveStatus::Active {
+            if let Some(event) = self.find_persisted_wait_event(&objective).await? {
+                self.wake_non_routed_event(&event).await?;
+                return Ok(());
+            }
+            // ToolTask, Delegation, Timer and legacy projection waits have a
+            // normal routed owner in the live process. Let that path claim the
+            // exact Event first; otherwise the repairer can clear the wait
+            // while the same Event is still becoming a routed Activation.
+            // The independent fallback deadline performs projection recovery
+            // if that owner actually failed.
+            if !full_reconcile {
+                return Ok(());
+            }
+            let orphaned_without_evaluation = objective.active_evaluation_id.is_none()
+                && Utc::now() - objective.updated_at >= OBJECTIVE_ORPHAN_SCHEDULE_GRACE;
+            if objective.wait_condition.is_some()
+                || orphaned_without_evaluation
+                || objective
+                    .evaluation_lease_expires_at
+                    .is_some_and(|expires_at| expires_at <= Utc::now())
+            {
+                return self.reconcile(objective).await;
+            }
+            // A live leased Evaluation owns progress. A fresh active/no-wait
+            // row may also be between a routed wait-clear commit and its
+            // immediate Evaluation claim; scheduling it here would create a
+            // second Evaluation. Only the fallback pass after a short grace
+            // repairs a genuinely orphaned row.
+            return Ok(());
+        }
+        if full_reconcile && objective.active_evaluation_id.is_some() {
+            return self.reconcile(objective).await;
         }
         Ok(())
     }
@@ -4316,6 +4562,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recoverable_objective_cursor_visits_each_live_row_once() {
+        let database = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(database.path().to_str().unwrap())
+            .await
+            .unwrap();
+        for suffix in ["cursor-a", "cursor-b", "cursor-c"] {
+            seed_objective_bundle(&store, suffix).await;
+        }
+
+        let mut cursor = None;
+        let mut visited = Vec::new();
+        loop {
+            let page = store
+                .list_recoverable_objectives_page(cursor.as_ref(), 1)
+                .await
+                .unwrap();
+            let Some(objective) = page.into_iter().next() else {
+                break;
+            };
+            if visited.is_empty() {
+                let mutation = store
+                    .update_objective_state(
+                        &objective.id,
+                        objective.revision,
+                        ObjectiveStatus::Active,
+                        Some(ObjectiveWaitCondition::Timer {
+                            deadline: Utc::now() + Duration::hours(1),
+                        }),
+                        Some("move updated_at without moving the recovery cursor"),
+                    )
+                    .await
+                    .unwrap();
+                assert!(matches!(mutation, ObjectiveMutation::Updated(_)));
+            }
+            cursor = Some(ObjectiveRecoveryCursor {
+                created_at: objective.created_at,
+                id: objective.id.clone(),
+            });
+            visited.push(objective.id);
+        }
+        assert_eq!(visited.len(), 3);
+        assert_eq!(
+            visited
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
     async fn directed_primary_thread_event_claims_bound_interrupt_without_clearing_wait() {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
@@ -4825,6 +5122,100 @@ mod tests {
             .unwrap()
             .expect("objective");
         assert!(runnable.active_evaluation_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn continuous_reconcile_consumes_a_persisted_resource_event_without_live_delivery() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "missed-resource-delivery").await;
+        let resource = "model-provider:test";
+        let waiting = match store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::ResourceAvailable {
+                    resource: resource.to_string(),
+                }),
+                Some("waiting for provider"),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(waiting) => waiting,
+            mutation => panic!("unexpected wait mutation: {mutation:?}"),
+        };
+        let dependency_id = stable_scheduler_dependency_id(
+            SchedulerDependencyOwnerKind::Objective,
+            &waiting.id,
+            waiting.generation,
+            SchedulerDependencyKind::Resource,
+            resource,
+            1,
+        );
+        store
+            .register_scheduler_dependency(NewSchedulerDependency {
+                id: dependency_id.clone(),
+                owner_kind: SchedulerDependencyOwnerKind::Objective,
+                owner_id: waiting.id.clone(),
+                owner_generation: waiting.generation,
+                dependency_kind: SchedulerDependencyKind::Resource,
+                dependency_id: resource.to_string(),
+                dependency_generation: 1,
+                required: true,
+                metadata: json!({"fixture": true}),
+            })
+            .await
+            .unwrap();
+        let recovered = Event::new(
+            "provider-recovered-without-live-handler".to_string(),
+            "Runtime-Test".to_string(),
+            "runtime_control".to_string(),
+            "runtime/resource_available".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!(waiting.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(waiting.coordinator_session_id),
+                ),
+                ("resource".to_string(), json!(resource)),
+            ]),
+        );
+        // Commit the physical fact without dispatching it through EventBus,
+        // reproducing a process-local subscriber failure after persistence.
+        store.append(recovered.clone()).await.unwrap();
+
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::new(ObjectiveEvaluationRegistry::default()),
+                timers,
+                std::time::Duration::from_secs(600),
+            )
+            .with_scheduler_dependency_store(
+                Arc::clone(&store) as Arc<dyn SchedulerDependencyStore>
+            ),
+        );
+        supervisor.started.store(true, Ordering::Release);
+
+        assert!(supervisor.reconcile_continuous_batch(true).await.unwrap() > 0);
+        let dependency = store
+            .get_scheduler_dependency(&dependency_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(dependency.status, SchedulerDependencyStatus::Pending);
+        let resumed = store.get_objective(&waiting.id).await.unwrap().unwrap();
+        assert!(resumed.wait_condition.is_none());
+        assert!(resumed.active_evaluation_id.is_some());
     }
 
     #[tokio::test]
