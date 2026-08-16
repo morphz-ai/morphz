@@ -227,10 +227,18 @@ const objectiveTones: readonly ObjectiveTone[] = [
   { color: '#e8a23b' },
   { color: '#38bd83' },
   { color: '#eb6f96' },
-  { color: '#6e93f7' },
+  // A yellow-green occupies the sixth categorical region. The previous blue
+  // was too close to the violet above on the Dashboard's dark surfaces.
+  { color: '#b9cf52' },
 ]
 
 export const TINT_PALETTE_SIZE = objectiveTones.length
+export const TINT_RECENT_SLOT_LIMIT = TINT_PALETTE_SIZE * 2
+
+export interface TintSlotAllocation {
+  slots: Map<string, number>
+  recentlyReleasedSlots: number[]
+}
 
 /**
  * Allocates a palette slot per live entity.
@@ -242,9 +250,9 @@ export const TINT_PALETTE_SIZE = objectiveTones.length
  * occupancy, so entities that are alive at the same time never share a colour.
  *
  * A slot is held for as long as its entity stays in `activeIds`, which keeps a
- * colour stable while the user is reading, and is released for reuse once the
- * entity is gone. Callers pass the previous assignment back in; ordering of
- * `activeIds` decides who claims a freed slot first.
+ * colour stable while the user is reading. Callers can reserve recently
+ * released slots so a new entity does not immediately inherit the colour the
+ * operator still associates with its predecessor.
  *
  * The first slots use the hand-tuned palette. Further slots are still unique
  * and receive generated tones: turning tinting off merely because a message
@@ -254,6 +262,7 @@ export const TINT_PALETTE_SIZE = objectiveTones.length
 export function assignTintSlots(
   activeIds: readonly string[],
   previous: ReadonlyMap<string, number>,
+  reservedSlots: ReadonlySet<number> = new Set(),
 ): Map<string, number> {
   const next = new Map<string, number>()
   const taken = new Set<number>()
@@ -267,26 +276,140 @@ export function assignTintSlots(
   for (const id of wanted) {
     if (next.has(id)) continue
     let slot = 0
-    while (taken.has(slot)) slot += 1
+    while (taken.has(slot) || reservedSlots.has(slot)) slot += 1
     next.set(id, slot)
     taken.add(slot)
   }
   return next
 }
 
+/**
+ * Reconciles live assignments and quarantines recently released colours.
+ *
+ * The quarantine is activity-bounded rather than time-based: it survives
+ * rapid streaming churn without timers, but old slots naturally become
+ * reusable after enough other entities have left the page.
+ */
+export function reconcileTintSlots(
+  activeIds: readonly string[],
+  previous: ReadonlyMap<string, number>,
+  previousRecentlyReleasedSlots: readonly number[] = [],
+): TintSlotAllocation {
+  const wanted = [...new Set(activeIds.filter(Boolean))]
+  const wantedSet = new Set(wanted)
+  const stillActiveSlots = new Set(
+    wanted.flatMap(id => {
+      const slot = previous.get(id)
+      return slot === undefined ? [] : [slot]
+    }),
+  )
+  const recentlyReleasedSlots: number[] = []
+  const rememberReleasedSlot = (slot: number) => {
+    if (stillActiveSlots.has(slot) || recentlyReleasedSlots.includes(slot)) return
+    recentlyReleasedSlots.push(slot)
+  }
+  for (const [id, slot] of previous) {
+    if (!wantedSet.has(id)) rememberReleasedSlot(slot)
+  }
+  for (const slot of previousRecentlyReleasedSlots) rememberReleasedSlot(slot)
+  recentlyReleasedSlots.splice(TINT_RECENT_SLOT_LIMIT)
+
+  return {
+    slots: assignTintSlots(wanted, previous, new Set(recentlyReleasedSlots)),
+    recentlyReleasedSlots,
+  }
+}
+
+type Rgb = readonly [number, number, number]
+type Oklab = readonly [number, number, number]
+
+function hslToRgb(hue: number, saturation: number, lightness: number): Rgb {
+  const s = saturation / 100
+  const l = lightness / 100
+  const chroma = (1 - Math.abs(2 * l - 1)) * s
+  const section = ((hue % 360) + 360) % 360 / 60
+  const x = chroma * (1 - Math.abs(section % 2 - 1))
+  const [red, green, blue]: Rgb = section < 1 ? [chroma, x, 0]
+    : section < 2 ? [x, chroma, 0]
+      : section < 3 ? [0, chroma, x]
+        : section < 4 ? [0, x, chroma]
+          : section < 5 ? [x, 0, chroma]
+            : [chroma, 0, x]
+  const match = l - chroma / 2
+  return [red + match, green + match, blue + match]
+}
+
+function toneToRgb(tone: ObjectiveTone): Rgb {
+  if (tone.color.startsWith('#')) {
+    const value = Number.parseInt(tone.color.slice(1), 16)
+    return [((value >> 16) & 0xff) / 255, ((value >> 8) & 0xff) / 255, (value & 0xff) / 255]
+  }
+  const hsl = /^hsl\(([\d.]+)\s+([\d.]+)%\s+([\d.]+)%\)$/.exec(tone.color)
+  if (!hsl) return [0, 0, 0]
+  return hslToRgb(Number(hsl[1]), Number(hsl[2]), Number(hsl[3]))
+}
+
+function rgbToOklab([red, green, blue]: Rgb): Oklab {
+  const linear = (value: number) => value <= 0.04045
+    ? value / 12.92
+    : ((value + 0.055) / 1.055) ** 2.4
+  const r = linear(red)
+  const g = linear(green)
+  const b = linear(blue)
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ]
+}
+
+export function tintToneDistance(left: ObjectiveTone, right: ObjectiveTone): number {
+  const [leftL, leftA, leftB] = rgbToOklab(toneToRgb(left))
+  const [rightL, rightA, rightB] = rgbToOklab(toneToRgb(right))
+  return Math.hypot(leftL - rightL, leftA - rightA, leftB - rightB)
+}
+
+const generatedToneCandidates: readonly ObjectiveTone[] = [52, 62, 72].flatMap(lightness => (
+  [64, 78].flatMap(saturation => (
+    Array.from({ length: 30 }, (_, index) => ({
+      color: `hsl(${index * 12} ${saturation}% ${lightness}%)`,
+    }))
+  ))
+))
+const generatedTones: ObjectiveTone[] = []
+
+function generatedToneForIndex(index: number): ObjectiveTone {
+  while (generatedTones.length <= index) {
+    const existing = [...objectiveTones, ...generatedTones]
+    const used = new Set(existing.map(tone => tone.color))
+    let best: ObjectiveTone | undefined
+    let bestDistance = -1
+    for (const candidate of generatedToneCandidates) {
+      if (used.has(candidate.color)) continue
+      const distance = Math.min(...existing.map(tone => tintToneDistance(candidate, tone)))
+      if (distance > bestDistance) {
+        best = candidate
+        bestDistance = distance
+      }
+    }
+    generatedTones.push(best ?? {
+      color: `hsl(${Math.round((188 + generatedTones.length * 137.508) % 360)} 70% 60%)`,
+    })
+  }
+  return generatedTones[index]
+}
+
 export function toneForSlot(slot: number | undefined): ObjectiveTone | undefined {
   if (slot === undefined || !Number.isSafeInteger(slot) || slot < 0) return undefined
   const curated = objectiveTones[slot]
   if (curated) return curated
-  // Golden-angle spacing avoids repeating the six curated colours and keeps
-  // adjacent overflow slots visually apart. Saturation/lightness bands add a
-  // second deterministic dimension without producing colours too dark for the
-  // Dashboard's borders and identifier chips.
-  const overflow = slot - objectiveTones.length
-  const hue = Math.round((188 + overflow * 137.508) % 360)
-  const saturation = 64 + (overflow % 3) * 5
-  const lightness = 57 + (Math.floor(overflow / 3) % 3) * 4
-  return { color: `hsl(${hue} ${saturation}% ${lightness}%)` }
+  // Each overflow tone maximises its minimum OKLab distance from every tone
+  // allocated before it. Slot uniqueness alone is insufficient: two distinct
+  // RGB values that both read as violet still look like the same causal owner.
+  return generatedToneForIndex(slot - objectiveTones.length)
 }
 
 /** The id a message is coloured by, given the dimension in effect. */

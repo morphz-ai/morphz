@@ -6,7 +6,10 @@ import {
   assignTintSlots,
   autoTintDimension,
   buildObjectiveLineageIndex,
+  reconcileTintSlots,
+  TINT_RECENT_SLOT_LIMIT,
   TINT_PALETTE_SIZE,
+  tintToneDistance,
   tintIdForLineage,
   toneForSlot,
 } from '../src/app/objectiveLineage.ts'
@@ -296,9 +299,32 @@ test('a live entity keeps its slot while its neighbours come and go', () => {
   const second = assignTintSlots(['alpha', 'gamma', 'delta'], first)
   assert.equal(second.get('alpha'), alphaSlot)
   assert.equal(new Set(second.values()).size, 3)
-  // beta's slot is free again rather than being held forever.
+  // The low-level allocator releases beta's slot; the UI reconciliation layer
+  // adds a short reuse quarantine below.
   assert.equal(second.has('beta'), false)
   assert.ok([...second.values()].includes(first.get('beta') as number))
+})
+
+test('recently released tint slots are not immediately reassigned', () => {
+  const first = reconcileTintSlots(['alpha', 'beta'], new Map())
+  const betaSlot = first.slots.get('beta')
+  const second = reconcileTintSlots(
+    ['alpha', 'gamma'],
+    first.slots,
+    first.recentlyReleasedSlots,
+  )
+  assert.notEqual(second.slots.get('gamma'), betaSlot)
+  assert.deepEqual(second.recentlyReleasedSlots, [betaSlot])
+
+  let current = second
+  for (let index = 0; index < TINT_RECENT_SLOT_LIMIT + 2; index += 1) {
+    current = reconcileTintSlots(
+      ['alpha', `replacement-${index}`],
+      current.slots,
+      current.recentlyReleasedSlots,
+    )
+  }
+  assert.ok(current.recentlyReleasedSlots.length <= TINT_RECENT_SLOT_LIMIT)
 })
 
 test('entities beyond the curated palette remain tinted without repeating a slot', () => {
@@ -309,6 +335,18 @@ test('entities beyond the curated palette remain tinted without repeating a slot
   for (const id of ids.slice(TINT_PALETTE_SIZE)) {
     assert.match(toneForSlot(slots.get(id))?.color ?? '', /^hsl\(/)
   }
+})
+
+test('visible tint tones maintain perceptual separation across palette overflow', () => {
+  const tones = Array.from({ length: TINT_PALETTE_SIZE + 6 }, (_, slot) => toneForSlot(slot))
+    .filter((tone): tone is NonNullable<typeof tone> => Boolean(tone))
+  let minimumDistance = Number.POSITIVE_INFINITY
+  for (let left = 0; left < tones.length; left += 1) {
+    for (let right = left + 1; right < tones.length; right += 1) {
+      minimumDistance = Math.min(minimumDistance, tintToneDistance(tones[left], tones[right]))
+    }
+  }
+  assert.ok(minimumDistance >= 0.08, `minimum OKLab distance was ${minimumDistance}`)
 })
 
 test('tint dimension follows the level being attended to', () => {

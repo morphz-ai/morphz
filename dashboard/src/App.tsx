@@ -118,9 +118,9 @@ import { resolveDashboardToken } from './api/auth'
 import { invalidatedQueriesForTopic } from './app/invalidation'
 import { copyTextToClipboard } from './utils/clipboard'
 import {
-  assignTintSlots,
   autoTintDimension,
   buildObjectiveLineageIndex,
+  reconcileTintSlots,
   tintIdForLineage,
   toneForSlot,
   type CausalLineage,
@@ -4632,15 +4632,28 @@ export default function App() {
   // key makes that history explicit rather than hiding it in a ref that is
   // read while rendering.
   const tintCandidateKey = tintCandidateIds.join('\u0000')
+  const tintScopeKey = [selectedContextId, selectedSessionId, tintDimension].join('\u0000')
   const [tintSlotState, setTintSlotState] = useState<{
     key: string
+    scopeKey: string
     slots: ReadonlyMap<string, number>
-  }>(() => ({ key: '', slots: new Map() }))
-  const tintSlots = tintSlotState.key === tintCandidateKey
-    ? tintSlotState.slots
-    : assignTintSlots(tintCandidateIds, tintSlotState.slots)
-  if (tintSlotState.key !== tintCandidateKey) {
-    setTintSlotState({ key: tintCandidateKey, slots: tintSlots })
+    recentlyReleasedSlots: readonly number[]
+  }>(() => ({ key: '', scopeKey: '', slots: new Map(), recentlyReleasedSlots: [] }))
+  const tintSlotAllocation = tintSlotState.key === tintCandidateKey
+      && tintSlotState.scopeKey === tintScopeKey
+    ? tintSlotState
+    : {
+        key: tintCandidateKey,
+        scopeKey: tintScopeKey,
+        ...reconcileTintSlots(
+          tintCandidateIds,
+          tintSlotState.scopeKey === tintScopeKey ? tintSlotState.slots : new Map(),
+          tintSlotState.scopeKey === tintScopeKey ? tintSlotState.recentlyReleasedSlots : [],
+        ),
+      }
+  const tintSlots = tintSlotAllocation.slots
+  if (tintSlotState.key !== tintCandidateKey || tintSlotState.scopeKey !== tintScopeKey) {
+    setTintSlotState(tintSlotAllocation)
   }
   const tintStyleFor: TintStyleResolver = id => {
     if (!objectiveTintEnabled || !id) return undefined
