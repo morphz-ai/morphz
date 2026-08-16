@@ -1,4 +1,4 @@
-use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT};
+use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
 use crate::harness::{ExactHarnessRef, HarnessRegistry};
 use crate::harness_package::{load_objective_harness_binding, objective_harness_binding_event};
 use crate::llm::ToolDefinition;
@@ -18,8 +18,8 @@ use crate::scheduler::{
 };
 use crate::timer::{TimerDisposition, TimerEngine};
 use crate::tool::{
-    Tool, ToolExecutionClass, CURRENT_ATTEMPT_ID, CURRENT_CONTEXT_ID, CURRENT_PRINCIPAL_ID,
-    CURRENT_SESSION_ID,
+    Tool, ToolExecutionClass, CURRENT_ATTEMPT_ID, CURRENT_CAUSAL_ROUTE, CURRENT_CONTEXT_ID,
+    CURRENT_PRINCIPAL_ID, CURRENT_SESSION_ID,
 };
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
@@ -345,7 +345,7 @@ impl Tool for ObjectiveCreateTool {
                 .is_none()
             {
                 self.supervisor
-                    .claim_routed_evaluation(&existing, &attempt_id, Some(&attempt_id), false)
+                    .claim_routed_evaluation(&existing, &attempt_id, Some(&attempt_id), false, None)
                     .await?
             } else {
                 None
@@ -444,7 +444,7 @@ impl Tool for ObjectiveCreateTool {
             .is_none()
         {
             self.supervisor
-                .claim_routed_evaluation(&created, &attempt_id, Some(&attempt_id), false)
+                .claim_routed_evaluation(&created, &attempt_id, Some(&attempt_id), false, None)
                 .await?
         } else {
             None
@@ -513,6 +513,13 @@ struct ObjectiveUpdateArgs {
 pub struct ObjectiveUpdateTool {
     supervisor: Arc<ObjectiveSupervisor>,
     context_engine: Arc<ContextEngine>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutedObjectiveEventDisposition {
+    Unrelated,
+    Admitted,
+    Suppressed,
 }
 
 impl ObjectiveUpdateTool {
@@ -733,6 +740,7 @@ impl Tool for ObjectiveUpdateTool {
                             "objective_id": current.id,
                             "expected_revision": args.base_revision,
                             "current_revision": current.revision,
+                            "current_stated_objective": current.stated_objective,
                             "current_status": current.status,
                             "current_status_reason": current.status_reason,
                             "wait_condition": current.wait_condition,
@@ -796,10 +804,224 @@ impl Tool for ObjectiveUpdateTool {
                     "objective_id": current.id,
                     "expected_revision": args.base_revision,
                     "current_revision": current.revision,
+                    "current_stated_objective": current.stated_objective,
                     "current_status": current.status,
                     "current_status_reason": current.status_reason,
                     "wait_condition": current.wait_condition,
                     "guidance": "Re-evaluate from the latest Context Encoding; never overwrite with a stale revision."
+                }),
+                ObjectiveMutation::NotFound => json!({
+                    "status": "not_found",
+                    "objective_id": args.objective_id
+                }),
+            }),
+        )?)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ObjectiveAmendArgs {
+    objective_id: String,
+    base_revision: u64,
+    stated_objective: String,
+    reason: String,
+    #[serde(default)]
+    evidence_refs: Vec<String>,
+}
+
+pub struct ObjectiveAmendTool {
+    supervisor: Arc<ObjectiveSupervisor>,
+    context_engine: Arc<ContextEngine>,
+}
+
+impl ObjectiveAmendTool {
+    pub fn new(supervisor: Arc<ObjectiveSupervisor>, context_engine: Arc<ContextEngine>) -> Self {
+        Self {
+            supervisor,
+            context_engine,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for ObjectiveAmendTool {
+    fn name(&self) -> &str {
+        "objective_amend"
+    }
+
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "Amend an existing Objective only when the current DialogueTurn was initiated by the Objective owner's user message. This changes the durable completion contract with revision CAS and queues the correction on the Objective's primary Thread. It preserves lifecycle status, waits, and already-running child work. Objective-bound Evaluations cannot call this tool; they may only use objective_update for lifecycle state.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "objective_id": {
+                        "type": "string",
+                        "description": "The exact Objective ID named by the user's correction"
+                    },
+                    "base_revision": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "The latest visible Objective revision"
+                    },
+                    "stated_objective": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The complete corrected objective, not a patch fragment"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Why the current user message changes the Objective contract"
+                    },
+                    "evidence_refs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional current Context Ledger refs supporting the correction"
+                    }
+                },
+                "required": ["objective_id", "base_revision", "stated_objective", "reason", "evidence_refs"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: &str) -> Result<String, DynError> {
+        let args: ObjectiveAmendArgs = serde_json::from_str(arguments)?;
+        let session_id = CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "objective_amend 缺少 Runtime 注入的当前 Session")?;
+        let context_id = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "objective_amend 缺少 Runtime 注入的当前 Context")?;
+        let attempt_id = CURRENT_ATTEMPT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "objective_amend 缺少 Runtime 注入的当前 Evaluation")?;
+        let route = CURRENT_CAUSAL_ROUTE
+            .try_with(Clone::clone)
+            .ok()
+            .flatten()
+            .ok_or("objective_amend 缺少 Runtime 注入的 DialogueTurn 因果路由")?;
+        let reason = args.reason.trim();
+        if reason.is_empty() || reason.chars().count() > 10_000 {
+            return Err("objective_amend.reason 必须为 1 到 10,000 个字符".into());
+        }
+        let stated_objective = args.stated_objective.trim();
+        if stated_objective.is_empty() {
+            return Err("objective_amend.stated_objective 不能为空".into());
+        }
+        let objective = self
+            .supervisor
+            .get(&args.objective_id)
+            .await?
+            .ok_or_else(|| format!("Objective '{}' 不存在", args.objective_id))?;
+        if objective.context_id != context_id || objective.coordinator_session_id != session_id {
+            return Err(format!(
+                "当前 Session/Context 无权修改 Objective '{}'",
+                args.objective_id
+            )
+            .into());
+        }
+        if self
+            .supervisor
+            .evaluations
+            .get_for_activation(&attempt_id)
+            .is_some()
+        {
+            return Err(
+                "Objective-bound Evaluation 无权修改自身完成契约；只能更新生命周期状态".into(),
+            );
+        }
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("objective_amend 需要 Runtime SessionStore 验证 DialogueTurn 权限")?;
+        let thread = session_store
+            .get_thread(&route.thread_id)
+            .await?
+            .ok_or_else(|| format!("DialogueTurn Thread '{}' 不存在", route.thread_id))?;
+        let trigger = self
+            .context_engine
+            .find_event(&context_id, &route.trigger_event_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "DialogueTurn 触发 Event '{}' 不存在",
+                    route.trigger_event_id
+                )
+            })?;
+        if thread.kind != ThreadKind::DialogueTurn
+            || thread.context_id != context_id
+            || thread.session_id != session_id
+            || trigger.event_type != TYPE_USER_MESSAGE
+        {
+            return Err("objective_amend 只允许由当前用户消息触发的 DialogueTurn 调用".into());
+        }
+        let owner_principal_id = objective
+            .initiating_principal_id
+            .as_deref()
+            .ok_or("旧版无归属 Objective 不能由模型代为修改；请使用 Dashboard Operator")?;
+        let active_principal_id = CURRENT_PRINCIPAL_ID
+            .try_with(Clone::clone)
+            .ok()
+            .flatten()
+            .ok_or("objective_amend 缺少已认证 Principal")?;
+        if active_principal_id != owner_principal_id
+            || !session_store
+                .verify_session_principal(&session_id, &active_principal_id)
+                .await?
+        {
+            return Err(format!("当前 Principal 无权修改 Objective '{}'", objective.id).into());
+        }
+        for evidence_ref in &args.evidence_refs {
+            if self
+                .context_engine
+                .find_event(&context_id, evidence_ref)
+                .await?
+                .is_none()
+            {
+                return Err(
+                    format!("evidence_ref '{}' 不存在或不属于当前 Context", evidence_ref).into(),
+                );
+            }
+        }
+        let mutation = self
+            .supervisor
+            .amend_from_dialogue(
+                &objective.id,
+                args.base_revision,
+                stated_objective,
+                reason,
+                &trigger,
+                &active_principal_id,
+            )
+            .await?;
+        Ok(serde_json::to_string_pretty(
+            &crate::local_time::localized_runtime_json(match mutation {
+                ObjectiveMutation::Updated(updated) => json!({
+                    "status": "committed",
+                    "objective_id": updated.id,
+                    "revision": updated.revision,
+                    "stated_objective": updated.stated_objective,
+                    "objective_status": updated.status,
+                    "wait_condition": updated.wait_condition,
+                    "evidence_refs": args.evidence_refs,
+                    "guidance": "The correction is committed and queued on the Objective primary Thread. Existing lifecycle state, waits, and child work were preserved."
+                }),
+                ObjectiveMutation::Conflict { current } => json!({
+                    "status": "revision_conflict",
+                    "objective_id": current.id,
+                    "expected_revision": args.base_revision,
+                    "current_revision": current.revision,
+                    "current_stated_objective": current.stated_objective,
+                    "current_status": current.status,
+                    "wait_condition": current.wait_condition,
+                    "guidance": "Reread the latest Objective and reapply the user's correction; never overwrite a newer revision."
                 }),
                 ObjectiveMutation::NotFound => json!({
                     "status": "not_found",
@@ -816,6 +1038,7 @@ pub struct ActiveObjectiveEvaluation {
     pub evaluation_id: String,
     pub revision: u64,
     pub started_at: DateTime<Utc>,
+    pub pending_dependency_id: Option<String>,
 }
 
 /// Runtime-local routing metadata. The persistent lease in ObjectiveStore is
@@ -1279,11 +1502,52 @@ impl ObjectiveSupervisor {
         }
     }
 
+    async fn claim_objective_interrupt_evaluation(
+        &self,
+        objective: &ObjectiveRecord,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        pending_dependency_id: &str,
+        causation_id: &str,
+    ) -> Result<ObjectiveMutation, DynError> {
+        if let Some(kernel) = self.scheduler_kernel.as_ref() {
+            return match kernel
+                .execute(
+                    crate::controllers::ObjectiveController::claim_interrupt_evaluation(
+                        objective,
+                        evaluation_id,
+                        lease_expires_at,
+                        pending_dependency_id,
+                        causation_id,
+                        "ObjectiveSupervisor",
+                    ),
+                )
+                .await?
+            {
+                KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
+                _ => Err(
+                    "Scheduler Kernel 返回了错误的 Objective interrupt evaluation claim 结果"
+                        .into(),
+                ),
+            };
+        }
+        self.store
+            .claim_objective_interrupt_evaluation(
+                &objective.id,
+                objective.revision,
+                evaluation_id,
+                lease_expires_at,
+                pending_dependency_id,
+            )
+            .await
+    }
+
     async fn renew_objective_evaluation(
         &self,
         objective_id: &str,
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
+        pending_dependency_id: Option<&str>,
         causation_id: &str,
     ) -> Result<ObjectiveMutation, DynError> {
         let Some(objective) = self.store.get_objective(objective_id).await? else {
@@ -1295,6 +1559,7 @@ impl ObjectiveSupervisor {
                     &objective,
                     evaluation_id,
                     lease_expires_at,
+                    pending_dependency_id,
                     causation_id,
                     "ObjectiveSupervisor",
                 ))
@@ -1304,9 +1569,20 @@ impl ObjectiveSupervisor {
                 _ => Err("Scheduler Kernel 返回了错误的 Objective evaluation renew 结果".into()),
             };
         }
-        self.store
-            .renew_objective_evaluation(objective_id, evaluation_id, lease_expires_at)
-            .await
+        if let Some(pending_dependency_id) = pending_dependency_id {
+            self.store
+                .renew_objective_interrupt_evaluation(
+                    objective_id,
+                    evaluation_id,
+                    lease_expires_at,
+                    pending_dependency_id,
+                )
+                .await
+        } else {
+            self.store
+                .renew_objective_evaluation(objective_id, evaluation_id, lease_expires_at)
+                .await
+        }
     }
 
     async fn prepare_objective_completion_transition(
@@ -1632,6 +1908,7 @@ impl ObjectiveSupervisor {
                                 &objective.id,
                                 &intent.evaluation_id,
                                 Utc::now() + self.lease_duration,
+                                None,
                                 "completion-recovery",
                             )
                             .await?
@@ -1644,6 +1921,7 @@ impl ObjectiveSupervisor {
                         evaluation_id: intent.evaluation_id.clone(),
                         revision: objective.revision,
                         started_at: intent.requested_at,
+                        pending_dependency_id: None,
                     };
                     let _ = self.evaluations.try_bind(&objective.id, binding.clone());
                     self.evaluations
@@ -1848,11 +2126,16 @@ impl ObjectiveSupervisor {
             return Ok(true);
         }
         let lease_expires_at = now + self.lease_duration;
+        let pending_dependency_id = self
+            .evaluations
+            .get_for_activation(activation_id)
+            .and_then(|binding| binding.pending_dependency_id);
         Ok(matches!(
             self.renew_objective_evaluation(
                 objective_id,
                 evaluation_id,
                 lease_expires_at,
+                pending_dependency_id.as_deref(),
                 activation_id,
             )
             .await?,
@@ -1881,6 +2164,19 @@ impl ObjectiveSupervisor {
             return Ok(false);
         }
         if let Some(dependencies) = self.current_scheduler_dependencies(&objective).await? {
+            if let Some(pending_dependency_id) = binding.pending_dependency_id.as_deref() {
+                let exact_pending = dependencies.iter().any(|dependency| {
+                    dependency.id == pending_dependency_id
+                        && dependency.required
+                        && dependency.status == SchedulerDependencyStatus::Pending
+                });
+                let competing_pending = dependencies.iter().any(|dependency| {
+                    dependency.id != pending_dependency_id
+                        && dependency.required
+                        && dependency.status == SchedulerDependencyStatus::Pending
+                });
+                return Ok(exact_pending && !competing_pending);
+            }
             return Ok(!matches!(
                 derive_objective_readiness(&objective, &dependencies, Utc::now()),
                 ObjectiveReadiness::Waiting { .. }
@@ -1921,6 +2217,7 @@ impl ObjectiveSupervisor {
                     &binding.objective_id,
                     &binding.evaluation_id,
                     lease_expires_at,
+                    binding.pending_dependency_id.as_deref(),
                     activation_id,
                 )
                 .await?
@@ -1991,12 +2288,116 @@ impl ObjectiveSupervisor {
         expected_revision: u64,
         stated_objective: &str,
     ) -> Result<ObjectiveMutation, DynError> {
+        self.edit_with_reason(id, expected_revision, stated_objective, None)
+            .await
+    }
+
+    pub async fn edit_with_reason(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        stated_objective: &str,
+        reason: Option<&str>,
+    ) -> Result<ObjectiveMutation, DynError> {
         let mutation = self
             .store
             .edit_objective(id, expected_revision, stated_objective)
             .await?;
         if let ObjectiveMutation::Updated(updated) = &mutation {
-            self.publish_state_event("edited", updated, None).await?;
+            self.publish_state_event("edited", updated, reason).await?;
+        }
+        Ok(mutation)
+    }
+
+    pub async fn amend_from_dialogue(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        stated_objective: &str,
+        reason: &str,
+        source_event: &Event,
+        principal_id: &str,
+    ) -> Result<ObjectiveMutation, DynError> {
+        let Some(objective) = self.store.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if objective.revision != expected_revision {
+            return Ok(ObjectiveMutation::Conflict { current: objective });
+        }
+        let root_turn_id =
+            crate::memory::objective_primary_execution_root_id(&objective.id, objective.generation);
+        let revision = expected_revision.saturating_add(1);
+        let event = Event::new(
+            format!(
+                "objective_amend_{}_r{}_{}",
+                objective.id, revision, source_event.id
+            ),
+            "Runtime-ObjectiveSupervisor".to_string(),
+            TYPE_OBJECTIVE_CONTROL.to_string(),
+            "chat/objective_amended".to_string(),
+            [
+                ("context_id".to_string(), json!(objective.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(objective.coordinator_session_id),
+                ),
+                ("root_turn_id".to_string(), json!(root_turn_id)),
+                ("objective_id".to_string(), json!(objective.id)),
+                ("objective_revision".to_string(), json!(revision)),
+                (
+                    "objective_generation".to_string(),
+                    json!(objective.generation),
+                ),
+                ("objective_interrupt".to_string(), json!(true)),
+                ("objective_phase".to_string(), json!("amendment")),
+                ("wake_source".to_string(), json!("objective-amend")),
+                ("source_event_id".to_string(), json!(source_event.id)),
+                ("principal_id".to_string(), json!(principal_id)),
+                ("reason".to_string(), json!(reason)),
+                (
+                    "text".to_string(),
+                    json!("The user amended this Objective. Re-read the current objective contract and continue without cancelling already-running child work."),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let thread = NewThread {
+            id: stable_thread_id(&root_turn_id),
+            agent_id: objective.agent_id.clone(),
+            context_id: objective.context_id.clone(),
+            session_id: objective.coordinator_session_id.clone(),
+            initiating_principal_id: objective.initiating_principal_id.clone(),
+            root_turn_id,
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::objective_primary_execution(
+                objective.id.clone(),
+                objective.generation,
+            ),
+        };
+        let mutation = self
+            .store
+            .amend_objective_with_signal(
+                &objective.id,
+                expected_revision,
+                stated_objective,
+                &event,
+                &thread,
+            )
+            .await?;
+        if matches!(mutation, ObjectiveMutation::Updated(_)) {
+            if let Err(error) = self.bus.dispatch_persisted(event.clone()).await {
+                tracing::warn!(
+                    objective_id = %objective.id,
+                    event_id = %event.id,
+                    error = %error,
+                    event_code = "objective.amendment.dispatch_deferred",
+                    "The Objective amendment committed, but immediate dispatch failed; durable Signal recovery will retry it"
+                );
+            }
         }
         Ok(mutation)
     }
@@ -2097,26 +2498,125 @@ impl ObjectiveSupervisor {
     }
 
     /// Lifecycle hook invoked by Orchestrator while holding the target Session
-    /// lane and before it evaluates a newly routed user/tool event. A matching
-    /// wait is cleared and the physical event itself becomes the wake input;
-    /// no duplicate synthetic continuation is emitted.
+    /// lane and before it evaluates a newly routed user/tool event. Ordinary
+    /// matching completion events satisfy their wait. A directed Objective
+    /// interrupt instead preserves the exact current wait as a crash-recovery
+    /// fallback while admitting one Objective-bound Evaluation for the new
+    /// input; no duplicate synthetic continuation is emitted.
     pub async fn prepare_routed_event(
         self: &Arc<Self>,
         event: &Event,
         activation_id: &str,
-    ) -> Result<bool, DynError> {
+    ) -> Result<RoutedObjectiveEventDisposition, DynError> {
         let Some(context_id) = event
             .payload
             .get("context_id")
             .and_then(|value| value.as_str())
         else {
-            return Ok(false);
+            return Ok(RoutedObjectiveEventDisposition::Unrelated);
         };
-        let mut wait_satisfied = false;
         let route_session_id = event
             .payload
             .get("session_id")
             .and_then(|value| value.as_str());
+        if event
+            .payload
+            .get("objective_interrupt")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            let objective_id = event
+                .payload
+                .get("objective_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("Objective interrupt Event 缺少 objective_id")?;
+            let objective_generation = event
+                .payload
+                .get("objective_generation")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("Objective interrupt Event 缺少 objective_generation")?;
+            let Some(objective) = self.store.get_objective(objective_id).await? else {
+                return Ok(RoutedObjectiveEventDisposition::Suppressed);
+            };
+            let expected_root = crate::memory::objective_primary_execution_root_id(
+                &objective.id,
+                objective.generation,
+            );
+            let routed_root = event
+                .payload
+                .get("root_turn_id")
+                .and_then(serde_json::Value::as_str);
+            if objective.context_id != context_id
+                || route_session_id != Some(objective.coordinator_session_id.as_str())
+                || objective.status != ObjectiveStatus::Active
+                || objective.generation != objective_generation
+                || routed_root != Some(expected_root.as_str())
+            {
+                tracing::info!(
+                    objective_id,
+                    objective_generation,
+                    event_id = %event.id,
+                    event_code = "objective.interrupt.stale_route_suppressed",
+                    "Suppressed an Objective interrupt whose persisted route is no longer current"
+                );
+                return Ok(RoutedObjectiveEventDisposition::Suppressed);
+            }
+            let Some(wait) = objective.wait_condition.as_ref() else {
+                // A Dialogue amendment queued behind the Objective's current
+                // primary Activation reaches this branch only after that work
+                // has settled. Claim the next ordinary Evaluation from the
+                // amended contract; if a live Evaluation still owns the
+                // Objective, the durable claim loses cleanly and the route is
+                // suppressed instead of creating concurrent work.
+                let claimed = self
+                    .claim_routed_evaluation(&objective, &event.id, Some(activation_id), true, None)
+                    .await?;
+                return Ok(if claimed.is_some() {
+                    RoutedObjectiveEventDisposition::Admitted
+                } else {
+                    RoutedObjectiveEventDisposition::Suppressed
+                });
+            };
+            let (dependency_kind, dependency_key) = objective_wait_dependency_key(wait);
+            let dependency = self
+                .current_scheduler_dependencies(&objective)
+                .await?
+                .unwrap_or_default()
+                .into_iter()
+                .find(|dependency| {
+                    dependency.required
+                        && dependency.status == SchedulerDependencyStatus::Pending
+                        && dependency.dependency_kind == dependency_kind
+                        && dependency.dependency_id == dependency_key
+                });
+            let Some(dependency) = dependency else {
+                tracing::warn!(
+                    objective_id,
+                    event_id = %event.id,
+                    event_code = "objective.interrupt.wait_dependency_missing",
+                    "Suppressed an Objective interrupt because its displayed wait has no exact pending Scheduler dependency"
+                );
+                return Ok(RoutedObjectiveEventDisposition::Suppressed);
+            };
+            let claimed = self
+                .claim_routed_evaluation(
+                    &objective,
+                    &event.id,
+                    Some(activation_id),
+                    true,
+                    Some(&dependency.id),
+                )
+                .await?;
+            let Some(claimed) = claimed else {
+                return Ok(RoutedObjectiveEventDisposition::Suppressed);
+            };
+            // Refresh both the preserved wait timer and the new Evaluation
+            // lease timer to the claimed semantic revision.
+            self.reconcile(claimed).await?;
+            return Ok(RoutedObjectiveEventDisposition::Admitted);
+        }
+
+        let mut admitted = false;
         let objectives = self
             .store
             .list_context_objectives(context_id, false)
@@ -2144,17 +2644,22 @@ impl ObjectiveSupervisor {
             let ObjectiveMutation::Updated(woken) = mutation else {
                 continue;
             };
-            wait_satisfied = true;
             self.publish_state_event("wait_satisfied", &woken, Some(&event.id))
                 .await?;
             if route_session_id == Some(woken.coordinator_session_id.as_str()) {
-                self.claim_routed_evaluation(&woken, &event.id, Some(activation_id), true)
-                    .await?;
+                admitted |= self
+                    .claim_routed_evaluation(&woken, &event.id, Some(activation_id), true, None)
+                    .await?
+                    .is_some();
             } else {
                 self.reconcile(woken).await?;
             }
         }
-        Ok(wait_satisfied)
+        Ok(if admitted {
+            RoutedObjectiveEventDisposition::Admitted
+        } else {
+            RoutedObjectiveEventDisposition::Unrelated
+        })
     }
 
     async fn wake_non_routed_event(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {
@@ -2293,6 +2798,7 @@ impl ObjectiveSupervisor {
                     .and_then(|value| value.as_u64())
                     .unwrap_or_default(),
                 started_at: event.timestamp,
+                pending_dependency_id: None,
             });
 
         let elapsed_seconds = (Utc::now() - binding.started_at).num_seconds().max(0) as u64;
@@ -2535,7 +3041,15 @@ impl ObjectiveSupervisor {
             }
         }
         if let Some(wait) = &objective.wait_condition {
-            self.cancel_lease_timer(&objective.id).await?;
+            if let Some(expires_at) = objective.evaluation_lease_expires_at {
+                if expires_at > Utc::now() {
+                    self.schedule_lease_expiry(&objective, expires_at).await?;
+                } else {
+                    self.revoke_local_evaluation(&objective).await?;
+                }
+            } else {
+                self.cancel_lease_timer(&objective.id).await?;
+            }
             match wait {
                 ObjectiveWaitCondition::ToolTask { task_id } => {
                     let task_id = task_id.clone();
@@ -2931,6 +3445,7 @@ impl ObjectiveSupervisor {
         source_event_id: &str,
         activation_id: Option<&str>,
         publish_started: bool,
+        pending_dependency_id: Option<&str>,
     ) -> Result<Option<ObjectiveRecord>, DynError> {
         let evaluation_id = format!(
             "objective_eval_{}_{}_{}",
@@ -2943,6 +3458,7 @@ impl ObjectiveSupervisor {
             evaluation_id: evaluation_id.clone(),
             revision: objective.revision,
             started_at: Utc::now(),
+            pending_dependency_id: pending_dependency_id.map(ToOwned::to_owned),
         };
         if self
             .evaluations
@@ -2952,15 +3468,25 @@ impl ObjectiveSupervisor {
             return Ok(None);
         }
         let lease_expires_at = Utc::now() + self.lease_duration;
-        let claimed = self
-            .claim_objective_evaluation(
+        let claimed = if let Some(pending_dependency_id) = pending_dependency_id {
+            self.claim_objective_interrupt_evaluation(
+                objective,
+                &evaluation_id,
+                lease_expires_at,
+                pending_dependency_id,
+                source_event_id,
+            )
+            .await?
+        } else {
+            self.claim_objective_evaluation(
                 objective,
                 &evaluation_id,
                 lease_expires_at,
                 None,
                 source_event_id,
             )
-            .await?;
+            .await?
+        };
         let ObjectiveMutation::Updated(claimed) = claimed else {
             self.evaluations.unbind(&objective.id, &evaluation_id);
             return Ok(None);
@@ -2978,6 +3504,7 @@ impl ObjectiveSupervisor {
                     evaluation_id: evaluation_id.clone(),
                     revision: claimed.revision,
                     started_at: Utc::now(),
+                    pending_dependency_id: pending_dependency_id.map(ToOwned::to_owned),
                 },
             );
         }
@@ -3084,6 +3611,7 @@ impl ObjectiveSupervisor {
             evaluation_id: evaluation_id.clone(),
             revision: objective.revision,
             started_at: Utc::now(),
+            pending_dependency_id: None,
         };
         if self
             .evaluations
@@ -3347,7 +3875,6 @@ impl ObjectiveSupervisor {
             .get("evaluation_id")
             .and_then(serde_json::Value::as_str);
         if current.status != ObjectiveStatus::Active
-            || current.wait_condition.is_some()
             || current.active_evaluation_id.as_deref() != timer_evaluation_id
         {
             return Ok(TimerDisposition::Complete);
@@ -3709,10 +4236,11 @@ fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::OrchestratorConfig;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         ExecutionJobStatus, ExecutionJobTerminal, ExecutionRetrySafety, NewAgent,
-        NewCognitiveContext, NewDelegation, NewExecutionJob, NewSession, NewThread,
+        NewCognitiveContext, NewDelegation, NewExecutionJob, NewPrincipal, NewSession, NewThread,
         NewThreadActivation, NewThreadGroup, NewThreadGroupMember, NewThreadGroupPlan,
         ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus,
         ThreadGroupPolicy, ThreadKind, ThreadStore as _, TimerStore,
@@ -3756,6 +4284,20 @@ mod tests {
             )
             .await
             .unwrap();
+        let principal_id = format!("principal-{suffix}");
+        store
+            .ensure_principal(NewPrincipal {
+                id: principal_id.clone(),
+                provider_id: "objective-test".to_string(),
+                assurance: "test".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal(&session_id, &principal_id)
+            .await
+            .unwrap();
         store
             .create_objective(NewObjective {
                 id: format!("objective-{suffix}"),
@@ -3765,12 +4307,332 @@ mod tests {
                 delivery_session_id: session_id,
                 parent_objective_id: None,
                 source_event_id: format!("source-{suffix}"),
-                initiating_principal_id: None,
+                initiating_principal_id: Some(principal_id),
                 stated_objective: "验证后台任务等待".to_string(),
                 token_budget: None,
             })
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn directed_primary_thread_event_claims_bound_interrupt_without_clearing_wait() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let created = seed_objective_bundle(&store, "directed-interrupt").await;
+        let waiting = match store
+            .update_objective_state(
+                &created.id,
+                created.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::Timer {
+                    deadline: Utc::now() + Duration::hours(1),
+                }),
+                Some("等待下一次巡检"),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected wait mutation: {mutation:?}"),
+        };
+        let evaluations = Arc::new(ObjectiveEvaluationRegistry::default());
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::clone(&evaluations),
+                Arc::clone(&timers),
+                std::time::Duration::from_millis(120),
+            )
+            .with_scheduler_dependency_store(
+                Arc::clone(&store) as Arc<dyn SchedulerDependencyStore>
+            ),
+        );
+        supervisor.register_timer_handlers().unwrap();
+        Arc::clone(&supervisor).start().await.unwrap();
+        let root =
+            crate::memory::objective_primary_execution_root_id(&waiting.id, waiting.generation);
+        let interrupt = Event::new(
+            "objective-directed-interrupt".to_string(),
+            "Runtime-Scheduler".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/schedule_due".to_string(),
+            [
+                ("context_id".to_string(), json!(waiting.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(waiting.coordinator_session_id),
+                ),
+                ("root_turn_id".to_string(), json!(root)),
+                ("objective_interrupt".to_string(), json!(true)),
+                ("objective_id".to_string(), json!(waiting.id)),
+                (
+                    "objective_generation".to_string(),
+                    json!(waiting.generation),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            supervisor
+                .prepare_routed_event(&interrupt, "activation-directed-interrupt")
+                .await
+                .unwrap(),
+            RoutedObjectiveEventDisposition::Admitted
+        );
+        let interrupted = store.get_objective(&waiting.id).await.unwrap().unwrap();
+        assert_eq!(interrupted.wait_condition, waiting.wait_condition);
+        assert!(interrupted.active_evaluation_id.is_some());
+        assert_eq!(
+            evaluations
+                .get_for_activation("activation-directed-interrupt")
+                .map(|binding| binding.objective_id),
+            Some(waiting.id.clone())
+        );
+        let dependencies = store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+                owner_id: Some(waiting.id.clone()),
+                required_only: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].status, SchedulerDependencyStatus::Pending);
+
+        let amend_tool = ObjectiveAmendTool::new(
+            Arc::clone(&supervisor),
+            Arc::new(
+                ContextEngine::new(
+                    Arc::clone(&store) as Arc<dyn EventStore>,
+                    OrchestratorConfig::default(),
+                )
+                .with_session_store(Arc::clone(&store) as Arc<dyn crate::memory::SessionStore>),
+            ),
+        );
+        let amend_arguments = json!({
+            "objective_id": waiting.id,
+            "base_revision": interrupted.revision,
+            "stated_objective": "验证修订后的巡检目标",
+            "reason": "用户在等待期间纠正了目标范围",
+            "evidence_refs": []
+        })
+        .to_string();
+        let amend_error = CURRENT_SESSION_ID
+            .scope(
+                waiting.coordinator_session_id.clone(),
+                CURRENT_CONTEXT_ID.scope(
+                    waiting.context_id.clone(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "activation-directed-interrupt".to_string(),
+                        CURRENT_PRINCIPAL_ID.scope(
+                            waiting.initiating_principal_id.clone(),
+                            CURRENT_CAUSAL_ROUTE.scope(
+                                Some(crate::tool::ToolCausalRoute {
+                                    thread_id: "thread-unrelated-dialogue".to_string(),
+                                    activation_id: "activation-directed-interrupt".to_string(),
+                                    root_turn_id: "turn-unrelated-dialogue".to_string(),
+                                    trigger_event_id: "event-unrelated-dialogue".to_string(),
+                                    trigger_sequence: 1,
+                                }),
+                                amend_tool.execute(&amend_arguments),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert!(amend_error
+            .to_string()
+            .contains("Objective-bound Evaluation 无权修改自身完成契约"));
+        let unchanged = store.get_objective(&waiting.id).await.unwrap().unwrap();
+        assert_eq!(unchanged.stated_objective, waiting.stated_objective);
+        assert_eq!(unchanged.wait_condition, waiting.wait_condition);
+        assert_eq!(
+            store
+                .get_scheduler_dependency(&dependencies[0].id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SchedulerDependencyStatus::Pending
+        );
+
+        let stale = Event {
+            id: "objective-directed-interrupt-stale".to_string(),
+            ..interrupt
+        };
+        assert_eq!(
+            supervisor
+                .prepare_routed_event(&stale, "activation-directed-interrupt-stale")
+                .await
+                .unwrap(),
+            RoutedObjectiveEventDisposition::Suppressed
+        );
+        assert!(evaluations
+            .get_for_activation("activation-directed-interrupt-stale")
+            .is_none());
+
+        tokio::time::sleep(std::time::Duration::from_millis(180)).await;
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+        assert!(evaluations
+            .cancelled_activation("activation-directed-interrupt")
+            .is_some());
+        let expired = store.get_objective(&waiting.id).await.unwrap().unwrap();
+        assert_eq!(
+            expired.wait_condition, waiting.wait_condition,
+            "an expired interrupt Evaluation must retain the original crash-recovery wait"
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_dialogue_amendment_commits_contract_and_primary_signal_atomically() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "dialogue-amendment").await;
+        let waiting = match store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::Timer {
+                    deadline: Utc::now() + Duration::hours(1),
+                }),
+                Some("等待用户补充验收边界"),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected wait mutation: {mutation:?}"),
+        };
+        let source_event = Event::new(
+            "user-objective-amendment".to_string(),
+            waiting
+                .initiating_principal_id
+                .clone()
+                .expect("seeded Objective must have an owner"),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            [
+                ("context_id".to_string(), json!(waiting.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(waiting.coordinator_session_id),
+                ),
+                (
+                    "principal_id".to_string(),
+                    json!(waiting.initiating_principal_id),
+                ),
+                ("text".to_string(), json!("把验收范围补充为包含回归测试")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        store.append(source_event.clone()).await.unwrap();
+        let dialogue_thread = store
+            .ensure_thread(NewThread {
+                id: stable_thread_id(&source_event.id),
+                agent_id: waiting.agent_id.clone(),
+                context_id: waiting.context_id.clone(),
+                session_id: waiting.coordinator_session_id.clone(),
+                initiating_principal_id: waiting.initiating_principal_id.clone(),
+                root_turn_id: source_event.id.clone(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let evaluations = Arc::new(ObjectiveEvaluationRegistry::default());
+        let bus = Arc::new(InMemoryEventBus::new());
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            bus,
+            evaluations,
+            timers,
+            std::time::Duration::from_secs(60),
+        ));
+        let tool = ObjectiveAmendTool::new(
+            supervisor,
+            Arc::new(
+                ContextEngine::new(
+                    Arc::clone(&store) as Arc<dyn EventStore>,
+                    OrchestratorConfig::default(),
+                )
+                .with_session_store(Arc::clone(&store) as Arc<dyn crate::memory::SessionStore>),
+            ),
+        );
+        let arguments = json!({
+            "objective_id": waiting.id,
+            "base_revision": waiting.revision,
+            "stated_objective": "完成实现，并以完整回归测试作为验收条件",
+            "reason": "用户补充了明确的验收边界",
+            "evidence_refs": [source_event.id]
+        })
+        .to_string();
+        let result = CURRENT_SESSION_ID
+            .scope(
+                waiting.coordinator_session_id.clone(),
+                CURRENT_CONTEXT_ID.scope(
+                    waiting.context_id.clone(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "dialogue-amendment-activation".to_string(),
+                        CURRENT_PRINCIPAL_ID.scope(
+                            waiting.initiating_principal_id.clone(),
+                            CURRENT_CAUSAL_ROUTE.scope(
+                                Some(crate::tool::ToolCausalRoute {
+                                    thread_id: dialogue_thread.id,
+                                    activation_id: "dialogue-amendment-activation".to_string(),
+                                    root_turn_id: source_event.id.clone(),
+                                    trigger_event_id: source_event.id.clone(),
+                                    trigger_sequence: 1,
+                                }),
+                                tool.execute(&arguments),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["status"], "committed");
+        let amended = store.get_objective(&waiting.id).await.unwrap().unwrap();
+        assert_eq!(
+            amended.stated_objective,
+            "完成实现，并以完整回归测试作为验收条件"
+        );
+        assert_eq!(amended.wait_condition, waiting.wait_condition);
+        assert!(amended.active_evaluation_id.is_none());
+        let primary_thread_id = stable_thread_id(
+            &crate::memory::objective_primary_execution_root_id(&amended.id, amended.generation),
+        );
+        let signals = store
+            .list_context_thread_signals(&amended.context_id, None)
+            .await
+            .unwrap();
+        assert!(signals.iter().any(|signal| {
+            signal.thread_id == primary_thread_id && signal.event_id.starts_with("objective_amend_")
+        }));
     }
 
     #[tokio::test]
@@ -5124,6 +5986,7 @@ mod tests {
             evaluation_id: "evaluation-a".to_string(),
             revision: 2,
             started_at: Utc::now(),
+            pending_dependency_id: None,
         };
         assert!(registry.try_bind("objective-a", first.clone()).is_ok());
         registry.bind_activation("work-a", first.clone());
@@ -5134,6 +5997,7 @@ mod tests {
             evaluation_id: "evaluation-a-2".to_string(),
             revision: 3,
             started_at: Utc::now(),
+            pending_dependency_id: None,
         };
         assert_eq!(
             registry.try_bind("objective-a", competing),
@@ -5144,6 +6008,7 @@ mod tests {
             evaluation_id: "evaluation-b".to_string(),
             revision: 2,
             started_at: Utc::now(),
+            pending_dependency_id: None,
         };
         assert!(registry.try_bind("objective-b", sibling.clone()).is_ok());
         registry.bind_activation("work-b", sibling.clone());
@@ -5176,12 +6041,14 @@ mod tests {
             evaluation_id: "evaluation-a".to_string(),
             revision: 2,
             started_at: Utc::now(),
+            pending_dependency_id: None,
         };
         let second = ActiveObjectiveEvaluation {
             objective_id: "objective-b".to_string(),
             evaluation_id: "evaluation-b".to_string(),
             revision: 4,
             started_at: Utc::now(),
+            pending_dependency_id: None,
         };
         registry.bind_activation("work-a", first.clone());
         registry.bind_activation("work-b", second.clone());
@@ -5274,6 +6141,7 @@ mod tests {
             evaluation_id: "evaluation-old".to_string(),
             revision: claimed.revision,
             started_at: Utc::now(),
+            pending_dependency_id: None,
         };
         registry
             .try_bind("objective-fence", binding.clone())

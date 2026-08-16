@@ -957,6 +957,14 @@ fn restrict_tools_to_scope(tools: &mut Vec<ToolDefinition>, scope: Option<&HashS
     }
 }
 
+fn is_objective_bound_tool(name: &str) -> bool {
+    name == "objective_update"
+}
+
+fn is_dialogue_objective_tool(name: &str) -> bool {
+    name == "objective_amend"
+}
+
 /// Critical pressure may suspend physical work, but it must never remove the
 /// control operation that can terminally settle the Objective currently being
 /// evaluated. Otherwise an Agent which has already proved completion can only
@@ -965,10 +973,12 @@ fn restrict_tools_to_scope(tools: &mut Vec<ToolDefinition>, scope: Option<&HashS
 fn retain_context_maintenance_tools(
     tools: &mut Vec<ToolDefinition>,
     objective_control_available: bool,
+    objective_amend_available: bool,
 ) {
     tools.retain(|tool| {
         matches!(tool.name.as_str(), "context_tx" | "recall")
             || (objective_control_available && tool.name == "objective_update")
+            || (objective_amend_available && tool.name == "objective_amend")
     });
 }
 
@@ -978,8 +988,12 @@ fn retain_context_maintenance_tools(
 fn retain_final_reply_control_tools(
     tools: &mut Vec<ToolDefinition>,
     objective_control_available: bool,
+    objective_amend_available: bool,
 ) {
-    tools.retain(|tool| objective_control_available && tool.name == "objective_update");
+    tools.retain(|tool| {
+        (objective_control_available && tool.name == "objective_update")
+            || (objective_amend_available && tool.name == "objective_amend")
+    });
 }
 
 fn derived_thread_kind(event: &Event, _has_objective_route: bool) -> ThreadKind {
@@ -5431,6 +5445,25 @@ impl Orchestrator {
                 return Ok(());
             }
         }
+        if let Some(supervisor) = &self.objective_supervisor {
+            if supervisor
+                .prepare_routed_event(&event, &activation.id)
+                .await?
+                == crate::objective::RoutedObjectiveEventDisposition::Suppressed
+            {
+                tracing::info!(
+                    session_id,
+                    activation_id = %activation.id,
+                    event_id = %event.id,
+                    event_code = "orchestrator.objective_interrupt.suppressed",
+                    "Suppressed a stale or concurrently superseded Objective interrupt Activation"
+                );
+                self.finish_thread_activation(&activation, ThreadActivationStatus::Cancelled)
+                    .await?;
+                self.objective_evaluations.remove_activation(&activation.id);
+                return Ok(());
+            }
+        }
 
         let mut cancellation = self.cancellation_sender(&session_id).subscribe();
         let start_epoch = *cancellation.borrow();
@@ -5493,11 +5526,6 @@ impl Orchestrator {
                     );
                     return Ok(());
                 }
-            }
-            if let Some(supervisor) = &self.objective_supervisor {
-                let _ = supervisor
-                    .prepare_routed_event(&event, &activation.id)
-                    .await?;
             }
             self.run_attempt(&session_id, &activation).await
             } => (Some(result), None, None),
@@ -7907,6 +7935,9 @@ impl Orchestrator {
                         && objective.status == crate::memory::ObjectiveStatus::Active
                 })
             });
+        let objective_amend_available = !objective_control_available
+            && thread.kind == ThreadKind::DialogueTurn
+            && activation.trigger_kind == "chat/user_message";
         let harness_activation = self
             .harness_mount_for_activation(&context_id, activation)
             .await?;
@@ -7989,7 +8020,10 @@ impl Orchestrator {
             measurement_tools.clear();
         }
         if !objective_control_available {
-            measurement_tools.retain(|tool| tool.name != "objective_update");
+            measurement_tools.retain(|tool| !is_objective_bound_tool(&tool.name));
+        }
+        if !objective_amend_available {
+            measurement_tools.retain(|tool| !is_dialogue_objective_tool(&tool.name));
         }
         restrict_tools_to_scope(&mut measurement_tools, plan_infer_tools.as_ref());
         if thread.executor_kind != "plan_infer" {
@@ -8110,7 +8144,10 @@ impl Orchestrator {
             tools.clear();
         }
         if !objective_control_available {
-            tools.retain(|tool| tool.name != "objective_update");
+            tools.retain(|tool| !is_objective_bound_tool(&tool.name));
+        }
+        if !objective_amend_available {
+            tools.retain(|tool| !is_dialogue_objective_tool(&tool.name));
         }
         if effective_phase == "final-reply" {
             tracing::warn!(
@@ -8120,7 +8157,11 @@ impl Orchestrator {
                 event_code = "orchestrator.context_pressure.reply_only",
                 "Context is critical and maintenance budget is exhausted; entering reply-only final response"
             );
-            retain_final_reply_control_tools(&mut tools, objective_control_available);
+            retain_final_reply_control_tools(
+                &mut tools,
+                objective_control_available,
+                objective_amend_available,
+            );
         } else {
             if effective_phase == "soft-checkpoint" {
                 tracing::info!(
@@ -8146,7 +8187,11 @@ impl Orchestrator {
                     event_code = "orchestrator.context_pressure.maintenance_required",
                     "Context pressure is critical; pausing costly external actions until the agent maintains Context"
                 );
-                retain_context_maintenance_tools(&mut tools, objective_control_available);
+                retain_context_maintenance_tools(
+                    &mut tools,
+                    objective_control_available,
+                    objective_amend_available,
+                );
             }
             if !context.turn_budget.context_tx_available {
                 tracing::warn!(
@@ -8604,9 +8649,16 @@ impl Orchestrator {
                     protocol_messages = base_protocol_messages.clone();
                     tools = self.tool_definitions.clone();
                     if !objective_control_available {
-                        tools.retain(|tool| tool.name != "objective_update");
+                        tools.retain(|tool| !is_objective_bound_tool(&tool.name));
                     }
-                    retain_context_maintenance_tools(&mut tools, objective_control_available);
+                    if !objective_amend_available {
+                        tools.retain(|tool| !is_dialogue_objective_tool(&tool.name));
+                    }
+                    retain_context_maintenance_tools(
+                        &mut tools,
+                        objective_control_available,
+                        objective_amend_available,
+                    );
                     restrict_tools_to_scope(&mut tools, plan_infer_tools.as_ref());
                     tools.push(no_reply_tool_definition());
                     allowed_tool_names = tools.iter().map(|tool| tool.name.clone()).collect();
@@ -10646,6 +10698,7 @@ impl Orchestrator {
                     .and_then(|value| value.as_u64())
                     .unwrap_or_default(),
                 started_at: event.timestamp,
+                pending_dependency_id: None,
             },
         );
     }
@@ -17382,8 +17435,14 @@ mod tests {
 
     #[test]
     fn critical_and_final_phases_preserve_bound_objective_control() {
-        let mut critical = named_tools(&["context_tx", "recall", "exec", "objective_update"]);
-        retain_context_maintenance_tools(&mut critical, true);
+        let mut critical = named_tools(&[
+            "context_tx",
+            "recall",
+            "exec",
+            "objective_update",
+            "objective_amend",
+        ]);
+        retain_context_maintenance_tools(&mut critical, true, false);
         assert_eq!(
             critical
                 .iter()
@@ -17392,24 +17451,29 @@ mod tests {
             vec!["context_tx", "recall", "objective_update"]
         );
 
-        let mut unbound_critical =
-            named_tools(&["context_tx", "recall", "exec", "objective_update"]);
-        retain_context_maintenance_tools(&mut unbound_critical, false);
+        let mut unbound_critical = named_tools(&[
+            "context_tx",
+            "recall",
+            "exec",
+            "objective_update",
+            "objective_amend",
+        ]);
+        retain_context_maintenance_tools(&mut unbound_critical, false, true);
         assert_eq!(
             unbound_critical
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["context_tx", "recall"]
+            vec!["context_tx", "recall", "objective_amend"]
         );
 
-        let mut final_reply = named_tools(&["exec", "objective_update"]);
-        retain_final_reply_control_tools(&mut final_reply, true);
+        let mut final_reply = named_tools(&["exec", "objective_update", "objective_amend"]);
+        retain_final_reply_control_tools(&mut final_reply, true, false);
         assert_eq!(final_reply[0].name, "objective_update");
 
-        let mut unbound_final_reply = named_tools(&["exec", "objective_update"]);
-        retain_final_reply_control_tools(&mut unbound_final_reply, false);
-        assert!(unbound_final_reply.is_empty());
+        let mut unbound_final_reply = named_tools(&["exec", "objective_update", "objective_amend"]);
+        retain_final_reply_control_tools(&mut unbound_final_reply, false, true);
+        assert_eq!(unbound_final_reply[0].name, "objective_amend");
     }
 
     #[test]

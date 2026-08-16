@@ -10,7 +10,13 @@ import {
   tintIdForLineage,
   toneForSlot,
 } from '../src/app/objectiveLineage.ts'
-import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, formatLocalRfc3339, newestConversationEventsForLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
+import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, formatLocalRfc3339, newestConversationEventsForLane, objectiveDisplayStatus, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
+
+test('active Objectives with an exact wait render as waiting in collapsed summaries', () => {
+  assert.equal(objectiveDisplayStatus({ status: 'active', wait_condition: { kind: 'timer' } }), 'waiting')
+  assert.equal(objectiveDisplayStatus({ status: 'active' }), 'active')
+  assert.equal(objectiveDisplayStatus({ status: 'blocked', wait_condition: { kind: 'timer' } }), 'blocked')
+})
 
 const translations: Record<string, string> = {
   'status.running': 'Running',

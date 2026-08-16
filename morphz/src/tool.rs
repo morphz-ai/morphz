@@ -1846,8 +1846,27 @@ impl ThreadScheduler {
             target_id: owner.target_id.clone(),
             supervision: ThreadSupervision::runtime("schedule-occurrence-router"),
         });
+        let objective_interrupt = if current.interval_seconds.is_none()
+            && owner.supervision.supervisor_kind == ThreadSupervisorKind::Objective
+            && owner.supervision.origin_evaluation_id.is_none()
+        {
+            owner
+                .supervision
+                .supervisor_id
+                .as_deref()
+                .filter(|objective_id| {
+                    owner.root_turn_id
+                        == crate::memory::objective_primary_execution_root_id(
+                            objective_id,
+                            owner.supervision.generation,
+                        )
+                })
+                .map(|objective_id| (objective_id.to_string(), owner.supervision.generation))
+        } else {
+            None
+        };
         let event_id = format!("schedule_due_{}_r{}", current.id, occurrence_revision);
-        let payload = serde_json::Map::from_iter([
+        let mut payload = vec![
             ("agent_id".to_string(), serde_json::json!(owner.agent_id)),
             (
                 "context_id".to_string(),
@@ -1888,13 +1907,31 @@ impl ThreadScheduler {
                 "text".to_string(),
                 serde_json::json!(format!("SCHEDULE_DUE: {}\n{}", current.id, current.intent)),
             ),
-        ]);
+        ];
+        if let Some((objective_id, objective_generation)) = objective_interrupt {
+            payload.extend([
+                ("objective_interrupt".to_string(), serde_json::json!(true)),
+                (
+                    "objective_phase".to_string(),
+                    serde_json::json!("interrupt"),
+                ),
+                (
+                    "wake_source".to_string(),
+                    serde_json::json!("schedule-enqueue"),
+                ),
+                ("objective_id".to_string(), serde_json::json!(objective_id)),
+                (
+                    "objective_generation".to_string(),
+                    serde_json::json!(objective_generation),
+                ),
+            ]);
+        }
         let event = Event::new(
             event_id,
             "Runtime-Scheduler".to_string(),
             TYPE_TOOL_OUTPUT.to_string(),
             "chat/schedule_due".to_string(),
-            payload,
+            payload.into_iter().collect(),
         );
         let Some(claimed) = self
             .sessions
@@ -8791,6 +8828,60 @@ Body
             })
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn one_shot_schedule_to_objective_primary_thread_marks_interrupt_route() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(&database, &[]).await;
+        let objective_id = "objective-scheduled-interrupt";
+        let generation = 3;
+        let root = crate::memory::objective_primary_execution_root_id(objective_id, generation);
+        let thread_id = stable_thread_id(&root);
+        store
+            .ensure_thread(NewThread {
+                id: thread_id.clone(),
+                agent_id: "agent-scheduler-test".to_string(),
+                context_id: "context-scheduler-test".to_string(),
+                session_id: "session-scheduler-test".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: root,
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::objective_primary_execution(
+                    objective_id,
+                    generation,
+                ),
+            })
+            .await
+            .unwrap();
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let (scheduler, timers) = build_test_scheduler(bus, Arc::clone(&store));
+        let intent = seed_test_schedule(
+            &store,
+            "schedule-objective-interrupt",
+            &thread_id,
+            chrono::Utc::now() - chrono::Duration::seconds(1),
+        )
+        .await;
+        scheduler.arm(intent).await.unwrap();
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+        let event = receiver.recv().await.unwrap();
+        assert_eq!(event.payload["objective_interrupt"], true);
+        assert_eq!(event.payload["objective_phase"], "interrupt");
+        assert_eq!(event.payload["wake_source"], "schedule-enqueue");
+        assert_eq!(event.payload["objective_id"], objective_id);
+        assert_eq!(event.payload["objective_generation"], generation);
     }
 
     #[tokio::test]

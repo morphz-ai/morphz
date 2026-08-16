@@ -35,7 +35,44 @@ impl ObjectiveController {
                     objective_id: objective.id.clone(),
                     evaluation_id: evaluation_id.to_string(),
                     lease_expires_at,
+                    pending_dependency_id: None,
                     continuation,
+                },
+            ),
+        }
+    }
+
+    pub fn claim_interrupt_evaluation(
+        objective: &ObjectiveRecord,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        pending_dependency_id: &str,
+        causation_id: &str,
+        actor: &str,
+    ) -> KernelCommand {
+        let material = format!(
+            "objective-interrupt-claim\0{}\0{}\0{}\0{}\0{}",
+            objective.id,
+            objective.revision,
+            objective.generation,
+            evaluation_id,
+            pending_dependency_id
+        );
+        KernelCommand {
+            header: KernelCommandHeader::new(
+                crate::scheduler::stable_command_id("objective-interrupt-claim", &material),
+                causation_id,
+                &objective.context_id,
+                actor,
+            )
+            .with_fence(objective.revision, Some(objective.generation)),
+            payload: KernelCommandPayload::ClaimObjectiveEvaluation(
+                ClaimObjectiveEvaluationCommand {
+                    objective_id: objective.id.clone(),
+                    evaluation_id: evaluation_id.to_string(),
+                    lease_expires_at,
+                    pending_dependency_id: Some(pending_dependency_id.to_string()),
+                    continuation: None,
                 },
             ),
         }
@@ -45,6 +82,7 @@ impl ObjectiveController {
         objective: &ObjectiveRecord,
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
+        pending_dependency_id: Option<&str>,
         causation_id: &str,
         actor: &str,
     ) -> KernelCommand {
@@ -65,6 +103,7 @@ impl ObjectiveController {
                     objective_id: objective.id.clone(),
                     evaluation_id: evaluation_id.to_string(),
                     lease_expires_at,
+                    pending_dependency_id: pending_dependency_id.map(ToOwned::to_owned),
                 },
             ),
         }

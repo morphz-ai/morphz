@@ -57,7 +57,8 @@ use crate::memory::{
     ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
 };
 use crate::objective::{
-    ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
+    ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
+    ObjectiveUpdateTool,
 };
 use crate::orchestrator::context::{
     ContextAttribution, ContextEngine, ContextPressure, ContextRecallService, ContextTokenBudget,
@@ -1481,6 +1482,10 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         Arc::clone(harness_registry),
     )));
     registry.register(Arc::new(ObjectiveUpdateTool::new(
+        Arc::clone(objective_supervisor),
+        Arc::clone(context_engine),
+    )));
+    registry.register(Arc::new(ObjectiveAmendTool::new(
         Arc::clone(objective_supervisor),
         Arc::clone(context_engine),
     )));
@@ -10096,6 +10101,7 @@ mod tests {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
                 assert!(tools.iter().any(|tool| tool.name == "objective_update"));
+                assert!(!tools.iter().any(|tool| tool.name == "objective_amend"));
                 assert!(messages
                     .iter()
                     .any(|message| message.content.contains("(objective-contract")));
@@ -10120,6 +10126,7 @@ mod tests {
                 });
             }
             assert!(!tools.iter().any(|tool| tool.name == "objective_update"));
+            assert!(!tools.iter().any(|tool| tool.name == "objective_amend"));
             Ok(text_response("objective-complete"))
         }
     }

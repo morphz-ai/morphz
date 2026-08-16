@@ -104,6 +104,10 @@ pub struct ClaimObjectiveEvaluationCommand {
     pub objective_id: String,
     pub evaluation_id: String,
     pub lease_expires_at: DateTime<Utc>,
+    /// Exact current-generation required dependency that an event-driven
+    /// interrupt Evaluation may coexist with. Ordinary claims leave this
+    /// unset and still require the Objective to be fully runnable.
+    pub pending_dependency_id: Option<String>,
     /// When present, the Evaluation lease, continuation Event and Objective
     /// Thread are committed as one scheduler transition.
     pub continuation: Option<(crate::event::Event, NewThread)>,
@@ -114,6 +118,7 @@ pub struct RenewObjectiveEvaluationCommand {
     pub objective_id: String,
     pub evaluation_id: String,
     pub lease_expires_at: DateTime<Utc>,
+    pub pending_dependency_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

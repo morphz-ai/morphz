@@ -13761,6 +13761,87 @@ impl ObjectiveStore for SqliteStore {
         })
     }
 
+    async fn amend_objective_with_signal(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        stated_objective: &str,
+        event: &Event,
+        thread: &NewThread,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let stated_objective = validate_stated_objective(stated_objective)?;
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        if current.status.is_terminal() {
+            return Err(format!("终态 Objective '{id}' 不能再修改目标").into());
+        }
+        let expected_root =
+            crate::memory::objective_primary_execution_root_id(id, current.generation);
+        if event.payload.get("context_id").and_then(JsonValue::as_str)
+            != Some(current.context_id.as_str())
+            || event.payload.get("session_id").and_then(JsonValue::as_str)
+                != Some(current.coordinator_session_id.as_str())
+            || event
+                .payload
+                .get("objective_id")
+                .and_then(JsonValue::as_str)
+                != Some(id)
+            || event
+                .payload
+                .get("objective_generation")
+                .and_then(JsonValue::as_u64)
+                != Some(current.generation)
+            || event
+                .payload
+                .get("objective_revision")
+                .and_then(JsonValue::as_u64)
+                != Some(expected_revision.saturating_add(1))
+            || event
+                .payload
+                .get("root_turn_id")
+                .and_then(JsonValue::as_str)
+                != Some(expected_root.as_str())
+            || thread.root_turn_id != expected_root
+            || thread.context_id != current.context_id
+            || thread.session_id != current.coordinator_session_id
+        {
+            return Err(format!("Objective '{id}' amendment Event 路由不一致").into());
+        }
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE objectives SET stated_objective = ?, completion_intent_json = NULL, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ? AND status NOT IN ('completed', 'failed', 'cancelled')",
+        )
+        .bind(stated_objective)
+        .bind(now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(match self.get_objective(id).await? {
+                Some(current) => ObjectiveMutation::Conflict { current },
+                None => ObjectiveMutation::NotFound,
+            });
+        }
+        let thread = ensure_thread_in_transaction(&mut tx, thread).await?;
+        append_event_idempotent_in_transaction(&mut tx, event).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, event, &thread.id).await?;
+        tx.commit().await?;
+        Ok(ObjectiveMutation::Updated(
+            self.get_objective(id)
+                .await?
+                .ok_or("Objective amendment + Signal 提交后无法读取")?,
+        ))
+    }
+
     async fn update_objective_state(
         &self,
         id: &str,
@@ -13990,6 +14071,84 @@ impl ObjectiveStore for SqliteStore {
         })
     }
 
+    async fn claim_objective_interrupt_evaluation(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        pending_dependency_id: &str,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if evaluation_id.trim().is_empty() || pending_dependency_id.trim().is_empty() {
+            return Err("Objective interrupt claim 必须包含 Evaluation 与 dependency ID".into());
+        }
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision
+            || current.status != ObjectiveStatus::Active
+            || current.completion_intent.is_some()
+            || current
+                .evaluation_lease_expires_at
+                .is_some_and(|expires_at| expires_at > Utc::now())
+        {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+        let generation = i64::try_from(current.generation)
+            .map_err(|_| "Objective generation 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let lease_expires_at = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET active_evaluation_id = ?, evaluation_lease_expires_at = ?,
+                   continuation_sequence = continuation_sequence + 1,
+                   revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'active'
+                 AND EXISTS (
+                   SELECT 1 FROM scheduler_dependencies dependency
+                   WHERE dependency.id = ?
+                     AND dependency.owner_kind = 'objective'
+                     AND dependency.owner_id = objectives.id
+                     AND dependency.owner_generation = ?
+                     AND dependency.required = 1 AND dependency.status = 'pending'
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies dependency
+                   WHERE dependency.owner_kind = 'objective'
+                     AND dependency.owner_id = objectives.id
+                     AND dependency.owner_generation = ?
+                     AND dependency.required = 1 AND dependency.status = 'pending'
+                     AND dependency.id <> ?
+                 )
+                 AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= ?)"#,
+        )
+        .bind(evaluation_id)
+        .bind(lease_expires_at)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_revision)
+        .bind(pending_dependency_id)
+        .bind(generation)
+        .bind(generation)
+        .bind(pending_dependency_id)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective interrupt Evaluation 租约提交后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
     async fn claim_objective_evaluation_with_signal(
         &self,
         id: &str,
@@ -14162,6 +14321,70 @@ impl ObjectiveStore for SqliteStore {
                 self.get_objective(id)
                     .await?
                     .ok_or("Objective Evaluation 续租后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn renew_objective_interrupt_evaluation(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        pending_dependency_id: &str,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if evaluation_id.trim().is_empty() || pending_dependency_id.trim().is_empty() {
+            return Err("Objective interrupt renew 必须包含 Evaluation 与 dependency ID".into());
+        }
+        if lease_expires_at <= Utc::now() {
+            return Err("Objective Evaluation 续租时间必须在未来".into());
+        }
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        let generation = i64::try_from(current.generation)
+            .map_err(|_| "Objective generation 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let lease_expires_at = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET evaluation_lease_expires_at = ?, updated_at = ?
+               WHERE id = ? AND status = 'active' AND active_evaluation_id = ?
+                 AND EXISTS (
+                   SELECT 1 FROM scheduler_dependencies dependency
+                   WHERE dependency.id = ?
+                     AND dependency.owner_kind = 'objective'
+                     AND dependency.owner_id = objectives.id
+                     AND dependency.owner_generation = ?
+                     AND dependency.required = 1 AND dependency.status = 'pending'
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies dependency
+                   WHERE dependency.owner_kind = 'objective'
+                     AND dependency.owner_id = objectives.id
+                     AND dependency.owner_generation = ?
+                     AND dependency.required = 1 AND dependency.status = 'pending'
+                     AND dependency.id <> ?
+                 )"#,
+        )
+        .bind(lease_expires_at)
+        .bind(now)
+        .bind(id)
+        .bind(evaluation_id)
+        .bind(pending_dependency_id)
+        .bind(generation)
+        .bind(generation)
+        .bind(pending_dependency_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective interrupt Evaluation 续租后无法读取")?,
             ));
         }
         Ok(match self.get_objective(id).await? {

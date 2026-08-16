@@ -5969,6 +5969,17 @@ pub trait ObjectiveStore: Send + Sync {
         expected_revision: u64,
         stated_objective: &str,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically amend the durable Objective contract and enqueue the
+    /// authoritative DialogueTurn notification on its primary Thread. The
+    /// Event and semantic revision either commit together or not at all.
+    async fn amend_objective_with_signal(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        stated_objective: &str,
+        event: &crate::event::Event,
+        thread: &NewThread,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     async fn update_objective_state(
         &self,
         id: &str,
@@ -5997,6 +6008,17 @@ pub trait ObjectiveStore: Send + Sync {
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Claim an event-driven Evaluation while preserving the Objective's
+    /// current required wait. The exact dependency ID is fenced in the store:
+    /// no other pending required dependency may be bypassed by this claim.
+    async fn claim_objective_interrupt_evaluation(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        pending_dependency_id: &str,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically claim an Objective evaluation lease and enqueue the
     /// continuation Event that will activate its coordinator Thread.
     async fn claim_objective_evaluation_with_signal(
@@ -6019,6 +6041,16 @@ pub trait ObjectiveStore: Send + Sync {
         id: &str,
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Renew an event-driven Evaluation which deliberately coexists with one
+    /// exact required dependency. The dependency fence prevents this physical
+    /// lease from turning an unrelated waiting Objective into runnable work.
+    async fn renew_objective_interrupt_evaluation(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        pending_dependency_id: &str,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Records the cost of a complete Prompt prepared for model submission. This accounting does not
     /// alter the Objective's semantic revision and uses Evaluation ID to prevent cross-attribution.

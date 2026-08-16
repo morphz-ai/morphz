@@ -140,6 +140,7 @@ import {
   summarizeToolCall,
   threadKindLabel,
   newestConversationEventsForLane,
+  objectiveDisplayStatus,
   type ConversationWindowLane,
 } from './app/presentation'
 import { buildToolTimeline, executionTargetIds, type ToolTimelineItem } from './app/executionTools'
@@ -1699,14 +1700,15 @@ function DialogueActivityDock({
                         ? 'delete'
                         : ''
                 const selected = selectedObjectiveId === objective.id
+                const displayStatus = objectiveDisplayStatus(objective)
                 return (
                   <article
-                    className={`dialogue-objective-card ${objective.status} ${expanded ? 'is-expanded' : ''} ${selected ? 'is-selected' : ''} ${tintStyleFor(objective.id) ? 'objective-tinted' : ''}`}
+                    className={`dialogue-objective-card ${objective.status} ${displayStatus} ${expanded ? 'is-expanded' : ''} ${selected ? 'is-selected' : ''} ${tintStyleFor(objective.id) ? 'objective-tinted' : ''}`}
                     key={objective.id}
                     style={tintStyleFor(objective.id)}
                   >
                     <header className="objective-card-titlebar">
-                      <span className={`activity-status ${objective.status}`}><i />{statusLabel(objective.status, t)}</span>
+                      <span className={`activity-status ${displayStatus}`}><i />{statusLabel(displayStatus, t)}</span>
                       <time>{formatAgo(objective.updated_at, t)}</time>
                       <ObjectiveCardActions
                         objective={objective}

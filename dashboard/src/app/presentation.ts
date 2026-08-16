@@ -28,6 +28,13 @@ export interface DelegatedContextReference {
   child_context_id?: string
 }
 
+export function objectiveDisplayStatus(objective: {
+  status: string
+  wait_condition?: { kind?: string } | null
+}): string {
+  return objective.status === 'active' && objective.wait_condition ? 'waiting' : objective.status
+}
+
 export function delegatedContextIds(
   delegations: ReadonlyArray<DelegatedContextReference>,
   candidateContextIds: ReadonlyArray<string> = [],

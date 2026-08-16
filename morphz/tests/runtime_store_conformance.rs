@@ -33,7 +33,7 @@ use morphz::memory::{
     SessionProjectionMutation, SessionProjectionStore, SessionStatus, SessionUpdate,
     SignalOutboxStatus, ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction,
     ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore,
-    TimerStore,
+    ThreadSupervision, TimerStore,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
@@ -3154,6 +3154,7 @@ where
         + ThreadStore
         + ThreadGroupStore
         + ActivationStore
+        + SchedulerDependencyStore
         + Send
         + Sync
         + 'static,
@@ -3203,6 +3204,187 @@ where
             .unwrap(),
         ObjectiveMutation::Conflict { .. }
     ));
+    let amendment_root = objective_primary_execution_root_id(&waiting.id, waiting.generation);
+    let amendment_event = Event::new(
+        "conformance-objective-amendment".to_string(),
+        "Runtime-ObjectiveSupervisor".to_string(),
+        "objective_control".to_string(),
+        "chat/objective_amended".to_string(),
+        [
+            ("context_id".to_string(), json!(waiting.context_id)),
+            (
+                "session_id".to_string(),
+                json!(waiting.coordinator_session_id),
+            ),
+            ("root_turn_id".to_string(), json!(amendment_root)),
+            ("objective_id".to_string(), json!(waiting.id)),
+            (
+                "objective_revision".to_string(),
+                json!(waiting.revision + 1),
+            ),
+            (
+                "objective_generation".to_string(),
+                json!(waiting.generation),
+            ),
+            ("objective_interrupt".to_string(), json!(true)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let amendment_thread = NewThread {
+        id: stable_thread_id(&amendment_root),
+        agent_id: waiting.agent_id.clone(),
+        context_id: waiting.context_id.clone(),
+        session_id: waiting.coordinator_session_id.clone(),
+        initiating_principal_id: waiting.initiating_principal_id.clone(),
+        root_turn_id: amendment_root,
+        kind: ThreadKind::Execution,
+        executor_kind: "self".to_string(),
+        executor_id: None,
+        target_id: None,
+        supervision: ThreadSupervision::objective_primary_execution(
+            waiting.id.clone(),
+            waiting.generation,
+        ),
+    };
+    let waiting = match store
+        .amend_objective_with_signal(
+            &waiting.id,
+            waiting.revision,
+            "verify amended objective fencing",
+            &amendment_event,
+            &amendment_thread,
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected amendment mutation: {mutation:?}"),
+    };
+    assert!(matches!(
+        waiting.wait_condition,
+        Some(ObjectiveWaitCondition::ResourceAvailable { .. })
+    ));
+    assert!(store
+        .list_context_thread_signals(&waiting.context_id, None)
+        .await
+        .unwrap()
+        .iter()
+        .any(|signal| signal.event_id == amendment_event.id));
+
+    let dependencies = store
+        .list_scheduler_dependencies(SchedulerDependencyFilter {
+            owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+            owner_id: Some(waiting.id.clone()),
+            status: Some(SchedulerDependencyStatus::Pending),
+            required_only: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(dependencies.len(), 1);
+    assert!(matches!(
+        store
+            .claim_objective_interrupt_evaluation(
+                &waiting.id,
+                waiting.revision,
+                "wrong-interrupt-evaluation",
+                chrono::Utc::now() + chrono::Duration::seconds(30),
+                "wrong-dependency",
+            )
+            .await
+            .unwrap(),
+        ObjectiveMutation::Conflict { .. }
+    ));
+    let interrupted = match store
+        .claim_objective_interrupt_evaluation(
+            &waiting.id,
+            waiting.revision,
+            "interrupt-evaluation",
+            chrono::Utc::now() + chrono::Duration::seconds(30),
+            &dependencies[0].id,
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected interrupt claim: {mutation:?}"),
+    };
+    assert_eq!(interrupted.wait_condition, waiting.wait_condition);
+    assert!(matches!(
+        store
+            .renew_objective_evaluation(
+                &interrupted.id,
+                "interrupt-evaluation",
+                chrono::Utc::now() + chrono::Duration::seconds(45),
+            )
+            .await
+            .unwrap(),
+        ObjectiveMutation::Conflict { .. }
+    ));
+    assert!(matches!(
+        store
+            .renew_objective_interrupt_evaluation(
+                &interrupted.id,
+                "interrupt-evaluation",
+                chrono::Utc::now() + chrono::Duration::seconds(45),
+                &dependencies[0].id,
+            )
+            .await
+            .unwrap(),
+        ObjectiveMutation::Updated(_)
+    ));
+    assert_eq!(
+        store
+            .get_scheduler_dependency(&dependencies[0].id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        SchedulerDependencyStatus::Pending,
+        "interrupt admission must preserve the original crash-recovery wait"
+    );
+    let interrupted = match store
+        .edit_objective(
+            &interrupted.id,
+            interrupted.revision,
+            "verify corrected objective wording",
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected objective edit during interrupt: {mutation:?}"),
+    };
+    assert_eq!(
+        interrupted.stated_objective,
+        "verify corrected objective wording"
+    );
+    assert_eq!(interrupted.wait_condition, waiting.wait_condition);
+    assert_eq!(
+        interrupted.active_evaluation_id.as_deref(),
+        Some("interrupt-evaluation"),
+        "editing Objective intent must not replace its Evaluation lease"
+    );
+    assert_eq!(
+        store
+            .get_scheduler_dependency(&dependencies[0].id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        SchedulerDependencyStatus::Pending,
+        "editing Objective intent must not satisfy or replace its wait"
+    );
+    let waiting = match store
+        .finish_objective_evaluation(&interrupted.id, "interrupt-evaluation", 0, 0)
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected interrupt finish: {mutation:?}"),
+    };
+    assert_eq!(waiting.wait_condition, interrupted.wait_condition);
     let ready = match store
         .update_objective_state(
             &waiting.id,

@@ -193,28 +193,45 @@ impl SchedulerKernel {
                     command.header.generation,
                 )
                 .await?;
-                let mutation = if let Some((event, thread)) = payload.continuation {
-                    self.store
-                        .claim_objective_evaluation_with_signal(
-                            &payload.objective_id,
-                            expected_revision,
-                            &payload.evaluation_id,
-                            payload.lease_expires_at,
-                            &event,
-                            &thread,
-                        )
-                        .await
-                } else {
-                    self.store
-                        .claim_objective_evaluation(
-                            &payload.objective_id,
-                            expected_revision,
-                            &payload.evaluation_id,
-                            payload.lease_expires_at,
-                        )
-                        .await
-                }
-                .map_err(store_error)?;
+                let mutation =
+                    if let Some(pending_dependency_id) = payload.pending_dependency_id.as_deref() {
+                        if payload.continuation.is_some() {
+                            return Err(KernelError::InvalidCommand(
+                                "Objective interrupt claim 不能同时创建 Supervisor continuation"
+                                    .to_string(),
+                            ));
+                        }
+                        self.store
+                            .claim_objective_interrupt_evaluation(
+                                &payload.objective_id,
+                                expected_revision,
+                                &payload.evaluation_id,
+                                payload.lease_expires_at,
+                                pending_dependency_id,
+                            )
+                            .await
+                    } else if let Some((event, thread)) = payload.continuation {
+                        self.store
+                            .claim_objective_evaluation_with_signal(
+                                &payload.objective_id,
+                                expected_revision,
+                                &payload.evaluation_id,
+                                payload.lease_expires_at,
+                                &event,
+                                &thread,
+                            )
+                            .await
+                    } else {
+                        self.store
+                            .claim_objective_evaluation(
+                                &payload.objective_id,
+                                expected_revision,
+                                &payload.evaluation_id,
+                                payload.lease_expires_at,
+                            )
+                            .await
+                    }
+                    .map_err(store_error)?;
                 Ok(KernelResult::ObjectiveEvaluationMutated(mutation))
             }
             KernelCommandPayload::RenewObjectiveEvaluation(payload) => {
@@ -224,14 +241,25 @@ impl SchedulerKernel {
                     command.header.generation,
                 )
                 .await?;
-                let mutation = self
-                    .store
-                    .renew_objective_evaluation(
-                        &payload.objective_id,
-                        &payload.evaluation_id,
-                        payload.lease_expires_at,
-                    )
-                    .await
+                let mutation =
+                    if let Some(pending_dependency_id) = payload.pending_dependency_id.as_deref() {
+                        self.store
+                            .renew_objective_interrupt_evaluation(
+                                &payload.objective_id,
+                                &payload.evaluation_id,
+                                payload.lease_expires_at,
+                                pending_dependency_id,
+                            )
+                            .await
+                    } else {
+                        self.store
+                            .renew_objective_evaluation(
+                                &payload.objective_id,
+                                &payload.evaluation_id,
+                                payload.lease_expires_at,
+                            )
+                            .await
+                    }
                     .map_err(store_error)?;
                 Ok(KernelResult::ObjectiveEvaluationMutated(mutation))
             }
