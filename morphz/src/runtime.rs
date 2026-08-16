@@ -239,22 +239,37 @@ const ARTIFACT_TRANSFER_WORKER_LEASE_SECS: i64 = 300;
 /// remains available through `thread_detail` when an operator opens a Thread.
 const SCHEDULER_TERMINAL_ACTIVATIONS_PER_THREAD: usize = 32;
 
-async fn persist_message_attachments(
+async fn prepare_message_attachments(
     configured_root: &str,
     model_input: &crate::config::ModelInputConfig,
     session_id: &str,
     event_id: &str,
     attachments: Vec<crate::sdk::MessageAttachmentInput>,
-) -> Result<Vec<Value>, RuntimeError> {
-    crate::model_input::persist_model_input_attachments(
+) -> Result<crate::model_input::PreparedMessageAttachments, RuntimeError> {
+    crate::model_input::prepare_message_input_attachments(
         configured_root,
-        "message-inputs",
         session_id,
         event_id,
         attachments,
         model_input.import_limits(),
     )
     .await
+}
+
+async fn discard_message_attachments(
+    prepared: crate::model_input::PreparedMessageAttachments,
+    event_id: &str,
+) {
+    if let Err(error) = prepared.discard().await {
+        // The pending manifest intentionally remains authoritative when a
+        // best-effort discard fails; startup recovery will retry it.
+        tracing::warn!(
+            event_id,
+            error = %error,
+            event_code = "runtime.message_attachment_discard_failed",
+            "Failed to discard message attachments; startup recovery will retry"
+        );
+    }
 }
 
 struct ArtifactTransferExecutionIdentity {
@@ -1593,6 +1608,46 @@ struct RuntimeInner {
     start_lock: tokio::sync::Mutex<()>,
 }
 
+async fn reconcile_pending_message_attachments(
+    inner: &RuntimeInner,
+) -> Result<crate::model_input::MessageAttachmentRecovery, RuntimeError> {
+    let attachment_store = Arc::clone(&inner.store);
+    crate::model_input::recover_pending_message_attachments(
+        &inner.config.background_task.artifact_dir,
+        std::time::Duration::from_secs(inner.config.model_input.pending_import_grace.as_secs()),
+        move |event_id| {
+            let store = Arc::clone(&attachment_store);
+            async move {
+                Ok(!store
+                    .query(QueryFilter {
+                        event_id: Some(event_id),
+                        top_k: Some(1),
+                        ..Default::default()
+                    })
+                    .await?
+                    .is_empty())
+            }
+        },
+    )
+    .await
+}
+
+fn log_message_attachment_recovery(
+    recovery: crate::model_input::MessageAttachmentRecovery,
+    event_code: &'static str,
+) {
+    if recovery != Default::default() {
+        tracing::info!(
+            committed_manifests = recovery.committed_manifests,
+            orphaned_imports = recovery.orphaned_imports,
+            deferred_live_imports = recovery.deferred_live_imports,
+            invalid_manifests = recovery.invalid_manifests,
+            event_code,
+            "Message-input attachment recovery completed"
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct MorphzRuntime {
     inner: Arc<RuntimeInner>,
@@ -1736,6 +1791,10 @@ impl MorphzRuntime {
                 .orchestrator
                 .register_session_context(&session.id, &session.context_id);
         }
+        log_message_attachment_recovery(
+            reconcile_pending_message_attachments(&self.inner).await?,
+            "runtime.message_attachments.startup_recovery_completed",
+        );
         let execution_recovery = self
             .inner
             .execution_jobs
@@ -1914,6 +1973,30 @@ impl MorphzRuntime {
                         tracing::warn!(event_code = "runtime.edge_execution.reconciliation_failed", %error, "Edge execution reconciliation failed")
                     }
                 }
+            }
+        });
+        let attachment_runtime = Arc::downgrade(&self.inner);
+        let attachment_recovery_interval = std::time::Duration::from_secs(
+            self.inner.config.model_input.pending_import_grace.as_secs(),
+        );
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(attachment_recovery_interval).await;
+                let Some(runtime) = attachment_runtime.upgrade() else {
+                    break;
+                };
+                match reconcile_pending_message_attachments(&runtime).await {
+                    Ok(recovery) => log_message_attachment_recovery(
+                        recovery,
+                        "runtime.message_attachments.periodic_recovery_completed",
+                    ),
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        event_code = "runtime.message_attachments.periodic_recovery_failed",
+                        "Message-input attachment recovery failed and will be retried"
+                    ),
+                }
+                drop(runtime);
             }
         });
         self.inner.started.store(true, Ordering::Release);
@@ -7100,6 +7183,55 @@ pub struct MessageReceipt {
     pub interrupted: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageIngressErrorKind {
+    InvalidArgument,
+    Conflict,
+    Forbidden,
+}
+
+#[derive(Debug)]
+pub struct MessageIngressError {
+    pub kind: MessageIngressErrorKind,
+    pub message: String,
+}
+
+impl MessageIngressError {
+    fn new(kind: MessageIngressErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for MessageIngressError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for MessageIngressError {}
+
+fn validate_client_message_id(value: &str) -> Result<(), MessageIngressError> {
+    if value.is_empty() || value.len() > 128 {
+        return Err(MessageIngressError::new(
+            MessageIngressErrorKind::InvalidArgument,
+            "client_message_id 长度必须为 1..=128 字节",
+        ));
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(MessageIngressError::new(
+            MessageIngressErrorKind::InvalidArgument,
+            "client_message_id 只能包含 ASCII 字母、数字、-、_、.、:",
+        ));
+    }
+    Ok(())
+}
+
 /// Result of restarting one failed logical DialogueTurn in place. The user
 /// Event and logical Thread identity remain stable; only the physical
 /// Evaluation generation advances.
@@ -7225,26 +7357,9 @@ impl SessionHandle {
             .into());
         }
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
+        validate_client_message_id(&client_message_id)?;
         let event_id = runtime_id("msg");
-        let attachment_metadata = persist_message_attachments(
-            &self.runtime.inner.config.background_task.artifact_dir,
-            &self.runtime.inner.config.model_input,
-            &self.id,
-            &event_id,
-            attachments,
-        )
-        .await?;
-        let mut payload = serde_json::Map::from_iter([
-            ("context_id".to_string(), json!(session.context_id)),
-            ("session_id".to_string(), json!(self.id)),
-            ("principal_id".to_string(), json!(principal_id)),
-            ("client_message_id".to_string(), json!(client_message_id)),
-            ("text".to_string(), json!(text)),
-        ]);
-        if !attachment_metadata.is_empty() {
-            payload.insert("attachments".to_string(), Value::Array(attachment_metadata));
-        }
-        if let Some(reference) = requested_harness {
+        let resolved_harness = if let Some(reference) = requested_harness {
             let id = reference.id.trim();
             let version = reference.version.trim();
             if id.is_empty() || version.is_empty() {
@@ -7259,6 +7374,32 @@ impl SessionHandle {
             let artifact_hash = harness.artifact_hash().ok_or_else(|| {
                 format!("Harness '{id}@{version}' 没有 artifact hash，不能精确绑定")
             })?;
+            Some((id.to_string(), version.to_string(), artifact_hash))
+        } else {
+            None
+        };
+        let prepared_attachments = prepare_message_attachments(
+            &self.runtime.inner.config.background_task.artifact_dir,
+            &self.runtime.inner.config.model_input,
+            &self.id,
+            &event_id,
+            attachments,
+        )
+        .await?;
+        let mut payload = serde_json::Map::from_iter([
+            ("context_id".to_string(), json!(session.context_id)),
+            ("session_id".to_string(), json!(self.id)),
+            ("principal_id".to_string(), json!(principal_id)),
+            ("client_message_id".to_string(), json!(client_message_id)),
+            ("text".to_string(), json!(text)),
+        ]);
+        if !prepared_attachments.metadata().is_empty() {
+            payload.insert(
+                "attachments".to_string(),
+                Value::Array(prepared_attachments.metadata().to_vec()),
+            );
+        }
+        if let Some((id, version, artifact_hash)) = resolved_harness {
             payload.insert("requested_harness_id".to_string(), json!(id));
             payload.insert("requested_harness_version".to_string(), json!(version));
             payload.insert(
@@ -7273,7 +7414,7 @@ impl SessionHandle {
             "chat/user_message".to_string(),
             payload,
         );
-        match self
+        let claim = self
             .runtime
             .inner
             .store
@@ -7287,15 +7428,67 @@ impl SessionHandle {
                     .orchestrator
                     .interrupt_dialogue_on_new_message,
             )
-            .await?
-        {
-            MessageClaim::Existing { event_id } => Ok(MessageReceipt {
-                event_id,
-                client_message_id,
-                duplicate: true,
-                interrupted: false,
-            }),
+            .await;
+        let claim = match claim {
+            Ok(claim) => claim,
+            Err(error) => {
+                discard_message_attachments(prepared_attachments, &event_id).await;
+                return Err(error);
+            }
+        };
+        match claim {
+            MessageClaim::Existing {
+                event_id: existing_event_id,
+            } => {
+                discard_message_attachments(prepared_attachments, &event_id).await;
+                Ok(MessageReceipt {
+                    event_id: existing_event_id,
+                    client_message_id,
+                    duplicate: true,
+                    interrupted: false,
+                })
+            }
+            MessageClaim::Conflict {
+                event_id: existing_event_id,
+            } => {
+                discard_message_attachments(prepared_attachments, &event_id).await;
+                Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Conflict,
+                    format!(
+                        "client_message_id '{}' 已绑定到不同请求 Event '{}'",
+                        client_message_id, existing_event_id
+                    ),
+                )))
+            }
+            MessageClaim::InactiveSession => {
+                discard_message_attachments(prepared_attachments, &event_id).await;
+                Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Conflict,
+                    "归档 Session 不能接收新消息",
+                )))
+            }
+            MessageClaim::ForbiddenPrincipal { principal_id } => {
+                discard_message_attachments(prepared_attachments, &event_id).await;
+                Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Forbidden,
+                    format!(
+                        "Principal '{}' 未绑定到 Session '{}'，拒绝接收消息",
+                        principal_id, self.id
+                    ),
+                )))
+            }
             MessageClaim::Accepted { event, interrupted } => {
+                if let Err(error) = prepared_attachments.commit().await {
+                    // The immutable Event owns the Event-specific links now.
+                    // Startup reconciliation can safely remove a leftover
+                    // manifest after observing that Event.
+                    tracing::warn!(
+                        event_id = %event.id,
+                        error = %error,
+                        event_code = "runtime.message_attachment_commit_deferred",
+                        "Message attachments committed, but pending-manifest cleanup was deferred"
+                    );
+                }
                 // claim_message committed the immutable Event and its
                 // Dialogue Thread Signal atomically.  Dispatch only the
                 // already-durable fact; routing it through publish() would
@@ -7664,6 +7857,18 @@ mod tests {
         assert_eq!(fallback.source, "runtime-default");
     }
 
+    #[test]
+    fn transport_neutral_client_message_id_contract_is_bounded() {
+        assert!(validate_client_message_id("wechat:message_123-4.5").is_ok());
+        for invalid in ["", "contains whitespace", "包含中文"] {
+            let error = validate_client_message_id(invalid).unwrap_err();
+            assert_eq!(error.kind, MessageIngressErrorKind::InvalidArgument);
+        }
+        let oversized = "a".repeat(129);
+        let error = validate_client_message_id(&oversized).unwrap_err();
+        assert_eq!(error.kind, MessageIngressErrorKind::InvalidArgument);
+    }
+
     #[tokio::test]
     async fn message_attachments_store_bytes_outside_the_ledger_by_digest() {
         let artifact_root = tempfile::tempdir().unwrap();
@@ -7672,7 +7877,7 @@ mod tests {
             media_type: "image/png".to_string(),
             data: b"image-bytes".to_vec(),
         };
-        let metadata = persist_message_attachments(
+        let prepared = prepare_message_attachments(
             artifact_root.path().to_str().unwrap(),
             &AppConfig::default().model_input,
             "session-attachment-test",
@@ -7681,6 +7886,7 @@ mod tests {
         )
         .await
         .unwrap();
+        let metadata = prepared.metadata();
 
         assert_eq!(metadata.len(), 2);
         assert_eq!(metadata[0]["name"], "diagram.png");
@@ -7695,6 +7901,45 @@ mod tests {
         assert!(!metadata_json
             .windows(b"image-bytes".len())
             .any(|window| window == b"image-bytes"));
+        prepared.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn running_runtime_reclaims_an_import_deferred_during_startup() {
+        let database = NamedTempFile::new().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
+        config.model_input.pending_import_grace = crate::config::HumanDuration::from_secs(2);
+        let prepared = prepare_message_attachments(
+            &config.background_task.artifact_dir,
+            &config.model_input,
+            "session-periodic-recovery",
+            "event-periodic-orphan",
+            vec![MessageAttachmentInput {
+                name: "orphan.png".to_string(),
+                media_type: "image/png".to_string(),
+                data: b"periodic-orphan".to_vec(),
+            }],
+        )
+        .await
+        .unwrap();
+        let path = PathBuf::from(prepared.metadata()[0]["storage_path"].as_str().unwrap());
+        drop(prepared);
+
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while tokio::fs::try_exists(&path).await.unwrap() {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("periodic recovery must reclaim an import deferred at startup");
     }
 
     struct BlockingArtifactTransferBackend {
@@ -13316,6 +13561,26 @@ mod tests {
             })
             .await
             .unwrap();
+        crashed_runtime
+            .inner
+            .store
+            .ensure_principal(NewPrincipal {
+                id: "principal-runtime-outbox-recovery".to_string(),
+                provider_id: "runtime-test".to_string(),
+                assurance: "test".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .inner
+            .store
+            .bind_session_principal(
+                "session-runtime-outbox-recovery",
+                "principal-runtime-outbox-recovery",
+            )
+            .await
+            .unwrap();
         let event = Event::new(
             "event-runtime-outbox-recovery".to_string(),
             "User-Test".to_string(),
@@ -13333,6 +13598,10 @@ mod tests {
                 (
                     "client_message_id".to_string(),
                     json!("client-runtime-outbox-recovery"),
+                ),
+                (
+                    "principal_id".to_string(),
+                    json!("principal-runtime-outbox-recovery"),
                 ),
                 ("text".to_string(), json!("recover this message")),
             ]

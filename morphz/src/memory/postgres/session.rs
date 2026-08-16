@@ -820,6 +820,55 @@ impl SessionDirectoryStore for PostgresStore {
 
         let now = now_text();
         let mut tx = self.pool.begin().await?;
+        let context_row =
+            sqlx::query("SELECT agent_id, status FROM cognitive_contexts WHERE id = $1 FOR UPDATE")
+                .bind(&session.context_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| format!("父 Context '{}' 不存在", session.context_id))?;
+        if context_row.get::<String, _>("agent_id") != session.agent_id {
+            return Err("Session 与 Context 的 Agent 不一致".into());
+        }
+        if context_row.get::<String, _>("status") != "active" {
+            return Err("归档 Context 不能创建新 Session".into());
+        }
+        let principal_exists =
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM principals WHERE id = $1)")
+                .bind(principal_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if !principal_exists {
+            return Err(format!("Principal '{principal_id}' 不存在").into());
+        }
+        if let Some(parent_id) = session.parent_session_id.as_deref() {
+            let parent =
+                sqlx::query("SELECT context_id, status FROM sessions WHERE id = $1 FOR UPDATE")
+                    .bind(parent_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| format!("父 Session '{parent_id}' 不存在"))?;
+            if parent.get::<String, _>("context_id") != session.context_id {
+                return Err(format!("父 Session '{parent_id}' 不属于目标 Context").into());
+            }
+            if parent.get::<String, _>("status") != "active" {
+                return Err("归档父 Session 不能创建子 Session".into());
+            }
+            let bound = sqlx::query_scalar::<_, bool>(
+                r#"SELECT EXISTS(
+                     SELECT 1 FROM session_principal_bindings
+                     WHERE session_id = $1 AND principal_id = $2 AND unbound_at IS NULL
+                   )"#,
+            )
+            .bind(parent_id)
+            .bind(principal_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !bound {
+                return Err(
+                    format!("Principal '{principal_id}' 未参与父 Session '{parent_id}'").into(),
+                );
+            }
+        }
         let row = sqlx::query(&format!(
             "INSERT INTO sessions \
              (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, \

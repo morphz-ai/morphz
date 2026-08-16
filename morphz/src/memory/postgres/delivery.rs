@@ -1,8 +1,8 @@
 use super::{append_event_in_tx, now_text, PostgresStore, StoreError};
 use crate::event::Event;
 use crate::memory::{
-    stable_thread_id, stable_thread_signal_id, DeliveryIngressStore, InterruptedDialogueTurn,
-    MessageClaim, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    message_request_fingerprint, stable_thread_id, stable_thread_signal_id, DeliveryIngressStore,
+    InterruptedDialogueTurn, MessageClaim, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use serde_json::{json, Value as JsonValue};
 use sqlx::{PgPool, Postgres, Row};
@@ -13,12 +13,15 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             client_message_id TEXT NOT NULL,
             event_id TEXT NOT NULL,
+            request_fingerprint TEXT,
             created_at TEXT NOT NULL,
             PRIMARY KEY(session_id, client_message_id),
             UNIQUE(event_id)
         )"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_session_message_requests_event
            ON session_message_requests(event_id)"#,
+        r#"ALTER TABLE session_message_requests
+           ADD COLUMN IF NOT EXISTS request_fingerprint TEXT"#,
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
@@ -367,9 +370,15 @@ impl DeliveryIngressStore for PostgresStore {
             .get("context_id")
             .and_then(JsonValue::as_str)
             .ok_or("用户消息缺少 context_id")?;
+        let event_principal_id = event
+            .payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("用户消息缺少 principal_id")?;
+        let request_fingerprint = message_request_fingerprint(&event.payload)?;
         let mut tx = self.pool.begin().await?;
         let session = sqlx::query(
-            r#"SELECT agent_id, context_id, attention_state, attention_revision
+            r#"SELECT agent_id, context_id, status, attention_state, attention_revision
                FROM sessions WHERE id = $1 FOR UPDATE"#,
         )
         .bind(session_id)
@@ -384,30 +393,90 @@ impl DeliveryIngressStore for PostgresStore {
             )
             .into());
         }
+        if session.get::<String, _>("status") == "archived" {
+            tx.commit().await?;
+            return Ok(MessageClaim::InactiveSession);
+        }
+        let principal_is_bound = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM session_principal_bindings
+                 WHERE session_id = $1 AND principal_id = $2 AND unbound_at IS NULL
+               )"#,
+        )
+        .bind(session_id)
+        .bind(event_principal_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !principal_is_bound {
+            tx.commit().await?;
+            return Ok(MessageClaim::ForbiddenPrincipal {
+                principal_id: event_principal_id.to_string(),
+            });
+        }
 
         let inserted = sqlx::query(
             r#"INSERT INTO session_message_requests
-               (session_id, client_message_id, event_id, created_at)
-               VALUES ($1, $2, $3, $4)
+               (session_id, client_message_id, event_id, request_fingerprint, created_at)
+               VALUES ($1, $2, $3, $4, $5)
                ON CONFLICT(session_id, client_message_id) DO NOTHING"#,
         )
         .bind(session_id)
         .bind(client_message_id)
         .bind(&event.id)
+        .bind(&request_fingerprint)
         .bind(now_text())
         .execute(&mut *tx)
         .await?;
         if inserted.rows_affected() == 0 {
-            let existing: String = sqlx::query_scalar(
-                r#"SELECT event_id FROM session_message_requests
+            let existing = sqlx::query(
+                r#"SELECT event_id, request_fingerprint FROM session_message_requests
                    WHERE session_id = $1 AND client_message_id = $2"#,
             )
             .bind(session_id)
             .bind(client_message_id)
             .fetch_one(&mut *tx)
             .await?;
+            let existing_event_id = existing.get::<String, _>("event_id");
+            let existing_fingerprint =
+                match existing.get::<Option<String>, _>("request_fingerprint") {
+                    Some(fingerprint) => fingerprint,
+                    None => {
+                        let payload = sqlx::query_scalar::<_, JsonValue>(
+                            "SELECT payload FROM events WHERE id = $1",
+                        )
+                        .bind(&existing_event_id)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                        .ok_or_else(|| {
+                            format!("消息幂等记录引用了不存在的 Event '{}'", existing_event_id)
+                        })?;
+                        let payload = payload
+                            .as_object()
+                            .ok_or("用户消息 Event payload 不是对象")?;
+                        let fingerprint = message_request_fingerprint(payload)?;
+                        sqlx::query(
+                            r#"UPDATE session_message_requests SET request_fingerprint = $1
+                           WHERE session_id = $2 AND client_message_id = $3
+                             AND request_fingerprint IS NULL"#,
+                        )
+                        .bind(&fingerprint)
+                        .bind(session_id)
+                        .bind(client_message_id)
+                        .execute(&mut *tx)
+                        .await?;
+                        fingerprint
+                    }
+                };
             tx.commit().await?;
-            return Ok(MessageClaim::Existing { event_id: existing });
+            return Ok(if existing_fingerprint == request_fingerprint {
+                MessageClaim::Existing {
+                    event_id: existing_event_id,
+                }
+            } else {
+                MessageClaim::Conflict {
+                    event_id: existing_event_id,
+                }
+            });
         }
 
         let agent_id = session.get::<String, _>("agent_id");

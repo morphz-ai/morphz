@@ -442,28 +442,44 @@ impl ThreadStore for PostgresStore {
         &self,
         session_id: &str,
         include_deferred: bool,
+        limit: usize,
     ) -> Result<Vec<ThreadRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit)?;
         let rows = if include_deferred {
             sqlx::query(
                 r#"SELECT * FROM threads WHERE session_id = $1
-                   AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id"#,
+                   AND delivery_status IN ('pending', 'deferred')
+                   ORDER BY CASE delivery_status WHEN 'pending' THEN 0 ELSE 1 END,
+                            updated_at, id
+                   LIMIT $2"#,
             )
             .bind(session_id)
+            .bind(limit)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
                 r#"SELECT * FROM threads WHERE session_id = $1
-                   AND delivery_status = 'pending' ORDER BY updated_at, id"#,
+                   AND delivery_status = 'pending' ORDER BY updated_at, id LIMIT $2"#,
             )
             .bind(session_id)
+            .bind(limit)
             .fetch_all(&self.pool)
             .await?
         };
         rows.iter().map(thread_from_row).collect()
     }
 
-    async fn list_pending_delivery_sessions(&self) -> Result<Vec<String>, StoreError> {
+    async fn list_pending_delivery_sessions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<String>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         Ok(sqlx::query_scalar::<_, String>(
             r#"SELECT DISTINCT pending.session_id
                FROM threads AS pending
@@ -481,8 +497,16 @@ impl ThreadStore for PostgresStore {
                      AND delivery.kind = 'delivery'
                      AND delivery.status NOT IN ('completed', 'failed', 'cancelled')
                  )
-               ORDER BY pending.session_id"#,
+                 AND NOT EXISTS (
+                   SELECT 1 FROM runtime_timers AS timer
+                   WHERE timer.kind = 'delivery_flush'
+                     AND timer.owner_id = pending.session_id
+                     AND timer.status IN ('pending', 'claimed')
+                 )
+               ORDER BY pending.session_id
+               LIMIT $1"#,
         )
+        .bind(i64::try_from(limit)?)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -493,12 +517,15 @@ impl ThreadStore for PostgresStore {
         session_id: &str,
         merge_window_secs: u64,
         max_wait_secs: u64,
+        snapshot_max_items: usize,
     ) -> Result<Option<RuntimeTimerRecord>, StoreError> {
         if timer_id.trim().is_empty() || session_id.trim().is_empty() {
             return Err("Delivery Flush timer_id/session_id 不能为空".into());
         }
-        if merge_window_secs == 0 || max_wait_secs == 0 {
-            return Err("Delivery Flush merge_window/max_wait 必须大于 0".into());
+        if merge_window_secs == 0 || max_wait_secs == 0 || snapshot_max_items == 0 {
+            return Err(
+                "Delivery Flush merge_window/max_wait/snapshot_max_items 必须大于 0".into(),
+            );
         }
         let merge_window = Duration::seconds(i64::try_from(merge_window_secs)?);
         let max_wait = Duration::seconds(i64::try_from(max_wait_secs)?);
@@ -531,9 +558,13 @@ impl ThreadStore for PostgresStore {
         let due_at = std::cmp::min(latest_pending + merge_window, first_pending + max_wait);
         let delivery_rows = sqlx::query(
             r#"SELECT id, result_event_id FROM threads WHERE session_id = $1
-               AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id"#,
+               AND delivery_status IN ('pending', 'deferred')
+               ORDER BY CASE delivery_status WHEN 'pending' THEN 0 ELSE 1 END,
+                        updated_at, id
+               LIMIT $2"#,
         )
         .bind(session_id)
+        .bind(i64::try_from(snapshot_max_items)?)
         .fetch_all(&mut *tx)
         .await?;
         let completed_thread_ids = delivery_rows

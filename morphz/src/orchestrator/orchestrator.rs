@@ -9868,6 +9868,9 @@ impl Orchestrator {
                     .scheduler
                     .delivery_max_wait
                     .as_secs(),
+                self.orchestrator_config
+                    .scheduler
+                    .delivery_snapshot_max_items,
             )
             .await?
         else {
@@ -9892,18 +9895,33 @@ impl Orchestrator {
         let Some(store) = self.context_engine.session_store() else {
             return Ok(0);
         };
-        let sessions = store.list_pending_delivery_sessions().await?;
-        for session_id in &sessions {
-            self.arm_delivery_flush(session_id).await?;
+        let page_size = self
+            .orchestrator_config
+            .scheduler
+            .delivery_recovery_page_size;
+        let mut recovered = 0usize;
+        loop {
+            let sessions = store.list_pending_delivery_sessions(page_size).await?;
+            if sessions.is_empty() {
+                break;
+            }
+            let page_len = sessions.len();
+            for session_id in &sessions {
+                self.arm_delivery_flush(session_id).await?;
+            }
+            recovered = recovered.saturating_add(page_len);
+            if page_len < page_size {
+                break;
+            }
         }
-        if !sessions.is_empty() {
+        if recovered != 0 {
             tracing::info!(
-                sessions = sessions.len(),
+                sessions = recovered,
                 event_code = "orchestrator.delivery_flush_timer.recovered",
                 "Recovered Delivery Flush Timers from pending or deferred Threads"
             );
         }
-        Ok(sessions.len())
+        Ok(recovered)
     }
 
     async fn dispatch_delivery_flush(
@@ -9931,10 +9949,17 @@ impl Orchestrator {
             // already `delivered`, so recover the stable reply by Event ID before
             // consulting the live pending set.
             self.bus.dispatch_persisted(reply).await?;
+            self.arm_delivery_flush(&session_id).await?;
             return Ok(TimerDisposition::Complete);
         }
         let threads = store
-            .list_session_delivery_threads(&session_id, true)
+            .list_session_delivery_threads(
+                &session_id,
+                true,
+                self.orchestrator_config
+                    .scheduler
+                    .delivery_snapshot_max_items,
+            )
             .await?;
         if threads.is_empty() {
             return Ok(TimerDisposition::Complete);
@@ -10032,6 +10057,11 @@ impl Orchestrator {
             match commit {
                 DeliveryFlushCommit::Committed | DeliveryFlushCommit::Existing { .. } => {
                     self.bus.dispatch_persisted(reply).await?;
+                    // A bounded snapshot can leave later results pending. Arm
+                    // the next generation before completing this claimed
+                    // generation; the generation fence makes the old timer's
+                    // final acknowledgement harmless.
+                    self.arm_delivery_flush(&session_id).await?;
                 }
                 DeliveryFlushCommit::Stale | DeliveryFlushCommit::Empty => {}
             }
@@ -10184,7 +10214,13 @@ impl Orchestrator {
             .session_store()
             .ok_or("Completion delivery 需要持久化 SessionStore")?;
         Ok(store
-            .list_session_delivery_threads(session_id, include_deferred)
+            .list_session_delivery_threads(
+                session_id,
+                include_deferred,
+                self.orchestrator_config
+                    .scheduler
+                    .delivery_snapshot_max_items,
+            )
             .await?
             .into_iter()
             .map(|thread| thread.id)

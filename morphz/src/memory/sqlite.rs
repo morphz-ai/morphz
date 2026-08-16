@@ -5,12 +5,12 @@ use crate::config::SqliteStorageConfig;
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
     causal_payload_string, evaluate_thread_completion_contract, evaluate_thread_group_contract,
-    stable_thread_id, stable_thread_signal_id, thread_cancellation_event,
-    thread_group_barrier_event, thread_terminal_barrier_event, ActionGroupFilter,
-    ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus, ActionGroupRecord,
-    ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit, ActivationStore,
-    AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter, ApprovalMutation,
-    ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    message_request_fingerprint, stable_thread_id, stable_thread_signal_id,
+    thread_cancellation_event, thread_group_barrier_event, thread_terminal_barrier_event,
+    ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus,
+    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
+    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
+    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
     CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
     CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
@@ -624,6 +624,7 @@ impl SqliteStore {
             session_id TEXT NOT NULL,
             client_message_id TEXT NOT NULL,
             event_id TEXT NOT NULL,
+            request_fingerprint TEXT,
             created_at TEXT NOT NULL,
             PRIMARY KEY(session_id, client_message_id),
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -1298,6 +1299,17 @@ impl SqliteStore {
             )
             .execute(&pool)
             .await?;
+        }
+        let message_request_columns = sqlx::query("PRAGMA table_info(session_message_requests)")
+            .fetch_all(&pool)
+            .await?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        if !message_request_columns.contains("request_fingerprint") {
+            sqlx::query("ALTER TABLE session_message_requests ADD COLUMN request_fingerprint TEXT")
+                .execute(&pool)
+                .await?;
         }
         migrate_execution_targets(&pool).await?;
         migrate_edge_execution(&pool).await?;
@@ -6572,6 +6584,66 @@ impl SessionDirectoryStore for SqliteStore {
 
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
+        // Acquire the writer before re-reading every mutable authority used by
+        // this creation. Preflight above provides fast errors; these reads are
+        // the commit-time source of truth.
+        let context_locked =
+            sqlx::query("UPDATE cognitive_contexts SET updated_at = updated_at WHERE id = ?")
+                .bind(&session.context_id)
+                .execute(&mut *tx)
+                .await?;
+        if context_locked.rows_affected() != 1 {
+            return Err(format!("父 Context '{}' 不存在", session.context_id).into());
+        }
+        let context_row =
+            sqlx::query("SELECT agent_id, status FROM cognitive_contexts WHERE id = ?")
+                .bind(&session.context_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if context_row.get::<String, _>("agent_id") != session.agent_id {
+            return Err("Session 与 Context 的 Agent 不一致".into());
+        }
+        if context_row.get::<String, _>("status") != "active" {
+            return Err("归档 Context 不能创建新 Session".into());
+        }
+        let principal_exists =
+            sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM principals WHERE id = ?)")
+                .bind(principal_id)
+                .fetch_one(&mut *tx)
+                .await?
+                != 0;
+        if !principal_exists {
+            return Err(format!("Principal '{principal_id}' 不存在").into());
+        }
+        if let Some(parent_id) = session.parent_session_id.as_deref() {
+            let parent = sqlx::query("SELECT context_id, status FROM sessions WHERE id = ?")
+                .bind(parent_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| format!("父 Session '{parent_id}' 不存在"))?;
+            if parent.get::<String, _>("context_id") != session.context_id {
+                return Err(format!("父 Session '{parent_id}' 不属于目标 Context").into());
+            }
+            if parent.get::<String, _>("status") != "active" {
+                return Err("归档父 Session 不能创建子 Session".into());
+            }
+            let bound = sqlx::query_scalar::<_, i64>(
+                r#"SELECT EXISTS(
+                     SELECT 1 FROM session_principal_bindings
+                     WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL
+                   )"#,
+            )
+            .bind(parent_id)
+            .bind(principal_id)
+            .fetch_one(&mut *tx)
+            .await?
+                != 0;
+            if !bound {
+                return Err(
+                    format!("Principal '{principal_id}' 未参与父 Session '{parent_id}'").into(),
+                );
+            }
+        }
         sqlx::query(
             r#"INSERT INTO sessions
                (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at)
@@ -9750,6 +9822,12 @@ impl ActivationStore for SqliteStore {
             .get("session_id")
             .and_then(JsonValue::as_str)
             .ok_or("DialogueTurn retry Event 缺少 session_id")?;
+        let principal_id = request
+            .event
+            .payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("DialogueTurn retry Event 缺少 principal_id")?;
         let expected_revision = i64::try_from(request.expected_thread_revision)
             .map_err(|_| "DialogueTurn Thread revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
@@ -9793,6 +9871,39 @@ impl ActivationStore for SqliteStore {
             return Ok(DialogueTurnRetryMutation::NotFound);
         };
         let current = thread_from_row(&row)?;
+        let session_status =
+            sqlx::query_scalar::<_, String>("SELECT status FROM sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if session_status.as_deref() != Some("active") {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: "归档或不存在的 Session 不能重启 DialogueTurn".to_string(),
+            });
+        }
+        let principal_is_bound = sqlx::query_scalar::<_, i64>(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM session_principal_bindings
+                 WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL
+               )"#,
+        )
+        .bind(session_id)
+        .bind(principal_id)
+        .fetch_one(&mut *tx)
+        .await?
+            != 0;
+        if !principal_is_bound {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: format!(
+                    "Principal '{}' 未绑定到 Session '{}'，拒绝重启 DialogueTurn",
+                    principal_id, session_id
+                ),
+            });
+        }
         if current.revision != request.expected_thread_revision {
             tx.commit().await?;
             return Ok(DialogueTurnRetryMutation::Conflict { current });
@@ -10320,19 +10431,30 @@ impl ThreadStore for SqliteStore {
         &self,
         session_id: &str,
         include_deferred: bool,
+        limit: usize,
     ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| "Delivery Thread 查询上限超出范围")?;
         let rows = if include_deferred {
             sqlx::query(
-                "SELECT * FROM threads WHERE session_id = ? AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id",
+                r#"SELECT * FROM threads WHERE session_id = ?
+                   AND delivery_status IN ('pending', 'deferred')
+                   ORDER BY CASE delivery_status WHEN 'pending' THEN 0 ELSE 1 END,
+                            updated_at, id
+                   LIMIT ?"#,
             )
             .bind(session_id)
+            .bind(limit)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
-                "SELECT * FROM threads WHERE session_id = ? AND delivery_status = 'pending' ORDER BY updated_at, id",
+                "SELECT * FROM threads WHERE session_id = ? AND delivery_status = 'pending' ORDER BY updated_at, id LIMIT ?",
             )
             .bind(session_id)
+            .bind(limit)
             .fetch_all(&self.pool)
             .await?
         };
@@ -10341,7 +10463,11 @@ impl ThreadStore for SqliteStore {
 
     async fn list_pending_delivery_sessions(
         &self,
+        limit: usize,
     ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         Ok(sqlx::query_scalar::<_, String>(
             r#"SELECT DISTINCT pending.session_id
                FROM threads AS pending
@@ -10361,8 +10487,16 @@ impl ThreadStore for SqliteStore {
                      AND delivery.kind = 'delivery'
                      AND delivery.status NOT IN ('completed', 'failed', 'cancelled')
                  )
-               ORDER BY pending.session_id"#,
+                 AND NOT EXISTS (
+                   SELECT 1 FROM runtime_timers AS timer
+                   WHERE timer.kind = 'delivery_flush'
+                     AND timer.owner_id = pending.session_id
+                     AND timer.status IN ('pending', 'claimed')
+                 )
+               ORDER BY pending.session_id
+               LIMIT ?"#,
         )
+        .bind(i64::try_from(limit).map_err(|_| "Delivery Session 查询上限超出范围")?)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -10373,12 +10507,15 @@ impl ThreadStore for SqliteStore {
         session_id: &str,
         merge_window_secs: u64,
         max_wait_secs: u64,
+        snapshot_max_items: usize,
     ) -> Result<Option<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>> {
         if timer_id.trim().is_empty() || session_id.trim().is_empty() {
             return Err("Delivery Flush timer_id/session_id 不能为空".into());
         }
-        if merge_window_secs == 0 || max_wait_secs == 0 {
-            return Err("Delivery Flush merge_window/max_wait 必须大于 0".into());
+        if merge_window_secs == 0 || max_wait_secs == 0 || snapshot_max_items == 0 {
+            return Err(
+                "Delivery Flush merge_window/max_wait/snapshot_max_items 必须大于 0".into(),
+            );
         }
         let merge_window = chrono::Duration::seconds(
             i64::try_from(merge_window_secs).map_err(|_| "Delivery Flush merge_window 超出范围")?,
@@ -10408,8 +10545,7 @@ impl ThreadStore for SqliteStore {
             .bind(session_id)
             .fetch_one(&mut *connection)
             .await?;
-            let Some(first_pending_at) =
-                aggregate.get::<Option<String>, _>("first_pending_at")
+            let Some(first_pending_at) = aggregate.get::<Option<String>, _>("first_pending_at")
             else {
                 return Ok(None);
             };
@@ -10420,9 +10556,17 @@ impl ThreadStore for SqliteStore {
             let latest_pending = parse_time(&latest_pending_at);
             let due_at = std::cmp::min(latest_pending + merge_window, first_pending + max_wait);
             let delivery_rows = sqlx::query(
-                "SELECT id, result_event_id FROM threads WHERE session_id = ? AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id",
+                r#"SELECT id, result_event_id FROM threads WHERE session_id = ?
+                   AND delivery_status IN ('pending', 'deferred')
+                   ORDER BY CASE delivery_status WHEN 'pending' THEN 0 ELSE 1 END,
+                            updated_at, id
+                   LIMIT ?"#,
             )
             .bind(session_id)
+            .bind(
+                i64::try_from(snapshot_max_items)
+                    .map_err(|_| "Delivery Flush snapshot_max_items 超出 SQLite INTEGER 范围")?,
+            )
             .fetch_all(&mut *connection)
             .await?;
             let completed_thread_ids = delivery_rows
@@ -10434,19 +10578,17 @@ impl ThreadStore for SqliteStore {
                 .filter_map(|row| row.get::<Option<String>, _>("result_event_id"))
                 .collect::<Vec<_>>();
 
-            let current_generation = sqlx::query_scalar::<_, i64>(
-                "SELECT generation FROM runtime_timers WHERE id = ?",
-            )
-            .bind(timer_id)
-            .fetch_optional(&mut *connection)
-            .await?
-            .unwrap_or(0);
+            let current_generation =
+                sqlx::query_scalar::<_, i64>("SELECT generation FROM runtime_timers WHERE id = ?")
+                    .bind(timer_id)
+                    .fetch_optional(&mut *connection)
+                    .await?
+                    .unwrap_or(0);
             let generation = current_generation
                 .checked_add(1)
                 .ok_or("Delivery Flush generation 溢出")?;
             let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            let due_at_text =
-                due_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let due_at_text = due_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
             let payload = serde_json::to_string(&serde_json::json!({
                 "session_id": session_id,
                 "first_pending_at": first_pending_at,
@@ -12945,10 +13087,6 @@ impl DeliveryIngressStore for SqliteStore {
         event: &Event,
         interrupt_dialogue: bool,
     ) -> Result<MessageClaim, Box<dyn std::error::Error + Send + Sync>> {
-        let session = self
-            .get_session(session_id)
-            .await?
-            .ok_or_else(|| format!("Session '{}' 不存在", session_id))?;
         let event_session_id = event
             .payload
             .get("session_id")
@@ -12959,6 +13097,37 @@ impl DeliveryIngressStore for SqliteStore {
             .get("context_id")
             .and_then(|value| value.as_str())
             .ok_or("用户消息缺少 context_id")?;
+        let event_principal_id = event
+            .payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("用户消息缺少 principal_id")?;
+        let request_fingerprint = message_request_fingerprint(&event.payload)?;
+        let mut tx = self.pool.begin().await?;
+        // Acquire SQLite's single writer before reading mutable Session
+        // authority. This avoids a deferred read -> write snapshot upgrade and
+        // serializes a concurrent archive with the claim decision.
+        let locked = sqlx::query("UPDATE sessions SET updated_at = updated_at WHERE id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        if locked.rows_affected() != 1 {
+            tx.commit().await?;
+            return Err(format!("Session '{}' 不存在", session_id).into());
+        }
+        let session_row = sqlx::query(
+            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                      s.created_at, s.updated_at, s.last_activity_at,
+                      sm.attention_state, sm.attention_revision, sm.attention_reason,
+                      sm.attention_changed_at, sm.attention_event_id
+               FROM sessions s
+               JOIN session_mounts sm ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+               WHERE s.id = ?"#,
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let session = session_from_row(&session_row);
         if event_session_id != session_id || event_context_id != session.context_id {
             return Err(format!(
                 "消息路由与 Session Registry 不一致：请求 Session='{}'，Event Session='{}'，Event Context='{}'，Registry Context='{}'",
@@ -12966,14 +13135,35 @@ impl DeliveryIngressStore for SqliteStore {
             )
             .into());
         }
+        if session.status == SessionStatus::Archived {
+            tx.commit().await?;
+            return Ok(MessageClaim::InactiveSession);
+        }
+        let principal_is_bound = sqlx::query_scalar::<_, i64>(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM session_principal_bindings
+                 WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL
+               )"#,
+        )
+        .bind(session_id)
+        .bind(event_principal_id)
+        .fetch_one(&mut *tx)
+        .await?
+            != 0;
+        if !principal_is_bound {
+            tx.commit().await?;
+            return Ok(MessageClaim::ForbiddenPrincipal {
+                principal_id: event_principal_id.to_string(),
+            });
+        }
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "INSERT OR IGNORE INTO session_message_requests (session_id, client_message_id, event_id, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO session_message_requests (session_id, client_message_id, event_id, request_fingerprint, created_at) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(session_id)
         .bind(client_message_id)
         .bind(&event.id)
+        .bind(&request_fingerprint)
         .bind(now)
         .execute(&mut *tx)
         .await?;
@@ -13052,16 +13242,47 @@ impl DeliveryIngressStore for SqliteStore {
             });
         }
         let existing = sqlx::query(
-            "SELECT event_id FROM session_message_requests WHERE session_id = ? AND client_message_id = ?",
+            "SELECT event_id, request_fingerprint FROM session_message_requests WHERE session_id = ? AND client_message_id = ?",
         )
         .bind(session_id)
         .bind(client_message_id)
         .fetch_one(&mut *tx)
         .await?;
+        let existing_event_id = existing.get::<String, _>("event_id");
+        let existing_fingerprint = match existing.get::<Option<String>, _>("request_fingerprint") {
+            Some(fingerprint) => fingerprint,
+            None => {
+                let payload =
+                    sqlx::query_scalar::<_, String>("SELECT payload FROM events WHERE id = ?")
+                        .bind(&existing_event_id)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                        .ok_or_else(|| {
+                            format!("消息幂等记录引用了不存在的 Event '{}'", existing_event_id)
+                        })?;
+                let payload = serde_json::from_str::<serde_json::Map<String, JsonValue>>(&payload)?;
+                let fingerprint = message_request_fingerprint(&payload)?;
+                sqlx::query(
+                    "UPDATE session_message_requests SET request_fingerprint = ? WHERE session_id = ? AND client_message_id = ? AND request_fingerprint IS NULL",
+                )
+                .bind(&fingerprint)
+                .bind(session_id)
+                .bind(client_message_id)
+                .execute(&mut *tx)
+                .await?;
+                fingerprint
+            }
+        };
         tx.commit().await?;
-        Ok(MessageClaim::Existing {
-            event_id: existing.get("event_id"),
-        })
+        if existing_fingerprint == request_fingerprint {
+            Ok(MessageClaim::Existing {
+                event_id: existing_event_id,
+            })
+        } else {
+            Ok(MessageClaim::Conflict {
+                event_id: existing_event_id,
+            })
+        }
     }
 }
 
@@ -19309,6 +19530,26 @@ mod tests {
     use std::time::Duration;
     use tempfile::NamedTempFile;
 
+    async fn bind_message_test_principal(
+        store: &SqliteStore,
+        session_id: &str,
+        principal_id: &str,
+    ) {
+        store
+            .ensure_principal(NewPrincipal {
+                id: principal_id.to_string(),
+                provider_id: "store-test".to_string(),
+                assurance: "test".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal(session_id, principal_id)
+            .await
+            .unwrap();
+    }
+
     #[test]
     fn wal_reset_fix_version_gate_matches_upstream_backports() {
         assert!(!sqlite_has_wal_reset_fix("3.46.0"));
@@ -23429,7 +23670,7 @@ mod tests {
         )
         .await;
         let first = store
-            .arm_delivery_flush_timer("delivery-max-wait", &session_id, 10, 3)
+            .arm_delivery_flush_timer("delivery-max-wait", &session_id, 10, 3, 64)
             .await
             .unwrap()
             .unwrap();
@@ -23446,7 +23687,7 @@ mod tests {
         )
         .await;
         let rearmed = store
-            .arm_delivery_flush_timer("delivery-max-wait", &session_id, 10, 3)
+            .arm_delivery_flush_timer("delivery-max-wait", &session_id, 10, 3, 1)
             .await
             .unwrap()
             .unwrap();
@@ -23457,8 +23698,20 @@ mod tests {
             "a late adjacent completion must not extend the first result past max_wait"
         );
         assert_eq!(
-            store.list_pending_delivery_sessions().await.unwrap(),
-            vec![session_id.clone()]
+            rearmed.payload["completed_thread_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "one durable timer generation must never exceed its configured snapshot bound"
+        );
+        assert!(
+            store
+                .list_pending_delivery_sessions(64)
+                .await
+                .unwrap()
+                .is_empty(),
+            "startup recovery must not replace a live Delivery Timer generation"
         );
 
         store.pool.close().await;
@@ -23467,7 +23720,7 @@ mod tests {
             .await
             .unwrap();
         let recovered = reopened
-            .arm_delivery_flush_timer("delivery-max-wait", &session_id, 10, 3)
+            .arm_delivery_flush_timer("delivery-max-wait", &session_id, 10, 3, 1)
             .await
             .unwrap()
             .unwrap();
@@ -23476,6 +23729,79 @@ mod tests {
             recovered.due_at,
             first_at + chrono::Duration::seconds(3),
             "restart recovery must preserve the original first-result deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_delivery_snapshot_rearms_the_remaining_results() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let (context_id, session_id, threads) =
+            seed_delivery_fixture(&store, "bounded-continuation", 2).await;
+        let pending_at = Utc::now() - chrono::Duration::seconds(5);
+        for (index, thread) in threads.iter().enumerate() {
+            mark_delivery_pending(
+                &store,
+                thread,
+                &format!("result {index}"),
+                &format!("bounded-result-{index}"),
+                pending_at + chrono::Duration::milliseconds(index as i64),
+            )
+            .await;
+        }
+
+        let first = store
+            .arm_delivery_flush_timer("delivery-bounded", &session_id, 1, 3, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        let first_ids = first.payload["completed_thread_ids"].as_array().unwrap();
+        assert_eq!(first_ids, &[serde_json::json!(threads[0].id.clone())]);
+        let claimed = store
+            .claim_due_runtime_timers(
+                Utc::now(),
+                "delivery-test-worker",
+                Utc::now() + chrono::Duration::seconds(30),
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+
+        let reply = Event::new(
+            "delivery-bounded-reply".to_string(),
+            "Runtime-Delivery".to_string(),
+            crate::event::TYPE_AGENT_CALL.to_string(),
+            "chat/reply".to_string(),
+            serde_json::json!({
+                "context_id": context_id,
+                "session_id": session_id.clone(),
+                "covers": [threads[0].id.clone()],
+                "text": "result 0"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert_eq!(
+            store
+                .commit_delivery_flush_reply("delivery-bounded", claimed[0].generation, &reply,)
+                .await
+                .unwrap(),
+            DeliveryFlushCommit::Committed
+        );
+
+        let next = store
+            .arm_delivery_flush_timer("delivery-bounded", &session_id, 1, 3, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(next.generation, first.generation + 1);
+        assert_eq!(
+            next.payload["completed_thread_ids"].as_array().unwrap(),
+            &[serde_json::json!(threads[1].id.clone())]
         );
     }
 
@@ -23496,12 +23822,12 @@ mod tests {
         )
         .await;
         let stale = store
-            .arm_delivery_flush_timer("delivery-fence", &session_id, 1, 3)
+            .arm_delivery_flush_timer("delivery-fence", &session_id, 1, 3, 64)
             .await
             .unwrap()
             .unwrap();
         let current = store
-            .arm_delivery_flush_timer("delivery-fence", &session_id, 1, 3)
+            .arm_delivery_flush_timer("delivery-fence", &session_id, 1, 3, 64)
             .await
             .unwrap()
             .unwrap();
@@ -23623,12 +23949,12 @@ mod tests {
         )
         .await;
         let stale = store
-            .arm_delivery_flush_timer("delivery-direct-fence", &session_id, 1, 3)
+            .arm_delivery_flush_timer("delivery-direct-fence", &session_id, 1, 3, 64)
             .await
             .unwrap()
             .unwrap();
         let current = store
-            .arm_delivery_flush_timer("delivery-direct-fence", &session_id, 1, 3)
+            .arm_delivery_flush_timer("delivery-direct-fence", &session_id, 1, 3, 64)
             .await
             .unwrap()
             .unwrap();
@@ -24513,6 +24839,7 @@ mod tests {
             })
             .await
             .unwrap();
+        bind_message_test_principal(&store, "retry-session", "principal-retry").await;
         let root = Event::new(
             "retry-root".to_string(),
             "User".to_string(),
@@ -24658,6 +24985,7 @@ mod tests {
             serde_json::json!({
                 "context_id": "retry-context",
                 "session_id": "retry-session",
+                "principal_id": "principal-retry",
                 "root_turn_id": "retry-root",
                 "thread_id": "retry-thread",
                 "disposition": "deliver",
@@ -24808,6 +25136,7 @@ mod tests {
             serde_json::json!({
                 "context_id": "retry-context",
                 "session_id": "retry-session",
+                "principal_id": "principal-retry",
                 "root_turn_id": "retry-root",
                 "thread_id": "retry-thread",
                 "runtime_force_evaluation": true
@@ -25096,6 +25425,7 @@ mod tests {
             })
             .await
             .unwrap();
+        bind_message_test_principal(&store, "outbox-session", "principal-outbox").await;
         let event = Event::new(
             "outbox-event".to_string(),
             "fixture".to_string(),
@@ -25113,6 +25443,10 @@ mod tests {
                 (
                     "client_message_id".to_string(),
                     serde_json::json!("outbox-client-message"),
+                ),
+                (
+                    "principal_id".to_string(),
+                    serde_json::json!("principal-outbox"),
                 ),
                 ("text".to_string(), serde_json::json!("continue")),
             ]
@@ -27374,6 +27708,7 @@ mod tests {
             })
             .await
             .unwrap();
+        bind_message_test_principal(&store, "interrupt-session", "principal-interrupt").await;
 
         let message = |id: &str, text: &str| {
             Event::new(
@@ -27384,6 +27719,7 @@ mod tests {
                 serde_json::json!({
                     "context_id": "interrupt-context",
                     "session_id": "interrupt-session",
+                    "principal_id": "principal-interrupt",
                     "text": text
                 })
                 .as_object()
@@ -27571,6 +27907,7 @@ mod tests {
             })
             .await
             .unwrap();
+        bind_message_test_principal(&store, "fifo-session", "principal-fifo").await;
         let first = Event::new(
             "fifo-event-a".to_string(),
             "user".to_string(),
@@ -27579,6 +27916,7 @@ mod tests {
             serde_json::json!({
                 "context_id": "fifo-context",
                 "session_id": "fifo-session",
+                "principal_id": "principal-fifo",
                 "text": "first"
             })
             .as_object()
@@ -27647,6 +27985,7 @@ mod tests {
             serde_json::json!({
                 "context_id": "fifo-context",
                 "session_id": "fifo-session",
+                "principal_id": "principal-fifo",
                 "text": "second"
             })
             .as_object()
@@ -27711,6 +28050,7 @@ mod tests {
             .unwrap();
         assert_eq!(created.context_id, "context-api-1");
         assert_eq!(created.status, SessionStatus::Active);
+        bind_message_test_principal(&store, "session-api-1", "principal-api-1").await;
 
         let event_1 = Event::new(
             "event-1".to_string(),
@@ -27720,6 +28060,10 @@ mod tests {
             vec![
                 ("context_id".to_string(), serde_json::json!("context-api-1")),
                 ("session_id".to_string(), serde_json::json!("session-api-1")),
+                (
+                    "principal_id".to_string(),
+                    serde_json::json!("principal-api-1"),
+                ),
                 ("text".to_string(), serde_json::json!("first")),
             ]
             .into_iter()
@@ -27733,6 +28077,10 @@ mod tests {
             vec![
                 ("context_id".to_string(), serde_json::json!("context-api-1")),
                 ("session_id".to_string(), serde_json::json!("session-api-1")),
+                (
+                    "principal_id".to_string(),
+                    serde_json::json!("principal-api-1"),
+                ),
                 ("text".to_string(), serde_json::json!("duplicate")),
             ]
             .into_iter()
@@ -27742,17 +28090,44 @@ mod tests {
             .claim_message("session-api-1", "client-1", &event_1, false)
             .await
             .unwrap();
-        let duplicate = store
+        sqlx::query(
+            "UPDATE session_message_requests SET request_fingerprint = NULL WHERE session_id = ? AND client_message_id = ?",
+        )
+        .bind("session-api-1")
+        .bind("client-1")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let replay = store
+            .claim_message("session-api-1", "client-1", &event_1, false)
+            .await
+            .unwrap();
+        let conflict = store
             .claim_message("session-api-1", "client-1", &event_2, false)
             .await
             .unwrap();
         assert!(matches!(first, MessageClaim::Accepted { .. }));
         assert_eq!(
-            duplicate,
+            replay,
             MessageClaim::Existing {
                 event_id: "event-1".to_string()
             }
         );
+        assert_eq!(
+            conflict,
+            MessageClaim::Conflict {
+                event_id: "event-1".to_string()
+            }
+        );
+        assert!(sqlx::query_scalar::<_, Option<String>>(
+            "SELECT request_fingerprint FROM session_message_requests WHERE session_id = ? AND client_message_id = ?",
+        )
+        .bind("session-api-1")
+        .bind("client-1")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+        .is_some());
         assert_eq!(
             store
                 .query(QueryFilter {
@@ -27764,6 +28139,66 @@ mod tests {
                 .len(),
             1
         );
+
+        store
+            .create_session(NewSession {
+                id: "session-api-unbound".to_string(),
+                agent_id: "agent-main".to_string(),
+                context_id: "context-api-1".to_string(),
+                parent_session_id: None,
+                title: "Unbound".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let unbound_event = Event::new(
+            "event-unbound".to_string(),
+            "user".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "context-api-1",
+                "session_id": "session-api-unbound",
+                "principal_id": "principal-api-1",
+                "text": "must not enter"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert_eq!(
+            store
+                .claim_message(
+                    "session-api-unbound",
+                    "client-unbound",
+                    &unbound_event,
+                    false,
+                )
+                .await
+                .unwrap(),
+            MessageClaim::ForbiddenPrincipal {
+                principal_id: "principal-api-1".to_string()
+            }
+        );
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(unbound_event.id),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+        store
+            .update_session(
+                "session-api-unbound",
+                SessionUpdate {
+                    title: None,
+                    status: Some(SessionStatus::Archived),
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
 
         let archived = store
             .update_session(
@@ -27778,8 +28213,35 @@ mod tests {
             .unwrap();
         assert_eq!(archived.title, "已完成");
         assert_eq!(archived.status, SessionStatus::Archived);
+        let archived_event = Event::new(
+            "event-archived".to_string(),
+            "user".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "context-api-1",
+                "session_id": "session-api-1",
+                "principal_id": "principal-api-1",
+                "text": "too late"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert_eq!(
+            store
+                .claim_message(
+                    "session-api-1",
+                    "client-after-archive",
+                    &archived_event,
+                    false,
+                )
+                .await
+                .unwrap(),
+            MessageClaim::InactiveSession
+        );
         assert!(store.list_sessions(false).await.unwrap().is_empty());
-        assert_eq!(store.list_sessions(true).await.unwrap().len(), 1);
+        assert_eq!(store.list_sessions(true).await.unwrap().len(), 2);
 
         drop(store);
         let restarted = SqliteStore::new(tmp_file.path().to_str().unwrap())

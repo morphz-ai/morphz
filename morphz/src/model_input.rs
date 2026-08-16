@@ -5,6 +5,7 @@
 //! while assembling a model request.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -23,6 +24,60 @@ pub struct ModelInputUsage {
     pub attachment_count: usize,
     pub total_bytes: usize,
     pub largest_attachment_bytes: usize,
+}
+
+/// A message-input import which has durable bytes but is not yet owned by an
+/// immutable Ledger Event. The pending manifest is deliberately filesystem
+/// durable: a Runtime crash between preparing bytes and `claim_message` can be
+/// reconciled against the Event Store on the next start.
+#[derive(Debug)]
+pub struct PreparedMessageAttachments {
+    metadata: Vec<Value>,
+    root: PathBuf,
+    scope_key: String,
+    event_id: String,
+    digests: Vec<String>,
+}
+
+impl PreparedMessageAttachments {
+    pub fn metadata(&self) -> &[Value] {
+        &self.metadata
+    }
+
+    /// Commits filesystem ownership after the immutable Event transaction has
+    /// committed. Failure to remove the manifest is recoverable: startup
+    /// reconciliation will observe the Event and remove only the manifest.
+    pub async fn commit(self) -> Result<(), ModelInputError> {
+        remove_file_if_exists(&pending_manifest_path(&self.root, &self.event_id)).await
+    }
+
+    /// Removes only this candidate Event's references. Shared content blobs
+    /// remain while another Event reference exists and are otherwise removed.
+    pub async fn discard(self) -> Result<(), ModelInputError> {
+        discard_prepared_message_attachments(
+            &self.root,
+            &self.scope_key,
+            &self.event_id,
+            &self.digests,
+        )
+        .await
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessageAttachmentRecovery {
+    pub committed_manifests: usize,
+    pub orphaned_imports: usize,
+    pub deferred_live_imports: usize,
+    pub invalid_manifests: usize,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PendingMessageAttachmentManifest {
+    version: u8,
+    event_id: String,
+    scope_key: String,
+    digests: Vec<String>,
 }
 
 impl ModelInputUsage {
@@ -165,6 +220,352 @@ pub async fn persist_model_input_attachments(
     Ok(metadata)
 }
 
+/// Prepares message attachments without making the shared content blob itself
+/// the Event reference. Every candidate Event receives an independent hard
+/// link, so rejecting one idempotency claimant can never remove another
+/// claimant's bytes. The pending manifest closes the crash window before the
+/// Event transaction commits.
+pub async fn prepare_message_input_attachments(
+    configured_root: impl AsRef<Path>,
+    scope_id: &str,
+    event_id: &str,
+    attachments: Vec<MessageAttachmentInput>,
+    limits: ModelInputLimits,
+) -> Result<PreparedMessageAttachments, ModelInputError> {
+    safe_storage_segment(event_id, "Event id")?;
+    let mut usage = ModelInputUsage::default();
+    for attachment in &attachments {
+        usage.add(attachment.data.len())?;
+    }
+    validate_model_input_usage(usage, limits, "本次导入")?;
+
+    let root = absolute_root(configured_root.as_ref())?.join("message-inputs-v2");
+    let scope_key = format!("{:x}", Sha256::digest(scope_id.as_bytes()));
+    let mut prepared = PreparedMessageAttachments {
+        metadata: Vec::with_capacity(attachments.len()),
+        root,
+        scope_key,
+        event_id: event_id.to_string(),
+        digests: attachments
+            .iter()
+            .map(|attachment| format!("{:x}", Sha256::digest(&attachment.data)))
+            .collect(),
+    };
+    if attachments.is_empty() {
+        return Ok(prepared);
+    }
+
+    create_pending_manifest(&prepared).await?;
+    let result = prepare_message_attachment_files(&mut prepared, attachments).await;
+    if let Err(error) = result {
+        if let Err(cleanup_error) = discard_prepared_message_attachments(
+            &prepared.root,
+            &prepared.scope_key,
+            &prepared.event_id,
+            &prepared.digests,
+        )
+        .await
+        {
+            tracing::warn!(
+                event_id = %prepared.event_id,
+                error = %cleanup_error,
+                event_code = "model_input.message_prepare_cleanup_failed",
+                "Failed to clean a partially prepared message-input import"
+            );
+        }
+        return Err(error);
+    }
+    Ok(prepared)
+}
+
+async fn prepare_message_attachment_files(
+    prepared: &mut PreparedMessageAttachments,
+    attachments: Vec<MessageAttachmentInput>,
+) -> Result<(), ModelInputError> {
+    let blob_directory = prepared.root.join("blobs").join(&prepared.scope_key);
+    let event_directory = prepared
+        .root
+        .join("events")
+        .join(&prepared.scope_key)
+        .join(&prepared.event_id);
+    tokio::fs::create_dir_all(&blob_directory).await?;
+    tokio::fs::create_dir_all(&event_directory).await?;
+    let blob_directory = tokio::fs::canonicalize(blob_directory).await?;
+    let event_directory = tokio::fs::canonicalize(event_directory).await?;
+
+    for (index, attachment) in attachments.into_iter().enumerate() {
+        let name = safe_attachment_name(&attachment.name)?;
+        let media_type = safe_media_type(&attachment.media_type, &name)?;
+        let digest = &prepared.digests[index];
+        let blob_path = blob_directory.join(digest);
+        ensure_content_blob(&blob_path, &attachment.data, &prepared.event_id, index).await?;
+        let event_path = event_directory.join(digest);
+        if !tokio::fs::try_exists(&event_path).await? {
+            // A concurrent rejected import may unlink the shared blob between
+            // our existence check and hard_link. Recreate and retry once from
+            // the bytes still owned by this request.
+            match tokio::fs::hard_link(&blob_path, &event_path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    ensure_content_blob(&blob_path, &attachment.data, &prepared.event_id, index)
+                        .await?;
+                    tokio::fs::hard_link(&blob_path, &event_path).await?;
+                }
+                Err(error) if tokio::fs::try_exists(&event_path).await.unwrap_or(false) => {
+                    tracing::debug!(
+                        path = %event_path.display(),
+                        error = %error,
+                        event_code = "model_input.message_reference_reused",
+                        "Message-input Event reference was reused within the same import"
+                    );
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        prepared.metadata.push(json!({
+            "id": format!("attachment_{digest}"),
+            "name": name,
+            "media_type": media_type,
+            "size_bytes": attachment.data.len(),
+            "sha256": digest,
+            "storage_path": event_path.to_string_lossy(),
+        }));
+    }
+    Ok(())
+}
+
+async fn ensure_content_blob(
+    blob_path: &Path,
+    data: &[u8],
+    event_id: &str,
+    index: usize,
+) -> Result<(), ModelInputError> {
+    if tokio::fs::try_exists(blob_path).await? {
+        return Ok(());
+    }
+    let digest = blob_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or("模型输入 blob 路径缺少摘要")?;
+    let temporary_path = blob_path.with_file_name(format!(".{digest}.{event_id}.{index}.partial"));
+    let mut file = match tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary_path)
+        .await
+    {
+        Ok(file) => file,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AlreadyExists
+                && tokio::fs::try_exists(blob_path).await.unwrap_or(false) =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Err(error) = file.write_all(data).await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    if let Err(error) = file.sync_data().await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    drop(file);
+    match tokio::fs::rename(&temporary_path, blob_path).await {
+        Ok(()) => Ok(()),
+        Err(error) if tokio::fs::try_exists(blob_path).await.unwrap_or(false) => {
+            let _ = tokio::fs::remove_file(&temporary_path).await;
+            tracing::debug!(
+                path = %blob_path.display(),
+                error = %error,
+                event_code = "model_input.concurrent_message_blob_reused",
+                "Message-input content blob was reused from a concurrent write"
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temporary_path).await;
+            Err(error.into())
+        }
+    }
+}
+
+async fn create_pending_manifest(
+    prepared: &PreparedMessageAttachments,
+) -> Result<(), ModelInputError> {
+    let pending_directory = prepared.root.join("pending");
+    tokio::fs::create_dir_all(&pending_directory).await?;
+    let marker = pending_manifest_path(&prepared.root, &prepared.event_id);
+    let temporary = marker.with_extension("json.partial");
+    let document = serde_json::to_vec(&PendingMessageAttachmentManifest {
+        version: 1,
+        event_id: prepared.event_id.clone(),
+        scope_key: prepared.scope_key.clone(),
+        digests: prepared.digests.clone(),
+    })?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .await?;
+    if let Err(error) = file.write_all(&document).await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error.into());
+    }
+    if let Err(error) = file.sync_data().await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error.into());
+    }
+    drop(file);
+    if let Err(error) = tokio::fs::rename(&temporary, marker).await {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+/// Reconciles only pending manifests; accepted Event directories are never
+/// scanned. This keeps restart work proportional to interrupted imports, not
+/// total retained attachment history. `event_exists` must query the immutable
+/// Ledger by exact Event id.
+pub async fn recover_pending_message_attachments<F, Fut>(
+    configured_root: impl AsRef<Path>,
+    grace: Duration,
+    mut event_exists: F,
+) -> Result<MessageAttachmentRecovery, ModelInputError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, ModelInputError>>,
+{
+    let root = absolute_root(configured_root.as_ref())?.join("message-inputs-v2");
+    let pending_directory = root.join("pending");
+    if !tokio::fs::try_exists(&pending_directory).await? {
+        return Ok(MessageAttachmentRecovery::default());
+    }
+    let now = SystemTime::now();
+    let mut recovery = MessageAttachmentRecovery::default();
+    let mut entries = tokio::fs::read_dir(&pending_directory).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let metadata = entry.metadata().await?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        if now.duration_since(modified).unwrap_or_default() < grace {
+            recovery.deferred_live_imports += 1;
+            continue;
+        }
+        let manifest = match tokio::fs::read(&path)
+            .await
+            .map_err(ModelInputError::from)
+            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(ModelInputError::from))
+        {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                recovery.invalid_manifests += 1;
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    event_code = "model_input.pending_manifest_invalid",
+                    "Ignored an invalid pending message-input manifest"
+                );
+                continue;
+            }
+        };
+        if !valid_pending_manifest(&manifest) {
+            recovery.invalid_manifests += 1;
+            tracing::warn!(
+                path = %path.display(),
+                event_code = "model_input.pending_manifest_unsafe",
+                "Ignored an unsafe pending message-input manifest"
+            );
+            continue;
+        }
+        if event_exists(manifest.event_id.clone()).await? {
+            remove_file_if_exists(&path).await?;
+            recovery.committed_manifests += 1;
+        } else {
+            discard_prepared_message_attachments(
+                &root,
+                &manifest.scope_key,
+                &manifest.event_id,
+                &manifest.digests,
+            )
+            .await?;
+            recovery.orphaned_imports += 1;
+        }
+    }
+    Ok(recovery)
+}
+
+fn valid_pending_manifest(manifest: &PendingMessageAttachmentManifest) -> bool {
+    manifest.version == 1
+        && safe_storage_segment(&manifest.event_id, "Event id").is_ok()
+        && is_sha256_hex(&manifest.scope_key)
+        && manifest.digests.iter().all(|digest| is_sha256_hex(digest))
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+async fn discard_prepared_message_attachments(
+    root: &Path,
+    scope_key: &str,
+    event_id: &str,
+    digests: &[String],
+) -> Result<(), ModelInputError> {
+    let event_directory = root.join("events").join(scope_key).join(event_id);
+    if tokio::fs::try_exists(&event_directory).await? {
+        tokio::fs::remove_dir_all(&event_directory).await?;
+    }
+    for digest in digests {
+        let blob_path = root.join("blobs").join(scope_key).join(digest);
+        if !tokio::fs::try_exists(&blob_path).await? {
+            continue;
+        }
+        if content_blob_is_unreferenced(&blob_path).await? {
+            // A concurrent preparer may link between this check and unlink.
+            // Its event-owned hard link keeps the inode alive; a preparer that
+            // has not linked yet recreates the shared name and retries.
+            let _ = tokio::fs::remove_file(&blob_path).await;
+        }
+    }
+    remove_file_if_exists(&pending_manifest_path(root, event_id)).await
+}
+
+fn pending_manifest_path(root: &Path, event_id: &str) -> PathBuf {
+    root.join("pending").join(format!("{event_id}.json"))
+}
+
+async fn remove_file_if_exists(path: &Path) -> Result<(), ModelInputError> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(unix)]
+async fn content_blob_is_unreferenced(path: &Path) -> Result<bool, ModelInputError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    Ok(tokio::fs::metadata(path).await?.nlink() == 1)
+}
+
+#[cfg(not(unix))]
+async fn content_blob_is_unreferenced(_path: &Path) -> Result<bool, ModelInputError> {
+    // Keep the shared cache conservatively on filesystems where Rust does not
+    // expose link counts. Event-owned references are still cleaned correctly.
+    Ok(false)
+}
+
 pub async fn attachment_message_from_metadata(
     configured_root: impl AsRef<Path>,
     items: &[Value],
@@ -297,6 +698,18 @@ fn validate_category(value: &str) -> Result<(), ModelInputError> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return Err("模型输入附件分类只能包含字母、数字、横线和下划线".into());
+    }
+    Ok(())
+}
+
+fn safe_storage_segment(value: &str, label: &str) -> Result<(), ModelInputError> {
+    if value.is_empty()
+        || value.len() > 255
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(format!("{label} 不能作为安全的存储路径片段").into());
     }
     Ok(())
 }
@@ -527,5 +940,120 @@ mod tests {
         let usage = inspect_model_input_messages(&[message]).unwrap();
         assert_eq!(usage.attachment_count, 43);
         assert_eq!(usage.total_bytes, 43 * 9);
+    }
+
+    #[tokio::test]
+    async fn message_attachment_candidates_are_isolated_and_recoverable() {
+        let root = tempfile::TempDir::new().unwrap();
+        let attachment = MessageAttachmentInput {
+            name: "shared.png".to_string(),
+            media_type: "image/png".to_string(),
+            data: b"shared-image".to_vec(),
+        };
+        let first = prepare_message_input_attachments(
+            root.path(),
+            "session-1",
+            "event-1",
+            vec![attachment.clone()],
+            crate::config::ModelInputConfig::default().import_limits(),
+        )
+        .await
+        .unwrap();
+        let second = prepare_message_input_attachments(
+            root.path(),
+            "session-1",
+            "event-2",
+            vec![attachment],
+            crate::config::ModelInputConfig::default().import_limits(),
+        )
+        .await
+        .unwrap();
+        let first_path = PathBuf::from(first.metadata()[0]["storage_path"].as_str().unwrap());
+        let second_path = PathBuf::from(second.metadata()[0]["storage_path"].as_str().unwrap());
+        assert_ne!(first_path, second_path);
+        assert_eq!(tokio::fs::read(&first_path).await.unwrap(), b"shared-image");
+        assert_eq!(
+            tokio::fs::read(&second_path).await.unwrap(),
+            b"shared-image"
+        );
+
+        first.discard().await.unwrap();
+        assert!(!tokio::fs::try_exists(&first_path).await.unwrap());
+        assert_eq!(
+            tokio::fs::read(&second_path).await.unwrap(),
+            b"shared-image"
+        );
+        second.commit().await.unwrap();
+
+        let orphan = prepare_message_input_attachments(
+            root.path(),
+            "session-1",
+            "event-orphan",
+            vec![MessageAttachmentInput {
+                name: "orphan.png".to_string(),
+                media_type: "image/png".to_string(),
+                data: b"orphan-image".to_vec(),
+            }],
+            crate::config::ModelInputConfig::default().import_limits(),
+        )
+        .await
+        .unwrap();
+        let orphan_path = PathBuf::from(orphan.metadata()[0]["storage_path"].as_str().unwrap());
+        drop(orphan);
+        let deferred = recover_pending_message_attachments(
+            root.path(),
+            Duration::from_secs(60 * 60),
+            |_event_id| async move { Ok(false) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(deferred.deferred_live_imports, 1);
+        assert!(tokio::fs::try_exists(&orphan_path).await.unwrap());
+        let recovery = recover_pending_message_attachments(
+            root.path(),
+            Duration::ZERO,
+            |event_id| async move { Ok(event_id == "event-2") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(recovery.orphaned_imports, 1);
+        assert!(!tokio::fs::try_exists(orphan_path).await.unwrap());
+        assert!(tokio::fs::try_exists(second_path).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_commits_a_manifest_when_the_event_exists() {
+        let root = tempfile::TempDir::new().unwrap();
+        let prepared = prepare_message_input_attachments(
+            root.path(),
+            "session-1",
+            "event-committed",
+            vec![MessageAttachmentInput {
+                name: "committed.png".to_string(),
+                media_type: "image/png".to_string(),
+                data: b"committed-image".to_vec(),
+            }],
+            crate::config::ModelInputConfig::default().import_limits(),
+        )
+        .await
+        .unwrap();
+        let path = PathBuf::from(prepared.metadata()[0]["storage_path"].as_str().unwrap());
+        drop(prepared);
+
+        let recovery = recover_pending_message_attachments(
+            root.path(),
+            Duration::ZERO,
+            |event_id| async move { Ok(event_id == "event-committed") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(recovery.committed_manifests, 1);
+        assert_eq!(tokio::fs::read(path).await.unwrap(), b"committed-image");
+        assert!(!tokio::fs::try_exists(
+            root.path()
+                .join("message-inputs-v2/pending/event-committed.json")
+        )
+        .await
+        .unwrap());
     }
 }

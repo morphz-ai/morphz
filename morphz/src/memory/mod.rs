@@ -2731,6 +2731,54 @@ mod supervised_concurrency_contract_tests {
             .iter()
             .any(|failure| failure == "completion_contract:check_failed:tests"));
     }
+
+    #[test]
+    fn message_request_fingerprint_binds_intent_but_not_storage_location() {
+        let payload = |principal: &str, text: &str, storage_path: &str| {
+            serde_json::json!({
+                "principal_id": principal,
+                "text": text,
+                "attachments": [{
+                    "name": "diagram.png",
+                    "media_type": "image/png",
+                    "sha256": "abc123",
+                    "size_bytes": 42,
+                    "storage_path": storage_path
+                }],
+                "requested_harness_id": "coding",
+                "requested_harness_version": "1",
+                "requested_harness_artifact_hash": "harness-sha"
+            })
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+        let base =
+            message_request_fingerprint(&payload("principal:a", "hello", "/node-a/blob")).unwrap();
+        assert_eq!(
+            base,
+            message_request_fingerprint(&payload("principal:a", "hello", "/node-b/blob")).unwrap(),
+            "physical storage paths are deployment details, not request intent"
+        );
+        assert_ne!(
+            base,
+            message_request_fingerprint(&payload("principal:b", "hello", "/node-a/blob")).unwrap()
+        );
+        assert_ne!(
+            base,
+            message_request_fingerprint(&payload("principal:a", "different", "/node-a/blob"))
+                .unwrap()
+        );
+        let mut different_harness = payload("principal:a", "hello", "/node-a/blob");
+        different_harness.insert(
+            "requested_harness_artifact_hash".to_string(),
+            serde_json::json!("other-harness-sha"),
+        );
+        assert_ne!(
+            base,
+            message_request_fingerprint(&different_harness).unwrap()
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -4136,6 +4184,78 @@ pub enum MessageClaim {
     Existing {
         event_id: String,
     },
+    Conflict {
+        event_id: String,
+    },
+    InactiveSession,
+    ForbiddenPrincipal {
+        principal_id: String,
+    },
+}
+
+/// Stable identity of one logical user-message request. The database key says
+/// where the request lives; this digest says what immutable intent that key
+/// names. Generated Event IDs, timestamps, and storage paths are deliberately
+/// excluded so an exact transport retry remains identical across processes.
+pub(crate) fn message_request_fingerprint(
+    payload: &serde_json::Map<String, JsonValue>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    fn field<'a>(
+        payload: &'a serde_json::Map<String, JsonValue>,
+        name: &str,
+    ) -> Result<&'a str, Box<dyn std::error::Error + Send + Sync>> {
+        payload
+            .get(name)
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| format!("用户消息缺少 {name}").into())
+    }
+
+    fn digest_field(digest: &mut sha2::Sha256, value: &str) {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"morphz.message-request.v1\0");
+    for name in ["principal_id", "text"] {
+        digest_field(&mut digest, field(payload, name)?);
+    }
+    let attachments = payload
+        .get("attachments")
+        .and_then(JsonValue::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    digest.update((attachments.len() as u64).to_be_bytes());
+    for attachment in attachments {
+        for name in ["name", "media_type", "sha256"] {
+            digest_field(
+                &mut digest,
+                attachment
+                    .get(name)
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| format!("用户消息附件缺少 {name}"))?,
+            );
+        }
+        let size = attachment
+            .get("size_bytes")
+            .and_then(JsonValue::as_u64)
+            .ok_or("用户消息附件缺少 size_bytes")?;
+        digest.update(size.to_be_bytes());
+    }
+    for name in [
+        "requested_harness_id",
+        "requested_harness_version",
+        "requested_harness_artifact_hash",
+    ] {
+        match payload.get(name).and_then(JsonValue::as_str) {
+            Some(value) => {
+                digest.update([1]);
+                digest_field(&mut digest, value);
+            }
+            None => digest.update([0]),
+        }
+    }
+    Ok(format!("v1:{:x}", digest.finalize()))
 }
 
 #[derive(Default, Debug, Clone)]
@@ -5514,10 +5634,12 @@ pub trait ThreadStore: Send + Sync {
         &self,
         session_id: &str,
         include_deferred: bool,
+        limit: usize,
     ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Sessions with recoverable pending/deferred completion results.
     async fn list_pending_delivery_sessions(
         &self,
+        limit: usize,
     ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically bumps the Session's persistent Delivery Timer generation and
     /// computes its due time from the oldest/newest pending result. The due
@@ -5529,6 +5651,7 @@ pub trait ThreadStore: Send + Sync {
         session_id: &str,
         merge_window_secs: u64,
         max_wait_secs: u64,
+        snapshot_max_items: usize,
     ) -> Result<Option<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Generation-fenced, idempotent publication of one Delivery wake Event
     /// and its Signal Outbox row.

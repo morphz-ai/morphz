@@ -52,9 +52,9 @@ use crate::provider::routing::EffectiveProviderCatalog;
 use crate::runtime::{
     AcknowledgeAttentionCommand, AttentionAcknowledgement, ContextOverview, ContextOverviewQuery,
     ContextTokenBudgetUpdate, DialogueTurnRetryReceipt, LedgerQuery, LedgerQueryPage,
-    MessageReceipt, ModelUsagePage, ModelUsageQuery, MorphzRuntime, RuntimeEventStream,
-    RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus, SchedulerQuery, SchedulerSnapshot,
-    ThreadDetail,
+    MessageIngressError, MessageIngressErrorKind, MessageReceipt, ModelUsagePage, ModelUsageQuery,
+    MorphzRuntime, RuntimeEventStream, RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus,
+    SchedulerQuery, SchedulerSnapshot, ThreadDetail,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -2927,7 +2927,17 @@ impl MorphzSdk {
                 command.attachments,
             )
             .await
-            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))
+            .map_err(|error| {
+                let code = error
+                    .downcast_ref::<MessageIngressError>()
+                    .map(|error| match error.kind {
+                        MessageIngressErrorKind::InvalidArgument => SdkErrorCode::InvalidArgument,
+                        MessageIngressErrorKind::Conflict => SdkErrorCode::Conflict,
+                        MessageIngressErrorKind::Forbidden => SdkErrorCode::Forbidden,
+                    })
+                    .unwrap_or(SdkErrorCode::InvalidArgument);
+                SdkError::new(code, error.to_string())
+            })
     }
 
     pub async fn retry_dialogue_turn(

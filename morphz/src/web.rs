@@ -10,9 +10,9 @@ use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
     ContextUpdate, DelegationStatus, ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent,
-    NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveStatus, QueryFilter,
-    ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate, ThreadControlAction,
-    ThreadMutation,
+    NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord,
+    ObjectiveStatus, QueryFilter, ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
+    ThreadControlAction, ThreadMutation,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
 use crate::provider::auth::{
@@ -1221,7 +1221,7 @@ async fn handle_status(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let mut status = state.sdk.runtime_status();
@@ -2251,7 +2251,7 @@ async fn handle_search_recall(
     headers: HeaderMap,
     Query(query): Query<RecallSearchHttpQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let query_text = query.query.unwrap_or_default();
@@ -2436,7 +2436,7 @@ async fn handle_recall_frame(
     headers: HeaderMap,
     Query(query): Query<FrameRecallHttpQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
@@ -2464,7 +2464,7 @@ async fn handle_inspect_recall_index(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.runtime.inspect_recall_index(&context_id).await {
@@ -2479,7 +2479,7 @@ async fn handle_rebuild_recall_index(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.runtime.rebuild_recall_index(&context_id).await {
@@ -2495,7 +2495,7 @@ async fn handle_mutate_frame_lifecycle(
     Query(query): Query<AuthQuery>,
     Json(request): Json<MutateFrameLifecycleRequest>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let action = match request.action.trim() {
@@ -2543,7 +2543,7 @@ async fn handle_get_inference(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let options = match state.runtime.inference_model_options().await {
@@ -2571,7 +2571,7 @@ async fn handle_update_inference(
     Query(query): Query<AuthQuery>,
     Json(request): Json<UpdateInferenceRequest>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let current_model = state.runtime.model();
@@ -2689,7 +2689,7 @@ async fn handle_list_approvals(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     Json(json!({ "approvals": state.runtime.pending_approvals().await })).into_response()
@@ -2702,7 +2702,7 @@ async fn handle_decide_approval(
     Query(query): Query<AuthQuery>,
     Json(request): Json<DecideApprovalRequest>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let rationale = request
@@ -2890,6 +2890,30 @@ fn request_read_principal(
     request_principal(state, headers, query_principal_id)
 }
 
+async fn authorize_objective_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    operator_token: Option<&str>,
+    objective_id: &str,
+) -> Result<ObjectiveRecord, Response> {
+    let objective = state
+        .runtime
+        .get_objective(objective_id)
+        .await
+        .map_err(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Objective 不存在"))?;
+    if is_operator_authorized(state, headers, operator_token) {
+        return Ok(objective);
+    }
+    let principal = request_principal(state, headers, None).map_err(sdk_error_response)?;
+    state
+        .sdk
+        .get_session(&principal.principal_id, &objective.coordinator_session_id)
+        .await
+        .map_err(sdk_error_response)?;
+    Ok(objective)
+}
+
 fn bounded_title(value: Option<String>, fallback: &str) -> String {
     value
         .unwrap_or_else(|| fallback.to_string())
@@ -3062,7 +3086,7 @@ async fn handle_list_agents(
     headers: HeaderMap,
     Query(query): Query<SessionListQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.runtime.list_agents(query.include_archived).await {
@@ -3077,7 +3101,7 @@ async fn handle_create_agent(
     Query(query): Query<AuthQuery>,
     Json(request): Json<CreateAgentRequest>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let principal = match request_principal(&state, &headers, None) {
@@ -3221,7 +3245,7 @@ async fn handle_list_contexts(
     headers: HeaderMap,
     Query(query): Query<SessionListQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.runtime.list_contexts(query.include_archived).await {
@@ -4095,7 +4119,7 @@ async fn handle_list_edge_command_output(
     headers: HeaderMap,
     Query(query): Query<EdgeOutputQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
@@ -4314,7 +4338,7 @@ async fn handle_get_context_working_set(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.runtime.get_context(&context_id).await {
@@ -4378,7 +4402,7 @@ async fn handle_get_context_activations(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.runtime.get_context(&context_id).await {
@@ -4402,7 +4426,7 @@ async fn handle_get_context_overview(
     headers: HeaderMap,
     Query(query): Query<ContextOverviewHttpQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
@@ -4450,7 +4474,7 @@ async fn handle_get_model_usage(
     headers: HeaderMap,
     Query(query): Query<ModelUsageHttpQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
@@ -4476,7 +4500,7 @@ async fn handle_get_scheduler_snapshot(
     headers: HeaderMap,
     Query(query): Query<SchedulerSnapshotHttpQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
@@ -4504,7 +4528,7 @@ async fn handle_list_attention_acknowledgements(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.sdk.attention_acknowledgements(&context_id).await {
@@ -4524,7 +4548,7 @@ async fn handle_acknowledge_attention(
     Query(query): Query<AuthQuery>,
     Json(request): Json<AcknowledgeAttentionRequest>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
@@ -4552,7 +4576,7 @@ async fn handle_get_thread_detail(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.sdk.thread_detail(&context_id, &thread_id).await {
@@ -4568,7 +4592,7 @@ async fn handle_control_thread(
     Query(query): Query<AuthQuery>,
     Json(request): Json<ControlThreadRequest>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let reason = request
@@ -4612,7 +4636,7 @@ async fn handle_query_ledger(
     headers: HeaderMap,
     Query(query): Query<LedgerHttpQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
@@ -4646,7 +4670,7 @@ async fn handle_audit_mind_projection(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.sdk.audit_mind_projection(&context_id).await {
@@ -4662,7 +4686,7 @@ async fn handle_mutate_schedule(
     Query(query): Query<AuthQuery>,
     Json(request): Json<MutateScheduleRequest>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let action = request.action.trim().to_ascii_lowercase();
@@ -4789,7 +4813,7 @@ async fn handle_update_context(
     Query(query): Query<AuthQuery>,
     Json(request): Json<UpdateContextRequest>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let title = request
@@ -5472,7 +5496,7 @@ async fn handle_list_delegations(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.runtime.list_delegations().await {
@@ -5586,6 +5610,11 @@ async fn handle_edit_objective(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if let Err(error) =
+        authorize_objective_request(&state, &headers, query.token.as_deref(), &objective_id).await
+    {
+        return error;
+    }
     let stated_objective = request.stated_objective.trim();
     if stated_objective.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "stated_objective 不能为空");
@@ -5625,11 +5654,13 @@ async fn handle_resume_objective(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let objective = match state.runtime.get_objective(&objective_id).await {
-        Ok(Some(objective)) => objective,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Objective 不存在"),
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    };
+    let objective =
+        match authorize_objective_request(&state, &headers, query.token.as_deref(), &objective_id)
+            .await
+        {
+            Ok(objective) => objective,
+            Err(error) => return error,
+        };
     if !matches!(
         objective.status,
         ObjectiveStatus::Blocked | ObjectiveStatus::Paused
@@ -5683,11 +5714,13 @@ async fn handle_pause_objective(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let objective = match state.runtime.get_objective(&objective_id).await {
-        Ok(Some(objective)) => objective,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Objective 不存在"),
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    };
+    let objective =
+        match authorize_objective_request(&state, &headers, query.token.as_deref(), &objective_id)
+            .await
+        {
+            Ok(objective) => objective,
+            Err(error) => return error,
+        };
     if objective.status != ObjectiveStatus::Active {
         return error_response(
             StatusCode::CONFLICT,
@@ -5741,6 +5774,11 @@ async fn handle_delete_objective(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if let Err(error) =
+        authorize_objective_request(&state, &headers, query.token.as_deref(), &objective_id).await
+    {
+        return error;
+    }
     let reason = request
         .reason
         .as_deref()
@@ -5779,7 +5817,7 @@ async fn handle_get_delegation(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.runtime.get_delegation(&delegation_id).await {
@@ -5795,7 +5833,7 @@ async fn handle_cancel_delegation(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let delegation = match state.runtime.get_delegation(&delegation_id).await {
@@ -7082,6 +7120,33 @@ mod tests {
         .into_response();
         assert_eq!(gateway_overview.status(), StatusCode::UNAUTHORIZED);
 
+        let gateway_status = handle_status(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-1")),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(gateway_status.status(), StatusCode::UNAUTHORIZED);
+
+        let gateway_inference = handle_get_inference(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-1")),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(gateway_inference.status(), StatusCode::UNAUTHORIZED);
+
+        let gateway_agents = handle_list_agents(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-1")),
+            Query(SessionListQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(gateway_agents.status(), StatusCode::UNAUTHORIZED);
+
         let operator_overview = handle_get_runtime_overview(
             State(Arc::clone(&state)),
             dashboard_headers(),
@@ -7147,6 +7212,42 @@ mod tests {
         .await
         .into_response();
         assert_eq!(own.status(), StatusCode::OK);
+
+        let objective_created = handle_create_objective(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-1")),
+            Query(AuthQuery::default()),
+            Json(CreateObjectiveRequest {
+                id: Some("gateway-objective-a".to_string()),
+                coordinator_session_id: "gateway-session-a".to_string(),
+                delivery_session_id: None,
+                parent_objective_id: None,
+                stated_objective: "gateway owned objective".to_string(),
+                token_budget: None,
+                harness: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(objective_created.status(), StatusCode::CREATED);
+        let objective = runtime
+            .get_objective("gateway-objective-a")
+            .await
+            .unwrap()
+            .unwrap();
+        let foreign_objective_edit = handle_edit_objective(
+            State(Arc::clone(&state)),
+            Path("gateway-objective-a".to_string()),
+            gateway_headers(Some("site-user-2")),
+            Query(AuthQuery::default()),
+            Json(EditObjectiveRequest {
+                expected_revision: objective.revision,
+                stated_objective: "stolen objective".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(foreign_objective_edit.status(), StatusCode::FORBIDDEN);
 
         let foreign = handle_get_session(
             State(Arc::clone(&state)),
@@ -9379,7 +9480,12 @@ account = "xai-account"
                 Json(SendMessageRequest {
                     text: "hello".to_string(),
                     client_message_id: Some("client-message-1".to_string()),
-                    attachments: Vec::new(),
+                    attachments: vec![IncomingMessageAttachment {
+                        name: "hello.png".to_string(),
+                        media_type: "image/png".to_string(),
+                        data_base64: base64::engine::general_purpose::STANDARD
+                            .encode(b"same-image"),
+                    }],
                     harness: None,
                 }),
             )
@@ -9392,6 +9498,43 @@ account = "xai-account"
             let receipt: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(receipt["interrupted"], json!(false));
         }
+
+        let conflict = handle_send_message(
+            State(Arc::clone(&state)),
+            Path("api-session".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(SendMessageRequest {
+                text: "different request".to_string(),
+                client_message_id: Some("client-message-1".to_string()),
+                attachments: Vec::new(),
+                harness: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let conflict_body = axum::body::to_bytes(conflict.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let conflict_json: serde_json::Value = serde_json::from_slice(&conflict_body).unwrap();
+        assert_eq!(conflict_json["error"]["code"], "conflict");
+
+        let user_message = runtime
+            .query_events(QueryFilter {
+                session_id: Some("api-session".to_string()),
+                topic: Some("chat/user_message".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let storage_path = user_message.payload["attachments"][0]["storage_path"]
+            .as_str()
+            .unwrap();
+        assert_eq!(tokio::fs::read(storage_path).await.unwrap(), b"same-image");
 
         // Wait for the reply itself rather than for a fixed span. The suite
         // runs in parallel, and under CPU contention the orchestrator needs

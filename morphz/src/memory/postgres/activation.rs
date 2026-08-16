@@ -2953,9 +2953,25 @@ impl ActivationStore for PostgresStore {
             .get("session_id")
             .and_then(JsonValue::as_str)
             .ok_or("DialogueTurn retry Event 缺少 session_id")?;
+        let principal_id = request
+            .event
+            .payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("DialogueTurn retry Event 缺少 principal_id")?;
         let expected_revision = i64::try_from(request.expected_thread_revision)?;
         let now = now_text();
         let mut tx = self.pool.begin().await?;
+
+        // Every dialogue-ingress transaction takes mutable authority in the
+        // same order: Session, then Thread/Activation. claim_message follows
+        // this order while interrupting a live dialogue; reversing it here
+        // creates a PostgreSQL deadlock when retry and interruption race.
+        let session_status =
+            sqlx::query_scalar::<_, String>("SELECT status FROM sessions WHERE id = $1 FOR UPDATE")
+                .bind(session_id)
+                .fetch_optional(&mut *tx)
+                .await?;
 
         // Lock the logical Thread before the idempotency read.  Concurrent
         // callers using the same request id must observe the first caller's
@@ -2978,6 +2994,34 @@ impl ActivationStore for PostgresStore {
             return Ok(DialogueTurnRetryMutation::Existing {
                 thread_id: current.id,
                 generation: current.generation,
+            });
+        }
+
+        if session_status.as_deref() != Some("active") {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: "归档或不存在的 Session 不能重启 DialogueTurn".to_string(),
+            });
+        }
+        let principal_is_bound = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM session_principal_bindings
+                 WHERE session_id = $1 AND principal_id = $2 AND unbound_at IS NULL
+               )"#,
+        )
+        .bind(session_id)
+        .bind(principal_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !principal_is_bound {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: format!(
+                    "Principal '{}' 未绑定到 Session '{}'，拒绝重启 DialogueTurn",
+                    principal_id, session_id
+                ),
             });
         }
 

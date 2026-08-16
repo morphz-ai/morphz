@@ -5950,7 +5950,7 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     assert_eq!(result_thread_ids.len(), result_events.len());
     for _ in 0..100 {
         if store
-            .list_session_delivery_threads("coalesced-session", true)
+            .list_session_delivery_threads("coalesced-session", true, 64)
             .await
             .unwrap()
             .is_empty()
@@ -5960,7 +5960,7 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
     assert!(store
-        .list_session_delivery_threads("coalesced-session", true)
+        .list_session_delivery_threads("coalesced-session", true, 64)
         .await
         .unwrap()
         .is_empty());

@@ -468,6 +468,14 @@ pub struct SchedulerConfig {
     pub delivery_merge_window: HumanDuration,
     /// Maximum time the first pending result may wait, regardless of later arrivals.
     pub delivery_max_wait: HumanDuration,
+    /// Hard bound for one durable Delivery Timer snapshot and one Delivery
+    /// Composer request. Remaining results stay pending for the next
+    /// generation instead of inflating one timer/model input without bound.
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub delivery_snapshot_max_items: usize,
+    /// Number of pending Sessions inspected in one startup-recovery page.
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub delivery_recovery_page_size: usize,
     /// Maximum completed results the runtime may combine deterministically without a model call.
     /// A single result is always passed through verbatim; larger batches use the Delivery Composer.
     #[serde(deserialize_with = "deserialize_positive_usize")]
@@ -483,6 +491,8 @@ impl Default for SchedulerConfig {
         Self {
             delivery_merge_window: HumanDuration::from_secs(1),
             delivery_max_wait: HumanDuration::from_secs(3),
+            delivery_snapshot_max_items: 64,
+            delivery_recovery_page_size: 256,
             delivery_deterministic_batch_max_items: 3,
             delivery_deterministic_batch_max_chars: 6_000,
         }
@@ -759,6 +769,10 @@ pub struct ModelInputConfig {
     /// Maximum decoded artifact bytes assembled into one model request.
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub max_request_bytes: usize,
+    /// Minimum age before startup recovery may treat a pending message import
+    /// as abandoned. This protects an import still running in another Runtime
+    /// worker while allowing crash leftovers to be reclaimed deterministically.
+    pub pending_import_grace: HumanDuration,
 }
 
 impl Default for ModelInputConfig {
@@ -772,6 +786,10 @@ impl Default for ModelInputConfig {
             max_import_bytes: 256 * 1024 * 1024,
             max_artifacts_per_request: 128,
             max_request_bytes: 256 * 1024 * 1024,
+            // Message persistence and the following database claim normally
+            // complete within seconds. One hour is a deliberately conservative
+            // multi-worker fencing window and remains operator-configurable.
+            pending_import_grace: HumanDuration::from_secs(60 * 60),
         }
     }
 }
@@ -3396,11 +3414,18 @@ mod tests {
         let defaults = SchedulerConfig::default();
         assert_eq!(defaults.delivery_merge_window.as_secs(), 1);
         assert_eq!(defaults.delivery_max_wait.as_secs(), 3);
+        assert_eq!(defaults.delivery_snapshot_max_items, 64);
+        assert_eq!(defaults.delivery_recovery_page_size, 256);
 
-        let parsed: SchedulerConfig =
-            toml::from_str("delivery_merge_window = '2s'\ndelivery_max_wait = '7s'\n").unwrap();
+        let parsed: SchedulerConfig = toml::from_str(
+            "delivery_merge_window = '2s'\ndelivery_max_wait = '7s'\n\
+             delivery_snapshot_max_items = 12\ndelivery_recovery_page_size = 48\n",
+        )
+        .unwrap();
         assert_eq!(parsed.delivery_merge_window.as_secs(), 2);
         assert_eq!(parsed.delivery_max_wait.as_secs(), 7);
+        assert_eq!(parsed.delivery_snapshot_max_items, 12);
+        assert_eq!(parsed.delivery_recovery_page_size, 48);
     }
 
     #[test]
@@ -4101,12 +4126,17 @@ max_artifact_bytes = 268435456
 max_import_bytes = 536870912
 max_artifacts_per_request = 192
 max_request_bytes = 402653184
+pending_import_grace = "2h"
 "#,
         )
         .unwrap();
         assert_eq!(config.model_input.max_artifacts_per_import, 256);
         assert_eq!(config.model_input.max_artifact_bytes, 256 * 1024 * 1024);
         assert_eq!(config.model_input.max_request_bytes, 384 * 1024 * 1024);
+        assert_eq!(
+            config.model_input.pending_import_grace.as_secs(),
+            2 * 60 * 60
+        );
         assert!(
             config.model_input.dashboard_body_limit_bytes() > config.model_input.max_import_bytes
         );

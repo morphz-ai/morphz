@@ -510,7 +510,7 @@ where
     );
     assert_eq!(
         store
-            .list_session_delivery_threads("conformance-session", false)
+            .list_session_delivery_threads("conformance-session", false, 64)
             .await
             .unwrap()
             .len(),
@@ -518,7 +518,13 @@ where
     );
 
     let timer = store
-        .arm_delivery_flush_timer("conformance-delivery-timer", "conformance-session", 1, 5)
+        .arm_delivery_flush_timer(
+            "conformance-delivery-timer",
+            "conformance-session",
+            1,
+            5,
+            64,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -1193,6 +1199,10 @@ where
         })
         .await
         .unwrap();
+    store
+        .bind_session_principal(session_id, "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat")
+        .await
+        .unwrap();
     let message = |id: &str, text: &str| {
         Event::new(
             id.to_string(),
@@ -1202,6 +1212,7 @@ where
             json!({
                 "context_id": "conformance-context",
                 "session_id": session_id,
+                "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
                 "text": text
             })
             .as_object()
@@ -1875,6 +1886,7 @@ where
         json!({
             "context_id": "conformance-context",
             "session_id": "conformance-session",
+            "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
             "text": "hello"
         })
         .as_object()
@@ -1959,6 +1971,186 @@ where
             .unwrap()
             .len(),
         1
+    );
+
+    let conflicting_message = Event::new(
+        "conformance-ingress-message-conflict".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+            "text": "different"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert_eq!(
+        store
+            .claim_message(
+                "conformance-session",
+                "client-message-a",
+                &conflicting_message,
+                false,
+            )
+            .await
+            .unwrap(),
+        MessageClaim::Conflict {
+            event_id: message.id.clone()
+        }
+    );
+
+    let racing_message = |id: &str, text: &str| {
+        Event::new(
+            id.to_string(),
+            "user".to_string(),
+            "user_message".to_string(),
+            "chat/user".to_string(),
+            json!({
+                "context_id": "conformance-context",
+                "session_id": "conformance-session",
+                "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+                "text": text
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    };
+    let racing_a = racing_message("conformance-ingress-race-a", "A");
+    let racing_b = racing_message("conformance-ingress-race-b", "B");
+    let claim_a = {
+        let store = Arc::clone(&store);
+        let event = racing_a.clone();
+        tokio::spawn(async move {
+            store
+                .claim_message("conformance-session", "client-message-race", &event, false)
+                .await
+        })
+    };
+    let claim_b = {
+        let store = Arc::clone(&store);
+        let event = racing_b.clone();
+        tokio::spawn(async move {
+            store
+                .claim_message("conformance-session", "client-message-race", &event, false)
+                .await
+        })
+    };
+    let racing_claims = [
+        claim_a.await.unwrap().unwrap(),
+        claim_b.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        racing_claims
+            .iter()
+            .filter(|claim| matches!(claim, MessageClaim::Accepted { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        racing_claims
+            .iter()
+            .filter(|claim| matches!(claim, MessageClaim::Conflict { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_ids: vec![racing_a.id, racing_b.id],
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    store
+        .create_session(NewSession {
+            id: "conformance-ingress-unbound".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            parent_session_id: None,
+            title: "Unbound ingress".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let unbound_message = Event::new(
+        "conformance-ingress-unbound-message".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-ingress-unbound",
+            "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+            "text": "forbidden"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(matches!(
+        store
+            .claim_message(
+                "conformance-ingress-unbound",
+                "client-message-unbound",
+                &unbound_message,
+                false,
+            )
+            .await
+            .unwrap(),
+        MessageClaim::ForbiddenPrincipal { .. }
+    ));
+    store
+        .bind_session_principal(
+            "conformance-ingress-unbound",
+            "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+        )
+        .await
+        .unwrap();
+    store
+        .update_session(
+            "conformance-ingress-unbound",
+            SessionUpdate {
+                title: None,
+                status: Some(SessionStatus::Archived),
+            },
+        )
+        .await
+        .unwrap();
+    let archived_message = Event::new(
+        "conformance-ingress-archived-message".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-ingress-unbound",
+            "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+            "text": "inactive"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert_eq!(
+        store
+            .claim_message(
+                "conformance-ingress-unbound",
+                "client-message-archived",
+                &archived_message,
+                false,
+            )
+            .await
+            .unwrap(),
+        MessageClaim::InactiveSession
     );
 
     let delivery_thread = store

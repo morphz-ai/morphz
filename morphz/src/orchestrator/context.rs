@@ -12750,6 +12750,19 @@ mod tests {
                 .unwrap();
         }
         store
+            .ensure_principal(NewPrincipal {
+                id: "principal-attention".to_string(),
+                provider_id: "context-test".to_string(),
+                assurance: "test".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal("session-b", "principal-attention")
+            .await
+            .unwrap();
+        store
             .append(Event::new(
                 "attention-evidence".to_string(),
                 "User".to_string(),
@@ -12809,6 +12822,7 @@ mod tests {
             vec![
                 ("context_id".to_string(), json!("attention-context")),
                 ("session_id".to_string(), json!("session-b")),
+                ("principal_id".to_string(), json!("principal-attention")),
                 ("text".to_string(), json!("I am back")),
             ]
             .into_iter()
