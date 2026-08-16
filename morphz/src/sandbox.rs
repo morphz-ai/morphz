@@ -469,22 +469,32 @@ mod macos {
             NetworkPolicy::Allow => "(allow network*)",
         };
         let temp_dir = std::env::temp_dir();
-        let mut denied_read_roots = vec![std::fs::canonicalize(&temp_dir).unwrap_or(temp_dir)];
-        denied_read_roots.extend(protected_reads);
+        // Broad baseline denies establish a read allowlist and intentionally
+        // precede its narrow exceptions. Protected paths are different: they
+        // must follow every workspace/read-root allow so an allowed parent
+        // can never override a protected descendant.
+        let mut baseline_denied_read_roots =
+            vec![std::fs::canonicalize(&temp_dir).unwrap_or(temp_dir)];
         let mut allowed_read_roots = Vec::new();
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-            denied_read_roots.push(std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone()));
+            baseline_denied_read_roots
+                .push(std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone()));
             allowed_read_roots.push(home.join(".cargo"));
             allowed_read_roots.push(home.join(".rustup"));
         }
         allowed_read_roots.extend(read_roots.iter().cloned());
         allowed_read_roots.extend(write_roots.iter().cloned());
-        let denied_read_rules = denied_read_roots
+        let baseline_denied_read_rules = baseline_denied_read_roots
             .iter()
             .map(|path| format!("(deny file-read* (subpath {}))", sbpl_quote(path)))
             .collect::<Vec<_>>()
             .join("\n");
-        let denied_read_pattern_rules = protected_read_patterns
+        let protected_read_rules = protected_reads
+            .iter()
+            .map(|path| format!("(deny file-read* (subpath {}))", sbpl_quote(path)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let protected_read_pattern_rules = protected_read_patterns
             .iter()
             .map(|pattern| format!("(deny file-read* (regex #\"{}\"))", sbpl_regex(pattern)))
             .collect::<Vec<_>>()
@@ -525,10 +535,11 @@ mod macos {
              (allow file-write* {write_rules} (literal \"/dev/null\"))\n\
              {denied_write_rules}\n\
              {denied_write_pattern_rules}\n\
-             {denied_read_rules}\n\
-             {denied_read_pattern_rules}\n\
+             {baseline_denied_read_rules}\n\
              (allow file-read* {allowed_read_rules})\n\
-             (allow file-read* {read_rules})\n"
+             (allow file-read* {read_rules})\n\
+             {protected_read_rules}\n\
+             {protected_read_pattern_rules}\n"
         ))
     }
 
@@ -907,16 +918,77 @@ mod tests {
         let protected = workspace.join(".git");
         std::fs::create_dir_all(&protected).unwrap();
         std::fs::write(protected.join("config"), "secret").unwrap();
+        std::fs::write(workspace.join("public.txt"), "public").unwrap();
         let sandbox = NativeSandbox::for_current_platform();
         let mut policy = SandboxPolicy::workspace(&workspace);
         policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.git"));
         policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.git/**"));
         let profile = macos::build_profile(&policy).unwrap();
 
+        let public_read = sandbox
+            .prepare_shell(&ShellRequest {
+                command: "cat public.txt >/dev/null".to_string(),
+                cwd: workspace.clone(),
+                policy: policy.clone(),
+            })
+            .unwrap();
+        let public_status = std::process::Command::new(&public_read.program)
+            .args(&public_read.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(public_status.success(), "generated profile:\n{profile}");
+
+        let protected_read = sandbox
+            .prepare_shell(&ShellRequest {
+                command: "cat .git/config >/dev/null".to_string(),
+                cwd: workspace.clone(),
+                policy: policy.clone(),
+            })
+            .unwrap();
+        let protected_read_status = std::process::Command::new(&protected_read.program)
+            .args(&protected_read.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(
+            !protected_read_status.success(),
+            "protected reads must remain denied after workspace allows:\n{profile}"
+        );
+
+        let protected_write = sandbox
+            .prepare_shell(&ShellRequest {
+                command: "printf changed > .git/config".to_string(),
+                cwd: workspace.clone(),
+                policy,
+            })
+            .unwrap();
+        let protected_write_status = std::process::Command::new(&protected_write.program)
+            .args(&protected_write.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(!protected_write_status.success());
+        assert_eq!(
+            std::fs::read_to_string(protected.join("config")).unwrap(),
+            "secret"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_backend_denies_exact_protected_read_inside_allowed_root() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let protected = workspace.join("credentials.json");
+        std::fs::write(&protected, "secret").unwrap();
+        let mut policy = SandboxPolicy::workspace(&workspace);
+        policy.deny_path(std::fs::canonicalize(&protected).unwrap());
+        let sandbox = NativeSandbox::for_current_platform();
         let prepared = sandbox
             .prepare_shell(&ShellRequest {
-                command: "cat .git/config >/dev/null 2>&1 || exit 41; printf changed > .git/config"
-                    .to_string(),
+                command: "cat credentials.json >/dev/null".to_string(),
                 cwd: workspace.clone(),
                 policy,
             })
@@ -926,11 +998,9 @@ mod tests {
             .current_dir(&workspace)
             .status()
             .unwrap();
-        assert!(!status.success(), "generated profile:\n{profile}");
-        assert_eq!(
-            std::fs::read_to_string(protected.join("config")).unwrap(),
-            "secret"
-        );
+
+        assert!(!status.success());
+        assert_eq!(std::fs::read_to_string(protected).unwrap(), "secret");
     }
 
     #[cfg(target_os = "macos")]

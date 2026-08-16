@@ -4,32 +4,57 @@ pub enum SExpr {
     List(Vec<SExpr>),
 }
 
+/// Global syntactic safety boundary for every S-expression accepted by the
+/// Runtime. Individual evaluators may impose a stricter semantic limit (Yao,
+/// for example, permits substantially less nesting), but parsing must reject
+/// hostile input before recursive tree construction can exhaust a worker
+/// thread's stack.
+pub const MAX_SEXPR_NESTING_DEPTH: usize = 128;
+
 impl std::fmt::Display for SExpr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SExpr::Atom(s) => {
-                // Quote and escape values containing whitespace, parentheses, double quotes, newlines,
-                // or other syntax-sensitive characters.
-                if s.contains(' ')
-                    || s.contains('(')
-                    || s.contains(')')
-                    || s.contains('\'')
-                    || s.contains('\n')
-                    || s.contains('\r')
-                    || s.contains('\t')
-                    || s.contains('"')
-                    || s.is_empty()
-                {
-                    write!(f, "\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-                } else {
-                    f.write_str(s)
+        enum Task<'a> {
+            Value(&'a SExpr),
+            Space,
+            CloseList,
+        }
+
+        let mut tasks = vec![Task::Value(self)];
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::Value(SExpr::Atom(s)) => {
+                    // Quote and escape values containing whitespace, parentheses, double quotes,
+                    // newlines, or other syntax-sensitive characters.
+                    if s.contains(' ')
+                        || s.contains('(')
+                        || s.contains(')')
+                        || s.contains('\'')
+                        || s.contains('\n')
+                        || s.contains('\r')
+                        || s.contains('\t')
+                        || s.contains('"')
+                        || s.is_empty()
+                    {
+                        write!(f, "\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))?;
+                    } else {
+                        f.write_str(s)?;
+                    }
                 }
-            }
-            SExpr::List(list) => {
-                let items: Vec<String> = list.iter().map(|item| item.to_string()).collect();
-                write!(f, "({})", items.join(" "))
+                Task::Value(SExpr::List(items)) => {
+                    f.write_str("(")?;
+                    tasks.push(Task::CloseList);
+                    for (index, item) in items.iter().enumerate().rev() {
+                        tasks.push(Task::Value(item));
+                        if index > 0 {
+                            tasks.push(Task::Space);
+                        }
+                    }
+                }
+                Task::Space => f.write_str(" ")?,
+                Task::CloseList => f.write_str(")")?,
             }
         }
+        Ok(())
     }
 }
 
@@ -202,8 +227,15 @@ impl<'a> Parser<'a> {
             .current_char
             .map(|(i, _)| i)
             .unwrap_or(self.input.len());
-        let start = idx.saturating_sub(15);
-        let end = std::cmp::min(self.input.len(), idx + 15);
+        let start = self.input[..idx]
+            .char_indices()
+            .rev()
+            .nth(14)
+            .map_or(0, |(offset, _)| offset);
+        let end = self.input[idx..]
+            .char_indices()
+            .nth(15)
+            .map_or(self.input.len(), |(offset, _)| idx + offset);
         let snippet = &self.input[start..end];
         let mut context = String::new();
         if start > 0 {
@@ -236,9 +268,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_value(&mut self) -> Result<SExpr, ParserError> {
+    fn parse_value(&mut self, parent_depth: usize) -> Result<SExpr, ParserError> {
         self.skip_whitespace();
-        let Some(c) = self.peek_char() else {
+        let Some(mut c) = self.peek_char() else {
             return Err(self.make_error("Unexpected EOF".to_string()));
         };
 
@@ -246,12 +278,21 @@ impl<'a> Parser<'a> {
         // Atom. Yao-lang lists are data by default and need no quote to suppress evaluation, so strip
         // the leading quote and continue. This prevents an LLM's unnecessary quote from producing
         // `[Atom("'"), List(...)]` and breaking the three-part `(set path value)` syntax.
-        if c == '\'' {
+        while c == '\'' {
             self.advance(); // consume '
-            return self.parse_value();
+            self.skip_whitespace();
+            let Some(next) = self.peek_char() else {
+                return Err(self.make_error("Unexpected EOF after quote".to_string()));
+            };
+            c = next;
         }
 
         if c == '(' {
+            if parent_depth >= MAX_SEXPR_NESTING_DEPTH {
+                return Err(self.make_error(format!(
+                    "S-expression nesting exceeds the safe limit of {MAX_SEXPR_NESTING_DEPTH}"
+                )));
+            }
             self.advance(); // consume '('
             let mut list = Vec::new();
             loop {
@@ -264,7 +305,7 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume ')'
                     break;
                 }
-                let child = self.parse_value()?;
+                let child = self.parse_value(parent_depth + 1)?;
                 list.push(child);
             }
             Ok(SExpr::List(list))
@@ -334,7 +375,7 @@ pub fn parse_all(input: &str) -> Result<Vec<SExpr>, ParserError> {
         if parser.peek_char().is_none() {
             break;
         }
-        forms.push(parser.parse_value()?);
+        forms.push(parser.parse_value(0)?);
     }
     if forms.is_empty() {
         return Err(parser.make_error("输入为空或只包含空白字符".to_string()));
@@ -349,7 +390,7 @@ pub fn parse(input: &str) -> Result<SExpr, ParserError> {
     if parser.peek_char().is_none() {
         return Err(parser.make_error("输入为空或只包含空白字符".to_string()));
     }
-    parser.parse_value()
+    parser.parse_value(0)
 }
 
 #[cfg(test)]
@@ -458,5 +499,49 @@ mod tests {
 
         assert_eq!(rendered, "(note \"不可绝对化为'旧权威永远正确'。\")");
         assert_eq!(parse(&rendered).unwrap(), original);
+    }
+
+    #[test]
+    fn parser_rejects_excessive_nesting_before_constructing_a_hostile_tree() {
+        let accepted = format!(
+            "{}value{}",
+            "(".repeat(MAX_SEXPR_NESTING_DEPTH),
+            ")".repeat(MAX_SEXPR_NESTING_DEPTH)
+        );
+        assert!(parse(&accepted).is_ok());
+
+        let hostile = format!("{}value", "(".repeat(100_000));
+        let error = parse(&hostile).unwrap_err();
+        assert!(error.message.contains("nesting exceeds the safe limit"));
+    }
+
+    #[test]
+    fn redundant_quote_prefix_is_iterative_and_does_not_consume_nesting_budget() {
+        let input = format!("{}value", "'".repeat(100_000));
+        assert_eq!(parse(&input).unwrap(), SExpr::Atom("value".to_string()));
+    }
+
+    #[test]
+    fn parser_error_context_preserves_utf8_boundaries() {
+        let error = parse_all("😀😀😀😀😀)").unwrap_err();
+        assert_eq!(error.message, "Empty atom");
+        assert!(error.context.contains("😀😀😀😀😀)"));
+    }
+
+    #[test]
+    fn display_walks_manually_constructed_deep_trees_iteratively() {
+        let mut value = SExpr::Atom("value".to_string());
+        for _ in 0..4_096 {
+            value = SExpr::List(vec![value]);
+        }
+        let rendered = value.to_string();
+        assert_eq!(rendered.len(), 4_096 * 2 + "value".len());
+        assert!(rendered.starts_with("(((("));
+        assert!(rendered.ends_with("))))"));
+        // `SExpr` is a public recursive enum, so a caller can manually build
+        // a value deeper than the parser accepts. Avoid testing Rust's
+        // recursive drop glue here; this assertion is specifically about the
+        // formatter's own stack usage.
+        std::mem::forget(value);
     }
 }
