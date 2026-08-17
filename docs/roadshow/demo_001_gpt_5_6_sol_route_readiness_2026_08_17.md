@@ -1,5 +1,9 @@
 # DEMO-001 GPT-5.6 Sol route readiness
 
+> Historical/superseded transport audit. It inspected the deployed Agent's
+> `codex-subscription` route, not the dedicated roadshow Morphz Profile. Do not
+> use it to authorize execution; see `demo_001_transport_correction_2026_08_17.md`.
+
 Date: 2026-08-17 (Asia/Shanghai)
 
 Result: `ready_for_frozen_v2=true`; `real_completion_called=false` at the time of this receipt.

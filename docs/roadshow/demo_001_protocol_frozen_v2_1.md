@@ -1,10 +1,10 @@
-# DEMO-001 Roadshow Protocol — frozen-v2
+# DEMO-001 Roadshow Protocol — frozen-v2.1
 
-> Superseded for execution by `frozen-v2.1`: this version accidentally bound
-> the deployed Agent account. Its 429 probe is invalid and excluded. See
-> `demo_001_transport_correction_2026_08_17.md`.
-
-> Frozen: 2026-08-17 (Asia/Shanghai)
+> Transport-corrected freeze: 2026-08-17 (Asia/Shanghai)
+>
+> Supersedes `demo-001-frozen-v2-20260817` for model transport only. The prior
+> 429 probe used the deployed Agent account by mistake and is excluded from all
+> results.
 >
 > Purpose: `roadshow_demo`
 >
@@ -22,20 +22,21 @@ The three arms use the same model, evidence semantics, business tools and task r
 
 The correct final action is hidden from every model call and is checked only after `commit_release`.
 
-## 2. Frozen provider and operational budgets
+## 2. Frozen Morphz Profile, provider and operational budgets
 
+- Morphz Profile: exact `roadshow-demo-001`; the runner loads it explicitly and does not read or change the globally active Profile.
 - Logical route and physical model: exact `gpt-5.6-sol`.
-- Provider route: configured `codex-subscription`, OpenAI Responses, one candidate, no fallback.
+- Provider route: existing `custom` service/account over the CLIProxyAPI-compatible OpenAI Responses endpoint, one candidate, no fallback. The Profile contains no endpoint or credential.
 - Reasoning: request `max`; record the requested value and whether the call succeeds. Do not claim Provider echo when unavailable.
 - Sampling seed: unsupported/not sent; `42001..42005` are paired cell identifiers only.
 - Active-input cost tier: 8,192 `o200k_base` tokens, including system, tools, current request, selected state/history and prior tool transcript reserve.
 - Business output acceptance cap: 512 tokens. Maintenance output acceptance cap: 1,024 tokens.
-- The Codex subscription adapter strips server-side `max_output_tokens`; these are uniform Harness acceptance limits and the manifest records `provider_max_output_tokens=stripped_unavailable`.
+- Business and maintenance caps are uniform Harness acceptance limits. Record whether the CLIProxyAPI-compatible route exposes or echoes a Provider-side output cap; otherwise mark it `unavailable`.
 - Wall-clock limit: 180 seconds per model call; 900 seconds per run.
 - Business calls: exactly 3 per completed run. Maintenance calls: Message 0; Summary/Morphz 2 in Normal and 4 in Pressure on the normal path. One counted repair is permitted per failed maintenance result.
 - Cost attribution: `subscription_not_monetarily_attributed`, never zero-cost.
 
-No Gemini model may be called. Model or route mismatch is a pre-run failure; no silent fallback is permitted.
+No Gemini model and no deployed `codex-subscription` account may be called. Profile, model or route mismatch is a pre-run failure; no silent fallback is permitted.
 
 ## 3. Frozen evidence and load levels
 
@@ -93,7 +94,7 @@ Cached reads/writes, output and reasoning tokens are separate. Missing Provider 
 
 Failures are classified as `service_failure`, `model_outcome`, `budget_failure`, `system_failure`, `harness_failure`, or `live_presentation_failure`. Only service failures may be appended to the paired queue, at most twice. Model outcomes, missing/wrong commits and budget failures remain results.
 
-Artifacts use `purpose=roadshow_demo`, `demo_id=DEMO-001`, `protocol_version=frozen-v2`, and never enter `ME-*` directories. A valid run records fixture, prompt/state-contract hashes, model binding, requested/accepted parameters, raw usage, local token counts, trace, ObservedRun, score, code commit and demo tag.
+Artifacts use `purpose=roadshow_demo`, `demo_id=DEMO-001`, `protocol_version=frozen-v2.1`, and never enter `ME-*` directories. A valid run records fixture, prompt/state-contract hashes, model binding, requested/accepted parameters, raw usage, local token counts, trace, ObservedRun, score, code commit and demo tag.
 
 ## 7. Execution gate
 
@@ -101,4 +102,4 @@ Runtime source baseline is `paper-eval-runtime-v2` at `03a32f864a3c38026672b4076
 
 The frozen tag must point to a selective clean commit containing this protocol, both fixtures, prompt/state contracts, runner/collector/scorer and queue. The pre-existing dirty worktree is recorded separately and is not represented as part of the tag.
 
-After tagging, execute only Normal `pair_cell_id=42001`, one run per Arm. Review the three smoke artifacts before authorizing the full 30-run batch.
+The corrected selective tag is `demo-001-frozen-v2.1-20260817`; the previous `demo-001-frozen-v2-20260817` tag remains immutable but is superseded for transport. After tagging, execute only Normal `pair_cell_id=42001`, one run per Arm. Review the three smoke artifacts before authorizing the full 30-run batch.

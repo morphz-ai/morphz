@@ -1,6 +1,8 @@
 # DEMO-001 `protocol frozen-v2` 决策提案
 
-> 状态：`user-decisions-complete / gpt-5.6-sol-readiness-confirmed`，即将生成 `frozen-v2`
+> 状态：历史决策稿；Provider 绑定部分已由 `frozen-v2.1` 的专用 Morphz
+> Profile 修正。原 `codex-subscription` 绑定不得用于执行，详见
+> `demo_001_transport_correction_2026_08_17.md`。
 >
 > 日期：2026-08-17（Asia/Shanghai）
 >
