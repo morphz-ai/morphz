@@ -1272,13 +1272,22 @@ impl MorphzRuntimeBuilder {
             }
             let endpoint =
                 crate::execution_target::ManagedSshEndpoint::load(&target_config.endpoint_ref)?;
-            if let Some(alias) = endpoint.password_secret.as_deref() {
-                if !secret_store.contains_alias(alias)? {
-                    return Err(format!(
-                        "Runtime Managed SSH Target '{}' 绑定的 password Secret '{}' 不存在",
-                        target_config.id, alias
-                    )
-                    .into());
+            for (label, alias) in [
+                ("private key", endpoint.private_key_secret.as_deref()),
+                (
+                    "private key passphrase",
+                    endpoint.private_key_passphrase_secret.as_deref(),
+                ),
+                ("password", endpoint.password_secret.as_deref()),
+            ] {
+                if let Some(alias) = alias {
+                    if !secret_store.contains_alias(alias)? {
+                        return Err(format!(
+                            "Runtime Managed SSH Target '{}' 绑定的 {label} Secret '{}' 不存在",
+                            target_config.id, alias
+                        )
+                        .into());
+                    }
                 }
             }
             if endpoint.destination.is_none() {

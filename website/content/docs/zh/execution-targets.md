@@ -18,7 +18,7 @@ status: current
 
 ## 托管 SSH
 
-Morphz 可以使用宿主已有 OpenSSH 配置解析远程目标。代理只提交主机别名与能力需求；运行时使用宿主 SSH 客户端、严格主机密钥校验和批处理模式执行连接，不把私钥内容交给模型。
+Morphz 可以使用宿主已有 OpenSSH 配置解析远程目标。代理只提交主机别名与能力需求；运行时使用宿主 SSH 客户端和严格主机密钥校验执行连接，不把凭证值交给模型。
 
 ```json
 {
@@ -28,7 +28,22 @@ Morphz 可以使用宿主已有 OpenSSH 配置解析远程目标。代理只提�
 }
 ```
 
-直接使用 IP 或 DNS 名称时可以显式提供用户和端口。已有 `IdentityFile`、`ProxyJump` 和 SSH 代理设置继续由宿主 OpenSSH 处理。
+直接使用 IP 或 DNS 名称时可以显式提供用户和端口。没有绑定密钥 Secret 时，已有 `IdentityFile`、`ProxyJump` 和 SSH Agent 设置继续由宿主 OpenSSH 处理。
+
+如果不想手工配置 `ssh-agent`，可以把私钥内容保存到 Secret Store，并只把 alias 绑定到 Target：
+
+```json
+{
+  "kind": "managed_ssh",
+  "host": "login.scnet.example",
+  "user": "researcher",
+  "auth_mode": "key_only",
+  "private_key_secret": "SCNET_SSH_KEY",
+  "private_key_passphrase_secret": "SCNET_SSH_KEY_PASSPHRASE"
+}
+```
+
+私钥口令 alias 是可选的，并且必须与私钥 alias 一起使用。Runtime 按当前 Context、Session、Objective 和 Target scope 解析这些属于 Target 的绑定，把私钥写入 Runtime 私有目录中的 `0600` 临时身份文件，强制 OpenSSH 只使用该身份，并在连接交接完成后删除。凭证值不会进入 Target 元数据、工具参数、Event History 或普通 Shell 环境。`resolve_target` 刻意不接受任意私钥路径。
 
 ## 边缘执行节点
 

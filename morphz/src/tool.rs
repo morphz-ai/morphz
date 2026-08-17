@@ -10497,9 +10497,11 @@ Body
     }
 
     #[test]
-    fn managed_ssh_password_alias_is_audited_but_not_injected_as_process_environment() {
+    fn managed_ssh_credential_aliases_are_audited_but_not_injected_as_process_environment() {
         let approved = vec![
             "SSH_AUTH_SOCK".to_string(),
+            "SCNET_SSH_KEY".to_string(),
+            "SCNET_SSH_KEY_PASSPHRASE".to_string(),
             "FEATURIZE_SSH_PASSWORD".to_string(),
         ];
 

@@ -70,9 +70,10 @@ impl ManagedSshAuthMode {
     }
 }
 
-/// Host-owned connection descriptor for a Managed SSH Target. Private keys
-/// stay inside OpenSSH (host config, key files, or ssh-agent). Password values
-/// stay in the Runtime Secret Store; this descriptor carries only an alias.
+/// Host-owned connection descriptor for a Managed SSH Target. Credential
+/// values stay in the Runtime Secret Store; this descriptor carries aliases
+/// only. When no private-key alias is bound, OpenSSH may still use its normal
+/// host configuration and ssh-agent as a compatibility source.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedSshEndpoint {
@@ -95,6 +96,10 @@ pub struct ManagedSshEndpoint {
     pub config_digest: Option<String>,
     #[serde(default)]
     pub auth_mode: ManagedSshAuthMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key_passphrase_secret: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_secret: Option<String>,
 }
@@ -145,7 +150,7 @@ impl ManagedSshEndpoint {
             self.auth_mode.uses_password(),
             self.password_secret.as_deref(),
         ) {
-            (true, Some(alias)) => validate_managed_ssh_secret_alias(alias)?,
+            (true, Some(alias)) => validate_managed_ssh_secret_alias("password_secret", alias)?,
             (true, None) => {
                 return Err(format!(
                     "Managed SSH auth_mode={} 必须绑定 password_secret",
@@ -155,6 +160,26 @@ impl ManagedSshEndpoint {
             }
             (false, Some(_)) => return Err("Managed SSH key_only 不能绑定 password_secret".into()),
             (false, None) => {}
+        }
+        if self.auth_mode.uses_keys() {
+            if let Some(alias) = self.private_key_secret.as_deref() {
+                validate_managed_ssh_secret_alias("private_key_secret", alias)?;
+            }
+            if let Some(alias) = self.private_key_passphrase_secret.as_deref() {
+                validate_managed_ssh_secret_alias("private_key_passphrase_secret", alias)?;
+                if self.private_key_secret.is_none() {
+                    return Err(
+                        "Managed SSH private_key_passphrase_secret 必须与 private_key_secret 一起使用"
+                            .into(),
+                    );
+                }
+            }
+        } else if self.private_key_secret.is_some() || self.private_key_passphrase_secret.is_some()
+        {
+            return Err(
+                "Managed SSH password_only 不能绑定 private_key_secret 或 private_key_passphrase_secret"
+                    .into(),
+            );
         }
         if self.destination.is_none()
             && (!self.known_hosts_file.is_absolute() || !self.known_hosts_file.is_file())
@@ -169,9 +194,9 @@ impl ManagedSshEndpoint {
     }
 }
 
-fn validate_managed_ssh_secret_alias(alias: &str) -> Result<(), TargetExecutionError> {
+fn validate_managed_ssh_secret_alias(field: &str, alias: &str) -> Result<(), TargetExecutionError> {
     if alias == "SSH_AUTH_SOCK" {
-        return Err("Managed SSH password_secret 不能使用保留的 SSH_AUTH_SOCK alias".into());
+        return Err(format!("Managed SSH {field} 不能使用保留的 SSH_AUTH_SOCK alias").into());
     }
     if alias.is_empty()
         || alias.len() > 128
@@ -180,7 +205,7 @@ fn validate_managed_ssh_secret_alias(alias: &str) -> Result<(), TargetExecutionE
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '_')
     {
-        return Err("Managed SSH password_secret 必须是合法的 Secret Store alias".into());
+        return Err(format!("Managed SSH {field} 必须是合法的 Secret Store alias").into());
     }
     Ok(())
 }
@@ -188,9 +213,16 @@ fn validate_managed_ssh_secret_alias(alias: &str) -> Result<(), TargetExecutionE
 fn managed_ssh_endpoint_secret_aliases(endpoint: &ManagedSshEndpoint) -> Vec<String> {
     let mut aliases = Vec::new();
     if endpoint.auth_mode.uses_keys()
+        && endpoint.private_key_secret.is_none()
         && std::env::var_os("SSH_AUTH_SOCK").is_some_and(|value| !value.is_empty())
     {
         aliases.push("SSH_AUTH_SOCK".to_string());
+    }
+    if let Some(alias) = endpoint.private_key_secret.as_ref() {
+        aliases.push(alias.clone());
+    }
+    if let Some(alias) = endpoint.private_key_passphrase_secret.as_ref() {
+        aliases.push(alias.clone());
     }
     if let Some(alias) = endpoint.password_secret.as_ref() {
         aliases.push(alias.clone());
@@ -285,6 +317,8 @@ fn managed_ssh_endpoint_from_expanded(
         approved: true,
         config_digest: Some(format!("sha256:{:x}", Sha256::digest(expanded.as_bytes()))),
         auth_mode: ManagedSshAuthMode::KeyOnly,
+        private_key_secret: None,
+        private_key_passphrase_secret: None,
         password_secret: None,
     };
     endpoint.validate()?;
@@ -304,54 +338,65 @@ fn validate_endpoint_ref(endpoint_ref: &str) -> Result<(), TargetExecutionError>
 
 #[derive(Clone, Default)]
 struct ManagedSshAuthentication {
+    private_key: Option<Arc<Zeroizing<String>>>,
+    private_key_passphrase: Option<Arc<Zeroizing<String>>>,
     password: Option<Arc<Zeroizing<String>>>,
 }
 
 struct ManagedSshAskpass {
     _directory: tempfile::TempDir,
-    _pipe: std::fs::File,
+    _pipes: Vec<std::fs::File>,
     helper_path: PathBuf,
-    pipe_path: PathBuf,
+    password_pipe_path: Option<PathBuf>,
+    key_passphrase_pipe_path: Option<PathBuf>,
 }
 
 impl ManagedSshAskpass {
-    fn new(password: &str) -> Result<Self, TargetExecutionError> {
-        if password.is_empty() {
-            return Err("Managed SSH password Secret 不能为空".into());
-        }
-        if password.contains(['\0', '\r', '\n']) {
-            return Err("Managed SSH password Secret 不能包含 NUL 或换行".into());
+    fn new(
+        password: Option<&str>,
+        key_passphrase: Option<&str>,
+    ) -> Result<Self, TargetExecutionError> {
+        validate_managed_ssh_prompt_secret("password", password)?;
+        validate_managed_ssh_prompt_secret("private key passphrase", key_passphrase)?;
+        if password.is_none() && key_passphrase.is_none() {
+            return Err("Managed SSH askpass 至少需要一个提示凭证".into());
         }
         let directory = tempfile::Builder::new()
             .prefix("morphz-ssh-askpass-")
             .tempdir()?;
         let helper_path = directory.path().join("askpass");
-        let pipe_path = directory.path().join("password.pipe");
         std::fs::write(
             &helper_path,
-            b"#!/bin/sh\nset -eu\ncase \"${1-}\" in *assword*|*PASSWORD*) ;; *) exit 1 ;; esac\nIFS= read -r password < \"$MORPHZ_SSH_ASKPASS_FIFO\"\nprintf '%s\\n' \"$password\"\n",
+            b"#!/bin/sh\nset -eu\ncase \"${1-}\" in\n  *assphrase*|*ASSPHRASE*) fifo=${MORPHZ_SSH_KEY_PASSPHRASE_FIFO-} ;;\n  *assword*|*ASSWORD*) fifo=${MORPHZ_SSH_PASSWORD_FIFO-} ;;\n  *) exit 1 ;;\nesac\n[ -n \"$fifo\" ] || exit 1\nIFS= read -r secret < \"$fifo\"\nprintf '%s\\n' \"$secret\"\n",
         )?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&helper_path, std::fs::Permissions::from_mode(0o700))?;
         }
-        nix::unistd::mkfifo(
-            &pipe_path,
-            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
-        )?;
-        let mut pipe = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&pipe_path)?;
-        pipe.write_all(password.as_bytes())?;
-        pipe.write_all(b"\n")?;
-        pipe.flush()?;
+        let mut pipes = Vec::new();
+        let password_pipe_path = password
+            .map(|secret| create_managed_ssh_secret_pipe(directory.path(), "password.pipe", secret))
+            .transpose()?
+            .map(|(path, pipe)| {
+                pipes.push(pipe);
+                path
+            });
+        let key_passphrase_pipe_path = key_passphrase
+            .map(|secret| {
+                create_managed_ssh_secret_pipe(directory.path(), "key-passphrase.pipe", secret)
+            })
+            .transpose()?
+            .map(|(path, pipe)| {
+                pipes.push(pipe);
+                path
+            });
         Ok(Self {
             _directory: directory,
-            _pipe: pipe,
+            _pipes: pipes,
             helper_path,
-            pipe_path,
+            password_pipe_path,
+            key_passphrase_pipe_path,
         })
     }
 
@@ -359,35 +404,258 @@ impl ManagedSshAskpass {
         command
             .env("SSH_ASKPASS", &self.helper_path)
             .env("SSH_ASKPASS_REQUIRE", "force")
-            .env("DISPLAY", "morphz-managed-ssh")
-            .env("MORPHZ_SSH_ASKPASS_FIFO", &self.pipe_path);
+            .env("DISPLAY", "morphz-managed-ssh");
+        if let Some(path) = self.password_pipe_path.as_ref() {
+            command.env("MORPHZ_SSH_PASSWORD_FIFO", path);
+        }
+        if let Some(path) = self.key_passphrase_pipe_path.as_ref() {
+            command.env("MORPHZ_SSH_KEY_PASSPHRASE_FIFO", path);
+        }
     }
 
     fn command_prefix(&self) -> Vec<String> {
-        vec![
+        let mut prefix = vec![
             "env".to_string(),
             format!("SSH_ASKPASS={}", self.helper_path.display()),
             "SSH_ASKPASS_REQUIRE=force".to_string(),
             "DISPLAY=morphz-managed-ssh".to_string(),
-            format!("MORPHZ_SSH_ASKPASS_FIFO={}", self.pipe_path.display()),
-        ]
+        ];
+        if let Some(path) = self.password_pipe_path.as_ref() {
+            prefix.push(format!("MORPHZ_SSH_PASSWORD_FIFO={}", path.display()));
+        }
+        if let Some(path) = self.key_passphrase_pipe_path.as_ref() {
+            prefix.push(format!("MORPHZ_SSH_KEY_PASSPHRASE_FIFO={}", path.display()));
+        }
+        prefix
     }
 }
 
-fn managed_ssh_askpass(
+fn validate_managed_ssh_prompt_secret(
+    label: &str,
+    secret: Option<&str>,
+) -> Result<(), TargetExecutionError> {
+    let Some(secret) = secret else {
+        return Ok(());
+    };
+    if secret.is_empty() {
+        return Err(format!("Managed SSH {label} Secret 不能为空").into());
+    }
+    if secret.contains(['\0', '\r', '\n']) {
+        return Err(format!("Managed SSH {label} Secret 不能包含 NUL 或换行").into());
+    }
+    Ok(())
+}
+
+fn create_managed_ssh_secret_pipe(
+    directory: &Path,
+    name: &str,
+    secret: &str,
+) -> Result<(PathBuf, std::fs::File), TargetExecutionError> {
+    let path = directory.join(name);
+    nix::unistd::mkfifo(
+        &path,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )?;
+    let mut pipe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)?;
+    // OpenSSH may invoke askpass again after a rejected identity. Keep a few
+    // one-shot values buffered without ever placing the secret in argv/env.
+    for _ in 0..4 {
+        pipe.write_all(secret.as_bytes())?;
+        pipe.write_all(b"\n")?;
+    }
+    pipe.flush()?;
+    Ok((path, pipe))
+}
+
+struct ManagedSshIdentityFile {
+    _directory: tempfile::TempDir,
+    path: PathBuf,
+}
+
+impl ManagedSshIdentityFile {
+    fn new(private_key: &str) -> Result<Self, TargetExecutionError> {
+        if private_key.trim().is_empty() {
+            return Err("Managed SSH private key Secret 不能为空".into());
+        }
+        if private_key.contains('\0') {
+            return Err("Managed SSH private key Secret 不能包含 NUL".into());
+        }
+        let directory = tempfile::Builder::new()
+            .prefix("morphz-ssh-identity-")
+            .tempdir()?;
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+            let path = directory.path().join("identity");
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)?;
+            file.write_all(private_key.as_bytes())?;
+            if !private_key.ends_with('\n') {
+                file.write_all(b"\n")?;
+            }
+            file.flush()?;
+            file.sync_all()?;
+            Self {
+                _directory: directory,
+                path,
+            }
+        };
+        #[cfg(not(unix))]
+        let identity = {
+            let path = directory.path().join("identity");
+            std::fs::write(&path, private_key.as_bytes())?;
+            Self {
+                _directory: directory,
+                path,
+            }
+        };
+        Ok(identity)
+    }
+}
+
+#[derive(Default)]
+struct ManagedSshCredentialMaterial {
+    askpass: Option<ManagedSshAskpass>,
+    identity: Option<ManagedSshIdentityFile>,
+    scrubbed_environment: Vec<String>,
+}
+
+impl ManagedSshCredentialMaterial {
+    fn new(
+        endpoint: &ManagedSshEndpoint,
+        authentication: &ManagedSshAuthentication,
+    ) -> Result<Self, TargetExecutionError> {
+        let private_key = match endpoint.private_key_secret.as_deref() {
+            Some(alias) => Some(
+                authentication
+                    .private_key
+                    .as_deref()
+                    .ok_or_else(|| format!("Managed SSH private key Secret '{alias}' 未解析"))?,
+            ),
+            None => None,
+        };
+        let key_passphrase = match endpoint.private_key_passphrase_secret.as_deref() {
+            Some(alias) => Some(
+                authentication
+                    .private_key_passphrase
+                    .as_deref()
+                    .ok_or_else(|| {
+                        format!("Managed SSH private key passphrase Secret '{alias}' 未解析")
+                    })?,
+            ),
+            None => None,
+        };
+        let password = match endpoint.password_secret.as_deref() {
+            Some(alias) => Some(
+                authentication
+                    .password
+                    .as_deref()
+                    .ok_or_else(|| format!("Managed SSH password Secret '{alias}' 未解析"))?,
+            ),
+            None => None,
+        };
+        let askpass = if password.is_some() || key_passphrase.is_some() {
+            Some(ManagedSshAskpass::new(
+                password.map(|value| value.as_str()),
+                key_passphrase.map(|value| value.as_str()),
+            )?)
+        } else {
+            None
+        };
+        let identity = private_key
+            .map(|value| ManagedSshIdentityFile::new(value.as_str()))
+            .transpose()?;
+        let mut scrubbed_environment = [
+            endpoint.private_key_secret.as_ref(),
+            endpoint.private_key_passphrase_secret.as_ref(),
+            endpoint.password_secret.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+        if endpoint.private_key_secret.is_some() {
+            scrubbed_environment.push("SSH_AUTH_SOCK".to_string());
+        }
+        scrubbed_environment.sort();
+        scrubbed_environment.dedup();
+        Ok(Self {
+            askpass,
+            identity,
+            scrubbed_environment,
+        })
+    }
+
+    fn apply_to_command(&self, command: &mut tokio::process::Command) {
+        for name in &self.scrubbed_environment {
+            command.env_remove(name);
+        }
+        if let Some(askpass) = self.askpass.as_ref() {
+            askpass.apply_to_command(command);
+        }
+    }
+
+    fn command_prefix(&self) -> Vec<String> {
+        let mut prefix = self
+            .askpass
+            .as_ref()
+            .map(ManagedSshAskpass::command_prefix)
+            .unwrap_or_else(|| {
+                if self.scrubbed_environment.is_empty() {
+                    Vec::new()
+                } else {
+                    vec!["env".to_string()]
+                }
+            });
+        if !prefix.is_empty() {
+            let removals = self
+                .scrubbed_environment
+                .iter()
+                .flat_map(|name| ["-u".to_string(), name.clone()])
+                .collect::<Vec<_>>();
+            prefix.splice(1..1, removals);
+        }
+        prefix
+    }
+
+    fn append_identity_arguments(&self, arguments: &mut Vec<String>) {
+        if let Some(identity) = self.identity.as_ref() {
+            arguments.extend([
+                "-o".to_string(),
+                "IdentityFile=none".to_string(),
+                "-o".to_string(),
+                "IdentitiesOnly=yes".to_string(),
+                "-i".to_string(),
+                identity.path.display().to_string(),
+            ]);
+        }
+    }
+
+    fn append_identity_to_command(&self, command: &mut tokio::process::Command) {
+        if let Some(identity) = self.identity.as_ref() {
+            command
+                .arg("-o")
+                .arg("IdentityFile=none")
+                .arg("-o")
+                .arg("IdentitiesOnly=yes")
+                .arg("-i")
+                .arg(&identity.path);
+        }
+    }
+}
+
+fn managed_ssh_credentials(
     endpoint: &ManagedSshEndpoint,
     authentication: &ManagedSshAuthentication,
-) -> Result<Option<ManagedSshAskpass>, TargetExecutionError> {
-    if !endpoint.auth_mode.uses_password() {
-        return Ok(None);
-    }
-    let password = authentication.password.as_deref().ok_or_else(|| {
-        format!(
-            "Managed SSH password Secret '{}' 未解析",
-            endpoint.password_secret.as_deref().unwrap_or("<missing>")
-        )
-    })?;
-    Ok(Some(ManagedSshAskpass::new(password.as_str())?))
+) -> Result<ManagedSshCredentialMaterial, TargetExecutionError> {
+    ManagedSshCredentialMaterial::new(endpoint, authentication)
 }
 
 /// Cloud authority copied from the immutable parent Job into the Edge
@@ -648,13 +916,19 @@ pub fn prepare_managed_ssh_exec_arguments(
     if endpoint.destination.is_none()
         && std::env::var_os("SSH_AUTH_SOCK").is_none_or(|value| value.is_empty())
         && endpoint.auth_mode.uses_keys()
+        && endpoint.private_key_secret.is_none()
     {
         return Err("静态 Managed SSH endpoint 需要 Runtime 的 SSH_AUTH_SOCK".into());
     }
-    if endpoint.auth_mode.uses_password() {
-        return Err("Managed SSH 密码认证必须由 Runtime Secret Store 解析后执行".into());
+    if endpoint.auth_mode.uses_password() || endpoint.private_key_secret.is_some() {
+        return Err("Managed SSH Secret 认证必须由 Runtime Secret Store 解析后执行".into());
     }
-    build_managed_ssh_exec_arguments(endpoint_ref, endpoint, target_id, arguments, None)
+    let credentials = ManagedSshCredentialMaterial {
+        askpass: None,
+        identity: None,
+        scrubbed_environment: Vec::new(),
+    };
+    build_managed_ssh_exec_arguments(endpoint_ref, endpoint, target_id, arguments, &credentials)
 }
 
 fn build_managed_ssh_exec_arguments(
@@ -662,7 +936,7 @@ fn build_managed_ssh_exec_arguments(
     endpoint: &ManagedSshEndpoint,
     target_id: &str,
     arguments: &str,
-    askpass: Option<&ManagedSshAskpass>,
+    credentials: &ManagedSshCredentialMaterial,
 ) -> Result<String, TargetExecutionError> {
     let mut arguments: serde_json::Value = serde_json::from_str(arguments)?;
     let object = arguments
@@ -680,19 +954,20 @@ fn build_managed_ssh_exec_arguments(
         }
         _ => remote_command.to_string(),
     };
-    let mut ssh = askpass
-        .map(ManagedSshAskpass::command_prefix)
-        .unwrap_or_default();
+    let mut ssh = credentials.command_prefix();
     ssh.push("ssh".to_string());
     if endpoint.destination.is_none() {
-        ssh.extend([
-            "-F".to_string(),
-            "/dev/null".to_string(),
-            "-o".to_string(),
-            "IdentitiesOnly=no".to_string(),
-        ]);
+        ssh.extend(["-F".to_string(), "/dev/null".to_string()]);
+        if credentials.identity.is_none() {
+            ssh.extend(["-o".to_string(), "IdentitiesOnly=no".to_string()]);
+        }
     }
-    append_managed_ssh_auth_options(&mut ssh, endpoint.auth_mode);
+    credentials.append_identity_arguments(&mut ssh);
+    append_managed_ssh_auth_options(
+        &mut ssh,
+        endpoint.auth_mode,
+        endpoint.private_key_passphrase_secret.is_some(),
+    );
     ssh.extend(["-o".to_string(), "StrictHostKeyChecking=yes".to_string()]);
     let destination = match endpoint.destination.as_deref() {
         Some(host) => {
@@ -732,15 +1007,7 @@ fn build_managed_ssh_exec_arguments(
         .then(|| endpoint.known_hosts_file.clone())
         .into_iter()
         .collect::<Vec<_>>();
-    let mut secret_env = Vec::new();
-    if endpoint.auth_mode.uses_keys()
-        && std::env::var_os("SSH_AUTH_SOCK").is_some_and(|value| !value.is_empty())
-    {
-        secret_env.push("SSH_AUTH_SOCK");
-    }
-    if let Some(alias) = endpoint.password_secret.as_deref() {
-        secret_env.push(alias);
-    }
+    let secret_env = managed_ssh_endpoint_secret_aliases(endpoint);
     Ok(serde_json::to_string(&serde_json::json!({
         "command": ssh,
         "cwd": ".",
@@ -758,11 +1025,23 @@ fn build_managed_ssh_exec_arguments(
     }))?)
 }
 
-fn append_managed_ssh_auth_options(arguments: &mut Vec<String>, mode: ManagedSshAuthMode) {
+fn append_managed_ssh_auth_options(
+    arguments: &mut Vec<String>,
+    mode: ManagedSshAuthMode,
+    has_key_passphrase: bool,
+) {
     match mode {
-        ManagedSshAuthMode::KeyOnly => {
-            arguments.extend(["-o".to_string(), "BatchMode=yes".to_string()])
+        ManagedSshAuthMode::KeyOnly if !has_key_passphrase => {
+            arguments.extend(["-o".to_string(), "BatchMode=yes".to_string()]);
         }
+        ManagedSshAuthMode::KeyOnly => arguments.extend([
+            "-o".to_string(),
+            "BatchMode=no".to_string(),
+            "-o".to_string(),
+            "PreferredAuthentications=publickey".to_string(),
+            "-o".to_string(),
+            "ConnectTimeout=30".to_string(),
+        ]),
         ManagedSshAuthMode::PasswordOnly => arguments.extend([
             "-o".to_string(),
             "BatchMode=no".to_string(),
@@ -1020,9 +1299,28 @@ fn managed_ssh_target_secret_aliases(
 ) -> Result<Vec<String>, TargetExecutionError> {
     let mode = managed_ssh_target_auth_mode(target)?;
     let mut aliases = Vec::new();
-    if mode.uses_keys() && std::env::var_os("SSH_AUTH_SOCK").is_some_and(|value| !value.is_empty())
-    {
-        aliases.push("SSH_AUTH_SOCK".to_string());
+    if mode.uses_keys() {
+        if let Some(alias) = target
+            .metadata
+            .get("private_key_secret")
+            .and_then(serde_json::Value::as_str)
+        {
+            validate_managed_ssh_secret_alias("private_key_secret", alias)?;
+            aliases.push(alias.to_string());
+            if let Some(passphrase_alias) = target
+                .metadata
+                .get("private_key_passphrase_secret")
+                .and_then(serde_json::Value::as_str)
+            {
+                validate_managed_ssh_secret_alias(
+                    "private_key_passphrase_secret",
+                    passphrase_alias,
+                )?;
+                aliases.push(passphrase_alias.to_string());
+            }
+        } else if std::env::var_os("SSH_AUTH_SOCK").is_some_and(|value| !value.is_empty()) {
+            aliases.push("SSH_AUTH_SOCK".to_string());
+        }
     }
     if mode.uses_password() {
         let alias = target
@@ -1035,7 +1333,7 @@ fn managed_ssh_target_secret_aliases(
                     target.id
                 )
             })?;
-        validate_managed_ssh_secret_alias(alias)?;
+        validate_managed_ssh_secret_alias("password_secret", alias)?;
         aliases.push(alias.to_string());
     }
     Ok(aliases)
@@ -2172,13 +2470,15 @@ impl ManagedSshBackend {
         job: &ExecutionJobRecord,
         target_id: &str,
     ) -> Result<ManagedSshAuthentication, TargetExecutionError> {
-        if !endpoint.auth_mode.uses_password() {
+        if endpoint.private_key_secret.is_none()
+            && endpoint.private_key_passphrase_secret.is_none()
+            && endpoint.password_secret.is_none()
+        {
             return Ok(ManagedSshAuthentication::default());
         }
-        let alias = endpoint
-            .password_secret
-            .clone()
-            .ok_or("Managed SSH password 认证缺少 Secret alias")?;
+        let private_key_alias = endpoint.private_key_secret.clone();
+        let key_passphrase_alias = endpoint.private_key_passphrase_secret.clone();
+        let password_alias = endpoint.password_secret.clone();
         let secret_store = Arc::clone(&self.secret_store);
         let context_id = job.context_id.clone();
         let session_id = job.session_id.clone();
@@ -2187,27 +2487,38 @@ impl ManagedSshBackend {
             .ok()
             .flatten();
         let target_id = target_id.to_string();
-        let value = tokio::task::spawn_blocking(move || {
-            secret_store.resolve(
-                &alias,
-                crate::secret_store::SecretUseContext {
-                    context_id: Some(&context_id),
-                    session_id: Some(&session_id),
-                    objective_id: objective_id.as_deref(),
-                    target_id: Some(&target_id),
-                },
-            )
+        let resolved = tokio::task::spawn_blocking(move || {
+            let resolve = |alias: Option<&str>, label: &str| -> Result<Option<String>, String> {
+                let Some(alias) = alias else {
+                    return Ok(None);
+                };
+                secret_store
+                    .resolve(
+                        alias,
+                        crate::secret_store::SecretUseContext {
+                            context_id: Some(&context_id),
+                            session_id: Some(&session_id),
+                            objective_id: objective_id.as_deref(),
+                            target_id: Some(&target_id),
+                        },
+                    )?
+                    .map(Some)
+                    .ok_or_else(|| {
+                        format!("Managed SSH {label} Secret '{alias}' 在当前作用域中不存在")
+                    })
+            };
+            Ok::<_, String>((
+                resolve(private_key_alias.as_deref(), "private key")?,
+                resolve(key_passphrase_alias.as_deref(), "private key passphrase")?,
+                resolve(password_alias.as_deref(), "password")?,
+            ))
         })
         .await
-        .map_err(|error| format!("Managed SSH Secret Store worker 失败：{error}"))??
-        .ok_or_else(|| {
-            format!(
-                "Managed SSH password Secret '{}' 在当前作用域中不存在",
-                endpoint.password_secret.as_deref().unwrap_or_default()
-            )
-        })?;
+        .map_err(|error| format!("Managed SSH Secret Store worker 失败：{error}"))??;
         Ok(ManagedSshAuthentication {
-            password: Some(Arc::new(Zeroizing::new(value))),
+            private_key: resolved.0.map(|value| Arc::new(Zeroizing::new(value))),
+            private_key_passphrase: resolved.1.map(|value| Arc::new(Zeroizing::new(value))),
+            password: resolved.2.map(|value| Arc::new(Zeroizing::new(value))),
         })
     }
 }
@@ -2296,28 +2607,26 @@ impl ExecutionTargetBackend for ManagedSshBackend {
             .await?;
         match tool.name() {
             "exec" => {
-                let askpass = managed_ssh_askpass(&endpoint, &authentication)?;
+                let credentials = managed_ssh_credentials(&endpoint, &authentication)?;
                 let prepared = build_managed_ssh_exec_arguments(
                     endpoint_ref,
                     &endpoint,
                     &context.target.id,
                     arguments,
-                    askpass.as_ref(),
+                    &credentials,
                 )?;
                 let result = crate::tool::CURRENT_RUNTIME_MANAGED_SSH
                     .scope(true, tool.execute_result(&prepared))
                     .await;
                 if tool_result_is_background(&result) {
-                    if let Some(askpass) = askpass {
-                        tokio::spawn(async move {
-                            // Password-mode SSH uses ConnectTimeout=30. Keep
-                            // the one-shot askpass endpoint alive beyond the
-                            // exec synchronous/background handoff so a slow
-                            // connection cannot lose its credential midway.
-                            tokio::time::sleep(std::time::Duration::from_secs(45)).await;
-                            drop(askpass);
-                        });
-                    }
+                    tokio::spawn(async move {
+                        // Password/passphrase authentication uses a 30 second
+                        // connect timeout. Keep all ephemeral credential
+                        // material alive through the synchronous/background
+                        // handoff so a slow connection cannot lose it midway.
+                        tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+                        drop(credentials);
+                    });
                 }
                 result
             }
@@ -2607,6 +2916,7 @@ fn validate_managed_ssh_endpoint_for_transfer(
     if endpoint.destination.is_none()
         && std::env::var_os("SSH_AUTH_SOCK").is_none_or(|value| value.is_empty())
         && endpoint.auth_mode.uses_keys()
+        && endpoint.private_key_secret.is_none()
     {
         return Err("静态 Managed SSH endpoint 需要 Runtime 的 SSH_AUTH_SOCK".into());
     }
@@ -2625,7 +2935,7 @@ fn validate_remote_artifact_path(path: &str) -> Result<(), TargetExecutionError>
 
 struct PreparedManagedSshCommand {
     command: tokio::process::Command,
-    _askpass: Option<ManagedSshAskpass>,
+    _credentials: ManagedSshCredentialMaterial,
 }
 
 fn managed_ssh_command(
@@ -2634,24 +2944,26 @@ fn managed_ssh_command(
     remote_command: &str,
 ) -> Result<PreparedManagedSshCommand, TargetExecutionError> {
     endpoint.validate()?;
-    let askpass = managed_ssh_askpass(endpoint, authentication)?;
+    let credentials = managed_ssh_credentials(endpoint, authentication)?;
     let mut command = tokio::process::Command::new("ssh");
     if endpoint.destination.is_none() {
-        command
-            .arg("-F")
-            .arg("/dev/null")
-            .arg("-o")
-            .arg("IdentitiesOnly=no");
+        command.arg("-F").arg("/dev/null");
+        if credentials.identity.is_none() {
+            command.arg("-o").arg("IdentitiesOnly=no");
+        }
     }
+    credentials.append_identity_to_command(&mut command);
     let mut auth_arguments = Vec::new();
-    append_managed_ssh_auth_options(&mut auth_arguments, endpoint.auth_mode);
+    append_managed_ssh_auth_options(
+        &mut auth_arguments,
+        endpoint.auth_mode,
+        endpoint.private_key_passphrase_secret.is_some(),
+    );
     command
         .args(auth_arguments)
         .arg("-o")
         .arg("StrictHostKeyChecking=yes");
-    if let Some(askpass) = askpass.as_ref() {
-        askpass.apply_to_command(&mut command);
-    }
+    credentials.apply_to_command(&mut command);
     let destination = match endpoint.destination.as_deref() {
         Some(host) => {
             if let Some(user) = endpoint.user.as_deref() {
@@ -2683,7 +2995,7 @@ fn managed_ssh_command(
         .kill_on_drop(true);
     Ok(PreparedManagedSshCommand {
         command,
-        _askpass: askpass,
+        _credentials: credentials,
     })
 }
 
@@ -4674,7 +4986,7 @@ pub fn runtime_managed_ssh_registration(
     }
 
     let mut digest = Sha256::new();
-    digest.update(b"morphz.runtime-managed-ssh-policy.v2\0");
+    digest.update(b"morphz.runtime-managed-ssh-policy.v3\0");
     digest.update(permission_policy_digest.as_bytes());
     digest.update(b"\0");
     digest.update(id.as_bytes());
@@ -4686,6 +4998,22 @@ pub fn runtime_managed_ssh_registration(
     digest.update(endpoint.user.as_deref().unwrap_or_default().as_bytes());
     digest.update(endpoint.port.to_be_bytes());
     digest.update(endpoint.auth_mode.as_str().as_bytes());
+    digest.update(b"\0");
+    digest.update(
+        endpoint
+            .private_key_secret
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    digest.update(b"\0");
+    digest.update(
+        endpoint
+            .private_key_passphrase_secret
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes(),
+    );
     digest.update(b"\0");
     digest.update(
         endpoint
@@ -4728,9 +5056,13 @@ pub fn runtime_managed_ssh_registration(
             "user": endpoint.destination.as_ref().and(endpoint.user.as_ref()),
             "port": endpoint.destination.as_ref().map(|_| endpoint.port),
             "auth_mode": endpoint.auth_mode,
+            "private_key_secret": endpoint.private_key_secret,
+            "private_key_passphrase_secret": endpoint.private_key_passphrase_secret,
+            "private_key_secret_configured": endpoint.private_key_secret.is_some(),
+            "private_key_passphrase_secret_configured": endpoint.private_key_passphrase_secret.is_some(),
             "password_secret": endpoint.password_secret,
             "password_secret_configured": endpoint.password_secret.is_some(),
-            "protocol_version": 2
+            "protocol_version": 3
         }),
         policy_digest: format!("sha256:{:x}", digest.finalize()),
         last_seen_at: Some(Utc::now()),
@@ -4808,6 +5140,8 @@ impl Tool for ListTargetsTool {
                     "provider_node_id": target.provider_node_id,
                     "workspace_root": target.workspace_root,
                     "auth_mode": target.metadata.get("auth_mode"),
+                    "private_key_secret_configured": target.metadata.get("private_key_secret_configured"),
+                    "private_key_passphrase_secret_configured": target.metadata.get("private_key_passphrase_secret_configured"),
                     "password_secret_configured": target.metadata.get("password_secret_configured"),
                     "runtime_availability": runtime_availability,
                 })
@@ -4830,29 +5164,66 @@ pub struct ResolveTargetTool {
     runtime_managed_ssh: Option<RuntimeManagedSshProvisioner>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct ManagedSshAuthBinding<'a> {
+    mode: Option<ManagedSshAuthMode>,
+    private_key_secret: Option<&'a str>,
+    private_key_passphrase_secret: Option<&'a str>,
+    password_secret: Option<&'a str>,
+}
+
 fn configure_managed_ssh_auth(
     endpoint: &mut ManagedSshEndpoint,
-    requested_mode: Option<ManagedSshAuthMode>,
-    requested_password_secret: Option<&str>,
-    fallback_mode: ManagedSshAuthMode,
-    fallback_password_secret: Option<&str>,
+    requested: ManagedSshAuthBinding<'_>,
+    fallback: ManagedSshAuthBinding<'_>,
 ) -> Result<(), TargetExecutionError> {
+    let requested_mode = requested.mode;
+    let requested_private_key_secret = requested.private_key_secret;
+    let requested_private_key_passphrase_secret = requested.private_key_passphrase_secret;
+    let requested_password_secret = requested.password_secret;
     if requested_mode == Some(ManagedSshAuthMode::KeyOnly) && requested_password_secret.is_some() {
         return Err("Managed SSH key_only 不能同时指定 password_secret".into());
     }
+    if requested_mode == Some(ManagedSshAuthMode::PasswordOnly)
+        && (requested_private_key_secret.is_some()
+            || requested_private_key_passphrase_secret.is_some())
+    {
+        return Err(
+            "Managed SSH password_only 不能同时指定 private_key_secret 或 private_key_passphrase_secret"
+                .into(),
+        );
+    }
     let mode = requested_mode.unwrap_or_else(|| {
-        if requested_password_secret.is_some() {
+        if requested_password_secret.is_some() && requested_private_key_secret.is_some() {
+            ManagedSshAuthMode::KeyThenPassword
+        } else if requested_password_secret.is_some() {
             ManagedSshAuthMode::PasswordOnly
+        } else if requested_private_key_secret.is_some()
+            || requested_private_key_passphrase_secret.is_some()
+        {
+            ManagedSshAuthMode::KeyOnly
         } else {
-            fallback_mode
+            fallback.mode.unwrap_or_default()
         }
     });
+    let private_key_secret = if mode.uses_keys() {
+        requested_private_key_secret.or(fallback.private_key_secret)
+    } else {
+        None
+    };
+    let private_key_passphrase_secret = if mode.uses_keys() {
+        requested_private_key_passphrase_secret.or(fallback.private_key_passphrase_secret)
+    } else {
+        None
+    };
     let password_secret = if mode.uses_password() {
-        requested_password_secret.or(fallback_password_secret)
+        requested_password_secret.or(fallback.password_secret)
     } else {
         None
     };
     endpoint.auth_mode = mode;
+    endpoint.private_key_secret = private_key_secret.map(str::to_string);
+    endpoint.private_key_passphrase_secret = private_key_passphrase_secret.map(str::to_string);
     endpoint.password_secret = password_secret.map(str::to_string);
     endpoint.validate()
 }
@@ -4871,6 +5242,8 @@ struct RuntimeManagedSshProvisionRequest<'a> {
     user: Option<&'a str>,
     port: Option<u16>,
     auth_mode: Option<ManagedSshAuthMode>,
+    private_key_secret: Option<&'a str>,
+    private_key_passphrase_secret: Option<&'a str>,
     password_secret: Option<&'a str>,
     platform: Option<String>,
     workspace_root: Option<String>,
@@ -4902,6 +5275,8 @@ impl RuntimeManagedSshProvisioner {
             user,
             port,
             auth_mode,
+            private_key_secret,
+            private_key_passphrase_secret,
             password_secret,
             platform,
             workspace_root,
@@ -4910,12 +5285,15 @@ impl RuntimeManagedSshProvisioner {
         let mut endpoint = resolve_runtime_ssh_host(host, user, port).await?;
         configure_managed_ssh_auth(
             &mut endpoint,
-            auth_mode,
-            password_secret,
-            ManagedSshAuthMode::KeyOnly,
-            None,
+            ManagedSshAuthBinding {
+                mode: auth_mode,
+                private_key_secret,
+                private_key_passphrase_secret,
+                password_secret,
+            },
+            ManagedSshAuthBinding::default(),
         )?;
-        self.validate_password_secret_binding(&endpoint)?;
+        self.validate_secret_bindings(&endpoint)?;
         let principal_id = CURRENT_PRINCIPAL_ID
             .try_with(Clone::clone)
             .ok()
@@ -4966,19 +5344,28 @@ impl RuntimeManagedSshProvisioner {
         Ok(target)
     }
 
-    fn validate_password_secret_binding(
+    fn validate_secret_bindings(
         &self,
         endpoint: &ManagedSshEndpoint,
     ) -> Result<(), TargetExecutionError> {
-        let Some(alias) = endpoint.password_secret.as_deref() else {
-            return Ok(());
-        };
-        if !self.secret_store.contains_alias(alias)? {
-            return Err(format!(
-                "Managed SSH password Secret '{}' 在 Secret Store 中不存在",
-                alias
-            )
-            .into());
+        for (label, alias) in [
+            ("private key", endpoint.private_key_secret.as_deref()),
+            (
+                "private key passphrase",
+                endpoint.private_key_passphrase_secret.as_deref(),
+            ),
+            ("password", endpoint.password_secret.as_deref()),
+        ] {
+            let Some(alias) = alias else {
+                continue;
+            };
+            if !self.secret_store.contains_alias(alias)? {
+                return Err(format!(
+                    "Managed SSH {label} Secret '{}' 在 Secret Store 中不存在",
+                    alias
+                )
+                .into());
+            }
         }
         Ok(())
     }
@@ -4991,13 +5378,16 @@ impl RuntimeManagedSshProvisioner {
         &self,
         target: &ExecutionTargetRecord,
     ) -> Result<ExecutionTargetRecord, TargetExecutionError> {
-        self.rehydrate_with_auth(target, None, None).await
+        self.rehydrate_with_auth(target, None, None, None, None)
+            .await
     }
 
     async fn rehydrate_with_auth(
         &self,
         target: &ExecutionTargetRecord,
         auth_mode: Option<ManagedSshAuthMode>,
+        private_key_secret: Option<&str>,
+        private_key_passphrase_secret: Option<&str>,
         password_secret: Option<&str>,
     ) -> Result<ExecutionTargetRecord, TargetExecutionError> {
         if target.kind != ExecutionTargetKind::ManagedSsh
@@ -5064,15 +5454,31 @@ impl RuntimeManagedSshProvisioner {
             .metadata
             .get("password_secret")
             .and_then(serde_json::Value::as_str);
+        let fallback_private_key_secret = target
+            .metadata
+            .get("private_key_secret")
+            .and_then(serde_json::Value::as_str);
+        let fallback_private_key_passphrase_secret = target
+            .metadata
+            .get("private_key_passphrase_secret")
+            .and_then(serde_json::Value::as_str);
         let mut endpoint = resolve_runtime_ssh_host(host, user, port).await?;
         configure_managed_ssh_auth(
             &mut endpoint,
-            auth_mode,
-            password_secret,
-            fallback_auth_mode,
-            fallback_password_secret,
+            ManagedSshAuthBinding {
+                mode: auth_mode,
+                private_key_secret,
+                private_key_passphrase_secret,
+                password_secret,
+            },
+            ManagedSshAuthBinding {
+                mode: Some(fallback_auth_mode),
+                private_key_secret: fallback_private_key_secret,
+                private_key_passphrase_secret: fallback_private_key_passphrase_secret,
+                password_secret: fallback_password_secret,
+            },
         )?;
-        self.validate_password_secret_binding(&endpoint)?;
+        self.validate_secret_bindings(&endpoint)?;
         let config = ManagedSshTargetConfig {
             id: target.id.clone(),
             name: target.name.clone(),
@@ -5209,6 +5615,8 @@ struct ResolveTargetArgs {
     user: Option<String>,
     port: Option<u16>,
     auth_mode: Option<ManagedSshAuthMode>,
+    private_key_secret: Option<String>,
+    private_key_passphrase_secret: Option<String>,
     password_secret: Option<String>,
     workspace_root: Option<String>,
     #[serde(default)]
@@ -5228,7 +5636,7 @@ impl Tool for ResolveTargetTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Deterministically resolve an Execution Target available to the current identity by stable ID or by capabilities, platform, and backend. Runtime-managed SSH has no persistent connection lease: when list_targets reports route_needs_rehydration, pass target_id to rebuild the route; that report does not mean the remote host is offline. Managed SSH may also register an existing host OpenSSH alias on demand. Password authentication binds a Secret Store alias to the Target; never place a password value in tool arguments. Explicitly use the returned stable target_id in subsequent non-local physical tool calls.".to_string(),
+            description: "Deterministically resolve an Execution Target available to the current identity by stable ID or by capabilities, platform, and backend. Runtime-managed SSH has no persistent connection lease: when list_targets reports route_needs_rehydration, pass target_id to rebuild the route; that report does not mean the remote host is offline. Managed SSH may also register an existing host OpenSSH alias on demand. SSH credentials bind Secret Store aliases to the Target; never place a private key, passphrase, or password value in tool arguments. Explicitly use the returned stable target_id in subsequent non-local physical tool calls.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -5263,7 +5671,15 @@ impl Tool for ResolveTargetTool {
                     "auth_mode": {
                         "type": "string",
                         "enum": ["key_only", "password_only", "key_then_password"],
-                        "description": "Managed SSH authentication mode. password modes require password_secret; key_only is the default"
+                        "description": "Managed SSH authentication mode. password modes require password_secret; key modes may bind private_key_secret or use host OpenSSH discovery; key_only is the default"
+                    },
+                    "private_key_secret": {
+                        "type": "string",
+                        "description": "Secret Store alias containing an OpenSSH private key. The key value is never accepted here or persisted in the Target. May be combined with target_id to bind or rotate an existing Runtime Managed SSH Target"
+                    },
+                    "private_key_passphrase_secret": {
+                        "type": "string",
+                        "description": "Optional Secret Store alias containing the passphrase for private_key_secret. It is invalid without a private-key binding"
                     },
                     "password_secret": {
                         "type": "string",
@@ -5306,20 +5722,49 @@ impl Tool for ResolveTargetTool {
         if let Some(user) = args.user.as_deref() {
             validate_ssh_user(user)?;
         }
-        if let Some(alias) = args.password_secret.as_deref() {
-            validate_managed_ssh_secret_alias(alias)?;
+        for (field, alias) in [
+            ("private_key_secret", args.private_key_secret.as_deref()),
+            (
+                "private_key_passphrase_secret",
+                args.private_key_passphrase_secret.as_deref(),
+            ),
+            ("password_secret", args.password_secret.as_deref()),
+        ] {
+            if let Some(alias) = alias {
+                validate_managed_ssh_secret_alias(field, alias)?;
+            }
         }
         if args.target_id.is_none()
             && args.host.is_none()
-            && (args.auth_mode.is_some() || args.password_secret.is_some())
+            && (args.auth_mode.is_some()
+                || args.private_key_secret.is_some()
+                || args.private_key_passphrase_secret.is_some()
+                || args.password_secret.is_some())
         {
             return Err(
-                "resolve_target.auth_mode/password_secret 必须与 target_id 或 Managed SSH host 一起使用"
+                "resolve_target 的 SSH 认证参数必须与 target_id 或 Managed SSH host 一起使用"
                     .into(),
             );
         }
         if args.auth_mode == Some(ManagedSshAuthMode::KeyOnly) && args.password_secret.is_some() {
             return Err("resolve_target.key_only 不能同时指定 password_secret".into());
+        }
+        if args.auth_mode == Some(ManagedSshAuthMode::PasswordOnly)
+            && (args.private_key_secret.is_some() || args.private_key_passphrase_secret.is_some())
+        {
+            return Err(
+                "resolve_target.password_only 不能同时指定 private_key_secret 或 private_key_passphrase_secret"
+                    .into(),
+            );
+        }
+        if args.private_key_passphrase_secret.is_some()
+            && args.private_key_secret.is_none()
+            && args.target_id.is_none()
+        {
+            return Err(
+                "resolve_target.private_key_passphrase_secret 必须与 private_key_secret 一起使用"
+                    .into(),
+            );
         }
         if args.port == Some(0) {
             return Err("resolve_target.port 必须大于 0".into());
@@ -5340,11 +5785,21 @@ impl Tool for ResolveTargetTool {
             if !target_visible_to_active_principal(&target) {
                 return Err(format!("当前身份不能使用 Execution Target '{}'", target.id).into());
             }
-            if args.auth_mode.is_some() || args.password_secret.is_some() {
+            if args.auth_mode.is_some()
+                || args.private_key_secret.is_some()
+                || args.private_key_passphrase_secret.is_some()
+                || args.password_secret.is_some()
+            {
                 self.runtime_managed_ssh
                     .as_ref()
                     .ok_or("当前 Runtime 未启用按需 Managed SSH Target")?
-                    .rehydrate_with_auth(&target, args.auth_mode, args.password_secret.as_deref())
+                    .rehydrate_with_auth(
+                        &target,
+                        args.auth_mode,
+                        args.private_key_secret.as_deref(),
+                        args.private_key_passphrase_secret.as_deref(),
+                        args.password_secret.as_deref(),
+                    )
                     .await?
             } else if target.status == ExecutionTargetStatus::Offline
                 && target.kind == ExecutionTargetKind::ManagedSsh
@@ -5382,6 +5837,8 @@ impl Tool for ResolveTargetTool {
                     user: args.user.as_deref(),
                     port: args.port,
                     auth_mode: args.auth_mode,
+                    private_key_secret: args.private_key_secret.as_deref(),
+                    private_key_passphrase_secret: args.private_key_passphrase_secret.as_deref(),
                     password_secret: args.password_secret.as_deref(),
                     platform: args.platform.clone(),
                     workspace_root: args.workspace_root.clone(),
@@ -5459,6 +5916,8 @@ impl Tool for ResolveTargetTool {
             "user": selected.metadata.get("user"),
             "port": selected.metadata.get("port"),
             "auth_mode": selected.metadata.get("auth_mode"),
+            "private_key_secret_configured": selected.metadata.get("private_key_secret_configured"),
+            "private_key_passphrase_secret_configured": selected.metadata.get("private_key_passphrase_secret_configured"),
             "password_secret_configured": selected.metadata.get("password_secret_configured"),
             "runtime_availability": target_runtime_availability(&selected),
             "selection": "deterministic_online_then_target_id"
@@ -5523,6 +5982,8 @@ impl Tool for InspectTargetTool {
             .get_mut("metadata")
             .and_then(serde_json::Value::as_object_mut)
         {
+            metadata.remove("private_key_secret");
+            metadata.remove("private_key_passphrase_secret");
             metadata.remove("password_secret");
         }
         output_object.insert("runtime_availability".to_string(), runtime_availability);
@@ -5718,6 +6179,8 @@ mod tests {
             approved: true,
             config_digest: None,
             auth_mode: ManagedSshAuthMode::KeyOnly,
+            private_key_secret: None,
+            private_key_passphrase_secret: None,
             password_secret: None,
         };
         let config = ManagedSshTargetConfig {
@@ -5756,7 +6219,15 @@ mod tests {
         assert_eq!(registration.metadata["endpoint_ref"], "server");
         assert_eq!(registration.metadata["auth_mode"], "key_only");
         assert_eq!(registration.metadata["password_secret_configured"], false);
-        assert_eq!(registration.metadata["protocol_version"], 2);
+        assert_eq!(
+            registration.metadata["private_key_secret_configured"],
+            false
+        );
+        assert_eq!(
+            registration.metadata["private_key_passphrase_secret_configured"],
+            false
+        );
+        assert_eq!(registration.metadata["protocol_version"], 3);
     }
 
     #[test]
@@ -5798,6 +6269,8 @@ mod tests {
             approved: true,
             config_digest: None,
             auth_mode: ManagedSshAuthMode::KeyOnly,
+            private_key_secret: None,
+            private_key_passphrase_secret: None,
             password_secret: None,
         };
 
@@ -5812,7 +6285,7 @@ mod tests {
                 "sandbox_permissions":"use_default",
                 "requested_permissions":{"write_paths":["/"]}
             }"#,
-            None,
+            &ManagedSshCredentialMaterial::default(),
         )
         .unwrap();
         let prepared: serde_json::Value = serde_json::from_str(&prepared).unwrap();
@@ -5849,21 +6322,23 @@ mod tests {
             approved: true,
             config_digest: Some("sha256:test".to_string()),
             auth_mode: ManagedSshAuthMode::PasswordOnly,
+            private_key_secret: None,
+            private_key_passphrase_secret: None,
             password_secret: Some("FEATURIZE_SSH_PASSWORD".to_string()),
         };
         let password = "password-value-that-must-not-be-serialized";
         let authentication = ManagedSshAuthentication {
             password: Some(Arc::new(Zeroizing::new(password.to_string()))),
+            ..ManagedSshAuthentication::default()
         };
-        let askpass = managed_ssh_askpass(&endpoint, &authentication)
-            .unwrap()
-            .unwrap();
+        let credentials = managed_ssh_credentials(&endpoint, &authentication).unwrap();
+        let askpass = credentials.askpass.as_ref().unwrap();
         let prepared = build_managed_ssh_exec_arguments(
             "runtime_ssh_test",
             &endpoint,
             "target-ssh-test",
             r#"{"command":"whoami"}"#,
-            Some(&askpass),
+            &credentials,
         )
         .unwrap();
         let prepared_json: serde_json::Value = serde_json::from_str(&prepared).unwrap();
@@ -5883,7 +6358,10 @@ mod tests {
 
         let output = std::process::Command::new(&askpass.helper_path)
             .arg("Enter passphrase for key")
-            .env("MORPHZ_SSH_ASKPASS_FIFO", &askpass.pipe_path)
+            .env(
+                "MORPHZ_SSH_PASSWORD_FIFO",
+                askpass.password_pipe_path.as_ref().unwrap(),
+            )
             .output()
             .unwrap();
         assert!(!output.status.success());
@@ -5891,13 +6369,143 @@ mod tests {
 
         let output = std::process::Command::new(&askpass.helper_path)
             .arg("featurize@workspace.featurize.cn's password:")
-            .env("MORPHZ_SSH_ASKPASS_FIFO", &askpass.pipe_path)
+            .env(
+                "MORPHZ_SSH_PASSWORD_FIFO",
+                askpass.password_pipe_path.as_ref().unwrap(),
+            )
             .output()
             .unwrap();
         assert!(output.status.success());
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
             format!("{password}\n")
+        );
+    }
+
+    #[test]
+    fn managed_ssh_private_key_is_ephemeral_and_passphrase_uses_askpass() {
+        let endpoint = ManagedSshEndpoint {
+            destination: Some("compute.example".to_string()),
+            host: "compute.example".to_string(),
+            user: Some("researcher".to_string()),
+            port: 22,
+            known_hosts_file: PathBuf::new(),
+            approved: true,
+            config_digest: Some("sha256:test".to_string()),
+            auth_mode: ManagedSshAuthMode::KeyOnly,
+            private_key_secret: Some("SCNET_SSH_KEY".to_string()),
+            private_key_passphrase_secret: Some("SCNET_SSH_KEY_PASSPHRASE".to_string()),
+            password_secret: None,
+        };
+        let private_key =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\ntest-material\n-----END OPENSSH PRIVATE KEY-----";
+        let passphrase = "private-key-passphrase";
+        let authentication = ManagedSshAuthentication {
+            private_key: Some(Arc::new(Zeroizing::new(private_key.to_string()))),
+            private_key_passphrase: Some(Arc::new(Zeroizing::new(passphrase.to_string()))),
+            password: None,
+        };
+        let credentials = managed_ssh_credentials(&endpoint, &authentication).unwrap();
+        let identity_path = credentials.identity.as_ref().unwrap().path.clone();
+        assert_eq!(
+            std::fs::read_to_string(&identity_path).unwrap(),
+            format!("{private_key}\n")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&identity_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        let prepared = build_managed_ssh_exec_arguments(
+            "runtime_ssh_test",
+            &endpoint,
+            "target-ssh-test",
+            r#"{"command":"hostname"}"#,
+            &credentials,
+        )
+        .unwrap();
+        let prepared_json: serde_json::Value = serde_json::from_str(&prepared).unwrap();
+        let command = prepared_json["command"].as_str().unwrap();
+        assert!(!prepared.contains(private_key));
+        assert!(!prepared.contains(passphrase));
+        assert!(command.starts_with("'env' "));
+        assert!(command.contains("'-u' 'SCNET_SSH_KEY'"));
+        assert!(command.contains("'-u' 'SCNET_SSH_KEY_PASSPHRASE'"));
+        assert!(command.contains("'-u' 'SSH_AUTH_SOCK'"));
+        assert!(command.contains("'IdentityFile=none'"));
+        assert!(command.contains("'IdentitiesOnly=yes'"));
+        assert!(command.contains(&shell_quote(&identity_path.display().to_string())));
+        assert!(command.contains("'BatchMode=no'"));
+        assert!(command.contains("'PreferredAuthentications=publickey'"));
+        assert_eq!(
+            prepared_json["requested_permissions"]["secret_env"],
+            serde_json::json!(["SCNET_SSH_KEY", "SCNET_SSH_KEY_PASSPHRASE"])
+        );
+
+        let askpass = credentials.askpass.as_ref().unwrap();
+        let output = std::process::Command::new(&askpass.helper_path)
+            .arg(format!(
+                "Enter passphrase for key '{}':",
+                identity_path.display()
+            ))
+            .env(
+                "MORPHZ_SSH_KEY_PASSPHRASE_FIFO",
+                askpass.key_passphrase_pipe_path.as_ref().unwrap(),
+            )
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{passphrase}\n")
+        );
+
+        drop(credentials);
+        assert!(!identity_path.exists());
+    }
+
+    #[test]
+    fn managed_ssh_private_key_preflight_uses_only_target_bound_secrets() {
+        let now = Utc::now();
+        let target = ExecutionTargetRecord {
+            id: "target-ssh-key".to_string(),
+            revision: 1,
+            owner_principal_id: Some("principal-a".to_string()),
+            provider_node_id: None,
+            kind: ExecutionTargetKind::ManagedSsh,
+            name: "SSH compute.example".to_string(),
+            status: ExecutionTargetStatus::Online,
+            platform: None,
+            workspace_root: None,
+            capabilities: vec!["exec".to_string()],
+            metadata: serde_json::json!({
+                "execution_location": "runtime",
+                "auth_mode": "key_only",
+                "private_key_secret": "SCNET_SSH_KEY",
+                "private_key_passphrase_secret": "SCNET_SSH_KEY_PASSPHRASE"
+            }),
+            policy_digest: "policy-a".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_seen_at: Some(now),
+        };
+        let requirement = remote_target_approval_requirement(
+            &target,
+            "exec",
+            r#"{"command":"hostname","requested_permissions":{"secret_env":["UNRELATED"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            requirement.requested.secret_env,
+            vec!["SCNET_SSH_KEY", "SCNET_SSH_KEY_PASSPHRASE"]
         );
     }
 
@@ -5959,7 +6567,7 @@ mod tests {
             &endpoint,
             "target-ssh-runtime",
             r#"{"command":"uname -a","cwd":"/srv/app"}"#,
-            None,
+            &ManagedSshCredentialMaterial::default(),
         )
         .unwrap();
         let prepared: serde_json::Value = serde_json::from_str(&prepared).unwrap();
@@ -6217,6 +6825,113 @@ mod tests {
         let key_only: serde_json::Value = serde_json::from_str(&key_only).unwrap();
         assert_eq!(key_only["auth_mode"], "key_only");
         assert_eq!(key_only["password_secret_configured"], false);
+    }
+
+    #[tokio::test]
+    async fn resolve_target_binds_and_recovers_private_key_secrets_without_persisting_values() {
+        if std::process::Command::new("ssh")
+            .arg("-V")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(
+                temp.path()
+                    .join("runtime-ssh-private-key.db")
+                    .to_str()
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        let secrets = test_secret_store(temp.path());
+        let private_key = "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret-test-value\n-----END OPENSSH PRIVATE KEY-----";
+        let passphrase = "secret-passphrase-value";
+        secrets
+            .put("SCNET_SSH_KEY", private_key, SecretScopeKind::Runtime, None)
+            .unwrap();
+        secrets
+            .put(
+                "SCNET_SSH_KEY_PASSPHRASE",
+                passphrase,
+                SecretScopeKind::Runtime,
+                None,
+            )
+            .unwrap();
+        let endpoints = Arc::new(RwLock::new(HashMap::new()));
+        let provisioner = RuntimeManagedSshProvisioner::new(
+            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+            Arc::clone(&endpoints),
+            Arc::clone(&secrets),
+            "principal-default".to_string(),
+            "policy-a".to_string(),
+        );
+        let tool = ResolveTargetTool::new(Arc::clone(&store) as Arc<dyn ExecutionTargetStore>)
+            .with_runtime_managed_ssh(provisioner);
+
+        let output = CURRENT_PRINCIPAL_ID
+            .scope(
+                Some("principal-a".to_string()),
+                tool.execute(
+                    r#"{
+                        "kind":"managed_ssh",
+                        "host":"localhost",
+                        "user":"researcher",
+                        "private_key_secret":"SCNET_SSH_KEY",
+                        "private_key_passphrase_secret":"SCNET_SSH_KEY_PASSPHRASE"
+                    }"#,
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(!output.contains(private_key));
+        assert!(!output.contains(passphrase));
+        let output: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(output["auth_mode"], "key_only");
+        assert_eq!(output["private_key_secret_configured"], true);
+        assert_eq!(output["private_key_passphrase_secret_configured"], true);
+        let target_id = output["target_id"].as_str().unwrap();
+        let target = store
+            .get_execution_target(target_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.metadata["private_key_secret"], "SCNET_SSH_KEY");
+        assert_eq!(
+            target.metadata["private_key_passphrase_secret"],
+            "SCNET_SSH_KEY_PASSPHRASE"
+        );
+        let serialized_target = serde_json::to_string(&target).unwrap();
+        assert!(!serialized_target.contains(private_key));
+        assert!(!serialized_target.contains(passphrase));
+
+        store
+            .set_execution_target_status(target_id, target.revision, ExecutionTargetStatus::Offline)
+            .await
+            .unwrap();
+        endpoints.write().unwrap().clear();
+        let recovered = CURRENT_PRINCIPAL_ID
+            .scope(
+                Some("principal-a".to_string()),
+                tool.execute(&format!(r#"{{"target_id":"{target_id}"}}"#)),
+            )
+            .await
+            .unwrap();
+        let recovered: serde_json::Value = serde_json::from_str(&recovered).unwrap();
+        assert_eq!(recovered["auth_mode"], "key_only");
+        assert_eq!(recovered["private_key_secret_configured"], true);
+        let endpoint = endpoints.read().unwrap().values().next().unwrap().clone();
+        assert_eq!(
+            endpoint.private_key_secret.as_deref(),
+            Some("SCNET_SSH_KEY")
+        );
+        assert_eq!(
+            endpoint.private_key_passphrase_secret.as_deref(),
+            Some("SCNET_SSH_KEY_PASSPHRASE")
+        );
     }
 
     #[test]

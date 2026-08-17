@@ -108,10 +108,27 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    Runtime 直接运行 `ssh`、`scp` 或 `sftp`。
 
    实际连接由 Runtime 的 OpenSSH 客户端完成，沿用宿主的 `Host`、`User`、`Port`、
-   `IdentityFile`、`ProxyJump`、`SSH_AUTH_SOCK` 和 known-hosts 设置，同时强制
-   严格 host-key 校验。默认 `key_only` 使用 `BatchMode=yes`。仅提供密码的主机可先把密码
-   保存到 Secret Store，再把 alias 绑定到 Target；密码值不会进入工具参数、Event Store、Target
-   元数据或普通 Shell 环境：
+   `ProxyJump` 和 known-hosts 设置，同时强制严格 host-key 校验。未显式绑定私钥时，
+   `key_only` 兼容宿主 `IdentityFile` / `SSH_AUTH_SOCK`，并使用 `BatchMode=yes`。如果用户不想
+   手工配置 `ssh-agent`，可以把私钥内容保存到 Secret Store，再把 alias 绑定到 Target：
+
+   ```json
+   {
+     "kind": "managed_ssh",
+     "host": "login.scnet.example",
+     "user": "researcher",
+     "auth_mode": "key_only",
+     "private_key_secret": "SCNET_SSH_KEY",
+     "private_key_passphrase_secret": "SCNET_SSH_KEY_PASSPHRASE"
+   }
+   ```
+
+   `private_key_passphrase_secret` 仅在私钥加密时需要。Runtime 按当前 Context、Session、
+   Objective 和 Target scope 解析凭证，将私钥短暂物化为 Runtime 私有目录中的 `0600`
+   文件，通过 `IdentityFile=none`、`IdentitiesOnly=yes` 只使用该密钥，并在连接完成后自动删除；
+   私钥和口令都不会进入工具参数、Event History、Target 元数据或普通 Shell 环境。
+
+   仅提供密码的主机同样可以先把密码保存到 Secret Store，再把 alias 绑定到 Target：
 
    ```json
    {
@@ -124,11 +141,11 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    }
    ```
 
-   `auth_mode` 还支持 `key_then_password`。Runtime 按当前 Context、Session、Objective 和
-   Target scope 从 Secret Store 解析该 alias，并通过一次性 askpass FIFO 交给 OpenSSH。
-   已有 Target 可用 `target_id + auth_mode + password_secret` 绑定或轮换密码；切回
-   `key_only` 会移除密码绑定。`host` 可直接使用 SSH config 中的 Host、普通 DNS hostname
-   或 IPv4 地址，不需要先创建 Edge Node 或 Managed SSH Target。
+   `auth_mode` 还支持 `key_then_password`。密码与加密私钥口令通过一次性 askpass FIFO
+   交给 OpenSSH。已有 Target 可用 `target_id` 加相应的 Secret alias 绑定或轮换凭证；
+   切换认证模式会清除该模式不使用的绑定。`resolve_target` 不接受任意私钥路径或凭证值。
+   `host` 可直接使用 SSH config 中的 Host、普通 DNS hostname 或 IPv4 地址，不需要先创建
+   Edge Node 或 Managed SSH Target。
 
    管理员仍可选择预注册固定 Target（例如需要稳定显示名、平台和 Workspace 元数据时）：
 
@@ -151,14 +168,14 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
      "port": 22,
      "known_hosts_file": "/absolute/operator-owned/path/known_hosts",
      "approved": true,
-     "auth_mode": "password_only",
-     "password_secret": "PRODUCTION_SSH_PASSWORD"
+     "auth_mode": "key_only",
+     "private_key_secret": "PRODUCTION_SSH_KEY"
    }
    ```
 
    固定描述符始终使用显式 `known_hosts_file`；`key_only` / `key_then_password` 可以继承
-   `SSH_AUTH_SOCK`，密码模式引用 Runtime Secret Store alias。它只是可选的管理员固定策略，
-   不是 Managed SSH 的使用前提。
+   `SSH_AUTH_SOCK`，也可以引用 `private_key_secret`；密码模式引用 `password_secret`。
+   它只是可选的管理员固定策略，不是 Managed SSH 的使用前提。
 
    CLI 也可以直接携带提示词；未被已注册命令和选项消费的文本都会交给 Agent：
 

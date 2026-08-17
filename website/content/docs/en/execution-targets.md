@@ -18,7 +18,7 @@ The Sandbox defines physical access; approval policy defines required authorizat
 
 ## Managed SSH
 
-Morphz can resolve remote targets through the host’s existing OpenSSH configuration. The Agent submits a host alias and required capabilities; the runtime uses the host SSH client, strict host-key validation, and batch mode without exposing private-key material to the model.
+Morphz can resolve remote targets through the host’s existing OpenSSH configuration. The Agent submits a host alias and required capabilities; the runtime uses the host SSH client and strict host-key validation without exposing credential values to the model.
 
 ```json
 {
@@ -28,7 +28,22 @@ Morphz can resolve remote targets through the host’s existing OpenSSH configur
 }
 ```
 
-Direct IP or DNS targets may include a user and port. Existing `IdentityFile`, `ProxyJump`, and SSH Agent settings remain the responsibility of host OpenSSH.
+Direct IP or DNS targets may include a user and port. When no key Secret is bound, existing `IdentityFile`, `ProxyJump`, and SSH Agent settings remain available through host OpenSSH.
+
+To avoid manually configuring `ssh-agent`, store the private-key contents in the Secret Store and bind only its alias to the Target:
+
+```json
+{
+  "kind": "managed_ssh",
+  "host": "login.scnet.example",
+  "user": "researcher",
+  "auth_mode": "key_only",
+  "private_key_secret": "SCNET_SSH_KEY",
+  "private_key_passphrase_secret": "SCNET_SSH_KEY_PASSPHRASE"
+}
+```
+
+The passphrase alias is optional and valid only with a private-key alias. The Runtime resolves these Target-owned aliases in the current Context, Session, Objective, and Target scope. It writes the key to a Runtime-private `0600` temporary identity file, forces OpenSSH to use only that identity, and deletes it after the connection handoff. Values never enter Target metadata, tool arguments, Event History, or an ordinary Shell environment. `resolve_target` deliberately does not accept an arbitrary private-key path.
 
 ## Edge Execution Node
 
