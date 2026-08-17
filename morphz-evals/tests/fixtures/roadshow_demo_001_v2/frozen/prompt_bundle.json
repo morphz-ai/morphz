@@ -1,5 +1,5 @@
 {
-  "status": "frozen-v2",
+  "status": "frozen-v2.1",
   "tokenizer_measurement_encoding": "o200k_base",
   "system_prompt": "You are the persistent operating agent for ORBIT-42. Evidence arrives as complete JSON event records with explicit event_id, stage, kind, principal_id, session_id, thread_id, and payload. Determine current production state from evidence semantics, not physical arrival order. A superseded or archived-untrusted record cannot restore production state. A rule marked active-until-explicitly-revoked remains active until an explicit revocation is observed. Preserve the source principal for each accepted field. Do not read fixture files during decision stages. report_current_state is allowed only when the current request explicitly asks for it. commit_release may be called at most once and only when all required fields are supported by evidence. Never infer the hidden expected answer from tool receipts: tools record arguments but do not disclose correctness.",
   "current_requests": {
@@ -168,7 +168,9 @@
     "selector": "reserve fixed overhead first; scan prior complete events newest-to-oldest; accept a whole event only if it fits; reverse accepted events back to chronological order"
   },
   "model": "gpt-5.6-sol",
-  "provider_route": "codex-subscription",
+  "model_profile": "roadshow-demo-001",
+  "provider_route": "custom",
+  "provider_transport": "CLIProxyAPI-compatible OpenAI Responses",
   "reasoning_effort_requested": "max",
   "active_input_cap": 8192,
   "business_output_acceptance_cap": 512,

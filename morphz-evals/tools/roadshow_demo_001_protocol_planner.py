@@ -302,9 +302,11 @@ def main() -> None:
                 encoding="utf-8",
             )
         frozen_bundle = dict(bundle)
-        frozen_bundle["status"] = "frozen-v2"
+        frozen_bundle["status"] = "frozen-v2.1"
         frozen_bundle["model"] = "gpt-5.6-sol"
-        frozen_bundle["provider_route"] = "codex-subscription"
+        frozen_bundle["model_profile"] = "roadshow-demo-001"
+        frozen_bundle["provider_route"] = "custom"
+        frozen_bundle["provider_transport"] = "CLIProxyAPI-compatible OpenAI Responses"
         frozen_bundle["reasoning_effort_requested"] = "max"
         frozen_bundle["active_input_cap"] = args.active_input_cap
         frozen_bundle["business_output_acceptance_cap"] = args.output_cap

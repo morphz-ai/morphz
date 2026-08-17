@@ -24,11 +24,12 @@ use walkdir::WalkDir;
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 const MODEL: &str = "gpt-5.6-sol";
-const PROVIDER: &str = "codex-subscription";
-const PROTOCOL_VERSION: &str = "frozen-v2";
+const PROVIDER: &str = "custom";
+const PROFILE: &str = "roadshow-demo-001";
+const PROTOCOL_VERSION: &str = "frozen-v2.1";
 const RUNTIME_BASELINE_ID: &str = "paper-eval-runtime-v2";
 const RUNTIME_BASELINE_COMMIT: &str = "03a32f864a3c38026672b4076855137e0bbb5627";
-const DEMO_TAG: &str = "demo-001-frozen-v2-20260817";
+const DEMO_TAG: &str = "demo-001-frozen-v2.1-20260817";
 const ACTIVE_INPUT_CAP: usize = 8192;
 const BUSINESS_OUTPUT_CAP: usize = 512;
 const MAINTENANCE_OUTPUT_CAP: usize = 1024;
@@ -46,6 +47,10 @@ const PROMPT_BUNDLE_TEXT: &str = include_str!(concat!(
 const STATE_CONTRACT_TEXT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/roadshow_demo_001_v2/frozen/state_contract.json"
+));
+const MODEL_PROFILE_TEXT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/profiles/roadshow-demo-001.toml"
 ));
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,6 +162,7 @@ struct SmokeManifest {
     arm: DemoArm,
     load_level: String,
     pair_cell_id: u64,
+    model_profile: String,
     provider: String,
     model: String,
     physical_model: String,
@@ -173,6 +179,7 @@ struct SmokeManifest {
     fixture_file_sha256: String,
     prompt_bundle_sha256: String,
     state_contract_sha256: String,
+    model_profile_sha256: String,
     runtime_baseline_id: String,
     runtime_baseline_commit: String,
     code_commit: String,
@@ -265,7 +272,7 @@ impl SmokeClient {
             requested_reasoning: "max".to_string(),
             accepted_reasoning: "request_succeeded_with_max".to_string(),
             requested_max_output_tokens: output_cap,
-            provider_max_output_tokens: "stripped_unavailable".to_string(),
+            provider_max_output_tokens: "requested_provider_echo_unavailable".to_string(),
             uncached_equivalent_input_tokens: input_tokens,
             harness_output_tokens: output_tokens,
             provider_usage: usage,
@@ -297,10 +304,33 @@ pub fn validate_frozen_smoke_contract() -> Result<Value, DynError> {
         "fixture_events": fixture.events.len(),
         "tools": bundle.tool_schemas.len(),
         "model": MODEL,
+        "model_profile": PROFILE,
+        "model_profile_sha256": sha256(MODEL_PROFILE_TEXT.as_bytes()),
         "reasoning": "max",
         "active_input_cap": ACTIVE_INPUT_CAP,
         "runtime_baseline_id": RUNTIME_BASELINE_ID,
         "runtime_baseline_commit": RUNTIME_BASELINE_COMMIT,
+        "real_model_called": false
+    }))
+}
+
+pub async fn validate_morphz_profile_binding(base_dir: Option<&Path>) -> Result<Value, DynError> {
+    validate_frozen_smoke_contract()?;
+    let root = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-roadshow-profile-preflight"));
+    std::fs::create_dir_all(&root)?;
+    let (client, runtime, physical_model) = build_exact_smoke_client(&root).await?;
+    drop(client);
+    drop(runtime);
+    Ok(json!({
+        "passed": true,
+        "profile": PROFILE,
+        "provider": PROVIDER,
+        "logical_model": MODEL,
+        "physical_model": physical_model,
+        "reasoning": "max",
+        "morphz_profile_loaded": true,
         "real_model_called": false
     }))
 }
@@ -323,7 +353,7 @@ pub async fn run_real_model_normal_smoke_suite(
     );
     let suite_root = base
         .join("DEMO-001")
-        .join("frozen-v2")
+        .join(PROTOCOL_VERSION)
         .join("runs")
         .join(&suite_id);
     std::fs::create_dir_all(&suite_root)?;
@@ -378,8 +408,19 @@ async fn build_exact_smoke_client(
         }
     }
     let cwd = std::env::current_dir()?;
-    let profile = config::active_profile()?;
-    let mut resolved = config::resolve_config(&cwd, None, profile.as_deref())?;
+    let mut resolved = config::resolve_config(&cwd, None, Some(PROFILE))?;
+    let profile_path = config::morphz_home_dir()
+        .ok_or("cannot resolve Morphz home for roadshow profile")?
+        .join("profiles")
+        .join(format!("{PROFILE}.toml"));
+    let installed_profile = std::fs::read(&profile_path)?;
+    if sha256(&installed_profile) != sha256(MODEL_PROFILE_TEXT.as_bytes()) {
+        return Err(format!(
+            "installed roadshow profile differs from frozen template: {}",
+            profile_path.display()
+        )
+        .into());
+    }
     resolved.config.apply_runtime_env_overrides()?;
     let route = resolved
         .config
@@ -391,7 +432,7 @@ async fn build_exact_smoke_client(
     }
     let candidate = &route.candidates[0];
     if candidate.provider != PROVIDER || candidate.model != MODEL {
-        return Err("route binding is not exact codex-subscription/gpt-5.6-sol".into());
+        return Err("roadshow profile binding is not exact custom/gpt-5.6-sol".into());
     }
     resolved.config.llm.model = MODEL.to_string();
     resolved.config.llm.reasoning_effort = Some(ReasoningEffort::Max);
@@ -596,6 +637,7 @@ async fn run_arm(
         arm,
         load_level: "normal_load".to_string(),
         pair_cell_id: 42001,
+        model_profile: PROFILE.to_string(),
         provider: PROVIDER.to_string(),
         model: MODEL.to_string(),
         physical_model: client.physical_model.clone(),
@@ -606,12 +648,13 @@ async fn run_arm(
         active_input_cap: ACTIVE_INPUT_CAP,
         business_output_acceptance_cap: BUSINESS_OUTPUT_CAP,
         maintenance_output_acceptance_cap: MAINTENANCE_OUTPUT_CAP,
-        provider_max_output_tokens: "stripped_unavailable".to_string(),
+        provider_max_output_tokens: "requested_provider_echo_unavailable".to_string(),
         cost_attribution: "subscription_not_monetarily_attributed".to_string(),
         tokenizer: "tiktoken:0.12.0:o200k_base".to_string(),
         fixture_file_sha256: sha256(FIXTURE_TEXT.as_bytes()),
         prompt_bundle_sha256: sha256(PROMPT_BUNDLE_TEXT.as_bytes()),
         state_contract_sha256: sha256(STATE_CONTRACT_TEXT.as_bytes()),
+        model_profile_sha256: sha256(MODEL_PROFILE_TEXT.as_bytes()),
         runtime_baseline_id: RUNTIME_BASELINE_ID.to_string(),
         runtime_baseline_commit: RUNTIME_BASELINE_COMMIT.to_string(),
         code_commit: git_output(&["rev-parse", "HEAD"]),
