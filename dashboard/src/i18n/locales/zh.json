@@ -280,6 +280,7 @@
     "valueBackend": "保存位置",
     "alias": "环境变量别名",
     "value": "凭证值",
+    "valueFormatHint": "按原格式保存；SSH 私钥请粘贴包含 BEGIN/END 行的完整多行内容。",
     "scope": "授权作用域",
     "scopeEntity": "作用域实体",
     "import": "导入别名",

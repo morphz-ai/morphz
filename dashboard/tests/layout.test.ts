@@ -8,6 +8,10 @@ const runtimeOverviewSource = readFileSync(
   new URL('../src/pages/RuntimeOverviewPage.tsx', import.meta.url),
   'utf8',
 )
+const credentialsSource = readFileSync(
+  new URL('../src/pages/CredentialsPage.tsx', import.meta.url),
+  'utf8',
+)
 
 function zIndexFor(selector: string): number {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -21,6 +25,24 @@ test('Context and Session catalog actions stay clickable above navigation', () =
   assert.ok(
     zIndexFor('.runtime-header') > zIndexFor('.runtime-navigation-row'),
     'the header stacking context must remain above the navigation row that its popovers overlap',
+  )
+})
+
+test('managed credentials preserve multiline secret values', () => {
+  assert.match(
+    credentialsSource,
+    /className="credential-value-field"[\s\S]*?<textarea[\s\S]*?value=\{value\}[\s\S]*?onChange=\{event => setValue\(event\.target\.value\)\}/s,
+    'credential values must use a textarea and pass its exact multiline value into state',
+  )
+  assert.doesNotMatch(
+    credentialsSource,
+    /className="credential-value-field"[\s\S]*?<input[^>]*type="password"/s,
+    'a single-line password input strips newlines from pasted SSH private keys',
+  )
+  assert.match(
+    appCss,
+    /\.credential-editor-grid textarea\s*\{[^}]*white-space:\s*pre;/s,
+    'credential editors must visibly preserve the line structure of multiline values',
   )
 })
 

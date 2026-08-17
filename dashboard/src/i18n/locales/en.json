@@ -280,6 +280,7 @@
     "valueBackend": "Storage location",
     "alias": "Environment alias",
     "value": "Credential value",
+    "valueFormatHint": "Stored in its original format. For SSH keys, paste the complete multiline value including the BEGIN/END lines.",
     "scope": "Authorization scope",
     "scopeEntity": "Scoped entity",
     "import": "Import alias",

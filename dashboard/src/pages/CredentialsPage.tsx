@@ -326,9 +326,16 @@ export function CredentialsPage({ api }: CredentialsPageProps) {
             )}
           </label>
           {mode === 'store' && (
-            <label>
+            <label className="credential-value-field">
               <span>{t('credentials.value')}</span>
-              <input autoComplete="new-password" type="password" value={value} onChange={event => setValue(event.target.value)} />
+              <textarea
+                autoComplete="new-password"
+                rows={5}
+                spellCheck={false}
+                value={value}
+                onChange={event => setValue(event.target.value)}
+              />
+              <small>{t('credentials.valueFormatHint')}</small>
             </label>
           )}
           <label>

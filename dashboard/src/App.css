@@ -2298,6 +2298,7 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
   letter-spacing: .05em;
 }
 .credential-editor-grid input,
+.credential-editor-grid textarea,
 .credential-editor-grid select {
   width: 100%;
   min-height: 39px;
@@ -2310,7 +2311,20 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
   font: 10px var(--mono);
 }
 .credential-editor-grid input:focus,
+.credential-editor-grid textarea:focus,
 .credential-editor-grid select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.credential-editor-grid textarea {
+  min-height: 102px;
+  padding-block: 10px;
+  line-height: 1.45;
+  resize: vertical;
+  white-space: pre;
+}
+.credential-value-field small {
+  color: var(--faint);
+  font-size: 8.5px;
+  line-height: 1.4;
+}
 .credential-scope-entity code {
   overflow: hidden;
   color: var(--faint);
