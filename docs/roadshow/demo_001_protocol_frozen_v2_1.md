@@ -102,4 +102,9 @@ Runtime source baseline is `paper-eval-runtime-v2` at `03a32f864a3c38026672b4076
 
 The frozen tag must point to a selective clean commit containing this protocol, both fixtures, prompt/state contracts, runner/collector/scorer and queue. The pre-existing dirty worktree is recorded separately and is not represented as part of the tag.
 
-The corrected selective tag is `demo-001-frozen-v2.1-20260817`; the previous `demo-001-frozen-v2-20260817` tag remains immutable but is superseded for transport. After tagging, execute only Normal `pair_cell_id=42001`, one run per Arm. Review the three smoke artifacts before authorizing the full 30-run batch.
+The corrected selective tag is `demo-001-frozen-v2.1-selective-20260817`.
+The previous `demo-001-frozen-v2-20260817` tag is superseded for transport; the
+intermediate `demo-001-frozen-v2.1-20260817` tag is superseded because its
+ancestry included an unrelated concurrent Runtime commit. Both remain immutable.
+After tagging, execute only Normal `pair_cell_id=42001`, one run per Arm. Review
+the three smoke artifacts before authorizing the full 30-run batch.
