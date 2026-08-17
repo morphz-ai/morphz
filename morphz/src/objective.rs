@@ -23,8 +23,8 @@ use crate::tool::{
 };
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Deserializer};
+use serde_json::{json, Value as JsonValue};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{watch, Mutex, Notify};
@@ -525,8 +525,140 @@ struct ObjectiveUpdateArgs {
     reason: String,
     #[serde(default)]
     evidence_refs: Vec<String>,
-    #[serde(default)]
-    wait_condition: Option<ObjectiveWaitCondition>,
+    #[serde(default, deserialize_with = "deserialize_objective_wait_condition")]
+    wait_condition: Option<ObjectiveWaitConditionArgument>,
+}
+
+#[derive(Debug)]
+struct ObjectiveWaitConditionArgument {
+    condition: ObjectiveWaitCondition,
+    decoded_from_string: bool,
+}
+
+fn deserialize_objective_wait_condition<'de, D>(
+    deserializer: D,
+) -> Result<Option<ObjectiveWaitConditionArgument>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<JsonValue>::deserialize(deserializer)?
+        .map(parse_objective_wait_condition_argument)
+        .transpose()
+        .map_err(serde::de::Error::custom)
+}
+
+fn parse_objective_wait_condition_argument(
+    value: JsonValue,
+) -> Result<ObjectiveWaitConditionArgument, String> {
+    let (value, decoded_from_string) = match value {
+        JsonValue::String(encoded) => {
+            let decoded = serde_json::from_str::<JsonValue>(&encoded).map_err(|error| {
+                format!(
+                    "objective_update.wait_condition 必须是 JSON 对象；兼容字符串不是有效 JSON: {error}"
+                )
+            })?;
+            if !decoded.is_object() {
+                return Err(
+                    "objective_update.wait_condition 仅兼容单层 JSON 对象字符串，不能递归解码"
+                        .to_string(),
+                );
+            }
+            (decoded, true)
+        }
+        value => (value, false),
+    };
+
+    let object = value
+        .as_object()
+        .ok_or("objective_update.wait_condition 必须是 JSON 对象")?;
+    let kind = object
+        .get("kind")
+        .and_then(JsonValue::as_str)
+        .ok_or("objective_update.wait_condition.kind 必须是字符串")?;
+    let required_fields: &[&str] = match kind {
+        "tool_task" => &["kind", "task_id"],
+        "delegation" => &["kind", "delegation_id"],
+        "thread_group" => &["kind", "group_id"],
+        "timer" => &["kind", "deadline"],
+        "permission" => &["kind", "request_id"],
+        "user_input" => &["kind", "session_id"],
+        "external_event" => &["kind", "topic", "correlation_id"],
+        "resource_available" => &["kind", "resource"],
+        other => {
+            return Err(format!(
+                "objective_update.wait_condition.kind '{other}' 不受支持"
+            ));
+        }
+    };
+    for field in required_fields.iter().skip(1) {
+        if !object
+            .get(*field)
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(format!(
+                "objective_update.wait_condition.{field} 必须是非空字符串"
+            ));
+        }
+    }
+    if let Some(unexpected) = object
+        .keys()
+        .find(|field| !required_fields.contains(&field.as_str()))
+    {
+        return Err(format!(
+            "objective_update.wait_condition.kind='{kind}' 不接受字段 '{unexpected}'"
+        ));
+    }
+
+    let condition = serde_json::from_value(value)
+        .map_err(|error| format!("objective_update.wait_condition 无效: {error}"))?;
+    Ok(ObjectiveWaitConditionArgument {
+        condition,
+        decoded_from_string,
+    })
+}
+
+fn objective_wait_condition_schema() -> JsonValue {
+    json!({
+        "type": "object",
+        "description": "A deterministic wake condition used only with status=active. Pass this as a native JSON object, never as a JSON-encoded string. Select kind and provide exactly its matching field: tool_task/task_id, delegation/delegation_id, thread_group/group_id, timer/deadline, permission/request_id, user_input/session_id, external_event/topic+correlation_id, or resource_available/resource. The Runtime does not poll after submission and resumes automatically when the event is satisfied.",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "tool_task",
+                    "delegation",
+                    "thread_group",
+                    "timer",
+                    "permission",
+                    "user_input",
+                    "external_event",
+                    "resource_available"
+                ]
+            },
+            "task_id": {
+                "type": "string",
+                "description": "For kind=tool_task, use only the exact task_id returned by exec with execution=background."
+            },
+            "delegation_id": { "type": "string" },
+            "group_id": {
+                "type": "string",
+                "description": "For kind=thread_group, use a Thread Group ID supervised by the current Objective."
+            },
+            "deadline": {
+                "type": "string",
+                "format": "date-time",
+                "description": "For kind=timer, use an absolute RFC 3339 time with an explicit offset."
+            },
+            "request_id": { "type": "string" },
+            "session_id": { "type": "string" },
+            "topic": { "type": "string" },
+            "correlation_id": { "type": "string" },
+            "resource": { "type": "string" }
+        },
+        "required": ["kind"],
+        "additionalProperties": false
+    })
 }
 
 pub struct ObjectiveUpdateTool {
@@ -589,82 +721,7 @@ impl Tool for ObjectiveUpdateTool {
                         "items": { "type": "string" },
                         "description": "Current Context Event refs such as @e27 supporting the decision. The Runtime verifies existence, not business sufficiency"
                     },
-                    "wait_condition": {
-                        "description": "A deterministic wake condition used only with status=active. The Runtime does not poll after submission and resumes automatically when the event is satisfied.",
-                        "oneOf": [
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "const": "tool_task" },
-                                    "task_id": {
-                                        "type": "string",
-                                        "description": "Use only the exact task_id returned by exec with execution=background. Synchronous execution=completed has no waitable task; do not use an artifact_path filename, execution_job_id, or a guessed ID."
-                                    }
-                                },
-                                "required": ["kind", "task_id"]
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "const": "delegation" },
-                                    "delegation_id": { "type": "string" }
-                                },
-                                "required": ["kind", "delegation_id"]
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "const": "thread_group" },
-                                    "group_id": {
-                                        "type": "string",
-                                        "description": "A Thread Group ID returned by schedule_tx and supervised by the current Objective"
-                                    }
-                                },
-                                "required": ["kind", "group_id"]
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "const": "timer" },
-                                    "deadline": { "type": "string", "format": "date-time", "description": "An absolute RFC 3339 time expressed in evaluation-environment.local-time with an explicit offset" }
-                                },
-                                "required": ["kind", "deadline"]
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "const": "permission" },
-                                    "request_id": { "type": "string" }
-                                },
-                                "required": ["kind", "request_id"]
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "const": "user_input" },
-                                    "session_id": { "type": "string" }
-                                },
-                                "required": ["kind", "session_id"]
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "const": "external_event" },
-                                    "topic": { "type": "string" },
-                                    "correlation_id": { "type": "string" }
-                                },
-                                "required": ["kind", "topic", "correlation_id"]
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "const": "resource_available" },
-                                    "resource": { "type": "string" }
-                                },
-                                "required": ["kind", "resource"]
-                            }
-                        ]
-                    }
+                    "wait_condition": objective_wait_condition_schema()
                 },
                 "required": ["objective_id", "base_revision", "status", "reason", "evidence_refs"]
             }),
@@ -672,7 +729,7 @@ impl Tool for ObjectiveUpdateTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, DynError> {
-        let args: ObjectiveUpdateArgs = serde_json::from_str(arguments)?;
+        let mut args: ObjectiveUpdateArgs = serde_json::from_str(arguments)?;
         let session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
             .map_err(|_| "objective_update 缺少 Runtime 注入的当前 Session")?;
@@ -682,6 +739,19 @@ impl Tool for ObjectiveUpdateTool {
         let attempt_id = CURRENT_ATTEMPT_ID
             .try_with(Clone::clone)
             .map_err(|_| "objective_update 缺少 Runtime 注入的当前 Evaluation")?;
+        let wait_condition = args.wait_condition.take().map(|argument| {
+            if argument.decoded_from_string {
+                tracing::warn!(
+                    objective_id = %args.objective_id,
+                    context_id = %context_id,
+                    session_id = %session_id,
+                    attempt_id = %attempt_id,
+                    event_code = "objective.update.wait_condition_string_compat_decoded",
+                    "Decoded a single-layer JSON-string wait condition from a Provider tool call; Providers should emit a native object"
+                );
+            }
+            argument.condition
+        });
         let reason = args.reason.trim();
         if reason.is_empty() {
             return Err("objective_update.reason 不能为空".into());
@@ -729,7 +799,7 @@ impl Tool for ObjectiveUpdateTool {
         }
         let (status, wait_condition) = match args.status {
             AgentObjectiveStatus::Completed => {
-                if args.wait_condition.is_some() {
+                if wait_condition.is_some() {
                     return Err("completed Objective 不能携带 wait_condition".into());
                 }
                 let mutation = self
@@ -774,7 +844,7 @@ impl Tool for ObjectiveUpdateTool {
                 )?);
             }
             AgentObjectiveStatus::Blocked => {
-                if args.wait_condition.is_some() {
+                if wait_condition.is_some() {
                     return Err(
                         "存在确定性 wait_condition 时应保持 active，不能标记 blocked".into(),
                     );
@@ -782,7 +852,7 @@ impl Tool for ObjectiveUpdateTool {
                 (ObjectiveStatus::Blocked, None)
             }
             AgentObjectiveStatus::Active => {
-                let wait_condition = args.wait_condition.ok_or(
+                let wait_condition = wait_condition.ok_or(
                     "status=active 的 objective_update 必须携带确定性 wait_condition；无需等待时继续执行，不要提交空状态更新",
                 )?;
                 self.supervisor
@@ -4674,6 +4744,80 @@ mod tests {
         stable_scheduler_dependency_id, NewSchedulerDependency, SchedulerDependencyKind,
     };
     use tempfile::NamedTempFile;
+
+    fn objective_update_arguments(wait_condition: JsonValue) -> JsonValue {
+        json!({
+            "objective_id": "objective-wait",
+            "base_revision": 7,
+            "status": "active",
+            "reason": "等待用户输入",
+            "evidence_refs": [],
+            "wait_condition": wait_condition
+        })
+    }
+
+    #[test]
+    fn objective_update_wait_schema_is_a_flat_native_object_contract() {
+        let schema = objective_wait_condition_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("oneOf").is_none());
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["kind"]));
+        assert!(schema["properties"]["kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("user_input")));
+    }
+
+    #[test]
+    fn objective_update_wait_accepts_native_and_single_layer_string_objects() {
+        let condition = json!({
+            "kind": "user_input",
+            "session_id": "session-objective-wait"
+        });
+        let native: ObjectiveUpdateArgs =
+            serde_json::from_value(objective_update_arguments(condition.clone())).unwrap();
+        let native = native.wait_condition.unwrap();
+        assert!(!native.decoded_from_string);
+        assert_eq!(
+            native.condition,
+            ObjectiveWaitCondition::UserInput {
+                session_id: "session-objective-wait".to_string()
+            }
+        );
+
+        let encoded = serde_json::to_string(&condition).unwrap();
+        let compatible: ObjectiveUpdateArgs =
+            serde_json::from_value(objective_update_arguments(json!(encoded))).unwrap();
+        let compatible = compatible.wait_condition.unwrap();
+        assert!(compatible.decoded_from_string);
+        assert_eq!(compatible.condition, native.condition);
+    }
+
+    #[test]
+    fn objective_update_wait_rejects_recursive_or_ambiguous_compatibility_values() {
+        let condition = json!({
+            "kind": "user_input",
+            "session_id": "session-objective-wait"
+        });
+        let once = serde_json::to_string(&condition).unwrap();
+        let twice = serde_json::to_string(&once).unwrap();
+        let recursive =
+            serde_json::from_value::<ObjectiveUpdateArgs>(objective_update_arguments(json!(twice)))
+                .unwrap_err()
+                .to_string();
+        assert!(recursive.contains("不能递归解码"));
+
+        let unexpected =
+            serde_json::from_value::<ObjectiveUpdateArgs>(objective_update_arguments(json!({
+                "kind": "user_input",
+                "session_id": "session-objective-wait",
+                "task_id": "task-not-valid-for-user-input"
+            })))
+            .unwrap_err()
+            .to_string();
+        assert!(unexpected.contains("不接受字段 'task_id'"));
+    }
 
     #[test]
     fn request_scoped_stream_timeouts_keep_objectives_recoverable() {
