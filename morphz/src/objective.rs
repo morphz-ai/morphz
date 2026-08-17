@@ -8,7 +8,7 @@ use crate::memory::{
     ObjectiveMutation, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore,
     ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
     ThreadActivationMutation, ThreadActivationStatus, ThreadGroupFilter, ThreadGroupStore,
-    ThreadKind, ThreadSupervision, ThreadSupervisorKind,
+    ThreadKind, ThreadStore, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::scheduler::{
@@ -1243,6 +1243,7 @@ pub struct ObjectiveSupervisor {
     audit_store: Arc<dyn EventStore>,
     execution_jobs: Option<Arc<dyn ExecutionJobStore>>,
     delegations: Option<Arc<dyn DelegationStore>>,
+    thread_store: Option<Arc<dyn ThreadStore>>,
     thread_groups: Option<Arc<dyn ThreadGroupStore>>,
     activation_store: Option<Arc<dyn ActivationStore>>,
     scheduler_dependencies: Option<Arc<dyn SchedulerDependencyStore>>,
@@ -1369,6 +1370,7 @@ impl ObjectiveSupervisor {
             audit_store,
             execution_jobs: None,
             delegations: None,
+            thread_store: None,
             thread_groups: None,
             activation_store: None,
             scheduler_dependencies: None,
@@ -1401,6 +1403,14 @@ impl ObjectiveSupervisor {
     /// Delegations are facts to consume, not conditions that can be awaited.
     pub fn with_delegation_store(mut self, store: Arc<dyn DelegationStore>) -> Self {
         self.delegations = Some(store);
+        self
+    }
+
+    /// Attach the authoritative Thread projection. Startup recovery uses it
+    /// to distinguish a globally unusable Store from one historical
+    /// Objective whose immutable primary route can no longer accept work.
+    pub fn with_thread_store(mut self, store: Arc<dyn ThreadStore>) -> Self {
+        self.thread_store = Some(store);
         self
     }
 
@@ -1867,6 +1877,126 @@ impl ObjectiveSupervisor {
             })
     }
 
+    /// Return an operator-facing reason only when the persisted primary
+    /// Thread makes this one Objective impossible to resume. A missing Thread
+    /// is recoverable because the scheduling transaction may create it. A
+    /// terminal or differently owned Thread at the stable ID is not
+    /// recoverable without rewriting immutable history and must be isolated.
+    async fn startup_primary_route_attention(
+        &self,
+        objective: &ObjectiveRecord,
+    ) -> Result<Option<(String, String)>, DynError> {
+        let Some(store) = self.thread_store.as_ref() else {
+            return Ok(None);
+        };
+        let root_turn_id =
+            crate::memory::objective_primary_execution_root_id(&objective.id, objective.generation);
+        let thread_id = stable_thread_id(&root_turn_id);
+        let Some(thread) = store.get_thread(&thread_id).await? else {
+            return Ok(None);
+        };
+        if thread.lifecycle.is_terminal() {
+            return Ok(Some((
+                thread_id,
+                format!(
+                    "Objective 的固定主 Thread 已处于终态 '{}'，不能再接收恢复 Signal；这是单条历史任务的不一致，不影响 Runtime 其他任务启动",
+                    thread.lifecycle.as_str()
+                ),
+            )));
+        }
+        let expected_supervision =
+            ThreadSupervision::objective_primary_execution(&objective.id, objective.generation);
+        if thread.agent_id != objective.agent_id
+            || thread.context_id != objective.context_id
+            || thread.session_id != objective.coordinator_session_id
+            || thread.initiating_principal_id != objective.initiating_principal_id
+            || thread.root_turn_id != root_turn_id
+            || thread.kind != ThreadKind::Execution
+            || thread.executor_kind != "self"
+            || thread.supervision != expected_supervision
+        {
+            return Ok(Some((
+                thread_id,
+                "Objective 的固定主 Thread 已存在，但 Agent/Context/Session/Principal 或监督路由与当前 Objective 不一致；Runtime 不会猜测或改写历史路由"
+                    .to_string(),
+            )));
+        }
+        Ok(None)
+    }
+
+    /// Quarantine one record-local recovery failure. Store connectivity,
+    /// schema and transaction failures still propagate and remain fatal to
+    /// startup; only a semantically proven impossible Objective route reaches
+    /// this method.
+    async fn isolate_startup_objective(
+        &self,
+        objective: ObjectiveRecord,
+        thread_id: &str,
+        reason: &str,
+    ) -> Result<(), DynError> {
+        let mut current = objective;
+        for _ in 0..3 {
+            if current.status != ObjectiveStatus::Active {
+                return Ok(());
+            }
+            if let Some(evaluation_id) = current.active_evaluation_id.clone() {
+                match self
+                    .finish_objective_evaluation(
+                        &current.id,
+                        &evaluation_id,
+                        0,
+                        0,
+                        "startup-recovery-attention",
+                    )
+                    .await?
+                {
+                    ObjectiveMutation::Updated(updated)
+                    | ObjectiveMutation::Conflict { current: updated } => {
+                        current = updated;
+                        continue;
+                    }
+                    ObjectiveMutation::NotFound => return Ok(()),
+                }
+            }
+            match self
+                .transition_objective(
+                    &current,
+                    ObjectiveStatus::Blocked,
+                    None,
+                    Some(reason),
+                    thread_id,
+                    "ObjectiveSupervisor-Recovery",
+                )
+                .await?
+            {
+                ObjectiveMutation::Updated(blocked) => {
+                    tracing::warn!(
+                        objective_id = %blocked.id,
+                        context_id = %blocked.context_id,
+                        thread_id,
+                        reason,
+                        event_code = "objective.startup_recovery.attention_required",
+                        "Isolated an unrecoverable historical Objective route; Runtime startup will continue"
+                    );
+                    self.publish_recovery_attention(&blocked, thread_id, reason)
+                        .await?;
+                    return Ok(());
+                }
+                ObjectiveMutation::Conflict { current: changed } => current = changed,
+                ObjectiveMutation::NotFound => return Ok(()),
+            }
+        }
+        tracing::warn!(
+            objective_id = %current.id,
+            context_id = %current.context_id,
+            thread_id,
+            reason,
+            event_code = "objective.startup_recovery.attention_deferred",
+            "Could not quarantine one concurrently changing Objective; skipped it without blocking Runtime startup"
+        );
+        Ok(())
+    }
+
     pub async fn start(self: Arc<Self>) -> Result<(), DynError> {
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
@@ -2051,6 +2181,15 @@ impl ObjectiveSupervisor {
                     objective = recovered;
                     self.publish_state_event("runtime_recovery_wait_released", &objective, None)
                         .await?;
+                }
+            }
+            if objective.status == ObjectiveStatus::Active {
+                if let Some((thread_id, reason)) =
+                    self.startup_primary_route_attention(&objective).await?
+                {
+                    self.isolate_startup_objective(objective, &thread_id, &reason)
+                        .await?;
+                    continue;
                 }
             }
             if objective.status == ObjectiveStatus::Active {
@@ -4360,6 +4499,46 @@ impl ObjectiveSupervisor {
         self.bus.publish(event).await
     }
 
+    async fn publish_recovery_attention(
+        &self,
+        objective: &ObjectiveRecord,
+        thread_id: &str,
+        reason: &str,
+    ) -> Result<(), DynError> {
+        let mut payload = vec![
+            ("context_id".to_string(), json!(objective.context_id)),
+            (
+                "session_id".to_string(),
+                json!(objective.coordinator_session_id),
+            ),
+            ("objective_id".to_string(), json!(objective.id)),
+            ("objective_revision".to_string(), json!(objective.revision)),
+            ("objective_status".to_string(), json!(objective.status)),
+            ("thread_id".to_string(), json!(thread_id)),
+            ("requires_operator_attention".to_string(), json!(true)),
+            (
+                "recovery_error_class".to_string(),
+                json!("record_local_unrecoverable"),
+            ),
+            ("reason".to_string(), json!(reason)),
+        ];
+        if let Some(principal_id) = &objective.initiating_principal_id {
+            payload.push(("principal_id".to_string(), json!(principal_id)));
+        }
+        let event = Event::new(
+            format!(
+                "objective_recovery_attention_{}_g{}_r{}",
+                objective.id, objective.generation, objective.revision
+            ),
+            "Runtime-ObjectiveSupervisor".to_string(),
+            TYPE_OBJECTIVE_CONTROL.to_string(),
+            "objective/recovery_attention_required".to_string(),
+            payload.into_iter().collect(),
+        );
+        self.audit_store.append(event.clone()).await?;
+        self.bus.publish(event).await
+    }
+
     async fn publish_recovery_observation(
         &self,
         objective: &ObjectiveRecord,
@@ -4489,7 +4668,7 @@ mod tests {
         NewCognitiveContext, NewDelegation, NewExecutionJob, NewPrincipal, NewSession, NewThread,
         NewThreadActivation, NewThreadGroup, NewThreadGroupMember, NewThreadGroupPlan,
         ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus,
-        ThreadGroupPolicy, ThreadKind, ThreadStore as _, TimerStore,
+        ThreadGroupPolicy, ThreadKind, ThreadLifecycle, ThreadMutation, TimerStore,
     };
     use crate::scheduler::{
         stable_scheduler_dependency_id, NewSchedulerDependency, SchedulerDependencyKind,
@@ -4609,6 +4788,117 @@ mod tests {
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             3
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_isolates_objective_whose_primary_thread_is_terminal() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "terminal-primary-recovery").await;
+        let root_turn_id =
+            crate::memory::objective_primary_execution_root_id(&objective.id, objective.generation);
+        let thread_id = stable_thread_id(&root_turn_id);
+        let thread = store
+            .ensure_thread(NewThread {
+                id: thread_id.clone(),
+                agent_id: objective.agent_id.clone(),
+                context_id: objective.context_id.clone(),
+                session_id: objective.coordinator_session_id.clone(),
+                initiating_principal_id: objective.initiating_principal_id.clone(),
+                root_turn_id,
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::objective_primary_execution(
+                    &objective.id,
+                    objective.generation,
+                ),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .update_thread(
+                    &thread.id,
+                    thread.revision,
+                    None,
+                    Some(ThreadLifecycle::Completed),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap(),
+            ThreadMutation::Updated(_)
+        ));
+        let leased = match store
+            .claim_objective_evaluation(
+                &objective.id,
+                objective.revision,
+                "evaluation-terminal-primary-recovery",
+                Utc::now() - Duration::seconds(1),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(leased) => leased,
+            mutation => panic!("unexpected Objective lease mutation: {mutation:?}"),
+        };
+
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::new(ObjectiveEvaluationRegistry::default()),
+                Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_thread_store(Arc::clone(&store) as Arc<dyn ThreadStore>),
+        );
+        supervisor.register_timer_handlers().unwrap();
+
+        Arc::clone(&supervisor)
+            .start()
+            .await
+            .expect("one unrecoverable historical Objective must not block Runtime startup");
+
+        let isolated = store.get_objective(&leased.id).await.unwrap().unwrap();
+        assert_eq!(isolated.status, ObjectiveStatus::Blocked);
+        assert!(isolated.active_evaluation_id.is_none());
+        assert!(isolated
+            .status_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("固定主 Thread 已处于终态")));
+        let attention = store
+            .query(QueryFilter {
+                context_id: Some(isolated.context_id.clone()),
+                topic: Some("objective/recovery_attention_required".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(attention.len(), 1);
+        assert_eq!(
+            attention[0]
+                .payload
+                .get("requires_operator_attention")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            attention[0]
+                .payload
+                .get("thread_id")
+                .and_then(serde_json::Value::as_str),
+            Some(thread_id.as_str())
         );
     }
 

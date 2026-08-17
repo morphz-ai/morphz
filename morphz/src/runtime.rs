@@ -1188,6 +1188,7 @@ impl MorphzRuntimeBuilder {
             )
             .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>)
             .with_delegation_store(Arc::clone(&store) as Arc<dyn crate::memory::DelegationStore>)
+            .with_thread_store(Arc::clone(&store) as Arc<dyn crate::memory::ThreadStore>)
             .with_thread_group_store(Arc::clone(&store) as Arc<dyn crate::memory::ThreadGroupStore>)
             .with_activation_store(Arc::clone(&store) as Arc<dyn crate::memory::ActivationStore>)
             .with_scheduler_dependency_store(
