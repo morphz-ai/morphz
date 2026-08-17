@@ -37,8 +37,10 @@ The Profile:
 - is byte-checked against the frozen repository template before a request;
 - is shared unchanged by all three Arms.
 
-The corrected protocol identity is `frozen-v2.1`, and its intended selective
-tag is `demo-001-frozen-v2.1-20260817`.
+The corrected protocol identity is `frozen-v2.1`, and its selective tag is
+`demo-001-frozen-v2.1-selective-20260817`. The intermediate tag without the
+`selective` suffix is not executable because its ancestry included an unrelated
+concurrent Runtime commit.
 
 ## Verified no-model preflight
 
