@@ -8007,8 +8007,22 @@ impl Orchestrator {
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false)
             });
+        let root_dispatch_mode = self
+            .context_engine
+            .find_event(&activation.context_id, &activation.root_turn_id)
+            .await?
+            .and_then(|event| {
+                event
+                    .payload
+                    .get("dispatch_mode")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+            });
+        let parallel_dialogue = root_dispatch_mode.as_deref() == Some("parallel");
         let dialogue_gate = self.dialogue_thread_gate(session_id);
-        let dialogue_bound = if matches!(
+        let dialogue_bound = if parallel_dialogue {
+            false
+        } else if matches!(
             activation.trigger_kind.as_str(),
             "chat/user_message" | "chat/dialogue_retry"
         ) && !persisted_physical_plan
@@ -10216,6 +10230,7 @@ impl Orchestrator {
             // already `delivered`, so recover the stable reply by Event ID before
             // consulting the live pending set.
             self.bus.dispatch_persisted(reply).await?;
+            self.refill_activation_admission_queue().await?;
             self.arm_delivery_flush(&session_id).await?;
             return Ok(TimerDisposition::Complete);
         }
@@ -10324,6 +10339,11 @@ impl Orchestrator {
             match commit {
                 DeliveryFlushCommit::Committed | DeliveryFlushCommit::Existing { .. } => {
                     self.bus.dispatch_persisted(reply).await?;
+                    // A strict follow-up DialogueTurn can be waiting on one
+                    // of the covered Threads. The fast path has no model
+                    // Activation whose permit release would otherwise wake
+                    // the durable admission queue.
+                    self.refill_activation_admission_queue().await?;
                     // A bounded snapshot can leave later results pending. Arm
                     // the next generation before completing this claimed
                     // generation; the generation fence makes the old timer's

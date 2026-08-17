@@ -200,7 +200,7 @@ Dialogue 继续提供友好的消息体验，但明确它只是当前 Session �
 - Session/Principal header：当前连接、身份锚点、attention/residency、Context mount；
 - Message Stream：只显示用户消息、Agent 回复、明确进度与 Delivery；
 - Thread Capsule：某条消息派生后台工作时，在消息旁显示 Thread 状态和跳转入口；
-- Composer：工具运行时仍可发送消息；清楚说明新消息会创建新的 DialogueTurn；
+- Composer：工具运行时仍可发送消息；Enter 使用配置默认值，Option/Alt+Enter 显式并发，Ctrl/Command+Enter 显式跟进，发送按钮菜单另提供打断、并发和跟进三种单次选择；
 - Session Drawer：参与 Principal、mount history、swap 状态、最近活动和同 Principal 其他 Session。
 
 物理工具步骤不持续冲刷消息流。用户需要时从 Thread Capsule 进入 Scheduler 查看。

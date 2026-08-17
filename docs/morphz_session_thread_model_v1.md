@@ -122,7 +122,10 @@ Thread 终态与 outcome Event 在一个 SQLite 事务中提交。对于普通 D
 
 Runtime 重启时也按 Thread 语义恢复：
 
-- 默认情况下，新用户消息会原子取消尚未形成 Execution Thread 的 DialogueTurn，并把此前尚未回复的输入按 Event History 顺序重放到替代 DialogueTurn；旧 Activation 标记为 `cancelled`，不会在数小时后突然恢复。已经形成 Execution Thread 的工作不被普通新消息取消，而与新的 DialogueTurn 并发。部署若需要严格 FIFO，可设置 `orchestrator.interrupt_dialogue_on_new_message = false`（或环境变量 `MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE=false`）；
+- 每条新用户消息都把有效发送模式固化为 `interrupt`、`parallel` 或 `follow_up`。未显式选择时，`orchestrator.interrupt_dialogue_on_new_message=true` 解析为 `interrupt`，`false` 解析为严格 `follow_up`；
+- `interrupt` 会原子取消尚未形成 Execution Thread 的 DialogueTurn，并按 Event History 顺序重放尚未回复的输入；若前一轮已经形成物理执行，则不取消它，新 DialogueTurn 与其并发；
+- `parallel` 始终创建独立 DialogueTurn，并在持久化准入和进程内 Dialogue Gate 两层绕过 Session 串行通道；
+- `follow_up` 也创建独立 DialogueTurn，但在根 Event 中保存前一条用户消息的 Thread 因果边，只有该 Thread 已终结且 `delivery_status` 不再是 `pending/deferred` 后才允许求值；
 - 已经形成持久物理工具计划的 Execution Thread 继续按 exactly-once 边界恢复；
 - `queued` 的 Scheduled Intent 会重新装载；已原子提交但尚未进程内 dispatch 的 `chat/schedule_due` Event 会安全重投；
 - Objective 按持久控制状态恢复，Supervisor 复用或重建该 generation 唯一的主 Execution Thread。

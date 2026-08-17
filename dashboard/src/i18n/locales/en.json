@@ -1190,6 +1190,16 @@
     "send": "Send",
     "inputAriaLabel": "Message input",
     "cancelTitle": "Cancel current Session execution",
+    "modes": {
+      "menu": "Choose how to send",
+      "defaultHint": "Send with the configured default behavior",
+      "interrupt": "Interrupt and send",
+      "interruptHint": "Replace the preceding turn while it is still thinking",
+      "parallel": "Send concurrently",
+      "parallelHint": "Option/Alt+Enter · evaluate independently now",
+      "followUp": "Send as follow-up",
+      "followUpHint": "Ctrl/Command+Enter · wait for the preceding reply"
+    },
     "attachments": {
       "add": "Add images or files",
       "remove": "Remove attachment",
@@ -1223,7 +1233,7 @@
       "summary": "{{dialogue}} dialogue · {{executing}} execution · {{waiting}} waiting"
     },
     "shortcuts": {
-      "send": "Enter to send",
+      "send": "Enter Default · Option/Alt+Enter Concurrent · Ctrl/Command+Enter Follow-up",
       "newline": "Shift+Enter for newline",
       "tasks": "Ctrl+T Tasks",
       "mind": "Ctrl+M Mind",

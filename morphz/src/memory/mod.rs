@@ -1243,6 +1243,35 @@ pub enum DeliveryFlushCommit {
     Empty,
 }
 
+/// Per-message scheduling policy for an ordinary DialogueTurn.
+///
+/// The configured default is resolved at ingress. Persisted Events therefore
+/// always carry one of these explicit modes and remain replayable even if the
+/// process configuration changes later.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageDispatchMode {
+    /// Replace a still-thinking DialogueTurn. Once the preceding turn has
+    /// crossed into physical Execution, the new turn proceeds concurrently.
+    Interrupt,
+    /// Start an independent DialogueTurn without acquiring the Session's
+    /// ordinary serial dialogue lane.
+    Parallel,
+    /// Start an independent DialogueTurn only after the immediately preceding
+    /// user turn has reached a terminal, user-visible delivery state.
+    FollowUp,
+}
+
+impl MessageDispatchMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Interrupt => "interrupt",
+            Self::Parallel => "parallel",
+            Self::FollowUp => "follow_up",
+        }
+    }
+}
+
 /// Durable mailbox fact addressed to one causal Thread. The immutable Event
 /// remains the physical/audit fact; this record owns only scheduler delivery
 /// and consumption state.
@@ -6151,7 +6180,7 @@ pub trait DeliveryIngressStore: Send + Sync {
         session_id: &str,
         client_message_id: &str,
         event: &crate::event::Event,
-        interrupt_dialogue: bool,
+        dispatch_mode: MessageDispatchMode,
     ) -> Result<MessageClaim, Box<dyn std::error::Error + Send + Sync>>;
 }
 

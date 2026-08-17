@@ -1104,6 +1104,8 @@ interface ComposerAttachment {
   previewUrl?: string
 }
 
+type MessageDispatchMode = 'interrupt' | 'parallel' | 'follow_up'
+
 interface SelectionPopup {
   x: number
   y: number
@@ -2331,7 +2333,11 @@ const Composer = memo(function Composer({
   onActiveQuoteIdChange: (quoteId: string) => void
   onRemoveQuote: (quoteId: string) => void
   onUpdateQuoteComment: (quoteId: string, comment: string) => void
-  onSend: (message: string, attachments: ComposerAttachment[]) => Promise<boolean>
+  onSend: (
+    message: string,
+    attachments: ComposerAttachment[],
+    dispatchMode?: MessageDispatchMode,
+  ) => Promise<boolean>
   onCancel: () => void
   onError: (message: string) => void
   modelInputPolicy?: RuntimeStatus['model_input']
@@ -2339,12 +2345,14 @@ const Composer = memo(function Composer({
   const [message, setMessage] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [draggingFiles, setDraggingFiles] = useState(false)
+  const [sendMenuOpen, setSendMenuOpen] = useState(false)
   const composingInput = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
-  const submit = useCallback(async () => {
+  const submit = useCallback(async (dispatchMode?: MessageDispatchMode) => {
     if (readOnly) return
-    if (await onSend(message, attachments)) {
+    setSendMenuOpen(false)
+    if (await onSend(message, attachments, dispatchMode)) {
       setMessage('')
       setAttachments(current => {
         current.forEach(attachment => attachment.previewUrl && URL.revokeObjectURL(attachment.previewUrl))
@@ -2513,7 +2521,13 @@ const Composer = memo(function Composer({
             if (composingInput.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
-              void submit()
+              if (event.altKey) {
+                void submit('parallel')
+              } else if (event.ctrlKey || event.metaKey) {
+                void submit('follow_up')
+              } else {
+                void submit()
+              }
             }
           }}
           placeholder={readOnly
@@ -2548,16 +2562,45 @@ const Composer = memo(function Composer({
       {activeWorkCount > 0 ? (
         <button className="cancel-button" type="button" title={readOnly ? t('header.principalScopeReadOnly') : t('composer.cancelTitle')} disabled={readOnly} onClick={onCancel}><Square size={14} /></button>
       ) : null}
-      <button
-        className="send-button"
-        aria-label={t('composer.send')}
-        title={t('composer.send')}
-        disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0) || sending || readOnly}
-        type="button"
-        onClick={() => void submit()}
-      >
-        <Send size={15} /><span>{t('composer.send')}</span>
-      </button>
+      <div className="send-control">
+        {sendMenuOpen && (
+          <div className="send-mode-menu" role="menu" aria-label={t('composer.modes.menu')}>
+            <button type="button" role="menuitem" onClick={() => void submit('interrupt')}>
+              <strong>{t('composer.modes.interrupt')}</strong>
+              <span>{t('composer.modes.interruptHint')}</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => void submit('parallel')}>
+              <strong>{t('composer.modes.parallel')}</strong>
+              <span>{t('composer.modes.parallelHint')}</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => void submit('follow_up')}>
+              <strong>{t('composer.modes.followUp')}</strong>
+              <span>{t('composer.modes.followUpHint')}</span>
+            </button>
+          </div>
+        )}
+        <button
+          className="send-button"
+          aria-label={t('composer.send')}
+          title={t('composer.modes.defaultHint')}
+          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0) || sending || readOnly}
+          type="button"
+          onClick={() => void submit()}
+        >
+          <Send size={15} /><span>{t('composer.send')}</span>
+        </button>
+        <button
+          className="send-mode-button"
+          aria-label={t('composer.modes.menu')}
+          title={t('composer.modes.menu')}
+          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0) || sending || readOnly}
+          type="button"
+          aria-expanded={sendMenuOpen}
+          onClick={() => setSendMenuOpen(open => !open)}
+        >
+          <ChevronDown size={13} />
+        </button>
+      </div>
     </div>
   )
 })
@@ -5411,6 +5454,7 @@ export default function App() {
   const sendMessage = useCallback(async (
     draftMessage: string,
     attachments: ComposerAttachment[],
+    dispatchMode?: MessageDispatchMode,
   ): Promise<boolean> => {
     const hasQuotes = quotes.length > 0
     const text = draftMessage.trim()
@@ -5453,6 +5497,7 @@ export default function App() {
             media_type: attachment.mediaType,
             data_base64: attachment.dataBase64,
           })),
+          ...(dispatchMode ? { dispatch_mode: dispatchMode } : {}),
         },
       )
       setPendingTurn(current => current?.startedAt === startedAt

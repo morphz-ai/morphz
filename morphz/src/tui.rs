@@ -4244,6 +4244,7 @@ async fn submit_prompt(
                 client_message_id: Some(message_id),
                 attachments: Vec::new(),
                 harness,
+                dispatch_mode: None,
             },
         )
         .await

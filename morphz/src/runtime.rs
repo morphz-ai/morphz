@@ -44,17 +44,18 @@ use crate::memory::{
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
     ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
-    ExecutionTargetStore, MessageClaim, MindProjectionHead, MindProjectionStore, NewAgent,
-    NewArtifactTransferExecution, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
-    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
-    NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
-    RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
-    SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore, SessionUpdate,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
-    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
-    ThreadSupervision, ThreadSupervisorKind, TimerStore, TransientStorageRetention,
+    ExecutionTargetStore, MessageClaim, MessageDispatchMode, MindProjectionHead,
+    MindProjectionStore, NewAgent, NewArtifactTransferExecution, NewCognitiveContext,
+    NewDelegation, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode,
+    NewObjective, NewPrincipal, NewSession, NewThread, NewThreadActivation, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
+    PrincipalDirectoryPage, QueryFilter, RecallDocumentKind, RecallProjectionStore, RuntimeStore,
+    ScheduleMutation, ScheduleRecord, SessionPrincipalBinding, SessionRecord, SessionStatus,
+    SessionStore, SessionUpdate, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadControlAction, ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord,
+    ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -7530,6 +7531,16 @@ pub struct MessageReceipt {
     /// is concurrent and this remains false.
     #[serde(default)]
     pub interrupted: bool,
+    /// Effective per-message scheduling mode after resolving the configured
+    /// default at ingress.
+    pub dispatch_mode: MessageDispatchMode,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionMessageOptions {
+    pub requested_harness: Option<crate::harness::ExactHarnessRef>,
+    pub attachments: Vec<crate::sdk::MessageAttachmentInput>,
+    pub dispatch_mode: Option<MessageDispatchMode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7656,26 +7667,32 @@ impl SessionHandle {
         client_message_id: Option<String>,
         requested_harness: Option<crate::harness::ExactHarnessRef>,
     ) -> Result<MessageReceipt, RuntimeError> {
-        self.send_as_principal_with_harness_and_attachments(
+        self.send_as_principal_with_options(
             text,
             actor,
             principal_id,
             client_message_id,
-            requested_harness,
-            Vec::new(),
+            SessionMessageOptions {
+                requested_harness,
+                ..SessionMessageOptions::default()
+            },
         )
         .await
     }
 
-    pub async fn send_as_principal_with_harness_and_attachments(
+    pub async fn send_as_principal_with_options(
         &self,
         text: impl Into<String>,
         actor: impl Into<String>,
         principal_id: impl Into<String>,
         client_message_id: Option<String>,
-        requested_harness: Option<crate::harness::ExactHarnessRef>,
-        attachments: Vec<crate::sdk::MessageAttachmentInput>,
+        options: SessionMessageOptions,
     ) -> Result<MessageReceipt, RuntimeError> {
+        let SessionMessageOptions {
+            requested_harness,
+            attachments,
+            dispatch_mode,
+        } = options;
         let session = self
             .runtime
             .get_session(&self.id)
@@ -7735,12 +7752,26 @@ impl SessionHandle {
             attachments,
         )
         .await?;
+        let dispatch_mode = dispatch_mode.unwrap_or_else(|| {
+            if self
+                .runtime
+                .inner
+                .config
+                .orchestrator
+                .interrupt_dialogue_on_new_message
+            {
+                MessageDispatchMode::Interrupt
+            } else {
+                MessageDispatchMode::FollowUp
+            }
+        });
         let mut payload = serde_json::Map::from_iter([
             ("context_id".to_string(), json!(session.context_id)),
             ("session_id".to_string(), json!(self.id)),
             ("principal_id".to_string(), json!(principal_id)),
             ("client_message_id".to_string(), json!(client_message_id)),
             ("text".to_string(), json!(text)),
+            ("dispatch_mode".to_string(), json!(dispatch_mode.as_str())),
         ]);
         if !prepared_attachments.metadata().is_empty() {
             payload.insert(
@@ -7767,16 +7798,7 @@ impl SessionHandle {
             .runtime
             .inner
             .store
-            .claim_message(
-                &self.id,
-                &client_message_id,
-                &event,
-                self.runtime
-                    .inner
-                    .config
-                    .orchestrator
-                    .interrupt_dialogue_on_new_message,
-            )
+            .claim_message(&self.id, &client_message_id, &event, dispatch_mode)
             .await;
         let claim = match claim {
             Ok(claim) => claim,
@@ -7795,6 +7817,7 @@ impl SessionHandle {
                     client_message_id,
                     duplicate: true,
                     interrupted: false,
+                    dispatch_mode,
                 })
             }
             MessageClaim::Conflict {
@@ -7855,6 +7878,7 @@ impl SessionHandle {
                     client_message_id,
                     duplicate: false,
                     interrupted: interrupted.is_some(),
+                    dispatch_mode,
                 })
             }
         }
@@ -14268,7 +14292,7 @@ mod tests {
                     "session-runtime-outbox-recovery",
                     "client-runtime-outbox-recovery",
                     &event,
-                    false,
+                    MessageDispatchMode::FollowUp,
                 )
                 .await
                 .unwrap(),

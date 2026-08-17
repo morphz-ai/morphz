@@ -275,7 +275,8 @@ POST /api/sessions/{session_id}/messages
 ```json
 {
   "text": "请分析这个问题",
-  "client_message_id": "caller-generated-unique-id"
+  "client_message_id": "caller-generated-unique-id",
+  "dispatch_mode": "parallel"
 }
 ```
 
@@ -318,6 +319,11 @@ POST /api/sessions/{session_id}/messages
 - 首次接受返回 `202 Accepted`。
 - 使用同一个 `client_message_id` 重试时返回同一个逻辑消息的 `200 OK`，且 `duplicate: true`。
 - 不要因为 HTTP 超时就生成新 ID；先用原 ID重试，否则可能产生两个回合。
+- `dispatch_mode` 可省略；省略时使用 Runtime 配置的默认行为。显式值为：
+  - `interrupt`：前一轮仍处于纯模型思考阶段时原子替换它；若已经形成物理执行，则本轮并发运行；
+  - `parallel`：立即创建独立 DialogueTurn，并绕过当前 Session 的串行对话通道；
+  - `follow_up`：创建独立 DialogueTurn，等待紧邻的上一条用户消息达到终态并完成用户可见交付后再运行。
+- 发送模式是单次请求属性；它不会修改 Runtime 的默认配置，并会固化在 `chat/user_message` Event 中以保证重放语义稳定。
 - `attachments` 可省略，最多 8 个。
 - 单个附件解码后最多 20 MiB，一条消息的附件解码后合计最多 40 MiB。
 - `name` 不能为空，最长 255 个字符。服务只保留文件名部分，例如 `../diagram.png` 会归一化为 `diagram.png`。
@@ -333,6 +339,8 @@ POST /api/sessions/{session_id}/messages
 {
   "accepted": true,
   "duplicate": false,
+  "interrupted": false,
+  "dispatch_mode": "parallel",
   "event_id": "message-event-id",
   "client_message_id": "caller-generated-unique-id"
 }

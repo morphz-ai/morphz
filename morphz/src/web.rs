@@ -240,6 +240,8 @@ struct SendMessageRequest {
     attachments: Vec<IncomingMessageAttachment>,
     #[serde(default)]
     harness: Option<crate::harness::ExactHarnessRef>,
+    #[serde(default)]
+    dispatch_mode: Option<crate::memory::MessageDispatchMode>,
 }
 
 #[derive(serde::Deserialize)]
@@ -5339,6 +5341,7 @@ async fn handle_send_message(
                 client_message_id: Some(client_message_id),
                 attachments,
                 harness: request.harness,
+                dispatch_mode: request.dispatch_mode,
             },
         )
         .await
@@ -5355,6 +5358,7 @@ async fn handle_send_message(
                     "accepted": true,
                     "duplicate": receipt.duplicate,
                     "interrupted": receipt.interrupted,
+                    "dispatch_mode": receipt.dispatch_mode,
                     "event_id": receipt.event_id,
                     "client_message_id": receipt.client_message_id,
                 })),
@@ -7615,6 +7619,7 @@ mod tests {
                 client_message_id: Some("forged-identity-message".to_string()),
                 attachments: Vec::new(),
                 harness: None,
+                dispatch_mode: None,
             }),
         )
         .await
@@ -7744,6 +7749,7 @@ mod tests {
                 client_message_id: Some("operator-impersonation-message".to_string()),
                 attachments: Vec::new(),
                 harness: None,
+                dispatch_mode: None,
             }),
         )
         .await
@@ -9802,6 +9808,7 @@ account = "xai-account"
                     })
                     .collect(),
                 harness: None,
+                dispatch_mode: None,
             }),
         )
         .await
@@ -9828,6 +9835,7 @@ account = "xai-account"
                             .encode(b"same-image"),
                     }],
                     harness: None,
+                    dispatch_mode: Some(crate::memory::MessageDispatchMode::Parallel),
                 }),
             )
             .await
@@ -9838,6 +9846,7 @@ account = "xai-account"
                 .unwrap();
             let receipt: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(receipt["interrupted"], json!(false));
+            assert_eq!(receipt["dispatch_mode"], json!("parallel"));
         }
 
         let conflict = handle_send_message(
@@ -9850,6 +9859,7 @@ account = "xai-account"
                 client_message_id: Some("client-message-1".to_string()),
                 attachments: Vec::new(),
                 harness: None,
+                dispatch_mode: None,
             }),
         )
         .await
@@ -9872,6 +9882,11 @@ account = "xai-account"
             .into_iter()
             .next()
             .unwrap();
+        assert_eq!(
+            user_message.payload["dispatch_mode"],
+            json!("parallel"),
+            "the one-shot HTTP scheduling choice must be an immutable part of the accepted user Event",
+        );
         let storage_path = user_message.payload["attachments"][0]["storage_path"]
             .as_str()
             .unwrap();
@@ -9943,6 +9958,7 @@ account = "xai-account"
                 client_message_id: Some("stream-message-1".to_string()),
                 attachments: Vec::new(),
                 harness: None,
+                dispatch_mode: None,
             }),
         )
         .await
@@ -10126,6 +10142,7 @@ account = "xai-account"
                 client_message_id: Some("summary-restart-message".to_string()),
                 attachments: Vec::new(),
                 harness: None,
+                dispatch_mode: None,
             }),
         )
         .await

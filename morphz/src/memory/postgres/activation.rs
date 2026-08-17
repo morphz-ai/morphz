@@ -1606,9 +1606,19 @@ impl ActivationStore for PostgresStore {
                  SELECT activations.*
                  FROM raw_candidates activations
                  JOIN threads ON threads.root_turn_id = activations.root_turn_id
+                 LEFT JOIN events root_event ON root_event.id = threads.root_turn_id
                  WHERE threads.executor_kind != 'artifact_transfer'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM threads predecessor
+                     WHERE predecessor.id = root_event.payload ->> 'after_thread_id'
+                       AND (
+                         predecessor.status = 'open'
+                         OR predecessor.delivery_status IN ('pending', 'deferred')
+                       )
+                   )
                    AND (
                      threads.kind != 'dialogue_turn'
+                     OR COALESCE(root_event.payload ->> 'dispatch_mode', '') = 'parallel'
                      OR (
                        NOT EXISTS (
                          SELECT 1
@@ -1622,6 +1632,10 @@ impl ActivationStore for PostgresStore {
                            AND running.id != activations.id
                            AND running.root_turn_id != activations.root_turn_id
                            AND running_thread.kind = 'dialogue_turn'
+                           AND COALESCE(
+                             (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = running_thread.root_turn_id),
+                             ''
+                           ) != 'parallel'
                        )
                        AND NOT EXISTS (
                          SELECT 1
@@ -1633,6 +1647,10 @@ impl ActivationStore for PostgresStore {
                            AND older.status = 'queued'
                            AND older.id != activations.id
                            AND older_thread.kind = 'dialogue_turn'
+                           AND COALESCE(
+                             (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = older_thread.root_turn_id),
+                             ''
+                           ) != 'parallel'
                            AND (
                              CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                                < CASE WHEN activations.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
@@ -1698,6 +1716,15 @@ impl ActivationStore for PostgresStore {
         let runnable = sqlx::query_scalar::<_, bool>(
             r#"SELECT CASE
                  WHEN candidate_thread.kind != 'dialogue_turn' THEN TRUE
+                 WHEN COALESCE(root_event.payload ->> 'dispatch_mode', '') = 'parallel' THEN TRUE
+                 WHEN EXISTS (
+                   SELECT 1 FROM threads predecessor
+                   WHERE predecessor.id = root_event.payload ->> 'after_thread_id'
+                     AND (
+                       predecessor.status = 'open'
+                       OR predecessor.delivery_status IN ('pending', 'deferred')
+                     )
+                 ) THEN FALSE
                  WHEN EXISTS (
                    SELECT 1
                    FROM thread_activations running
@@ -1710,6 +1737,10 @@ impl ActivationStore for PostgresStore {
                      AND running.id != candidate.id
                      AND running.root_turn_id != candidate.root_turn_id
                      AND running_thread.kind = 'dialogue_turn'
+                     AND COALESCE(
+                       (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = running_thread.root_turn_id),
+                       ''
+                     ) != 'parallel'
                  ) THEN FALSE
                  WHEN EXISTS (
                    SELECT 1
@@ -1721,6 +1752,10 @@ impl ActivationStore for PostgresStore {
                      AND older.status = 'queued'
                      AND older.id != candidate.id
                      AND older_thread.kind = 'dialogue_turn'
+                     AND COALESCE(
+                       (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = older_thread.root_turn_id),
+                       ''
+                     ) != 'parallel'
                      AND (
                        CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                          < CASE WHEN candidate.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
@@ -1743,6 +1778,7 @@ impl ActivationStore for PostgresStore {
                JOIN threads candidate_thread
                  ON candidate_thread.root_turn_id = candidate.root_turn_id
                 AND candidate_thread.generation = candidate.generation
+               LEFT JOIN events root_event ON root_event.id = candidate_thread.root_turn_id
                WHERE candidate.id = $1"#,
         )
         .bind(activation_id)
@@ -1784,25 +1820,55 @@ impl ActivationStore for PostgresStore {
         let mut tx = self.pool.begin().await?;
         if status == ThreadActivationStatus::Running {
             let route = sqlx::query(
-                r#"SELECT activation.session_id, activation.status, thread.kind
+                r#"SELECT activation.session_id, activation.status, thread.kind,
+                          root_event.payload AS root_payload
                    FROM thread_activations activation
                    JOIN threads thread
                      ON thread.root_turn_id = activation.root_turn_id
                     AND thread.generation = activation.generation
+                   LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
                    WHERE activation.id = $1"#,
             )
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
             if let Some(route) = route {
+                let root_payload = route
+                    .get::<Option<JsonValue>, _>("root_payload")
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let parallel = root_payload
+                    .get("dispatch_mode")
+                    .and_then(JsonValue::as_str)
+                    == Some("parallel");
                 let queued_dialogue_turn = route.get::<String, _>("status") == "queued"
-                    && route.get::<String, _>("kind") == "dialogue_turn";
+                    && route.get::<String, _>("kind") == "dialogue_turn"
+                    && !parallel;
                 if queued_dialogue_turn {
                     let session_id = route.get::<String, _>("session_id");
                     sqlx::query("SELECT id FROM sessions WHERE id = $1 FOR UPDATE")
                         .bind(&session_id)
                         .fetch_one(&mut *tx)
                         .await?;
+                    let blocked_by_follow_up = match root_payload
+                        .get("after_thread_id")
+                        .and_then(JsonValue::as_str)
+                    {
+                        Some(predecessor_id) => {
+                            sqlx::query_scalar::<_, bool>(
+                                r#"SELECT EXISTS(
+                                     SELECT 1 FROM threads
+                                     WHERE id = $1 AND (
+                                       status = 'open'
+                                       OR delivery_status IN ('pending', 'deferred')
+                                     )
+                                   )"#,
+                            )
+                            .bind(predecessor_id)
+                            .fetch_one(&mut *tx)
+                            .await?
+                        }
+                        None => false,
+                    };
                     let running_other: Option<String> = sqlx::query_scalar(
                         r#"SELECT activation.id
                            FROM thread_activations activation
@@ -1817,6 +1883,10 @@ impl ActivationStore for PostgresStore {
                                SELECT root_turn_id FROM thread_activations WHERE id = $2
                              )
                              AND thread.kind = 'dialogue_turn'
+                             AND COALESCE(
+                               (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = thread.root_turn_id),
+                               ''
+                             ) != 'parallel'
                            LIMIT 1"#,
                     )
                     .bind(&session_id)
@@ -1832,6 +1902,10 @@ impl ActivationStore for PostgresStore {
                            WHERE activation.session_id = $1
                              AND activation.status = 'queued'
                              AND thread.kind = 'dialogue_turn'
+                             AND COALESCE(
+                               (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = thread.root_turn_id),
+                               ''
+                             ) != 'parallel'
                            ORDER BY
                              CASE WHEN activation.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END,
                              activation.trigger_sequence,
@@ -1841,7 +1915,10 @@ impl ActivationStore for PostgresStore {
                     .bind(&session_id)
                     .fetch_optional(&mut *tx)
                     .await?;
-                    if running_other.is_some() || oldest_queued.as_deref() != Some(id) {
+                    if blocked_by_follow_up
+                        || running_other.is_some()
+                        || oldest_queued.as_deref() != Some(id)
+                    {
                         tx.commit().await?;
                         return Ok(match self.get_thread_activation(id).await? {
                             Some(current) => ThreadActivationMutation::Conflict { current },

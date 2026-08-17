@@ -254,6 +254,24 @@ test('the initial generating state stays visible above the composer in both conv
   )
 })
 
+test('the composer exposes all three one-shot message scheduling modes', () => {
+  assert.match(
+    appSource,
+    /event\.altKey[\s\S]*?submit\('parallel'\)[\s\S]*?event\.ctrlKey \|\| event\.metaKey[\s\S]*?submit\('follow_up'\)/s,
+    'Option/Alt+Enter must send concurrently and Ctrl/Command+Enter must queue a follow-up',
+  )
+  assert.match(
+    appSource,
+    /submit\('interrupt'\)[\s\S]*?submit\('parallel'\)[\s\S]*?submit\('follow_up'\)/s,
+    'the send menu must expose interrupt, concurrent and follow-up choices',
+  )
+  assert.match(
+    appSource,
+    /\.\.\.\(dispatchMode \? \{ dispatch_mode: dispatchMode \} : \{\}\)/,
+    'an explicit one-shot choice must cross the HTTP boundary without changing the default configuration',
+  )
+})
+
 test('runtime overview reveals regular Sessions and only collapses managed delegation Contexts', () => {
   assert.match(
     runtimeOverviewSource,

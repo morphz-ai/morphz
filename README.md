@@ -277,7 +277,7 @@ npm run build
 
 `list_files/search/read/edit/write/exec` 共享同一个 `PermissionProfile` 和 `PermissionBroker`。默认 `auto_review` 模式允许工作区读写、禁止网络，越界能力由独立 AI Reviewer 审查；Reviewer 无法判断时会进入可等待的人工审批通道。`permissions.auto_review_model` 可以指定一个独立的 Model Route（例如成本更低、延迟更小的审核模型）；未配置时才为向后兼容复用主模型。Dashboard 的“身份与模型”页面可从已启用路由中选择审核模型，保存后立即热切换并持久化，不改变对话模型。CLI 可直接批准或拒绝，Web 使用 `GET /api/approvals` 与 `POST /api/approvals/:id`。`edit/write` 另外使用 SHA-256 乐观并发校验及同目录原子替换。
 
-同一 Session 的新消息默认会打断尚未跨越 Execution 边界的在途 DialogueTurn，并把此前尚未回复的输入按 Event Sequence 合并到替代求值中；一旦已经产生 Execution Thread，新消息会进入并发 DialogueTurn，而不会取消物理工作。需要严格 FIFO 时可设置 `orchestrator.interrupt_dialogue_on_new_message = false`。对应环境变量为 `MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE`；独立审核模型也可由 `MORPHZ_AUTO_REVIEW_MODEL` 覆盖。
+每条消息都支持三种持久化调度语义：`interrupt` 会替换尚未跨越 Execution 边界的在途 DialogueTurn，并按 Event Sequence 合并尚未回复的输入；`parallel` 会立即建立独立 DialogueTurn 并与前一轮并发求值；`follow_up` 会等待前一轮完成且结果交付后再求值。Dashboard 中 Enter 使用配置默认值，Option/Alt+Enter 并发发送，Ctrl/Command+Enter 跟进发送，也可从发送按钮菜单显式选择。`orchestrator.interrupt_dialogue_on_new_message = true` 时默认使用 `interrupt`，设为 `false` 时默认使用 `follow_up`；对应环境变量为 `MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE`。独立审核模型也可由 `MORPHZ_AUTO_REVIEW_MODEL` 覆盖。
 
 `exec` 会把相同的路径、protected paths 和网络权限编译到操作系统原生沙箱：macOS Seatbelt 已经过真实越权测试；Linux 与 Windows 后端尚未实机实现，启用沙箱时会 fail-closed。高层模式为 `request_approval`、`auto_review`、`full_access` 和 `custom`；完全访问会关闭文件边界与 OS 沙箱并显示启动警告，但敏感环境变量是否传给 Shell 仍由独立环境策略控制。完整设计和当前边界见 [统一沙箱执行与可插拔审批架构](docs/morphz_sandbox_execution_and_approval_architecture.md)。
 

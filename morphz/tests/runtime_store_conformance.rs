@@ -21,10 +21,10 @@ use morphz::memory::{
     ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRegistration,
-    ExecutionTargetStatus, ExecutionTargetStore, MessageClaim, MindProjectionCommit,
-    MindProjectionStore, NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
-    NewCapabilityLease, NewCognitiveContext, NewDelegation, NewEdgeCommand, NewExecutionJob,
-    NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
+    ExecutionTargetStatus, ExecutionTargetStore, MessageClaim, MessageDispatchMode,
+    MindProjectionCommit, MindProjectionStore, NewActionGroup, NewActionGroupMember, NewAgent,
+    NewApprovalRequest, NewCapabilityLease, NewCognitiveContext, NewDelegation, NewEdgeCommand,
+    NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
     NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer, NewSession, NewThread,
     NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
     ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallDocument, RecallDocumentKind,
@@ -1231,7 +1231,12 @@ where
     let first = message("conformance-interrupt-event-a", "first input");
     assert!(matches!(
         store
-            .claim_message(session_id, "conformance-interrupt-client-a", &first, false)
+            .claim_message(
+                session_id,
+                "conformance-interrupt-client-a",
+                &first,
+                MessageDispatchMode::FollowUp,
+            )
             .await
             .unwrap(),
         MessageClaim::Accepted {
@@ -1293,7 +1298,12 @@ where
     let second = message("conformance-interrupt-event-b", "second input");
     assert!(matches!(
         store
-            .claim_message(session_id, "conformance-interrupt-client-b", &second, true)
+            .claim_message(
+                session_id,
+                "conformance-interrupt-client-b",
+                &second,
+                MessageDispatchMode::Interrupt,
+            )
             .await
             .unwrap(),
         MessageClaim::Accepted {
@@ -1390,7 +1400,12 @@ where
     let third = message("conformance-interrupt-event-c", "third input");
     assert!(matches!(
         store
-            .claim_message(session_id, "conformance-interrupt-client-c", &third, true)
+            .claim_message(
+                session_id,
+                "conformance-interrupt-client-c",
+                &third,
+                MessageDispatchMode::Interrupt,
+            )
             .await
             .unwrap(),
         MessageClaim::Accepted {
@@ -1408,6 +1423,292 @@ where
         ThreadActivationStatus::Running,
         "once execution has released the dialogue lane, a follow-up message must not cancel it"
     );
+
+    let dispatch_session_id = "conformance-dialogue-dispatch";
+    store
+        .create_session(NewSession {
+            id: dispatch_session_id.to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            parent_session_id: Some("conformance-session".to_string()),
+            title: "Dialogue dispatch conformance".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    store
+        .bind_session_principal(
+            dispatch_session_id,
+            "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+        )
+        .await
+        .unwrap();
+    let dispatch_message = |id: &str, text: &str| {
+        Event::new(
+            id.to_string(),
+            "Store-Conformance".to_string(),
+            morphz::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": "conformance-context",
+                "session_id": dispatch_session_id,
+                "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+                "text": text
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    };
+
+    let first = dispatch_message("conformance-dispatch-event-a", "first serial input");
+    store
+        .claim_message(
+            dispatch_session_id,
+            "conformance-dispatch-client-a",
+            &first,
+            MessageDispatchMode::FollowUp,
+        )
+        .await
+        .unwrap();
+    let first_thread = store.get_thread_by_root(&first.id).await.unwrap().unwrap();
+    let first_signal = store
+        .next_pending_thread_signal(&first_thread.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let first_activation = store
+        .claim_thread_signal_batch(
+            NewThreadSignal {
+                id: stable_thread_signal_id(&first.id),
+                thread_id: first_thread.id.clone(),
+                thread_generation: first_thread.generation,
+                event_id: first.id.clone(),
+                principal_id: None,
+                sequence: first_signal.sequence,
+                kind: first.topic.clone(),
+                parent_activation_id: None,
+            },
+            NewThreadActivation {
+                id: "conformance-dispatch-activation-a".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: dispatch_session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: first.id.clone(),
+                trigger_sequence: first_signal.sequence,
+                trigger_kind: first.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: first.id.clone(),
+            },
+            32,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let first_running = match store
+        .update_thread_activation(
+            &first_activation.id,
+            first_activation.revision,
+            ThreadActivationStatus::Running,
+            Some("conformance-dispatch-worker-a"),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadActivationMutation::Updated(record) => record,
+        other => panic!("unexpected first dispatch Activation mutation: {other:?}"),
+    };
+
+    let follow_up = dispatch_message("conformance-dispatch-event-b", "strict follow-up");
+    let routed_follow_up = match store
+        .claim_message(
+            dispatch_session_id,
+            "conformance-dispatch-client-b",
+            &follow_up,
+            MessageDispatchMode::FollowUp,
+        )
+        .await
+        .unwrap()
+    {
+        MessageClaim::Accepted { event, .. } => event,
+        other => panic!("unexpected follow-up claim: {other:?}"),
+    };
+    assert_eq!(
+        routed_follow_up
+            .payload
+            .get("dispatch_mode")
+            .and_then(serde_json::Value::as_str),
+        Some("follow_up")
+    );
+    assert_eq!(
+        routed_follow_up
+            .payload
+            .get("after_thread_id")
+            .and_then(serde_json::Value::as_str),
+        Some(first_thread.id.as_str())
+    );
+    let follow_up_thread = store
+        .get_thread_by_root(&follow_up.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let follow_up_signal = store
+        .next_pending_thread_signal(&follow_up_thread.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let follow_up_activation = store
+        .claim_thread_signal_batch(
+            NewThreadSignal {
+                id: stable_thread_signal_id(&follow_up.id),
+                thread_id: follow_up_thread.id.clone(),
+                thread_generation: follow_up_thread.generation,
+                event_id: follow_up.id.clone(),
+                principal_id: None,
+                sequence: follow_up_signal.sequence,
+                kind: follow_up.topic.clone(),
+                parent_activation_id: None,
+            },
+            NewThreadActivation {
+                id: "conformance-dispatch-activation-b".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: dispatch_session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: follow_up.id.clone(),
+                trigger_sequence: follow_up_signal.sequence,
+                trigger_kind: follow_up.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: follow_up.id.clone(),
+            },
+            32,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!store
+        .dialogue_turn_activation_runnable(&follow_up_activation.id)
+        .await
+        .unwrap());
+
+    assert!(matches!(
+        store
+            .update_thread_activation(
+                &first_running.id,
+                first_running.revision,
+                ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+        ThreadActivationMutation::Updated(_)
+    ));
+    let first_thread = store.get_thread(&first_thread.id).await.unwrap().unwrap();
+    assert!(matches!(
+        store
+            .update_thread(
+                &first_thread.id,
+                first_thread.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                Some("first serial reply"),
+                Some("conformance-dispatch-reply-a"),
+                Some(DeliveryStatus::Delivered),
+                Some("conformance-dispatch-reply-a"),
+            )
+            .await
+            .unwrap(),
+        ThreadMutation::Updated(_)
+    ));
+    assert!(store
+        .dialogue_turn_activation_runnable(&follow_up_activation.id)
+        .await
+        .unwrap());
+    assert!(matches!(
+        store
+            .update_thread_activation(
+                &follow_up_activation.id,
+                follow_up_activation.revision,
+                ThreadActivationStatus::Running,
+                Some("conformance-dispatch-worker-b"),
+                Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+                None,
+            )
+            .await
+            .unwrap(),
+        ThreadActivationMutation::Updated(_)
+    ));
+
+    let parallel = dispatch_message("conformance-dispatch-event-c", "parallel input");
+    let routed_parallel = match store
+        .claim_message(
+            dispatch_session_id,
+            "conformance-dispatch-client-c",
+            &parallel,
+            MessageDispatchMode::Parallel,
+        )
+        .await
+        .unwrap()
+    {
+        MessageClaim::Accepted { event, .. } => event,
+        other => panic!("unexpected parallel claim: {other:?}"),
+    };
+    assert_eq!(
+        routed_parallel
+            .payload
+            .get("dispatch_mode")
+            .and_then(serde_json::Value::as_str),
+        Some("parallel")
+    );
+    assert!(routed_parallel.payload.get("after_thread_id").is_none());
+    let parallel_thread = store
+        .get_thread_by_root(&parallel.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let parallel_signal = store
+        .next_pending_thread_signal(&parallel_thread.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let parallel_activation = store
+        .claim_thread_signal_batch(
+            NewThreadSignal {
+                id: stable_thread_signal_id(&parallel.id),
+                thread_id: parallel_thread.id.clone(),
+                thread_generation: parallel_thread.generation,
+                event_id: parallel.id.clone(),
+                principal_id: None,
+                sequence: parallel_signal.sequence,
+                kind: parallel.topic.clone(),
+                parent_activation_id: None,
+            },
+            NewThreadActivation {
+                id: "conformance-dispatch-activation-c".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: dispatch_session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: parallel.id.clone(),
+                trigger_sequence: parallel_signal.sequence,
+                trigger_kind: parallel.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: parallel.id.clone(),
+            },
+            32,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(store
+        .dialogue_turn_activation_runnable(&parallel_activation.id)
+        .await
+        .unwrap());
 }
 
 async fn assert_scheduler_dependency_conformance<S>(store: Arc<S>)
@@ -1906,7 +2207,12 @@ where
         let event = message.clone();
         tokio::spawn(async move {
             store
-                .claim_message("conformance-session", "client-message-a", &event, false)
+                .claim_message(
+                    "conformance-session",
+                    "client-message-a",
+                    &event,
+                    MessageDispatchMode::FollowUp,
+                )
                 .await
         })
     };
@@ -1915,7 +2221,12 @@ where
         let event = message.clone();
         tokio::spawn(async move {
             store
-                .claim_message("conformance-session", "client-message-a", &event, false)
+                .claim_message(
+                    "conformance-session",
+                    "client-message-a",
+                    &event,
+                    MessageDispatchMode::FollowUp,
+                )
                 .await
         })
     };
@@ -2002,7 +2313,7 @@ where
                 "conformance-session",
                 "client-message-a",
                 &conflicting_message,
-                false,
+                MessageDispatchMode::FollowUp,
             )
             .await
             .unwrap(),
@@ -2035,7 +2346,12 @@ where
         let event = racing_a.clone();
         tokio::spawn(async move {
             store
-                .claim_message("conformance-session", "client-message-race", &event, false)
+                .claim_message(
+                    "conformance-session",
+                    "client-message-race",
+                    &event,
+                    MessageDispatchMode::FollowUp,
+                )
                 .await
         })
     };
@@ -2044,7 +2360,12 @@ where
         let event = racing_b.clone();
         tokio::spawn(async move {
             store
-                .claim_message("conformance-session", "client-message-race", &event, false)
+                .claim_message(
+                    "conformance-session",
+                    "client-message-race",
+                    &event,
+                    MessageDispatchMode::FollowUp,
+                )
                 .await
         })
     };
@@ -2110,7 +2431,7 @@ where
                 "conformance-ingress-unbound",
                 "client-message-unbound",
                 &unbound_message,
-                false,
+                MessageDispatchMode::FollowUp,
             )
             .await
             .unwrap(),
@@ -2154,7 +2475,7 @@ where
                 "conformance-ingress-unbound",
                 "client-message-archived",
                 &archived_message,
-                false,
+                MessageDispatchMode::FollowUp,
             )
             .await
             .unwrap(),

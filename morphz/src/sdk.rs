@@ -25,6 +25,7 @@ use crate::harness::{HarnessBinding, HarnessDescriptor};
 use crate::harness_package::HarnessPackage;
 use crate::identity::PrincipalAssertion;
 use crate::llm::{ModelRouteDiagnostic, ProviderAccountDiagnostic};
+pub use crate::memory::MessageDispatchMode;
 use crate::memory::{
     ArtifactTransferExecutionRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
     CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate, EdgeCommandMutation,
@@ -55,7 +56,7 @@ use crate::runtime::{
     EventHistoryPage, EventHistoryQuery, MessageIngressError, MessageIngressErrorKind,
     MessageReceipt, ModelUsagePage, ModelUsageQuery, MorphzRuntime, RuntimeEventStream,
     RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus, SchedulerQuery, SchedulerSnapshot,
-    ThreadDetail,
+    SessionMessageOptions, ThreadDetail,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -267,6 +268,10 @@ pub struct SendMessageCommand {
     /// let the model either answer normally or discover/select one lazily.
     #[serde(default)]
     pub harness: Option<crate::harness::ExactHarnessRef>,
+    /// One-shot scheduling choice for this message. Omit to use the Runtime's
+    /// configured default without changing that configuration.
+    #[serde(default)]
+    pub dispatch_mode: Option<MessageDispatchMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3041,13 +3046,16 @@ impl MorphzSdk {
             .await?;
         self.runtime
             .session(command.session_id)
-            .send_as_principal_with_harness_and_attachments(
+            .send_as_principal_with_options(
                 command.text,
                 command.actor,
                 principal.principal_id.clone(),
                 command.client_message_id,
-                command.harness,
-                command.attachments,
+                SessionMessageOptions {
+                    requested_harness: command.harness,
+                    attachments: command.attachments,
+                    dispatch_mode: command.dispatch_mode,
+                },
             )
             .await
             .map_err(|error| {

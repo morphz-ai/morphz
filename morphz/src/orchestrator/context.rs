@@ -13244,11 +13244,21 @@ mod tests {
             .collect(),
         );
         store
-            .claim_message("session-b", "client-restore-1", &message, false)
+            .claim_message(
+                "session-b",
+                "client-restore-1",
+                &message,
+                crate::memory::MessageDispatchMode::FollowUp,
+            )
             .await
             .unwrap();
         store
-            .claim_message("session-b", "client-restore-1", &message, false)
+            .claim_message(
+                "session-b",
+                "client-restore-1",
+                &message,
+                crate::memory::MessageDispatchMode::FollowUp,
+            )
             .await
             .unwrap();
         let restored = store.get_session("session-b").await.unwrap().unwrap();

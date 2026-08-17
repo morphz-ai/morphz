@@ -3734,6 +3734,7 @@ async fn run_once(
             client_message_id: Some(generated_id("cli")),
             attachments: Vec::new(),
             harness,
+            dispatch_mode: None,
         },
     )
     .await?;
@@ -3969,6 +3970,7 @@ async fn run_interactive(
                     // its prompt came from argv or was typed interactively.
                     // Console-only commands above do not consume it.
                     harness: initial_harness.take(),
+                    dispatch_mode: None,
                 },
             )) {
                 if let Ok(mut waiting) = waiting_for_reply.lock() {

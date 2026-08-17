@@ -2805,6 +2805,16 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .send-button { gap: 7px; padding: 10px 14px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 750; box-shadow: 0 0 16px var(--accent-glow); }
 .send-button:hover:not(:disabled) { background: var(--accent-strong); transform: translateY(-1px); }
 .send-button:disabled { background: var(--line-strong); color: var(--faint); cursor: default; }
+.send-control { position: relative; display: flex; flex: 0 0 auto; align-items: stretch; }
+.send-control .send-button { border-radius: var(--radius-xs) 0 0 var(--radius-xs); }
+.send-mode-button { display: flex; width: 28px; align-items: center; justify-content: center; border-left: 1px solid color-mix(in srgb, var(--on-accent) 28%, transparent); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; background: var(--accent); color: var(--on-accent); }
+.send-mode-button:hover:not(:disabled) { background: var(--accent-strong); }
+.send-mode-button:disabled { background: var(--line-strong); color: var(--faint); cursor: default; }
+.send-mode-menu { position: absolute; z-index: 60; right: 0; bottom: calc(100% + 8px); display: grid; width: min(310px, 72vw); gap: 3px; padding: 6px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-elevated); box-shadow: var(--shadow-lg); }
+.send-mode-menu button { display: grid; gap: 3px; padding: 9px 10px; border-radius: var(--radius-xs); color: var(--text-soft); text-align: left; }
+.send-mode-menu button:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.send-mode-menu strong { font-size: 11px; font-weight: 700; }
+.send-mode-menu span { color: var(--muted); font-size: 9px; line-height: 1.4; }
 .composer-file-input { display: none; }
 .attachment-button { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid transparent; border-radius: var(--radius-xs); color: var(--muted); transition: border-color .15s ease, color .15s ease, background .15s ease; }
 .attachment-button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--surface-elevated); color: var(--accent-strong); }

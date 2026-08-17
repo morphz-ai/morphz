@@ -2,7 +2,7 @@ use super::{append_event_in_tx, now_text, PostgresStore, StoreError};
 use crate::event::Event;
 use crate::memory::{
     message_request_fingerprint, stable_thread_id, stable_thread_signal_id, DeliveryIngressStore,
-    InterruptedDialogueTurn, MessageClaim, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    InterruptedDialogueTurn, MessageClaim, MessageDispatchMode, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use serde_json::{json, Value as JsonValue};
 use sqlx::{PgPool, Postgres, Row};
@@ -34,6 +34,7 @@ async fn append_dialogue_signal_in_tx(
     context_id: &str,
     session_id: &str,
     event: &Event,
+    dispatch_mode: MessageDispatchMode,
 ) -> Result<(), StoreError> {
     let principal_id = event
         .payload
@@ -46,19 +47,22 @@ async fn append_dialogue_signal_in_tx(
     let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
     let now = now_text();
 
-    let queued = sqlx::query(
-        r#"SELECT activation.id AS activation_id, thread.id AS thread_id,
+    let queued = if dispatch_mode == MessageDispatchMode::Interrupt {
+        sqlx::query(
+            r#"SELECT activation.id AS activation_id, thread.id AS thread_id,
                   thread.generation AS thread_generation
            FROM thread_activations activation
            JOIN threads thread
              ON thread.root_turn_id = activation.root_turn_id
             AND thread.generation = activation.generation
+           LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
            WHERE activation.session_id = $1
              AND activation.status = 'queued'
              AND activation.trigger_kind = 'chat/user_message'
              AND thread.kind = 'dialogue_turn'
              AND thread.status = 'open'
              AND thread.control_state = 'active'
+             AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
              AND (
                SELECT COUNT(*) FROM activation_signals links
                WHERE links.activation_id = activation.id
@@ -67,12 +71,15 @@ async fn append_dialogue_signal_in_tx(
            ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1
            FOR UPDATE OF activation, thread"#,
-    )
-    .bind(session_id)
-    .bind(batch_limit)
-    .bind(principal_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+        )
+        .bind(session_id)
+        .bind(batch_limit)
+        .bind(principal_id)
+        .fetch_optional(&mut **tx)
+        .await?
+    } else {
+        None
+    };
 
     let (thread_id, thread_generation, activation_id) = if let Some(row) = queued {
         (
@@ -81,15 +88,18 @@ async fn append_dialogue_signal_in_tx(
             Some(row.get::<String, _>("activation_id")),
         )
     } else {
-        let pending = sqlx::query(
-            r#"SELECT thread.id AS thread_id, thread.generation AS thread_generation
+        let pending = if dispatch_mode == MessageDispatchMode::Interrupt {
+            sqlx::query(
+                r#"SELECT thread.id AS thread_id, thread.generation AS thread_generation
                FROM threads thread
                JOIN thread_signals signal ON signal.thread_id = thread.id
+               LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
                WHERE thread.session_id = $1
                  AND thread.kind = 'dialogue_turn'
                  AND thread.status = 'open'
                  AND thread.control_state = 'active'
                  AND signal.status = 'pending'
+                 AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
                  AND thread.initiating_principal_id IS NOT DISTINCT FROM $2
                  AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
@@ -101,12 +111,15 @@ async fn append_dialogue_signal_in_tx(
                HAVING COUNT(*) < $3
                ORDER BY MIN(signal.sequence), thread.id
                LIMIT 1"#,
-        )
-        .bind(session_id)
-        .bind(principal_id)
-        .bind(batch_limit)
-        .fetch_optional(&mut **tx)
-        .await?;
+            )
+            .bind(session_id)
+            .bind(principal_id)
+            .bind(batch_limit)
+            .fetch_optional(&mut **tx)
+            .await?
+        } else {
+            None
+        };
         if let Some(row) = pending {
             (
                 row.get::<String, _>("thread_id"),
@@ -190,19 +203,25 @@ async fn interrupt_dialogue_turn_in_tx(
     session_id: &str,
     event: &Event,
 ) -> Result<Option<InterruptedDialogueTurn>, StoreError> {
-    let principal_id = event
-        .payload
-        .get("principal_id")
-        .and_then(JsonValue::as_str);
     let Some(row) = sqlx::query(
-        r#"SELECT activation.id AS activation_id,
+        r#"WITH predecessor AS (
+             SELECT request.event_id
+             FROM session_message_requests request
+             WHERE request.session_id = $1 AND request.event_id != $2
+             ORDER BY request.created_at DESC, request.event_id DESC
+             LIMIT 1
+           )
+           SELECT activation.id AS activation_id,
                   activation.root_turn_id AS root_turn_id,
                   thread.id AS thread_id,
                   thread.generation AS thread_generation
-           FROM thread_activations activation
+           FROM predecessor
+           JOIN thread_signals signal ON signal.event_id = predecessor.event_id
            JOIN threads thread
-             ON thread.root_turn_id = activation.root_turn_id
-            AND thread.generation = activation.generation
+             ON thread.id = signal.thread_id
+            AND thread.generation = signal.thread_generation
+           JOIN activation_signals link ON link.signal_id = signal.id
+           JOIN thread_activations activation ON activation.id = link.activation_id
            WHERE activation.session_id = $1
              AND activation.status = 'running'
              AND activation.trigger_kind = 'chat/user_message'
@@ -210,13 +229,11 @@ async fn interrupt_dialogue_turn_in_tx(
              AND thread.kind = 'dialogue_turn'
              AND thread.status = 'open'
              AND thread.control_state = 'active'
-             AND activation.initiating_principal_id IS NOT DISTINCT FROM $2
-           ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1
-           FOR UPDATE OF activation, thread"#,
+           FOR UPDATE OF activation, thread, signal"#,
     )
     .bind(session_id)
-    .bind(principal_id)
+    .bind(&event.id)
     .fetch_optional(&mut **tx)
     .await?
     else {
@@ -230,6 +247,10 @@ async fn interrupt_dialogue_turn_in_tx(
     };
     let thread_generation = row.get::<i64, _>("thread_generation");
     let replacement_thread_id = stable_thread_id(&event.id);
+    let principal_id = event
+        .payload
+        .get("principal_id")
+        .and_then(JsonValue::as_str);
     let now = now_text();
     sqlx::query(
         r#"INSERT INTO threads
@@ -358,8 +379,13 @@ impl DeliveryIngressStore for PostgresStore {
         session_id: &str,
         client_message_id: &str,
         event: &Event,
-        interrupt_dialogue: bool,
+        dispatch_mode: MessageDispatchMode,
     ) -> Result<MessageClaim, StoreError> {
+        let mut routed_event = event.clone();
+        routed_event
+            .payload
+            .insert("dispatch_mode".to_string(), json!(dispatch_mode.as_str()));
+        let event = &routed_event;
         let event_session_id = event
             .payload
             .get("session_id")
@@ -480,7 +506,7 @@ impl DeliveryIngressStore for PostgresStore {
         }
 
         let agent_id = session.get::<String, _>("agent_id");
-        let interrupted = if interrupt_dialogue {
+        let interrupted = if dispatch_mode == MessageDispatchMode::Interrupt {
             interrupt_dialogue_turn_in_tx(
                 &mut tx,
                 &agent_id,
@@ -492,9 +518,41 @@ impl DeliveryIngressStore for PostgresStore {
         } else {
             None
         };
-        append_event_in_tx(&mut tx, event).await?;
-        append_dialogue_signal_in_tx(&mut tx, &agent_id, &registry_context_id, session_id, event)
+        let mut claimed_event = event.clone();
+        if dispatch_mode == MessageDispatchMode::FollowUp {
+            let predecessor = sqlx::query_scalar::<_, String>(
+                r#"SELECT thread.id
+                   FROM session_message_requests request
+                   JOIN thread_signals signal ON signal.event_id = request.event_id
+                   JOIN threads thread ON thread.id = signal.thread_id
+                   WHERE request.session_id = $1
+                     AND thread.session_id = request.session_id
+                     AND thread.kind IN ('dialogue_turn', 'execution')
+                     AND request.event_id != $2
+                   ORDER BY request.created_at DESC, request.event_id DESC
+                   LIMIT 1
+                   FOR SHARE OF signal, thread"#,
+            )
+            .bind(session_id)
+            .bind(&event.id)
+            .fetch_optional(&mut *tx)
             .await?;
+            if let Some(predecessor) = predecessor {
+                claimed_event
+                    .payload
+                    .insert("after_thread_id".to_string(), json!(predecessor));
+            }
+        }
+        append_event_in_tx(&mut tx, &claimed_event).await?;
+        append_dialogue_signal_in_tx(
+            &mut tx,
+            &agent_id,
+            &registry_context_id,
+            session_id,
+            &claimed_event,
+            dispatch_mode,
+        )
+        .await?;
         let timestamp = event
             .timestamp
             .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
@@ -542,7 +600,7 @@ impl DeliveryIngressStore for PostgresStore {
         }
         tx.commit().await?;
         Ok(MessageClaim::Accepted {
-            event: event.clone(),
+            event: claimed_event,
             interrupted,
         })
     }

@@ -28,25 +28,26 @@ use crate::memory::{
     ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetKind,
     ExecutionTargetMutation, ExecutionTargetRecord, ExecutionTargetRegistration,
     ExecutionTargetStatus, ExecutionTargetStore, InterruptedDialogueTurn, MessageClaim,
-    MindProjectionCommit, MindProjectionHead, MindProjectionRecord, MindProjectionStore,
-    MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
-    NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext, NewDelegation,
-    NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
-    NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
-    NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
-    NewThreadGroupPlan, NewThreadSignal, ObjectiveCompletionIntent, ObjectiveMutation,
-    ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
-    PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
-    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
-    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
-    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
-    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate,
-    SignalOutboxRecord, SignalOutboxStatus, StorageMaintenanceReport, StorageMaintenanceStore,
+    MessageDispatchMode, MindProjectionCommit, MindProjectionHead, MindProjectionRecord,
+    MindProjectionStore, MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent,
+    NewApprovalRequest, NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext,
+    NewDelegation, NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge,
+    NewExecutionTargetAuthorization, NewMindProjection, NewNodePairingCode, NewObjective,
+    NewPrincipal, NewRuntimeTimer, NewSchedule, NewScheduledObjective, NewSession, NewThread,
+    NewThreadActivation, NewThreadGroupPlan, NewThreadSignal, ObjectiveCompletionIntent,
+    ObjectiveMutation, ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
+    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
+    ProviderAccountAffinityRecord, ProviderAccountStateRecord, ProviderAccountStateStore,
+    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
+    ProviderRefreshLeaseRecord, QueryFilter, RecallDocument, RecallDocumentKind,
+    RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
+    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
+    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
+    ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
+    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
+    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, StorageMaintenanceReport, StorageMaintenanceStore,
     ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
     ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus,
     ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind,
@@ -5159,6 +5160,7 @@ async fn append_dialogue_signal_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     session: &SessionRecord,
     event: &Event,
+    dispatch_mode: MessageDispatchMode,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let principal_id = event
         .payload
@@ -5173,19 +5175,25 @@ async fn append_dialogue_signal_in_transaction(
 
     // Prefer the already-queued next DialogueTurn.  Its model input has not
     // started, so a consecutive user message belongs to that same batch.
-    let queued = sqlx::query(
-        r#"SELECT activation.id AS activation_id, thread.id AS thread_id,
+    let queued = if dispatch_mode == MessageDispatchMode::Interrupt {
+        sqlx::query(
+            r#"SELECT activation.id AS activation_id, thread.id AS thread_id,
                   thread.generation AS thread_generation
            FROM thread_activations activation
            JOIN threads thread
              ON thread.root_turn_id = activation.root_turn_id
             AND thread.generation = activation.generation
+           LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
            WHERE activation.session_id = ?
              AND activation.status = 'queued'
              AND activation.trigger_kind = 'chat/user_message'
              AND thread.kind = 'dialogue_turn'
              AND thread.status = 'open'
              AND thread.control_state = 'active'
+             AND COALESCE(
+               json_extract(root_event.payload, '$.dispatch_mode'),
+               'interrupt'
+             ) = 'interrupt'
              AND (
                SELECT COUNT(*) FROM activation_signals links
                WHERE links.activation_id = activation.id
@@ -5196,13 +5204,16 @@ async fn append_dialogue_signal_in_transaction(
              )
            ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1"#,
-    )
-    .bind(&session.id)
-    .bind(batch_limit)
-    .bind(principal_id)
-    .bind(principal_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+        )
+        .bind(&session.id)
+        .bind(batch_limit)
+        .bind(principal_id)
+        .bind(principal_id)
+        .fetch_optional(&mut **tx)
+        .await?
+    } else {
+        None
+    };
 
     let (thread_id, thread_generation, activation_id) = if let Some(row) = queued {
         (
@@ -5214,15 +5225,21 @@ async fn append_dialogue_signal_in_transaction(
         // There may be a durable next batch whose Event+Signal committed just
         // before EventBus created its Activation. Fold into that oldest batch
         // rather than racing a second DialogueTurn into existence.
-        let pending = sqlx::query(
-            r#"SELECT thread.id AS thread_id, thread.generation AS thread_generation
+        let pending = if dispatch_mode == MessageDispatchMode::Interrupt {
+            sqlx::query(
+                r#"SELECT thread.id AS thread_id, thread.generation AS thread_generation
                FROM threads thread
                JOIN thread_signals signal ON signal.thread_id = thread.id
+               LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
                WHERE thread.session_id = ?
                  AND thread.kind = 'dialogue_turn'
                  AND thread.status = 'open'
                  AND thread.control_state = 'active'
                  AND signal.status = 'pending'
+                 AND COALESCE(
+                   json_extract(root_event.payload, '$.dispatch_mode'),
+                   'interrupt'
+                 ) = 'interrupt'
                  AND (
                    thread.initiating_principal_id = ?
                    OR (thread.initiating_principal_id IS NULL AND ? IS NULL)
@@ -5237,13 +5254,16 @@ async fn append_dialogue_signal_in_transaction(
                HAVING COUNT(*) < ?
                ORDER BY MIN(signal.sequence), thread.id
                LIMIT 1"#,
-        )
-        .bind(&session.id)
-        .bind(principal_id)
-        .bind(principal_id)
-        .bind(batch_limit)
-        .fetch_optional(&mut **tx)
-        .await?;
+            )
+            .bind(&session.id)
+            .bind(principal_id)
+            .bind(principal_id)
+            .bind(batch_limit)
+            .fetch_optional(&mut **tx)
+            .await?
+        } else {
+            None
+        };
         if let Some(row) = pending {
             (
                 row.get::<String, _>("thread_id"),
@@ -5331,19 +5351,25 @@ async fn interrupt_dialogue_turn_in_transaction(
     session: &SessionRecord,
     event: &Event,
 ) -> Result<Option<InterruptedDialogueTurn>, Box<dyn std::error::Error + Send + Sync>> {
-    let principal_id = event
-        .payload
-        .get("principal_id")
-        .and_then(JsonValue::as_str);
     let Some(row) = sqlx::query(
-        r#"SELECT activation.id AS activation_id,
+        r#"WITH predecessor AS (
+             SELECT request.event_id
+             FROM session_message_requests request
+             WHERE request.session_id = ? AND request.event_id != ?
+             ORDER BY request.created_at DESC, request.event_id DESC
+             LIMIT 1
+           )
+           SELECT activation.id AS activation_id,
                   activation.root_turn_id AS root_turn_id,
                   thread.id AS thread_id,
                   thread.generation AS thread_generation
-           FROM thread_activations activation
+           FROM predecessor
+           JOIN thread_signals signal ON signal.event_id = predecessor.event_id
            JOIN threads thread
-             ON thread.root_turn_id = activation.root_turn_id
-            AND thread.generation = activation.generation
+             ON thread.id = signal.thread_id
+            AND thread.generation = signal.thread_generation
+           JOIN activation_signals link ON link.signal_id = signal.id
+           JOIN thread_activations activation ON activation.id = link.activation_id
            WHERE activation.session_id = ?
              AND activation.status = 'running'
              AND activation.trigger_kind = 'chat/user_message'
@@ -5351,16 +5377,11 @@ async fn interrupt_dialogue_turn_in_transaction(
              AND thread.kind = 'dialogue_turn'
              AND thread.status = 'open'
              AND thread.control_state = 'active'
-             AND (
-               activation.initiating_principal_id = ?
-               OR (activation.initiating_principal_id IS NULL AND ? IS NULL)
-             )
-           ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1"#,
     )
     .bind(&session.id)
-    .bind(principal_id)
-    .bind(principal_id)
+    .bind(&event.id)
+    .bind(&session.id)
     .fetch_optional(&mut **tx)
     .await?
     else {
@@ -5374,6 +5395,10 @@ async fn interrupt_dialogue_turn_in_transaction(
     };
     let thread_generation = row.get::<i64, _>("thread_generation");
     let replacement_thread_id = stable_thread_id(&event.id);
+    let principal_id = event
+        .payload
+        .get("principal_id")
+        .and_then(JsonValue::as_str);
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
 
     // The replacement Thread must exist before its replayed Signals are
@@ -9028,9 +9053,19 @@ impl ActivationStore for SqliteStore {
                  SELECT activations.*
                  FROM raw_candidates activations
                  JOIN threads ON threads.root_turn_id = activations.root_turn_id
+                 LEFT JOIN events root_event ON root_event.id = threads.root_turn_id
                  WHERE threads.executor_kind != 'artifact_transfer'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM threads predecessor
+                     WHERE predecessor.id = json_extract(root_event.payload, '$.after_thread_id')
+                       AND (
+                         predecessor.status = 'open'
+                         OR predecessor.delivery_status IN ('pending', 'deferred')
+                       )
+                   )
                    AND (
                      threads.kind != 'dialogue_turn'
+                     OR COALESCE(json_extract(root_event.payload, '$.dispatch_mode'), '') = 'parallel'
                      OR (
                        NOT EXISTS (
                          SELECT 1
@@ -9043,7 +9078,11 @@ impl ActivationStore for SqliteStore {
                            AND running.dialogue_lane_released_at IS NULL
                            AND running.id != activations.id
                            AND running.root_turn_id != activations.root_turn_id
-                           AND running_thread.kind = 'dialogue_turn'
+                            AND running_thread.kind = 'dialogue_turn'
+                            AND COALESCE(
+                              json_extract((SELECT payload FROM events WHERE id = running_thread.root_turn_id), '$.dispatch_mode'),
+                              ''
+                            ) != 'parallel'
                        )
                        AND NOT EXISTS (
                          SELECT 1
@@ -9055,6 +9094,10 @@ impl ActivationStore for SqliteStore {
                            AND older.status = 'queued'
                            AND older.id != activations.id
                            AND older_thread.kind = 'dialogue_turn'
+                           AND COALESCE(
+                             json_extract((SELECT payload FROM events WHERE id = older_thread.root_turn_id), '$.dispatch_mode'),
+                             ''
+                           ) != 'parallel'
                            AND (
                              CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                                < CASE WHEN activations.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
@@ -9144,6 +9187,15 @@ impl ActivationStore for SqliteStore {
         let runnable = sqlx::query_scalar::<_, i64>(
             r#"SELECT CASE
                  WHEN candidate_thread.kind != 'dialogue_turn' THEN 1
+                 WHEN COALESCE(json_extract(root_event.payload, '$.dispatch_mode'), '') = 'parallel' THEN 1
+                 WHEN EXISTS (
+                   SELECT 1 FROM threads predecessor
+                   WHERE predecessor.id = json_extract(root_event.payload, '$.after_thread_id')
+                     AND (
+                       predecessor.status = 'open'
+                       OR predecessor.delivery_status IN ('pending', 'deferred')
+                     )
+                 ) THEN 0
                  WHEN EXISTS (
                    SELECT 1
                    FROM thread_activations running
@@ -9156,6 +9208,10 @@ impl ActivationStore for SqliteStore {
                      AND running.id != candidate.id
                      AND running.root_turn_id != candidate.root_turn_id
                      AND running_thread.kind = 'dialogue_turn'
+                     AND COALESCE(
+                       json_extract((SELECT payload FROM events WHERE id = running_thread.root_turn_id), '$.dispatch_mode'),
+                       ''
+                     ) != 'parallel'
                  ) THEN 0
                  WHEN EXISTS (
                    SELECT 1
@@ -9167,6 +9223,10 @@ impl ActivationStore for SqliteStore {
                      AND older.status = 'queued'
                      AND older.id != candidate.id
                      AND older_thread.kind = 'dialogue_turn'
+                     AND COALESCE(
+                       json_extract((SELECT payload FROM events WHERE id = older_thread.root_turn_id), '$.dispatch_mode'),
+                       ''
+                     ) != 'parallel'
                      AND (
                        CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                          < CASE WHEN candidate.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
@@ -9189,6 +9249,7 @@ impl ActivationStore for SqliteStore {
                JOIN threads candidate_thread
                  ON candidate_thread.root_turn_id = candidate.root_turn_id
                 AND candidate_thread.generation = candidate.generation
+               LEFT JOIN events root_event ON root_event.id = candidate_thread.root_turn_id
                WHERE candidate.id = ?"#,
         )
         .bind(activation_id)
@@ -9247,21 +9308,55 @@ impl ActivationStore for SqliteStore {
                 .execute(&mut *tx)
                 .await?;
             let route = sqlx::query(
-                r#"SELECT activation.session_id, activation.status, thread.kind
+                r#"SELECT activation.session_id, activation.status, thread.kind,
+                          thread.id AS thread_id, thread.generation AS thread_generation,
+                          root_event.payload AS root_payload
                    FROM thread_activations activation
                    JOIN threads thread
                      ON thread.root_turn_id = activation.root_turn_id
                     AND thread.generation = activation.generation
+                   LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
                    WHERE activation.id = ?"#,
             )
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
             if let Some(route) = route {
+                let root_payload = route
+                    .get::<Option<String>, _>("root_payload")
+                    .map(|payload| serde_json::from_str::<JsonValue>(&payload))
+                    .transpose()?
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let parallel = root_payload
+                    .get("dispatch_mode")
+                    .and_then(JsonValue::as_str)
+                    == Some("parallel");
                 let queued_dialogue_turn = route.get::<String, _>("status") == "queued"
-                    && route.get::<String, _>("kind") == "dialogue_turn";
+                    && route.get::<String, _>("kind") == "dialogue_turn"
+                    && !parallel;
                 if queued_dialogue_turn {
                     let session_id = route.get::<String, _>("session_id");
+                    let blocked_by_follow_up = match root_payload
+                        .get("after_thread_id")
+                        .and_then(JsonValue::as_str)
+                    {
+                        Some(predecessor_id) => {
+                            sqlx::query_scalar::<_, i64>(
+                                r#"SELECT EXISTS(
+                                     SELECT 1 FROM threads
+                                     WHERE id = ? AND (
+                                       status = 'open'
+                                       OR delivery_status IN ('pending', 'deferred')
+                                     )
+                                   )"#,
+                            )
+                            .bind(predecessor_id)
+                            .fetch_one(&mut *tx)
+                            .await?
+                                != 0
+                        }
+                        None => false,
+                    };
                     let running_other: Option<String> = sqlx::query_scalar(
                         r#"SELECT activation.id
                            FROM thread_activations activation
@@ -9276,6 +9371,10 @@ impl ActivationStore for SqliteStore {
                                SELECT root_turn_id FROM thread_activations WHERE id = ?
                              )
                              AND thread.kind = 'dialogue_turn'
+                             AND COALESCE(
+                               json_extract((SELECT payload FROM events WHERE id = thread.root_turn_id), '$.dispatch_mode'),
+                               ''
+                             ) != 'parallel'
                            LIMIT 1"#,
                     )
                     .bind(&session_id)
@@ -9292,6 +9391,10 @@ impl ActivationStore for SqliteStore {
                            WHERE activation.session_id = ?
                              AND activation.status = 'queued'
                              AND thread.kind = 'dialogue_turn'
+                             AND COALESCE(
+                               json_extract((SELECT payload FROM events WHERE id = thread.root_turn_id), '$.dispatch_mode'),
+                               ''
+                             ) != 'parallel'
                            ORDER BY
                              CASE WHEN activation.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END,
                              activation.trigger_sequence,
@@ -9301,7 +9404,10 @@ impl ActivationStore for SqliteStore {
                     .bind(&session_id)
                     .fetch_optional(&mut *tx)
                     .await?;
-                    if running_other.is_some() || oldest_queued.as_deref() != Some(id) {
+                    if blocked_by_follow_up
+                        || running_other.is_some()
+                        || oldest_queued.as_deref() != Some(id)
+                    {
                         tx.commit().await?;
                         return Ok(match self.get_thread_activation(id).await? {
                             Some(current) => ThreadActivationMutation::Conflict { current },
@@ -13904,8 +14010,14 @@ impl DeliveryIngressStore for SqliteStore {
         session_id: &str,
         client_message_id: &str,
         event: &Event,
-        interrupt_dialogue: bool,
+        dispatch_mode: MessageDispatchMode,
     ) -> Result<MessageClaim, Box<dyn std::error::Error + Send + Sync>> {
+        let mut routed_event = event.clone();
+        routed_event.payload.insert(
+            "dispatch_mode".to_string(),
+            serde_json::json!(dispatch_mode.as_str()),
+        );
+        let event = &routed_event;
         let event_session_id = event
             .payload
             .get("session_id")
@@ -13987,16 +14099,42 @@ impl DeliveryIngressStore for SqliteStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
-            let interrupted = if interrupt_dialogue {
+            let interrupted = if dispatch_mode == MessageDispatchMode::Interrupt {
                 interrupt_dialogue_turn_in_transaction(&mut tx, &session, event).await?
             } else {
                 None
             };
+            let mut claimed_event = event.clone();
+            if dispatch_mode == MessageDispatchMode::FollowUp {
+                let predecessor = sqlx::query_scalar::<_, String>(
+                    r#"SELECT thread.id
+                       FROM session_message_requests request
+                       JOIN thread_signals signal ON signal.event_id = request.event_id
+                       JOIN threads thread ON thread.id = signal.thread_id
+                       WHERE request.session_id = ?
+                         AND thread.session_id = request.session_id
+                         AND thread.kind IN ('dialogue_turn', 'execution')
+                         AND request.event_id != ?
+                       ORDER BY request.created_at DESC, request.event_id DESC
+                       LIMIT 1"#,
+                )
+                .bind(session_id)
+                .bind(&event.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if let Some(predecessor) = predecessor {
+                    claimed_event.payload.insert(
+                        "after_thread_id".to_string(),
+                        serde_json::json!(predecessor),
+                    );
+                }
+            }
             let timestamp = event
                 .timestamp
                 .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            append_event_in_transaction(&mut tx, event).await?;
-            append_dialogue_signal_in_transaction(&mut tx, &session, event).await?;
+            append_event_in_transaction(&mut tx, &claimed_event).await?;
+            append_dialogue_signal_in_transaction(&mut tx, &session, &claimed_event, dispatch_mode)
+                .await?;
             sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
                 .bind(&timestamp)
                 .bind(&timestamp)
@@ -14056,7 +14194,7 @@ impl DeliveryIngressStore for SqliteStore {
             }
             tx.commit().await?;
             return Ok(MessageClaim::Accepted {
-                event: event.clone(),
+                event: claimed_event,
                 interrupted,
             });
         }
@@ -27389,7 +27527,12 @@ mod tests {
         );
         assert!(matches!(
             store
-                .claim_message("outbox-session", "outbox-client-message", &event, false)
+                .claim_message(
+                    "outbox-session",
+                    "outbox-client-message",
+                    &event,
+                    MessageDispatchMode::FollowUp,
+                )
                 .await
                 .unwrap(),
             MessageClaim::Accepted { .. }
@@ -29708,7 +29851,12 @@ mod tests {
         let first = message("interrupt-event-a", "first thought");
         assert!(matches!(
             store
-                .claim_message("interrupt-session", "interrupt-client-a", &first, false)
+                .claim_message(
+                    "interrupt-session",
+                    "interrupt-client-a",
+                    &first,
+                    MessageDispatchMode::FollowUp,
+                )
                 .await
                 .unwrap(),
             MessageClaim::Accepted {
@@ -29769,7 +29917,12 @@ mod tests {
 
         let second = message("interrupt-event-b", "additional constraint");
         let interrupted = store
-            .claim_message("interrupt-session", "interrupt-client-b", &second, true)
+            .claim_message(
+                "interrupt-session",
+                "interrupt-client-b",
+                &second,
+                MessageDispatchMode::Interrupt,
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -29858,10 +30011,55 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first.id.as_str(), second.id.as_str()]
         );
+
+        let batched = message("interrupt-event-c", "one more correction");
+        assert!(matches!(
+            store
+                .claim_message(
+                    "interrupt-session",
+                    "interrupt-client-c",
+                    &batched,
+                    MessageDispatchMode::Interrupt,
+                )
+                .await
+                .unwrap(),
+            MessageClaim::Accepted {
+                interrupted: None,
+                ..
+            }
+        ));
+        assert!(store
+            .get_thread_by_root(&batched.id)
+            .await
+            .unwrap()
+            .is_none());
+
+        let follow_up = message("interrupt-event-d", "answer after those corrections");
+        let routed_follow_up = match store
+            .claim_message(
+                "interrupt-session",
+                "interrupt-client-d",
+                &follow_up,
+                MessageDispatchMode::FollowUp,
+            )
+            .await
+            .unwrap()
+        {
+            MessageClaim::Accepted { event, .. } => event,
+            other => panic!("unexpected follow-up claim: {other:?}"),
+        };
+        assert_eq!(
+            routed_follow_up
+                .payload
+                .get("after_thread_id")
+                .and_then(JsonValue::as_str),
+            Some(replacement.id.as_str()),
+            "follow-up routing must resolve the preceding message through its durable Signal when that message was batched into an older Thread",
+        );
     }
 
     #[tokio::test]
-    async fn dialogue_interruption_can_be_disabled() {
+    async fn follow_up_waits_for_preceding_delivery() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
@@ -29902,7 +30100,12 @@ mod tests {
             .clone(),
         );
         store
-            .claim_message("fifo-session", "fifo-client-a", &first, false)
+            .claim_message(
+                "fifo-session",
+                "fifo-client-a",
+                &first,
+                MessageDispatchMode::FollowUp,
+            )
             .await
             .unwrap();
         let thread = store.get_thread_by_root(&first.id).await.unwrap().unwrap();
@@ -29972,7 +30175,12 @@ mod tests {
         );
         assert!(matches!(
             store
-                .claim_message("fifo-session", "fifo-client-b", &second, false)
+                .claim_message(
+                    "fifo-session",
+                    "fifo-client-b",
+                    &second,
+                    MessageDispatchMode::FollowUp,
+                )
                 .await
                 .unwrap(),
             MessageClaim::Accepted {
@@ -29998,6 +30206,184 @@ mod tests {
                 .lifecycle,
             ThreadLifecycle::Open
         );
+        let routed_second = store
+            .query(QueryFilter {
+                event_id: Some(second.id.clone()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            routed_second
+                .payload
+                .get("after_thread_id")
+                .and_then(JsonValue::as_str),
+            Some(thread.id.as_str())
+        );
+        let follow_up_thread = store.get_thread_by_root(&second.id).await.unwrap().unwrap();
+        let follow_up_signal = store
+            .next_pending_thread_signal(&follow_up_thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let follow_up_activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: stable_thread_signal_id(&second.id),
+                    thread_id: follow_up_thread.id.clone(),
+                    thread_generation: follow_up_thread.generation,
+                    event_id: second.id.clone(),
+                    principal_id: None,
+                    sequence: follow_up_signal.sequence,
+                    kind: second.topic.clone(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "fifo-activation-b".to_string(),
+                    agent_id: "fifo-agent".to_string(),
+                    context_id: "fifo-context".to_string(),
+                    session_id: "fifo-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: second.id.clone(),
+                    trigger_sequence: follow_up_signal.sequence,
+                    trigger_kind: second.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: second.id.clone(),
+                },
+                DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!store
+            .dialogue_turn_activation_runnable(&follow_up_activation.id)
+            .await
+            .unwrap());
+
+        let first_activation = store
+            .get_thread_activation(&running.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            store
+                .update_thread_activation(
+                    &first_activation.id,
+                    first_activation.revision,
+                    ThreadActivationStatus::Succeeded,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap(),
+            ThreadActivationMutation::Updated(_)
+        ));
+        let first_thread = store.get_thread(&thread.id).await.unwrap().unwrap();
+        assert!(matches!(
+            store
+                .update_thread(
+                    &first_thread.id,
+                    first_thread.revision,
+                    None,
+                    Some(ThreadLifecycle::Completed),
+                    Some("first reply"),
+                    Some("reply-first"),
+                    Some(DeliveryStatus::Delivered),
+                    Some("reply-first"),
+                )
+                .await
+                .unwrap(),
+            ThreadMutation::Updated(_)
+        ));
+        assert!(store
+            .dialogue_turn_activation_runnable(&follow_up_activation.id)
+            .await
+            .unwrap());
+        assert!(matches!(
+            store
+                .update_thread_activation(
+                    &follow_up_activation.id,
+                    follow_up_activation.revision,
+                    ThreadActivationStatus::Running,
+                    Some("fifo-test-worker-b"),
+                    Some(Utc::now() + chrono::Duration::seconds(30)),
+                    None,
+                )
+                .await
+                .unwrap(),
+            ThreadActivationMutation::Updated(_)
+        ));
+
+        let parallel = Event::new(
+            "fifo-event-parallel".to_string(),
+            "user".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "fifo-context",
+                "session_id": "fifo-session",
+                "principal_id": "principal-fifo",
+                "text": "parallel"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store
+            .claim_message(
+                "fifo-session",
+                "fifo-client-parallel",
+                &parallel,
+                MessageDispatchMode::Parallel,
+            )
+            .await
+            .unwrap();
+        let parallel_thread = store
+            .get_thread_by_root(&parallel.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let parallel_signal = store
+            .next_pending_thread_signal(&parallel_thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let parallel_activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: stable_thread_signal_id(&parallel.id),
+                    thread_id: parallel_thread.id.clone(),
+                    thread_generation: parallel_thread.generation,
+                    event_id: parallel.id.clone(),
+                    principal_id: None,
+                    sequence: parallel_signal.sequence,
+                    kind: parallel.topic.clone(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "fifo-activation-parallel".to_string(),
+                    agent_id: "fifo-agent".to_string(),
+                    context_id: "fifo-context".to_string(),
+                    session_id: "fifo-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: parallel.id.clone(),
+                    trigger_sequence: parallel_signal.sequence,
+                    trigger_kind: parallel.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: parallel.id.clone(),
+                },
+                DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .dialogue_turn_activation_runnable(&parallel_activation.id)
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -30065,7 +30451,12 @@ mod tests {
             .collect(),
         );
         let first = store
-            .claim_message("session-api-1", "client-1", &event_1, false)
+            .claim_message(
+                "session-api-1",
+                "client-1",
+                &event_1,
+                MessageDispatchMode::FollowUp,
+            )
             .await
             .unwrap();
         sqlx::query(
@@ -30077,11 +30468,21 @@ mod tests {
         .await
         .unwrap();
         let replay = store
-            .claim_message("session-api-1", "client-1", &event_1, false)
+            .claim_message(
+                "session-api-1",
+                "client-1",
+                &event_1,
+                MessageDispatchMode::FollowUp,
+            )
             .await
             .unwrap();
         let conflict = store
-            .claim_message("session-api-1", "client-1", &event_2, false)
+            .claim_message(
+                "session-api-1",
+                "client-1",
+                &event_2,
+                MessageDispatchMode::FollowUp,
+            )
             .await
             .unwrap();
         assert!(matches!(first, MessageClaim::Accepted { .. }));
@@ -30150,7 +30551,7 @@ mod tests {
                     "session-api-unbound",
                     "client-unbound",
                     &unbound_event,
-                    false,
+                    MessageDispatchMode::FollowUp,
                 )
                 .await
                 .unwrap(),
@@ -30212,7 +30613,7 @@ mod tests {
                     "session-api-1",
                     "client-after-archive",
                     &archived_event,
-                    false,
+                    MessageDispatchMode::FollowUp,
                 )
                 .await
                 .unwrap(),

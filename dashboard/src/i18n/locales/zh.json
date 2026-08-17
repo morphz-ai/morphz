@@ -1190,6 +1190,16 @@
     "send": "发送",
     "inputAriaLabel": "消息输入",
     "cancelTitle": "取消当前会话执行",
+    "modes": {
+      "menu": "选择发送方式",
+      "defaultHint": "按当前配置的默认行为发送",
+      "interrupt": "打断并发送",
+      "interruptHint": "前一轮仍在思考时替换它",
+      "parallel": "并发发送",
+      "parallelHint": "Option/Alt+Enter · 立即独立求值",
+      "followUp": "跟进发送",
+      "followUpHint": "Ctrl/Command+Enter · 等待前一轮回复后处理"
+    },
     "attachments": {
       "add": "添加图片或文件",
       "remove": "移除附件",
@@ -1223,7 +1233,7 @@
       "summary": "{{dialogue}} 对话 · {{executing}} 执行 · {{waiting}} 等待"
     },
     "shortcuts": {
-      "send": "Enter 发送",
+      "send": "Enter 默认 · Option/Alt+Enter 并发 · Ctrl/Command+Enter 跟进",
       "newline": "Shift+Enter 换行",
       "tasks": "Ctrl+T 任务",
       "mind": "Ctrl+M 认知",
