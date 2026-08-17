@@ -239,6 +239,8 @@ struct SendMessageRequest {
     #[serde(default)]
     attachments: Vec<IncomingMessageAttachment>,
     #[serde(default)]
+    references: Vec<crate::sdk::MessageReferenceInput>,
+    #[serde(default)]
     harness: Option<crate::harness::ExactHarnessRef>,
     #[serde(default)]
     dispatch_mode: Option<crate::memory::MessageDispatchMode>,
@@ -2488,7 +2490,10 @@ async fn handle_search_dialogue_history(
                 .and_then(|value| value.as_str());
             matches!(
                 event.topic.as_str(),
-                "chat/user_message" | "chat/reply" | "chat/outbound_message"
+                "chat/user_message"
+                    | "chat/reply"
+                    | "chat/outbound_message"
+                    | "chat/session_signal"
             ) && event_session_id.is_some_and(|session_id| visible_session_ids.contains(session_id))
         })
         .map(|event| (event.id.clone(), event))
@@ -2499,6 +2504,7 @@ async fn handle_search_dialogue_history(
             let event = events_by_id.get(&hit.document_id)?;
             let kind = match event.topic.as_str() {
                 "chat/user_message" => "user",
+                "chat/session_signal" => "coordination",
                 "chat/reply" | "chat/outbound_message"
                     if event
                         .payload
@@ -5272,8 +5278,11 @@ async fn handle_send_message(
     if session.status == SessionStatus::Archived {
         return error_response(StatusCode::CONFLICT, "归档 Session 不能接收新消息");
     }
-    if request.text.trim().is_empty() && request.attachments.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "消息正文和附件不能同时为空");
+    if request.text.trim().is_empty()
+        && request.attachments.is_empty()
+        && request.references.is_empty()
+    {
+        return error_response(StatusCode::BAD_REQUEST, "消息正文、附件和引用不能同时为空");
     }
     if request.text.chars().count() > 1_000_000 {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "消息正文超过 1,000,000 字符");
@@ -5340,6 +5349,7 @@ async fn handle_send_message(
                 actor: "User-API".to_string(),
                 client_message_id: Some(client_message_id),
                 attachments,
+                references: request.references,
                 harness: request.harness,
                 dispatch_mode: request.dispatch_mode,
             },
@@ -7618,6 +7628,7 @@ mod tests {
                 text: "I am user 1".to_string(),
                 client_message_id: Some("forged-identity-message".to_string()),
                 attachments: Vec::new(),
+                references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
             }),
@@ -7748,6 +7759,7 @@ mod tests {
                 text: "operator must not impersonate".to_string(),
                 client_message_id: Some("operator-impersonation-message".to_string()),
                 attachments: Vec::new(),
+                references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
             }),
@@ -9790,6 +9802,21 @@ account = "xai-account"
         .await
         .into_response();
         assert_eq!(create.status(), StatusCode::CREATED);
+        let target = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("api-session-target".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("API Target".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(target.status(), StatusCode::CREATED);
 
         let rejected = handle_send_message(
             State(Arc::clone(&state)),
@@ -9807,6 +9834,7 @@ account = "xai-account"
                             .encode([index as u8]),
                     })
                     .collect(),
+                references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
             }),
@@ -9834,6 +9862,9 @@ account = "xai-account"
                         data_base64: base64::engine::general_purpose::STANDARD
                             .encode(b"same-image"),
                     }],
+                    references: vec![crate::sdk::MessageReferenceInput::Session {
+                        session_id: "api-session-target".to_string(),
+                    }],
                     harness: None,
                     dispatch_mode: Some(crate::memory::MessageDispatchMode::Parallel),
                 }),
@@ -9858,6 +9889,7 @@ account = "xai-account"
                 text: "different request".to_string(),
                 client_message_id: Some("client-message-1".to_string()),
                 attachments: Vec::new(),
+                references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
             }),
@@ -9886,6 +9918,14 @@ account = "xai-account"
             user_message.payload["dispatch_mode"],
             json!("parallel"),
             "the one-shot HTTP scheduling choice must be an immutable part of the accepted user Event",
+        );
+        assert_eq!(
+            user_message.payload["references"][0]["session_id"],
+            json!("api-session-target")
+        );
+        assert_eq!(
+            user_message.payload["references"][0]["title"],
+            json!("API Target")
         );
         let storage_path = user_message.payload["attachments"][0]["storage_path"]
             .as_str()
@@ -9957,6 +9997,7 @@ account = "xai-account"
                 text: "stream please".to_string(),
                 client_message_id: Some("stream-message-1".to_string()),
                 attachments: Vec::new(),
+                references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
             }),
@@ -10141,6 +10182,7 @@ account = "xai-account"
                 text: "persist summary".to_string(),
                 client_message_id: Some("summary-restart-message".to_string()),
                 attachments: Vec::new(),
+                references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
             }),

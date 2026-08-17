@@ -2,7 +2,7 @@
 
 > 状态：已实现
 >
-> 当前 Context Protocol：v20（本响应语义自 v16 起生效）
+> 当前 Context Protocol：v32（普通响应语义自 v16 起生效；Session Signal 自 v31 起生效；结构化 Session 引用自 v32 起生效）
 >
 > 日期：2026-07-17
 
@@ -47,9 +47,27 @@ SExpr VM 中的 `(reply content)` 是对这一行为的语义描述，不是名�
 - 工具回执返回当前 Evaluation，调用本身不是终态；
 - 该消息不会伪造目标用户输入，也不会自动启动目标 Session 的模型求值。
 
+### 2.4 激活其他 Session：`session_signal`
+
+`session_signal(session_id, content)` 是同一 Agent 内已有 Session 之间的内部协调原语：
+
+- 目标必须已经存在、未归档且属于同一 Agent；它绝不隐式创建 Session；
+- Event 以 `chat/session_signal` 写入目标 Context，并形成目标 Session 自己的持久化 DialogueTurn；
+- 它既不是 User Message，也不是 Assistant Reply，Dashboard 与 TUI 以独立的“Session 协调”条目显示；
+- A 可以发给 B，B 也用同一原语发回 A；Runtime 自动写入来源 Session/Context、Activation、Attempt、Principal、correlation、reply-to 与去重身份；
+- 调用不结束来源 Evaluation。目标 Session 可以与来源 Session 并发求值，但目标自己的 Dialogue Lane 仍保持顺序；
+- 同 Context 时共享已经提交的 Mind；跨 Context 时只携带 Signal 的显式正文和来源标识，不复制来源 Inbox，不隐式读取来源 Frame/Mind；
+- Signal 的 Event 与目标 Thread Signal 原子提交。重复投递不会产生第二个目标 Activation，Runtime 重启会恢复尚未消费的 Signal。
+
+`session_signal` 不继承用户消息的 Interrupt / Parallel / Follow-up 选择。它总是形成一条独立的内部根输入，并按目标 Session 的既有 Dialogue Lane 排队；这里的并发是来源 Session 与目标 Session 之间的并发。
+
+### 2.5 引用已有 Session：`@Session`
+
+Dashboard Composer 的 `@Session` 自动补全只选择当前 Principal 可见、同 Agent、未归档的已有 Session，并随 `chat/user_message` 提交稳定 `session_id`。Runtime 在写入 Event 前重新校验并补齐标题、Context 与 Agent 快照。该引用本身没有调度副作用：不读取目标 transcript、不导入跨 Context Mind、不激活目标，也不隐式创建 Session；模型判断确有协调需要时，再显式调用 `send_message` 或 `session_signal`。
+
 ## 3. 工具响应仍是中间状态
 
-任何包含物理工具、`context_tx`、Objective 工具或 `send_message` 的模型响应都是中间状态。正文可以作为当前 active Session 的可见进度，但 Runtime 必须执行工具、用标准 tool result 参数把结果返回模型，然后继续求值，直到出现普通文本或独占 `no_reply`。
+任何包含物理工具、`context_tx`、Objective 工具、`send_message` 或 `session_signal` 的模型响应都是中间状态。正文可以作为当前 active Session 的可见进度，但 Runtime 必须执行工具、用标准 tool result 参数把结果返回模型，然后继续求值，直到出现普通文本或独占 `no_reply`。
 
 这保持了模型原生 Function Calling 训练所依赖的调用—回执结构，也避免工具已经执行但模型因看不到回执而重复调用。
 
@@ -80,7 +98,7 @@ Router fast path 同样以 generation fencing 原子提交 `chat/reply` 与 cove
 
 ## 5. 流式与持久化边界
 
-Provider 适配器默认请求协议原生流，并把不同协议统一为 `Started/TextDelta/ReasoningSummaryDelta/ToolCallStarted/ToolArgumentsDelta/ToolCallCompleted/Usage/Completed/Failed`。`runtime/model_stream` 只是短暂展示状态；`chat/reply`、`chat/outbound_message`、工具结果和独立的模型推理摘要终态才是持久事实：
+Provider 适配器默认请求协议原生流，并把不同协议统一为 `Started/TextDelta/ReasoningSummaryDelta/ToolCallStarted/ToolArgumentsDelta/ToolCallCompleted/Usage/Completed/Failed`。`runtime/model_stream` 只是短暂展示状态；`chat/reply`、`chat/outbound_message`、`chat/session_signal`、工具结果和独立的模型推理摘要终态才是持久事实：
 
 1. TUI 与 Dashboard 直接显示 Provider 实际产生的 `TextDelta`；Runtime 同时转发工具名和参数增量，TUI 可显示其详情，Dashboard 当前至少据此显示工具调用计数；
 2. 分块粒度由模型服务和代理决定。如果上游只返回一个整块 delta，界面立即整块显示，不人为制造打字机效果；
@@ -108,5 +126,6 @@ plain CLI 在等待当前求值时串行显示进度和最终持久回复，不�
 - 共享 Mind 的 `context_tx` 仍按 Context 串行提交并检查 version；
 - 响应路由不依赖 Context Working Set 中包含多少个 Session；
 - `send_message` 是明确的跨 Session IO，不改变当前请求的 active Session。
+- `session_signal` 是明确的跨 Session 内部协调：不改变来源请求的 active Session，但会创建目标 Session 的新 DialogueTurn。
 
 由此，Morphz 同时保留“一个认知主体服务大量 Session”的共享能力、独立请求的正确性和 Provider 原生文本流。

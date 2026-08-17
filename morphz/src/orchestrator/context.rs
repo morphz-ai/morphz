@@ -1,7 +1,7 @@
 use crate::config::OrchestratorConfig;
 use crate::event::{
-    Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT,
-    TYPE_USER_MESSAGE,
+    Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_SESSION_SIGNAL,
+    TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{
     CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventAppend, EventStore,
@@ -53,7 +53,7 @@ impl std::fmt::Display for RuntimeContextVersionConflict {
 
 impl std::error::Error for RuntimeContextVersionConflict {}
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 30;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 32;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 const FRAME_RECALL_CURSOR_DOMAIN: &[u8] = b"morphz/frame-recall-cursor/v1\0";
@@ -4288,12 +4288,16 @@ impl ContextEngine {
         ContextObservation {
             id: event.id.clone(),
             reference: self.event_reference(event),
-            session_id: event
-                .payload
-                .get("source_session_id")
-                .and_then(|value| value.as_str())
-                .or_else(|| event_session(event))
-                .map(ToOwned::to_owned),
+            session_id: if event.event_type == TYPE_SESSION_SIGNAL {
+                event_session(event).map(ToOwned::to_owned)
+            } else {
+                event
+                    .payload
+                    .get("source_session_id")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| event_session(event))
+                    .map(ToOwned::to_owned)
+            },
             principal_id: event_principal(event).map(ToOwned::to_owned),
             sequence: metadata.sequence,
             turn: metadata.turn,
@@ -4380,6 +4384,7 @@ impl ContextRecallService for ContextEngine {
                         "chat/tool_output".to_string(),
                         "chat/file_change".to_string(),
                         "chat/outbound_message".to_string(),
+                        "chat/session_signal".to_string(),
                         "chat/context_tx_committed".to_string(),
                         "runtime/thread_result".to_string(),
                         "runtime/delegation_result".to_string(),
@@ -4544,7 +4549,10 @@ fn observation_metadata(
     let mut current_turn = 0usize;
     let mut current_attempt = 0usize;
     for event in events {
-        if event.event_type == TYPE_USER_MESSAGE {
+        if matches!(
+            event.event_type.as_str(),
+            TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+        ) {
             current_turn += 1;
             current_attempt = 0;
         }
@@ -7364,7 +7372,7 @@ fn render_protocol() -> SExpr {
                     pair("active-session", atom("the sole input source and ordinary-text reply target for this evaluation, not the only globally active Session in the Context")),
                     pair("concurrency", atom("multiple Sessions in one Context may evaluate and reply concurrently")),
                     pair("shared-evidence", atom("inbox observations record a source session but belong to the current Context and may be reasoned over and reused across Sessions")),
-                    pair("reply-routing", atom("ordinary assistant text without tools and visible progress must correspond to kernel.active-session; use send_message for another Session")),
+                    pair("reply-routing", atom("ordinary assistant text without tools and visible progress must correspond to kernel.active-session; use send_message for a visible message to another Session or session_signal for internal coordination that must activate it")),
                     pair("write-serialization", atom("context_tx modifies the shared Mind; the Runtime serializes commits per Context and checks version")),
                 ],
             ),
@@ -7759,7 +7767,11 @@ fn render_protocol() -> SExpr {
                     pair("current", atom("ordinary text without tools replies only to kernel.active-session")),
                     pair("other-session-tool", atom("send_message {session_id,content}")),
                     pair("other-session", atom("send_message proactively delivers only to another Session of the same Agent; it neither ends the current Activation nor starts target Session evaluation")),
-                    pair("current-session-guard", atom("never use send_message to reply to active-session; the Runtime rejects it")),
+                    pair("coordination-tool", atom("session_signal {session_id,content}")),
+                    pair("coordination", atom("session_signal sends a distinct internal coordination message to another Session of the same Agent and starts a durable DialogueTurn there; it is neither User nor Assistant content and does not end the current Activation")),
+                    pair("coordination-context", atom("same-Context targets share the existing Mind; cross-Context targets receive only the explicit Signal content and source identifiers, never implicit access to the source Mind or Frames")),
+                    pair("session-reference", atom("a Runtime-verified Session reference in root-input provides a stable existing session_id for possible send_message or session_signal use; it does not import that Session transcript, share a different Context Mind, activate the target, or authorize creating a Session")),
+                    pair("current-session-guard", atom("never use send_message or session_signal to reply to active-session; the Runtime rejects both")),
                     pair("context-boundary", atom("context_tx changes only the shared Mind and cannot send a user message")),
                 ],
             ),
@@ -7971,7 +7983,12 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
         // Objective evaluations are continuations of the same user-owned work,
         // not fresh maintenance budgets. Resetting here allowed a stuck
         // Objective to receive another emergency allowance indefinitely.
-        .rposition(|event| event.event_type == TYPE_USER_MESSAGE)
+        .rposition(|event| {
+            matches!(
+                event.event_type.as_str(),
+                TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+            )
+        })
         .map(|index| &events[index + 1..])
         .unwrap_or(events);
     let assistant_calls = after_cycle_boundary
@@ -8034,6 +8051,7 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
 fn wake_for(events: &[Event]) -> WakeSignal {
     let latest = events.iter().rev().find(|event| {
         event.event_type == TYPE_USER_MESSAGE
+            || event.event_type == TYPE_SESSION_SIGNAL
             || event.event_type == TYPE_TOOL_OUTPUT
             || event.event_type == TYPE_INFER_REQUEST
     });
@@ -8056,6 +8074,8 @@ fn wake_for_event(event: &Event) -> WakeSignal {
         .map(ToOwned::to_owned);
     let cause = if event.event_type == TYPE_USER_MESSAGE {
         "user-message"
+    } else if event.event_type == TYPE_SESSION_SIGNAL {
+        "session-signal"
     } else if event.topic == "chat/dialogue_retry" {
         // This is the same logical DialogueTurn with a new fenced generation,
         // not a new user utterance or an unrelated infer program.
@@ -9112,6 +9132,42 @@ fn event_text(event: &Event) -> String {
         .get("text")
         .and_then(|value| value.as_str())
         .unwrap_or("");
+    if event.event_type == TYPE_SESSION_SIGNAL && !text.is_empty() {
+        let source_session_id = event
+            .payload
+            .get("source_session_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown-session");
+        let source_context_id = event
+            .payload
+            .get("source_context_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown-context");
+        let correlation_id = event
+            .payload
+            .get("correlation_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or(&event.id);
+        return format!(
+            "[internal Session Signal from {source_session_id} in {source_context_id}; correlation {correlation_id}]\n{text}"
+        );
+    }
+    let references = event
+        .payload
+        .get("references")
+        .and_then(|value| value.as_array())
+        .filter(|references| !references.is_empty());
+    if let Some(references) = references {
+        let reference_block = format!(
+            "[Runtime-verified Session references; identities only, no target transcript or Mind was imported]\n{}",
+            serde_json::Value::Array(references.clone())
+        );
+        return if text.is_empty() {
+            reference_block
+        } else {
+            format!("{text}\n\n{reference_block}")
+        };
+    }
     if !text.is_empty() {
         return text.to_string();
     }

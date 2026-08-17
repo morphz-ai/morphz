@@ -72,7 +72,9 @@ SQLite 包含：
 
 Dialogue Lane 锁只覆盖同一 Session 用户消息的首次模型决策，并在执行物理工具前释放；工具执行和等待不持有该锁。每个 Thread 固定 `root_turn_id` 和根事件的 Event sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Activation；终态以 `activation_id` 唯一提交。共享 Mind 的修改仍只在事务提交临界区加 Context 锁。完整模型见 [`morphz_session_thread_model_v1.md`](./morphz_session_thread_model_v1.md)。
 
-每个模型请求只编译一个 active Session。多个 Session 即使共享同一个 Context，也各自发起独立且可并行的模型请求；它们共享已提交 Mind，但不会要求模型在一个响应里拆分多个回复。普通无工具文本投递给 active Session；跨 Session 主动消息使用 `send_message`。
+每个模型请求只编译一个 active Session。多个 Session 即使共享同一个 Context，也各自发起独立且可并行的模型请求；它们共享已提交 Mind，但不会要求模型在一个响应里拆分多个回复。普通无工具文本投递给 active Session；`send_message` 向另一个 Session 写入可见 Assistant 消息但不激活它；`session_signal` 向已经存在的同 Agent Session 写入独立内部协调事件并激活其 DialogueTurn。Signal 跨 Context 时只桥接显式正文和来源标识，不隐式共享来源 Context 的 Inbox、Frame 或 Mind。
+
+Session 仍由 Human/API/Dashboard 拥有创建、消息顺序与回复路由边界，Agent 不获得普通 `create_session` 工具。Dashboard 可用 `@Session` 为已有 Session 生成结构化稳定引用；引用只提供经过权限校验的 `session_id` 与目录元数据，不复制目标消息流，也不产生激活。Agent 的自主工作分解继续使用 Objective/Thread。
 
 ## 5. HTTP API
 

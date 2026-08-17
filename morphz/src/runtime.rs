@@ -102,8 +102,8 @@ use crate::timer::TimerEngine;
 use crate::tool::{
     BackgroundTaskScheduler, CheckTaskAfterTool, DelegateTool, EditFileTool, ExecuteCommandTool,
     KillTaskTool, ListFilesTool, ListSecretsTool, ListSkillsTool, ListTasksTool, ReadFileTool,
-    Registry, ScheduleTxTool, SearchTool, SendMessageTool, TaskStatusTool, ThreadScheduler,
-    VerifyIdentityTool, WriteFileTool,
+    Registry, ScheduleTxTool, SearchTool, SendMessageTool, SessionSignalTool, TaskStatusTool,
+    ThreadScheduler, VerifyIdentityTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1558,6 +1558,13 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
     )));
     registry.register(Arc::new(SendMessageTool::new(
         Arc::clone(bus),
+        context_engine
+            .session_store()
+            .expect("Runtime ContextEngine 必须配置 SessionStore"),
+    )));
+    registry.register(Arc::new(SessionSignalTool::new(
+        Arc::clone(bus),
+        Arc::clone(event_store),
         context_engine
             .session_store()
             .expect("Runtime ContextEngine 必须配置 SessionStore"),
@@ -7540,6 +7547,7 @@ pub struct MessageReceipt {
 pub struct SessionMessageOptions {
     pub requested_harness: Option<crate::harness::ExactHarnessRef>,
     pub attachments: Vec<crate::sdk::MessageAttachmentInput>,
+    pub references: Vec<crate::sdk::MessageReferenceInput>,
     pub dispatch_mode: Option<MessageDispatchMode>,
 }
 
@@ -7691,6 +7699,7 @@ impl SessionHandle {
         let SessionMessageOptions {
             requested_harness,
             attachments,
+            references,
             dispatch_mode,
         } = options;
         let session = self
@@ -7702,11 +7711,17 @@ impl SessionHandle {
             return Err("归档 Session 不能接收新消息".into());
         }
         let text = text.into().trim().to_string();
-        if text.is_empty() && attachments.is_empty() {
-            return Err("消息正文和附件不能同时为空".into());
+        if text.is_empty() && attachments.is_empty() && references.is_empty() {
+            return Err("消息正文、附件和引用不能同时为空".into());
         }
         if text.chars().count() > 1_000_000 {
             return Err("消息正文超过 1,000,000 字符".into());
+        }
+        if references.len() > 64 {
+            return Err(Box::new(MessageIngressError::new(
+                MessageIngressErrorKind::InvalidArgument,
+                "一条消息最多引用 64 个 Session",
+            )));
         }
         let principal_id = principal_id.into();
         if !self
@@ -7744,6 +7759,61 @@ impl SessionHandle {
         } else {
             None
         };
+        // Resolve every logical reference before importing attachment bytes.
+        // A rejected reference must not leave a pending attachment manifest
+        // for startup recovery to clean later.
+        let mut canonical_references = Vec::with_capacity(references.len());
+        let mut referenced_session_ids = std::collections::HashSet::new();
+        for reference in references {
+            let crate::sdk::MessageReferenceInput::Session { session_id } = reference;
+            let session_id = session_id.trim();
+            if session_id.is_empty() {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    "Session 引用缺少 session_id",
+                )));
+            }
+            if !referenced_session_ids.insert(session_id.to_string()) {
+                continue;
+            }
+            let referenced = self.runtime.get_session(session_id).await?.ok_or_else(|| {
+                Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    format!("引用的 Session '{session_id}' 不存在"),
+                )) as RuntimeError
+            })?;
+            if referenced.status == crate::memory::SessionStatus::Archived {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Conflict,
+                    format!("引用的 Session '{session_id}' 已归档"),
+                )));
+            }
+            if referenced.agent_id != session.agent_id {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Forbidden,
+                    format!("引用的 Session '{session_id}' 不属于当前 Agent"),
+                )));
+            }
+            if !self
+                .runtime
+                .inner
+                .store
+                .verify_session_principal(session_id, &principal_id)
+                .await?
+            {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Forbidden,
+                    format!("Principal '{principal_id}' 无权引用 Session '{session_id}'"),
+                )));
+            }
+            canonical_references.push(json!({
+                "kind": "session",
+                "session_id": referenced.id,
+                "title": referenced.title,
+                "context_id": referenced.context_id,
+                "agent_id": referenced.agent_id,
+            }));
+        }
         let prepared_attachments = prepare_message_attachments(
             &self.runtime.inner.config.background_task.artifact_dir,
             &self.runtime.inner.config.model_input,
@@ -7773,6 +7843,9 @@ impl SessionHandle {
             ("text".to_string(), json!(text)),
             ("dispatch_mode".to_string(), json!(dispatch_mode.as_str())),
         ]);
+        if !canonical_references.is_empty() {
+            payload.insert("references".to_string(), Value::Array(canonical_references));
+        }
         if !prepared_attachments.metadata().is_empty() {
             payload.insert(
                 "attachments".to_string(),
@@ -7847,6 +7920,30 @@ impl SessionHandle {
                         "Principal '{}' 未绑定到 Session '{}'，拒绝接收消息",
                         principal_id, self.id
                     ),
+                )))
+            }
+            MessageClaim::InvalidReference { message } => {
+                discard_message_attachments(prepared_attachments, &event_id).await;
+                Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    message,
+                )))
+            }
+            MessageClaim::InactiveReference { session_id } => {
+                discard_message_attachments(prepared_attachments, &event_id).await;
+                Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Conflict,
+                    format!("引用的 Session '{session_id}' 已归档"),
+                )))
+            }
+            MessageClaim::ForbiddenReference {
+                session_id,
+                principal_id,
+            } => {
+                discard_message_attachments(prepared_attachments, &event_id).await;
+                Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Forbidden,
+                    format!("Principal '{principal_id}' 无权引用 Session '{session_id}'"),
                 )))
             }
             MessageClaim::Accepted { event, interrupted } => {
@@ -8169,6 +8266,16 @@ mod tests {
     use tempfile::NamedTempFile;
 
     struct ReplyClient;
+
+    struct SessionSignalCoordinationClient {
+        target_started: tokio::sync::Notify,
+        observed_concurrent_target: AtomicBool,
+        source_initial_calls: AtomicU64,
+        source_continuation_calls: AtomicU64,
+        source_reply_calls: AtomicU64,
+        target_initial_calls: AtomicU64,
+        target_continuation_calls: AtomicU64,
+    }
 
     struct ReviewerDecisionClient {
         calls: AtomicU64,
@@ -8563,6 +8670,90 @@ mod tests {
             _tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             Ok(text_response("runtime-ok"))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for SessionSignalCoordinationClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let prompt = messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let active_target = prompt.contains("(active-session session-signal-live-b)");
+            let active_source = prompt.contains("(active-session session-signal-live-a)");
+            let has_session_signal_result = messages
+                .iter()
+                .any(|message| message.role == "tool" && message.content.contains("signalled"));
+
+            if active_target {
+                if has_session_signal_result {
+                    self.target_continuation_calls
+                        .fetch_add(1, Ordering::SeqCst);
+                    return Ok(text_response("target-finished"));
+                }
+                self.target_initial_calls.fetch_add(1, Ordering::SeqCst);
+                assert!(prompt.contains("work-request-for-b"));
+                assert!(tools.iter().any(|tool| tool.name == "session_signal"));
+                self.target_started.notify_one();
+                return Ok(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: "session-signal-b-to-a".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "session_signal".to_string(),
+                        arguments: json!({
+                            "session_id": "session-signal-live-a",
+                            "content": "target-result-from-b"
+                        })
+                        .to_string(),
+                    }],
+                });
+            }
+
+            if !active_source {
+                return Ok(text_response("non-dialogue-maintenance"));
+            }
+            if prompt.contains("target-result-from-b") {
+                self.source_reply_calls.fetch_add(1, Ordering::SeqCst);
+                return Ok(text_response("source-received-result"));
+            }
+            if has_session_signal_result {
+                self.source_continuation_calls
+                    .fetch_add(1, Ordering::SeqCst);
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    self.target_started.notified(),
+                )
+                .await
+                .map_err(|_| {
+                    "target Session did not start while source Evaluation remained live"
+                })?;
+                self.observed_concurrent_target
+                    .store(true, Ordering::SeqCst);
+                return Ok(text_response("source-finished"));
+            }
+            self.source_initial_calls.fetch_add(1, Ordering::SeqCst);
+            assert!(prompt.contains("start-session-coordination"));
+            assert!(tools.iter().any(|tool| tool.name == "session_signal"));
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "session-signal-a-to-b".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "session_signal".to_string(),
+                    arguments: json!({
+                        "session_id": "session-signal-live-b",
+                        "content": "work-request-for-b"
+                    })
+                    .to_string(),
+                }],
+            })
         }
     }
 
@@ -14352,6 +14543,241 @@ mod tests {
         assert!(outbox
             .iter()
             .all(|entry| entry.event_id != "event-runtime-outbox-recovery"));
+    }
+
+    #[tokio::test]
+    async fn runtime_restart_dispatches_a_committed_session_signal_once() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let tool_policy = RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        };
+
+        let crashed_runtime = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(tool_policy)
+            .build()
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_agent(NewAgent {
+                id: crashed_runtime.identity().agent_id.clone(),
+                title: "Session Signal recovery agent".to_string(),
+                root_context_id: crashed_runtime.identity().context_id.clone(),
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_context(NewCognitiveContext {
+                id: crashed_runtime.identity().context_id.clone(),
+                agent_id: crashed_runtime.identity().agent_id.clone(),
+                title: "Session Signal recovery context".to_string(),
+            })
+            .await
+            .unwrap();
+        for session_id in [
+            "session-signal-recovery-source",
+            "session-signal-recovery-target",
+        ] {
+            crashed_runtime
+                .ensure_session(NewSession {
+                    id: session_id.to_string(),
+                    agent_id: crashed_runtime.identity().agent_id.clone(),
+                    context_id: crashed_runtime.identity().context_id.clone(),
+                    parent_session_id: None,
+                    title: session_id.to_string(),
+                    mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+        }
+        let event = Event::new(
+            "event-session-signal-recovery".to_string(),
+            "Agent-SessionSignal".to_string(),
+            crate::event::TYPE_SESSION_SIGNAL.to_string(),
+            "chat/session_signal".to_string(),
+            json!({
+                "agent_id": crashed_runtime.identity().agent_id,
+                "context_id": crashed_runtime.identity().context_id,
+                "session_id": "session-signal-recovery-target",
+                "source_context_id": crashed_runtime.identity().context_id,
+                "source_session_id": "session-signal-recovery-source",
+                "source_thread_id": "thread-session-signal-recovery-source",
+                "source_activation_id": "activation-session-signal-recovery-source",
+                "source_attempt_id": "attempt-session-signal-recovery-source",
+                "source_root_turn_id": "root-session-signal-recovery-source",
+                "source_trigger_event_id": "trigger-session-signal-recovery-source",
+                "correlation_id": "event-session-signal-recovery",
+                "dedupe_id": "event-session-signal-recovery",
+                "text": "recover this internal coordination message",
+                "cross_context": false
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert!(matches!(
+            crashed_runtime
+                .inner
+                .store
+                .claim_session_signal(&event)
+                .await
+                .unwrap(),
+            crate::memory::SessionSignalClaim::Accepted { .. }
+        ));
+        drop(crashed_runtime);
+
+        let recovered_runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(tool_policy)
+            .build()
+            .await
+            .unwrap();
+        let mut replies = recovered_runtime.subscribe("chat/reply", 4);
+        recovered_runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload["session_id"],
+            "session-signal-recovery-target"
+        );
+        assert_eq!(reply.payload["text"], "runtime-ok");
+        assert_eq!(
+            recovered_runtime
+                .inner
+                .store
+                .list_context_thread_signals(&recovered_runtime.identity().context_id, None)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.event_id == event.id)
+                .count(),
+            1
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), replies.recv())
+                .await
+                .is_err(),
+            "one durable Session Signal must produce exactly one target Activation reply"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_session_signal_is_symmetric_and_runs_target_concurrently() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(SessionSignalCoordinationClient {
+            target_started: tokio::sync::Notify::new(),
+            observed_concurrent_target: AtomicBool::new(false),
+            source_initial_calls: AtomicU64::new(0),
+            source_continuation_calls: AtomicU64::new(0),
+            source_reply_calls: AtomicU64::new(0),
+            target_initial_calls: AtomicU64::new(0),
+            target_continuation_calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        for session_id in ["session-signal-live-a", "session-signal-live-b"] {
+            runtime
+                .ensure_session(NewSession {
+                    id: session_id.to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    parent_session_id: None,
+                    title: session_id.to_string(),
+                    mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+        }
+        let source = runtime.session("session-signal-live-a");
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        source
+            .send(
+                "start-session-coordination",
+                "User-Test",
+                Some("client-session-signal-live".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let mut received = std::collections::HashSet::new();
+        let completed = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while received.len() < 3 {
+                let reply = replies.recv().await.unwrap();
+                let session_id = reply.payload["session_id"].as_str().unwrap();
+                let text = reply.payload["text"].as_str().unwrap();
+                received.insert((session_id.to_string(), text.to_string()));
+            }
+        })
+        .await;
+        assert!(
+            completed.is_ok(),
+            "Session Signal live flow timed out: received={received:?}, source_initial={}, source_continuation={}, source_reply={}, target_initial={}, target_continuation={}",
+            client.source_initial_calls.load(Ordering::SeqCst),
+            client.source_continuation_calls.load(Ordering::SeqCst),
+            client.source_reply_calls.load(Ordering::SeqCst),
+            client.target_initial_calls.load(Ordering::SeqCst),
+            client.target_continuation_calls.load(Ordering::SeqCst),
+        );
+        assert!(received.contains(&(
+            "session-signal-live-a".to_string(),
+            "source-finished".to_string()
+        )));
+        assert!(received.contains(&(
+            "session-signal-live-b".to_string(),
+            "target-finished".to_string()
+        )));
+        assert!(received.contains(&(
+            "session-signal-live-a".to_string(),
+            "source-received-result".to_string()
+        )));
+        assert!(client.observed_concurrent_target.load(Ordering::SeqCst));
+
+        let signals = runtime
+            .query_events(QueryFilter {
+                context_id: Some(runtime.identity().context_id.clone()),
+                topic: Some("chat/session_signal".to_string()),
+                top_k: Some(8),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(signals.len(), 2);
+        let a_to_b = signals
+            .iter()
+            .find(|event| {
+                event.payload["source_session_id"] == "session-signal-live-a"
+                    && event.payload["session_id"] == "session-signal-live-b"
+            })
+            .unwrap();
+        let b_to_a = signals
+            .iter()
+            .find(|event| {
+                event.payload["source_session_id"] == "session-signal-live-b"
+                    && event.payload["session_id"] == "session-signal-live-a"
+            })
+            .unwrap();
+        assert_eq!(b_to_a.payload["reply_to_event_id"], a_to_b.id);
+        assert_eq!(
+            b_to_a.payload["correlation_id"],
+            a_to_b.payload["correlation_id"]
+        );
     }
 
     #[tokio::test]

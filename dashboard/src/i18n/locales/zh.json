@@ -740,6 +740,9 @@
     "startChat": "开始对话",
     "roleYou": "你",
     "roleAgent": "Morphz",
+    "roleCoordination": "会话协调",
+    "coordinationFrom": "来自 {{session}}",
+    "sessionReferences": "引用的会话",
     "roleObjective": "目标",
     "roleDelivery": "任务结果",
     "roleRuntime": "运行时",
@@ -1206,6 +1209,14 @@
       "tooMany": "单条消息最多添加 {{count}} 个附件",
       "fileTooLarge": "单个附件不能超过 {{size}}",
       "totalTooLarge": "单条消息的附件总大小不能超过 {{size}}"
+    },
+    "sessionReferences": {
+      "menu": "引用已有会话",
+      "selected": "已选择的会话引用",
+      "currentContext": "当前上下文",
+      "otherContext": "其他上下文",
+      "remove": "移除会话引用",
+      "empty": "没有匹配的可见活跃会话"
     },
     "status": {
       "idle": "空闲",

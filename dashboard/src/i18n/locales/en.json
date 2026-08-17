@@ -740,6 +740,9 @@
     "startChat": "Start chat",
     "roleYou": "You",
     "roleAgent": "Morphz",
+    "roleCoordination": "Session coordination",
+    "coordinationFrom": "from {{session}}",
+    "sessionReferences": "Referenced Sessions",
     "roleObjective": "Objective",
     "roleDelivery": "Task result",
     "roleRuntime": "Runtime",
@@ -1206,6 +1209,14 @@
       "tooMany": "A message can contain at most {{count}} attachments",
       "fileTooLarge": "Each attachment must be {{size}} or smaller",
       "totalTooLarge": "Attachments in one message must total {{size}} or less"
+    },
+    "sessionReferences": {
+      "menu": "Reference an existing Session",
+      "selected": "Selected Session references",
+      "currentContext": "Current Context",
+      "otherContext": "Other Context",
+      "remove": "Remove Session reference",
+      "empty": "No visible active Session matches"
     },
     "status": {
       "idle": "Idle",

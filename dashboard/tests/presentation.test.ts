@@ -175,6 +175,14 @@ test('reply presentation follows delivery semantics rather than causal thread pr
   }), 'background')
 })
 
+test('Session Signals remain distinct internal coordination entries', () => {
+  assert.equal(conversationEventKind('chat/session_signal', {
+    source_session_id: 'session-source',
+    session_id: 'session-target',
+  }), 'coordination')
+  assert.equal(conversationEventLane('chat/session_signal', {}), 'dialogue')
+})
+
 test('dual-track presentation separates execution output without moving Runtime activity', () => {
   assert.equal(conversationEventLane('chat/user_message', {}), 'dialogue')
   assert.equal(conversationEventLane('chat/reply', {

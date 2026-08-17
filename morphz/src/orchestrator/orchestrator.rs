@@ -12,7 +12,7 @@ use crate::approval_authority::stable_approval_identity;
 use crate::config::OrchestratorConfig;
 use crate::event::{
     DurableEventDeliveryQueue, Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_INFER_REQUEST,
-    TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
+    TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::execution::{
     ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
@@ -508,7 +508,7 @@ Every response must explicitly choose one primary mode from `protocol.response-c
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily hides context_tx. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
 - schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. inspect reads state and revision. pause/resume/reschedule/cancel are expected_revision CAS controls; on conflict, inspect again and decide from current facts rather than retrying blindly. One control call contains one op. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
 
-Each model request has exactly one kernel.active-session, and ordinary text routes only there. To proactively message another Session of the same Agent, use send_message; it neither ends the current Evaluation nor starts evaluation in the target Session. context_tx never substitutes for Session output. An empty response is not terminal and the Runtime returns a bounded protocol retry.
+Each model request has exactly one kernel.active-session, and ordinary text routes only there. To write a visible Assistant message to another Session of the same Agent without evaluating it, use send_message. To deliver an internal coordination message and actively evaluate an existing Session, use session_signal; it creates a distinct target DialogueTurn and neither ends nor changes the active-session of the current Evaluation. Neither tool may target the current Session. context_tx never substitutes for Session output. An empty response is not terminal and the Runtime returns a bounded protocol retry.
 
 Use context_tx for atomic Mind changes and follow `protocol.context-tx-contract` exactly. Use the current kernel version in every transaction. reason is a transaction-level item and never an argument of retire or unprotect. `revise` completely replaces a frame body rather than merging it, so restate every field that must remain. Create an explicit checkpoint before high-risk restructuring and use rollback with a reason if necessary.
 
@@ -5480,6 +5480,7 @@ impl Orchestrator {
             return Ok(());
         }
         if event.event_type != TYPE_USER_MESSAGE
+            && event.event_type != TYPE_SESSION_SIGNAL
             && event.event_type != TYPE_TOOL_OUTPUT
             && event.event_type != TYPE_INFER_REQUEST
             && event.topic != "runtime/action_group_settled"
@@ -5630,9 +5631,14 @@ impl Orchestrator {
         };
 
         if let Some(cancelled_at) = self.cancelled_at.get(&session_id).map(|value| *value) {
-            if event.event_type == TYPE_USER_MESSAGE && event.timestamp > cancelled_at {
-                // A later explicit user message resumes a cancelled Session. Tool
-                // completions never resume it on their own.
+            if matches!(
+                event.event_type.as_str(),
+                TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+            ) && event.timestamp > cancelled_at
+            {
+                // A later directed user or internal coordination message
+                // resumes a cancelled Session. Tool completions never resume
+                // it on their own.
                 self.cancelled_at.remove(&session_id);
             } else {
                 if let Some(store) = self.context_engine.session_store() {
@@ -16811,7 +16817,10 @@ fn legacy_plan_effect_sequence(
 }
 
 fn is_dialogue_trigger(event: &Event) -> bool {
-    event.event_type == TYPE_USER_MESSAGE || event.topic == "chat/dialogue_retry"
+    matches!(
+        event.event_type.as_str(),
+        TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+    ) || event.topic == "chat/dialogue_retry"
 }
 
 fn should_force_final_for_maintenance(

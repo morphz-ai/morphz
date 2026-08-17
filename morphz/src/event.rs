@@ -23,6 +23,11 @@ pub const TYPE_CONTEXT_SEED: &str = "context_seed";
 /// would invite the Agent to answer the user, when what is waiting on the value
 /// is its own half-evaluated program.
 pub const TYPE_INFER_REQUEST: &str = "infer_request";
+/// An internal coordination message addressed to another Session of the same
+/// Agent. It is deliberately distinct from a user message and from a visible
+/// Assistant delivery: the Runtime routes it into the target Session's own
+/// DialogueTurn and evaluates it there.
+pub const TYPE_SESSION_SIGNAL: &str = "session_signal";
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -158,6 +163,7 @@ pub fn is_context_observation(event: &Event) -> bool {
     matches!(
         event.event_type.as_str(),
         TYPE_USER_MESSAGE
+            | TYPE_SESSION_SIGNAL
             | TYPE_TOOL_OUTPUT
             | TYPE_AGENT_CALL
             | TYPE_EXCEPTION
@@ -180,7 +186,10 @@ pub fn advances_cognitive_clock(event: &Event) -> bool {
     {
         return true;
     }
-    if event.event_type == TYPE_USER_MESSAGE {
+    if matches!(
+        event.event_type.as_str(),
+        TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+    ) {
         return true;
     }
     if event.event_type == TYPE_TOOL_OUTPUT {

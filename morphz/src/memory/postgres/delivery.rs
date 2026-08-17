@@ -1,11 +1,13 @@
 use super::{append_event_in_tx, now_text, PostgresStore, StoreError};
-use crate::event::Event;
+use crate::event::{Event, TYPE_SESSION_SIGNAL};
 use crate::memory::{
     message_request_fingerprint, stable_thread_id, stable_thread_signal_id, DeliveryIngressStore,
-    InterruptedDialogueTurn, MessageClaim, MessageDispatchMode, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    InterruptedDialogueTurn, MessageClaim, MessageDispatchMode, SessionSignalClaim,
+    DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use serde_json::{json, Value as JsonValue};
 use sqlx::{PgPool, Postgres, Row};
+use std::collections::{HashMap, HashSet};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
@@ -402,11 +404,58 @@ impl DeliveryIngressStore for PostgresStore {
             .and_then(JsonValue::as_str)
             .ok_or("用户消息缺少 principal_id")?;
         let request_fingerprint = message_request_fingerprint(&event.payload)?;
+        let referenced_session_ids = event
+            .payload
+            .get("references")
+            .and_then(JsonValue::as_array)
+            .map(|references| {
+                references
+                    .iter()
+                    .filter_map(|reference| {
+                        reference
+                            .get("session_id")
+                            .and_then(JsonValue::as_str)
+                            .map(str::to_string)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let mut tx = self.pool.begin().await?;
-        let session = sqlx::query(
+        let mut locked_references = HashMap::new();
+        if !referenced_session_ids.is_empty() {
+            // Lock the source and every referenced Session in one stable order.
+            // This preserves the authorization snapshot without introducing an
+            // A -> B / B -> A lock-order deadlock between concurrent messages.
+            let mut session_ids = referenced_session_ids.clone();
+            session_ids.push(session_id.to_string());
+            session_ids.sort();
+            session_ids.dedup();
+            for row in sqlx::query(
+                r#"SELECT id, agent_id, context_id, status
+                   FROM sessions WHERE id = ANY($1)
+                   ORDER BY id FOR UPDATE"#,
+            )
+            .bind(&session_ids)
+            .fetch_all(&mut *tx)
+            .await?
+            {
+                locked_references.insert(
+                    row.get::<String, _>("id"),
+                    (
+                        row.get::<String, _>("agent_id"),
+                        row.get::<String, _>("context_id"),
+                        row.get::<String, _>("status"),
+                    ),
+                );
+            }
+        }
+        let session = sqlx::query(if referenced_session_ids.is_empty() {
             r#"SELECT agent_id, context_id, status, attention_state, attention_revision
-               FROM sessions WHERE id = $1 FOR UPDATE"#,
-        )
+               FROM sessions WHERE id = $1 FOR UPDATE"#
+        } else {
+            r#"SELECT agent_id, context_id, status, attention_state, attention_revision
+               FROM sessions WHERE id = $1"#
+        })
         .bind(session_id)
         .fetch_optional(&mut *tx)
         .await?
@@ -503,6 +552,84 @@ impl DeliveryIngressStore for PostgresStore {
                     event_id: existing_event_id,
                 }
             });
+        }
+
+        if let Some(references) = event
+            .payload
+            .get("references")
+            .and_then(JsonValue::as_array)
+        {
+            let bound_sessions = if referenced_session_ids.is_empty() {
+                HashSet::new()
+            } else {
+                sqlx::query_scalar::<_, String>(
+                    r#"SELECT session_id FROM session_principal_bindings
+                       WHERE principal_id = $1 AND session_id = ANY($2)
+                         AND unbound_at IS NULL
+                       ORDER BY session_id FOR SHARE"#,
+                )
+                .bind(event_principal_id)
+                .bind(&referenced_session_ids)
+                .fetch_all(&mut *tx)
+                .await?
+                .into_iter()
+                .collect::<HashSet<_>>()
+            };
+            let source_agent_id = session.get::<String, _>("agent_id");
+            for reference in references {
+                if reference.get("kind").and_then(JsonValue::as_str) != Some("session") {
+                    tx.rollback().await?;
+                    return Ok(MessageClaim::InvalidReference {
+                        message: "用户消息包含不支持的引用类型".to_string(),
+                    });
+                }
+                let Some(referenced_session_id) =
+                    reference.get("session_id").and_then(JsonValue::as_str)
+                else {
+                    tx.rollback().await?;
+                    return Ok(MessageClaim::InvalidReference {
+                        message: "Session 引用缺少 session_id".to_string(),
+                    });
+                };
+                let Some((referenced_agent_id, referenced_context_id, referenced_status)) =
+                    locked_references.get(referenced_session_id)
+                else {
+                    tx.rollback().await?;
+                    return Ok(MessageClaim::InvalidReference {
+                        message: format!("引用的 Session '{referenced_session_id}' 不存在"),
+                    });
+                };
+                if reference.get("agent_id").and_then(JsonValue::as_str)
+                    != Some(referenced_agent_id.as_str())
+                    || reference.get("context_id").and_then(JsonValue::as_str)
+                        != Some(referenced_context_id.as_str())
+                {
+                    tx.rollback().await?;
+                    return Ok(MessageClaim::InvalidReference {
+                        message: format!("Session 引用 '{referenced_session_id}' 的权威路由已改变"),
+                    });
+                }
+                if referenced_agent_id != &source_agent_id {
+                    tx.rollback().await?;
+                    return Ok(MessageClaim::ForbiddenReference {
+                        session_id: referenced_session_id.to_string(),
+                        principal_id: event_principal_id.to_string(),
+                    });
+                }
+                if referenced_status == "archived" {
+                    tx.rollback().await?;
+                    return Ok(MessageClaim::InactiveReference {
+                        session_id: referenced_session_id.to_string(),
+                    });
+                }
+                if !bound_sessions.contains(referenced_session_id) {
+                    tx.rollback().await?;
+                    return Ok(MessageClaim::ForbiddenReference {
+                        session_id: referenced_session_id.to_string(),
+                        principal_id: event_principal_id.to_string(),
+                    });
+                }
+            }
         }
 
         let agent_id = session.get::<String, _>("agent_id");
@@ -602,6 +729,141 @@ impl DeliveryIngressStore for PostgresStore {
         Ok(MessageClaim::Accepted {
             event: claimed_event,
             interrupted,
+        })
+    }
+
+    async fn claim_session_signal(&self, event: &Event) -> Result<SessionSignalClaim, StoreError> {
+        if event.event_type != TYPE_SESSION_SIGNAL || event.topic != "chat/session_signal" {
+            return Err("Session Signal Event 类型或 topic 不正确".into());
+        }
+        let target_session_id = event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Session Signal 缺少目标 session_id")?;
+        let target_context_id = event
+            .payload
+            .get("context_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Session Signal 缺少目标 context_id")?;
+        let source_session_id = event
+            .payload
+            .get("source_session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Session Signal 缺少 source_session_id")?;
+        let source_context_id = event
+            .payload
+            .get("source_context_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Session Signal 缺少 source_context_id")?;
+        if target_session_id == source_session_id {
+            return Err("session_signal 只能投递给另一个 Session".into());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let target = sqlx::query(
+            "SELECT agent_id, context_id, status FROM sessions WHERE id = $1 FOR UPDATE",
+        )
+        .bind(target_session_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| format!("目标 Session '{target_session_id}' 不存在"))?;
+        let target_agent_id = target.get::<String, _>("agent_id");
+        let target_registry_context_id = target.get::<String, _>("context_id");
+        if target_registry_context_id != target_context_id {
+            return Err(format!(
+                "Session Signal 目标 Context 路由不一致：Event='{}'，Registry='{}'",
+                target_context_id, target_registry_context_id
+            )
+            .into());
+        }
+        if target.get::<String, _>("status") == "archived" {
+            tx.commit().await?;
+            return Ok(SessionSignalClaim::InactiveSession);
+        }
+        let source = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = $1")
+            .bind(source_session_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("来源 Session '{source_session_id}' 不存在"))?;
+        let source_agent_id = source.get::<String, _>("agent_id");
+        let source_registry_context_id = source.get::<String, _>("context_id");
+        if source_registry_context_id != source_context_id {
+            return Err(format!(
+                "Session Signal 来源 Context 路由不一致：Event='{}'，Registry='{}'",
+                source_context_id, source_registry_context_id
+            )
+            .into());
+        }
+        if source_agent_id != target_agent_id {
+            return Err("session_signal 暂不允许跨 Agent 投递".into());
+        }
+
+        if let Some(existing_payload) =
+            sqlx::query_scalar::<_, JsonValue>("SELECT payload FROM events WHERE id = $1")
+                .bind(&event.id)
+                .fetch_optional(&mut *tx)
+                .await?
+        {
+            if existing_payload != JsonValue::Object(event.payload.clone()) {
+                return Err(
+                    format!("Session Signal Event ID '{}' 已绑定到不同消息", event.id).into(),
+                );
+            }
+            tx.commit().await?;
+            return Ok(SessionSignalClaim::Existing {
+                event_id: event.id.clone(),
+            });
+        }
+
+        if let Some(principal_id) = event
+            .payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str)
+        {
+            let principal_is_bound = sqlx::query_scalar::<_, String>(
+                r#"SELECT principal_id FROM session_principal_bindings
+                   WHERE session_id = $1 AND principal_id = $2 AND unbound_at IS NULL
+                   FOR SHARE"#,
+            )
+            .bind(target_session_id)
+            .bind(principal_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+            if !principal_is_bound {
+                tx.rollback().await?;
+                return Ok(SessionSignalClaim::ForbiddenPrincipal {
+                    principal_id: principal_id.to_string(),
+                });
+            }
+        }
+
+        if !append_event_in_tx(&mut tx, event).await? {
+            return Err(
+                format!("Session Signal Event '{}' 在原子提交期间发生冲突", event.id).into(),
+            );
+        }
+        append_dialogue_signal_in_tx(
+            &mut tx,
+            &target_agent_id,
+            &target_registry_context_id,
+            target_session_id,
+            event,
+            MessageDispatchMode::FollowUp,
+        )
+        .await?;
+        let timestamp = event
+            .timestamp
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query("UPDATE sessions SET updated_at = $1, last_activity_at = $1 WHERE id = $2")
+            .bind(&timestamp)
+            .bind(target_session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(SessionSignalClaim::Accepted {
+            event: event.clone(),
         })
     }
 }

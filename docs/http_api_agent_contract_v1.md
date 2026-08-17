@@ -296,6 +296,21 @@ POST /api/sessions/{session_id}/messages
 }
 ```
 
+引用已有 Session 的消息：
+
+```json
+{
+  "text": "把这个需求同步给 @开发",
+  "client_message_id": "caller-generated-unique-id",
+  "references": [
+    {
+      "kind": "session",
+      "session_id": "session-stable-id"
+    }
+  ]
+}
+```
+
 也可直接传完整 Data URL；服务会剥离 `data:*;base64,` 前缀：
 
 ```json
@@ -314,7 +329,7 @@ POST /api/sessions/{session_id}/messages
 
 规则：
 
-- `text` 最多 1,000,000 字符；正文与附件不能同时为空，因此允许纯附件消息。
+- `text` 最多 1,000,000 字符；正文、附件与引用不能同时为空，因此允许纯附件或纯引用消息。
 - 强烈建议始终提供 `client_message_id`。
 - 首次接受返回 `202 Accepted`。
 - 使用同一个 `client_message_id` 重试时返回同一个逻辑消息的 `200 OK`，且 `duplicate: true`。
@@ -324,6 +339,8 @@ POST /api/sessions/{session_id}/messages
   - `parallel`：立即创建独立 DialogueTurn，并绕过当前 Session 的串行对话通道；
   - `follow_up`：创建独立 DialogueTurn，等待紧邻的上一条用户消息达到终态并完成用户可见交付后再运行。
 - 发送模式是单次请求属性；它不会修改 Runtime 的默认配置，并会固化在 `chat/user_message` Event 中以保证重放语义稳定。
+- `references` 是稳定、结构化的对象引用。当前只支持 `{ "kind": "session", "session_id": "..." }`，单条消息最多 64 个；Runtime 会重新校验 Principal 可见范围、同 Agent 边界和归档状态，并在 Event 中补齐权威标题、Context 和 Agent 信息。
+- Session 引用不读取目标 Session 的消息历史，不导入另一 Context 的 Mind，不激活目标，也不创建 Session；它只向当前 Agent 提供可用于 `send_message` / `session_signal` 的稳定身份。
 - `attachments` 可省略，最多 8 个。
 - 单个附件解码后最多 20 MiB，一条消息的附件解码后合计最多 40 MiB。
 - `name` 不能为空，最长 255 个字符。服务只保留文件名部分，例如 `../diagram.png` 会归一化为 `diagram.png`。
@@ -366,6 +383,24 @@ POST /api/sessions/{session_id}/messages
 ```
 
 `storage_path` 是 Runtime 内部路径，不是公共下载 URL；外部客户端不应依赖它。附件字节按摘要存到配置的 artifact 目录，Event History 不保存附件原文。
+
+`payload.references` 保存 Runtime 校验后的稳定引用和发送时的展示快照：
+
+```json
+{
+  "references": [
+    {
+      "kind": "session",
+      "session_id": "session-stable-id",
+      "title": "开发",
+      "context_id": "context-stable-id",
+      "agent_id": "agent-stable-id"
+    }
+  ]
+}
+```
+
+后续重命名只改变目录中的展示标题，不改变已经持久化的 `session_id` 指向。
 
 ### 读取 Event History
 

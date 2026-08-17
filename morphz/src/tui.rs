@@ -398,6 +398,7 @@ enum EntryKind {
     User,
     Reasoning,
     Assistant,
+    Coordination,
     Progress,
     Tool,
     System,
@@ -871,6 +872,7 @@ impl UiState {
             "chat/user_message" => self.push(EntryKind::User, text),
             "runtime/model_reasoning_summary" => self.ingest_reasoning_summary(event),
             "chat/reply" | "chat/outbound_message" => self.push(EntryKind::Assistant, text),
+            "chat/session_signal" => self.push_session_signal(event),
             "chat/progress" => self.push(EntryKind::Progress, text),
             "runtime/tool_calls_selected" => {
                 if event_thread_kind(&event.payload) != "execution" {
@@ -1005,6 +1007,7 @@ impl UiState {
                     .unwrap_or_default();
                 self.push(EntryKind::Assistant, text);
             }
+            "chat/session_signal" => self.push_session_signal(&event),
             "chat/no_reply" => {
                 self.resolve_causal_live_attempt(&event);
                 let background = event
@@ -1105,6 +1108,27 @@ impl UiState {
             }
             _ => {}
         }
+    }
+
+    fn push_session_signal(&mut self, event: &RuntimeEvent) {
+        let text = event
+            .payload
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let source_session_id = event
+            .payload
+            .get("source_session_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        self.push(
+            EntryKind::Coordination,
+            if self.locale.is_chinese() {
+                format!("来自会话 {}\n{}", short_id(source_session_id), text)
+            } else {
+                format!("from Session {}\n{}", short_id(source_session_id), text)
+            },
+        );
     }
 
     fn on_model_stream(
@@ -3265,6 +3289,12 @@ impl UiState {
                     self.theme.text_primary,
                     Modifier::empty(),
                 ),
+                EntryKind::Coordination => (
+                    "↔ ",
+                    self.theme.brand,
+                    self.theme.text_secondary,
+                    Modifier::empty(),
+                ),
                 EntryKind::System => (
                     "• ",
                     self.theme.text_muted,
@@ -4196,6 +4226,7 @@ pub async fn run(
                         | "chat/reply"
                         | "chat/no_reply"
                         | "chat/outbound_message"
+                        | "chat/session_signal"
                         | "chat/tool_output"
                         | "context/transaction"
                         | "runtime/model_attempt_state"
@@ -4243,6 +4274,7 @@ async fn submit_prompt(
                 actor: "User".to_string(),
                 client_message_id: Some(message_id),
                 attachments: Vec::new(),
+                references: Vec::new(),
                 harness,
                 dispatch_mode: None,
             },

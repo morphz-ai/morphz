@@ -1,6 +1,9 @@
 use crate::approval::{ApprovalAction, ApprovalProvider, CapabilityDelta, DenyAllApprovalProvider};
 use crate::config::BackgroundTaskConfig;
-use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT};
+use crate::event::{
+    Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_FILE_CHANGE, TYPE_SESSION_SIGNAL,
+    TYPE_TOOL_OUTPUT,
+};
 use crate::execution::{
     deterministic_job_id, ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat,
     JobOutcome, JobReceipt,
@@ -12,9 +15,9 @@ use crate::memory::{
     NewSchedule, NewScheduledObjective, NewThread, NewThreadGroup, NewThreadGroupMember,
     NewThreadGroupPlan, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
     RuntimeTimerKind, RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus,
-    ScheduledObjectiveWaitBinding, SessionStatus, SessionStore, ThreadGroupPolicy, ThreadKind,
-    ThreadLifecycle, ThreadLifetime, ThreadPromotionMutation, ThreadPromotionRequest, ThreadRecord,
-    ThreadSupervision, ThreadSupervisorKind,
+    ScheduledObjectiveWaitBinding, SessionSignalClaim, SessionStatus, SessionStore,
+    ThreadGroupPolicy, ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadPromotionMutation,
+    ThreadPromotionRequest, ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::TYPE_OBJECTIVE_CONTROL;
 use crate::permission::{
@@ -694,6 +697,248 @@ impl Tool for SendMessageTool {
             "guidance": "The message was delivered to the target Session; the current Evaluation has not ended. If the current active Session needs a reply, eventually return ordinary assistant text."
         })
         .to_string())
+    }
+}
+
+/// Durable, symmetric Session-to-Session coordination. Unlike
+/// `send_message`, this tool does not emit an Assistant message into the
+/// target dialogue. It commits a distinct internal Event and wakes a fresh
+/// DialogueTurn owned by the target Session.
+pub struct SessionSignalTool {
+    bus: Arc<InMemoryEventBus>,
+    events: Arc<dyn EventStore>,
+    sessions: Arc<dyn SessionStore>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionSignalArgs {
+    session_id: String,
+    content: String,
+}
+
+impl SessionSignalTool {
+    pub fn new(
+        bus: Arc<InMemoryEventBus>,
+        events: Arc<dyn EventStore>,
+        sessions: Arc<dyn SessionStore>,
+    ) -> Self {
+        Self {
+            bus,
+            events,
+            sessions,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for SessionSignalTool {
+    fn name(&self) -> &str {
+        "session_signal"
+    }
+
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "Send an internal coordination message to another Session of the same Agent and actively evaluate it there. The target receives a distinct internal message, not a User or Assistant message. This call does not end the current Evaluation; the target may respond with the same tool.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Target Session ID owned by the current Agent; it cannot be the active Session"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Non-empty coordination message for the target Session"
+                    }
+                },
+                "required": ["session_id", "content"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: SessionSignalArgs = serde_json::from_str(arguments)?;
+        let source_session_id = CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "session_signal 缺少当前 Session 路由")?;
+        let source_context_id = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "session_signal 缺少当前 Context 路由")?;
+        let source_attempt_id = CURRENT_ATTEMPT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "session_signal 缺少当前 Evaluation 路由")?;
+        let causal_route = CURRENT_CAUSAL_ROUTE
+            .try_with(Clone::clone)
+            .map_err(|_| "session_signal 缺少当前 Activation 因果路由")?
+            .ok_or("session_signal 只能在持久化 Activation 中执行")?;
+        let target_session_id = args.session_id.trim();
+        let content = args.content.trim();
+        if target_session_id.is_empty() {
+            return Err("session_signal.session_id 不能为空".into());
+        }
+        if target_session_id == source_session_id {
+            return Err("session_signal 只能投递给另一个 Session".into());
+        }
+        if content.is_empty() {
+            return Err("session_signal.content 不能为空".into());
+        }
+        if content.chars().count() > 1_000_000 {
+            return Err("session_signal.content 超过 1,000,000 字符".into());
+        }
+
+        let source = self
+            .sessions
+            .get_session(&source_session_id)
+            .await?
+            .ok_or("当前 Session 不存在")?;
+        if source.context_id != source_context_id {
+            return Err("当前 Session 与 Context 因果路由不一致".into());
+        }
+        let target = self
+            .sessions
+            .get_session(target_session_id)
+            .await?
+            .ok_or_else(|| format!("目标 Session '{target_session_id}' 不存在"))?;
+        if source.agent_id != target.agent_id {
+            return Err("session_signal 暂不允许跨 Agent 投递".into());
+        }
+        if target.status == SessionStatus::Archived {
+            return Err("目标 Session 已归档，不能接收内部协调消息".into());
+        }
+
+        let digest = sha256_hex(
+            format!(
+                "{}\0{}\0{}\0{}",
+                source_attempt_id, causal_route.activation_id, target_session_id, content
+            )
+            .as_bytes(),
+        );
+        let event_id = format!("session_signal_{}_{}", source_attempt_id, &digest[..16]);
+        let root_event = self
+            .events
+            .query(QueryFilter {
+                event_id: Some(causal_route.root_turn_id.clone()),
+                context_id: Some(source_context_id.clone()),
+                session_id: Some(source_session_id.clone()),
+                ..QueryFilter::default()
+            })
+            .await?
+            .into_iter()
+            .find(|event| event.id == causal_route.root_turn_id);
+        let reply_to_event_id = root_event
+            .as_ref()
+            .filter(|event| event.topic == "chat/session_signal")
+            .map(|event| event.id.clone());
+        let correlation_id = root_event
+            .as_ref()
+            .filter(|event| event.topic == "chat/session_signal")
+            .and_then(|event| event.payload.get("correlation_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| event_id.clone());
+        let initiating_principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
+        let mut payload = serde_json::Map::from_iter([
+            ("agent_id".to_string(), serde_json::json!(&target.agent_id)),
+            (
+                "context_id".to_string(),
+                serde_json::json!(&target.context_id),
+            ),
+            ("session_id".to_string(), serde_json::json!(&target.id)),
+            (
+                "source_context_id".to_string(),
+                serde_json::json!(&source_context_id),
+            ),
+            (
+                "source_session_id".to_string(),
+                serde_json::json!(&source_session_id),
+            ),
+            (
+                "source_thread_id".to_string(),
+                serde_json::json!(&causal_route.thread_id),
+            ),
+            (
+                "source_activation_id".to_string(),
+                serde_json::json!(&causal_route.activation_id),
+            ),
+            (
+                "source_attempt_id".to_string(),
+                serde_json::json!(&source_attempt_id),
+            ),
+            (
+                "source_root_turn_id".to_string(),
+                serde_json::json!(&causal_route.root_turn_id),
+            ),
+            (
+                "source_trigger_event_id".to_string(),
+                serde_json::json!(&causal_route.trigger_event_id),
+            ),
+            (
+                "correlation_id".to_string(),
+                serde_json::json!(&correlation_id),
+            ),
+            ("dedupe_id".to_string(), serde_json::json!(&event_id)),
+            ("text".to_string(), serde_json::json!(content)),
+            (
+                "cross_context".to_string(),
+                serde_json::json!(source_context_id != target.context_id),
+            ),
+        ]);
+        if let Some(reply_to_event_id) = &reply_to_event_id {
+            payload.insert(
+                "reply_to_event_id".to_string(),
+                serde_json::json!(reply_to_event_id),
+            );
+        }
+        if let Some(principal_id) = &initiating_principal_id {
+            payload.insert("principal_id".to_string(), serde_json::json!(principal_id));
+        }
+        let event = Event::new(
+            event_id.clone(),
+            "Agent-SessionSignal".to_string(),
+            TYPE_SESSION_SIGNAL.to_string(),
+            "chat/session_signal".to_string(),
+            payload,
+        );
+        match self.sessions.claim_session_signal(&event).await? {
+            SessionSignalClaim::Accepted { event } => {
+                self.bus.dispatch_persisted(event).await?;
+                Ok(serde_json::json!({
+                    "status": "signalled",
+                    "session_id": target_session_id,
+                    "event_id": event_id,
+                    "correlation_id": correlation_id,
+                    "duplicate": false,
+                    "guidance": "The target Session has an independent internal DialogueTurn. Continue the current Evaluation normally; use session_signal again only when further coordination is needed."
+                })
+                .to_string())
+            }
+            SessionSignalClaim::Existing { event_id } => Ok(serde_json::json!({
+                "status": "signalled",
+                "session_id": target_session_id,
+                "event_id": event_id,
+                "correlation_id": correlation_id,
+                "duplicate": true,
+                "guidance": "This logical Signal was already committed; no duplicate target Activation was created."
+            })
+            .to_string()),
+            SessionSignalClaim::InactiveSession => {
+                Err("目标 Session 已归档，不能接收内部协调消息".into())
+            }
+            SessionSignalClaim::ForbiddenPrincipal { principal_id } => Err(format!(
+                "Principal '{principal_id}' 无权向目标 Session '{target_session_id}' 投递内部协调消息"
+            )
+            .into()),
+        }
     }
 }
 
@@ -8267,6 +8512,134 @@ Body
         assert_eq!(event.payload["context_id"], "context-b");
         assert_eq!(event.payload["source_session_id"], "session-a");
         assert_eq!(event.payload["text"], "background task finished");
+        assert!(store
+            .list_context_thread_signals("context-b", None)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_signal_commits_one_target_dialogue_turn_and_is_idempotent() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-session-signal".to_string(),
+                title: "Session Signal Agent".to_string(),
+                root_context_id: "context-session-signal-a".to_string(),
+            })
+            .await
+            .unwrap();
+        for context_id in ["context-session-signal-a", "context-session-signal-b"] {
+            store
+                .ensure_context(NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: "agent-session-signal".to_string(),
+                    title: context_id.to_string(),
+                })
+                .await
+                .unwrap();
+        }
+        for (session_id, context_id) in [
+            ("session-session-signal-a", "context-session-signal-a"),
+            ("session-session-signal-b", "context-session-signal-b"),
+        ] {
+            store
+                .ensure_session(NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "agent-session-signal".to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: session_id.to_string(),
+                    mount_kind: SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+        }
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/session_signal".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let tool = SessionSignalTool::new(
+            Arc::clone(&bus),
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+        );
+        let arguments = serde_json::json!({
+            "session_id": "session-session-signal-b",
+            "content": "Please review the launch plan"
+        })
+        .to_string();
+        let route = Some(ToolCausalRoute {
+            thread_id: "thread-session-signal-a".to_string(),
+            activation_id: "activation-session-signal-a".to_string(),
+            root_turn_id: "root-session-signal-a".to_string(),
+            trigger_event_id: "trigger-session-signal-a".to_string(),
+            trigger_sequence: 7,
+        });
+        let execute = || {
+            CURRENT_SESSION_ID.scope(
+                "session-session-signal-a".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-session-signal-a".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-session-signal-a".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(route.clone(), tool.execute(&arguments)),
+                    ),
+                ),
+            )
+        };
+
+        let first: serde_json::Value = serde_json::from_str(&execute().await.unwrap()).unwrap();
+        assert_eq!(first["status"], "signalled");
+        assert_eq!(first["duplicate"], false);
+        let event = receiver.recv().await.unwrap();
+        assert_eq!(event.topic, "chat/session_signal");
+        assert_eq!(event.payload["context_id"], "context-session-signal-b");
+        assert_eq!(event.payload["session_id"], "session-session-signal-b");
+        assert_eq!(
+            event.payload["source_context_id"],
+            "context-session-signal-a"
+        );
+        assert_eq!(
+            event.payload["source_session_id"],
+            "session-session-signal-a"
+        );
+        assert_eq!(event.payload["cross_context"], true);
+
+        let second: serde_json::Value = serde_json::from_str(&execute().await.unwrap()).unwrap();
+        assert_eq!(second["duplicate"], true);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), receiver.recv())
+                .await
+                .is_err()
+        );
+        let signals = store
+            .list_context_thread_signals("context-session-signal-b", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            signals
+                .iter()
+                .filter(|signal| signal.event_id == event.id)
+                .count(),
+            1
+        );
+        let target_thread = store.get_thread_by_root(&event.id).await.unwrap().unwrap();
+        assert_eq!(target_thread.session_id, "session-session-signal-b");
+        assert_eq!(target_thread.context_id, "context-session-signal-b");
+        assert_eq!(target_thread.kind, ThreadKind::DialogueTurn);
     }
 
     #[tokio::test]

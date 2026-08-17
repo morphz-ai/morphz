@@ -15,7 +15,7 @@ export interface PresentedToolCall {
   truncated?: boolean
 }
 
-export type ConversationEventKind = 'user' | 'agent' | 'background' | 'progress' | 'reasoning' | 'system'
+export type ConversationEventKind = 'user' | 'agent' | 'coordination' | 'background' | 'progress' | 'reasoning' | 'system'
 export type ConversationLane = 'dialogue' | 'execution_output'
 export type ConversationWindowLane = 'merged' | ConversationLane
 
@@ -83,6 +83,7 @@ export function conversationEventKind(
       : 'agent'
   }
   if (topic === 'chat/outbound_message') return 'agent'
+  if (topic === 'chat/session_signal') return 'coordination'
   if (topic === 'chat/progress') return 'progress'
   if (topic === 'chat/assistant_call' && payload.terminal_outcome !== true) return 'reasoning'
   if (topic === 'chat/cancelled') return 'system'

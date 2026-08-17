@@ -87,6 +87,13 @@ import {
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
 import { resolveSelectedModelOption } from './app/modelSelection'
+import {
+  insertSessionMention,
+  rankSessionReferenceCandidates,
+  sessionMentionAt,
+  type SessionMentionRange,
+  type SessionReferenceCandidate,
+} from './app/sessionReferences'
 import type {
   ApprovalRecord,
   ScheduleRecord,
@@ -1056,6 +1063,13 @@ interface EventPayload {
     size_bytes?: number
     sha256?: string
   }>
+  references?: Array<{
+    kind: 'session'
+    session_id: string
+    title?: string
+    context_id?: string
+    agent_id?: string
+  }>
   [key: string]: unknown
 }
 
@@ -1102,6 +1116,12 @@ interface ComposerAttachment {
   size: number
   dataBase64: string
   previewUrl?: string
+}
+
+interface ComposerSessionReference {
+  sessionId: string
+  title: string
+  contextId: string
 }
 
 type MessageDispatchMode = 'interrupt' | 'parallel' | 'follow_up'
@@ -1446,10 +1466,10 @@ interface DialogueHistorySearchHit {
   event_id: string
   sequence?: number
   session_id: string
-  topic: 'chat/user_message' | 'chat/reply' | 'chat/outbound_message'
+  topic: 'chat/user_message' | 'chat/reply' | 'chat/outbound_message' | 'chat/session_signal'
   timestamp: string
   actor: string
-  kind: 'user' | 'agent' | 'execution_result'
+  kind: 'user' | 'agent' | 'coordination' | 'execution_result'
   score: number
   retired: boolean
   preview: string
@@ -2295,6 +2315,31 @@ const MessageAttachments = memo(function MessageAttachments({
   )
 })
 
+const MessageSessionReferences = memo(function MessageSessionReferences({
+  references,
+  currentContextId,
+  t,
+}: {
+  references: EventPayload['references']
+  currentContextId: string
+  t: TFunction
+}) {
+  if (!references?.length) return null
+  return (
+    <div className="message-session-references" aria-label={t('conversation.sessionReferences')}>
+      {references.map(reference => (
+        <span key={reference.session_id} title={reference.session_id}>
+          <MessageSquare size={11} />
+          <strong>@{reference.title || shortId(reference.session_id, 22)}</strong>
+          {reference.context_id && reference.context_id !== currentContextId && (
+            <small>{t('composer.sessionReferences.otherContext')}</small>
+          )}
+        </span>
+      ))}
+    </div>
+  )
+})
+
 function formatFileSize(bytes: number): string {
   const mib = 1024 * 1024
   const kib = 1024
@@ -2321,6 +2366,9 @@ const Composer = memo(function Composer({
   onCancel,
   onError,
   modelInputPolicy,
+  sessionCandidates,
+  currentAgentId,
+  currentContextId,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>
   selectedSessionId: string
@@ -2336,14 +2384,21 @@ const Composer = memo(function Composer({
   onSend: (
     message: string,
     attachments: ComposerAttachment[],
+    references: ComposerSessionReference[],
     dispatchMode?: MessageDispatchMode,
   ) => Promise<boolean>
   onCancel: () => void
   onError: (message: string) => void
   modelInputPolicy?: RuntimeStatus['model_input']
+  sessionCandidates: SessionReferenceCandidate[]
+  currentAgentId: string
+  currentContextId: string
 }) {
   const [message, setMessage] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [sessionReferences, setSessionReferences] = useState<ComposerSessionReference[]>([])
+  const [mentionRange, setMentionRange] = useState<SessionMentionRange | null>(null)
+  const [mentionIndex, setMentionIndex] = useState(0)
   const [draggingFiles, setDraggingFiles] = useState(false)
   const [sendMenuOpen, setSendMenuOpen] = useState(false)
   const composingInput = useRef(false)
@@ -2352,14 +2407,46 @@ const Composer = memo(function Composer({
   const submit = useCallback(async (dispatchMode?: MessageDispatchMode) => {
     if (readOnly) return
     setSendMenuOpen(false)
-    if (await onSend(message, attachments, dispatchMode)) {
+    if (await onSend(message, attachments, sessionReferences, dispatchMode)) {
       setMessage('')
+      setSessionReferences([])
+      setMentionRange(null)
       setAttachments(current => {
         current.forEach(attachment => attachment.previewUrl && URL.revokeObjectURL(attachment.previewUrl))
         return []
       })
     }
-  }, [attachments, message, onSend, readOnly])
+  }, [attachments, message, onSend, readOnly, sessionReferences])
+
+  const mentionCandidates = useMemo(() => {
+    if (!mentionRange) return []
+    return rankSessionReferenceCandidates(
+      sessionCandidates,
+      currentAgentId,
+      currentContextId,
+      selectedSessionId,
+      mentionRange.query,
+    ).slice(0, 8)
+  }, [currentAgentId, currentContextId, mentionRange, selectedSessionId, sessionCandidates])
+
+  const selectSessionReference = useCallback((candidate: SessionReferenceCandidate) => {
+    if (!mentionRange) return
+    const inserted = insertSessionMention(message, mentionRange, candidate.title)
+    setMessage(inserted.text)
+    setSessionReferences(current => current.some(item => item.sessionId === candidate.id)
+      ? current
+      : [...current, {
+          sessionId: candidate.id,
+          title: candidate.title,
+          contextId: candidate.context_id,
+        }])
+    setMentionRange(null)
+    setMentionIndex(0)
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(inserted.cursor, inserted.cursor)
+    })
+  }, [inputRef, mentionRange, message])
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
     if (readOnly) return
@@ -2433,6 +2520,24 @@ const Composer = memo(function Composer({
     >
       <span className="composer-prompt">›</span>
       <div className="composer-input-area">
+        {sessionReferences.length > 0 && (
+          <div className="composer-session-references" aria-label={t('composer.sessionReferences.selected')}>
+            {sessionReferences.map(reference => (
+              <span key={reference.sessionId} title={reference.sessionId}>
+                <MessageSquare size={12} />
+                <strong>@{reference.title}</strong>
+                {reference.contextId !== currentContextId && <small>{t('composer.sessionReferences.otherContext')}</small>}
+                <button
+                  type="button"
+                  title={t('composer.sessionReferences.remove')}
+                  onClick={() => setSessionReferences(current => current.filter(item => item.sessionId !== reference.sessionId))}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="composer-attachments">
             {attachments.map(attachment => (
@@ -2514,11 +2619,41 @@ const Composer = memo(function Composer({
           autoCapitalize="off"
           spellCheck={false}
           disabled={sending || readOnly}
-          onChange={event => setMessage(event.target.value)}
+          onChange={event => {
+            const next = event.target.value
+            setMessage(next)
+            setMentionRange(sessionMentionAt(next, event.target.selectionStart ?? next.length))
+            setMentionIndex(0)
+          }}
+          onSelect={event => {
+            setMentionRange(sessionMentionAt(message, event.currentTarget.selectionStart ?? message.length))
+          }}
           onCompositionStart={() => { composingInput.current = true }}
           onCompositionEnd={() => { composingInput.current = false }}
           onKeyDown={event => {
             if (composingInput.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+            if (mentionRange && mentionCandidates.length > 0) {
+              if (event.key === 'ArrowDown') {
+                event.preventDefault()
+                setMentionIndex(index => (index + 1) % mentionCandidates.length)
+                return
+              }
+              if (event.key === 'ArrowUp') {
+                event.preventDefault()
+                setMentionIndex(index => (index + mentionCandidates.length - 1) % mentionCandidates.length)
+                return
+              }
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                selectSessionReference(mentionCandidates[mentionIndex] ?? mentionCandidates[0])
+                return
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                setMentionRange(null)
+                return
+              }
+            }
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
               if (event.altKey) {
@@ -2538,6 +2673,33 @@ const Composer = memo(function Composer({
           rows={1}
           value={message}
         />
+        {mentionRange && (
+          <div className="session-mention-menu" role="listbox" aria-label={t('composer.sessionReferences.menu')}>
+            {mentionCandidates.map((candidate, index) => (
+              <button
+                className={index === mentionIndex ? 'active' : ''}
+                key={candidate.id}
+                type="button"
+                role="option"
+                aria-selected={index === mentionIndex}
+                onMouseDown={event => event.preventDefault()}
+                onClick={() => selectSessionReference(candidate)}
+              >
+                <MessageSquare size={13} />
+                <span>
+                  <strong>{candidate.title}</strong>
+                  <small>{candidate.context_id === currentContextId
+                    ? t('composer.sessionReferences.currentContext')
+                    : t('composer.sessionReferences.otherContext')}</small>
+                </span>
+                <code>{candidate.id}</code>
+              </button>
+            ))}
+            {mentionCandidates.length === 0 && (
+              <p>{t('composer.sessionReferences.empty')}</p>
+            )}
+          </div>
+        )}
       </div>
       <input
         ref={fileInputRef}
@@ -2583,7 +2745,7 @@ const Composer = memo(function Composer({
           className="send-button"
           aria-label={t('composer.send')}
           title={t('composer.modes.defaultHint')}
-          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0) || sending || readOnly}
+          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0 && sessionReferences.length === 0) || sending || readOnly}
           type="button"
           onClick={() => void submit()}
         >
@@ -2593,7 +2755,7 @@ const Composer = memo(function Composer({
           className="send-mode-button"
           aria-label={t('composer.modes.menu')}
           title={t('composer.modes.menu')}
-          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0) || sending || readOnly}
+          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0 && sessionReferences.length === 0) || sending || readOnly}
           type="button"
           aria-expanded={sendMenuOpen}
           onClick={() => setSendMenuOpen(open => !open)}
@@ -5454,11 +5616,12 @@ export default function App() {
   const sendMessage = useCallback(async (
     draftMessage: string,
     attachments: ComposerAttachment[],
+    references: ComposerSessionReference[],
     dispatchMode?: MessageDispatchMode,
   ): Promise<boolean> => {
     const hasQuotes = quotes.length > 0
     const text = draftMessage.trim()
-    if (!text && !hasQuotes && attachments.length === 0) return false
+    if (!text && !hasQuotes && attachments.length === 0 && references.length === 0) return false
     if (sending) return false
     if (principalScopeRef.current) {
       setError(t('header.principalScopeReadOnly'))
@@ -5496,6 +5659,10 @@ export default function App() {
             name: attachment.name,
             media_type: attachment.mediaType,
             data_base64: attachment.dataBase64,
+          })),
+          references: references.map(reference => ({
+            kind: 'session',
+            session_id: reference.sessionId,
           })),
           ...(dispatchMode ? { dispatch_mode: dispatchMode } : {}),
         },
@@ -7003,10 +7170,12 @@ export default function App() {
                     ? t('conversation.roleYou')
                     : kind === 'agent'
                       ? t('conversation.roleAgent')
+                      : kind === 'coordination'
+                        ? t('conversation.roleCoordination')
                       : kind === 'background'
                         ? t('conversation.roleDelivery')
                         : t('conversation.roleRuntime')
-                  const showRole = kind === 'background' || kind === 'system'
+                  const showRole = kind === 'coordination' || kind === 'background' || kind === 'system'
                   const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
                   const retryableTurn = retryableDialogueThread(schedulerThreads, event.id, event.payload)
                   return (
@@ -7015,6 +7184,11 @@ export default function App() {
                         <div className="message-role">
                           <strong>{role}</strong>
                           <time>{formatTime(event.timestamp, i18n.language)}</time>
+                          {kind === 'coordination' && (
+                            <small>{t('conversation.coordinationFrom', {
+                              session: shortId(String(event.payload.source_session_id ?? ''), 18),
+                            })}</small>
+                          )}
                           {kind === 'background' && <small>{shortId(String(event.payload.root_turn_id ?? ''), 18)}</small>}
                         </div>
                       )}
@@ -7036,6 +7210,11 @@ export default function App() {
                           : event.payload.attachments?.length ? null : t('conversation.noText')}
                       </div>
                       <MessageAttachments attachments={event.payload.attachments} />
+                      <MessageSessionReferences
+                        references={event.payload.references}
+                        currentContextId={selectedContextId}
+                        t={t}
+                      />
                       {waitingForModelRead && (
                         <div className="message-input-queue-state" role="status">
                           <Clock3 size={11} />
@@ -8224,6 +8403,9 @@ export default function App() {
             onCancel={cancelCurrentSession}
             onError={setError}
             modelInputPolicy={status?.model_input}
+            sessionCandidates={sessions}
+            currentAgentId={selectedAgentId}
+            currentContextId={selectedContextId}
           />
           <div className="shortcut-row"><span>{t('composer.shortcuts.send')}</span><span>{t('composer.shortcuts.newline')}</span><span>{t('composer.shortcuts.tasks')}</span><span>{t('composer.shortcuts.mind')}</span><span>{t('composer.shortcuts.back')}</span></div>
           {error && (

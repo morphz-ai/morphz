@@ -256,6 +256,15 @@ pub struct MessageAttachmentInput {
     pub data: Vec<u8>,
 }
 
+/// A typed reference carried by one user message. The caller supplies only
+/// the stable identity; Runtime resolves and persists authoritative display
+/// metadata after checking the current Principal's visibility boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MessageReferenceInput {
+    Session { session_id: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SendMessageCommand {
     pub session_id: String,
@@ -264,6 +273,11 @@ pub struct SendMessageCommand {
     pub client_message_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<MessageAttachmentInput>,
+    /// Stable typed references selected by the caller. Referencing a Session
+    /// neither reads its transcript nor activates it; the Agent may choose to
+    /// call `session_signal` after interpreting the current message.
+    #[serde(default)]
+    pub references: Vec<MessageReferenceInput>,
     /// Optional exact Harness selection for this ordinary Evaluation. Omit to
     /// let the model either answer normally or discover/select one lazily.
     #[serde(default)]
@@ -306,6 +320,7 @@ fn conversation_event_topics() -> &'static [&'static str] {
         "chat/user_message",
         "chat/reply",
         "chat/outbound_message",
+        "chat/session_signal",
         "chat/progress",
         "chat/assistant_call",
         // These Events are the durable fallback for the live WebSocket tool
@@ -3054,6 +3069,7 @@ impl MorphzSdk {
                 SessionMessageOptions {
                     requested_harness: command.harness,
                     attachments: command.attachments,
+                    references: command.references,
                     dispatch_mode: command.dispatch_mode,
                 },
             )
@@ -3254,7 +3270,7 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use crate::llm::{Client, Message, Response, ToolDefinition};
-    use crate::memory::{NewAgent, SessionMountKind};
+    use crate::memory::{NewAgent, QueryFilter, SessionMountKind, SessionStatus};
     use async_trait::async_trait;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
@@ -3365,6 +3381,166 @@ mod tests {
             sdk.list_sessions("principal-a", false).await.unwrap().len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn typed_session_reference_is_authorized_and_persisted_by_stable_id() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(OfflineClient))
+            .database_path(database.path().to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        runtime
+            .ensure_agent(NewAgent {
+                id: "agent-reference".to_string(),
+                title: "Reference".to_string(),
+                root_context_id: "context-reference-a".to_string(),
+            })
+            .await
+            .unwrap();
+        for (context_id, title) in [
+            ("context-reference-a", "Source Context"),
+            ("context-reference-b", "Target Context"),
+        ] {
+            runtime
+                .ensure_context(NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: "agent-reference".to_string(),
+                    title: title.to_string(),
+                })
+                .await
+                .unwrap();
+        }
+        let sdk = MorphzSdk::new(runtime.clone());
+        for (session_id, context_id, title) in [
+            ("session-reference-a", "context-reference-a", "Coordinator"),
+            ("session-reference-b", "context-reference-b", "Research"),
+        ] {
+            sdk.create_session(
+                principal("principal-reference"),
+                NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "agent-reference".to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: title.to_string(),
+                    mount_kind: SessionMountKind::ExistingContext,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let receipt = sdk
+            .send_message(
+                &principal("principal-reference"),
+                SendMessageCommand {
+                    session_id: "session-reference-a".to_string(),
+                    text: "Coordinate with @Research".to_string(),
+                    actor: "User-API".to_string(),
+                    client_message_id: Some("reference-message-1".to_string()),
+                    attachments: Vec::new(),
+                    references: vec![MessageReferenceInput::Session {
+                        session_id: "session-reference-b".to_string(),
+                    }],
+                    harness: None,
+                    dispatch_mode: Some(MessageDispatchMode::Parallel),
+                },
+            )
+            .await
+            .unwrap();
+        let event = runtime
+            .query_events(QueryFilter {
+                event_id: Some(receipt.event_id),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(event.payload["references"][0]["kind"], "session");
+        assert_eq!(
+            event.payload["references"][0]["session_id"],
+            "session-reference-b"
+        );
+        assert_eq!(event.payload["references"][0]["title"], "Research");
+        assert_eq!(
+            event.payload["references"][0]["context_id"],
+            "context-reference-b"
+        );
+        assert!(runtime
+            .query_events(QueryFilter {
+                context_id: Some("context-reference-b".to_string()),
+                topic: Some("chat/user_message".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+
+        sdk.create_session(
+            principal("principal-private"),
+            NewSession {
+                id: "session-reference-private".to_string(),
+                agent_id: "agent-reference".to_string(),
+                context_id: "context-reference-a".to_string(),
+                parent_session_id: None,
+                title: "Private".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            },
+        )
+        .await
+        .unwrap();
+        let forbidden = sdk
+            .send_message(
+                &principal("principal-reference"),
+                SendMessageCommand {
+                    session_id: "session-reference-a".to_string(),
+                    text: "Reference private".to_string(),
+                    actor: "User-API".to_string(),
+                    client_message_id: Some("reference-message-private".to_string()),
+                    attachments: Vec::new(),
+                    references: vec![MessageReferenceInput::Session {
+                        session_id: "session-reference-private".to_string(),
+                    }],
+                    harness: None,
+                    dispatch_mode: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(forbidden.code, SdkErrorCode::Forbidden);
+
+        sdk.update_session(
+            "principal-reference",
+            "session-reference-b",
+            SessionUpdate {
+                title: None,
+                status: Some(SessionStatus::Archived),
+            },
+        )
+        .await
+        .unwrap();
+        let archived = sdk
+            .send_message(
+                &principal("principal-reference"),
+                SendMessageCommand {
+                    session_id: "session-reference-a".to_string(),
+                    text: "Reference archived".to_string(),
+                    actor: "User-API".to_string(),
+                    client_message_id: Some("reference-message-archived".to_string()),
+                    attachments: Vec::new(),
+                    references: vec![MessageReferenceInput::Session {
+                        session_id: "session-reference-b".to_string(),
+                    }],
+                    harness: None,
+                    dispatch_mode: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(archived.code, SdkErrorCode::Conflict);
     }
 
     #[tokio::test]

@@ -24,7 +24,9 @@ Experience Transfer v1 以相关经验、无关经验和全新 Agent 三 arm 同
 
 历史 Cognitive SExpr VM Prompt 实验将 LLM 定义为持续运行的 Morphz（S 表达式认知机）的非确定性语义处理器。严格 Mind-only 评分下的五次 Gemini 配对实验中，VM related 为 15/15、原 Agent Prompt 为 14/15，三 arm 总语义为 31/45 对 26/45；模型尝试略降但物理工具增加，且尚未形成显式抽象原则。实验所用旧英文词序保留在历史报告中；当前产品统一使用 **S-Expression Cognitive Machine**。完整判据、Mind 审计和结论见 [Cognitive S-Expression VM Prompt A/B](docs/morphz_cognitive_sexpr_vm_prompt_ab.md)。
 
-Runtime 现在提供三个可运行的 System Prompt Profile，并默认使用 `semantic_sexpr_vm`：整个稳定 Prompt 是一棵 SExpr，`seq/call/fallback/bind/if/reply` 的自然语言语义位于各自节点内部。`cognitive_sexpr_vm` 与 `agent_owned_context` 仍可通过 `MORPHZ_SYSTEM_PROMPT_MODE` 选择。三者共享 Context Protocol、DSL、工具和持久化状态；普通无工具文本直接回复当前 active Session，`no_reply` 表示显式静默，`send_message` 用于主动联系另一 Session。完整响应协议见 [单 Session 求值与响应路由协议 v1](docs/morphz_response_routing_protocol_v1.md)。
+Runtime 现在提供三个可运行的 System Prompt Profile，并默认使用 `semantic_sexpr_vm`：整个稳定 Prompt 是一棵 SExpr，`seq/call/fallback/bind/if/reply` 的自然语言语义位于各自节点内部。`cognitive_sexpr_vm` 与 `agent_owned_context` 仍可通过 `MORPHZ_SYSTEM_PROMPT_MODE` 选择。三者共享 Context Protocol、DSL、工具和持久化状态；普通无工具文本直接回复当前 active Session，`no_reply` 表示显式静默，`send_message` 向另一 Session 写入可见消息但不激活它，`session_signal` 向已存在的同 Agent Session 投递内部协调消息并启动该 Session 的独立求值。完整响应协议见 [单 Session 求值与响应路由协议 v1](docs/morphz_response_routing_protocol_v1.md)。
+
+Dashboard Composer 支持对已有 Session 的结构化 `@Session` 引用：界面展示标题，Event 与模型输入使用 Runtime 校验后的稳定 `session_id`。引用本身不读取目标消息流、不激活目标，也不会创建 Session；Session 仍是 Human/上层系统拥有的 IO 与回复路由边界，Agent 的自主分解使用 Objective/Thread。
 
 Context-Owned Session Service v1 提供持久化 Context/Session Registry、消息幂等、按 Session 的消息与回复路由、共享 Context Encoding、过滤 WebSocket 和取消语义。一个 Context 拥有一个共享 Mind 和多个可并发活跃的 Session；同一 Session 可以同时拥有 Dialogue、Execution、Objective 与 Delivery Thread，回复和工具 continuation 通过稳定因果身份保持隔离。`context_tx` 的物理提交仍短暂串行化，但 Frame 级 MVCC 已允许修改不同 Frame 的并发事务安全 rebase；同一 Frame 或全局生命周期冲突仍会被拒绝。接口与边界见 [Session Service v1](docs/morphz_session_service_v1.md) 与 [Context 事务、Mind Projection 与分布式扩展](docs/morphz_context_transaction_scalability_and_mind_projection_v1.md)。
 

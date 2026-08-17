@@ -340,6 +340,7 @@ pub fn event_has_recall_value(event: &crate::event::Event) -> bool {
             | "chat/tool_output"
             | "chat/file_change"
             | "chat/outbound_message"
+            | "chat/session_signal"
             | "chat/context_tx_committed"
             | "runtime/thread_result"
             | "runtime/delegation_result"
@@ -2817,6 +2818,30 @@ mod supervised_concurrency_contract_tests {
             base,
             message_request_fingerprint(&different_harness).unwrap()
         );
+        let mut with_reference = payload("principal:a", "hello", "/node-a/blob");
+        with_reference.insert(
+            "references".to_string(),
+            serde_json::json!([{
+                "kind": "session",
+                "session_id": "session-target",
+                "title": "Old title",
+                "context_id": "context-target",
+                "agent_id": "agent-a"
+            }]),
+        );
+        let reference_fingerprint = message_request_fingerprint(&with_reference).unwrap();
+        assert_ne!(base, reference_fingerprint);
+        with_reference["references"][0]["title"] = serde_json::json!("Renamed");
+        assert_eq!(
+            reference_fingerprint,
+            message_request_fingerprint(&with_reference).unwrap(),
+            "display title snapshots do not replace stable Session identity"
+        );
+        with_reference["references"][0]["session_id"] = serde_json::json!("session-other");
+        assert_ne!(
+            reference_fingerprint,
+            message_request_fingerprint(&with_reference).unwrap()
+        );
     }
 }
 
@@ -4287,6 +4312,30 @@ pub enum MessageClaim {
     ForbiddenPrincipal {
         principal_id: String,
     },
+    InvalidReference {
+        message: String,
+    },
+    InactiveReference {
+        session_id: String,
+    },
+    ForbiddenReference {
+        session_id: String,
+        principal_id: String,
+    },
+}
+
+/// Atomic ingress result for one Runtime-authored internal Session Signal.
+///
+/// The caller does not provide an idempotency key. The Runtime derives the
+/// immutable Event id from the source evaluation route and message intent;
+/// `Existing` therefore means the same logical Signal was already committed
+/// and must not create another target Activation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionSignalClaim {
+    Accepted { event: crate::event::Event },
+    Existing { event_id: String },
+    InactiveSession,
+    ForbiddenPrincipal { principal_id: String },
 }
 
 /// Stable identity of one logical user-message request. The database key says
@@ -4349,6 +4398,27 @@ pub(crate) fn message_request_fingerprint(
                 digest_field(&mut digest, value);
             }
             None => digest.update([0]),
+        }
+    }
+    // Preserve the v1 digest of every pre-reference message. Only requests
+    // which actually carry typed references extend the intent fingerprint, so
+    // an exact transport retry created before this field existed remains
+    // idempotent after upgrading Runtime.
+    if let Some(references) = payload.get("references").and_then(JsonValue::as_array) {
+        if !references.is_empty() {
+            digest.update(b"morphz.message-references.v1\0");
+            digest.update((references.len() as u64).to_be_bytes());
+            for reference in references {
+                for name in ["kind", "session_id", "context_id", "agent_id"] {
+                    digest_field(
+                        &mut digest,
+                        reference
+                            .get(name)
+                            .and_then(JsonValue::as_str)
+                            .ok_or_else(|| format!("用户消息引用缺少 {name}"))?,
+                    );
+                }
+            }
         }
     }
     Ok(format!("v1:{:x}", digest.finalize()))
@@ -6182,6 +6252,13 @@ pub trait DeliveryIngressStore: Send + Sync {
         event: &crate::event::Event,
         dispatch_mode: MessageDispatchMode,
     ) -> Result<MessageClaim, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically persist an internal coordination Event and the target
+    /// Session's fresh DialogueTurn Signal. The Event is not a User Message
+    /// and never participates in interrupt/batch semantics.
+    async fn claim_session_signal(
+        &self,
+        event: &crate::event::Event,
+    ) -> Result<SessionSignalClaim, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Parent/child delegation routing and result handoff.

@@ -3604,6 +3604,7 @@ async fn monitor_objective(
                             println!("{text}");
                         }
                     }
+                    ConsoleMessageKind::Coordination => print_session_coordination(&text),
                     ConsoleMessageKind::Progress => {
                         if !text.trim().is_empty() {
                             eprintln!("[Agent 进度] {text}");
@@ -3733,6 +3734,7 @@ async fn run_once(
             actor: "User".to_string(),
             client_message_id: Some(generated_id("cli")),
             attachments: Vec::new(),
+            references: Vec::new(),
             harness,
             dispatch_mode: None,
         },
@@ -3752,6 +3754,7 @@ async fn run_once(
             }
             ConsoleMessageKind::NoReply => return Ok(()),
             ConsoleMessageKind::Message => print_agent_message(&text),
+            ConsoleMessageKind::Coordination => print_session_coordination(&text),
             ConsoleMessageKind::Progress => {
                 if !text.trim().is_empty() {
                     eprintln!("[Agent 进度] {text}");
@@ -3966,6 +3969,7 @@ async fn run_interactive(
                     actor: "User-Shafreeck".to_string(),
                     client_message_id: Some(client_message_id),
                     attachments: Vec::new(),
+                    references: Vec::new(),
                     // `--harness` selects the first real Evaluation, whether
                     // its prompt came from argv or was typed interactively.
                     // Console-only commands above do not consume it.
@@ -4063,6 +4067,7 @@ enum ConsoleMessageKind {
     Final,
     NoReply,
     Message,
+    Coordination,
     Progress,
     ToolCall,
     Approval,
@@ -4104,6 +4109,16 @@ fn console_message_from_event(event: &morphz::event::Event) -> Option<ConsoleMes
                 .unwrap_or("")
                 .to_string(),
             ConsoleMessageKind::Message,
+        )),
+        "chat/session_signal" => Some((
+            session_id,
+            event
+                .payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            ConsoleMessageKind::Coordination,
         )),
         "chat/progress" => Some((
             session_id,
@@ -4156,6 +4171,7 @@ async fn wait_for_session_activity(
                 ConsoleMessageKind::NoReply => return Some(ConsoleWaitOutcome::NoReply),
                 ConsoleMessageKind::Approval => return Some(ConsoleWaitOutcome::Approval(text)),
                 ConsoleMessageKind::Message => print_agent_message(&text),
+                ConsoleMessageKind::Coordination => print_session_coordination(&text),
                 ConsoleMessageKind::Progress => print_agent_progress(&text),
                 ConsoleMessageKind::ToolCall => print_tool_call_activity(&text),
             }
@@ -4179,6 +4195,7 @@ async fn wait_for_session_activity(
                     ConsoleMessageKind::NoReply => return Some(ConsoleWaitOutcome::NoReply),
                     ConsoleMessageKind::Approval => return Some(ConsoleWaitOutcome::Approval(text)),
                     ConsoleMessageKind::Message => print_agent_message(&text),
+                    ConsoleMessageKind::Coordination => print_session_coordination(&text),
                     ConsoleMessageKind::Progress => print_agent_progress(&text),
                     ConsoleMessageKind::ToolCall => print_tool_call_activity(&text),
                 }
@@ -4291,9 +4308,18 @@ fn print_agent_message(text: &str) {
     }
 }
 
+fn print_session_coordination(text: &str) {
+    if !text.trim().is_empty() {
+        let mut stdout = std::io::stdout();
+        let _ = writeln!(stdout, "\n[Session coordination] {}", text);
+        let _ = stdout.flush();
+    }
+}
+
 fn print_console_notification(message: &ConsoleMessage) {
     match message.2 {
         ConsoleMessageKind::Final | ConsoleMessageKind::Message => print_agent_message(&message.1),
+        ConsoleMessageKind::Coordination => print_session_coordination(&message.1),
         ConsoleMessageKind::NoReply => {}
         ConsoleMessageKind::Progress => print_agent_progress(&message.1),
         ConsoleMessageKind::ToolCall => print_tool_call_activity(&message.1),

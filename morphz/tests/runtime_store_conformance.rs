@@ -30,10 +30,11 @@ use morphz::memory::{
     ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallDocument, RecallDocumentKind,
     RecallProjectionStore, RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus,
     ScheduleStore, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionProjectionMutation, SessionProjectionStore, SessionStatus, SessionUpdate,
-    SignalOutboxStatus, StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationStatus,
-    ThreadControlAction, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadSignalStatus, ThreadStore, ThreadSupervision, TimerStore, TransientStorageRetention,
+    SessionProjectionMutation, SessionProjectionStore, SessionSignalClaim, SessionStatus,
+    SessionUpdate, SignalOutboxStatus, StorageMaintenanceStore, ThreadActivationMutation,
+    ThreadActivationStatus, ThreadControlAction, ThreadGroupStore, ThreadKind, ThreadLifecycle,
+    ThreadMutation, ThreadSignalStatus, ThreadStore, ThreadSupervision, TimerStore,
+    TransientStorageRetention,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
@@ -2401,6 +2402,158 @@ where
 
     store
         .create_session(NewSession {
+            id: "conformance-ingress-reference".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            parent_session_id: Some("conformance-session".to_string()),
+            title: "Referenced Session".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    store
+        .bind_session_principal(
+            "conformance-ingress-reference",
+            "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+        )
+        .await
+        .unwrap();
+    let referenced_message = Event::new(
+        "conformance-ingress-reference-message".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+            "text": "coordinate with the referenced Session",
+            "references": [{
+                "kind": "session",
+                "session_id": "conformance-ingress-reference",
+                "title": "Referenced Session",
+                "context_id": "conformance-context",
+                "agent_id": "conformance-agent"
+            }]
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(matches!(
+        store
+            .claim_message(
+                "conformance-session",
+                "client-message-reference",
+                &referenced_message,
+                MessageDispatchMode::FollowUp,
+            )
+            .await
+            .unwrap(),
+        MessageClaim::Accepted { .. }
+    ));
+
+    store
+        .create_session(NewSession {
+            id: "conformance-ingress-reference-unbound".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            parent_session_id: Some("conformance-session".to_string()),
+            title: "Unbound referenced Session".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let forbidden_reference = Event::new(
+        "conformance-ingress-reference-forbidden".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+            "text": "forbidden reference",
+            "references": [{
+                "kind": "session",
+                "session_id": "conformance-ingress-reference-unbound",
+                "title": "Unbound referenced Session",
+                "context_id": "conformance-context",
+                "agent_id": "conformance-agent"
+            }]
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(matches!(
+        store
+            .claim_message(
+                "conformance-session",
+                "client-message-reference-forbidden",
+                &forbidden_reference,
+                MessageDispatchMode::FollowUp,
+            )
+            .await
+            .unwrap(),
+        MessageClaim::ForbiddenReference { .. }
+    ));
+    assert!(store
+        .query(QueryFilter {
+            event_id: Some(forbidden_reference.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+
+    store
+        .update_session(
+            "conformance-ingress-reference",
+            SessionUpdate {
+                title: None,
+                status: Some(SessionStatus::Archived),
+            },
+        )
+        .await
+        .unwrap();
+    let inactive_reference = Event::new(
+        "conformance-ingress-reference-inactive".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+            "text": "inactive reference",
+            "references": [{
+                "kind": "session",
+                "session_id": "conformance-ingress-reference",
+                "title": "Referenced Session",
+                "context_id": "conformance-context",
+                "agent_id": "conformance-agent"
+            }]
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(matches!(
+        store
+            .claim_message(
+                "conformance-session",
+                "client-message-reference-inactive",
+                &inactive_reference,
+                MessageDispatchMode::FollowUp,
+            )
+            .await
+            .unwrap(),
+        MessageClaim::InactiveReference { .. }
+    ));
+
+    store
+        .create_session(NewSession {
             id: "conformance-ingress-unbound".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -2553,6 +2706,309 @@ where
         delivered.delivery_event_id.as_deref(),
         Some(delivery.id.as_str())
     );
+}
+
+async fn assert_session_signal_conformance<S>(store: Arc<S>)
+where
+    S: ActivationStore
+        + DeliveryIngressStore
+        + EventStore
+        + SessionDirectoryStore
+        + ThreadStore
+        + Send
+        + Sync
+        + 'static,
+{
+    store
+        .create_session(NewSession {
+            id: "conformance-signal-target".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            parent_session_id: Some("conformance-session".to_string()),
+            title: "Signal target".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    store
+        .ensure_context(NewCognitiveContext {
+            id: "conformance-signal-cross-context".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            title: "Cross-context signal target".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .create_session(NewSession {
+            id: "conformance-signal-cross-target".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-signal-cross-context".to_string(),
+            parent_session_id: None,
+            title: "Cross-context signal Session".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+
+    let signal_event = |id: &str,
+                        source_context_id: &str,
+                        source_session_id: &str,
+                        target_context_id: &str,
+                        target_session_id: &str,
+                        text: &str| {
+        Event::new(
+            id.to_string(),
+            "Agent-SessionSignal".to_string(),
+            morphz::event::TYPE_SESSION_SIGNAL.to_string(),
+            "chat/session_signal".to_string(),
+            json!({
+                "agent_id": "conformance-agent",
+                "context_id": target_context_id,
+                "session_id": target_session_id,
+                "source_context_id": source_context_id,
+                "source_session_id": source_session_id,
+                "source_thread_id": "conformance-source-thread",
+                "source_activation_id": "conformance-source-activation",
+                "source_attempt_id": "conformance-source-attempt",
+                "source_root_turn_id": "conformance-source-root",
+                "source_trigger_event_id": "conformance-source-trigger",
+                "correlation_id": id,
+                "dedupe_id": id,
+                "text": text,
+                "cross_context": source_context_id != target_context_id
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    };
+
+    let same_context = signal_event(
+        "conformance-session-signal",
+        "conformance-context",
+        "conformance-session",
+        "conformance-context",
+        "conformance-signal-target",
+        "coordinate in the shared Context",
+    );
+    let mut forbidden_principal_signal = signal_event(
+        "conformance-session-signal-forbidden-principal",
+        "conformance-context",
+        "conformance-session",
+        "conformance-context",
+        "conformance-signal-target",
+        "must not cross the Principal boundary",
+    );
+    forbidden_principal_signal.payload.insert(
+        "principal_id".to_string(),
+        json!("o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat"),
+    );
+    assert!(matches!(
+        store
+            .claim_session_signal(&forbidden_principal_signal)
+            .await
+            .unwrap(),
+        SessionSignalClaim::ForbiddenPrincipal { .. }
+    ));
+    assert!(store
+        .query(QueryFilter {
+            event_id: Some(forbidden_principal_signal.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+    let first = {
+        let store = Arc::clone(&store);
+        let event = same_context.clone();
+        tokio::spawn(async move { store.claim_session_signal(&event).await })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        let event = same_context.clone();
+        tokio::spawn(async move { store.claim_session_signal(&event).await })
+    };
+    let claims = [
+        first.await.unwrap().unwrap(),
+        second.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| matches!(claim, SessionSignalClaim::Accepted { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| matches!(claim, SessionSignalClaim::Existing { event_id } if event_id == &same_context.id))
+            .count(),
+        1
+    );
+    let mut conflicting_signal = same_context.clone();
+    conflicting_signal.payload.insert(
+        "text".to_string(),
+        json!("same Event ID must not be rebound"),
+    );
+    assert!(store
+        .claim_session_signal(&conflicting_signal)
+        .await
+        .is_err());
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(same_context.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let target_thread = store
+        .get_thread_by_root(&same_context.id)
+        .await
+        .unwrap()
+        .expect("Session Signal must atomically create its target DialogueTurn");
+    assert_eq!(target_thread.session_id, "conformance-signal-target");
+    assert_eq!(target_thread.kind, ThreadKind::DialogueTurn);
+    assert_eq!(
+        store
+            .list_context_thread_signals("conformance-context", None)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|signal| signal.event_id == same_context.id)
+            .count(),
+        1
+    );
+
+    let reply = signal_event(
+        "conformance-session-signal-reply",
+        "conformance-context",
+        "conformance-signal-target",
+        "conformance-context",
+        "conformance-session",
+        "symmetric reply",
+    );
+    assert!(matches!(
+        store.claim_session_signal(&reply).await.unwrap(),
+        SessionSignalClaim::Accepted { .. }
+    ));
+    assert_eq!(
+        store
+            .get_thread_by_root(&reply.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .session_id,
+        "conformance-session"
+    );
+
+    let cross_context = signal_event(
+        "conformance-session-signal-cross-context",
+        "conformance-context",
+        "conformance-session",
+        "conformance-signal-cross-context",
+        "conformance-signal-cross-target",
+        "explicit bridge only",
+    );
+    assert!(matches!(
+        store.claim_session_signal(&cross_context).await.unwrap(),
+        SessionSignalClaim::Accepted { .. }
+    ));
+    let persisted_cross = store
+        .query(QueryFilter {
+            event_id: Some(cross_context.id.clone()),
+            context_id: Some("conformance-signal-cross-context".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(persisted_cross.len(), 1);
+    assert_eq!(persisted_cross[0].payload["cross_context"], true);
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(cross_context.id.clone()),
+                context_id: Some("conformance-context".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        0,
+        "cross-Context coordination must not copy the signal into the source Context",
+    );
+
+    store
+        .update_session(
+            "conformance-signal-target",
+            SessionUpdate {
+                title: None,
+                status: Some(SessionStatus::Archived),
+            },
+        )
+        .await
+        .unwrap();
+    let archived = signal_event(
+        "conformance-session-signal-archived",
+        "conformance-context",
+        "conformance-session",
+        "conformance-context",
+        "conformance-signal-target",
+        "must reject",
+    );
+    assert_eq!(
+        store.claim_session_signal(&archived).await.unwrap(),
+        SessionSignalClaim::InactiveSession
+    );
+    assert!(store
+        .query(QueryFilter {
+            event_id: Some(archived.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+
+    store
+        .ensure_agent(NewAgent {
+            id: "conformance-other-agent".to_string(),
+            title: "Other Agent".to_string(),
+            root_context_id: "conformance-signal-other-context".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .ensure_context(NewCognitiveContext {
+            id: "conformance-signal-other-context".to_string(),
+            agent_id: "conformance-other-agent".to_string(),
+            title: "Other Context".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .create_session(NewSession {
+            id: "conformance-other-session".to_string(),
+            agent_id: "conformance-other-agent".to_string(),
+            context_id: "conformance-signal-other-context".to_string(),
+            parent_session_id: None,
+            title: "Other Session".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let cross_agent = signal_event(
+        "conformance-session-signal-cross-agent",
+        "conformance-context",
+        "conformance-session",
+        "conformance-signal-other-context",
+        "conformance-other-session",
+        "must reject",
+    );
+    assert!(store.claim_session_signal(&cross_agent).await.is_err());
 }
 
 async fn assert_delegation_store_conformance<S>(store: Arc<S>)
@@ -6169,6 +6625,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_scheduler_dependency_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_delivery_ingress_conformance(Arc::clone(&store)).await;
+    assert_session_signal_conformance(Arc::clone(&store)).await;
     assert_delegation_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
@@ -6491,6 +6948,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_scheduler_dependency_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_delivery_ingress_conformance(Arc::clone(&store)).await;
+    assert_session_signal_conformance(Arc::clone(&store)).await;
     assert_delegation_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
