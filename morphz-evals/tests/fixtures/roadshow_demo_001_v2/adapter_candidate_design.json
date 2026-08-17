@@ -1,0 +1,50 @@
+{
+  "status": "candidate-not-frozen",
+  "history": {
+    "irrelevant_diagnostic_count": 24,
+    "migration_process_count": 8,
+    "diagnostic_template": "Completed deployment diagnostic {index}; no change to approved release, compliance policy, or security rule.",
+    "migration_template": "Historical v1-to-v2 migration note {index}; process evidence only, not a current-state update."
+  },
+  "persistent_messages": {
+    "storage": "durable append-only full event history",
+    "selector": "fixed system prefix + current request + newest complete events fitting the active-input limit, restored to chronological order",
+    "failure_strategy": "selector failure is harness failure; no hidden summary or cross-arm state is injected"
+  },
+  "summary_json_memory": {
+    "schema_version": "demo-001-summary-v1",
+    "fields": [
+      "current_facts",
+      "field_sources",
+      "open_items",
+      "source_notes",
+      "last_maintained_event_sequence"
+    ],
+    "candidate_trigger": "after every 8 newly ingested evidence events and before each protocol diagnostic/final-action stage",
+    "failure_strategy": "preserve the last valid memory, perform one counted same-model repair attempt, then terminate as model_outcome if parsing still fails"
+  },
+  "morphz_structured_context": {
+    "evidence_mapping": "fixture evidence -> Observation carrying Principal, Session, Thread and source event id",
+    "transaction_mapping": "approved current facts -> stable release/policy/security objects with source and supersedes relations",
+    "request_mapping": "user request -> Session/Thread input; build a Principal-authorized Context projection",
+    "recovery_mapping": "replacement Worker reattaches Agent identity, durable store and Context; no completed external action is repeated"
+  },
+  "report_current_state": {
+    "allowed_stages": [
+      "stage_2_cross_session_continuation",
+      "stage_4_late_conflict"
+    ],
+    "schema": {
+      "project": "string",
+      "version": "string",
+      "port": "integer",
+      "endpoint": "string",
+      "retention_days": "integer",
+      "timezone": "string",
+      "security_rule": "string"
+    },
+    "behavior": "record and echo a receipt only; never return, validate, or hint at the expected answer",
+    "accounting": "count as a business tool call and include its duration",
+    "primary_metric": "does not replace commit_release"
+  }
+}

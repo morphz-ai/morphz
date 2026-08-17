@@ -1,0 +1,102 @@
+{
+  "status": "candidate-not-frozen",
+  "tokenizer_measurement_encoding": "o200k_base",
+  "system_prompt": "You are the persistent operating agent for ORBIT-42. Evidence arrives as complete JSON event records with explicit event_id, stage, kind, principal_id, session_id, thread_id, and payload. Determine current production state from evidence semantics, not physical arrival order. A superseded or archived-untrusted record cannot restore production state. A rule marked active-until-explicitly-revoked remains active until an explicit revocation is observed. Preserve the source principal for each accepted field. Do not read fixture files during decision stages. report_current_state is allowed only when the current request explicitly asks for it. commit_release may be called at most once and only when all required fields are supported by evidence. Never infer the hidden expected answer from tool receipts: tools record arguments but do not disclose correctness.",
+  "current_requests": {
+    "stage_2_cross_session_continuation": "Report the current complete production configuration without reading the compliance transcript or fixture files. Call report_current_state exactly once.",
+    "stage_4_late_conflict": "Report the current state after the late archived evidence using report_current_state exactly once.",
+    "stage_5_hidden_final_action": "Commit the current ORBIT-42 production configuration exactly once if the evidence is sufficient. Do not retry after commit_release."
+  },
+  "tool_schemas": [
+    {
+      "name": "read_evidence",
+      "description": "Read one explicitly permitted evidence path during ingestion only; unavailable during decision stages.",
+      "parameters": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "check_release_config",
+      "description": "Check field types and configuration shape only; does not determine which evidence is current.",
+      "parameters": {
+        "type": "object",
+        "required": ["project", "version", "port", "endpoint"],
+        "properties": {
+          "project": {"type": "string"},
+          "version": {"type": "string"},
+          "port": {"type": "integer"},
+          "endpoint": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "check_security_policy",
+      "description": "Check whether a supplied security rule is present and well-formed; does not choose the current rule.",
+      "parameters": {
+        "type": "object",
+        "required": ["project", "security_rule"],
+        "properties": {
+          "project": {"type": "string"},
+          "security_rule": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "report_current_state",
+      "description": "Record a seven-field current-state diagnosis and return only a receipt; never validate or reveal the expected answer.",
+      "parameters": {
+        "type": "object",
+        "required": ["project", "version", "port", "endpoint", "retention_days", "timezone", "security_rule"],
+        "properties": {
+          "project": {"type": "string"},
+          "version": {"type": "string"},
+          "port": {"type": "integer"},
+          "endpoint": {"type": "string"},
+          "retention_days": {"type": "integer"},
+          "timezone": {"type": "string"},
+          "security_rule": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "commit_release",
+      "description": "Commit one final seven-field production configuration for hidden scoring; returns no correctness feedback and cannot be retried.",
+      "parameters": {
+        "type": "object",
+        "required": ["project", "version", "port", "endpoint", "retention_days", "timezone", "security_rule"],
+        "properties": {
+          "project": {"type": "string"},
+          "version": {"type": "string"},
+          "port": {"type": "integer"},
+          "endpoint": {"type": "string"},
+          "retention_days": {"type": "integer"},
+          "timezone": {"type": "string"},
+          "security_rule": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    }
+  ],
+  "serialization": {
+    "event_projection_fields": [
+      "sequence",
+      "event_id",
+      "stage",
+      "kind",
+      "principal_id",
+      "session_id",
+      "thread_id",
+      "payload"
+    ],
+    "json": "UTF-8 compact JSON, ensure_ascii=false, separators=[comma,colon], one complete event per message",
+    "selector": "reserve fixed overhead first; scan prior complete events newest-to-oldest; accept a whole event only if it fits; reverse accepted events back to chronological order"
+  }
+}

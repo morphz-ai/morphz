@@ -1,0 +1,770 @@
+{
+  "fixture_id": "orbit-42-roadshow-demo-001",
+  "fixture_version": "frozen-v2-normal_load",
+  "purpose": "roadshow_demo",
+  "load_level": "normal_load",
+  "events": [
+    {
+      "sequence": 1,
+      "event_id": "orbit42-history-release-v1",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "superseded",
+        "project": "ORBIT-42",
+        "version": "v1",
+        "port": 8080,
+        "endpoint": "/v1/events",
+        "retention_days": 30,
+        "timezone": "UTC",
+        "replaced_by": "v2"
+      }
+    },
+    {
+      "sequence": 2,
+      "event_id": "orbit42-history-release-v2",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "approved-current",
+        "project": "ORBIT-42",
+        "version": "v2",
+        "port": 9090,
+        "endpoint": "/v2/events",
+        "retention_days": 30,
+        "timezone": "UTC",
+        "supersedes": "v1"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_id": "orbit42-history-security-rule",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-compliance-owner",
+      "session_id": "compliance-review",
+      "thread_id": "compliance",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "active-until-explicitly-revoked",
+        "project": "ORBIT-42",
+        "security_rule": "NEVER-LOG-SECRETS"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_id": "company-history-background-001",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Closed customer-support review 001; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 5,
+      "event_id": "company-history-background-002",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Reconciled vendor invoice 002; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 6,
+      "event_id": "company-history-background-003",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Completed onboarding checklist 003; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 7,
+      "event_id": "company-history-background-004",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Archived marketing draft 004; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 8,
+      "event_id": "company-history-background-005",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Reviewed domain renewal 005; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 9,
+      "event_id": "company-history-background-006",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Completed deployment diagnostic 006; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 10,
+      "event_id": "company-history-background-007",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Recorded roadmap discussion 007; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 11,
+      "event_id": "company-history-background-008",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Closed analytics investigation 008; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 12,
+      "event_id": "company-history-background-009",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Closed customer-support review 009; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 13,
+      "event_id": "company-history-background-010",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Reconciled vendor invoice 010; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 14,
+      "event_id": "company-history-background-011",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Completed onboarding checklist 011; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 15,
+      "event_id": "company-history-background-012",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Archived marketing draft 012; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 16,
+      "event_id": "company-history-background-013",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Reviewed domain renewal 013; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 17,
+      "event_id": "company-history-background-014",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Completed deployment diagnostic 014; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 18,
+      "event_id": "company-history-background-015",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Recorded roadmap discussion 015; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 19,
+      "event_id": "company-history-background-016",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Closed analytics investigation 016; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 20,
+      "event_id": "company-history-background-017",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Closed customer-support review 017; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 21,
+      "event_id": "company-history-background-018",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Reconciled vendor invoice 018; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 22,
+      "event_id": "company-history-background-019",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Completed onboarding checklist 019; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 23,
+      "event_id": "company-history-background-020",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Archived marketing draft 020; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 24,
+      "event_id": "company-history-background-021",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Reviewed domain renewal 021; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 25,
+      "event_id": "company-history-background-022",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Completed deployment diagnostic 022; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 26,
+      "event_id": "company-history-background-023",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Recorded roadmap discussion 023; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 27,
+      "event_id": "company-history-background-024",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Closed analytics investigation 024; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 28,
+      "event_id": "company-history-background-025",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Closed customer-support review 025; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 29,
+      "event_id": "company-history-background-026",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Reconciled vendor invoice 026; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 30,
+      "event_id": "company-history-background-027",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Completed onboarding checklist 027; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 31,
+      "event_id": "company-history-background-028",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Archived marketing draft 028; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 32,
+      "event_id": "company-history-background-029",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Reviewed domain renewal 029; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 33,
+      "event_id": "company-history-background-030",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Completed deployment diagnostic 030; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 34,
+      "event_id": "company-history-background-031",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Recorded roadmap discussion 031; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 35,
+      "event_id": "company-history-background-032",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "company-operations-history",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "process-record",
+        "project": "COMPANY-OPS",
+        "record_type": "completed-business-operation",
+        "text": "Closed analytics investigation 032; no ORBIT-42 production-state change.",
+        "changes_orbit42_state": false
+      }
+    },
+    {
+      "sequence": 36,
+      "event_id": "orbit42-stage1-release-v3",
+      "stage": "stage_1_concurrent_updates",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": "stage-1-concurrent",
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "approved-current",
+        "project": "ORBIT-42",
+        "version": "v3",
+        "port": 9443,
+        "endpoint": "/v3/events",
+        "supersedes": "v2"
+      }
+    },
+    {
+      "sequence": 37,
+      "event_id": "orbit42-stage1-compliance-policy",
+      "stage": "stage_1_concurrent_updates",
+      "kind": "evidence",
+      "principal_id": "principal-compliance-owner",
+      "session_id": "compliance-review",
+      "thread_id": "compliance",
+      "injection_group": "stage-1-concurrent",
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "approved-policy",
+        "project": "ORBIT-42",
+        "retention_days": 45,
+        "timezone": "Asia/Shanghai",
+        "supersedes": "retention=30, timezone=UTC"
+      }
+    },
+    {
+      "sequence": 38,
+      "event_id": "orbit42-stage2-cross-session-request",
+      "stage": "stage_2_cross_session_continuation",
+      "kind": "user_request",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "request": "Report the current complete production configuration without reading the compliance transcript or fixture files."
+      }
+    },
+    {
+      "sequence": 39,
+      "event_id": "orbit42-stage3-worker-terminated",
+      "stage": "stage_3_worker_replacement",
+      "kind": "worker_terminated",
+      "principal_id": "system-harness",
+      "session_id": "runtime-control",
+      "thread_id": "recovery",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "reason": "controlled_replacement"
+      }
+    },
+    {
+      "sequence": 40,
+      "event_id": "orbit42-stage3-worker-attached",
+      "stage": "stage_3_worker_replacement",
+      "kind": "worker_attached",
+      "principal_id": "system-harness",
+      "session_id": "runtime-control",
+      "thread_id": "recovery",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "agent_identity": "orbit42-company-agent",
+        "storage_identity": "orbit42-durable-state"
+      }
+    },
+    {
+      "sequence": 41,
+      "event_id": "orbit42-stage4-late-archived-v1",
+      "stage": "stage_4_late_conflict",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "archived-untrusted",
+        "project": "ORBIT-42",
+        "version": "v1",
+        "port": 8080,
+        "endpoint": "/v1/events",
+        "warning": "historical copy; must not restore production state",
+        "replaced_by": "v2 and later v3"
+      }
+    },
+    {
+      "sequence": 42,
+      "event_id": "orbit42-stage4-current-state-request",
+      "stage": "stage_4_late_conflict",
+      "kind": "user_request",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "request": "Report the current state after the late archived evidence using report_current_state exactly once."
+      }
+    },
+    {
+      "sequence": 43,
+      "event_id": "orbit42-stage5-final-action-request",
+      "stage": "stage_5_hidden_final_action",
+      "kind": "final_action_request",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "request": "Commit the current ORBIT-42 production configuration exactly once if the evidence is sufficient."
+      }
+    }
+  ]
+}

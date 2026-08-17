@@ -1,0 +1,212 @@
+[
+  {
+    "queue_index": 1,
+    "load_level": "normal_load",
+    "pair_cell_id": 42001,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 2,
+    "load_level": "normal_load",
+    "pair_cell_id": 42001,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 3,
+    "load_level": "normal_load",
+    "pair_cell_id": 42001,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 4,
+    "load_level": "normal_load",
+    "pair_cell_id": 42002,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 5,
+    "load_level": "normal_load",
+    "pair_cell_id": 42002,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 6,
+    "load_level": "normal_load",
+    "pair_cell_id": 42002,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 7,
+    "load_level": "normal_load",
+    "pair_cell_id": 42003,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 8,
+    "load_level": "normal_load",
+    "pair_cell_id": 42003,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 9,
+    "load_level": "normal_load",
+    "pair_cell_id": 42003,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 10,
+    "load_level": "normal_load",
+    "pair_cell_id": 42004,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 11,
+    "load_level": "normal_load",
+    "pair_cell_id": 42004,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 12,
+    "load_level": "normal_load",
+    "pair_cell_id": 42004,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 13,
+    "load_level": "normal_load",
+    "pair_cell_id": 42005,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 14,
+    "load_level": "normal_load",
+    "pair_cell_id": 42005,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 15,
+    "load_level": "normal_load",
+    "pair_cell_id": 42005,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 16,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42001,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 17,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42001,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 18,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42001,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 19,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42002,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 20,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42002,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 21,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42002,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 22,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42003,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 23,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42003,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 24,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42003,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 25,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42004,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 26,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42004,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 27,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42004,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 28,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42005,
+    "arm": "morphz_structured_context",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 29,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42005,
+    "arm": "persistent_messages",
+    "sampling_seed_applied": false
+  },
+  {
+    "queue_index": 30,
+    "load_level": "context_pressure",
+    "pair_cell_id": 42005,
+    "arm": "summary_json_memory",
+    "sampling_seed_applied": false
+  }
+]

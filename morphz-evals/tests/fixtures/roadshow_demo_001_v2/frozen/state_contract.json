@@ -1,0 +1,111 @@
+{
+  "status": "frozen-v2",
+  "summary_schema": {
+    "type": "object",
+    "required": [
+      "schema_version",
+      "current_facts",
+      "field_sources",
+      "open_items",
+      "source_notes",
+      "last_maintained_event_sequence"
+    ],
+    "properties": {
+      "schema_version": {
+        "const": "demo-001-summary-v1"
+      },
+      "current_facts": {
+        "type": "object",
+        "required": [
+          "project",
+          "version",
+          "port",
+          "endpoint",
+          "retention_days",
+          "timezone",
+          "security_rule"
+        ],
+        "properties": {
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "security_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "field_sources": {
+        "type": "object"
+      },
+      "open_items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "source_notes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "last_maintained_event_sequence": {
+        "type": "integer"
+      }
+    },
+    "additionalProperties": false
+  },
+  "summary_maintenance_prompt": "Update the JSON memory using only the prior valid memory and the new complete events. Return JSON matching the schema and no prose. Preserve a current fact until explicit evidence supersedes or revokes it. Physical arrival order alone does not establish authority. Superseded and archived-untrusted records are historical. Preserve event_id, principal_id and observed_sequence for each accepted field. Do not invent missing facts.",
+  "maintenance_trigger_new_evidence_tokens": 4096,
+  "state_cap_tokens": 2048,
+  "repair_calls_per_maintenance": 1,
+  "morphz_objects": [
+    "release:orbit42/current",
+    "policy:orbit42/retention",
+    "policy:orbit42/timezone",
+    "rule:orbit42/no-secret-logging"
+  ],
+  "morphz_transaction_validation": [
+    "schema",
+    "principal_object_permissions",
+    "source_event_reference",
+    "version_and_supersession"
+  ]
+}

@@ -1,0 +1,180 @@
+{
+  "fixture_id": "orbit-42-roadshow-demo-001",
+  "fixture_version": "candidate-v2-contract-minimal",
+  "purpose": "roadshow_demo",
+  "events": [
+    {
+      "sequence": 1,
+      "event_id": "orbit42-history-release-v1",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "superseded",
+        "project": "ORBIT-42",
+        "version": "v1",
+        "port": 8080,
+        "endpoint": "/v1/events",
+        "retention_days": 30,
+        "timezone": "UTC",
+        "replaced_by": "v2"
+      }
+    },
+    {
+      "sequence": 2,
+      "event_id": "orbit42-history-release-v2",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "approved-current",
+        "project": "ORBIT-42",
+        "version": "v2",
+        "port": 9090,
+        "endpoint": "/v2/events",
+        "retention_days": 30,
+        "timezone": "UTC",
+        "supersedes": "v1"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_id": "orbit42-history-security-rule",
+      "stage": "history",
+      "kind": "evidence",
+      "principal_id": "principal-compliance-owner",
+      "session_id": "compliance-review",
+      "thread_id": "compliance",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "active-until-explicitly-revoked",
+        "project": "ORBIT-42",
+        "security_rule": "NEVER-LOG-SECRETS"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_id": "orbit42-stage1-release-v3",
+      "stage": "stage_1_concurrent_updates",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": "stage-1-concurrent",
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "approved-current",
+        "project": "ORBIT-42",
+        "version": "v3",
+        "port": 9443,
+        "endpoint": "/v3/events",
+        "supersedes": "v2"
+      }
+    },
+    {
+      "sequence": 5,
+      "event_id": "orbit42-stage1-compliance-policy",
+      "stage": "stage_1_concurrent_updates",
+      "kind": "evidence",
+      "principal_id": "principal-compliance-owner",
+      "session_id": "compliance-review",
+      "thread_id": "compliance",
+      "injection_group": "stage-1-concurrent",
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "approved-policy",
+        "project": "ORBIT-42",
+        "retention_days": 45,
+        "timezone": "Asia/Shanghai",
+        "security_rule": "NEVER-LOG-SECRETS",
+        "supersedes": "retention=30, timezone=UTC"
+      }
+    },
+    {
+      "sequence": 6,
+      "event_id": "orbit42-stage2-cross-session-request",
+      "stage": "stage_2_cross_session_continuation",
+      "kind": "user_request",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "request": "Report the current complete production configuration without reading the compliance transcript or fixture files."
+      }
+    },
+    {
+      "sequence": 7,
+      "event_id": "orbit42-stage3-worker-terminated",
+      "stage": "stage_3_worker_replacement",
+      "kind": "worker_terminated",
+      "principal_id": "system-harness",
+      "session_id": "runtime-control",
+      "thread_id": "recovery",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "reason": "controlled_replacement"
+      }
+    },
+    {
+      "sequence": 8,
+      "event_id": "orbit42-stage3-worker-attached",
+      "stage": "stage_3_worker_replacement",
+      "kind": "worker_attached",
+      "principal_id": "system-harness",
+      "session_id": "runtime-control",
+      "thread_id": "recovery",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "agent_identity": "orbit42-company-agent",
+        "storage_identity": "orbit42-durable-state"
+      }
+    },
+    {
+      "sequence": 9,
+      "event_id": "orbit42-stage4-late-archived-v1",
+      "stage": "stage_4_late_conflict",
+      "kind": "evidence",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "status": "archived-untrusted",
+        "project": "ORBIT-42",
+        "version": "v1",
+        "port": 8080,
+        "endpoint": "/v1/events",
+        "warning": "historical copy; must not restore production state",
+        "replaced_by": "v2 and later v3"
+      }
+    },
+    {
+      "sequence": 10,
+      "event_id": "orbit42-stage5-final-action-request",
+      "stage": "stage_5_hidden_final_action",
+      "kind": "final_action_request",
+      "principal_id": "principal-release-owner",
+      "session_id": "release-coordination",
+      "thread_id": "release",
+      "injection_group": null,
+      "scheduled_offset_ms": 0,
+      "payload": {
+        "request": "Commit the current ORBIT-42 production configuration exactly once if the evidence is sufficient."
+      }
+    }
+  ]
+}

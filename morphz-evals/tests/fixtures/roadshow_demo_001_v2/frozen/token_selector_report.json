@@ -1,0 +1,144 @@
+{
+  "measurement": {
+    "counter": "tiktoken:0.12.0:o200k_base",
+    "encoding_requested": "o200k_base",
+    "active_input_cap": 8192,
+    "wrapper_reserve": 256,
+    "prior_report_round_reserve": 256,
+    "output_cap_separate": 512,
+    "system_tokens": 159,
+    "tool_schema_tokens": 422
+  },
+  "levels": {
+    "normal_load": {
+      "event_count": 43,
+      "fixture_utf8_bytes": 19741,
+      "fixture_tokens": 4371,
+      "fixture_sha256": "61ea5cc3629bf637fcc8ab9a0dde88b872ad5ba6045ab5f12359a23eb567ec45",
+      "requests": {
+        "orbit42-stage2-cross-session-request": {
+          "request_tokens": 15,
+          "prior_transcript_reserve": 0,
+          "fixed_tokens": 852,
+          "event_budget_tokens": 7340,
+          "selected_event_tokens": 3397,
+          "selected_event_count": 37,
+          "selected_first_event": "orbit42-history-release-v1",
+          "selected_last_event": "orbit42-stage1-compliance-policy",
+          "omitted_event_count": 0,
+          "authority_visibility": {
+            "orbit42-history-release-v1": true,
+            "orbit42-history-release-v2": true,
+            "orbit42-history-security-rule": true,
+            "orbit42-stage1-compliance-policy": true,
+            "orbit42-stage1-release-v3": true,
+            "orbit42-stage4-late-archived-v1": false
+          }
+        },
+        "orbit42-stage4-current-state-request": {
+          "request_tokens": 16,
+          "prior_transcript_reserve": 256,
+          "fixed_tokens": 1109,
+          "event_budget_tokens": 7083,
+          "selected_event_tokens": 3708,
+          "selected_event_count": 41,
+          "selected_first_event": "orbit42-history-release-v1",
+          "selected_last_event": "orbit42-stage4-late-archived-v1",
+          "omitted_event_count": 0,
+          "authority_visibility": {
+            "orbit42-history-release-v1": true,
+            "orbit42-history-release-v2": true,
+            "orbit42-history-security-rule": true,
+            "orbit42-stage1-compliance-policy": true,
+            "orbit42-stage1-release-v3": true,
+            "orbit42-stage4-late-archived-v1": true
+          }
+        },
+        "orbit42-stage5-final-action-request": {
+          "request_tokens": 17,
+          "prior_transcript_reserve": 512,
+          "fixed_tokens": 1366,
+          "event_budget_tokens": 6826,
+          "selected_event_tokens": 3779,
+          "selected_event_count": 42,
+          "selected_first_event": "orbit42-history-release-v1",
+          "selected_last_event": "orbit42-stage4-current-state-request",
+          "omitted_event_count": 0,
+          "authority_visibility": {
+            "orbit42-history-release-v1": true,
+            "orbit42-history-release-v2": true,
+            "orbit42-history-security-rule": true,
+            "orbit42-stage1-compliance-policy": true,
+            "orbit42-stage1-release-v3": true,
+            "orbit42-stage4-late-archived-v1": true
+          }
+        }
+      }
+    },
+    "context_pressure": {
+      "event_count": 139,
+      "fixture_utf8_bytes": 65631,
+      "fixture_tokens": 14295,
+      "fixture_sha256": "be025fa33ac4593ae0ee4469b33288f1e7bc267e132eda12f8a3484f7059ed69",
+      "requests": {
+        "orbit42-stage2-cross-session-request": {
+          "request_tokens": 15,
+          "prior_transcript_reserve": 0,
+          "fixed_tokens": 852,
+          "event_budget_tokens": 7340,
+          "selected_event_tokens": 7290,
+          "selected_event_count": 79,
+          "selected_first_event": "company-history-background-052",
+          "selected_last_event": "orbit42-stage1-compliance-policy",
+          "omitted_event_count": 54,
+          "authority_visibility": {
+            "orbit42-history-release-v1": false,
+            "orbit42-history-release-v2": false,
+            "orbit42-history-security-rule": false,
+            "orbit42-stage1-compliance-policy": true,
+            "orbit42-stage1-release-v3": true,
+            "orbit42-stage4-late-archived-v1": false
+          }
+        },
+        "orbit42-stage4-current-state-request": {
+          "request_tokens": 16,
+          "prior_transcript_reserve": 256,
+          "fixed_tokens": 1109,
+          "event_budget_tokens": 7083,
+          "selected_event_tokens": 7048,
+          "selected_event_count": 77,
+          "selected_first_event": "company-history-background-058",
+          "selected_last_event": "orbit42-stage4-late-archived-v1",
+          "omitted_event_count": 60,
+          "authority_visibility": {
+            "orbit42-history-release-v1": false,
+            "orbit42-history-release-v2": false,
+            "orbit42-history-security-rule": false,
+            "orbit42-stage1-compliance-policy": true,
+            "orbit42-stage1-release-v3": true,
+            "orbit42-stage4-late-archived-v1": true
+          }
+        },
+        "orbit42-stage5-final-action-request": {
+          "request_tokens": 17,
+          "prior_transcript_reserve": 512,
+          "fixed_tokens": 1366,
+          "event_budget_tokens": 6826,
+          "selected_event_tokens": 6749,
+          "selected_event_count": 74,
+          "selected_first_event": "company-history-background-062",
+          "selected_last_event": "orbit42-stage4-current-state-request",
+          "omitted_event_count": 64,
+          "authority_visibility": {
+            "orbit42-history-release-v1": false,
+            "orbit42-history-release-v2": false,
+            "orbit42-history-security-rule": false,
+            "orbit42-stage1-compliance-policy": true,
+            "orbit42-stage1-release-v3": true,
+            "orbit42-stage4-late-archived-v1": true
+          }
+        }
+      }
+    }
+  }
+}
