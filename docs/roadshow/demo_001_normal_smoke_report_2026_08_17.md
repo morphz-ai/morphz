@@ -1,5 +1,10 @@
 # DEMO-001 Normal Smoke Report — frozen-v2.1
 
+> Superseded engineering probe. This run used the correct Morphz Profile but
+> its code ancestry included unrelated commit `8a06824`. It is excluded from
+> the formal Gate. Use
+> `demo_001_normal_smoke_report_frozen_v2_1_selective_2026_08_17.md` instead.
+
 > Executed: 2026-08-17 (Asia/Shanghai)
 >
 > Purpose: `roadshow_demo`; excluded from paper statistics
