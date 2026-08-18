@@ -664,7 +664,7 @@ context_snapshot_version
 | Working Set | `active_window + max_sessions + token budget` 确定性选择，当前 Session 强制 Full |
 | Session attention | Mount 上持久化 `active/retired`；DSL 原子修改；定向事件自动 restore |
 | 自描述 | Context Protocol v15 编码并发、Working Set、attention、投影与 wake 语义 |
-| 可观测性 | `context status`、`session list`、TUI 顶栏/工具因果信息和两个 Context HTTP 状态接口 |
+| 可观测性 | `context status`、`session list`、TUI 底部状态栏/工具因果信息和两个 Context HTTP 状态接口 |
 
 工具计划恢复提供的是 Runtime 级的稳定 identity 与“已有结果不重做”。对于任意外部系统的不可回滚副作用，跨进程崩溃后的严格 exactly-once 仍需要工具或目标系统支持幂等键；v1 不伪造这一保证。
 

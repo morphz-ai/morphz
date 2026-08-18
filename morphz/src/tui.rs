@@ -13,20 +13,21 @@ use crate::event::Event as RuntimeEvent;
 use crate::i18n::Locale;
 use crate::llm::ModelStreamEvent;
 use crate::memory::{
-    DelegationRecord, DelegationStatus, ObjectiveRecord, ObjectiveStatus, ObjectiveWaitCondition,
+    DelegationRecord, DelegationStatus, MessageDispatchMode, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveWaitCondition, SessionRecord, SessionStatus,
 };
 use crate::orchestrator::context::ContextView;
 use crate::runtime::{MorphzRuntime, SessionHandle};
 use crate::sdk::{MorphzSdk, SendMessageCommand};
+use crate::sexpr::SExpr;
 use crate::sexpr_vm_contract::{MORPHZ_MACHINE_NAME_EN, MORPHZ_MACHINE_NAME_ZH};
 use crate::tool::{get_tasks_map, BackgroundTaskStatus};
 use chrono::Utc;
 use crossterm::cursor::Show;
 use crossterm::event::{
-    poll as poll_input_event, read as read_input_event, DisableBracketedPaste, DisableMouseCapture,
-    EnableBracketedPaste, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    poll as poll_input_event, read as read_input_event, DisableBracketedPaste,
+    EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -50,7 +51,6 @@ type TuiError = Box<dyn std::error::Error + Send + Sync>;
 const USER_MESSAGE_PREFIX: &str = "✨ ";
 const COMPOSER_PREFIX: &str = "❯ ";
 const REASONING_PREVIEW_LINES: usize = 2;
-const MOUSE_SCROLL_LINES: u16 = 3;
 const MORPHZ_WORDMARK: [&str; 6] = [
     r"███╗   ███╗ ██████╗ ██████╗ ██████╗ ██╗  ██╗ ███████╗",
     r"████╗ ████║██╔═══██╗██╔══██╗██╔══██╗██║  ██║ ╚══███╔╝",
@@ -412,6 +412,12 @@ enum UiView {
     Mind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiFocus {
+    Content,
+    Composer,
+}
+
 #[derive(Debug, Clone)]
 struct TranscriptEntry {
     kind: EntryKind,
@@ -550,7 +556,13 @@ struct UiState {
     objectives: Vec<ObjectiveRecord>,
     context_view: Option<ContextView>,
     delegations: Vec<DelegationRecord>,
+    sessions: Vec<SessionRecord>,
+    session_selection: usize,
+    session_drafts: BTreeMap<String, String>,
     active_view: UiView,
+    focus: UiFocus,
+    selected_objective_id: Option<String>,
+    selected_frame_id: Option<String>,
     view_scroll: u16,
     busy: bool,
     follow_tail: bool,
@@ -563,6 +575,7 @@ struct UiState {
     show_reasoning_details: bool,
     show_task_diagnostics: bool,
     show_objectives: bool,
+    show_sessions: bool,
     objective_scroll: u16,
     cancel_confirmation_armed: bool,
     appearance: TerminalAppearance,
@@ -605,7 +618,13 @@ impl UiState {
             objectives: Vec::new(),
             context_view: None,
             delegations: Vec::new(),
+            sessions: Vec::new(),
+            session_selection: 0,
+            session_drafts: BTreeMap::new(),
             active_view: UiView::Conversation,
+            focus: UiFocus::Composer,
+            selected_objective_id: None,
+            selected_frame_id: None,
             view_scroll: 0,
             busy: false,
             follow_tail: true,
@@ -618,6 +637,7 @@ impl UiState {
             show_reasoning_details: false,
             show_task_diagnostics: false,
             show_objectives: false,
+            show_sessions: false,
             objective_scroll: 0,
             cancel_confirmation_armed: false,
             appearance,
@@ -650,7 +670,137 @@ impl UiState {
 
     fn set_active_view(&mut self, active_view: UiView) {
         self.active_view = active_view;
+        self.focus = if active_view == UiView::Conversation {
+            UiFocus::Composer
+        } else {
+            UiFocus::Content
+        };
         self.view_scroll = 0;
+    }
+
+    fn toggle_secondary_focus(&mut self) {
+        if self.active_view == UiView::Conversation {
+            self.focus = UiFocus::Composer;
+        } else {
+            self.focus = match self.focus {
+                UiFocus::Content => UiFocus::Composer,
+                UiFocus::Composer => UiFocus::Content,
+            };
+        }
+    }
+
+    fn set_sessions(&mut self, mut sessions: Vec<SessionRecord>) {
+        sessions.retain(|session| session.status == SessionStatus::Active);
+        sessions.sort_by(|left, right| {
+            right
+                .last_activity_at
+                .cmp(&left.last_activity_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let selected_id = self
+            .sessions
+            .get(self.session_selection)
+            .map(|session| session.id.clone())
+            .unwrap_or_else(|| self.session_id.clone());
+        self.session_selection = sessions
+            .iter()
+            .position(|session| session.id == selected_id)
+            .or_else(|| {
+                sessions
+                    .iter()
+                    .position(|session| session.id == self.session_id)
+            })
+            .unwrap_or_default();
+        self.sessions = sessions;
+    }
+
+    fn selected_session_id(&self) -> Option<&str> {
+        self.sessions
+            .get(self.session_selection)
+            .map(|session| session.id.as_str())
+    }
+
+    fn move_session_selection(&mut self, amount: isize) {
+        self.session_selection =
+            move_selection(self.session_selection, self.sessions.len(), amount);
+    }
+
+    fn reconcile_content_selections(&mut self) {
+        let active_objective_ids = self
+            .objectives
+            .iter()
+            .filter(|objective| !objective.status.is_terminal())
+            .map(|objective| objective.id.as_str())
+            .collect::<Vec<_>>();
+        if self
+            .selected_objective_id
+            .as_deref()
+            .is_none_or(|id| !active_objective_ids.contains(&id))
+        {
+            self.selected_objective_id = active_objective_ids.first().map(|id| (*id).to_string());
+        }
+
+        let frame_ids = self
+            .context_view
+            .as_ref()
+            .map(|view| {
+                view.state
+                    .frames
+                    .iter()
+                    .map(|frame| frame.id.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if self
+            .selected_frame_id
+            .as_deref()
+            .is_none_or(|id| !frame_ids.contains(&id))
+        {
+            self.selected_frame_id = frame_ids.first().map(|id| (*id).to_string());
+        }
+    }
+
+    fn move_objective_selection(&mut self, amount: isize) {
+        let ids = self
+            .objectives
+            .iter()
+            .filter(|objective| !objective.status.is_terminal())
+            .map(|objective| objective.id.clone())
+            .collect::<Vec<_>>();
+        self.selected_objective_id =
+            moved_selection_id(self.selected_objective_id.as_deref(), &ids, amount);
+    }
+
+    fn move_frame_selection(&mut self, amount: isize) {
+        let ids = self
+            .context_view
+            .as_ref()
+            .map(|view| {
+                view.state
+                    .frames
+                    .iter()
+                    .map(|frame| frame.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.selected_frame_id =
+            moved_selection_id(self.selected_frame_id.as_deref(), &ids, amount);
+    }
+
+    fn select_first_content_item(&mut self) {
+        match self.active_view {
+            UiView::Tasks => self.move_objective_selection(isize::MIN),
+            UiView::Mind => self.move_frame_selection(isize::MIN),
+            UiView::Conversation => {}
+        }
+    }
+
+    fn select_last_content_item(&mut self) {
+        match self.active_view {
+            UiView::Tasks => self.move_objective_selection(isize::MAX),
+            UiView::Mind => self.move_frame_selection(isize::MAX),
+            UiView::Conversation => {}
+        }
     }
 
     fn push(&mut self, kind: EntryKind, body: impl Into<String>) {
@@ -728,6 +878,7 @@ impl UiState {
             )
         };
         self.context_view = Some(view.clone());
+        self.reconcile_content_selections();
     }
 
     fn clear_live_attempt(&mut self, causal_id: &str) -> bool {
@@ -740,14 +891,6 @@ impl UiState {
 
     fn refresh_busy_from_live_attempts(&mut self) {
         self.busy = !self.live_attempts.is_empty();
-    }
-
-    fn conversation_activity_is_visible(&self) -> bool {
-        self.active_view == UiView::Conversation
-            && self
-                .live_attempts
-                .values()
-                .any(LiveAttempt::is_conversation)
     }
 
     fn clear_causal_live_attempt(&mut self, event: &RuntimeEvent) -> bool {
@@ -1232,9 +1375,6 @@ impl UiState {
         frame.render_widget(Block::default(), size);
         let input_lines = self.composer.text().split('\n').count().clamp(1, 5) as u16;
         if self.active_view == UiView::Conversation {
-            // The default surface is intentionally only the conversation and
-            // its execution stream. Morphz-specific control planes stay one
-            // shortcut away instead of permanently taking over the viewport.
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -1247,249 +1387,34 @@ impl UiState {
             self.render_composer(frame, chunks[1], show_cursor);
             self.render_footer(frame, chunks[2]);
         } else {
-            let compact = size.width < 88 || size.height < 18;
-            let header_height = if compact { 3 } else { 4 };
-            let status_height = if compact { 1 } else { 3 };
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(header_height),
-                    Constraint::Length(status_height),
                     Constraint::Min(4),
                     Constraint::Length(input_lines + 2),
                     Constraint::Length(1),
                 ])
                 .split(size);
-            self.render_header(frame, chunks[0]);
-            self.render_chat_status(frame, chunks[1]);
             match self.active_view {
-                UiView::Tasks => self.render_tasks_view(frame, chunks[2]),
-                UiView::Mind => self.render_mind_view(frame, chunks[2]),
+                UiView::Tasks => self.render_tasks_view(frame, chunks[0]),
+                UiView::Mind => self.render_mind_view(frame, chunks[0]),
                 UiView::Conversation => unreachable!(),
             }
-            self.render_composer(frame, chunks[3], show_cursor);
-            self.render_footer(frame, chunks[4]);
+            self.render_composer(frame, chunks[1], show_cursor);
+            self.render_footer(frame, chunks[2]);
         }
         if self.show_help {
-            self.render_help(frame, centered_rect(72, 70, size));
+            self.render_help(frame, centered_rect(88, 96, size));
         }
         if self.show_objectives {
             self.render_objectives(frame, centered_rect(84, 78, size));
         }
+        if self.show_sessions {
+            self.render_sessions(frame, centered_rect(88, 82, size));
+        }
         if self.pending_approval.is_some() {
             self.render_approval(frame, centered_rect(78, 62, size));
         }
-    }
-
-    fn render_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        let spinner = ["◐", "◓", "◑", "◒"][self.spinner % 4];
-        let activity = if self.busy { spinner } else { "●" };
-        let activity_color = if self.busy {
-            self.theme.warning
-        } else {
-            self.theme.success
-        };
-        if area.width < 88 {
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from(vec![
-                        Span::styled("◆ ", Style::default().fg(self.theme.brand)),
-                        Span::styled(
-                            "Morphz",
-                            Style::default()
-                                .fg(self.theme.brand)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled("   ", Style::default()),
-                        Span::styled(activity, Style::default().fg(activity_color)),
-                        Span::styled(
-                            format!("  {}", self.status),
-                            Style::default().fg(self.theme.text_secondary),
-                        ),
-                    ]),
-                    self.render_legacy_identity_line(),
-                ])
-                .block(Block::default().padding(ratatui::widgets::Padding::horizontal(2))),
-                area,
-            );
-            return;
-        }
-        let inner = inset_rect(area, control_plane_horizontal_margin(area.width), 0);
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Fill(20),
-                Constraint::Length(2),
-                Constraint::Fill(27),
-                Constraint::Length(2),
-                Constraint::Fill(27),
-                Constraint::Length(2),
-                Constraint::Fill(26),
-            ])
-            .split(inner);
-        for separator in [columns[1], columns[3], columns[5]] {
-            frame.render_widget(
-                Paragraph::new(vec![Line::from("│"), Line::from("│")])
-                    .style(Style::default().fg(self.theme.border_subtle)),
-                separator,
-            );
-        }
-        let session_label = self
-            .session_title
-            .as_deref()
-            .filter(|title| !title.trim().is_empty())
-            .map(|title| format!("{} · {}", truncate(title, 28), short_id(&self.session_id)))
-            .unwrap_or_else(|| short_id(&self.session_id));
-        let brand = vec![
-            Line::from(vec![
-                Span::styled("◆ ", Style::default().fg(self.theme.brand)),
-                Span::styled(
-                    "Morphz",
-                    Style::default()
-                        .fg(self.theme.brand)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("   ", Style::default()),
-                Span::styled(activity, Style::default().fg(activity_color)),
-                Span::styled(
-                    format!("  {}", self.status),
-                    Style::default().fg(self.theme.text_secondary),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    self.tr("agent/", "代理/"),
-                    Style::default().fg(self.theme.text_muted),
-                ),
-                Span::styled(
-                    short_id(&self.agent_id),
-                    Style::default().fg(self.theme.text_secondary),
-                ),
-            ]),
-        ];
-        frame.render_widget(Paragraph::new(brand), columns[0]);
-
-        let context = vec![
-            Line::from(Span::styled(
-                self.tr("CONTEXT", "上下文"),
-                Style::default().fg(self.theme.text_muted),
-            )),
-            Line::from(vec![
-                Span::styled(
-                    short_id(&self.context_id),
-                    Style::default()
-                        .fg(self.theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    self.tr("  shared", "  共享"),
-                    Style::default().fg(self.theme.focus),
-                ),
-            ]),
-        ];
-        frame.render_widget(Paragraph::new(context), columns[2]);
-
-        let session = vec![
-            Line::from(Span::styled(
-                self.tr("SESSION", "会话"),
-                Style::default().fg(self.theme.text_muted),
-            )),
-            Line::from(vec![
-                Span::styled(
-                    session_label,
-                    Style::default()
-                        .fg(self.theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    self.tr("  active", "  活跃"),
-                    Style::default().fg(self.theme.success),
-                ),
-            ]),
-        ];
-        frame.render_widget(Paragraph::new(session), columns[4]);
-
-        let (frames, version, pressure, tokens, hard_limit) = self
-            .context_view
-            .as_ref()
-            .map(|view| {
-                (
-                    view.state.frames.len(),
-                    view.state.version,
-                    view.pressure.level.as_str(),
-                    view.pressure.estimated_tokens,
-                    view.pressure.hard_limit,
-                )
-            })
-            .unwrap_or((0, 0, "loading", 0, 0));
-        let runtime = vec![
-            Line::from(vec![
-                Span::styled(
-                    self.tr("MIND  ", "认知  "),
-                    Style::default().fg(self.theme.focus),
-                ),
-                Span::styled(
-                    if self.locale.is_chinese() {
-                        format!("{frames} 个认知帧")
-                    } else {
-                        format!("{frames} Mind Frames")
-                    },
-                    Style::default()
-                        .fg(self.theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!(
-                        "  r{version} · {}",
-                        localized_pressure(self.locale, pressure)
-                    ),
-                    Style::default().fg(pressure_color(pressure, &self.theme)),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    format!("{} / {}", compact_count(tokens), compact_count(hard_limit)),
-                    Style::default().fg(self.theme.text_muted),
-                ),
-                Span::styled("  ·  ", Style::default().fg(self.theme.border_subtle)),
-                Span::styled(&self.model, Style::default().fg(self.theme.text_muted)),
-            ]),
-        ];
-        frame.render_widget(
-            Paragraph::new(runtime).alignment(Alignment::Right),
-            columns[6],
-        );
-    }
-
-    fn render_legacy_identity_line(&self) -> Line<'static> {
-        Line::from(vec![
-            Span::styled(
-                self.tr("AGENT ", "代理 "),
-                Style::default().fg(self.theme.text_muted),
-            ),
-            Span::styled(
-                short_id(&self.agent_id),
-                Style::default().fg(self.theme.text_secondary),
-            ),
-            Span::styled("  │  ", Style::default().fg(self.theme.border_strong)),
-            Span::styled(
-                self.tr("CONTEXT ", "上下文 "),
-                Style::default().fg(self.theme.text_muted),
-            ),
-            Span::styled(
-                short_id(&self.context_id),
-                Style::default().fg(self.theme.text_secondary),
-            ),
-            Span::styled("  │  ", Style::default().fg(self.theme.border_strong)),
-            Span::styled(
-                self.tr("SESSION ", "会话 "),
-                Style::default().fg(self.theme.text_muted),
-            ),
-            Span::styled(
-                short_id(&self.session_id),
-                Style::default().fg(self.theme.text_primary),
-            ),
-        ])
     }
 
     fn runtime_task_counts(&self) -> (usize, usize, usize, usize) {
@@ -1521,83 +1446,6 @@ impl UiState {
         (activations, objectives, background, delegations)
     }
 
-    fn render_chat_status(&self, frame: &mut Frame<'_>, area: Rect) {
-        let (view_label, view_color, view_detail) = match self.active_view {
-            UiView::Tasks => (
-                self.tr("TASKS", "任务"),
-                self.theme.focus,
-                self.tr("Objectives, execution, and delegations", "目标、执行与委派"),
-            ),
-            UiView::Mind => (
-                self.tr("MIND", "认知"),
-                self.theme.focus,
-                self.tr("Shared cognition", "共享认知"),
-            ),
-            UiView::Conversation => (
-                self.tr("CHAT", "对话"),
-                self.theme.user,
-                self.tr("Current session", "当前会话"),
-            ),
-        };
-        if area.height < 3 {
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        format!(" {view_label}  "),
-                        Style::default().fg(view_color).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("context/{}", short_id(&self.context_id)),
-                        Style::default().fg(self.theme.text_secondary),
-                    ),
-                    Span::styled("  ·  Esc", Style::default().fg(self.theme.text_muted)),
-                ])),
-                area,
-            );
-            return;
-        }
-        let strip = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(Style::default().fg(self.theme.border_subtle));
-        let inner = inset_rect(
-            strip.inner(area),
-            control_plane_horizontal_margin(area.width),
-            0,
-        );
-        frame.render_widget(strip, area);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!("{view_label}  "),
-                    Style::default().fg(view_color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("context/{}", short_id(&self.context_id)),
-                    Style::default().fg(self.theme.text_secondary),
-                ),
-                Span::styled(
-                    format!("  ·  {view_detail}"),
-                    Style::default().fg(self.theme.text_muted),
-                ),
-            ])),
-            inner,
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    self.tr("Conversation input remains available  ", "仍可输入对话  "),
-                    Style::default().fg(self.theme.text_muted),
-                ),
-                Span::styled(
-                    self.tr("Esc to return", "按 Esc 返回"),
-                    Style::default().fg(self.theme.user),
-                ),
-            ]))
-            .alignment(Alignment::Right),
-            inner,
-        );
-    }
-
     fn task_overview_lines(&self) -> Vec<Line<'static>> {
         const MAX_ITEMS_PER_SECTION: usize = 4;
         let (activations, objectives, background_count, delegations) = self.runtime_task_counts();
@@ -1625,8 +1473,8 @@ impl UiState {
             ]),
             Line::from(Span::styled(
                 self.tr(
-                    "Only current executable facts are shown; press Tab for diagnostics.",
-                    "仅显示当前可执行事实；按 Tab 查看诊断详情。",
+                    "Only current executable facts are shown; press D for diagnostics.",
+                    "仅显示当前可执行事实；按 D 查看诊断详情。",
                 ),
                 Style::default().fg(self.theme.text_muted),
             )),
@@ -1711,15 +1559,30 @@ impl UiState {
                 self.theme.warning,
                 self.theme.text_muted,
             ));
-            for objective in active_objectives.iter().take(MAX_ITEMS_PER_SECTION) {
+            for objective in &active_objectives {
+                let selected = self.selected_objective_id.as_deref() == Some(objective.id.as_str());
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("  {}  ", objective_status_marker(objective.status)),
+                        if selected { "▌ " } else { "  " },
+                        Style::default().fg(if selected {
+                            self.theme.focus
+                        } else {
+                            self.theme.border_subtle
+                        }),
+                    ),
+                    Span::styled(
+                        format!("{}  ", objective_status_marker(objective.status)),
                         Style::default().fg(objective_status_color(objective.status, &self.theme)),
                     ),
                     Span::styled(
                         truncate(&objective.stated_objective.replace('\n', " "), 110),
-                        Style::default().fg(self.theme.text_primary),
+                        Style::default()
+                            .fg(self.theme.text_primary)
+                            .add_modifier(if selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
                     ),
                     Span::styled(
                         format!(
@@ -1730,13 +1593,6 @@ impl UiState {
                     ),
                 ]));
             }
-            push_more_hint(
-                &mut lines,
-                active_objectives.len(),
-                MAX_ITEMS_PER_SECTION,
-                self.theme.text_muted,
-                self.locale,
-            );
             lines.push(Line::from(""));
         }
 
@@ -2163,13 +2019,26 @@ impl UiState {
             } else {
                 ""
             };
+            let selected = self.selected_frame_id.as_deref() == Some(frame.id.as_str());
             lines.push(Line::from(vec![
-                Span::styled("  ◇ ", Style::default().fg(self.theme.focus)),
+                Span::styled(
+                    if selected { "▌ " } else { "  " },
+                    Style::default().fg(if selected {
+                        self.theme.focus
+                    } else {
+                        self.theme.border_subtle
+                    }),
+                ),
+                Span::styled("◇ ", Style::default().fg(self.theme.focus)),
                 Span::styled(
                     frame.id.clone(),
                     Style::default()
                         .fg(self.theme.text_secondary)
-                        .add_modifier(Modifier::BOLD),
+                        .add_modifier(if selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
                 ),
                 Span::styled(
                     if self.locale.is_chinese() {
@@ -2253,7 +2122,7 @@ impl UiState {
     }
 
     fn render_view_lines(&mut self, frame: &mut Frame<'_>, area: Rect, lines: Vec<Line<'static>>) {
-        let inner = inset_rect(area, (area.width / 14).clamp(3, 14), 1);
+        let inner = inset_rect(area, content_horizontal_margin(area.width), 1);
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         let visual_lines = paragraph.line_count(inner.width);
         let max_scroll = visual_lines
@@ -2261,88 +2130,6 @@ impl UiState {
             .min(u16::MAX as usize) as u16;
         self.view_scroll = self.view_scroll.min(max_scroll);
         frame.render_widget(paragraph.scroll((self.view_scroll, 0)), inner);
-    }
-
-    fn render_metric_card(
-        &self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        label: &str,
-        value: String,
-        detail: String,
-        accent: Color,
-    ) {
-        let content = if area.height >= 3 {
-            vec![
-                Line::from(Span::styled(
-                    label.to_string(),
-                    Style::default().fg(self.theme.text_muted),
-                )),
-                Line::from(vec![
-                    Span::styled(
-                        value,
-                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("  {detail}"),
-                        Style::default().fg(self.theme.text_muted),
-                    ),
-                ]),
-            ]
-        } else {
-            vec![Line::from(vec![
-                Span::styled(
-                    value,
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  {detail}"),
-                    Style::default().fg(self.theme.text_muted),
-                ),
-            ])]
-        };
-        frame.render_widget(
-            Paragraph::new(content).block(
-                Block::default()
-                    .borders(Borders::LEFT)
-                    .border_style(Style::default().fg(accent))
-                    .padding(ratatui::widgets::Padding::horizontal(1)),
-            ),
-            area,
-        );
-    }
-
-    fn render_section_panel(
-        &self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        title: &str,
-        badge: impl std::fmt::Display,
-        lines: Vec<Line<'static>>,
-        accent: Color,
-    ) {
-        let title = Line::from(vec![
-            Span::styled(
-                format!(" {title} "),
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{badge} "),
-                Style::default().fg(self.theme.text_muted),
-            ),
-        ]);
-        frame.render_widget(
-            Paragraph::new(lines)
-                .block(
-                    Block::default()
-                        .title(title)
-                        .borders(Borders::TOP)
-                        .border_style(Style::default().fg(self.theme.border_subtle))
-                        .padding(ratatui::widgets::Padding::horizontal(1)),
-                )
-                .wrap(Wrap { trim: false }),
-            area,
-        );
     }
 
     fn evaluation_panel_lines(&self, detailed: bool) -> Vec<Line<'static>> {
@@ -2383,66 +2170,6 @@ impl UiState {
                             short_id(&item.session_id),
                         ),
                         Style::default().fg(self.theme.text_muted),
-                    )));
-                }
-                lines
-            })
-            .collect()
-    }
-
-    fn objective_panel_lines(&self, detailed: bool) -> Vec<Line<'static>> {
-        let objectives = self
-            .objectives
-            .iter()
-            .filter(|objective| !objective.status.is_terminal())
-            .collect::<Vec<_>>();
-        if objectives.is_empty() {
-            return vec![empty_state_line(
-                self.tr("No non-terminal objectives", "没有非终态目标"),
-                self.theme.text_muted,
-            )];
-        }
-        objectives
-            .into_iter()
-            .flat_map(|objective| {
-                let mut lines = vec![Line::from(vec![
-                    Span::styled(
-                        format!("{}  ", objective_status_marker(objective.status)),
-                        Style::default().fg(objective_status_color(objective.status, &self.theme)),
-                    ),
-                    Span::styled(
-                        truncate(&objective.stated_objective.replace('\n', " "), 120),
-                        Style::default()
-                            .fg(self.theme.text_primary)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(
-                            "  ·  {}",
-                            localized_objective_status(self.locale, objective.status)
-                        ),
-                        Style::default().fg(objective_status_color(objective.status, &self.theme)),
-                    ),
-                ])];
-                if detailed {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "   {} · {} {}",
-                            short_id(&objective.id),
-                            self.tr("revision", "修订"),
-                            objective.revision,
-                        ),
-                        Style::default().fg(self.theme.text_muted),
-                    )));
-                }
-                if let Some(wait) = objective.wait_condition.as_ref() {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "   {} · {}",
-                            self.tr("waiting", "等待"),
-                            format_objective_wait(wait, self.locale)
-                        ),
-                        Style::default().fg(self.theme.warning),
                     )));
                 }
                 lines
@@ -2497,56 +2224,6 @@ impl UiState {
                             short_id(&session_id),
                             (Utc::now() - started_at).num_seconds().max(0),
                             self.tr("s", "秒"),
-                        ),
-                        Style::default().fg(self.theme.text_muted),
-                    )));
-                }
-                lines
-            })
-            .collect()
-    }
-
-    fn delegation_panel_lines(&self, detailed: bool) -> Vec<Line<'static>> {
-        let jobs = self
-            .delegations
-            .iter()
-            .filter(|job| {
-                job.parent_context_id == self.context_id
-                    && matches!(
-                        job.status,
-                        DelegationStatus::Queued | DelegationStatus::Running
-                    )
-            })
-            .collect::<Vec<_>>();
-        if jobs.is_empty() {
-            return vec![empty_state_line(
-                self.tr("No active subagent delegations", "没有活跃的子代理委派"),
-                self.theme.text_muted,
-            )];
-        }
-        jobs.into_iter()
-            .flat_map(|job| {
-                let mut lines = vec![Line::from(vec![
-                    Span::styled("◇ ", Style::default().fg(self.theme.tool)),
-                    Span::styled(
-                        truncate(&job.task.replace('\n', " "), 120),
-                        Style::default().fg(self.theme.text_primary),
-                    ),
-                    Span::styled(
-                        format!(
-                            "  ·  {}",
-                            localized_delegation_status(self.locale, &job.status)
-                        ),
-                        Style::default().fg(task_status_color(job.status.as_str(), &self.theme)),
-                    ),
-                ])];
-                if detailed {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "  {} · {}/{}",
-                            short_id(&job.id),
-                            self.tr("child", "子会话"),
-                            short_id(&job.child_session_id)
                         ),
                         Style::default().fg(self.theme.text_muted),
                     )));
@@ -2679,6 +2356,271 @@ impl UiState {
             .collect()
     }
 
+    fn task_outline_lines(&self) -> Vec<Line<'static>> {
+        let objectives = self
+            .objectives
+            .iter()
+            .filter(|objective| !objective.status.is_terminal())
+            .collect::<Vec<_>>();
+        let activations = self
+            .context_view
+            .as_ref()
+            .map(|view| view.active_activations.as_slice())
+            .unwrap_or_default();
+        let thread_groups = self
+            .context_view
+            .as_ref()
+            .map(|view| view.thread_groups.as_slice())
+            .unwrap_or_default();
+        let background = get_tasks_map()
+            .iter()
+            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
+            .map(|task| (task.cmd_str.clone(), task.status))
+            .collect::<Vec<_>>();
+        let delegations = self
+            .delegations
+            .iter()
+            .filter(|job| {
+                job.parent_context_id == self.context_id
+                    && matches!(
+                        job.status,
+                        DelegationStatus::Queued | DelegationStatus::Running
+                    )
+            })
+            .collect::<Vec<_>>();
+
+        let mut lines = vec![section_title(
+            self.tr("OBJECTIVES", "目标"),
+            objectives.len(),
+            self.theme.focus,
+            self.theme.text_muted,
+        )];
+        if objectives.is_empty() {
+            lines.push(empty_state_line(
+                self.tr("No active objectives", "没有活跃目标"),
+                self.theme.text_muted,
+            ));
+        }
+        for objective in objectives {
+            let selected = self.selected_objective_id.as_deref() == Some(objective.id.as_str());
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if selected { "▌ " } else { "  " },
+                    Style::default().fg(if selected {
+                        self.theme.focus
+                    } else {
+                        self.theme.border_subtle
+                    }),
+                ),
+                Span::styled(
+                    objective_status_marker(objective.status),
+                    Style::default().fg(objective_status_color(objective.status, &self.theme)),
+                ),
+                Span::styled(
+                    format!(
+                        " {}  r{}",
+                        truncate(&objective.stated_objective.replace('\n', " "), 42),
+                        objective.revision
+                    ),
+                    Style::default()
+                        .fg(self.theme.text_primary)
+                        .add_modifier(if selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+            ]));
+            if let Some(wait) = objective.wait_condition.as_ref() {
+                lines.push(Line::from(Span::styled(
+                    format!("      ◷ {}", format_objective_wait(wait, self.locale)),
+                    Style::default().fg(self.theme.warning),
+                )));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(section_title(
+            self.tr("EXECUTION", "执行"),
+            activations.len() + background.len() + thread_groups.len(),
+            self.theme.success,
+            self.theme.text_muted,
+        ));
+        for activation in activations.iter().take(5) {
+            lines.push(Line::from(vec![
+                Span::styled("  ◒ ", Style::default().fg(self.theme.tool)),
+                Span::styled(
+                    truncate(&activation.trigger_kind, 32),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+                Span::styled(
+                    format!(
+                        "  {}",
+                        localized_runtime_status(self.locale, activation.status.as_str())
+                    ),
+                    Style::default().fg(task_status_color(activation.status.as_str(), &self.theme)),
+                ),
+            ]));
+        }
+        for (command, status) in background.iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::styled("  ● ", Style::default().fg(self.theme.success)),
+                Span::styled(
+                    truncate(&command.replace('\n', " "), 34),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+                Span::styled(
+                    format!("  {}", localized_background_status(self.locale, *status)),
+                    Style::default().fg(task_status_color(
+                        background_status_str(*status),
+                        &self.theme,
+                    )),
+                ),
+            ]));
+        }
+        for group in thread_groups.iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::styled("  ├ ", Style::default().fg(self.theme.focus)),
+                Span::styled(
+                    format!("{} · {}", short_id(&group.id), group.status.as_str()),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]));
+        }
+        if activations.is_empty() && background.is_empty() && thread_groups.is_empty() {
+            lines.push(empty_state_line(
+                self.tr("No work in flight", "没有正在执行的工作"),
+                self.theme.text_muted,
+            ));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(section_title(
+            self.tr("DELEGATIONS", "委派"),
+            delegations.len(),
+            self.theme.tool,
+            self.theme.text_muted,
+        ));
+        if delegations.is_empty() {
+            lines.push(empty_state_line(
+                self.tr("No active delegations", "没有活跃委派"),
+                self.theme.text_muted,
+            ));
+        }
+        for job in delegations.into_iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::styled("  ◇ ", Style::default().fg(self.theme.tool)),
+                Span::styled(
+                    truncate(&job.task.replace('\n', " "), 38),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]));
+        }
+        lines
+    }
+
+    fn task_detail_lines(&self) -> Vec<Line<'static>> {
+        let selected = self
+            .objectives
+            .iter()
+            .find(|objective| {
+                !objective.status.is_terminal()
+                    && self.selected_objective_id.as_deref() == Some(objective.id.as_str())
+            })
+            .or_else(|| {
+                self.objectives
+                    .iter()
+                    .find(|objective| !objective.status.is_terminal())
+            });
+        let mut lines = Vec::new();
+        if let Some(objective) = selected {
+            lines.extend([
+                Line::from(Span::styled(
+                    format!(
+                        "{} · {}",
+                        self.tr("OBJECTIVE", "目标"),
+                        short_id(&objective.id)
+                    ),
+                    Style::default().fg(self.theme.focus),
+                )),
+                Line::from(Span::styled(
+                    objective.stated_objective.clone(),
+                    Style::default()
+                        .fg(self.theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        format!("{}  ", self.tr("Status", "状态")),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                    Span::styled(
+                        localized_objective_status(self.locale, objective.status),
+                        Style::default().fg(objective_status_color(objective.status, &self.theme)),
+                    ),
+                    Span::styled(
+                        format!("  ·  r{}", objective.revision),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ]),
+            ]);
+            if let Some(wait) = objective.wait_condition.as_ref() {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{}  ◷ {}",
+                        self.tr("Waiting", "等待"),
+                        format_objective_wait(wait, self.locale)
+                    ),
+                    Style::default().fg(self.theme.warning),
+                )));
+            }
+            if let Some(reason) = objective.status_reason.as_deref() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    reason.to_string(),
+                    Style::default().fg(self.theme.text_secondary),
+                )));
+            }
+        } else {
+            lines.push(empty_state_line(
+                self.tr(
+                    "No active objective is selected",
+                    "当前没有可查看的活跃目标",
+                ),
+                self.theme.text_muted,
+            ));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(section_title(
+            self.tr("CURRENT ACTIVITY", "当前活动"),
+            self.runtime_task_counts().0 + self.runtime_task_counts().2,
+            self.theme.success,
+            self.theme.text_muted,
+        ));
+        lines.extend(self.execution_panel_lines(self.show_task_diagnostics));
+        let groups = self.thread_group_panel_lines(self.show_task_diagnostics);
+        if self
+            .context_view
+            .as_ref()
+            .is_some_and(|view| !view.thread_groups.is_empty())
+        {
+            lines.push(Line::from(""));
+            lines.push(section_title(
+                self.tr("THREAD GROUPS", "线程组"),
+                self.context_view
+                    .as_ref()
+                    .map(|view| view.thread_groups.len())
+                    .unwrap_or_default(),
+                self.theme.focus,
+                self.theme.text_muted,
+            ));
+            lines.extend(groups);
+        }
+        lines
+    }
+
     fn render_tasks_view(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if area.width < 94 || area.height < 16 {
             let lines = if self.show_task_diagnostics {
@@ -2690,144 +2632,55 @@ impl UiState {
             return;
         }
 
-        let inner = inset_rect(area, control_plane_horizontal_margin(area.width), 1);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(8)])
-            .split(inner);
-        let metrics = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(34),
-                Constraint::Percentage(33),
-                Constraint::Percentage(33),
-            ])
-            .split(rows[0]);
+        let inner = inset_rect(area, content_horizontal_margin(area.width), 0);
         let (activations, objectives, background, delegations) = self.runtime_task_counts();
         let thread_groups = self
             .context_view
             .as_ref()
             .map(|view| view.thread_groups.len())
             .unwrap_or_default();
-        self.render_metric_card(
-            frame,
-            metrics[0],
-            self.tr("OBJECTIVES", "目标"),
-            objectives.to_string(),
-            self.tr("current objectives", "当前目标").to_string(),
-            self.theme.focus,
-        );
-        self.render_metric_card(
-            frame,
-            metrics[1],
-            self.tr("IN FLIGHT", "执行中"),
-            (activations + background).to_string(),
-            if self.locale.is_chinese() {
-                format!("{activations} 项求值 · {background} 个后台任务")
-            } else {
-                format!("{activations} evaluations · {background} background tasks")
-            },
-            if activations + background > 0 {
-                self.theme.success
-            } else {
-                self.theme.text_muted
-            },
-        );
-        self.render_metric_card(
-            frame,
-            metrics[2],
-            self.tr("DELEGATIONS", "委派"),
-            delegations.to_string(),
-            self.tr("subagents", "子代理").to_string(),
-            self.theme.tool,
-        );
-
         let total = activations + objectives + background + delegations + thread_groups;
         if total == 0 {
-            self.render_tasks_empty_state(frame, rows[1]);
+            self.render_tasks_empty_state(frame, inner);
             return;
         }
 
-        let task_rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(rows[1]);
-        self.render_section_panel(
-            frame,
-            task_rows[0],
-            self.tr("OBJECTIVES", "目标"),
-            objectives,
-            self.objective_panel_lines(self.show_task_diagnostics),
-            self.theme.focus,
-        );
-
-        let execution = Layout::default()
+        let panes = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-            .split(task_rows[1]);
-        let mut execution_lines = self.execution_panel_lines(self.show_task_diagnostics);
-        if thread_groups > 0 {
-            if !execution_lines.is_empty() {
-                execution_lines.push(Line::from(""));
-            }
-            execution_lines.push(section_title(
-                self.tr("THREAD GROUPS", "线程组"),
-                thread_groups,
-                self.theme.focus,
-                self.theme.text_muted,
-            ));
-            execution_lines.extend(self.thread_group_panel_lines(self.show_task_diagnostics));
-        }
-        self.render_section_panel(
-            frame,
-            execution[0],
-            self.tr("EXECUTION", "执行"),
-            activations + background + thread_groups,
-            execution_lines,
-            self.theme.success,
+            .constraints([Constraint::Percentage(37), Constraint::Percentage(63)])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(self.task_outline_lines())
+                .block(
+                    Block::default()
+                        .borders(Borders::RIGHT)
+                        .border_style(Style::default().fg(self.theme.border_subtle))
+                        .padding(ratatui::widgets::Padding::horizontal(1)),
+                )
+                .wrap(Wrap { trim: false }),
+            panes[0],
         );
-        self.render_section_panel(
-            frame,
-            execution[1],
-            self.tr("DELEGATIONS", "委派"),
-            delegations,
-            self.delegation_panel_lines(self.show_task_diagnostics),
-            self.theme.tool,
+        frame.render_widget(
+            Paragraph::new(self.task_detail_lines())
+                .block(Block::default().padding(ratatui::widgets::Padding::horizontal(2)))
+                .wrap(Wrap { trim: false }),
+            panes[1],
         );
     }
 
     fn render_tasks_empty_state(&self, frame: &mut Frame<'_>, area: Rect) {
-        let block = Block::default()
-            .title(Line::from(vec![
-                Span::styled(
-                    self.tr(" TASKS & EXECUTION ", " 任务与执行 "),
-                    Style::default()
-                        .fg(self.theme.focus)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("0 ", Style::default().fg(self.theme.text_muted)),
-            ]))
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(self.theme.border_subtle));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let content_height = 3_u16.min(inner.height);
-        let content = Rect::new(
-            inner.x,
-            inner
-                .y
-                .saturating_add(inner.height.saturating_sub(content_height) / 2),
-            inner.width,
-            content_height,
-        );
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    self.tr("○  No tasks are running", "○  当前没有进行中的任务"),
+                    self.tr("TASKS & EXECUTION  0", "任务与执行  0"),
                     Style::default()
-                        .fg(self.theme.text_secondary)
+                        .fg(self.theme.focus)
                         .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    self.tr("○  No tasks are running", "○  当前没有进行中的任务"),
+                    Style::default().fg(self.theme.text_secondary),
                 )),
                 Line::from(Span::styled(
                     self.tr(
@@ -2836,17 +2689,190 @@ impl UiState {
                     ),
                     Style::default().fg(self.theme.text_muted),
                 )),
-                Line::from(Span::styled(
-                    self.tr(
-                        "Continue typing below, or press Esc to return to the conversation.",
-                        "继续在下方输入，或按 Esc 返回对话。",
-                    ),
-                    Style::default().fg(self.theme.text_muted),
-                )),
             ])
-            .alignment(Alignment::Center),
-            content,
+            .block(Block::default().padding(ratatui::widgets::Padding::new(2, 2, 1, 0))),
+            area,
         );
+    }
+
+    fn mind_outline_lines(&self) -> Vec<Line<'static>> {
+        let Some(view) = self.context_view.as_ref() else {
+            return vec![empty_state_line(
+                self.tr("Shared cognition is loading", "共享认知正在加载"),
+                self.theme.text_muted,
+            )];
+        };
+        let mut lines = vec![section_title(
+            self.tr("MIND FRAMES", "认知帧"),
+            view.state.frames.len(),
+            self.theme.focus,
+            self.theme.text_muted,
+        )];
+        for context_frame in &view.state.frames {
+            let protected = view.state.protected.contains(&context_frame.id);
+            let selected = self.selected_frame_id.as_deref() == Some(context_frame.id.as_str());
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if selected { "▌ " } else { "  " },
+                    Style::default().fg(if selected {
+                        self.theme.focus
+                    } else {
+                        self.theme.border_subtle
+                    }),
+                ),
+                Span::styled(
+                    if protected { "◆ " } else { "◇ " },
+                    Style::default().fg(if protected {
+                        self.theme.brand
+                    } else {
+                        self.theme.text_muted
+                    }),
+                ),
+                Span::styled(
+                    truncate(&context_frame.id, 38),
+                    Style::default()
+                        .fg(self.theme.text_primary)
+                        .add_modifier(if selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    format!("  r{}", context_frame.revision),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]));
+        }
+        lines
+    }
+
+    fn mind_detail_lines(&self) -> Vec<Line<'static>> {
+        let Some(view) = self.context_view.as_ref() else {
+            return vec![empty_state_line(
+                self.tr("Shared cognition is loading", "共享认知正在加载"),
+                self.theme.text_muted,
+            )];
+        };
+        let Some(context_frame) = view
+            .state
+            .frames
+            .iter()
+            .find(|frame| self.selected_frame_id.as_deref() == Some(frame.id.as_str()))
+            .or_else(|| view.state.frames.first())
+        else {
+            return Vec::new();
+        };
+        let protected = view.state.protected.contains(&context_frame.id);
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!(
+                    "{} · {}",
+                    self.tr("FRAME", "认知帧"),
+                    short_id(&context_frame.id)
+                ),
+                Style::default().fg(self.theme.focus),
+            )),
+            Line::from(Span::styled(
+                context_frame.id.clone(),
+                Style::default()
+                    .fg(self.theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    format!("{}  ", self.tr("Revision", "修订")),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled(
+                    format!("r{}", context_frame.revision),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+                Span::styled(
+                    if self.locale.is_chinese() {
+                        format!("  ·  {} 个来源", context_frame.sources.len())
+                    } else {
+                        format!("  ·  {} sources", context_frame.sources.len())
+                    },
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled(
+                    if protected {
+                        self.tr("  ·  protected", "  ·  已保护")
+                    } else {
+                        ""
+                    },
+                    Style::default().fg(self.theme.brand),
+                ),
+            ]),
+            Line::from(""),
+        ];
+        lines.extend(sexpr_reader_lines(&context_frame.body, &self.theme));
+        if !context_frame.sources.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(section_title(
+                self.tr("SOURCES", "来源"),
+                context_frame.sources.len(),
+                self.theme.text_secondary,
+                self.theme.text_muted,
+            ));
+            for source in context_frame.sources.iter().take(8) {
+                lines.push(Line::from(vec![
+                    Span::styled("  ↳ ", Style::default().fg(self.theme.text_muted)),
+                    Span::styled(
+                        source.clone(),
+                        Style::default().fg(self.theme.text_secondary),
+                    ),
+                ]));
+            }
+        }
+        let related = view
+            .state
+            .relations
+            .iter()
+            .filter(|relation| {
+                relation.subject == context_frame.id || relation.object == context_frame.id
+            })
+            .collect::<Vec<_>>();
+        if !related.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(section_title(
+                self.tr("RELATIONS", "关系"),
+                related.len(),
+                self.theme.tool,
+                self.theme.text_muted,
+            ));
+            for relation in related.into_iter().take(6) {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {} —{}→ {}",
+                        relation.subject, relation.relation, relation.object
+                    ),
+                    Style::default().fg(self.theme.text_secondary),
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}  ", self.tr("Pressure", "压力")),
+                Style::default().fg(self.theme.text_muted),
+            ),
+            Span::styled(
+                localized_pressure(self.locale, &view.pressure.level),
+                Style::default().fg(pressure_color(&view.pressure.level, &self.theme)),
+            ),
+            Span::styled(
+                format!(
+                    "  ·  {} / {}",
+                    compact_count(view.pressure.estimated_tokens),
+                    compact_count(view.pressure.hard_limit)
+                ),
+                Style::default().fg(self.theme.text_muted),
+            ),
+        ]));
+        lines
     }
 
     fn render_mind_view(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -2870,288 +2896,55 @@ impl UiState {
             return;
         };
 
-        let inner = inset_rect(area, control_plane_horizontal_margin(area.width), 1);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(8)])
-            .split(inner);
-        let metrics = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-            ])
-            .split(rows[0]);
-        self.render_metric_card(
-            frame,
-            metrics[0],
-            self.tr("MIND FRAMES", "认知帧"),
-            view.state.frames.len().to_string(),
-            self.tr("cognitive units", "认知单元").to_string(),
-            self.theme.focus,
-        );
-        self.render_metric_card(
-            frame,
-            metrics[1],
-            self.tr("RELATIONS", "关系"),
-            view.state.relations.len().to_string(),
-            self.tr("semantic links", "语义连接").to_string(),
-            self.theme.tool,
-        );
-        self.render_metric_card(
-            frame,
-            metrics[2],
-            self.tr("OBSERVATIONS", "观察"),
-            view.observations.len().to_string(),
-            self.tr("traceable evidence", "可追溯证据").to_string(),
-            self.theme.text_secondary,
-        );
-        self.render_metric_card(
-            frame,
-            metrics[3],
-            self.tr("SESSIONS", "会话"),
-            view.session_working_set.full_session_ids.len().to_string(),
-            if self.locale.is_chinese() {
-                format!(
-                    "+{} 个元数据会话",
-                    view.session_working_set.metadata_only_session_ids.len()
-                )
-            } else {
-                format!(
-                    "+{} metadata sessions",
-                    view.session_working_set.metadata_only_session_ids.len()
-                )
-            },
-            self.theme.user,
-        );
-
+        let inner = inset_rect(area, content_horizontal_margin(area.width), 0);
         if view.state.frames.is_empty() {
-            self.render_mind_empty_state(frame, rows[1], view.state.version);
+            self.render_mind_empty_state(frame, inner, view.state.version);
             return;
         }
 
-        let body = Layout::default()
+        let panes = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
-            .split(rows[1]);
-        let frame_lines = view
-            .state
-            .frames
-            .iter()
-            .flat_map(|context_frame| {
-                let protection = if view.state.protected.contains(&context_frame.id) {
-                    self.tr(" · protected", " · 已保护")
-                } else {
-                    ""
-                };
-                let mut lines = vec![Line::from(vec![
-                    Span::styled("◇  ", Style::default().fg(self.theme.focus)),
-                    Span::styled(
-                        context_frame.id.clone(),
-                        Style::default()
-                            .fg(self.theme.text_primary)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(
-                            "  r{} · v{}{protection}",
-                            context_frame.revision, context_frame.updated_version
-                        ),
-                        Style::default().fg(self.theme.text_muted),
-                    ),
-                ])];
-                for body_line in truncate(&context_frame.body, 280).lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("   {body_line}"),
-                        Style::default().fg(self.theme.text_primary),
-                    )));
-                }
-                lines.push(Line::from(Span::styled(
-                    if self.locale.is_chinese() {
-                        format!("   {} 个来源", context_frame.sources.len())
-                    } else {
-                        format!("   {} source(s)", context_frame.sources.len())
-                    },
-                    Style::default().fg(self.theme.text_muted),
-                )));
-                lines.push(Line::from(""));
-                lines
-            })
-            .collect();
-        self.render_section_panel(
-            frame,
-            body[0],
-            self.tr("MIND FRAMES", "认知帧"),
-            view.state.frames.len(),
-            frame_lines,
-            self.theme.focus,
+            .constraints([Constraint::Percentage(37), Constraint::Percentage(63)])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(self.mind_outline_lines())
+                .block(
+                    Block::default()
+                        .borders(Borders::RIGHT)
+                        .border_style(Style::default().fg(self.theme.border_subtle))
+                        .padding(ratatui::widgets::Padding::horizontal(1)),
+                )
+                .wrap(Wrap { trim: false }),
+            panes[0],
         );
-
-        let mut mind_state = vec![
-            Line::from(vec![
-                Span::styled(
-                    self.tr("PRESSURE  ", "压力  "),
-                    Style::default().fg(self.theme.text_muted),
-                ),
-                Span::styled(
-                    localized_pressure(self.locale, &view.pressure.level),
-                    Style::default()
-                        .fg(pressure_color(&view.pressure.level, &self.theme))
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::from(Span::styled(
-                pressure_bar(view.pressure.estimated_tokens, view.pressure.hard_limit, 22),
-                Style::default().fg(pressure_color(&view.pressure.level, &self.theme)),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "{} / {} · {}",
-                    compact_count(view.pressure.estimated_tokens),
-                    compact_count(view.pressure.hard_limit),
-                    view.pressure.token_accuracy
-                ),
-                Style::default().fg(self.theme.text_muted),
-            )),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    self.tr("RESIDENCY  ", "驻留  "),
-                    Style::default().fg(self.theme.text_muted),
-                ),
-                Span::styled(
-                    if self.locale.is_chinese() {
-                        format!(
-                            "{} 个完整会话 · {} 个元数据会话",
-                            view.session_working_set.full_session_ids.len(),
-                            view.session_working_set.metadata_only_session_ids.len()
-                        )
-                    } else {
-                        format!(
-                            "{} full sessions · {} metadata sessions",
-                            view.session_working_set.full_session_ids.len(),
-                            view.session_working_set.metadata_only_session_ids.len()
-                        )
-                    },
-                    Style::default().fg(self.theme.text_primary),
-                ),
-            ]),
-            Line::from(Span::styled(
-                if self.locale.is_chinese() {
-                    format!(
-                        "窗口 {} · 最多 {} 个会话",
-                        format_duration_localized(
-                            view.session_working_set.active_window_secs,
-                            self.locale,
-                        ),
-                        view.session_working_set.max_sessions
-                    )
-                } else {
-                    format!(
-                        "window {} · max {} sessions",
-                        format_duration_localized(
-                            view.session_working_set.active_window_secs,
-                            self.locale,
-                        ),
-                        view.session_working_set.max_sessions
-                    )
-                },
-                Style::default().fg(self.theme.text_muted),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                if self.locale.is_chinese() {
-                    format!(
-                        "生命周期  {} 个已保护 · {} 个已退役",
-                        view.state.protected.len(),
-                        view.state.retired.len()
-                    )
-                } else {
-                    format!(
-                        "LIFECYCLE  {} protected · {} retired",
-                        view.state.protected.len(),
-                        view.state.retired.len()
-                    )
-                },
-                Style::default().fg(self.theme.text_secondary),
-            )),
-            Line::from(Span::styled(
-                if self.locale.is_chinese() {
-                    format!("           {} 个检查点", view.state.checkpoints.len())
-                } else {
-                    format!("           {} checkpoints", view.state.checkpoints.len())
-                },
-                Style::default().fg(self.theme.text_muted),
-            )),
-        ];
-        if !view.state.relations.is_empty() {
-            mind_state.push(Line::from(""));
-            mind_state.push(section_title(
-                self.tr("RELATIONS", "关系"),
-                view.state.relations.len(),
-                self.theme.tool,
-                self.theme.text_muted,
-            ));
-        }
-        for relation in view.state.relations.iter().take(6) {
-            mind_state.push(Line::from(Span::styled(
-                format!(
-                    "{} —{}→ {}",
-                    relation.subject, relation.relation, relation.object
-                ),
-                Style::default().fg(self.theme.text_secondary),
-            )));
-        }
-        self.render_section_panel(
-            frame,
-            body[1],
-            self.tr("MIND STATE", "认知状态"),
-            format!("r{}", view.state.version),
-            mind_state,
-            self.theme.text_secondary,
+        frame.render_widget(
+            Paragraph::new(self.mind_detail_lines())
+                .block(Block::default().padding(ratatui::widgets::Padding::horizontal(2)))
+                .wrap(Wrap { trim: false }),
+            panes[1],
         );
     }
 
     fn render_mind_empty_state(&self, frame: &mut Frame<'_>, area: Rect, version: u64) {
-        let block = Block::default()
-            .title(Line::from(vec![
-                Span::styled(
-                    self.tr(" MIND FRAMES ", " 认知帧 "),
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    if self.locale.is_chinese() {
+                        format!("认知帧  0  ·  r{version}")
+                    } else {
+                        format!("MIND FRAMES  0  ·  r{version}")
+                    },
                     Style::default()
                         .fg(self.theme.focus)
                         .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("0  ·  r{version} "),
-                    Style::default().fg(self.theme.text_muted),
-                ),
-            ]))
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(self.theme.border_subtle));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let content_height = 2_u16.min(inner.height);
-        let content = Rect::new(
-            inner.x,
-            inner
-                .y
-                .saturating_add(inner.height.saturating_sub(content_height) / 2),
-            inner.width,
-            content_height,
-        );
-        frame.render_widget(
-            Paragraph::new(vec![
+                )),
+                Line::from(""),
                 Line::from(Span::styled(
                     self.tr(
                         "○  The shared cognition has not formed any Mind Frames yet",
                         "○  共享认知尚未形成任何认知帧",
                     ),
-                    Style::default()
-                        .fg(self.theme.text_secondary)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(self.theme.text_secondary),
                 )),
                 Line::from(Span::styled(
                     self.tr(
@@ -3161,16 +2954,107 @@ impl UiState {
                     Style::default().fg(self.theme.text_muted),
                 )),
             ])
-            .alignment(Alignment::Center),
-            content,
+            .block(Block::default().padding(ratatui::widgets::Padding::new(2, 2, 1, 0))),
+            area,
         );
     }
 
-    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+    fn startup_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines = vec![Line::from("")];
+        let rule_width = width.saturating_sub(2).min(112) as usize;
+        if width >= 104 {
+            lines.push(Line::from(Span::styled(
+                "─".repeat(rule_width),
+                Style::default().fg(self.theme.border_subtle),
+            )));
+            let wordmark_width = MORPHZ_WORDMARK
+                .iter()
+                .map(|line| UnicodeWidthStr::width(*line))
+                .max()
+                .unwrap_or_default()
+                + 2;
+            let metadata = [
+                vec![Span::styled(
+                    "Morphz",
+                    Style::default()
+                        .fg(self.theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                )],
+                vec![Span::styled(
+                    self.tagline(),
+                    Style::default().fg(self.theme.text_muted),
+                )],
+                vec![],
+                vec![
+                    Span::styled(
+                        self.tr("Directory  ", "目录    "),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                    Span::styled(
+                        self.working_directory.clone(),
+                        Style::default().fg(self.theme.text_secondary),
+                    ),
+                ],
+                vec![
+                    Span::styled(
+                        self.tr("Model      ", "模型    "),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                    Span::styled(
+                        self.model.clone(),
+                        Style::default().fg(self.theme.text_secondary),
+                    ),
+                ],
+                vec![
+                    Span::styled(
+                        self.tr("Status     ", "状态    "),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                    Span::styled("● ", Style::default().fg(self.theme.success)),
+                    Span::styled(
+                        self.tr("Ready", "已就绪"),
+                        Style::default().fg(self.theme.success),
+                    ),
+                ],
+            ];
+            let last_line = MORPHZ_WORDMARK.len().saturating_sub(1);
+            for (index, wordmark) in MORPHZ_WORDMARK.iter().enumerate() {
+                let slant = MORPHZ_WORDMARK_SLANT
+                    .get(index)
+                    .copied()
+                    .unwrap_or_default();
+                let rendered = format!("{}{}", " ".repeat(slant), wordmark);
+                let padding = wordmark_width
+                    .saturating_sub(UnicodeWidthStr::width(rendered.as_str()))
+                    .saturating_add(4);
+                let mut spans = vec![
+                    Span::styled(
+                        rendered,
+                        Style::default()
+                            .fg(interpolate_color(
+                                self.theme.wordmark_start,
+                                self.theme.wordmark_end,
+                                index,
+                                last_line,
+                            ))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" ".repeat(padding)),
+                ];
+                spans.extend(metadata[index].clone());
+                lines.push(Line::from(spans));
+            }
+            lines.push(Line::from(Span::styled(
+                "─".repeat(rule_width),
+                Style::default().fg(self.theme.border_subtle),
+            )));
+            lines.push(Line::from(""));
+            return lines;
+        }
+
         let wordmark: Option<&[&str]> = if width >= 66 {
             Some(&MORPHZ_WORDMARK)
-        } else if width >= 52 {
+        } else if width >= 44 {
             Some(&MORPHZ_COMPACT_WORDMARK)
         } else {
             None
@@ -3193,36 +3077,25 @@ impl UiState {
                         .add_modifier(Modifier::BOLD),
                 ))
             }));
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("  ◆  ", Style::default().fg(self.theme.brand)),
-                Span::styled(
-                    "Morphz",
-                    Style::default()
-                        .fg(self.theme.brand)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  ·  ", Style::default().fg(self.theme.tool)),
+        }
+        let mut brand_line = vec![
+            Span::styled("  ◆  ", Style::default().fg(self.theme.brand)),
+            Span::styled(
+                "Morphz",
+                Style::default()
+                    .fg(self.theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if width >= 44 {
+            brand_line.extend([
+                Span::styled("  ·  ", Style::default().fg(self.theme.border_subtle)),
                 Span::styled(self.tagline(), Style::default().fg(self.theme.text_muted)),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled("  ◆  ", Style::default().fg(self.theme.brand)),
-                Span::styled(
-                    "Morphz",
-                    Style::default()
-                        .fg(self.theme.brand)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            if width >= 44 {
-                lines.push(Line::from(Span::styled(
-                    format!("     {}", self.tagline()),
-                    Style::default().fg(self.theme.text_muted),
-                )));
-            }
+            ]);
         }
         lines.extend([
+            Line::from(""),
+            Line::from(brand_line),
             Line::from(""),
             Line::from(vec![
                 Span::styled(
@@ -3231,22 +3104,6 @@ impl UiState {
                 ),
                 Span::styled(
                     self.working_directory.clone(),
-                    Style::default().fg(self.theme.text_secondary),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    self.tr("     Session    ", "     会话      "),
-                    Style::default().fg(self.theme.text_muted),
-                ),
-                Span::styled(
-                    self.session_title
-                        .as_deref()
-                        .filter(|title| !title.trim().is_empty())
-                        .map(|title| {
-                            format!("{} · {}", truncate(title, 36), short_id(&self.session_id))
-                        })
-                        .unwrap_or_else(|| short_id(&self.session_id)),
                     Style::default().fg(self.theme.text_secondary),
                 ),
             ]),
@@ -3262,6 +3119,11 @@ impl UiState {
             ]),
             Line::from(""),
         ]);
+        lines
+    }
+
+    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines = self.startup_lines(width);
         for entry in &self.entries {
             if entry.kind == EntryKind::Tool {
                 lines.extend(self.tool_activity_lines(&entry.body, entry.detail.as_deref()));
@@ -3546,7 +3408,7 @@ impl UiState {
     }
 
     fn render_transcript(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let horizontal_margin = (area.width / 24).clamp(2, 8);
+        let horizontal_margin = content_horizontal_margin(area.width);
         let inner = inset_rect(area, horizontal_margin, 0);
         let lines = self.transcript_lines(inner.width);
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
@@ -3607,20 +3469,26 @@ impl UiState {
                 })
                 .collect::<Vec<_>>()
         };
-        let horizontal_margin = (area.width / 24).clamp(2, 8);
+        let horizontal_margin = content_horizontal_margin(area.width);
         let box_area = inset_rect(area, horizontal_margin, 0);
         let composer_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(self.theme.border_strong))
+            .border_style(Style::default().fg(if self.focus == UiFocus::Composer {
+                self.theme.border_strong
+            } else {
+                self.theme.border_subtle
+            }))
             .padding(ratatui::widgets::Padding::horizontal(1));
         let inner = composer_block.inner(box_area);
         frame.render_widget(composer_block, box_area);
         frame.render_widget(Paragraph::new(content), inner);
         if show_cursor
+            && self.focus == UiFocus::Composer
             && self.pending_approval.is_none()
             && !self.show_help
             && !self.show_objectives
+            && !self.show_sessions
         {
             let (row, column) = self.composer.row_col();
             let x = inner
@@ -3637,13 +3505,17 @@ impl UiState {
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let marker = "●";
+        let marker = if self.busy {
+            ["◐", "◓", "◑", "◒"][self.spinner % 4]
+        } else {
+            "●"
+        };
         let marker_color = if self.busy {
             self.theme.warning
         } else {
             self.theme.success
         };
-        let horizontal_margin = (area.width / 24).clamp(2, 8);
+        let horizontal_margin = content_horizontal_margin(area.width);
         let inner = inset_rect(area, horizontal_margin, 0);
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -3673,55 +3545,119 @@ impl UiState {
             );
             return;
         }
-        let mut left = Vec::new();
-        if !self.conversation_activity_is_visible() {
-            left.extend([
-                Span::styled(format!("{marker} "), Style::default().fg(marker_color)),
-                Span::styled(
-                    self.status.clone(),
-                    Style::default().fg(self.theme.text_secondary),
-                ),
-                Span::styled("  ·  ", Style::default().fg(self.theme.border_subtle)),
-            ]);
-        }
-        left.push(Span::styled(
-            self.model.clone(),
-            Style::default().fg(self.theme.text_muted),
-        ));
-        if area.width >= 100 {
-            left.push(Span::styled(
-                format!("  ·  {}", self.working_directory),
+        let hints = if area.width < 112 {
+            self.tr("F1 help · F3 Sessions", "F1 帮助 · F3 会话")
+        } else if self.active_view == UiView::Tasks && self.focus == UiFocus::Content {
+            self.tr(
+                "↑↓ select · D diagnostics · Tab input · Esc chat",
+                "↑↓ 选择 · D 诊断 · Tab 输入 · Esc 对话",
+            )
+        } else if self.active_view == UiView::Mind && self.focus == UiFocus::Content {
+            self.tr(
+                "↑↓ select · Tab input · Esc chat",
+                "↑↓ 选择 · Tab 输入 · Esc 对话",
+            )
+        } else if self.active_view != UiView::Conversation {
+            self.tr(
+                "Tab content · Esc content · F1 help",
+                "Tab 内容 · Esc 内容 · F1 帮助",
+            )
+        } else {
+            self.tr(
+                "F1 help · F2 theme · F3 Sessions",
+                "F1 帮助 · F2 主题 · F3 会话",
+            )
+        };
+        let mut state = vec![
+            Span::styled(format!("{marker} "), Style::default().fg(marker_color)),
+            Span::styled(
+                self.status.clone(),
+                Style::default().fg(self.theme.text_secondary),
+            ),
+            Span::styled("  ·  ", Style::default().fg(self.theme.border_subtle)),
+            Span::styled(
+                self.model.clone(),
+                Style::default().fg(self.theme.text_muted),
+            ),
+        ];
+        if area.width >= 140 {
+            let (frames, version, tokens, hard_limit) = self
+                .context_view
+                .as_ref()
+                .map(|view| {
+                    (
+                        view.state.frames.len(),
+                        view.state.version,
+                        view.pressure.estimated_tokens,
+                        view.pressure.hard_limit,
+                    )
+                })
+                .unwrap_or_default();
+            state.push(Span::styled(
+                if self.locale.is_chinese() {
+                    format!(
+                        "  ·  {frames} 帧 · {} / {} · r{version}",
+                        compact_count(tokens),
+                        compact_count(hard_limit)
+                    )
+                } else {
+                    format!(
+                        "  ·  {frames} frames · {} / {} · r{version}",
+                        compact_count(tokens),
+                        compact_count(hard_limit)
+                    )
+                },
                 Style::default().fg(self.theme.text_muted),
             ));
         }
-        frame.render_widget(Paragraph::new(Line::from(left)), columns[0]);
-        let hints = if area.width < 112 {
-            self.tr("? shortcuts", "? 快捷键")
-        } else if self.active_view == UiView::Tasks {
-            if self.show_task_diagnostics {
-                self.tr(
-                    "Tab summary  ·  Esc conversation  ·  ? shortcuts",
-                    "Tab 概要  ·  Esc 对话  ·  ? 快捷键",
-                )
-            } else {
-                self.tr(
-                    "Tab diagnostics  ·  Esc conversation  ·  ? shortcuts",
-                    "Tab 诊断  ·  Esc 对话  ·  ? 快捷键",
-                )
-            }
-        } else if self.active_view == UiView::Conversation {
-            self.tr(
-                "Ctrl+P shell  ·  Ctrl+T/K views  ·  ? help",
-                "Ctrl+P 终端  ·  Ctrl+T/K 视图  ·  ? 帮助",
+        if area.width < 92 {
+            frame.render_widget(Paragraph::new(Line::from(state)), columns[0]);
+            frame.render_widget(
+                Paragraph::new(hints)
+                    .style(Style::default().fg(self.theme.text_muted))
+                    .alignment(Alignment::Right),
+                columns[1],
+            );
+            return;
+        }
+
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(if area.width >= 160 { 42 } else { 44 }),
+                Constraint::Percentage(if area.width >= 160 { 33 } else { 30 }),
+                Constraint::Percentage(26),
+            ])
+            .split(inner);
+        frame.render_widget(Paragraph::new(Line::from(state)), columns[0]);
+        let session_label = self
+            .session_title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+            .map(|title| truncate(title, 22))
+            .unwrap_or_else(|| short_id(&self.session_id));
+        let location = if area.width >= 180 {
+            format!(
+                "{} / {} / {}  ·  {}",
+                short_id(&self.agent_id),
+                short_id(&self.context_id),
+                session_label,
+                self.working_directory
             )
         } else {
-            self.tr("Esc conversation  ·  ? shortcuts", "Esc 对话  ·  ? 快捷键")
+            format!("{} / {}", short_id(&self.context_id), session_label)
         };
+        frame.render_widget(
+            Paragraph::new(location)
+                .style(Style::default().fg(self.theme.text_muted))
+                .alignment(Alignment::Center),
+            columns[1],
+        );
         frame.render_widget(
             Paragraph::new(hints)
                 .style(Style::default().fg(self.theme.text_muted))
                 .alignment(Alignment::Right),
-            columns[1],
+            columns[2],
         );
     }
 
@@ -3730,28 +3666,22 @@ impl UiState {
         let help_lines = if self.locale.is_chinese() {
             vec![
                 Line::from("键盘快捷键"),
-                Line::from("  Enter                 发送"),
-                Line::from("  Shift+Enter           插入换行（增强终端）"),
-                Line::from("  Ctrl+J                插入换行（通用备用）"),
-                Line::from("  Ctrl+T                切换任务视图"),
-                Line::from("  Ctrl+W                任务视图兼容快捷键"),
-                Line::from("  Ctrl+K                切换认知帧视图"),
-                Line::from("  Ctrl+P                切换内嵌终端"),
-                Line::from("  Tab                   切换任务概要和诊断"),
-                Line::from("  Esc                   返回对话视图"),
-                Line::from("  Esc Esc               确认并取消活跃任务"),
-                Line::from("  Ctrl+O                展开或收起目标"),
-                Line::from("  Alt+T                 切换颜色主题"),
-                Line::from("  Ctrl+R                展开或收起推理摘要"),
-                Line::from("  Ctrl+C                取消活跃求值；空闲时退出"),
-                Line::from("  Ctrl+D                退出 Morphz"),
-                Line::from("  鼠标滚轮/PageUp    滚动对话记录"),
-                Line::from("  Ctrl+Home/Ctrl+End    跳到对话记录开头或末尾"),
-                Line::from("  ?                     输入为空时切换快捷键面板"),
+                Line::from("  Enter 默认发送  ·  Option+Enter 并发发送"),
+                Line::from("  Ctrl/Command+Enter 跟进  ·  Shift+Enter/Ctrl+J 换行"),
+                Line::from(""),
+                Line::from("导航与视图"),
+                Line::from("  F1/? 帮助  ·  F2 主题  ·  F3 会话"),
+                Line::from("  Ctrl+T 任务  ·  Ctrl+K 认知帧  ·  Ctrl+P 终端"),
+                Line::from("  Tab 切换焦点  ·  ↑/↓ 选择  ·  Home/End 首项/末项"),
+                Line::from("  D 任务诊断  ·  Ctrl+O 目标  ·  Ctrl+R 推理摘要"),
+                Line::from("  PageUp/PageDown 滚动/跨页  ·  Ctrl+Home/End 对话首尾"),
+                Line::from("  Esc 返回/二次确认取消  ·  Ctrl+C 取消/退出  ·  Ctrl+D 退出"),
+                Line::from(""),
+                Line::from("鼠标拖选使用终端原生选择与复制；Morphz 默认不捕获鼠标。"),
                 Line::from(""),
                 Line::from("命令"),
                 Line::from(
-                    "  /ctx   /objectives   /jobs   /tools   /theme   /cancel   /clear   /quit",
+                    "  /ctx   /sessions   /objectives   /jobs   /tools   /theme   /cancel   /clear   /quit",
                 ),
                 Line::from(""),
                 Line::from("按 Esc 或 ? 关闭。"),
@@ -3759,28 +3689,22 @@ impl UiState {
         } else {
             vec![
                 Line::from("Keyboard shortcuts"),
-                Line::from("  Enter                 Send"),
-                Line::from("  Shift+Enter           Insert newline (enhanced terminals)"),
-                Line::from("  Ctrl+J                Insert newline (portable fallback)"),
-                Line::from("  Ctrl+T                Toggle Tasks view"),
-                Line::from("  Ctrl+W                Compatibility alias for Tasks view"),
-                Line::from("  Ctrl+K                Toggle cognition frame view"),
-                Line::from("  Ctrl+P                Toggle embedded shell"),
-                Line::from("  Tab                   Toggle Tasks summary/diagnostics"),
-                Line::from("  Esc                   Return to Conversation view"),
-                Line::from("  Esc Esc               Confirm, then cancel active task"),
-                Line::from("  Ctrl+O                Expand/collapse Objectives"),
-                Line::from("  Alt+T                 Cycle color theme"),
-                Line::from("  Ctrl+R                Expand/collapse reasoning summaries"),
-                Line::from("  Ctrl+C                Cancel active evaluation; quit when idle"),
-                Line::from("  Ctrl+D                Exit Morphz"),
-                Line::from("  Mouse wheel/PageUp    Scroll transcript"),
-                Line::from("  Ctrl+Home/Ctrl+End    Jump to transcript start/end"),
-                Line::from("  ?                     Toggle shortcuts (when input is empty)"),
+                Line::from("  Enter default  ·  Option+Enter parallel"),
+                Line::from("  Ctrl/Command+Enter follow-up  ·  Shift+Enter/Ctrl+J newline"),
+                Line::from(""),
+                Line::from("Navigation and views"),
+                Line::from("  F1/? help  ·  F2 theme  ·  F3 Sessions"),
+                Line::from("  Ctrl+T Tasks  ·  Ctrl+K Mind  ·  Ctrl+P shell"),
+                Line::from("  Tab focus  ·  ↑/↓ select  ·  Home/End first/last"),
+                Line::from("  D diagnostics  ·  Ctrl+O Objectives  ·  Ctrl+R reasoning"),
+                Line::from("  PageUp/PageDown scroll/page  ·  Ctrl+Home/End transcript ends"),
+                Line::from("  Esc back/cancel confirmation  ·  Ctrl+C cancel/quit  ·  Ctrl+D quit"),
+                Line::from(""),
+                Line::from("Mouse drag uses native terminal selection and copy; Morphz does not capture it."),
                 Line::from(""),
                 Line::from("Commands"),
                 Line::from(
-                    "  /ctx   /objectives   /jobs   /tools   /theme   /cancel   /clear   /quit",
+                    "  /ctx   /sessions   /objectives   /jobs   /tools   /theme   /cancel   /clear   /quit",
                 ),
                 Line::from(""),
                 Line::from("Press Esc or ? to close."),
@@ -3960,11 +3884,106 @@ impl UiState {
             .style(Style::default().fg(self.theme.text_primary));
         frame.render_widget(dialog, area);
     }
+
+    fn render_sessions(&self, frame: &mut Frame<'_>, area: Rect) {
+        frame.render_widget(Clear, area);
+        let mut lines = Vec::new();
+        if self.sessions.is_empty() {
+            lines.extend([
+                Line::from(""),
+                Line::from(Span::styled(
+                    self.tr("No active Sessions are visible", "没有可见的活跃会话"),
+                    Style::default().fg(self.theme.text_secondary),
+                )),
+            ]);
+        } else {
+            for (index, session) in self.sessions.iter().enumerate() {
+                let selected = index == self.session_selection;
+                let current = session.id == self.session_id;
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        if selected { "▌ " } else { "  " },
+                        Style::default().fg(if selected {
+                            self.theme.focus
+                        } else {
+                            self.theme.border_subtle
+                        }),
+                    ),
+                    Span::styled(
+                        if current { "● " } else { "○ " },
+                        Style::default().fg(if current {
+                            self.theme.success
+                        } else {
+                            self.theme.text_muted
+                        }),
+                    ),
+                    Span::styled(
+                        truncate(&session.title, 36),
+                        Style::default()
+                            .fg(self.theme.text_primary)
+                            .add_modifier(if selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                    Span::styled(
+                        format!("  {}", short_id(&session.id)),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(
+                        format!(
+                            "{}  ·  {}  ·  {}",
+                            short_id(&session.context_id),
+                            short_id(&session.agent_id),
+                            crate::local_time::format_utc_for_local(session.last_activity_at)
+                        ),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ]));
+            }
+        }
+        let title = if self.locale.is_chinese() {
+            format!(" 会话  {} ", self.sessions.len())
+        } else {
+            format!(" Sessions  {} ", self.sessions.len())
+        };
+        let visible_rows = usize::from(area.height.saturating_sub(4)).max(1);
+        let selected_row = self.session_selection.saturating_mul(2);
+        let scroll = selected_row
+            .saturating_add(2)
+            .saturating_sub(visible_rows)
+            .min(u16::MAX as usize) as u16;
+        let dialog = Paragraph::new(lines)
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .title(title)
+                    .title_bottom(Line::from(self.tr(
+                        " ↑/↓ select  ·  Enter switch  ·  Esc close ",
+                        " ↑/↓ 选择  ·  Enter 切换  ·  Esc 关闭 ",
+                    )))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(self.theme.focus))
+                    .padding(ratatui::widgets::Padding::uniform(1)),
+            );
+        frame.render_widget(dialog, area);
+    }
 }
 
 enum UiAction {
     None,
-    Submit(String),
+    Submit {
+        text: String,
+        dispatch_mode: Option<MessageDispatchMode>,
+    },
+    OpenSessions,
+    SwitchSession(String),
     Quit,
     Cancel,
     Approve(bool),
@@ -3983,12 +4002,10 @@ impl TerminalSession {
         let detected_appearance = query_terminal_appearance();
         let keyboard_enhancement_enabled = supports_keyboard_enhancement().unwrap_or(false);
         drain_terminal_probe_events();
-        execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableBracketedPaste
-        )?;
+        // Do not enable Crossterm mouse capture here. Native terminal drag
+        // selection and copy are part of the TUI interaction contract; every
+        // application-level navigation path therefore has a keyboard binding.
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
         if keyboard_enhancement_enabled {
             execute!(
                 stdout,
@@ -4022,7 +4039,6 @@ impl Drop for TerminalSession {
             self.terminal.backend_mut(),
             Show,
             DisableBracketedPaste,
-            DisableMouseCapture,
             LeaveAlternateScreen
         );
         let _ = self.terminal.show_cursor();
@@ -4033,7 +4049,7 @@ impl Drop for TerminalSession {
 /// Runtime commits the corresponding `chat/reply` terminal fact.
 pub async fn run(
     runtime: MorphzRuntime,
-    session: SessionHandle,
+    mut session: SessionHandle,
     initial_prompt: Option<String>,
     initial_harness: Option<crate::harness::ExactHarnessRef>,
 ) -> Result<(), TuiError> {
@@ -4053,6 +4069,11 @@ pub async fn run(
     if let Ok(delegations) = runtime.list_delegations().await {
         state.delegations = delegations;
     }
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    if let Ok(sessions) = sdk.list_sessions(&principal.principal_id, false).await {
+        state.set_sessions(sessions);
+    }
 
     let mut runtime_events = runtime.subscribe("*", 2_048);
     let mut pending_harness = initial_harness;
@@ -4063,6 +4084,7 @@ pub async fn run(
             &mut state,
             prompt,
             pending_harness.take(),
+            None,
         )
         .await;
     }
@@ -4091,7 +4113,7 @@ pub async fn run(
             embedded_shell = None;
         }
         terminal.terminal.draw(|frame| {
-            if shell_visible {
+            if shell_visible && state.pending_approval.is_none() {
                 state.render_with_composer_cursor(frame, false);
                 if let Some(shell) = embedded_shell.as_mut() {
                     shell.render(frame, state.theme);
@@ -4105,7 +4127,7 @@ pub async fn run(
                 let Some(event) = maybe_event else { break; };
                 match event? {
                     Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
-                        if is_shell_toggle_key(key) {
+                        if is_shell_toggle_key(key) && state.pending_approval.is_none() {
                             if shell_visible {
                                 shell_visible = false;
                             } else {
@@ -4132,7 +4154,7 @@ pub async fn run(
                             }
                             continue;
                         }
-                        if shell_visible {
+                        if shell_visible && state.pending_approval.is_none() {
                             if let Some(shell) = embedded_shell.as_mut() {
                                 shell.send_key(key);
                             }
@@ -4181,7 +4203,7 @@ pub async fn run(
                                     }
                                 }
                             }
-                            UiAction::Submit(text) => {
+                            UiAction::Submit { text, dispatch_mode } => {
                                 if handle_command(&runtime, &session, &mut state, &text).await? {
                                     continue;
                                 }
@@ -4191,23 +4213,63 @@ pub async fn run(
                                     &mut state,
                                     text,
                                     pending_harness.take(),
+                                    dispatch_mode,
                                 )
                                 .await;
                             }
+                            UiAction::OpenSessions => {
+                                let sdk = MorphzSdk::new(runtime.clone());
+                                let principal = sdk.default_principal();
+                                match sdk.list_sessions(&principal.principal_id, false).await {
+                                    Ok(sessions) => {
+                                        state.set_sessions(sessions);
+                                        state.show_help = false;
+                                        state.show_objectives = false;
+                                        state.show_sessions = true;
+                                    }
+                                    Err(error) => state.push(
+                                        EntryKind::Error,
+                                        if state.locale.is_chinese() {
+                                            format!("读取会话列表失败：{error}")
+                                        } else {
+                                            format!("Could not load Sessions: {error}")
+                                        },
+                                    ),
+                                }
+                            }
+                            UiAction::SwitchSession(session_id) => {
+                                if let Err(error) = switch_tui_session(
+                                    &runtime,
+                                    &mut session,
+                                    &mut state,
+                                    &session_id,
+                                ).await {
+                                    state.push(
+                                        EntryKind::Error,
+                                        if state.locale.is_chinese() {
+                                            format!("切换会话失败：{error}")
+                                        } else {
+                                            format!("Could not switch Session: {error}")
+                                        },
+                                    );
+                                }
+                            }
                         }
                     }
-                    Event::Paste(text) if shell_visible => {
+                    Event::Paste(text) if shell_visible && state.pending_approval.is_none() => {
                         if let Some(shell) = embedded_shell.as_mut() {
                             shell.send_paste(&text);
                         }
                     }
-                    Event::Paste(text) => state.composer.insert_str(&text),
-                    Event::Mouse(mouse) if shell_visible => {
-                        if let Some(shell) = embedded_shell.as_mut() {
-                            shell.handle_mouse(mouse.kind);
-                        }
+                    Event::Paste(_)
+                        if state.pending_approval.is_some()
+                            || state.show_help
+                            || state.show_objectives
+                            || state.show_sessions => {}
+                    Event::Paste(text) => {
+                        state.focus = UiFocus::Composer;
+                        state.composer.insert_str(&text);
                     }
-                    Event::Mouse(mouse) => handle_mouse_scroll(&mut state, mouse.kind),
                     _ => {}
                 }
             }
@@ -4251,14 +4313,99 @@ pub async fn run(
     Ok(())
 }
 
+async fn switch_tui_session(
+    runtime: &MorphzRuntime,
+    session: &mut SessionHandle,
+    state: &mut UiState,
+    target_session_id: &str,
+) -> Result<(), TuiError> {
+    if target_session_id == session.id() {
+        state.show_sessions = false;
+        state.focus = UiFocus::Composer;
+        return Ok(());
+    }
+
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let record = sdk
+        .get_session(&principal.principal_id, target_session_id)
+        .await?;
+    if record.status == SessionStatus::Archived {
+        return Err(format!("Session '{}' is archived", record.id).into());
+    }
+    let target = runtime.session(record.id.clone());
+    let history = target.events(None).await?;
+    let context_view = target.inspect_context_view().await?;
+    let delegations = runtime.list_delegations().await?;
+    let sessions = sdk.list_sessions(&principal.principal_id, false).await?;
+
+    state
+        .session_drafts
+        .insert(session.id().to_string(), state.composer.text());
+    let target_draft = state.session_drafts.remove(target_session_id);
+    state.agent_id.clone_from(&record.agent_id);
+    state.context_id.clone_from(&record.context_id);
+    state.session_id.clone_from(&record.id);
+    state.session_title = Some(record.title);
+    state.entries.clear();
+    state.live_attempts.clear();
+    state.objectives.clear();
+    state.context_view = None;
+    state.delegations = delegations;
+    state.selected_objective_id = None;
+    state.selected_frame_id = None;
+    state.composer.clear();
+    if let Some(draft) = target_draft {
+        state.composer.insert_str(&draft);
+    }
+    state.scroll = 0;
+    state.max_scroll = 0;
+    state.follow_tail = true;
+    state.view_scroll = 0;
+    state.show_sessions = false;
+    state.show_help = false;
+    state.show_objectives = false;
+    state.cancel_confirmation_armed = false;
+    for event in &history {
+        state.ingest_history(event);
+    }
+    let busy = context_view
+        .active_activations
+        .iter()
+        .any(|activation| activation.session_id == record.id);
+    state.update_context(&context_view);
+    state.busy = busy;
+    state.status = if busy {
+        state.tr("running", "执行中")
+    } else {
+        state.tr("ready", "就绪")
+    }
+    .to_string();
+    state.set_sessions(sessions);
+    state.set_active_view(UiView::Conversation);
+    *session = target;
+    Ok(())
+}
+
 async fn submit_prompt(
     runtime: &MorphzRuntime,
     session: &SessionHandle,
     state: &mut UiState,
     prompt: String,
     harness: Option<crate::harness::ExactHarnessRef>,
+    dispatch_mode: Option<MessageDispatchMode>,
 ) {
     state.begin_request(&prompt);
+    if let Some(mode) = dispatch_mode {
+        state.status = match (state.locale.is_chinese(), mode) {
+            (true, MessageDispatchMode::Parallel) => "已排队 · 并发".to_string(),
+            (true, MessageDispatchMode::FollowUp) => "已排队 · 跟进".to_string(),
+            (true, MessageDispatchMode::Interrupt) => "已排队 · 打断".to_string(),
+            (false, MessageDispatchMode::Parallel) => "queued · parallel".to_string(),
+            (false, MessageDispatchMode::FollowUp) => "queued · follow-up".to_string(),
+            (false, MessageDispatchMode::Interrupt) => "queued · interrupt".to_string(),
+        };
+    }
     let message_id = format!(
         "tui_{}",
         Utc::now().timestamp_nanos_opt().unwrap_or_default()
@@ -4276,7 +4423,7 @@ async fn submit_prompt(
                 attachments: Vec::new(),
                 references: Vec::new(),
                 harness,
-                dispatch_mode: None,
+                dispatch_mode,
             },
         )
         .await
@@ -4354,6 +4501,8 @@ async fn handle_command(
     }
     match command {
         "/help" => {
+            state.show_objectives = false;
+            state.show_sessions = false;
             state.show_help = true;
             Ok(true)
         }
@@ -4401,7 +4550,30 @@ async fn handle_command(
         }
         "/objective" | "/objectives" => {
             state.show_objectives = !state.show_objectives;
+            state.show_help = false;
+            state.show_sessions = false;
             state.objective_scroll = 0;
+            Ok(true)
+        }
+        "/sessions" => {
+            let sdk = MorphzSdk::new(runtime.clone());
+            let principal = sdk.default_principal();
+            match sdk.list_sessions(&principal.principal_id, false).await {
+                Ok(sessions) => {
+                    state.set_sessions(sessions);
+                    state.show_help = false;
+                    state.show_objectives = false;
+                    state.show_sessions = true;
+                }
+                Err(error) => state.push(
+                    EntryKind::Error,
+                    if state.locale.is_chinese() {
+                        format!("读取会话列表失败：{error}")
+                    } else {
+                        format!("Could not load Sessions: {error}")
+                    },
+                ),
+            }
             Ok(true)
         }
         "/tools" => {
@@ -4469,13 +4641,57 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
             _ => UiAction::None,
         };
     }
+    if is_theme_cycle_key(key) {
+        let theme = state.cycle_theme();
+        state.status = if state.locale.is_chinese() {
+            format!("主题 · {}", theme.as_str())
+        } else {
+            format!("theme · {}", theme.as_str())
+        };
+        return UiAction::None;
+    }
     if state.show_help {
-        if is_theme_cycle_key(key) {
-            state.cycle_theme();
-        } else if key.code == KeyCode::Esc || is_shortcuts_key(key) {
+        if key.code == KeyCode::Esc || is_shortcuts_key(key) {
             state.show_help = false;
         }
         return UiAction::None;
+    }
+    if state.show_sessions {
+        return match key.code {
+            KeyCode::Esc | KeyCode::F(3) => {
+                state.show_sessions = false;
+                UiAction::None
+            }
+            KeyCode::Up => {
+                state.move_session_selection(-1);
+                UiAction::None
+            }
+            KeyCode::Down => {
+                state.move_session_selection(1);
+                UiAction::None
+            }
+            KeyCode::PageUp => {
+                state.move_session_selection(-8);
+                UiAction::None
+            }
+            KeyCode::PageDown => {
+                state.move_session_selection(8);
+                UiAction::None
+            }
+            KeyCode::Home => {
+                state.session_selection = 0;
+                UiAction::None
+            }
+            KeyCode::End => {
+                state.session_selection = state.sessions.len().saturating_sub(1);
+                UiAction::None
+            }
+            KeyCode::Enter => state
+                .selected_session_id()
+                .map(|id| UiAction::SwitchSession(id.to_string()))
+                .unwrap_or(UiAction::None),
+            _ => UiAction::None,
+        };
     }
     if state.show_objectives {
         match key.code {
@@ -4494,6 +4710,15 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
         }
         return UiAction::None;
     }
+    if key.code == KeyCode::F(1) || (is_shortcuts_key(key) && state.composer.text().is_empty()) {
+        state.show_objectives = false;
+        state.show_sessions = false;
+        state.show_help = true;
+        return UiAction::None;
+    }
+    if is_session_directory_key(key) {
+        return UiAction::OpenSessions;
+    }
     if !state.busy || (state.cancel_confirmation_armed && key.code != KeyCode::Esc) {
         state.cancel_confirmation_armed = false;
     }
@@ -4503,10 +4728,6 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
             return UiAction::Cancel;
         }
         state.cancel_confirmation_armed = true;
-        return UiAction::None;
-    }
-    if is_theme_cycle_key(key) {
-        state.cycle_theme();
         return UiAction::None;
     }
     if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -4548,16 +4769,21 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
         state.set_active_view(next);
         return UiAction::None;
     }
-    if key.code == KeyCode::Tab && state.active_view == UiView::Tasks {
-        state.show_task_diagnostics = !state.show_task_diagnostics;
-        state.view_scroll = 0;
+    if key.code == KeyCode::Tab && state.active_view != UiView::Conversation {
+        state.toggle_secondary_focus();
         return UiAction::None;
     }
     if key.code == KeyCode::Esc && state.active_view != UiView::Conversation {
-        state.set_active_view(UiView::Conversation);
+        if state.focus == UiFocus::Composer {
+            state.focus = UiFocus::Content;
+        } else {
+            state.set_active_view(UiView::Conversation);
+        }
         return UiAction::None;
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+        state.show_help = false;
+        state.show_sessions = false;
         state.show_objectives = true;
         state.objective_scroll = 0;
         return UiAction::None;
@@ -4578,25 +4804,64 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
         }
         return UiAction::None;
     }
-    match key.code {
-        KeyCode::Char('?') if is_shortcuts_key(key) && state.composer.text().is_empty() => {
-            state.show_help = true
+    if state.active_view != UiView::Conversation && state.focus == UiFocus::Content {
+        match key.code {
+            KeyCode::Up => match state.active_view {
+                UiView::Tasks => state.move_objective_selection(-1),
+                UiView::Mind => state.move_frame_selection(-1),
+                UiView::Conversation => {}
+            },
+            KeyCode::Down => match state.active_view {
+                UiView::Tasks => state.move_objective_selection(1),
+                UiView::Mind => state.move_frame_selection(1),
+                UiView::Conversation => {}
+            },
+            KeyCode::PageUp => match state.active_view {
+                UiView::Tasks => state.move_objective_selection(-8),
+                UiView::Mind => state.move_frame_selection(-8),
+                UiView::Conversation => {}
+            },
+            KeyCode::PageDown => match state.active_view {
+                UiView::Tasks => state.move_objective_selection(8),
+                UiView::Mind => state.move_frame_selection(8),
+                UiView::Conversation => {}
+            },
+            KeyCode::Home => state.select_first_content_item(),
+            KeyCode::End => state.select_last_content_item(),
+            KeyCode::Char('d') | KeyCode::Char('D') if state.active_view == UiView::Tasks => {
+                state.show_task_diagnostics = !state.show_task_diagnostics;
+                state.view_scroll = 0;
+            }
+            KeyCode::Char(_)
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
+            {
+                state.focus = UiFocus::Composer;
+            }
+            _ => {}
         }
+        if state.focus == UiFocus::Content {
+            return UiAction::None;
+        }
+    }
+    match key.code {
         KeyCode::Esc => state.composer.clear(),
-        KeyCode::Enter
-            if key.modifiers.contains(KeyModifiers::SHIFT)
-                || key.modifiers.contains(KeyModifiers::ALT) =>
-        {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
             state.composer.insert('\n')
         }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+            return submit_composer(state, Some(MessageDispatchMode::Parallel));
+        }
+        KeyCode::Enter
+            if key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+        {
+            return submit_composer(state, Some(MessageDispatchMode::FollowUp));
+        }
         KeyCode::Enter => {
-            let text = state.composer.take_trimmed();
-            if text == "/quit" || text == "/exit" {
-                return UiAction::Quit;
-            }
-            if !text.is_empty() {
-                return UiAction::Submit(text);
-            }
+            return submit_composer(state, None);
         }
         KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.composer.insert('\n')
@@ -4627,45 +4892,56 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     UiAction::None
 }
 
-fn handle_mouse_scroll(state: &mut UiState, kind: MouseEventKind) {
-    if state.pending_approval.is_some() || state.show_help {
-        return;
+fn submit_composer(state: &mut UiState, dispatch_mode: Option<MessageDispatchMode>) -> UiAction {
+    let text = state.composer.take_trimmed();
+    if text == "/quit" || text == "/exit" {
+        return UiAction::Quit;
     }
-    let scrolling_up = match kind {
-        MouseEventKind::ScrollUp => true,
-        MouseEventKind::ScrollDown => false,
-        _ => return,
-    };
-    if state.show_objectives {
-        if scrolling_up {
-            state.objective_scroll = state.objective_scroll.saturating_sub(MOUSE_SCROLL_LINES);
-        } else {
-            state.objective_scroll = state.objective_scroll.saturating_add(MOUSE_SCROLL_LINES);
-        }
-    } else if state.active_view == UiView::Conversation {
-        if scrolling_up {
-            state.scroll_transcript_up(MOUSE_SCROLL_LINES);
-        } else {
-            state.scroll_transcript_down(MOUSE_SCROLL_LINES);
-        }
-    } else if scrolling_up {
-        state.view_scroll = state.view_scroll.saturating_sub(MOUSE_SCROLL_LINES);
-    } else {
-        state.view_scroll = state.view_scroll.saturating_add(MOUSE_SCROLL_LINES);
+    if text.is_empty() {
+        return UiAction::None;
     }
+    UiAction::Submit {
+        text,
+        dispatch_mode,
+    }
+}
+
+fn move_selection(current: usize, len: usize, amount: isize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    match amount {
+        isize::MIN => 0,
+        isize::MAX => len - 1,
+        amount if amount.is_negative() => current.saturating_sub(amount.unsigned_abs()),
+        amount => current.saturating_add(amount as usize).min(len - 1),
+    }
+}
+
+fn moved_selection_id(current: Option<&str>, ids: &[String], amount: isize) -> Option<String> {
+    let current = current
+        .and_then(|id| ids.iter().position(|candidate| candidate == id))
+        .unwrap_or_default();
+    ids.get(move_selection(current, ids.len(), amount)).cloned()
 }
 
 fn is_shortcuts_key(key: KeyEvent) -> bool {
-    key.code == KeyCode::Char('?')
-        && !key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    key.code == KeyCode::F(1)
+        || (key.code == KeyCode::Char('?')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT))
 }
 
 fn is_theme_cycle_key(key: KeyEvent) -> bool {
-    key.modifiers.contains(KeyModifiers::ALT)
-        && !key.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
+    key.code == KeyCode::F(2)
+        || (key.modifiers.contains(KeyModifiers::ALT)
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T')))
+}
+
+fn is_session_directory_key(key: KeyEvent) -> bool {
+    key.code == KeyCode::F(3)
 }
 
 fn is_shell_toggle_key(key: KeyEvent) -> bool {
@@ -4701,9 +4977,9 @@ fn push_more_hint(
     if total > shown {
         lines.push(Line::from(Span::styled(
             if locale.is_chinese() {
-                format!("     … 另有 {} 项，按 Tab 查看详情", total - shown)
+                format!("     … 另有 {} 项，按 D 查看详情", total - shown)
             } else {
-                format!("     … {} more; press Tab for details", total - shown)
+                format!("     … {} more; press D for details", total - shown)
             },
             Style::default().fg(color),
         )));
@@ -4734,19 +5010,6 @@ fn pressure_color(level: &str, theme: &Theme) -> Color {
         "warning" | "soft" => theme.warning,
         _ => theme.success,
     }
-}
-
-fn pressure_bar(used: usize, limit: usize, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    let ratio = if limit == 0 {
-        0.0
-    } else {
-        (used as f64 / limit as f64).clamp(0.0, 1.0)
-    };
-    let filled = (ratio * width as f64).round() as usize;
-    format!("{}{}", "━".repeat(filled), "─".repeat(width - filled))
 }
 
 fn background_status_str(status: BackgroundTaskStatus) -> &'static str {
@@ -4892,6 +5155,99 @@ fn objective_status_color(status: ObjectiveStatus, theme: &Theme) -> Color {
     }
 }
 
+fn sexpr_reader_lines(source: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let Ok(expression) = crate::sexpr::parse(source) else {
+        return source
+            .lines()
+            .map(|line| {
+                Line::from(vec![
+                    Span::styled("│ ", Style::default().fg(theme.focus)),
+                    Span::styled(line.to_string(), Style::default().fg(theme.text_primary)),
+                ])
+            })
+            .collect();
+    };
+
+    fn atom_text(atom: &str) -> String {
+        SExpr::Atom(atom.to_string()).to_string()
+    }
+
+    fn push_expression(
+        expression: &SExpr,
+        depth: usize,
+        theme: &Theme,
+        lines: &mut Vec<Line<'static>>,
+    ) {
+        let indent = "  ".repeat(depth);
+        match expression {
+            SExpr::Atom(atom) => lines.push(Line::from(vec![
+                Span::styled(indent, Style::default().fg(theme.border_subtle)),
+                Span::styled(atom_text(atom), Style::default().fg(theme.text_primary)),
+            ])),
+            SExpr::List(items) if items.is_empty() => lines.push(Line::from(vec![
+                Span::styled(indent, Style::default().fg(theme.border_subtle)),
+                Span::styled("()", Style::default().fg(theme.text_secondary)),
+            ])),
+            SExpr::List(items)
+                if items.iter().all(|item| matches!(item, SExpr::Atom(_)))
+                    && items
+                        .iter()
+                        .map(ToString::to_string)
+                        .map(|value| UnicodeWidthStr::width(value.as_str()) + 1)
+                        .sum::<usize>()
+                        + depth * 2
+                        <= 72 =>
+            {
+                let mut spans = vec![
+                    Span::styled(indent, Style::default().fg(theme.border_subtle)),
+                    Span::styled("(", Style::default().fg(theme.text_secondary)),
+                ];
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        spans.push(Span::raw(" "));
+                    }
+                    spans.push(Span::styled(
+                        item.to_string(),
+                        Style::default().fg(if index == 0 {
+                            theme.focus
+                        } else {
+                            theme.text_primary
+                        }),
+                    ));
+                }
+                spans.push(Span::styled(")", Style::default().fg(theme.text_secondary)));
+                lines.push(Line::from(spans));
+            }
+            SExpr::List(items) => {
+                let mut first = vec![
+                    Span::styled(indent.clone(), Style::default().fg(theme.border_subtle)),
+                    Span::styled("(", Style::default().fg(theme.text_secondary)),
+                ];
+                let mut remaining = items.as_slice();
+                if let Some(SExpr::Atom(operator)) = items.first() {
+                    first.push(Span::styled(
+                        atom_text(operator),
+                        Style::default().fg(theme.focus),
+                    ));
+                    remaining = &items[1..];
+                }
+                lines.push(Line::from(first));
+                for child in remaining {
+                    push_expression(child, depth + 1, theme, lines);
+                }
+                lines.push(Line::from(vec![
+                    Span::styled(indent, Style::default().fg(theme.border_subtle)),
+                    Span::styled(")", Style::default().fg(theme.text_secondary)),
+                ]));
+            }
+        }
+    }
+
+    let mut lines = Vec::new();
+    push_expression(&expression, 0, theme, &mut lines);
+    lines
+}
+
 fn compact_count(value: usize) -> String {
     if value >= 1_000_000 {
         let tenths = value / 100_000;
@@ -4907,11 +5263,12 @@ fn compact_count(value: usize) -> String {
     }
 }
 
-fn control_plane_horizontal_margin(width: u16) -> u16 {
-    if width >= 100 {
-        4
-    } else {
-        2
+fn content_horizontal_margin(width: u16) -> u16 {
+    match width {
+        0..=79 => 1,
+        80..=119 => 2,
+        120..=179 => 3,
+        _ => 4,
     }
 }
 
@@ -5477,7 +5834,13 @@ mod tests {
             objectives: Vec::new(),
             context_view: None,
             delegations: Vec::new(),
+            sessions: Vec::new(),
+            session_selection: 0,
+            session_drafts: BTreeMap::new(),
             active_view: UiView::Conversation,
+            focus: UiFocus::Composer,
+            selected_objective_id: None,
+            selected_frame_id: None,
             view_scroll: 0,
             busy: false,
             follow_tail: true,
@@ -5490,6 +5853,7 @@ mod tests {
             show_reasoning_details: false,
             show_task_diagnostics: false,
             show_objectives: false,
+            show_sessions: false,
             objective_scroll: 0,
             cancel_confirmation_armed: false,
             appearance: TerminalAppearance::Dark,
@@ -5870,7 +6234,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_does_not_repeat_activity_already_visible_in_the_conversation() {
+    fn footer_is_the_single_persistent_home_for_runtime_status() {
         let mut state = test_state(Composer::new());
         state.on_runtime_event(stream_runtime_event(
             "attempt-chat",
@@ -5881,7 +6245,7 @@ mod tests {
 
         assert!(transcript_text(&state).contains("Thinking…"));
         let conversation_footer = footer_text(&state);
-        assert!(!conversation_footer.contains("thinking"));
+        assert!(conversation_footer.contains("thinking"));
         assert!(conversation_footer.contains("m"));
 
         state.set_active_view(UiView::Tasks);
@@ -6024,6 +6388,26 @@ mod tests {
         }
     }
 
+    fn test_session(id: &str, title: &str, activity_offset_seconds: i64) -> SessionRecord {
+        let now = Utc::now();
+        SessionRecord {
+            id: id.to_string(),
+            agent_id: "agent-default".to_string(),
+            context_id: "context-default".to_string(),
+            parent_session_id: None,
+            title: title.to_string(),
+            status: SessionStatus::Active,
+            created_at: now,
+            updated_at: now,
+            last_activity_at: now + chrono::Duration::seconds(activity_offset_seconds),
+            attention_state: crate::memory::SessionAttentionState::default(),
+            attention_revision: 0,
+            attention_reason: None,
+            attention_changed_at: None,
+            attention_event_id: None,
+        }
+    }
+
     #[test]
     fn composer_edits_unicode_by_character_not_byte() {
         let mut composer = Composer::new();
@@ -6046,24 +6430,28 @@ mod tests {
     }
 
     #[test]
-    fn wide_header_uses_subtle_separators_between_identity_groups() {
-        let state = test_state(Composer::new());
-        let mut terminal = Terminal::new(TestBackend::new(160, 4)).unwrap();
-        terminal
-            .draw(|frame| state.render_header(frame, frame.area()))
-            .unwrap();
+    fn conversation_has_no_fixed_header_and_keeps_location_in_the_footer() {
+        let mut state = test_state(Composer::new());
+        state.push(EntryKind::User, "hello");
+        let width = 160usize;
+        let height = 16usize;
+        let mut terminal = Terminal::new(TestBackend::new(width as u16, height as u16)).unwrap();
+        terminal.draw(|frame| state.render(frame)).unwrap();
 
-        let separators = terminal
-            .backend()
-            .buffer()
-            .content()
+        let buffer = terminal.backend().buffer();
+        let top = buffer.content()[..width * 3]
             .iter()
-            .filter(|cell| cell.symbol() == "│")
-            .collect::<Vec<_>>();
-        assert_eq!(separators.len(), 6);
-        assert!(separators
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let footer = buffer.content()[width * (height - 1)..]
             .iter()
-            .all(|cell| cell.fg == state.theme.border_subtle));
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!top.contains("CONTEXT"));
+        assert!(!top.contains("SESSION"));
+        assert!(footer.contains("ready"));
+        assert!(footer.contains("context-default"));
+        assert!(footer.contains("main"));
     }
 
     #[test]
@@ -6073,7 +6461,10 @@ mod tests {
         let mut state = test_state(composer);
         assert!(matches!(
             key_action(&mut state, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            UiAction::Submit(value) if value == "hello"
+            UiAction::Submit {
+                text,
+                dispatch_mode: None,
+            } if text == "hello"
         ));
         assert!(matches!(
             key_action(
@@ -6092,6 +6483,168 @@ mod tests {
             UiAction::None
         ));
         assert_eq!(state.composer.text(), "\n\n");
+    }
+
+    #[test]
+    fn modified_enter_exposes_parallel_and_follow_up_dispatch_modes() {
+        let mut parallel = test_state(Composer::new());
+        parallel.composer.insert_str("parallel work");
+        assert!(matches!(
+            key_action(
+                &mut parallel,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)
+            ),
+            UiAction::Submit {
+                text,
+                dispatch_mode: Some(MessageDispatchMode::Parallel),
+            } if text == "parallel work"
+        ));
+
+        let mut follow_up = test_state(Composer::new());
+        follow_up.composer.insert_str("after that");
+        assert!(matches!(
+            key_action(
+                &mut follow_up,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+            ),
+            UiAction::Submit {
+                text,
+                dispatch_mode: Some(MessageDispatchMode::FollowUp),
+            } if text == "after that"
+        ));
+    }
+
+    #[test]
+    fn secondary_views_have_real_content_focus_and_stable_objective_selection() {
+        let mut first = test_objective();
+        first.id = "objective-first".to_string();
+        first.stated_objective = "First objective".to_string();
+        let mut second = test_objective();
+        second.id = "objective-second".to_string();
+        second.stated_objective = "Second objective".to_string();
+        let mut state = test_state(Composer::new());
+        state.objectives = vec![first, second];
+        state.reconcile_content_selections();
+        state.set_active_view(UiView::Tasks);
+
+        assert_eq!(state.focus, UiFocus::Content);
+        assert_eq!(
+            state.selected_objective_id.as_deref(),
+            Some("objective-first")
+        );
+        key_action(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            state.selected_objective_id.as_deref(),
+            Some("objective-second")
+        );
+
+        state.objectives.reverse();
+        state.reconcile_content_selections();
+        assert_eq!(
+            state.selected_objective_id.as_deref(),
+            Some("objective-second")
+        );
+
+        key_action(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(state.focus, UiFocus::Composer);
+        assert_eq!(state.composer.text(), "x");
+    }
+
+    #[test]
+    fn selection_by_stable_id_supports_mind_frame_navigation() {
+        let ids = vec![
+            "frame-alpha".to_string(),
+            "frame-beta".to_string(),
+            "frame-gamma".to_string(),
+        ];
+        assert_eq!(
+            moved_selection_id(Some("frame-alpha"), &ids, 1).as_deref(),
+            Some("frame-beta")
+        );
+        assert_eq!(
+            moved_selection_id(Some("frame-beta"), &ids, isize::MAX).as_deref(),
+            Some("frame-gamma")
+        );
+        assert_eq!(
+            moved_selection_id(Some("frame-gamma"), &ids, isize::MIN).as_deref(),
+            Some("frame-alpha")
+        );
+    }
+
+    #[test]
+    fn session_directory_sorts_by_activity_and_returns_selected_stable_id() {
+        let mut state = test_state(Composer::new());
+        state.set_sessions(vec![
+            test_session("session-old", "Old", 0),
+            test_session("session-new", "New", 20),
+            test_session("session-middle", "Middle", 10),
+        ]);
+        assert_eq!(state.sessions[0].id, "session-new");
+        assert_eq!(state.sessions[1].id, "session-middle");
+        assert_eq!(state.sessions[2].id, "session-old");
+
+        state.show_sessions = true;
+        assert!(matches!(
+            key_action(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            UiAction::None
+        ));
+        assert!(matches!(
+            key_action(
+                &mut state,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            ),
+            UiAction::SwitchSession(id) if id == "session-middle"
+        ));
+    }
+
+    #[test]
+    fn f3_opens_the_session_directory_without_destroying_the_draft() {
+        let mut state = test_state(Composer::new());
+        state.composer.insert_str("unfinished message");
+        assert!(matches!(
+            key_action(&mut state, KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE)),
+            UiAction::OpenSessions
+        ));
+        assert_eq!(state.composer.text(), "unfinished message");
+    }
+
+    #[test]
+    fn session_directory_keeps_a_deep_selection_visible() {
+        let mut state = test_state(Composer::new());
+        state.set_sessions(
+            (0..14)
+                .map(|index| {
+                    test_session(
+                        &format!("session-{index:02}"),
+                        &format!("Session {index:02}"),
+                        index,
+                    )
+                })
+                .collect(),
+        );
+        state.session_selection = state.sessions.len() - 1;
+        let selected_title = state.sessions.last().unwrap().title.clone();
+        let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
+        terminal
+            .draw(|frame| state.render_sessions(frame, frame.area()))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains(&selected_title));
+        assert!(terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.fg == state.theme.focus));
     }
 
     #[test]
@@ -6128,12 +6681,18 @@ mod tests {
         assert_eq!(state.composer.text(), "why?");
         assert!(!state.show_help);
 
-        let mut legacy = test_state(Composer::new());
+        let mut function_key = test_state(Composer::new());
         key_action(
-            &mut legacy,
+            &mut function_key,
             KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
         );
-        assert!(!legacy.show_help);
+        assert!(function_key.show_help);
+
+        let mut draft = test_state(Composer::new());
+        draft.composer.insert_str("keep this draft");
+        key_action(&mut draft, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(draft.show_help);
+        assert_eq!(draft.composer.text(), "keep this draft");
     }
 
     #[test]
@@ -6141,14 +6700,16 @@ mod tests {
         let mut state = test_state(Composer::new());
         state.set_theme(TuiTheme::Iris);
         let styled = state.transcript_lines(120);
-        let wordmark_colors = styled[1..=MORPHZ_WORDMARK.len()]
+        let wordmark_start = 2;
+        let wordmark_end = wordmark_start + MORPHZ_WORDMARK.len();
+        let wordmark_colors = styled[wordmark_start..wordmark_end]
             .iter()
             .map(|line| line.spans[0].style.fg.expect("wordmark line has color"))
             .collect::<Vec<_>>();
         assert_eq!(wordmark_colors.first(), Some(&state.theme.wordmark_start));
         assert_eq!(wordmark_colors.last(), Some(&state.theme.wordmark_end));
         assert_ne!(wordmark_colors[1], wordmark_colors[4]);
-        let leading_spaces = styled[1..=MORPHZ_WORDMARK.len()]
+        let leading_spaces = styled[wordmark_start..wordmark_end]
             .iter()
             .map(|line| {
                 line.spans[0]
@@ -6158,8 +6719,8 @@ mod tests {
                     .count()
             })
             .collect::<Vec<_>>();
-        assert_eq!(leading_spaces, vec![4, 4, 3, 3, 2, 2]);
-        assert!(styled[1..=MORPHZ_WORDMARK.len()]
+        assert_eq!(leading_spaces, vec![2, 2, 1, 1, 0, 0]);
+        assert!(styled[wordmark_start..wordmark_end]
             .iter()
             .all(|line| !line.spans[0].style.add_modifier.contains(Modifier::ITALIC)));
 
@@ -6192,7 +6753,7 @@ mod tests {
         assert!(narrow.contains("◆"));
         assert!(narrow.contains("Morphz"));
         assert!(narrow.contains(MORPHZ_MACHINE_NAME_EN));
-        assert!(!narrow.contains(r"|  \/  | ___"));
+        assert!(narrow.contains(r"|  \/  | ___"));
         assert!(!narrow.contains("███╗   ███╗"));
 
         let tiny = state
@@ -6412,7 +6973,7 @@ mod tests {
         assert!(screen.contains("Morphz"));
         assert!(screen.contains(MORPHZ_MACHINE_NAME_EN));
         assert!(screen.contains("Directory"));
-        assert!(screen.contains("Session"));
+        assert!(screen.contains("context-default"));
         assert!(screen.contains("Using"));
         assert!(screen.contains("Run command"));
         assert!(screen.contains("cargo test"));
@@ -6565,6 +7126,11 @@ mod tests {
     fn print_tasks_view_snapshot() {
         let mut state = test_state(Composer::new());
         state.set_theme(TuiTheme::Cyan);
+        state.locale = Locale::SimplifiedChinese;
+        let mut objective = test_objective();
+        objective.stated_objective = "完成 Provider 契约审计并交付稳定性报告".to_string();
+        objective.status_reason = Some("等待后台兼容性测试完成".to_string());
+        state.objectives.push(objective);
         state.set_active_view(UiView::Tasks);
         let width = 160usize;
         let mut terminal = Terminal::new(TestBackend::new(width as u16, 34)).unwrap();
@@ -6599,7 +7165,7 @@ mod tests {
             .collect::<String>();
         assert!(screen.contains("Morphz"));
         assert_eq!(state.tagline(), MORPHZ_MACHINE_NAME_ZH);
-        assert!(compact_screen.contains("快捷键"));
+        assert!(compact_screen.contains("F1帮助"));
         assert!(!screen.contains("F1 shortcuts"));
         assert!(compact_screen.contains("输入消息"));
         assert!(!screen.contains("OBJECTIVE"));
@@ -6636,13 +7202,13 @@ mod tests {
 
         let english = render(Locale::English);
         assert!(english.contains("Typeamessage"));
-        assert!(english.contains("shortcuts"));
+        assert!(english.contains("F1help"));
         assert!(!english.contains("输入消息"));
         assert!(!english.contains("快捷键"));
 
         let chinese = render(Locale::SimplifiedChinese);
         assert!(chinese.contains("输入消息") || chinese.contains("请选择会话"));
-        assert!(chinese.contains("快捷键"));
+        assert!(chinese.contains("F1帮助"));
         assert!(!chinese.contains("Typeamessage"));
         assert!(!chinese.contains("shortcuts"));
     }
@@ -6720,9 +7286,9 @@ mod tests {
     }
 
     #[test]
-    fn alt_t_cycles_the_four_dashboard_palettes_without_a_modal() {
+    fn f2_cycles_the_four_terminal_palettes_and_alt_t_remains_an_alias() {
         let mut state = test_state(Composer::new());
-        let alt_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT);
+        let f2 = KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE);
         for expected in [
             TuiTheme::Cyan,
             TuiTheme::Iris,
@@ -6730,13 +7296,17 @@ mod tests {
             TuiTheme::Mono,
             TuiTheme::Cyan,
         ] {
-            assert!(matches!(key_action(&mut state, alt_t), UiAction::None));
+            assert!(matches!(key_action(&mut state, f2), UiAction::None));
             assert_eq!(state.theme_kind, expected);
             assert_eq!(
                 state.theme,
                 Theme::for_appearance(expected, TerminalAppearance::Dark)
             );
         }
+
+        let alt_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT);
+        assert!(matches!(key_action(&mut state, alt_t), UiAction::None));
+        assert_eq!(state.theme_kind, TuiTheme::Iris);
 
         let before = state.theme_kind;
         let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
@@ -6768,15 +7338,23 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(task_screen.contains("TASKS"));
         assert!(task_screen.contains("OBJECTIVES"));
         assert!(task_screen.contains("EXECUTION"));
         assert!(task_screen.contains("DELEGATIONS"));
         assert!(task_screen.contains("Win TankWar and keep improving strategy"));
         assert!(!task_screen.contains("WORK"));
-        assert!(terminal.backend().cursor_visible());
+        assert!(!terminal.backend().cursor_visible());
+        assert_eq!(state.focus, UiFocus::Content);
 
         key_action(&mut state, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(state.focus, UiFocus::Composer);
+        assert!(!state.show_task_diagnostics);
+        key_action(&mut state, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(state.focus, UiFocus::Content);
+        key_action(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        );
         assert!(state.show_task_diagnostics);
         terminal.draw(|frame| state.render(frame)).unwrap();
         let diagnostic_task_screen = terminal
@@ -6786,7 +7364,6 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(diagnostic_task_screen.contains("TASKS"));
         assert!(diagnostic_task_screen.contains("EXECUTION"));
         assert!(diagnostic_task_screen.contains("OBJECTIVES"));
         assert!(diagnostic_task_screen.contains("DELEGATIONS"));
@@ -6805,7 +7382,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(mind_screen.contains("MIND"));
+        assert!(mind_screen.contains("shared cognition"));
 
         key_action(
             &mut state,
@@ -6835,7 +7412,7 @@ mod tests {
     }
 
     #[test]
-    fn tasks_view_uses_a_structured_empty_state_without_legacy_work_language() {
+    fn tasks_view_uses_a_compact_empty_state_without_metric_cards() {
         let mut state = test_state(Composer::new());
         state.set_theme(TuiTheme::Cyan);
         state.set_active_view(UiView::Tasks);
@@ -6849,32 +7426,18 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(screen.contains("TASKS"));
-        assert!(screen.contains("OBJECTIVES"));
-        assert!(screen.contains("IN FLIGHT"));
-        assert!(screen.contains("DELEGATIONS"));
+        assert!(screen.contains("TASKS & EXECUTION"));
+        assert!(!screen.contains("IN FLIGHT"));
         assert!(!screen.contains("WORK"));
-        let margin = control_plane_horizontal_margin(buffer.area.width);
-        assert_eq!(
-            buffer.cell((margin, 5)).map(|cell| cell.symbol()),
-            Some("T")
-        );
-        assert_eq!(
-            buffer.cell((margin, 8)).map(|cell| cell.symbol()),
-            Some("│")
-        );
         assert!(buffer
             .content()
             .iter()
             .any(|cell| cell.fg == state.theme.focus));
-        assert!(buffer
-            .content()
-            .iter()
-            .any(|cell| cell.fg == state.theme.tool));
         assert!(buffer.content().iter().all(|cell| cell.bg == Color::Reset));
     }
 
     #[test]
-    fn empty_mind_uses_one_centered_cognitive_frame_surface() {
+    fn empty_mind_uses_one_compact_cognitive_frame_surface() {
         let mut state = test_state(Composer::new());
         let mut terminal = Terminal::new(TestBackend::new(120, 16)).unwrap();
         terminal
@@ -6915,6 +7478,93 @@ mod tests {
     }
 
     #[test]
+    fn content_margins_grow_discretely_instead_of_drifting_with_terminal_width() {
+        assert_eq!(content_horizontal_margin(40), 1);
+        assert_eq!(content_horizontal_margin(79), 1);
+        assert_eq!(content_horizontal_margin(80), 2);
+        assert_eq!(content_horizontal_margin(119), 2);
+        assert_eq!(content_horizontal_margin(120), 3);
+        assert_eq!(content_horizontal_margin(179), 3);
+        assert_eq!(content_horizontal_margin(180), 4);
+        assert_eq!(content_horizontal_margin(320), 4);
+    }
+
+    #[test]
+    fn wide_tasks_view_presents_outline_and_detail_instead_of_kpi_cards() {
+        let mut state = test_state(Composer::new());
+        state.objectives.push(test_objective());
+        state.set_active_view(UiView::Tasks);
+        let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|frame| state.render(frame)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(screen.contains("OBJECTIVES"));
+        assert!(screen.contains("OBJECTIVE ·"));
+        assert!(screen.contains("Win TankWar"));
+        assert!(screen.contains("CURRENT ACTIVITY"));
+        assert!(!screen.contains("IN FLIGHT"));
+    }
+
+    #[test]
+    fn redesigned_tasks_view_keeps_product_chrome_localized() {
+        let mut state = test_state(Composer::new());
+        state.locale = Locale::SimplifiedChinese;
+        let mut objective = test_objective();
+        objective.stated_objective = "完成运行时契约审计".to_string();
+        objective.status_reason = Some("等待验证结果".to_string());
+        state.objectives.push(objective);
+        state.set_active_view(UiView::Tasks);
+        let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|frame| state.render(frame)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let compact_screen = screen
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+
+        assert!(compact_screen.contains("目标"));
+        assert!(compact_screen.contains("当前活动"));
+        assert!(compact_screen.contains("完成运行时契约审计"));
+        assert!(!screen.contains("OBJECTIVE"));
+        assert!(!screen.contains("CURRENT ACTIVITY"));
+    }
+
+    #[test]
+    fn sexpr_reader_formats_nested_frames_and_preserves_operator_emphasis() {
+        let state = test_state(Composer::new());
+        let lines = sexpr_reader_lines(
+            r#"(frame (subject "Morphz") (constraint (scope runtime) (mode durable)))"#,
+            &state.theme,
+        );
+        let screen = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(screen.lines().count() >= 5);
+        assert!(screen.contains("frame"));
+        assert!(screen.contains("subject"));
+        assert!(screen.contains("constraint"));
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|span| span.style.fg == Some(state.theme.focus)));
+    }
+
+    #[test]
     fn transcript_follow_tail_keeps_latest_message_above_composer_after_word_wrapping() {
         let mut state = test_state(Composer::new());
         let wrapped_line = "abcdefghijklmnopqrst abcdefghijklmnopqrst abcdefghijklmnopqrst";
@@ -6940,7 +7590,7 @@ mod tests {
     }
 
     #[test]
-    fn transcript_mouse_scroll_and_jump_keys_reach_history_and_wordmark() {
+    fn transcript_keyboard_scroll_and_jump_keys_reach_history_and_wordmark() {
         let mut state = test_state(Composer::new());
         for index in 0..30 {
             state.push(EntryKind::Assistant, format!("historical message {index}"));
@@ -6951,9 +7601,10 @@ mod tests {
         assert_eq!(state.scroll, state.max_scroll);
         assert!(state.follow_tail);
 
-        handle_mouse_scroll(&mut state, MouseEventKind::ScrollUp);
+        let page_up = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+        assert!(matches!(key_action(&mut state, page_up), UiAction::None));
         let review_position = state.scroll;
-        assert_eq!(review_position, state.max_scroll - MOUSE_SCROLL_LINES);
+        assert_eq!(review_position, state.max_scroll - 8);
         assert!(!state.follow_tail);
 
         state.push(EntryKind::Assistant, "NEW_TAIL_MESSAGE");

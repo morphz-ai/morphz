@@ -164,17 +164,19 @@ TUI 使用 Ratatui/Crossterm，只依赖公开 Runtime 事件和命令接口，�
 
 默认布局以对话为中心：
 
-- 顶部：Session、模型和求值状态
-- 中部：历史消息、Agent 增量进度、工具卡片和审批请求
-- 底部：多行 Composer、Context pressure、Frame 和 Objective 状态
-- 内置命令：`/ctx`、`/jobs`、`/cancel`、`/clear`、`/help`、`/quit`
+- 主体：历史消息、Agent 增量进度、工具活动和审批请求
+- 底部：多行 Composer 与唯一的运行状态栏；TUI 不保留固定 Header
+- 辅助视图：可选择的 Tasks 与 Mind Frame 主从视图
+- F1/F2/F3：帮助、主题和可切换的 Session 目录
+- 内置命令：`/ctx`、`/sessions`、`/jobs`、`/cancel`、`/clear`、`/help`、`/quit`
 
 视觉原则：
 
 - 一个品牌强调色，语义色只用于成功、警告和错误
 - 日志与对话分离
 - 工具与运行进度原位更新
-- 键盘优先；Enter 发送，Shift/Alt+Enter 换行
+- 键盘优先；Enter 默认发送，Option+Enter 并发，Ctrl/Command+Enter 跟进，Shift+Enter/Ctrl+J 换行
+- 默认不捕获鼠标，保留终端原生文本选择与复制
 - 不把 Dashboard 密度搬进默认聊天界面
 
 首版 TUI 可以与 Runtime 同进程运行，但接口必须允许未来替换为 stdio/WebSocket 的独立 Host，从而复用到桌面应用、IDE 和 SDK。

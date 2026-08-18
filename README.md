@@ -40,7 +40,7 @@ Scheduler Kernel v2 将物理工作与 Context transaction 分开控制。当前
 
 Runtime 注入给模型的稳定 Context 协议、Yao/VM 算子契约、Harness 执行指令和 Function Calling 工具 Schema 统一使用英文，作为后续多语言实验的基准。用户原文、外部证据、Mind BODY 和工具真实输出保持原始语言；当前改动不改变协议符号或算子语义。生产测试会拒绝这些稳定契约重新混入 CJK 文本。
 
-Session Working Set 默认选择当前 Session 与最近 24 小时内最多 50 个活跃 Session；共享 Mind 始终保留，超出窗口、数量或 Token Budget 的 Session 只退出完整 Observation 投影。Agent 可用 `retire-session/restore-session` 持久维护注意力，新定向消息或工具结果会自动恢复目标 Session。可用 `MORPHZ_SESSION_ACTIVE_WINDOW` 和 `MORPHZ_SESSION_WORKING_SET_MAX` 调整策略；`morphz context status`、TUI 顶栏以及 `/api/contexts/:context_id/working-set`、`/api/contexts/:context_id/work-items` 可查看实际编译状态。完整实现与真实 Gemini 并发结果见 [并发 Session 与认知工作集 v1](docs/morphz_concurrent_session_working_set_v1.md)。
+Session Working Set 默认选择当前 Session 与最近 24 小时内最多 50 个活跃 Session；共享 Mind 始终保留，超出窗口、数量或 Token Budget 的 Session 只退出完整 Observation 投影。Agent 可用 `retire-session/restore-session` 持久维护注意力，新定向消息或工具结果会自动恢复目标 Session。可用 `MORPHZ_SESSION_ACTIVE_WINDOW` 和 `MORPHZ_SESSION_WORKING_SET_MAX` 调整策略；`morphz context status`、TUI 底部状态栏以及 `/api/contexts/:context_id/working-set`、`/api/contexts/:context_id/work-items` 可查看实际编译状态。完整实现与真实 Gemini 并发结果见 [并发 Session 与认知工作集 v1](docs/morphz_concurrent_session_working_set_v1.md)。
 
 Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `derive/protect/retire`：首次真实运行将 estimated tokens 从 9,177 降至 2,140，并完整保留四项长期事实。设计、命令和结论边界见 [Context Pressure Eval](docs/morphz_context_pressure_eval.md)。
 
@@ -71,8 +71,11 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    加入不可覆盖保护，Agent 不能通过文件工具、Shell 或自动审批修改 Runtime 自身；
    `.env`、`.git`、`.ssh` 同样默认受保护。
 
-   交互式 TTY 默认进入 Ratatui 界面：Enter 发送，Shift/Alt+Enter 换行，Ctrl+T 打开任务视图，
-   Tab 按需展开任务诊断，Ctrl+K 打开 Mind；`/ctx`、`/jobs`、`/tools`、`/cancel`、`/help` 可检查或控制当前运行。Provider 返回的模型正文和工具参数按统一流式事件
+   交互式 TTY 默认进入 Ratatui 界面：Enter 按配置的默认方式发送，Option+Enter 并发发送，
+   Ctrl/Command+Enter 排到前一条消息之后，Shift+Enter 或 Ctrl+J 换行；Ctrl+T 打开任务视图，
+   Ctrl+K 打开 Mind，F2 切换主题，F3 浏览并切换 Session。任务与 Mind 视图用方向键选择、
+   Tab 切换内容/输入焦点，任务诊断使用 D。Morphz 默认不捕获鼠标，终端原生文本选择和复制
+   可以直接使用；`/ctx`、`/sessions`、`/jobs`、`/tools`、`/cancel`、`/help` 可检查或控制当前运行。Provider 返回的模型正文和工具参数按统一流式事件
    展示；无工具正文完整返回后会提交为持久化 Session 消息。`/theme` 可在与 Dashboard
    一致的电光青、鸢尾紫、暖珊瑚和纯单色四套主题间切换。`--plain` 可选择
    行式界面；非 TTY 与 `morphz exec` 自动使用纯文本，适合脚本和管道。

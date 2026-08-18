@@ -1,5 +1,5 @@
 use super::{centered_rect, Theme, TuiError};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -160,22 +160,6 @@ impl EmbeddedShell {
             self.write_input(b"\x1b[201~");
         } else {
             self.write_input(text.as_bytes());
-        }
-    }
-
-    pub(super) fn handle_mouse(&mut self, kind: MouseEventKind) {
-        let page = usize::from(self.size.0.saturating_sub(2).max(1));
-        let current = self.parser.screen().scrollback();
-        match kind {
-            MouseEventKind::ScrollUp => self
-                .parser
-                .screen_mut()
-                .set_scrollback(current.saturating_add(page / 3).max(1)),
-            MouseEventKind::ScrollDown => self
-                .parser
-                .screen_mut()
-                .set_scrollback(current.saturating_sub((page / 3).max(1))),
-            _ => {}
         }
     }
 

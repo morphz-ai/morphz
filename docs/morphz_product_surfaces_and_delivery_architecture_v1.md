@@ -196,7 +196,9 @@ TUI 默认保留：
 - 当前 Thread/Objective/Job 的一行状态；
 - pending Approval 和需要关注的失败；
 - Mind revision、Frame 数量、pressure；
-- 快捷面板：Tasks、Objectives、Mind summary、Approvals。
+- 可选择的 Tasks、Objectives 和 Mind Frame 主从视图；
+- 当前 Principal 可见的活跃 Session 目录与安全切换；
+- 底部单行状态栏；不使用固定顶部 Header。
 
 TUI 默认不承担：
 
