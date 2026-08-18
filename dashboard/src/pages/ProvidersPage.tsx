@@ -20,6 +20,7 @@ import {
   Smartphone,
   Save,
   Settings2,
+  Trash2,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -216,6 +217,7 @@ interface CatalogEditorState {
   id: string
   value: string
   creating: boolean
+  displayName: string
 }
 
 interface CatalogMutationReceipt {
@@ -240,6 +242,7 @@ type ProviderSetupMode = 'oauth' | 'api_key'
 interface ProviderSetupState {
   mode: ProviderSetupMode
   preset: string
+  name: string
   providerId: string
   accountId: string
   routeId: string
@@ -323,6 +326,7 @@ function setupForProtocol(
   return {
     mode,
     preset: protocol.id,
+    name: '',
     providerId,
     accountId: `${providerId}-account`,
     routeId: '',
@@ -395,6 +399,7 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
   const [oauthPreparation, setOAuthPreparation] = useState<OAuthPreparationState | null>(null)
   const [oauthConnection, setOAuthConnection] = useState<OAuthConnectionState | null>(null)
   const [catalogEditor, setCatalogEditor] = useState<CatalogEditorState | null>(null)
+  const [accountPendingDeletion, setAccountPendingDeletion] = useState<{ id: string; label: string } | null>(null)
   const [catalogNotice, setCatalogNotice] = useState('')
   const [diagnostic, setDiagnostic] = useState<ModelRouteDiagnostic | null>(null)
   const [accountDiagnostic, setAccountDiagnostic] = useState<ProviderAccountDiagnostic | null>(null)
@@ -560,7 +565,7 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
     const accountId = requestedSetup.accountId.trim()
     const routeId = requestedSetup.routeId.trim()
     const physicalModel = requestedSetup.physicalModel.trim()
-    if (!providerId || !accountId || !routeId || !physicalModel
+    if (!requestedSetup.name.trim() || !providerId || !accountId || !routeId || !physicalModel
       || !requestedSetup.baseUrl.trim() || !requestedSetup.apiKey.trim()) {
       setError(t('providers.setupRequired'))
       return
@@ -595,7 +600,7 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
       const previousRoute = snapshot.model_routes[routeId]
       const payload = buildProviderCatalogSetupPayload(
         requestedSetup,
-        t('providers.defaultAccount'),
+        requestedSetup.name.trim(),
         previousProvider,
         previousRoute,
         credentialId && credential && managedSecret
@@ -679,6 +684,27 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
       await refresh()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusyAccount('')
+    }
+  }
+
+  const deleteAccount = async () => {
+    if (!accountPendingDeletion) return
+    const { id, label } = accountPendingDeletion
+    setBusyAccount(id)
+    setError('')
+    try {
+      await api.command<CatalogMutationReceipt>(
+        `/api/runtime/providers/accounts/${encodeURIComponent(id)}`,
+        'DELETE',
+      )
+      setAccountPendingDeletion(null)
+      setCatalogNotice(t('providers.accountDeleted', { account: label }))
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      await refresh()
     } finally {
       setBusyAccount('')
     }
@@ -912,7 +938,13 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
     id = '',
     value: ProviderInstanceConfig | AuthAccountConfig | ModelRouteConfig,
   ) => {
-    setCatalogEditor({ kind, id, value: JSON.stringify(value, null, 2), creating: !id })
+    setCatalogEditor({
+      kind,
+      id,
+      value: JSON.stringify(value, null, 2),
+      creating: !id,
+      displayName: kind === 'auth_account' && 'label' in value ? value.label ?? '' : '',
+    })
     setCatalogNotice('')
   }
 
@@ -929,6 +961,18 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
     } catch (reason) {
       setError(t('providers.invalidJson', { error: reason instanceof Error ? reason.message : String(reason) }))
       return
+    }
+    if (catalogEditor.kind === 'auth_account') {
+      const displayName = catalogEditor.displayName.trim()
+      if (!displayName) {
+        setError(t('providers.accountNameRequired'))
+        return
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        setError(t('providers.invalidAccountConfig'))
+        return
+      }
+      body = { ...body, label: displayName }
     }
     const endpoint = catalogEditor.kind === 'provider_instance'
       ? `/api/runtime/providers/instances/${encodeURIComponent(id)}`
@@ -1348,6 +1392,16 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
                     {record.effective_enabled ? <CircleOff size={13} /> : <ShieldCheck size={13} />}
                     {record.effective_enabled ? t('providers.disable') : t('providers.enable')}
                   </button>
+                  {!record.oauth && (
+                    <button
+                      className="is-danger"
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => setAccountPendingDeletion({ id: accountId, label: accountLabel })}
+                    >
+                      <Trash2 size={13} /> {t('providers.delete')}
+                    </button>
+                  )}
                 </nav>
                 {diagnosticPresentation.visible && (
                   <section className={`provider-account-test-result is-${diagnosticPresentation.state}`} aria-live="polite">
@@ -1589,6 +1643,9 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
                 </div>
               </div>
               <div className="provider-setup-grid">
+                <label className="is-wide"><span>{t('providers.accountName')}</span><input autoFocus placeholder={t('providers.accountNamePlaceholder')} value={setup.name} onChange={event => {
+                  setSetup(current => current ? { ...current, name: event.target.value } : current)
+                }} /></label>
                 <label className="is-wide"><span>{t('providers.baseUrl')}</span><input value={setup.baseUrl} onChange={event => {
                   setSetup(current => current ? { ...current, baseUrl: event.target.value, physicalModel: '', alias: '', routeId: '' } : current)
                   setDiscoveredModels([])
@@ -1625,7 +1682,7 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
             </>}
             <footer>
               <button type="button" onClick={() => setSetup(null)}>{t('providers.cancel')}</button>
-              {setup.mode === 'api_key' && <button className="is-primary" type="button" disabled={savingSetup || !setup.physicalModel} onClick={() => void saveProviderSetup()}>
+              {setup.mode === 'api_key' && <button className="is-primary" type="button" disabled={savingSetup || !setup.name.trim() || !setup.physicalModel} onClick={() => void saveProviderSetup()}>
                 <Save size={13} />
                 {savingSetup ? t('providers.busy') : t('providers.addSelectedModel')}
               </button>}
@@ -1851,10 +1908,35 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
             </header>
             <p>{t('providers.catalogEditorHint')}</p>
             <label className="provider-catalog-id"><span>{t('providers.catalogId')}</span><input value={catalogEditor.id} disabled={!catalogEditor.creating} onChange={event => setCatalogEditor(current => current ? { ...current, id: event.target.value } : current)} autoFocus /></label>
+            {catalogEditor.kind === 'auth_account' && (
+              <label className="provider-catalog-id"><span>{t('providers.accountName')}</span><input value={catalogEditor.displayName} onChange={event => setCatalogEditor(current => current ? { ...current, displayName: event.target.value } : current)} /></label>
+            )}
             <label className="provider-catalog-json"><span>{t('providers.catalogJson')}</span><textarea spellCheck={false} value={catalogEditor.value} onChange={event => setCatalogEditor(current => current ? { ...current, value: event.target.value } : current)} /></label>
             <footer>
               <button type="button" onClick={() => setCatalogEditor(null)}>{t('providers.cancel')}</button>
               <button className="is-primary" type="button" onClick={() => void saveCatalogObject()}><Save size={13} /> {t('providers.saveRestart')}</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {accountPendingDeletion && (
+        <div className="app-dialog-backdrop" role="presentation" onMouseDown={event => {
+          if (event.currentTarget === event.target && busyAccount !== accountPendingDeletion.id) {
+            setAccountPendingDeletion(null)
+          }
+        }}>
+          <section className="app-dialog is-danger" role="dialog" aria-modal="true" aria-labelledby="provider-delete-title">
+            <header>
+              <div><small>{t('providers.deleteAccountEyebrow')}</small><h2 id="provider-delete-title">{t('providers.deleteAccountTitle', { account: accountPendingDeletion.label })}</h2></div>
+              <button type="button" disabled={busyAccount === accountPendingDeletion.id} onClick={() => setAccountPendingDeletion(null)} aria-label={t('providers.cancel')}><X size={15} /></button>
+            </header>
+            <p>{t('providers.deleteAccountHint')}</p>
+            <footer>
+              <button type="button" disabled={busyAccount === accountPendingDeletion.id} onClick={() => setAccountPendingDeletion(null)}>{t('providers.cancel')}</button>
+              <button className="danger" type="button" disabled={busyAccount === accountPendingDeletion.id} onClick={() => void deleteAccount()}>
+                <Trash2 size={13} /> {busyAccount === accountPendingDeletion.id ? t('providers.busy') : t('providers.confirmDelete')}
+              </button>
             </footer>
           </section>
         </div>

@@ -856,7 +856,7 @@ impl Server {
             )
             .route(
                 "/api/runtime/providers/accounts/:account_id",
-                patch(handle_control_provider_account),
+                patch(handle_control_provider_account).delete(handle_delete_provider_account),
             )
             .route(
                 "/api/runtime/providers/setup",
@@ -2033,6 +2033,31 @@ async fn handle_control_provider_account(
     {
         Ok(record) => Json(record).into_response(),
         Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+    }
+}
+
+async fn handle_delete_provider_account(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "无法确定 Morphz 受管配置路径",
+        );
+    };
+    match state
+        .sdk
+        .delete_auth_account_config(path, &account_id)
+        .await
+    {
+        Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -8206,6 +8231,159 @@ mod tests {
         let secrets = state.sdk.list_managed_secrets().unwrap();
         assert_eq!(secrets.len(), 1);
         assert_eq!(secrets[0].name, "MORPHZ_PROVIDER_DASHBOARD_API_KEY");
+    }
+
+    #[tokio::test]
+    async fn dashboard_api_key_account_lifecycle_is_hot_and_cascading() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let (state, runtime) = test_state_at_with_config_auth_and_secrets(
+            &database_path,
+            false,
+            AppConfig::default(),
+            None,
+            None,
+        )
+        .await;
+        let setup = |suffix: &str, with_secret: bool| {
+            let env_suffix = suffix.to_ascii_uppercase();
+            PutProviderCatalogSetupRequest {
+                provider_id: format!("provider-{suffix}"),
+                provider: ProviderInstanceConfig {
+                    adapter: "openai-compatible".to_string(),
+                    protocol: crate::config::ModelProtocol::OpenaiResponses,
+                    base_url: format!("http://{suffix}.example.test/v1"),
+                    accounts: vec![format!("account-{suffix}")],
+                    ..ProviderInstanceConfig::default()
+                },
+                account_id: format!("account-{suffix}"),
+                account: AuthAccountConfig {
+                    auth_adapter: if with_secret { "credential" } else { "none" }.to_string(),
+                    credential_ref: if with_secret {
+                        format!("credential-{suffix}")
+                    } else {
+                        String::new()
+                    },
+                    provider: Some(format!("provider-{suffix}")),
+                    label: Some(format!("Account {suffix}")),
+                    ..AuthAccountConfig::default()
+                },
+                credential_id: with_secret.then(|| format!("credential-{suffix}")),
+                credential: with_secret.then(|| crate::config::CredentialConfig {
+                    source: crate::config::CredentialSource::Env,
+                    name: Some(format!("MORPHZ_PROVIDER_{env_suffix}_API_KEY")),
+                    ..crate::config::CredentialConfig::default()
+                }),
+                managed_secret: with_secret.then(|| PutManagedSecretRequest {
+                    name: format!("MORPHZ_PROVIDER_{env_suffix}_API_KEY"),
+                    value: format!("secret-{suffix}"),
+                    scope_kind: crate::secret_store::SecretScopeKind::Runtime,
+                    scope_id: None,
+                    value_backend: None,
+                }),
+                route_id: format!("route-{suffix}"),
+                route: ModelRouteConfig {
+                    candidates: vec![crate::config::ModelRouteCandidateConfig {
+                        provider: format!("provider-{suffix}"),
+                        account: Some(format!("account-{suffix}")),
+                        model: format!("model-{suffix}"),
+                        ..crate::config::ModelRouteCandidateConfig::default()
+                    }],
+                    ..ModelRouteConfig::default()
+                },
+            }
+        };
+
+        for request in [setup("primary", true), setup("backup", false)] {
+            let response = handle_put_provider_catalog_setup(
+                State(Arc::clone(&state)),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+                Json(request),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let disabled = handle_control_provider_account(
+            State(Arc::clone(&state)),
+            Path("account-primary".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(ControlProviderAccountRequest {
+                action: ProviderAccountControlAction::Disable,
+                expected_revision: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(disabled.status(), StatusCode::OK);
+        let snapshot = runtime.provider_control_snapshot().await.unwrap();
+        let disabled_account = &snapshot.auth_accounts["account-primary"];
+        assert!(!disabled_account.effective_enabled);
+
+        let enabled = handle_control_provider_account(
+            State(Arc::clone(&state)),
+            Path("account-primary".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(ControlProviderAccountRequest {
+                action: ProviderAccountControlAction::Enable,
+                expected_revision: disabled_account.state.as_ref().map(|state| state.revision),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(enabled.status(), StatusCode::OK);
+
+        let mut renamed =
+            runtime.provider_catalog_config().unwrap().auth_accounts["account-primary"].clone();
+        renamed.label = Some("Renamed account".to_string());
+        let renamed_response = handle_put_auth_account_config(
+            State(Arc::clone(&state)),
+            Path("account-primary".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(renamed),
+        )
+        .await
+        .into_response();
+        assert_eq!(renamed_response.status(), StatusCode::OK);
+        assert_eq!(
+            runtime.provider_catalog_config().unwrap().auth_accounts["account-primary"]
+                .label
+                .as_deref(),
+            Some("Renamed account")
+        );
+
+        let deleted = handle_delete_provider_account(
+            State(Arc::clone(&state)),
+            Path("account-primary".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(deleted.status(), StatusCode::OK);
+
+        let live = runtime.provider_catalog_config().unwrap();
+        assert!(!live.auth_accounts.contains_key("account-primary"));
+        assert!(!live.provider_instances.contains_key("provider-primary"));
+        assert!(!live.model_routes.contains_key("route-primary"));
+        assert!(!live.credentials.contains_key("credential-primary"));
+        assert_eq!(live.llm.model, "route-backup");
+        assert!(live.auth_accounts.contains_key("account-backup"));
+        assert!(state.sdk.list_managed_secrets().unwrap().is_empty());
+
+        let managed_path = state.managed_config_path.as_deref().unwrap();
+        let managed: AppConfig =
+            toml::from_str(&std::fs::read_to_string(managed_path).unwrap()).unwrap();
+        assert!(!managed.auth_accounts.contains_key("account-primary"));
+        assert!(!managed.provider_instances.contains_key("provider-primary"));
+        assert!(!managed.model_routes.contains_key("route-primary"));
+        assert!(!managed.credentials.contains_key("credential-primary"));
+        assert_eq!(managed.llm.model, "route-backup");
     }
 
     #[tokio::test]

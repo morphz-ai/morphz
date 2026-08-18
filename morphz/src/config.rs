@@ -2039,8 +2039,60 @@ pub fn remove_managed_provider_accounts_at(
         return Ok(());
     }
     let mut root = read_managed_value(path)?;
+    let removed_credential_refs = root
+        .get("accounts")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|accounts| accounts.iter())
+        .filter(|(account_id, _)| account_ids.contains(*account_id))
+        .filter_map(|(_, account)| {
+            account
+                .get("credential_ref")
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>();
     if let Some(accounts) = root.get_mut("accounts").and_then(toml::Value::as_table_mut) {
         accounts.retain(|account_id, _| !account_ids.contains(account_id));
+    }
+
+    let retained_credential_refs = root
+        .get("accounts")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|accounts| accounts.values())
+        .filter_map(|account| {
+            account
+                .get("credential_ref")
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .chain(
+            root.get("providers")
+                .and_then(toml::Value::as_table)
+                .into_iter()
+                .flat_map(|providers| providers.values())
+                .filter_map(|provider| {
+                    provider
+                        .get("credential")
+                        .and_then(toml::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                }),
+        )
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    if let Some(credentials) = root
+        .get_mut("credentials")
+        .and_then(toml::Value::as_table_mut)
+    {
+        credentials.retain(|credential_id, _| {
+            !removed_credential_refs.contains(credential_id)
+                || retained_credential_refs.contains(credential_id)
+        });
     }
 
     let mut empty_providers = BTreeSet::new();
@@ -2088,6 +2140,32 @@ pub fn remove_managed_provider_accounts_at(
         routes.retain(|route_id, _| !empty_routes.contains(route_id));
     }
 
+    let fallback_route = root
+        .get("models")
+        .and_then(toml::Value::as_table)
+        .and_then(|routes| routes.keys().next())
+        .cloned();
+    let selected_model = root
+        .get("llm")
+        .and_then(toml::Value::as_table)
+        .and_then(|llm| llm.get("model"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_string);
+    let selected_model_exists = selected_model.as_deref().is_some_and(|selected| {
+        root.get("models")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|routes| {
+                routes.get(selected).is_some()
+                    || routes.values().any(|route| {
+                        route
+                            .get("aliases")
+                            .and_then(toml::Value::as_array)
+                            .is_some_and(|aliases| {
+                                aliases.iter().any(|alias| alias.as_str() == Some(selected))
+                            })
+                    })
+            })
+    });
     if let Some(llm) = root.get_mut("llm").and_then(toml::Value::as_table_mut) {
         if llm
             .get("provider")
@@ -2096,12 +2174,12 @@ pub fn remove_managed_provider_accounts_at(
         {
             llm.remove("provider");
         }
-        if llm
-            .get("model")
-            .and_then(toml::Value::as_str)
-            .is_some_and(|route_id| empty_routes.contains(route_id))
-        {
-            llm.remove("model");
+        if !selected_model_exists {
+            if let Some(fallback) = fallback_route {
+                llm.insert("model".to_string(), toml::Value::String(fallback));
+            } else {
+                llm.remove("model");
+            }
         }
     }
     write_managed_value(path, &root)

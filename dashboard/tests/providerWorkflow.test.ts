@@ -67,6 +67,7 @@ test('API setup preserves exact physical names and existing capacity metadata', 
   assert.equal(payload.route.candidates[0].model, 'gpt-5.6-sol')
   assert.equal(payload.provider.models['gpt-5.6'], undefined)
   assert.equal(payload.account.credential_ref, 'custom-api-key')
+  assert.equal(payload.account.label, 'Default account')
   assert.deepEqual(payload.managed_secret, {
     name: 'MORPHZ_PROVIDER_CUSTOM_API_KEY',
     value: 'setup-secret',

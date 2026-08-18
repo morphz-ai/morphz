@@ -1927,6 +1927,7 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .provider-account-list nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .provider-account-list nav button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-soft); background: var(--surface); font-size: 10px; }
 .provider-account-list nav button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.provider-account-list nav button.is-danger:hover:not(:disabled) { border-color: color-mix(in srgb, var(--danger) 52%, var(--line)); color: var(--danger); background: color-mix(in srgb, var(--danger) 7%, var(--surface)); }
 .provider-account-test-result {
   display: flex;
   grid-column: 2 / -1;

@@ -2517,7 +2517,11 @@ impl MorphzRuntime {
         expected_revision: Option<u64>,
         action: ProviderAccountControlAction,
     ) -> Result<crate::memory::ProviderAccountStateRecord, RuntimeError> {
-        let catalog = EffectiveProviderCatalog::from_config(&self.inner.config)?;
+        // Dashboard/SDK catalog mutations are hot-applied. Validate against
+        // that live catalog instead of the immutable startup snapshot, or an
+        // account created after boot can never be enabled or disabled.
+        let config = self.provider_catalog_config()?;
+        let catalog = EffectiveProviderCatalog::from_config(&config)?;
         if !catalog.auth_accounts.contains_key(account_id) {
             return Err(format!("Auth Account '{account_id}' 不存在").into());
         }

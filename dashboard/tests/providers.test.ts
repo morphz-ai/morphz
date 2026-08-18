@@ -87,6 +87,17 @@ test('API-key setup is protocol based and does not invent provider brands', () =
   assert.match(providerWorkflowSource, /display_alias: explicitAlias \|\| previousRoute\?\.display_alias/)
 })
 
+test('API-key accounts expose a complete named lifecycle', () => {
+  assert.match(providersSource, /providers\.accountName/)
+  assert.match(providersSource, /requestedSetup\.name\.trim\(\)/)
+  assert.match(providersSource, /displayName: kind === 'auth_account'/)
+  assert.match(providersSource, /body = \{ \.\.\.body, label: displayName \}/)
+  assert.match(providersSource, /'PATCH'/)
+  assert.match(providersSource, /'DELETE'/)
+  assert.match(providersSource, /providers\.deleteAccountTitle/)
+  assert.match(providersSource, /!record\.oauth/)
+})
+
 test('unfinished OAuth attempts are not rendered as accounts', () => {
   assert.match(providersSource, /!record\.oauth \|\| record\.authenticated/)
   assert.doesNotMatch(providersSource, /unfinishedLogin|groupProviderAccounts/)

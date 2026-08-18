@@ -196,9 +196,36 @@ fn merge_managed_provider_catalog(
 }
 
 fn remove_accounts_from_catalog(config: &mut AppConfig, account_ids: &BTreeSet<String>) {
+    let removed_credential_refs = account_ids
+        .iter()
+        .filter_map(|account_id| config.auth_accounts.get(account_id))
+        .map(|account| account.credential_ref.trim())
+        .filter(|credential_ref| !credential_ref.is_empty())
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
     for account_id in account_ids {
         config.auth_accounts.remove(account_id);
     }
+
+    let retained_credential_refs = config
+        .auth_accounts
+        .values()
+        .map(|account| account.credential_ref.trim())
+        .filter(|credential_ref| !credential_ref.is_empty())
+        .chain(
+            config
+                .providers
+                .values()
+                .filter_map(|provider| provider.credential.as_deref())
+                .map(str::trim)
+                .filter(|credential_ref| !credential_ref.is_empty()),
+        )
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    config.credentials.retain(|credential_id, _| {
+        !removed_credential_refs.contains(credential_id)
+            || retained_credential_refs.contains(credential_id)
+    });
 
     let empty_providers = config
         .provider_instances
@@ -244,8 +271,17 @@ fn remove_accounts_from_catalog(config: &mut AppConfig, account_ids: &BTreeSet<S
     {
         config.llm.provider = None;
     }
-    if empty_routes.contains(&config.llm.model) {
-        config.llm.model.clear();
+    let selected_model_exists = config.model_routes.iter().any(|(route_id, route)| {
+        route_id == &config.llm.model
+            || route.aliases.iter().any(|alias| alias == &config.llm.model)
+    });
+    if !selected_model_exists {
+        config.llm.model = config
+            .model_routes
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_default();
     }
 }
 
@@ -1203,6 +1239,88 @@ impl MorphzSdk {
         self.runtime
             .replace_provider_catalog(live)
             .map_err(SdkError::internal)?;
+        Ok(ProviderCatalogMutationReceipt::new(
+            ProviderCatalogObjectKind::AuthAccount,
+            account_id,
+            managed_config_path,
+        ))
+    }
+
+    /// Delete one Dashboard-managed authentication account and every catalog
+    /// fragment that becomes unreachable with it. Shared credentials,
+    /// Provider pools and routes are retained.
+    pub async fn delete_auth_account_config(
+        &self,
+        managed_config_path: &Path,
+        account_id: &str,
+    ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Auth Account ID 不能为空",
+            ));
+        }
+        let managed_contents =
+            std::fs::read_to_string(managed_config_path).map_err(SdkError::internal)?;
+        let managed: AppConfig = toml::from_str(&managed_contents)
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
+        if !managed.auth_accounts.contains_key(account_id) {
+            return Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                format!("Auth Account '{account_id}' 不由 Dashboard 管理；请在其来源配置中删除"),
+            ));
+        }
+
+        let mut live = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        let account = live.auth_accounts.get(account_id).cloned().ok_or_else(|| {
+            SdkError::new(
+                SdkErrorCode::NotFound,
+                format!("Auth Account '{account_id}' 不存在"),
+            )
+        })?;
+        let credential_id = (!account.credential_ref.trim().is_empty())
+            .then(|| account.credential_ref.trim().to_string());
+        let secret_name = credential_id.as_deref().and_then(|credential_id| {
+            live.credentials
+                .get(credential_id)
+                .filter(|credential| credential.source == crate::config::CredentialSource::Env)
+                .and_then(|credential| credential.name.clone())
+        });
+
+        let account_ids = BTreeSet::from([account_id.to_string()]);
+        remove_accounts_from_catalog(&mut live, &account_ids);
+        EffectiveProviderCatalog::from_config(&live).map_err(|error| {
+            SdkError::new(
+                SdkErrorCode::Conflict,
+                format!(
+                    "删除 Auth Account '{account_id}' 后没有可用模型路由；请先添加另一个模型服务：{error}"
+                ),
+            )
+        })?;
+
+        remove_managed_provider_accounts_at(managed_config_path, &account_ids)
+            .map_err(SdkError::internal)?;
+        self.runtime
+            .replace_provider_catalog(live.clone())
+            .map_err(SdkError::internal)?;
+        self.runtime
+            .remove_provider_auth_account(account_id)
+            .await
+            .map_err(SdkError::internal)?;
+
+        let removed_credential = credential_id
+            .as_ref()
+            .is_some_and(|credential_id| !live.credentials.contains_key(credential_id));
+        if removed_credential {
+            if let Some(secret_name) = secret_name {
+                self.delete_managed_secret(&secret_name)?;
+            }
+        }
+
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::AuthAccount,
             account_id,
