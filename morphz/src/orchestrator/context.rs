@@ -729,6 +729,11 @@ pub struct WakeSignal {
 pub struct ActivationFocus {
     pub activation_id: String,
     pub session_id: String,
+    /// Runtime-authoritative identity for this physical Evaluation. This is
+    /// copied from the durable Activation route (with legacy Event fallback),
+    /// not inferred from Session membership or conversational content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_id: Option<String>,
     pub root_turn_id: String,
     /// Exact immutable Event carrying the original task. This differs from
     /// `root_turn_id` for scheduled Threads, whose stable route ID is
@@ -5879,6 +5884,24 @@ fn render_current_activation(
         pair("id", atom(&evaluation.activation_id)),
         pair("session", atom(&evaluation.session_id)),
         list(
+            "principal",
+            vec![
+                pair(
+                    "id",
+                    atom(evaluation.principal_id.as_deref().unwrap_or("unknown")),
+                ),
+                pair("authority", atom("runtime")),
+                pair(
+                    "binding",
+                    atom(if evaluation.principal_id.is_some() {
+                        "verified"
+                    } else {
+                        "unknown"
+                    }),
+                ),
+            ],
+        ),
+        list(
             "root-turn",
             vec![
                 pair("id", atom(&evaluation.root_turn_id)),
@@ -6037,6 +6060,10 @@ fn render_evaluation_directive(
                 "activation",
                 vec![
                     pair("id", atom(&evaluation.activation_id)),
+                    pair(
+                        "principal",
+                        atom(evaluation.principal_id.as_deref().unwrap_or("unknown")),
+                    ),
                     list(
                         "caused-by",
                         vec![list(
@@ -6068,6 +6095,10 @@ fn render_evaluation_directive(
             ),
             pair("root-kind", atom(&evaluation.root_kind)),
             pair("root-input", atom(&evaluation.root_preview)),
+            pair(
+                "identity-boundary",
+                atom("interpret first-person root-input and address the current interlocutor only as activation.principal. Do not transfer another Principal's names, preferences, relationships, permissions, or past statements to this Principal; when attribution is absent or ambiguous, use neutral wording"),
+            ),
             pair(
                 "instruction",
                 atom(if thread_kind == "delivery" {
@@ -8941,6 +8972,11 @@ fn activation_focus(
     ActivationFocus {
         activation_id: activation.id.clone(),
         session_id: activation.session_id.clone(),
+        principal_id: activation
+            .initiating_principal_id
+            .clone()
+            .or_else(|| trigger.and_then(event_principal).map(ToOwned::to_owned))
+            .or_else(|| root.and_then(event_principal).map(ToOwned::to_owned)),
         root_turn_id: activation.root_turn_id.clone(),
         root_event_id: effective_root
             .map(|event| event.id.clone())
@@ -10008,7 +10044,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(view.active_principal_id.as_deref(), Some("principal:b"));
+        assert_eq!(
+            view.activation
+                .as_ref()
+                .and_then(|activation| activation.principal_id.as_deref()),
+            Some("principal:b")
+        );
         assert!(view.sexpr.contains("(active-principal (id principal:b)"));
+        assert!(view.sexpr.contains(
+            "(current-activation (id activation:b) (session session:b) (principal (id principal:b) (authority runtime) (binding verified))"
+        ));
+        assert!(view.sexpr.contains(
+            "(evaluate (activation (id activation:b) (principal principal:b)"
+        ));
+        assert!(view.sexpr.contains(
+            "(identity-boundary \"interpret first-person root-input and address the current interlocutor only as activation.principal."
+        ));
         assert!(view.sexpr.contains("(id session:a)"));
         assert!(view.sexpr.contains("(principals principal:a)"));
         assert!(view.sexpr.contains("(id session:b)"));
@@ -10087,9 +10138,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(legacy_view.active_principal_id, None);
+        assert_eq!(
+            legacy_view
+                .activation
+                .as_ref()
+                .and_then(|activation| activation.principal_id.as_deref()),
+            None
+        );
         assert!(legacy_view
             .sexpr
             .contains("(active-principal (id unknown) (authority runtime) (binding unknown))"));
+        assert!(legacy_view.sexpr.contains(
+            "(current-activation (id activation:legacy-unattributed) (session session:b) (principal (id unknown) (authority runtime) (binding unknown))"
+        ));
+        assert!(legacy_view.sexpr.contains(
+            "(evaluate (activation (id activation:legacy-unattributed) (principal unknown)"
+        ));
     }
 
     #[tokio::test]
@@ -11238,6 +11302,7 @@ mod tests {
         let evaluation = ActivationFocus {
             activation_id: "work-current".to_string(),
             session_id: "s1".to_string(),
+            principal_id: None,
             root_turn_id: "user:1".to_string(),
             root_event_id: "user:1".to_string(),
             thread_kind: "dialogue_turn".to_string(),
@@ -11352,7 +11417,9 @@ mod tests {
         assert!(rendered.contains(
             "(signal-batch (signal (event @e7) (kind chat/user_message) (observation-ref @e7) (sequence 7)))"
         ));
-        assert!(rendered.contains("(activation (id work-current) (caused-by (signal-batch @e7)))"));
+        assert!(rendered.contains(
+            "(activation (id work-current) (principal unknown) (caused-by (signal-batch @e7)))"
+        ));
         assert!(!rendered.contains("current-evaluation"));
         assert!(rendered.contains("(pending-tools exec)"));
         assert!(rendered.contains("(thread-kind execution)"));
@@ -11548,6 +11615,7 @@ mod tests {
         let evaluation = ActivationFocus {
             activation_id: "work-dialogue".to_string(),
             session_id: "session-a".to_string(),
+            principal_id: Some("principal:a".to_string()),
             root_turn_id: "message-new".to_string(),
             root_event_id: "message-new".to_string(),
             thread_kind: "dialogue_turn".to_string(),
@@ -11866,6 +11934,7 @@ mod tests {
         let focus = ActivationFocus {
             activation_id: "work-control".to_string(),
             session_id: "session-control".to_string(),
+            principal_id: None,
             root_turn_id: "user:root".to_string(),
             root_event_id: "user:root".to_string(),
             thread_kind: "execution".to_string(),
