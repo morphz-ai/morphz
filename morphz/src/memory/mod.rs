@@ -2410,6 +2410,11 @@ pub struct PlanExecutionFilter {
     pub pending_kind: Option<PlanExecutionWaitKind>,
     pub lease_expires_at_or_before: Option<DateTime<Utc>>,
     pub include_terminal: bool,
+    /// Keyset scans use oldest-first order so a permanently waiting prefix
+    /// cannot starve later durable completions.
+    pub oldest_first: bool,
+    pub after_updated_at: Option<DateTime<Utc>>,
+    pub after_id: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -5376,6 +5381,19 @@ pub trait ActivationStore: Send + Sync {
     async fn list_signal_outbox(
         &self,
         status: SignalOutboxStatus,
+        limit: usize,
+    ) -> Result<Vec<SignalOutboxRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Reads one stable keyset page of legacy Event-to-Signal handoffs.
+    ///
+    /// Startup migration must be able to dispatch a page exactly once even
+    /// though EventBus business handlers run asynchronously and therefore may
+    /// leave that page `pending` for a while. Re-reading the first page until
+    /// its status changes both races normal handlers and starves later rows.
+    async fn list_signal_outbox_page(
+        &self,
+        status: SignalOutboxStatus,
+        after_created_at: Option<DateTime<Utc>>,
+        after_event_id: Option<String>,
         limit: usize,
     ) -> Result<Vec<SignalOutboxRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn discard_signal_outbox(

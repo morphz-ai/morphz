@@ -5,12 +5,12 @@ use crate::event::{
 };
 use crate::memory::{
     CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventAppend, EventStore,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationRecord,
-    ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
-    ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetRecord,
-    ExecutionTargetStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
-    MindSnapshotRecord, NewMindProjection, ObjectiveRecord, ObjectiveStore, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    ExecutionJobFilter, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
+    ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
+    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
+    ExecutionTargetRecord, ExecutionTargetStore, MindProjectionCommit, MindProjectionRecord,
+    MindProjectionStore, MindSnapshotRecord, NewMindProjection, ObjectiveRecord, ObjectiveStore,
+    QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
     RecallProjectionStore, RecallSearchHit, ScheduleRecord, ScheduleStatus, SessionAttentionState,
     SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
     SessionStatus, SessionStore, ThreadActivationRecord, ThreadGroupMemberRecord,
@@ -1157,6 +1157,7 @@ pub struct ContextEngine {
     recall_projection_store: Option<Arc<dyn RecallProjectionStore>>,
     cognitive_clock_store: Option<Arc<dyn CognitiveClockStore>>,
     objective_store: Option<Arc<dyn ObjectiveStore>>,
+    execution_job_store: Option<Arc<dyn ExecutionJobStore>>,
     execution_target_store: Option<Arc<dyn ExecutionTargetStore>>,
     execution_target_authorization_store: Option<Arc<dyn ExecutionTargetAuthorizationStore>>,
     worker_coordination_mode: WorkerCoordinationMode,
@@ -1208,6 +1209,7 @@ impl ContextEngine {
             recall_projection_store: None,
             cognitive_clock_store: None,
             objective_store: None,
+            execution_job_store: None,
             execution_target_store: None,
             execution_target_authorization_store: None,
             worker_coordination_mode: WorkerCoordinationMode::ExclusiveProcess,
@@ -1346,6 +1348,37 @@ impl ContextEngine {
     pub fn with_objective_store(mut self, objective_store: Arc<dyn ObjectiveStore>) -> Self {
         self.objective_store = Some(objective_store);
         self
+    }
+
+    pub fn with_execution_job_store(mut self, store: Arc<dyn ExecutionJobStore>) -> Self {
+        self.execution_job_store = Some(store);
+        self
+    }
+
+    async fn session_has_owed_background_work(
+        &self,
+        session_id: &str,
+        context_id: &str,
+    ) -> Result<bool, DynError> {
+        let Some(store) = self.execution_job_store.as_ref() else {
+            return Ok(active_background_task_count(session_id, context_id) > 0);
+        };
+        Ok(store
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: Some(context_id.to_string()),
+                session_id: Some(session_id.to_string()),
+                tool_name: Some("exec/background".to_string()),
+                include_terminal: false,
+                ..ExecutionJobFilter::default()
+            })
+            .await?
+            .into_iter()
+            .any(|job| {
+                !job.request
+                    .get("keep_running")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            }))
     }
 
     pub fn with_execution_target_store(
@@ -2068,7 +2101,10 @@ impl ContextEngine {
                         )
                         .into());
                     }
-                    if active_background_task_count(session_id, context_id) > 0 {
+                    if self
+                        .session_has_owed_background_work(session_id, context_id)
+                        .await?
+                    {
                         return Err(format!(
                             "Session '{}' 存在 running Background Task，不能 retire",
                             session_id
@@ -10054,9 +10090,9 @@ mod tests {
         assert!(view.sexpr.contains(
             "(current-activation (id activation:b) (session session:b) (principal (id principal:b) (authority runtime) (binding verified))"
         ));
-        assert!(view.sexpr.contains(
-            "(evaluate (activation (id activation:b) (principal principal:b)"
-        ));
+        assert!(view
+            .sexpr
+            .contains("(evaluate (activation (id activation:b) (principal principal:b)"));
         assert!(view.sexpr.contains(
             "(identity-boundary \"interpret first-person root-input and address the current interlocutor only as activation.principal."
         ));

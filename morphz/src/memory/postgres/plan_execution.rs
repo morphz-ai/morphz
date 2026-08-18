@@ -364,7 +364,26 @@ impl PlanExecutionStore for PostgresStore {
                 .push_bind(expiry.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
             query.push(" ORDER BY lease_expires_at, created_at, id");
         } else {
-            query.push(" ORDER BY updated_at DESC, id");
+            match (filter.after_updated_at, filter.after_id) {
+                (Some(updated_at), Some(id)) => {
+                    let updated_at = updated_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                    query
+                        .push(" AND (updated_at > ")
+                        .push_bind(updated_at.clone())
+                        .push(" OR (updated_at = ")
+                        .push_bind(updated_at)
+                        .push(" AND id > ")
+                        .push_bind(id)
+                        .push("))");
+                }
+                (None, None) => {}
+                _ => return Err("PlanExecution keyset cursor 必须同时包含 updated_at 与 id".into()),
+            }
+            query.push(if filter.oldest_first {
+                " ORDER BY updated_at, id"
+            } else {
+                " ORDER BY updated_at DESC, id"
+            });
         }
         if let Some(limit) = filter.limit {
             query.push(" LIMIT ").push_bind(i64::try_from(limit)?);

@@ -107,6 +107,8 @@ pub struct PlanReconciliationReport {
     pub resumed: Vec<PlanExecutionRecord>,
     pub still_waiting: Vec<String>,
     pub conflicts: Vec<(String, String)>,
+    pub scanned: usize,
+    pub next_cursor: Option<(DateTime<Utc>, String)>,
 }
 
 pub struct PlanExecutionCoordinator {
@@ -733,6 +735,17 @@ impl PlanExecutionCoordinator {
         context_id: Option<&str>,
         limit: usize,
     ) -> PlanExecutionResult<PlanReconciliationReport> {
+        self.reconcile_waiting_execution_jobs_page(context_id, None, None, limit)
+            .await
+    }
+
+    pub async fn reconcile_waiting_execution_jobs_page(
+        &self,
+        context_id: Option<&str>,
+        after_updated_at: Option<DateTime<Utc>>,
+        after_id: Option<String>,
+        limit: usize,
+    ) -> PlanExecutionResult<PlanReconciliationReport> {
         let plans = self
             .store
             .list_plan_executions(PlanExecutionFilter {
@@ -740,11 +753,18 @@ impl PlanExecutionCoordinator {
                 status: Some(PlanExecutionStatus::Waiting),
                 pending_kind: Some(PlanExecutionWaitKind::ExecutionJob),
                 include_terminal: false,
+                oldest_first: true,
+                after_updated_at,
+                after_id,
                 limit: Some(limit.max(1)),
                 ..PlanExecutionFilter::default()
             })
             .await?;
-        let mut report = PlanReconciliationReport::default();
+        let mut report = PlanReconciliationReport {
+            scanned: plans.len(),
+            next_cursor: plans.last().map(|plan| (plan.updated_at, plan.id.clone())),
+            ..PlanReconciliationReport::default()
+        };
         for plan in plans {
             let Some(job_id) = plan.pending_id.as_deref() else {
                 report.conflicts.push((
@@ -781,6 +801,17 @@ impl PlanExecutionCoordinator {
         context_id: Option<&str>,
         limit: usize,
     ) -> PlanExecutionResult<PlanReconciliationReport> {
+        self.reconcile_waiting_evaluations_page(context_id, None, None, limit)
+            .await
+    }
+
+    pub async fn reconcile_waiting_evaluations_page(
+        &self,
+        context_id: Option<&str>,
+        after_updated_at: Option<DateTime<Utc>>,
+        after_id: Option<String>,
+        limit: usize,
+    ) -> PlanExecutionResult<PlanReconciliationReport> {
         let plans = self
             .store
             .list_plan_executions(PlanExecutionFilter {
@@ -788,11 +819,18 @@ impl PlanExecutionCoordinator {
                 status: Some(PlanExecutionStatus::Waiting),
                 pending_kind: Some(PlanExecutionWaitKind::Evaluation),
                 include_terminal: false,
+                oldest_first: true,
+                after_updated_at,
+                after_id,
                 limit: Some(limit.max(1)),
                 ..PlanExecutionFilter::default()
             })
             .await?;
-        let mut report = PlanReconciliationReport::default();
+        let mut report = PlanReconciliationReport {
+            scanned: plans.len(),
+            next_cursor: plans.last().map(|plan| (plan.updated_at, plan.id.clone())),
+            ..PlanReconciliationReport::default()
+        };
         for plan in plans {
             let Some(activation_id) = plan.pending_id.as_deref() else {
                 report
@@ -1585,6 +1623,146 @@ mod tests {
             }
             other => panic!("expected completed plan, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn waiting_plan_keyset_pages_do_not_starve_a_later_terminal_child() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        registry.register(Arc::new(DefinitionOnlyTool));
+        let program = validate(
+            r#"(eval (requires (tools read)) (call read (path "README.md")))"#,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap();
+        let first_route = seed_route(&store).await;
+        let mut second_route = first_route.clone();
+        second_route.tool_call_id = "outer-eval-call-second".to_string();
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+
+        let first = coordinator
+            .ensure(first_route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let first_waiting = match coordinator
+            .drive_once(
+                &first.id,
+                first.revision,
+                "plan-worker-first",
+                "plan-claim-first",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForExecutionJob { plan, .. } => plan,
+            other => panic!("expected first waiting plan, got {other:?}"),
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let second = coordinator
+            .ensure(second_route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let (second_waiting, second_job) = match coordinator
+            .drive_once(
+                &second.id,
+                second.revision,
+                "plan-worker-second",
+                "plan-claim-second",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForExecutionJob { plan, job, .. } => (plan, job),
+            other => panic!("expected second waiting plan, got {other:?}"),
+        };
+        let running_job = updated_job(
+            store
+                .claim_execution_job(
+                    &second_job.id,
+                    second_job.revision,
+                    "execution-worker",
+                    "job-claim-second",
+                    Utc::now() + Duration::minutes(1),
+                    None,
+                )
+                .await
+                .unwrap(),
+        );
+        let result_event = Event::new(
+            "plan-second-result".to_string(),
+            "Test-Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                (
+                    "context_id".to_string(),
+                    serde_json::json!(second_job.context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!(second_job.session_id),
+                ),
+                (
+                    "activation_id".to_string(),
+                    serde_json::json!(second_job.activation_id),
+                ),
+                (
+                    "thread_id".to_string(),
+                    serde_json::json!(second_job.thread_id),
+                ),
+                (
+                    "tool_call_id".to_string(),
+                    serde_json::json!(second_job.tool_call_id),
+                ),
+                ("tool_name".to_string(), serde_json::json!("read")),
+                ("tool_status".to_string(), serde_json::json!("success")),
+                ("text".to_string(), serde_json::json!("second result")),
+            ]),
+        );
+        updated_job(
+            store
+                .finish_execution_job_with_event(
+                    &running_job.id,
+                    running_job.revision,
+                    Some("job-claim-second"),
+                    ExecutionJobTerminal {
+                        status: ExecutionJobStatus::Succeeded,
+                        result_event_id: Some(result_event.id.clone()),
+                        result_refs: Vec::new(),
+                        error: None,
+                        exit_code: Some(0),
+                    },
+                    &result_event,
+                    false,
+                )
+                .await
+                .unwrap(),
+        );
+
+        let first_page = coordinator
+            .reconcile_waiting_execution_jobs_page(None, None, None, 1)
+            .await
+            .unwrap();
+        assert_eq!(first_page.still_waiting, vec![first_waiting.id]);
+        assert!(first_page.resumed.is_empty());
+        let (updated_at, id) = first_page.next_cursor.unwrap();
+        let second_page = coordinator
+            .reconcile_waiting_execution_jobs_page(None, Some(updated_at), Some(id), 1)
+            .await
+            .unwrap();
+        assert_eq!(second_page.resumed.len(), 1);
+        assert_eq!(second_page.resumed[0].id, second_waiting.id);
     }
 
     #[tokio::test]

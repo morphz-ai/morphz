@@ -20,6 +20,30 @@ use serde_json::Value as JsonValue;
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 
+async fn append_execution_job_signal_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event: &Event,
+    thread_id: &str,
+) -> Result<bool, StoreError> {
+    let existing_signal: Option<i64> =
+        sqlx::query_scalar("SELECT 1::BIGINT FROM thread_signals WHERE event_id = $1 LIMIT 1")
+            .bind(&event.id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if existing_signal.is_some() {
+        return append_direct_thread_signal_in_tx(tx, event, thread_id).await;
+    }
+    let status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = $1 FOR SHARE")
+        .bind(thread_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| format!("Execution Job result 目标 Thread '{thread_id}' 不存在"))?;
+    if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+        return Ok(false);
+    }
+    append_direct_thread_signal_in_tx(tx, event, thread_id).await
+}
+
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
         r#"CREATE TABLE IF NOT EXISTS threads (
@@ -1081,7 +1105,7 @@ impl ExecutionJobStore for PostgresStore {
             if exact_replay {
                 append_event_in_tx(&mut tx, event).await?;
                 if wake_thread {
-                    append_direct_thread_signal_in_tx(&mut tx, event, &current.thread_id).await?;
+                    append_execution_job_signal_in_tx(&mut tx, event, &current.thread_id).await?;
                 }
                 tx.commit().await?;
                 return Ok(ExecutionJobMutation::Existing(current));
@@ -1151,7 +1175,7 @@ impl ExecutionJobStore for PostgresStore {
         }
         append_event_in_tx(&mut tx, event).await?;
         if wake_thread {
-            append_direct_thread_signal_in_tx(&mut tx, event, &current.thread_id).await?;
+            append_execution_job_signal_in_tx(&mut tx, event, &current.thread_id).await?;
         }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = $1")
             .bind(id)
@@ -1202,7 +1226,7 @@ impl ExecutionJobStore for PostgresStore {
                 && current.exit_code == terminal.exit_code;
             if exact_replay {
                 if wake_thread {
-                    append_direct_thread_signal_in_tx(&mut tx, event, &current.thread_id).await?;
+                    append_execution_job_signal_in_tx(&mut tx, event, &current.thread_id).await?;
                 }
                 tx.commit().await?;
                 return Ok(ExecutionJobMutation::Existing(current));
@@ -1249,7 +1273,7 @@ impl ExecutionJobStore for PostgresStore {
             .await;
         }
         if wake_thread {
-            append_direct_thread_signal_in_tx(&mut tx, event, &current.thread_id).await?;
+            append_execution_job_signal_in_tx(&mut tx, event, &current.thread_id).await?;
         }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = $1")
             .bind(id)

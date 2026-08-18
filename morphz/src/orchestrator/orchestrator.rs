@@ -1897,6 +1897,10 @@ pub struct Orchestrator {
     /// a purely mechanical reason; a weak self-reference keeps that surface
     /// untouched and cannot keep the Runtime alive on its own.
     self_ref: std::sync::OnceLock<std::sync::Weak<Orchestrator>>,
+    /// Unique owner identity for this Runtime instance. Multiple embedded
+    /// Runtimes may share one process and one Store, so a process-wide token
+    /// is not a sufficient fencing boundary.
+    runtime_claimant_id: String,
     bus: Arc<InMemoryEventBus>,
     store: Arc<dyn EventStore>,
     /// Complete Store authority used by durable Yao PlanExecution. Kept
@@ -1983,6 +1987,8 @@ pub struct Orchestrator {
     /// slow fallback exists only for shared-store mutations from another
     /// process and the commit-before-notify crash window.
     plan_reconcile_wakeup: Arc<Notify>,
+    plan_job_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
+    plan_evaluation_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
     action_group_reconcile_dirty: Arc<DashMap<String, ()>>,
     action_group_reconcile_wakeup: Arc<Notify>,
     /// Rotating keyset cursor for the slow lost-notification fallback. A
@@ -2781,6 +2787,7 @@ impl Orchestrator {
         let tool_definitions = registry.definitions();
         let orchestrator = Arc::new(Self {
             self_ref: std::sync::OnceLock::new(),
+            runtime_claimant_id: new_runtime_claimant_id(),
             bus,
             store,
             plan_store,
@@ -2814,6 +2821,8 @@ impl Orchestrator {
             session_contexts: DashMap::new(),
             supervision_audit_dirty_contexts: Arc::new(DashMap::new()),
             plan_reconcile_wakeup: Arc::new(Notify::new()),
+            plan_job_reconcile_cursor: Mutex::new(None),
+            plan_evaluation_reconcile_cursor: Mutex::new(None),
             action_group_reconcile_dirty: Arc::new(DashMap::new()),
             action_group_reconcile_wakeup: Arc::new(Notify::new()),
             action_group_reconcile_cursor: Mutex::new(None),
@@ -2855,6 +2864,7 @@ impl Orchestrator {
         orchestrator_config: OrchestratorConfig,
         context_engine: Arc<ContextEngine>,
         timer_engine: Arc<TimerEngine>,
+        execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
     ) -> Result<Arc<Self>, DynError> {
         let orchestrator = Self::assemble_with_scheduler_kernel(
             bus,
@@ -2870,7 +2880,7 @@ impl Orchestrator {
             None,
             timer_engine,
             None,
-            None,
+            execution_jobs,
             None,
             Some(action_groups),
             None,
@@ -2914,26 +2924,18 @@ impl Orchestrator {
             return Ok(());
         }
         let lease_expires_at = activation.lease_expires_at.unwrap_or_else(Utc::now);
-        let due_at = if self.activation_admission.is_in_flight(&activation.id) {
-            let heartbeat_secs = self
-                .orchestrator_config
-                .activation_lease_secs
-                .saturating_div(3)
-                .max(1);
-            lease_expires_at.min(
-                Utc::now()
-                    + chrono::Duration::seconds(i64::try_from(heartbeat_secs).unwrap_or(i64::MAX)),
-            )
-        } else {
-            lease_expires_at
-        };
         self.timer_engine
             .schedule(NewRuntimeTimer {
                 id: activation_lease_timer_id(&activation.id),
                 generation: activation.revision,
                 kind: RuntimeTimerKind::ActivationLease,
                 owner_id: activation.id.clone(),
-                due_at,
+                // Runtime Timers are shared-store work. Scheduling the owner
+                // heartbeat here lets another Runtime consume the only wakeup
+                // and mistake a healthy long-running Activation for a zombie.
+                // The process-local heartbeat loop renews the durable lease;
+                // this Timer is solely the cross-Runtime expiry detector.
+                due_at: lease_expires_at,
                 payload: json!({
                     "activation_id": activation.id,
                     "revision": activation.revision,
@@ -2943,6 +2945,123 @@ impl Orchestrator {
             })
             .await?;
         Ok(())
+    }
+
+    fn start_activation_lease_heartbeats(self: &Arc<Self>) {
+        let orchestrator = Arc::downgrade(self);
+        let heartbeat_secs = self
+            .orchestrator_config
+            .activation_lease_secs
+            .saturating_div(3)
+            .max(1);
+        tokio::spawn(async move {
+            let heartbeat = std::time::Duration::from_secs(heartbeat_secs);
+            loop {
+                tokio::time::sleep(heartbeat).await;
+                let Some(orchestrator) = orchestrator.upgrade() else {
+                    break;
+                };
+                if let Err(error) = orchestrator.renew_local_activation_leases().await {
+                    tracing::error!(
+                        event_code = "orchestrator.activation.lease_heartbeat_failed",
+                        %error,
+                        "Could not renew one or more locally-owned Activation leases; durable expiry recovery remains armed"
+                    );
+                }
+            }
+        });
+    }
+
+    async fn renew_local_activation_leases(&self) -> Result<(), DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Activation lease heartbeat 需要持久化 SessionStore")?;
+        let snapshot = self.activation_admission.snapshot();
+        let activation_ids = snapshot
+            .in_flight_activation_ids
+            .into_iter()
+            .chain(snapshot.suspended_activation_ids);
+        for activation_id in activation_ids {
+            if !self.activation_admission.is_in_flight(&activation_id) {
+                continue;
+            }
+            let Some(current) = session_store.get_thread_activation(&activation_id).await? else {
+                continue;
+            };
+            if current.status != ThreadActivationStatus::Running
+                || current.claimed_by.as_deref() != Some(self.runtime_claimant_id.as_str())
+            {
+                continue;
+            }
+            let renewed_expires_at = Utc::now() + self.activation_lease_duration();
+            match self
+                .transition_thread_activation(
+                    &current,
+                    ThreadActivationStatus::Running,
+                    current.claimed_by.clone(),
+                    Some(renewed_expires_at),
+                    current.context_snapshot_version,
+                    &current.trigger_event_id,
+                    "ActivationLeaseHeartbeat",
+                )
+                .await?
+            {
+                ThreadActivationMutation::Updated(renewed) => {
+                    self.arm_activation_lease(&renewed).await?;
+                    tracing::debug!(
+                        activation_id = %renewed.id,
+                        revision = renewed.revision,
+                        lease_expires_at = %crate::local_time::format_utc_for_local(renewed_expires_at),
+                        event_code = "orchestrator.activation.lease_renewed",
+                        "Local Activation heartbeat renewed its durable lease"
+                    );
+                }
+                ThreadActivationMutation::Conflict { current }
+                    if current.status == ThreadActivationStatus::Running
+                        && current.claimed_by.as_deref()
+                            == Some(self.runtime_claimant_id.as_str()) =>
+                {
+                    self.arm_activation_lease(&current).await?;
+                }
+                ThreadActivationMutation::Conflict { .. } | ThreadActivationMutation::NotFound => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Observe the durable Activation fence while this Runtime owns the
+    /// process-local evaluation future. A peer Runtime cannot wake our local
+    /// cancellation registry, so the persisted row is the cross-process
+    /// cancellation channel.
+    async fn wait_for_durable_activation_revocation(&self, activation_id: &str) -> String {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return std::future::pending::<String>().await;
+        };
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            match durable_activation_revocation_reason(
+                session_store.as_ref(),
+                activation_id,
+                &self.runtime_claimant_id,
+            )
+            .await
+            {
+                Ok(Some(reason)) => return reason,
+                Ok(None) => {}
+                Err(error) => {
+                    // A transient read failure must not manufacture a
+                    // cancellation. Lease expiry remains the crash fallback,
+                    // and the next poll rechecks the authoritative row.
+                    tracing::warn!(
+                        activation_id,
+                        error = %error,
+                        event_code = "orchestrator.activation.durable_fence_read_failed",
+                        "Could not read the durable Activation cancellation fence; retrying"
+                    );
+                }
+            }
+        }
     }
 
     async fn cancel_activation_lease(&self, activation_id: &str) -> Result<(), DynError> {
@@ -3021,7 +3140,9 @@ impl Orchestrator {
             self.arm_activation_lease(&current).await?;
             return Ok(TimerDisposition::Complete);
         }
-        if self.activation_admission.is_in_flight(&current.id) {
+        if current.claimed_by.as_deref() == Some(self.runtime_claimant_id.as_str())
+            && self.activation_admission.is_in_flight(&current.id)
+        {
             // A live owner renews before expiry. The lease is a failure
             // detector, not a model/tool wall-clock timeout; keeping those
             // concepts separate lets another Runtime recover a crashed
@@ -3316,6 +3437,7 @@ impl Orchestrator {
         // and tool continuations may write concurrently with the caller.
         self.recover_thread_activations().await?;
         self.refill_activation_admission_queue().await?;
+        self.start_activation_lease_heartbeats();
         self.start_activation_admission_refill();
         self.start_plan_reconciler();
         self.start_pending_signal_reconciler();
@@ -4153,12 +4275,39 @@ impl Orchestrator {
         let recovered = coordinator
             .recover_expired_running(None, PLAN_RECONCILE_BATCH)
             .await?;
+        let job_cursor = self.plan_job_reconcile_cursor.lock().await.clone();
         let jobs = coordinator
-            .reconcile_waiting_execution_jobs(None, PLAN_RECONCILE_BATCH)
+            .reconcile_waiting_execution_jobs_page(
+                None,
+                job_cursor.as_ref().map(|(updated_at, _)| *updated_at),
+                job_cursor.as_ref().map(|(_, id)| id.clone()),
+                PLAN_RECONCILE_BATCH,
+            )
             .await?;
+        let evaluation_cursor = self.plan_evaluation_reconcile_cursor.lock().await.clone();
         let evaluations = coordinator
-            .reconcile_waiting_evaluations(None, PLAN_RECONCILE_BATCH)
+            .reconcile_waiting_evaluations_page(
+                None,
+                evaluation_cursor
+                    .as_ref()
+                    .map(|(updated_at, _)| *updated_at),
+                evaluation_cursor.as_ref().map(|(_, id)| id.clone()),
+                PLAN_RECONCILE_BATCH,
+            )
             .await?;
+        let more_jobs = jobs.scanned == PLAN_RECONCILE_BATCH;
+        let more_evaluations = evaluations.scanned == PLAN_RECONCILE_BATCH;
+        *self.plan_job_reconcile_cursor.lock().await =
+            more_jobs.then_some(jobs.next_cursor.clone()).flatten();
+        *self.plan_evaluation_reconcile_cursor.lock().await = more_evaluations
+            .then_some(evaluations.next_cursor.clone())
+            .flatten();
+        if more_jobs || more_evaluations {
+            // The next page must not wait for the 30-second cross-process
+            // fallback. Notify retains one permit even during startup before
+            // the reconciler task begins.
+            self.plan_reconcile_wakeup.notify_one();
+        }
         if !recovered.is_empty()
             || !jobs.resumed.is_empty()
             || !evaluations.resumed.is_empty()
@@ -4185,52 +4334,98 @@ impl Orchestrator {
             .context_engine
             .session_store()
             .ok_or("Signal Outbox dispatcher 需要持久化 SessionStore")?;
-        let pending = session_store
-            .list_signal_outbox(SignalOutboxStatus::Pending, SIGNAL_OUTBOX_DISPATCH_BATCH)
-            .await?;
         let mut dispatched = 0usize;
-        for entry in pending {
-            let Some(event) = self
-                .store
-                .query(QueryFilter {
-                    event_id: Some(entry.event_id.clone()),
-                    ..Default::default()
-                })
-                .await?
-                .into_iter()
-                .find(|event| event.id == entry.event_id)
-            else {
-                return Err(format!("Signal Outbox Event '{}' 未持久化", entry.event_id).into());
-            };
-            let routable = event
-                .payload
-                .get("context_id")
-                .and_then(|value| value.as_str())
-                .is_some()
-                && event
-                    .payload
-                    .get("session_id")
-                    .and_then(|value| value.as_str())
-                    .is_some();
-            if !routable || self.is_legacy_internal_plan_output(&event).await? {
-                // Older Runtime builds could enqueue Plan-internal tool
-                // outputs as ordinary chat wakeups. They remain observable
-                // persisted Event facts, but routing them back through the parent
-                // Thread gate can deadlock the Plan that owns them. Discard
-                // only the invalid Outbox entry; real Plan infer requests
-                // remain routable child-evaluation inputs.
-                tracing::warn!(
-                    event_id = %event.id,
-                    event_type = %event.event_type,
-                    topic = %event.topic,
-                    event_code = "orchestrator.signal_outbox.unroutable_legacy_entry_dropped",
-                    "One-time migration dropped an unroutable legacy Signal Outbox entry while preserving the Event"
-                );
-                session_store.discard_signal_outbox(&event.id).await?;
-                continue;
+        let mut cursor: Option<(chrono::DateTime<Utc>, String)> = None;
+        loop {
+            let pending = session_store
+                .list_signal_outbox_page(
+                    SignalOutboxStatus::Pending,
+                    cursor.as_ref().map(|(created_at, _)| *created_at),
+                    cursor.as_ref().map(|(_, event_id)| event_id.clone()),
+                    SIGNAL_OUTBOX_DISPATCH_BATCH,
+                )
+                .await?;
+            if pending.is_empty() {
+                break;
             }
-            self.bus.dispatch_persisted(event).await?;
-            dispatched = dispatched.saturating_add(1);
+            cursor = pending
+                .last()
+                .map(|entry| (entry.created_at, entry.event_id.clone()));
+            for entry in pending {
+                let Some(event) = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(entry.event_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|event| event.id == entry.event_id)
+                else {
+                    return Err(format!("Signal Outbox Event '{}' 未持久化", entry.event_id).into());
+                };
+                let routable = event
+                    .payload
+                    .get("context_id")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+                    && event
+                        .payload
+                        .get("session_id")
+                        .and_then(|value| value.as_str())
+                        .is_some();
+                if !routable || self.is_legacy_internal_plan_output(&event).await? {
+                    // Older Runtime builds could enqueue Plan-internal tool
+                    // outputs as ordinary chat wakeups. They remain observable
+                    // persisted Event facts, but routing them back through the parent
+                    // Thread gate can deadlock the Plan that owns them. Discard
+                    // only the invalid Outbox entry; real Plan infer requests
+                    // remain routable child-evaluation inputs.
+                    tracing::warn!(
+                        event_id = %event.id,
+                        event_type = %event.event_type,
+                        topic = %event.topic,
+                        event_code = "orchestrator.signal_outbox.unroutable_legacy_entry_dropped",
+                        "One-time migration dropped an unroutable legacy Signal Outbox entry while preserving the Event"
+                    );
+                    session_store.discard_signal_outbox(&event.id).await?;
+                    continue;
+                }
+                match event
+                    .payload
+                    .get("wake_policy")
+                    .and_then(|value| value.as_str())
+                {
+                    Some("none") => {
+                        // The Event is an immutable result fact only. Older
+                        // writers could still enqueue it in the generic
+                        // bridge, but replaying it as a wake violates its
+                        // explicit routing contract.
+                        session_store.discard_signal_outbox(&event.id).await?;
+                        continue;
+                    }
+                    Some("direct_signal") => {
+                        // Modern terminal handoffs atomically persist their
+                        // direct Thread Signal or supervisor readiness. Replay
+                        // the process-local notification, then retire the
+                        // obsolete legacy bridge row; no handler is expected
+                        // to materialize that row.
+                        self.bus.dispatch_persisted(event.clone()).await?;
+                        session_store.discard_signal_outbox(&event.id).await?;
+                        dispatched = dispatched.saturating_add(1);
+                        continue;
+                    }
+                    _ => {}
+                }
+                self.bus.dispatch_persisted(event).await?;
+                dispatched = dispatched.saturating_add(1);
+            }
+            // EventBus business handlers intentionally run asynchronously.
+            // Keyset pagination, rather than immediate status observation,
+            // guarantees this one-shot migration reaches every legacy row
+            // without re-dispatching a slow first page or requiring handler
+            // completion during Runtime startup.
+            tokio::task::yield_now().await;
         }
         Ok(dispatched)
     }
@@ -4822,6 +5017,20 @@ impl Orchestrator {
         } else {
             HashSet::new()
         };
+        let active_execution_job_threads = if let Some(manager) = self.execution_jobs.as_ref() {
+            manager
+                .store()
+                .list_execution_jobs(ExecutionJobFilter {
+                    include_terminal: false,
+                    ..ExecutionJobFilter::default()
+                })
+                .await?
+                .into_iter()
+                .map(|job| job.thread_id)
+                .collect::<HashSet<_>>()
+        } else {
+            HashSet::new()
+        };
         for context in session_store.list_contexts(false).await? {
             let pending_signal_threads = session_store
                 .list_context_thread_signals(
@@ -4848,6 +5057,7 @@ impl Orchestrator {
                     || scheduled_threads.contains(&thread.id)
                     || pending_signal_threads.contains(&thread.id)
                     || pending_dependency_threads.contains(&thread.id)
+                    || active_execution_job_threads.contains(&thread.id)
                 {
                     continue;
                 }
@@ -4968,8 +5178,14 @@ impl Orchestrator {
                 .get_thread_activation(&job.activation_id)
                 .await?;
             let thread = session_store.get_thread(&job.thread_id).await?;
+            let detached_background = job.tool_name == "exec/background"
+                && job
+                    .request
+                    .get("keep_running")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
             let reason = match (&activation, &thread) {
-                (None, _) => Some(format!(
+                (None, _) if !detached_background => Some(format!(
                     "Runtime 启动恢复时发现 Execution Job '{}' 的 Activation '{}' 不存在",
                     job.id, job.activation_id
                 )),
@@ -4977,12 +5193,16 @@ impl Orchestrator {
                     "Runtime 启动恢复时发现 Execution Job '{}' 的 Thread '{}' 不存在",
                     job.id, job.thread_id
                 )),
-                (Some(activation), _) if activation.status.is_terminal() => Some(format!(
+                (Some(activation), _)
+                    if activation.status.is_terminal() && !detached_background =>
+                {
+                    Some(format!(
                     "Runtime 启动恢复时发现 Execution Job '{}' 的 Activation '{}' 已处于终态 {}",
                     job.id,
                     activation.id,
                     activation.status.as_str()
-                )),
+                ))
+                }
                 (_, Some(thread)) if thread.lifecycle.is_terminal() => Some(format!(
                     "Runtime 启动恢复时发现 Execution Job '{}' 的 Thread '{}' 已处于终态 {}",
                     job.id,
@@ -5776,6 +5996,9 @@ impl Orchestrator {
             reason = self.activation_cancellations.wait(&activation.id) => {
                 (None, None, Some(reason))
             }
+            reason = self.wait_for_durable_activation_revocation(&activation.id) => {
+                (None, None, Some(reason))
+            }
             lease = objective_lease_maintenance => {
                 match lease {
                     Ok(revoked) => (None, Some(revoked), None),
@@ -6369,7 +6592,7 @@ impl Orchestrator {
             .transition_thread_activation(
                 &activation,
                 ThreadActivationStatus::Running,
-                Some(runtime_claimant_id().to_string()),
+                Some(self.runtime_claimant_id.clone()),
                 Some(lease_expires_at),
                 None,
                 &activation.trigger_event_id,
@@ -9243,11 +9466,13 @@ impl Orchestrator {
                     continue;
                 }
                 Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait))) => {
-                    let active_root_tasks = active_background_task_count_for_root(
-                        session_id,
-                        &activation.context_id,
-                        &activation.root_turn_id,
-                    );
+                    let active_root_tasks = self
+                        .owed_background_jobs_for_thread(
+                            session_id,
+                            &activation.context_id,
+                            &thread,
+                        )
+                        .await?;
                     let pending_schedules = session_store
                         .list_schedules(Some(&thread.id), Some(ScheduleStatus::Queued))
                         .await?
@@ -9337,11 +9562,9 @@ impl Orchestrator {
         };
 
         if let Some(decision) = terminal_decision {
-            let active_root_tasks = active_background_task_count_for_root(
-                session_id,
-                &activation.context_id,
-                &activation.root_turn_id,
-            );
+            let active_root_tasks = self
+                .owed_background_jobs_for_thread(session_id, &activation.context_id, &thread)
+                .await?;
             let pending_schedules = session_store
                 .list_schedules(Some(&thread.id), Some(ScheduleStatus::Queued))
                 .await?
@@ -9857,6 +10080,68 @@ impl Orchestrator {
             .await
     }
 
+    async fn owed_background_jobs_for_thread(
+        &self,
+        session_id: &str,
+        context_id: &str,
+        thread: &ThreadRecord,
+    ) -> Result<usize, DynError> {
+        let Some(manager) = self.execution_jobs.as_ref() else {
+            return Ok(active_background_task_count_for_root(
+                session_id,
+                context_id,
+                &thread.root_turn_id,
+            ));
+        };
+        Ok(manager
+            .store()
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: Some(context_id.to_string()),
+                session_id: Some(session_id.to_string()),
+                thread_id: Some(thread.id.clone()),
+                tool_name: Some("exec/background".to_string()),
+                include_terminal: false,
+                ..ExecutionJobFilter::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|job| {
+                !job.request
+                    .get("keep_running")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .count())
+    }
+
+    async fn owed_background_jobs_for_session(
+        &self,
+        session_id: &str,
+        context_id: &str,
+    ) -> Result<usize, DynError> {
+        let Some(manager) = self.execution_jobs.as_ref() else {
+            return Ok(active_background_task_count(session_id, context_id));
+        };
+        Ok(manager
+            .store()
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: Some(context_id.to_string()),
+                session_id: Some(session_id.to_string()),
+                tool_name: Some("exec/background".to_string()),
+                include_terminal: false,
+                ..ExecutionJobFilter::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|job| {
+                !job.request
+                    .get("keep_running")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .count())
+    }
+
     async fn publish_no_reply_with_attributes(
         &self,
         session_id: &str,
@@ -9865,7 +10150,9 @@ impl Orchestrator {
         extra_payload: Vec<(String, serde_json::Value)>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
-        let active_background_tasks = active_background_task_count(session_id, context_id.as_str());
+        let active_background_tasks = self
+            .owed_background_jobs_for_session(session_id, context_id.as_str())
+            .await?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
@@ -11670,7 +11957,7 @@ impl Orchestrator {
         let mut plan = coordinator
             .ensure(route.clone(), &program, artifact_binding)
             .await?;
-        let worker_id = format!("plan-runner-{}", std::process::id());
+        let worker_id = format!("plan-runner-{}", self.runtime_claimant_id);
         let mut suspended_admission = None;
 
         loop {
@@ -11700,7 +11987,7 @@ impl Orchestrator {
                     let claim_token = format!(
                         "plan_claim_{}_{}_{}",
                         plan.id,
-                        std::process::id(),
+                        self.runtime_claimant_id,
                         Utc::now().timestamp_nanos_opt().unwrap_or(0)
                     );
                     let receipt = coordinator
@@ -11764,7 +12051,7 @@ impl Orchestrator {
                         let claim_token = format!(
                             "plan_reclaim_{}_{}_{}",
                             plan.id,
-                            std::process::id(),
+                            self.runtime_claimant_id,
                             Utc::now().timestamp_nanos_opt().unwrap_or(0)
                         );
                         let receipt = coordinator
@@ -12372,7 +12659,7 @@ impl Orchestrator {
         let claim_token = format!(
             "claim_{}_{}_{}",
             crate::execution::deterministic_job_id(&route.activation_id, &call.id)?,
-            std::process::id(),
+            self.runtime_claimant_id,
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
 
@@ -12396,7 +12683,7 @@ impl Orchestrator {
                             &job.id,
                             job.revision,
                             JobClaim {
-                                worker_id: "morphz-local-executor",
+                                worker_id: &self.runtime_claimant_id,
                                 claim_token: &claim_token,
                                 lease_expires_at,
                                 approval_ref: None,
@@ -12657,7 +12944,7 @@ impl Orchestrator {
                             job.revision,
                             &approval.id,
                             approval.revision,
-                            "morphz-local-executor",
+                            &self.runtime_claimant_id,
                             &claim_token,
                             lease_expires_at,
                         )
@@ -15336,6 +15623,31 @@ fn recovery_owns_activation(
     }
 }
 
+async fn durable_activation_revocation_reason(
+    store: &dyn SessionStore,
+    activation_id: &str,
+    runtime_claimant_id: &str,
+) -> Result<Option<String>, DynError> {
+    let Some(current) = store.get_thread_activation(activation_id).await? else {
+        return Ok(Some(format!(
+            "Activation '{activation_id}' no longer exists in durable state"
+        )));
+    };
+    if current.status != ThreadActivationStatus::Running {
+        return Ok(Some(format!(
+            "Activation '{activation_id}' durable status changed to {}",
+            current.status.as_str()
+        )));
+    }
+    if current.claimed_by.as_deref() != Some(runtime_claimant_id) {
+        return Ok(Some(format!(
+            "Activation '{activation_id}' durable ownership moved from Runtime '{runtime_claimant_id}' to '{}'",
+            current.claimed_by.as_deref().unwrap_or("unclaimed")
+        )));
+    }
+    Ok(None)
+}
+
 fn delivery_flush_timer_id(session_id: &str) -> String {
     let digest = Sha256::digest(format!("delivery-flush:{session_id}").as_bytes());
     format!("delivery-flush:{digest:x}")
@@ -15454,9 +15766,10 @@ fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
         return false;
     }
     if raw_pid == i32::try_from(std::process::id()).unwrap_or(-1) {
-        // A matching PID with another process-instance nonce is necessarily a
-        // stale claim left before PID reuse (or before this Runtime instance).
-        return claimed_by != Some(runtime_claimant_id());
+        // One host process may embed multiple live Runtime instances. A
+        // different nonce under our PID is therefore not proof of death; the
+        // durable expiry clock remains the safe takeover boundary.
+        return false;
     }
     #[cfg(unix)]
     {
@@ -15471,18 +15784,25 @@ fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
     }
 }
 
-/// Stable fencing identity for this Runtime process. The nonce distinguishes
-/// a freshly-started process from a stale claim even if the operating system
-/// quickly reuses the same PID. Legacy `runtime:<pid>` claims remain readable.
-fn runtime_claimant_id() -> &'static str {
-    static CLAIMANT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    CLAIMANT.get_or_init(|| {
-        let nonce = std::time::SystemTime::now()
+/// Unique fencing identity for one Runtime instance. The sequence handles
+/// multiple builders in one process; the time component also distinguishes a
+/// newly-started process if the operating system reuses its PID.
+fn new_runtime_claimant_id() -> String {
+    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
+    let mut random = [0_u8; 16];
+    let nonce = if getrandom::fill(&mut random).is_ok() {
+        random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    } else {
+        std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        format!("runtime:{}:{nonce}", std::process::id())
-    })
+            .map(|duration| duration.as_nanos().to_string())
+            .unwrap_or_default()
+    };
+    let sequence = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+    format!("runtime:{}:{nonce}:{sequence}", std::process::id())
 }
 
 fn prompt_pressure_measurement_from_event(event: &Event) -> Option<PromptPressureMeasurement> {
@@ -16936,22 +17256,22 @@ mod tests {
         action_group_reconcile_id, activation_admission_class, apply_prompt_estimate_delta,
         baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         completed_objective_update_call, compose_context_encoding,
-        critical_maintenance_transaction_available, derived_thread_kind, extend_exec_output_facts,
+        critical_maintenance_transaction_available, derived_thread_kind,
+        durable_activation_revocation_reason, extend_exec_output_facts,
         harness_entry_callable_tools, legacy_plan_effect_sequence,
-        model_visible_attachment_references, objective_supervision_matches_state,
-        persist_model_reasoning_summary, persist_model_usage, plan_infer_tool_scope,
-        production_system_prompt_inspection, provider_delivery_retry_delay,
+        model_visible_attachment_references, new_runtime_claimant_id,
+        objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
+        plan_infer_tool_scope, production_system_prompt_inspection, provider_delivery_retry_delay,
         recover_action_group_from_durable_events, recovered_action_group_settled_event,
         recovery_owns_activation, render_harness_context, render_system_contract,
         restrict_tools_to_scope, retain_context_maintenance_tools,
-        retain_final_reply_control_tools, retain_pending_continuation_calls, runtime_claimant_id,
-        scheduler_audit_event, semantic_sexpr_vm_system_prompt,
-        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
-        tool_call_activity_preview, validate_final_reply_response,
-        validate_objective_closure_review_response, validate_objective_completion_call,
-        ContextEngine, DialogueThreadGate, DialogueThreadLease, DurableEventWriter,
-        DurableEventWriterMetrics, DynError, EvaluationContextOverlay, ModelCompletionError,
-        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        retain_final_reply_control_tools, retain_pending_continuation_calls, scheduler_audit_event,
+        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
+        should_force_final_for_maintenance, tool_call_activity_preview,
+        validate_final_reply_response, validate_objective_closure_review_response,
+        validate_objective_completion_call, ContextEngine, DialogueThreadGate, DialogueThreadLease,
+        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
+        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
         ModelVisibleAttachmentReference, NoReplyMode, TerminalDecision,
         AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
@@ -17242,11 +17562,14 @@ mod tests {
             claimed_by: Some(format!("runtime:{}:stale-instance", std::process::id())),
             ..live.clone()
         };
-        assert!(recovery_owns_activation(
-            WorkerCoordinationMode::SharedHostLeases,
-            &stale_same_host,
-            now
-        ));
+        assert!(
+            !recovery_owns_activation(
+                WorkerCoordinationMode::SharedHostLeases,
+                &stale_same_host,
+                now
+            ),
+            "another Runtime instance under the same PID may still be alive"
+        );
         assert!(!recovery_owns_activation(
             WorkerCoordinationMode::SharedLeases,
             &stale_same_host,
@@ -17254,7 +17577,7 @@ mod tests {
         ));
 
         let current_same_host = ThreadActivationRecord {
-            claimed_by: Some(runtime_claimant_id().to_string()),
+            claimed_by: Some(new_runtime_claimant_id()),
             ..live
         };
         assert!(!recovery_owns_activation(
@@ -17262,6 +17585,140 @@ mod tests {
             &current_same_host,
             now
         ));
+    }
+
+    #[test]
+    fn runtime_claimants_are_unique_inside_one_process() {
+        let first = new_runtime_claimant_id();
+        let second = new_runtime_claimant_id();
+        assert_ne!(first, second);
+        assert!(first.starts_with(&format!("runtime:{}:", std::process::id())));
+        assert!(second.starts_with(&format!("runtime:{}:", std::process::id())));
+    }
+
+    #[tokio::test]
+    async fn activation_owner_observes_a_peer_runtime_durable_cancellation() {
+        let tmp = TempDir::new().unwrap();
+        let store = SqliteStore::new(tmp.path().join("activation-cancel.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let owner = new_runtime_claimant_id();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "agent-cancel".to_string(),
+                    title: "Cancel Agent".to_string(),
+                    root_context_id: "context-cancel".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-cancel".to_string(),
+                    agent_id: "agent-cancel".to_string(),
+                    title: "Cancel Context".to_string(),
+                },
+                NewSession {
+                    id: "session-cancel".to_string(),
+                    agent_id: "agent-cancel".to_string(),
+                    context_id: "context-cancel".to_string(),
+                    parent_session_id: None,
+                    title: "Cancel Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let trigger = Event::new(
+            "trigger-cancel".to_string(),
+            "test".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!("context-cancel")),
+                ("session_id".to_string(), json!("session-cancel")),
+            ]),
+        );
+        store.append(trigger.clone()).await.unwrap();
+        let trigger_sequence = store
+            .query(QueryFilter {
+                event_id: Some(trigger.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: "thread-cancel".to_string(),
+                agent_id: "agent-cancel".to_string(),
+                context_id: "context-cancel".to_string(),
+                session_id: "session-cancel".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-cancel".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let queued = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "activation-cancel".to_string(),
+                agent_id: "agent-cancel".to_string(),
+                context_id: "context-cancel".to_string(),
+                session_id: "session-cancel".to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: trigger.id,
+                trigger_sequence,
+                trigger_kind: trigger.topic,
+                parent_activation_id: None,
+                root_turn_id: "root-cancel".to_string(),
+            })
+            .await
+            .unwrap();
+        let running = match store
+            .update_thread_activation(
+                &queued.id,
+                queued.revision,
+                ThreadActivationStatus::Running,
+                Some(&owner),
+                Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            crate::memory::ThreadActivationMutation::Updated(record) => record,
+            other => panic!("unexpected running mutation: {other:?}"),
+        };
+        assert_eq!(
+            durable_activation_revocation_reason(&store, &running.id, &owner)
+                .await
+                .unwrap(),
+            None
+        );
+
+        let cancelled = match store
+            .update_thread_activation(
+                &running.id,
+                running.revision,
+                ThreadActivationStatus::Cancelled,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            crate::memory::ThreadActivationMutation::Updated(record) => record,
+            other => panic!("unexpected cancellation mutation: {other:?}"),
+        };
+        let reason = durable_activation_revocation_reason(&store, &cancelled.id, &owner)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reason.contains("cancelled"));
     }
 
     #[tokio::test]

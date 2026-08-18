@@ -485,7 +485,31 @@ impl ActionGroupStore for PostgresStore {
                 .and_then(JsonValue::as_str)
                 == Some("direct_signal")
             {
-                append_direct_thread_signal_in_tx(&mut tx, settled_event, &group.thread_id).await?;
+                let thread_status: Option<String> =
+                    sqlx::query_scalar("SELECT status FROM threads WHERE id = $1")
+                        .bind(&group.thread_id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                match thread_status.as_deref() {
+                    Some("open") => {
+                        append_direct_thread_signal_in_tx(&mut tx, settled_event, &group.thread_id)
+                            .await?;
+                    }
+                    Some(_) => tracing::debug!(
+                        action_group_id = %group.id,
+                        thread_id = %group.thread_id,
+                        event_id = %settled_event.id,
+                        event_code = "memory.postgres.action_group.terminal_thread_wake_suppressed",
+                        "Committed a settled Action Group without waking its already-terminal Thread"
+                    ),
+                    None => {
+                        return Err(format!(
+                            "Action Group '{}' 的 Thread '{}' 不存在",
+                            group.id, group.thread_id
+                        )
+                        .into())
+                    }
+                }
             }
             sqlx::query(
                 r#"UPDATE action_groups

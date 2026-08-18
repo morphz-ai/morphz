@@ -485,7 +485,24 @@ impl ApprovalProvider for HumanApprovalProvider {
                 .hub
                 .notify_decision(&request.approval_id, decision.clone());
         }
-        Ok(waiter.wait().await?)
+        let mut local_wait = Box::pin(waiter.wait());
+        loop {
+            tokio::select! {
+                decision = &mut local_wait => return Ok(decision?),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                    match self.durable_decision(&request).await {
+                        Ok(Some(decision)) => return Ok(decision),
+                        Ok(None) => {}
+                        Err(error) => tracing::warn!(
+                            approval_id = %request.approval_id,
+                            %error,
+                            event_code = "approval.human.durable_wait_retry",
+                            "Could not inspect the durable Approval while waiting for a cross-Runtime decision; retaining the local waiter"
+                        ),
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -734,6 +751,10 @@ mod tests {
     use crate::event::Event;
     use crate::llm::{Response, ToolDefinition};
     use crate::memory::sqlite::SqliteStore;
+    use crate::memory::{
+        ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
+        NewApprovalRequest,
+    };
     use tempfile::NamedTempFile;
 
     struct NeverReviewClient;
@@ -750,6 +771,80 @@ mod tests {
     }
 
     struct FixedReviewClient(&'static str);
+
+    struct MutableApprovalStore {
+        record: Mutex<ApprovalRecord>,
+    }
+
+    #[async_trait::async_trait]
+    impl ApprovalStore for MutableApprovalStore {
+        async fn ensure_approval_request(
+            &self,
+            _request: NewApprovalRequest,
+        ) -> Result<ApprovalMutation, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(ApprovalMutation::Existing(
+                self.record.lock().unwrap().clone(),
+            ))
+        }
+
+        async fn get_approval(
+            &self,
+            id: &str,
+        ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+            let record = self.record.lock().unwrap().clone();
+            Ok((record.id == id).then_some(record))
+        }
+
+        async fn list_approvals(
+            &self,
+            _filter: ApprovalFilter,
+        ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(vec![self.record.lock().unwrap().clone()])
+        }
+
+        async fn list_context_approvals(
+            &self,
+            _context_id: &str,
+        ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(vec![self.record.lock().unwrap().clone()])
+        }
+
+        async fn commit_approval_decision(
+            &self,
+            _id: &str,
+            _expected_revision: u64,
+            decision: ApprovalResolution,
+        ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
+            let mut record = self.record.lock().unwrap();
+            record.revision += 1;
+            record.status = decision.status();
+            record.rationale = Some(decision.rationale().to_string());
+            record.risk_tags = decision.risk_tags().to_vec();
+            record.decided_at = Some(chrono::Utc::now());
+            Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Updated(record.clone()),
+                event_created: false,
+                event: None,
+            })
+        }
+
+        async fn commit_approval_cancellation(
+            &self,
+            _id: &str,
+            _expected_revision: u64,
+            reason: &str,
+        ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
+            let mut record = self.record.lock().unwrap();
+            record.revision += 1;
+            record.status = ApprovalStatus::Cancelled;
+            record.cancel_reason = Some(reason.to_string());
+            Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Updated(record.clone()),
+                event_created: false,
+                event: None,
+            })
+        }
+    }
 
     #[async_trait::async_trait]
     impl Client for FixedReviewClient {
@@ -1026,6 +1121,70 @@ mod tests {
             waiter.wait().await.unwrap(),
             ApprovalDecision::AllowOnce { .. }
         ));
+        assert!(hub.pending().is_empty());
+    }
+
+    #[tokio::test]
+    async fn human_approval_wait_observes_a_peer_runtime_durable_decision() {
+        let now = chrono::Utc::now();
+        let store = Arc::new(MutableApprovalStore {
+            record: Mutex::new(ApprovalRecord {
+                id: "human-peer-runtime".to_string(),
+                revision: 1,
+                job_id: "job-human-peer-runtime".to_string(),
+                request_digest: "request-human-peer-runtime".to_string(),
+                policy_digest: "policy-human-peer-runtime".to_string(),
+                action: serde_json::json!({"kind": "shell"}),
+                requested: serde_json::json!({}),
+                justification: "cross Runtime test".to_string(),
+                status: ApprovalStatus::PendingHuman,
+                rationale: None,
+                risk_tags: Vec::new(),
+                grant_id: None,
+                grant_consumed_at: None,
+                consumed_by_claim_token: None,
+                cancel_reason: None,
+                last_error: None,
+                created_at: now,
+                updated_at: now,
+                decided_at: None,
+                cancelled_at: None,
+            }),
+        });
+        let hub = HumanApprovalHub::default();
+        let provider = Arc::new(HumanApprovalProvider::new(
+            hub.clone(),
+            Arc::clone(&store) as Arc<dyn ApprovalStore>,
+        ));
+        let mut request = human_request("human-peer-runtime");
+        request.lease_offer = None;
+        let waiting = {
+            let provider = Arc::clone(&provider);
+            tokio::spawn(async move { provider.review(&request).await })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while hub.pending().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the owner Runtime must attach its local waiter");
+
+        {
+            let mut record = store.record.lock().unwrap();
+            record.revision += 1;
+            record.status = ApprovalStatus::Allowed;
+            record.rationale = Some("approved by peer Runtime".to_string());
+            record.risk_tags = vec!["human-approved".to_string()];
+            record.decided_at = Some(chrono::Utc::now());
+        }
+
+        let decision = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .expect("durable decision must wake the owner without its process-local notifier")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(decision, ApprovalDecision::AllowOnce { .. }));
         assert!(hub.pending().is_empty());
     }
 

@@ -10,6 +10,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::path::{Component, Path};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
@@ -2025,6 +2026,7 @@ pub struct EdgeRelayArtifactTransferBackend {
     jobs: Arc<dyn ExecutionJobStore>,
     stages: crate::artifact::ArtifactTransferStageStore,
     poll_interval: std::time::Duration,
+    claimant_id: String,
 }
 
 impl EdgeRelayArtifactTransferBackend {
@@ -2038,6 +2040,7 @@ impl EdgeRelayArtifactTransferBackend {
             jobs,
             stages,
             poll_interval: std::time::Duration::from_millis(250),
+            claimant_id: new_artifact_relay_claimant_id(),
         }
     }
 
@@ -2106,7 +2109,8 @@ impl EdgeRelayArtifactTransferBackend {
             };
         }
         let claim_token = format!(
-            "relay-claim-{:x}",
+            "relay-claim-{}-{:x}",
+            self.claimant_id,
             Sha256::digest(format!("{}\0r{}", job.id, job.revision).as_bytes())
         );
         let claimed = self
@@ -2114,7 +2118,7 @@ impl EdgeRelayArtifactTransferBackend {
             .claim_execution_job(
                 &job.id,
                 job.revision,
-                "artifact-relay",
+                &self.claimant_id,
                 &claim_token,
                 Utc::now() + chrono::Duration::minutes(10),
                 Some("runtime-internal-artifact-relay"),
@@ -2246,6 +2250,24 @@ impl EdgeRelayArtifactTransferBackend {
             }
         }
     }
+}
+
+fn new_artifact_relay_claimant_id() -> String {
+    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
+    let instance = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+    let mut random = [0_u8; 16];
+    let nonce = if getrandom::fill(&mut random).is_ok() {
+        random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    } else {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos().to_string())
+            .unwrap_or_default()
+    };
+    format!("artifact-relay:{}:{nonce}:{instance}", std::process::id())
 }
 
 #[async_trait::async_trait]
@@ -5998,6 +6020,14 @@ mod tests {
     use crate::memory::{ExecutionJobStatus, ExecutionRetrySafety};
     use crate::secret_store::{SecretScopeKind, SecretStore, SecretValueBackend};
     use std::sync::Mutex;
+
+    #[test]
+    fn artifact_relay_claimants_are_unique_inside_one_process() {
+        let first = new_artifact_relay_claimant_id();
+        let second = new_artifact_relay_claimant_id();
+        assert_ne!(first, second);
+        assert!(first.starts_with("artifact-relay:"));
+    }
 
     #[derive(Default)]
     struct TestSecretBackend {

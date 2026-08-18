@@ -2832,6 +2832,7 @@ impl EventStore for PostgresStore {
     }
 
     async fn query(&self, filter: QueryFilter) -> Result<Vec<Event>, StoreError> {
+        let forward_by_sequence = filter.after_sequence.is_some();
         let mut builder = QueryBuilder::<Postgres>::new(
             "SELECT sequence, id, timestamp, actor, type, topic, payload FROM events WHERE TRUE",
         );
@@ -2953,6 +2954,8 @@ impl EventStore for PostgresStore {
         let latest_k = filter.latest_k;
         if latest_k.is_some() {
             builder.push(" ORDER BY sequence DESC");
+        } else if forward_by_sequence {
+            builder.push(" ORDER BY sequence ASC");
         } else {
             builder.push(" ORDER BY timestamp ASC, sequence ASC");
         }

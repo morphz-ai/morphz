@@ -6076,6 +6076,34 @@ async fn append_direct_thread_signal_in_transaction(
     Ok(inserted.rows_affected() == 1)
 }
 
+/// Preserve a late physical result even when its logical continuation owner
+/// has already reached a terminal state in another Runtime. Existing Signals
+/// still take the strict idempotent validation path; only a brand-new wake to
+/// a terminal Thread is suppressed.
+async fn append_execution_job_signal_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+    thread_id: &str,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let existing_signal: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM thread_signals WHERE event_id = ? LIMIT 1")
+            .bind(&event.id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if existing_signal.is_some() {
+        return append_direct_thread_signal_in_transaction(tx, event, thread_id).await;
+    }
+    let status: String = sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+        .bind(thread_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| format!("Execution Job result 目标 Thread '{thread_id}' 不存在"))?;
+    if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+        return Ok(false);
+    }
+    append_direct_thread_signal_in_transaction(tx, event, thread_id).await
+}
+
 #[async_trait::async_trait]
 impl MindProjectionStore for SqliteStore {
     async fn get_mind_projection(
@@ -8413,6 +8441,52 @@ impl ActivationStore for SqliteStore {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
+        rows.iter().map(signal_outbox_from_row).collect()
+    }
+
+    async fn list_signal_outbox_page(
+        &self,
+        status: SignalOutboxStatus,
+        after_created_at: Option<DateTime<Utc>>,
+        after_event_id: Option<String>,
+        limit: usize,
+    ) -> Result<Vec<SignalOutboxRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit =
+            i64::try_from(limit).map_err(|_| "Signal Outbox 查询上限超出 SQLite INTEGER 范围")?;
+        let rows = if let (Some(after_created_at), Some(after_event_id)) =
+            (after_created_at, after_event_id)
+        {
+            let after_created_at =
+                after_created_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            sqlx::query(
+                r#"SELECT * FROM signal_outbox
+                   WHERE status = ?
+                     AND (created_at > ? OR (created_at = ? AND event_id > ?))
+                   ORDER BY created_at, event_id
+                   LIMIT ?"#,
+            )
+            .bind(status.as_str())
+            .bind(&after_created_at)
+            .bind(&after_created_at)
+            .bind(after_event_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"SELECT * FROM signal_outbox
+                   WHERE status = ?
+                   ORDER BY created_at, event_id
+                   LIMIT ?"#,
+            )
+            .bind(status.as_str())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
         rows.iter().map(signal_outbox_from_row).collect()
     }
 
@@ -16496,12 +16570,35 @@ impl ActionGroupStore for SqliteStore {
                 .and_then(JsonValue::as_str)
                 == Some("direct_signal")
             {
-                append_direct_thread_signal_in_transaction(
-                    &mut tx,
-                    settled_event,
-                    &group.thread_id,
-                )
-                .await?;
+                let thread_status: Option<String> =
+                    sqlx::query_scalar("SELECT status FROM threads WHERE id = ?")
+                        .bind(&group.thread_id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                match thread_status.as_deref() {
+                    Some("open") => {
+                        append_direct_thread_signal_in_transaction(
+                            &mut tx,
+                            settled_event,
+                            &group.thread_id,
+                        )
+                        .await?;
+                    }
+                    Some(_) => tracing::debug!(
+                        action_group_id = %group.id,
+                        thread_id = %group.thread_id,
+                        event_id = %settled_event.id,
+                        event_code = "memory.sqlite.action_group.terminal_thread_wake_suppressed",
+                        "Committed a settled Action Group without waking its already-terminal Thread"
+                    ),
+                    None => {
+                        return Err(format!(
+                            "Action Group '{}' 的 Thread '{}' 不存在",
+                            group.id, group.thread_id
+                        )
+                        .into())
+                    }
+                }
             }
             sqlx::query(
                 r#"UPDATE action_groups
@@ -18742,7 +18839,7 @@ impl ExecutionJobStore for SqliteStore {
             if exact_replay {
                 append_event_idempotent_in_transaction(&mut tx, event).await?;
                 if wake_thread {
-                    append_direct_thread_signal_in_transaction(&mut tx, event, &current.thread_id)
+                    append_execution_job_signal_in_transaction(&mut tx, event, &current.thread_id)
                         .await?;
                 }
                 tx.commit().await?;
@@ -18867,7 +18964,7 @@ impl ExecutionJobStore for SqliteStore {
         }
         append_event_idempotent_in_transaction(&mut tx, event).await?;
         if wake_thread {
-            append_direct_thread_signal_in_transaction(&mut tx, event, &current.thread_id).await?;
+            append_execution_job_signal_in_transaction(&mut tx, event, &current.thread_id).await?;
         }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
             .bind(id)
@@ -18924,7 +19021,7 @@ impl ExecutionJobStore for SqliteStore {
                 && current.exit_code == terminal.exit_code;
             if exact_replay {
                 if wake_thread {
-                    append_direct_thread_signal_in_transaction(&mut tx, event, &current.thread_id)
+                    append_execution_job_signal_in_transaction(&mut tx, event, &current.thread_id)
                         .await?;
                 }
                 tx.commit().await?;
@@ -18975,7 +19072,7 @@ impl ExecutionJobStore for SqliteStore {
             .await;
         }
         if wake_thread {
-            append_direct_thread_signal_in_transaction(&mut tx, event, &current.thread_id).await?;
+            append_execution_job_signal_in_transaction(&mut tx, event, &current.thread_id).await?;
         }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
             .bind(id)
@@ -20244,6 +20341,7 @@ impl EventStore for SqliteStore {
         &self,
         filter: QueryFilter,
     ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
+        let forward_by_sequence = filter.after_sequence.is_some();
         let mut builder = QueryBuilder::new(
             "SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload FROM events WHERE 1=1",
         );
@@ -20394,6 +20492,11 @@ impl EventStore for SqliteStore {
             // Limit that physical tail in SQLite, then restore append order
             // below.
             builder.push(" ORDER BY rowid DESC");
+        } else if forward_by_sequence {
+            // Incremental consumers advance a physical append cursor. Producer
+            // timestamps may arrive out of order, so timestamp ordering plus
+            // LIMIT can skip unseen rows when the caller advances its cursor.
+            builder.push(" ORDER BY rowid ASC");
         } else {
             // Sort by ascending timestamp, then by physical rowid insertion order for ties.
             builder.push(" ORDER BY timestamp ASC, rowid ASC");
@@ -25773,6 +25876,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn late_execution_result_closes_job_without_waking_terminal_thread() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let created = seed_execution_job(
+            &store,
+            "late-result-terminal-thread",
+            false,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let claimed = match store
+            .claim_execution_job(
+                &created.id,
+                created.revision,
+                "late-worker",
+                "late-claim",
+                Utc::now() + chrono::Duration::minutes(1),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected claim: {other:?}"),
+        };
+        sqlx::query("UPDATE threads SET status = 'failed' WHERE id = ?")
+            .bind(&created.thread_id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let result_event = Event::new(
+            "late-job-result".to_string(),
+            "System-Executor".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::json!({
+                "context_id": created.context_id,
+                "session_id": created.session_id,
+                "activation_id": created.activation_id,
+                "thread_id": created.thread_id,
+                "tool_call_id": created.tool_call_id,
+                "tool_name": created.tool_name,
+                "text": "late but authoritative"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let terminal = ExecutionJobTerminal {
+            status: ExecutionJobStatus::Succeeded,
+            result_event_id: Some(result_event.id.clone()),
+            result_refs: Vec::new(),
+            error: None,
+            exit_code: Some(0),
+        };
+
+        let completed = store
+            .finish_execution_job_with_event(
+                &created.id,
+                claimed.revision,
+                Some("late-claim"),
+                terminal.clone(),
+                &result_event,
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            completed,
+            ExecutionJobMutation::Updated(ref job)
+                if job.status == ExecutionJobStatus::Succeeded
+                    && job.result_event_id.as_deref() == Some(result_event.id.as_str())
+        ));
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(result_event.id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store
+            .list_context_thread_signals(&created.context_id, None)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            store
+                .finish_execution_job_with_event(
+                    &created.id,
+                    claimed.revision,
+                    Some("late-claim"),
+                    terminal,
+                    &result_event,
+                    true,
+                )
+                .await
+                .unwrap(),
+            ExecutionJobMutation::Existing(_)
+        ));
+    }
+
+    #[tokio::test]
     async fn execution_job_exact_replay_cannot_repair_missing_event_with_wrong_route() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
@@ -30039,6 +30250,69 @@ mod tests {
             .unwrap();
         assert_eq!(incremental.len(), 1);
         assert_eq!(incremental[0].id, "bounded-3");
+
+        let mut late_timestamp = Event::new(
+            "bounded-4".to_string(),
+            "fixture".to_string(),
+            "fixture".to_string(),
+            "chat/reply".to_string(),
+            [(
+                "session_id".to_string(),
+                serde_json::json!("bounded-session"),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        late_timestamp.timestamp = base - chrono::Duration::hours(1);
+        store.append(late_timestamp).await.unwrap();
+        let mut current_timestamp = Event::new(
+            "bounded-5".to_string(),
+            "fixture".to_string(),
+            "fixture".to_string(),
+            "chat/reply".to_string(),
+            [(
+                "session_id".to_string(),
+                serde_json::json!("bounded-session"),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        current_timestamp.timestamp = base + chrono::Duration::hours(1);
+        store.append(current_timestamp).await.unwrap();
+
+        let first_page = store
+            .query(QueryFilter {
+                session_id: Some("bounded-session".to_string()),
+                after_sequence: Some(second_sequence),
+                top_k: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bounded-3", "bounded-4"],
+            "forward paging must follow append sequence, not producer time"
+        );
+        let second_page = store
+            .query(QueryFilter {
+                session_id: Some("bounded-session".to_string()),
+                after_sequence: first_page.last().and_then(|event| event.sequence),
+                top_k: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bounded-5"]
+        );
     }
 
     #[tokio::test]

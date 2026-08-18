@@ -49,12 +49,12 @@ use base64::Engine;
 use futures_util::StreamExt;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tower_http::{
     compression::CompressionLayer,
     cors::{AllowOrigin, CorsLayer},
@@ -65,6 +65,36 @@ const DASHBOARD_APP_JS: &[u8] = include_bytes!("../../dashboard/dist/assets/app.
 const DASHBOARD_APP_CSS: &[u8] = include_bytes!("../../dashboard/dist/assets/app.css");
 const DASHBOARD_FAVICON: &[u8] = include_bytes!("../../dashboard/dist/favicon.svg");
 const DASHBOARD_ICONS: &[u8] = include_bytes!("../../dashboard/dist/icons.svg");
+const DASHBOARD_DURABLE_EVENT_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(500);
+const DASHBOARD_DURABLE_EVENT_BATCH_SIZE: usize = 256;
+const DASHBOARD_RECENT_EVENT_IDS: usize = 16_384;
+
+#[derive(Default)]
+struct RecentDashboardEventIds {
+    ids: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl RecentDashboardEventIds {
+    fn insert(&mut self, event_id: &str) -> bool {
+        if !self.ids.insert(event_id.to_string()) {
+            return false;
+        }
+        self.order.push_back(event_id.to_string());
+        while self.order.len() > DASHBOARD_RECENT_EVENT_IDS {
+            if let Some(expired) = self.order.pop_front() {
+                self.ids.remove(&expired);
+            }
+        }
+        true
+    }
+
+    fn remove(&mut self, event_id: &str) {
+        self.ids.remove(event_id);
+        self.order.retain(|candidate| candidate != event_id);
+    }
+}
 
 pub struct Server {
     runtime: MorphzRuntime,
@@ -723,53 +753,71 @@ impl Server {
             }
         }
 
-        // Distribute all Events to WebSocket clients through the runtime Event stream.
+        // Merge the low-latency process-local stream with a durable Event tail.
+        // Another Runtime can commit into the same Store without publishing on
+        // this process's EventBus, so WebSocket invalidation cannot rely on the
+        // in-memory stream alone.
+        let durable_after_sequence = loop {
+            match self
+                .runtime
+                .query_events(QueryFilter {
+                    latest_k: Some(1),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(events) => break events.last().and_then(|event| event.sequence).unwrap_or(0),
+                Err(error) => {
+                    tracing::warn!(
+                        event_code = "web.websocket.durable_tail_initialize_failed",
+                        %error,
+                        "Could not initialize the durable Dashboard Event tail; retrying without advancing its cursor"
+                    );
+                    tokio::time::sleep(DASHBOARD_DURABLE_EVENT_POLL_INTERVAL).await;
+                }
+            }
+        };
         let mut events = self.runtime.subscribe("*", 1024);
+        let recent_event_ids = Arc::new(Mutex::new(RecentDashboardEventIds::default()));
+        let local_recent_event_ids = Arc::clone(&recent_event_ids);
         tokio::spawn(async move {
             while let Some(ev) = events.recv().await {
-                // Model stream events are deliberately ephemeral. They must reach the
-                // browser with the lowest possible latency and must not mutate durable
-                // Session metadata once per token/chunk. Persisted events below still
-                // pass through the normal routing validation and activity touch.
-                if !dashboard_event_requires_session_touch(&ev) {
-                    let _ = broadcast_tx_clone.send(ev);
+                if !local_recent_event_ids.lock().await.insert(&ev.id) {
                     continue;
                 }
-                let result: Result<(), crate::runtime::RuntimeError> = async {
-                    if let Some(session_id) = ev
-                        .payload
-                        .get("session_id")
-                        .and_then(|value| value.as_str())
-                    {
-                        let declared_context_id = ev
-                            .payload
-                            .get("context_id")
-                            .and_then(|value| value.as_str());
-                        let parent_session_id = ev
-                            .payload
-                            .get("parent_session_id")
-                            .and_then(|value| value.as_str())
-                            .map(ToOwned::to_owned);
-                        ensure_dashboard_event_session_route(
-                            &runtime,
-                            &default_agent_id,
-                            &default_context_id,
-                            identity_mode,
-                            session_id,
-                            declared_context_id,
-                            parent_session_id,
-                        )
-                        .await?;
-                        runtime.touch_session(session_id, ev.timestamp).await?;
-                    }
-                    let _ = broadcast_tx_clone.send(ev);
-                    Ok(())
-                }
+                let event_id = ev.id.clone();
+                let result = mirror_dashboard_event(
+                    &runtime,
+                    &broadcast_tx_clone,
+                    &default_agent_id,
+                    &default_context_id,
+                    identity_mode,
+                    ev,
+                )
                 .await;
                 if let Err(error) = result {
+                    local_recent_event_ids.lock().await.remove(&event_id);
                     tracing::warn!(event_code = "web.websocket.event_mirror_failed", error = %error, "WebSocket Event mirroring failed");
                 }
             }
+        });
+
+        let durable_runtime = self.runtime.clone();
+        let durable_broadcast_tx = self.broadcast_tx.clone();
+        let durable_default_agent_id = self.default_agent_id.clone();
+        let durable_default_context_id = self.default_context_id.clone();
+        let durable_identity_mode = self.identity.mode;
+        tokio::spawn(async move {
+            mirror_durable_dashboard_events(
+                durable_runtime,
+                durable_broadcast_tx,
+                durable_default_agent_id,
+                durable_default_context_id,
+                durable_identity_mode,
+                recent_event_ids,
+                durable_after_sequence,
+            )
+            .await;
         });
 
         let state = Arc::new(AppState {
@@ -5666,7 +5714,17 @@ async fn handle_cancel_session(
     {
         return sdk_error_response(error);
     }
-    let was_running = state.runtime.cancel_session(&session_id);
+    let cancelled_threads = match state
+        .runtime
+        .cancel_session_durable(&session_id, "Session cancelled from Dashboard")
+        .await
+    {
+        Ok(cancelled) => cancelled,
+        Err(error) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+        }
+    };
+    let was_running = cancelled_threads > 0;
     let payload = vec![
         ("session_id".to_string(), json!(session_id)),
         ("status".to_string(), json!("cancelled")),
@@ -6229,6 +6287,122 @@ async fn ensure_dashboard_event_session_route(
     Ok(())
 }
 
+async fn mirror_dashboard_event(
+    runtime: &MorphzRuntime,
+    broadcast_tx: &broadcast::Sender<Event>,
+    default_agent_id: &str,
+    default_context_id: &str,
+    identity_mode: ServerIdentityMode,
+    event: Event,
+) -> Result<(), crate::runtime::RuntimeError> {
+    // Model stream events are deliberately ephemeral. They must reach the
+    // browser with the lowest possible latency and must not mutate durable
+    // Session metadata once per token/chunk. Persisted events below still pass
+    // through normal routing validation and activity touch.
+    if dashboard_event_requires_session_touch(&event) {
+        if let Some(session_id) = event
+            .payload
+            .get("session_id")
+            .and_then(|value| value.as_str())
+        {
+            let declared_context_id = event
+                .payload
+                .get("context_id")
+                .and_then(|value| value.as_str());
+            let parent_session_id = event
+                .payload
+                .get("parent_session_id")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned);
+            ensure_dashboard_event_session_route(
+                runtime,
+                default_agent_id,
+                default_context_id,
+                identity_mode,
+                session_id,
+                declared_context_id,
+                parent_session_id,
+            )
+            .await?;
+            runtime.touch_session(session_id, event.timestamp).await?;
+        }
+    }
+    let _ = broadcast_tx.send(event);
+    Ok(())
+}
+
+async fn mirror_durable_dashboard_events(
+    runtime: MorphzRuntime,
+    broadcast_tx: broadcast::Sender<Event>,
+    default_agent_id: String,
+    default_context_id: String,
+    identity_mode: ServerIdentityMode,
+    recent_event_ids: Arc<Mutex<RecentDashboardEventIds>>,
+    mut after_sequence: u64,
+) {
+    let mut wait_before_query = true;
+    loop {
+        if wait_before_query {
+            tokio::time::sleep(DASHBOARD_DURABLE_EVENT_POLL_INTERVAL).await;
+        }
+        let events = match runtime
+            .query_events(QueryFilter {
+                after_sequence: Some(after_sequence),
+                top_k: Some(DASHBOARD_DURABLE_EVENT_BATCH_SIZE),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(events) => events,
+            Err(error) => {
+                tracing::warn!(
+                    event_code = "web.websocket.durable_tail_failed",
+                    %error,
+                    "Durable Dashboard Event tail failed; retaining its cursor for retry"
+                );
+                wait_before_query = true;
+                continue;
+            }
+        };
+        wait_before_query = events.len() < DASHBOARD_DURABLE_EVENT_BATCH_SIZE;
+        for event in events {
+            let Some(sequence) = event.sequence else {
+                tracing::warn!(
+                    event_id = %event.id,
+                    event_code = "web.websocket.durable_event_missing_sequence",
+                    "Persisted Dashboard Event has no physical sequence; retaining the current tail cursor"
+                );
+                continue;
+            };
+            if !recent_event_ids.lock().await.insert(&event.id) {
+                after_sequence = after_sequence.max(sequence);
+                continue;
+            }
+            let event_id = event.id.clone();
+            if let Err(error) = mirror_dashboard_event(
+                &runtime,
+                &broadcast_tx,
+                &default_agent_id,
+                &default_context_id,
+                identity_mode,
+                event,
+            )
+            .await
+            {
+                recent_event_ids.lock().await.remove(&event_id);
+                tracing::warn!(
+                    event_code = "web.websocket.durable_event_mirror_failed",
+                    %error,
+                    "Could not mirror a peer Runtime's durable Event to Dashboard WebSockets"
+                );
+                wait_before_query = true;
+                break;
+            }
+            after_sequence = after_sequence.max(sequence);
+        }
+    }
+}
+
 async fn handle_ws(
     socket: WebSocket,
     state: Arc<AppState>,
@@ -6454,6 +6628,21 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn dashboard_event_deduplication_is_bounded_and_retryable() {
+        let mut recent = RecentDashboardEventIds::default();
+        assert!(recent.insert("event-a"));
+        assert!(!recent.insert("event-a"));
+        recent.remove("event-a");
+        assert!(recent.insert("event-a"));
+
+        for index in 0..=DASHBOARD_RECENT_EVENT_IDS {
+            assert!(recent.insert(&format!("event-{index}")));
+        }
+        assert!(recent.order.len() <= DASHBOARD_RECENT_EVENT_IDS);
+        assert!(recent.ids.len() <= DASHBOARD_RECENT_EVENT_IDS);
+    }
 
     #[derive(Default)]
     struct WebTestSecretBackend {

@@ -8,8 +8,8 @@ use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
 use morphz::memory::{
     ExecutionTargetAuthorizationScope, ExecutionTargetKind, ExecutionTargetRegistration,
     ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
-    ObjectiveStatus, SessionMountKind, SessionRecord, SessionStatus, ThreadControlAction,
-    ThreadMutation,
+    ObjectiveStatus, QueryFilter, SessionMountKind, SessionRecord, SessionStatus,
+    ThreadControlAction, ThreadMutation,
 };
 use morphz::orchestrator::context::{
     FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
@@ -192,9 +192,24 @@ async fn main() -> Result<(), AppError> {
         .map(Path::to_path_buf)
         .collect::<Vec<_>>();
     let mut app_config = resolved.config;
-    if let Ok(path) = std::env::var("MORPHZ_STORAGE_SQLITE_PATH") {
-        app_config.storage.sqlite.path = path;
+    let explicit_sqlite_path = std::env::var("MORPHZ_STORAGE_SQLITE_PATH")
+        .ok()
+        .filter(|path| !path.trim().is_empty());
+    if let Some(path) = explicit_sqlite_path.as_ref() {
+        app_config.storage.sqlite.path.clone_from(path);
     }
+    validate_coding_eval_storage_isolation(
+        std::env::var("MORPHZ_CODING_EVAL_MODE")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            }),
+        app_config.storage.backend,
+        explicit_sqlite_path.as_deref(),
+    )?;
     protect_runtime_files(&mut app_config, &protected_config_paths);
 
     let default_agent_id =
@@ -243,6 +258,23 @@ async fn main() -> Result<(), AppError> {
         tui_mode,
     )
     .await
+}
+
+fn validate_coding_eval_storage_isolation(
+    coding_eval: bool,
+    backend: config::StorageBackend,
+    explicit_sqlite_path: Option<&str>,
+) -> Result<(), AppError> {
+    if coding_eval
+        && backend == config::StorageBackend::Sqlite
+        && explicit_sqlite_path.is_none_or(|path| path.trim().is_empty())
+    {
+        return Err(
+            "Coding evaluation with SQLite requires an explicit MORPHZ_STORAGE_SQLITE_PATH. Refusing to reuse the working directory's default morphz.db; allocate one database path per benchmark run."
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn bootstrap_config_language(args: &[std::ffi::OsString]) -> Option<UiLanguage> {
@@ -3726,51 +3758,131 @@ async fn run_once(
     let sdk = MorphzSdk::new(runtime.clone());
     let principal = sdk.default_principal();
     let mut events = runtime.subscribe("*", 256);
-    sdk.send_message(
-        &principal,
-        SendMessageCommand {
-            session_id: session_id.clone(),
-            text: prompt,
-            actor: "User".to_string(),
-            client_message_id: Some(generated_id("cli")),
-            attachments: Vec::new(),
-            references: Vec::new(),
-            harness,
-            dispatch_mode: None,
-        },
-    )
-    .await?;
-    while let Some(event) = events.recv().await {
-        let Some((event_session, text, kind)) = console_message_from_event(&event) else {
-            continue;
-        };
-        if event_session != session_id {
-            continue;
-        }
-        match kind {
-            ConsoleMessageKind::Final => {
-                println!("{text}");
-                return Ok(());
-            }
-            ConsoleMessageKind::NoReply => return Ok(()),
-            ConsoleMessageKind::Message => print_agent_message(&text),
-            ConsoleMessageKind::Coordination => print_session_coordination(&text),
-            ConsoleMessageKind::Progress => {
-                if !text.trim().is_empty() {
-                    eprintln!("[Agent 进度] {text}");
+    let receipt = sdk
+        .send_message(
+            &principal,
+            SendMessageCommand {
+                session_id: session_id.clone(),
+                text: prompt,
+                actor: "User".to_string(),
+                client_message_id: Some(generated_id("cli")),
+                attachments: Vec::new(),
+                references: Vec::new(),
+                harness,
+                dispatch_mode: None,
+            },
+        )
+        .await?;
+    let root_turn_id = receipt.event_id;
+    let mut observed_event_ids = std::collections::HashSet::new();
+    let mut durable_sequence = 0_u64;
+    let mut durable_check = tokio::time::interval(std::time::Duration::from_millis(500));
+    durable_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    durable_check.tick().await;
+    loop {
+        tokio::select! {
+            event = events.recv() => {
+                let Some(event) = event else {
+                    return Err("Agent 回复通道已关闭".into());
+                };
+                if !observed_event_ids.insert(event.id.clone()) {
+                    continue;
+                }
+                let Some((event_session, text, kind)) = console_message_from_event(&event) else {
+                    continue;
+                };
+                if event_session != session_id {
+                    continue;
+                }
+                if event
+                    .payload
+                    .get("root_turn_id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|root| root != root_turn_id)
+                {
+                    continue;
+                }
+                match kind {
+                    ConsoleMessageKind::Final | ConsoleMessageKind::NoReply
+                        if event
+                            .payload
+                            .get("root_turn_id")
+                            .and_then(serde_json::Value::as_str)
+                            != Some(root_turn_id.as_str()) =>
+                    {
+                        continue;
+                    }
+                    ConsoleMessageKind::Final => {
+                        println!("{text}");
+                        return Ok(());
+                    }
+                    ConsoleMessageKind::NoReply => return Ok(()),
+                    ConsoleMessageKind::Message => print_agent_message(&text),
+                    ConsoleMessageKind::Coordination => print_session_coordination(&text),
+                    ConsoleMessageKind::Progress => {
+                        if !text.trim().is_empty() {
+                            eprintln!("[Agent 进度] {text}");
+                        }
+                    }
+                    ConsoleMessageKind::ToolCall => eprintln!("{text}"),
+                    ConsoleMessageKind::Approval => {
+                        let mut stdin = std::io::stdin().lock();
+                        let mut stderr = std::io::stderr();
+                        prompt_for_human_approval(&text, &runtime, &mut stdin, &mut stderr)
+                            .await
+                            .map_err(|error| format!("审批失败: {error}"))?;
+                    }
                 }
             }
-            ConsoleMessageKind::ToolCall => eprintln!("{text}"),
-            ConsoleMessageKind::Approval => {
-                let mut stdin = std::io::stdin().lock();
-                let mut stderr = std::io::stderr();
-                prompt_for_human_approval(&text, &runtime, &mut stdin, &mut stderr)
-                    .await
-                    .map_err(|error| format!("审批失败: {error}"))?;
+            _ = durable_check.tick() => {
+                let terminal_events = runtime
+                    .query_events(QueryFilter {
+                        session_id: Some(session_id.clone()),
+                        root_turn_id: Some(root_turn_id.clone()),
+                        after_sequence: Some(durable_sequence),
+                        top_k: Some(256),
+                        ..Default::default()
+                    })
+                    .await?;
+                for event in terminal_events {
+                    if let Some(sequence) = event.sequence {
+                        durable_sequence = durable_sequence.max(sequence);
+                    }
+                    if !observed_event_ids.insert(event.id.clone()) {
+                        continue;
+                    }
+                    let Some((event_session, text, kind)) = console_message_from_event(&event) else {
+                        continue;
+                    };
+                    if event_session != session_id {
+                        continue;
+                    }
+                    match kind {
+                        ConsoleMessageKind::Final => {
+                            println!("{text}");
+                            return Ok(());
+                        }
+                        ConsoleMessageKind::NoReply => return Ok(()),
+                        ConsoleMessageKind::Message => print_agent_message(&text),
+                        ConsoleMessageKind::Coordination => print_session_coordination(&text),
+                        ConsoleMessageKind::Progress => {
+                            if !text.trim().is_empty() {
+                                eprintln!("[Agent 进度] {text}");
+                            }
+                        }
+                        ConsoleMessageKind::ToolCall => eprintln!("{text}"),
+                        ConsoleMessageKind::Approval => {
+                            let mut stdin = std::io::stdin().lock();
+                            let mut stderr = std::io::stderr();
+                            prompt_for_human_approval(&text, &runtime, &mut stdin, &mut stderr)
+                                .await
+                                .map_err(|error| format!("审批失败: {error}"))?;
+                        }
+                    }
+                }
             }
         }
     }
-    Err("Agent 回复通道已关闭".into())
 }
 
 async fn run_interactive(
@@ -3798,23 +3910,86 @@ async fn run_interactive(
     let waiting_for_reply = Arc::new(std::sync::Mutex::new(false));
     let event_waiting_for_reply = Arc::clone(&waiting_for_reply);
     let event_session_id = session_id.clone();
+    let history = session.events(None).await.unwrap_or_default();
+    let durable_sequence = Arc::new(std::sync::atomic::AtomicU64::new(
+        history
+            .iter()
+            .filter_map(|event| event.sequence)
+            .max()
+            .unwrap_or_default(),
+    ));
+    let recent_event_ids = Arc::new(std::sync::Mutex::new(RecentConsoleEventIds::default()));
+    if let Ok(mut recent) = recent_event_ids.lock() {
+        for event in history {
+            recent.insert(event.id);
+        }
+    }
     let mut console_events = runtime.subscribe("*", 256);
+    let local_recent_event_ids = Arc::clone(&recent_event_ids);
+    let local_reply_tx = reply_tx.clone();
     tokio::spawn(async move {
         while let Some(event) = console_events.recv().await {
-            if let Some(message) = console_message_from_event(&event) {
-                if message.0 != event_session_id {
+            let fresh = local_recent_event_ids
+                .lock()
+                .map(|mut recent| recent.insert(event.id.clone()))
+                .unwrap_or(true);
+            if fresh
+                && !forward_console_event(
+                    &event,
+                    &event_session_id,
+                    &event_waiting_for_reply,
+                    &local_reply_tx,
+                )
+            {
+                break;
+            }
+        }
+    });
+
+    let durable_runtime = runtime.clone();
+    let durable_session_id = session_id.clone();
+    let durable_waiting_for_reply = Arc::clone(&waiting_for_reply);
+    let durable_recent_event_ids = Arc::clone(&recent_event_ids);
+    let durable_reply_tx = reply_tx;
+    let durable_sequence_for_task = Arc::clone(&durable_sequence);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let after_sequence =
+                durable_sequence_for_task.load(std::sync::atomic::Ordering::Acquire);
+            let events = match durable_runtime
+                .query_events(QueryFilter {
+                    session_id: Some(durable_session_id.clone()),
+                    after_sequence: Some(after_sequence),
+                    top_k: Some(256),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(events) => events,
+                Err(error) => {
+                    tracing::warn!(event_code = "app.terminal.durable_tail_failed", %error, "Interactive terminal durable Event tail failed; retaining its cursor for retry");
                     continue;
                 }
-                let waiting = event_waiting_for_reply
+            };
+            for event in events {
+                if let Some(sequence) = event.sequence {
+                    durable_sequence_for_task
+                        .fetch_max(sequence, std::sync::atomic::Ordering::AcqRel);
+                }
+                let fresh = durable_recent_event_ids
                     .lock()
-                    .map(|waiting| *waiting)
+                    .map(|mut recent| recent.insert(event.id.clone()))
                     .unwrap_or(true);
-                if waiting {
-                    if reply_tx.send(message).is_err() {
-                        break;
-                    }
-                } else {
-                    print_idle_console_message(&message);
+                if fresh
+                    && !forward_console_event(
+                        &event,
+                        &durable_session_id,
+                        &durable_waiting_for_reply,
+                        &durable_reply_tx,
+                    )
+                {
+                    return;
                 }
             }
         }
@@ -4074,6 +4249,52 @@ enum ConsoleMessageKind {
 }
 
 type ConsoleMessage = (String, String, ConsoleMessageKind);
+
+#[derive(Default)]
+struct RecentConsoleEventIds {
+    ids: std::collections::HashSet<String>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl RecentConsoleEventIds {
+    fn insert(&mut self, event_id: String) -> bool {
+        const CAPACITY: usize = 16_384;
+        if !self.ids.insert(event_id.clone()) {
+            return false;
+        }
+        self.order.push_back(event_id);
+        while self.order.len() > CAPACITY {
+            if let Some(expired) = self.order.pop_front() {
+                self.ids.remove(&expired);
+            }
+        }
+        true
+    }
+}
+
+fn forward_console_event(
+    event: &morphz::event::Event,
+    session_id: &str,
+    waiting_for_reply: &std::sync::Mutex<bool>,
+    reply_tx: &tokio::sync::mpsc::UnboundedSender<ConsoleMessage>,
+) -> bool {
+    let Some(message) = console_message_from_event(event) else {
+        return true;
+    };
+    if message.0 != session_id {
+        return true;
+    }
+    let waiting = waiting_for_reply
+        .lock()
+        .map(|waiting| *waiting)
+        .unwrap_or(true);
+    if waiting {
+        reply_tx.send(message).is_ok()
+    } else {
+        print_idle_console_message(&message);
+        true
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum ConsoleWaitOutcome {
@@ -4572,7 +4793,8 @@ mod tests {
         generate_dashboard_token, parse_terminal_approval_input, read_console_input,
         resolve_resumed_session, select_or_create_console_session,
         should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
-        wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
+        validate_coding_eval_storage_isolation, wait_for_session_reply, ConsoleInput,
+        ConsoleMessageKind, OfflineClient,
     };
     use morphz::approval::ApprovalDecision;
     use morphz::cli::morphz_command_line_parser;
@@ -4586,6 +4808,34 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn coding_eval_sqlite_requires_an_explicit_isolated_database() {
+        assert!(validate_coding_eval_storage_isolation(
+            true,
+            morphz::config::StorageBackend::Sqlite,
+            None,
+        )
+        .is_err());
+        assert!(validate_coding_eval_storage_isolation(
+            true,
+            morphz::config::StorageBackend::Sqlite,
+            Some("/tmp/terminal-bench-run/morphz.db"),
+        )
+        .is_ok());
+        assert!(validate_coding_eval_storage_isolation(
+            true,
+            morphz::config::StorageBackend::Postgres,
+            None,
+        )
+        .is_ok());
+        assert!(validate_coding_eval_storage_isolation(
+            false,
+            morphz::config::StorageBackend::Sqlite,
+            None,
+        )
+        .is_ok());
+    }
 
     #[test]
     fn tui_is_default_only_for_interactive_conversations_and_can_be_overridden() {

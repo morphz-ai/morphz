@@ -1120,6 +1120,9 @@ impl MorphzRuntimeBuilder {
                 Arc::clone(&store) as Arc<dyn crate::memory::CognitiveClockStore>
             )
             .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>)
+            .with_execution_job_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::ExecutionJobStore>
+            )
             .with_execution_target_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::ExecutionTargetStore>
             )
@@ -1525,6 +1528,7 @@ impl MorphzRuntimeBuilder {
                 provider_auth_manager,
                 timer_engine,
                 human_approval_hub,
+                runtime_instance_id: new_runtime_instance_id(),
                 process_started_at: chrono::Utc::now(),
                 recovery: std::sync::RwLock::new(RuntimeRecoveryStatus::default()),
                 started: AtomicBool::new(false),
@@ -1720,6 +1724,7 @@ struct RuntimeInner {
     provider_auth_manager: Arc<crate::provider::auth::ProviderAuthManager>,
     timer_engine: Arc<TimerEngine>,
     human_approval_hub: HumanApprovalHub,
+    runtime_instance_id: String,
     process_started_at: chrono::DateTime<chrono::Utc>,
     recovery: std::sync::RwLock<RuntimeRecoveryStatus>,
     started: AtomicBool,
@@ -2008,11 +2013,7 @@ impl MorphzRuntime {
             self.spawn_artifact_transfer_job(job_id);
         }
         let recall_store = Arc::clone(&self.inner.store);
-        let recall_worker_id = format!(
-            "recall-projector:{}:{}",
-            std::process::id(),
-            self.inner.process_started_at.timestamp_micros()
-        );
+        let recall_worker_id = format!("recall-projector:{}", self.inner.runtime_instance_id);
         tokio::spawn(async move {
             const BATCH_SIZE: usize = 4;
             loop {
@@ -3945,7 +3946,7 @@ impl MorphzRuntime {
 
         let claim_token = format!(
             "artifact-claim:{}:{}:{}",
-            std::process::id(),
+            self.inner.runtime_instance_id,
             job_id,
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
@@ -5010,7 +5011,11 @@ impl MorphzRuntime {
             ) {
                 continue;
             }
-            self.cancel_session(&delegation.child_session_id);
+            self.cancel_session_durable(
+                &delegation.child_session_id,
+                "Delegation tree was cancelled by its supervisor",
+            )
+            .await?;
             if let Some(updated) = self
                 .inner
                 .store
@@ -5344,6 +5349,59 @@ impl MorphzRuntime {
 
     pub fn cancel_session(&self, session_id: &str) -> bool {
         self.inner.orchestrator.cancel_session(session_id)
+    }
+
+    /// Persistently cancel every open Thread in one Session. The legacy
+    /// process-local cancellation signal is still sent for low latency, while
+    /// Thread/Activation state is the cross-Runtime authority observed by the
+    /// actual owner process.
+    pub async fn cancel_session_durable(
+        &self,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<usize, RuntimeError> {
+        self.inner.orchestrator.cancel_session(session_id);
+        let Some(session) = self.inner.store.get_session(session_id).await? else {
+            return Ok(0);
+        };
+        let threads = self
+            .inner
+            .store
+            .list_context_threads(&session.context_id, false)
+            .await?
+            .into_iter()
+            .filter(|thread| thread.session_id == session_id)
+            .collect::<Vec<_>>();
+        let mut cancelled = 0usize;
+        for mut current in threads {
+            for _ in 0..8 {
+                if current.lifecycle.is_terminal() {
+                    break;
+                }
+                match self
+                    .control_thread(
+                        &session.context_id,
+                        &current.id,
+                        current.revision,
+                        ThreadControlAction::Close,
+                        reason,
+                    )
+                    .await?
+                {
+                    ThreadMutation::Updated(_) => {
+                        cancelled = cancelled.saturating_add(1);
+                        break;
+                    }
+                    ThreadMutation::Conflict { current: changed }
+                        if !changed.lifecycle.is_terminal() =>
+                    {
+                        current = changed;
+                    }
+                    ThreadMutation::Conflict { .. } | ThreadMutation::NotFound => break,
+                }
+            }
+        }
+        Ok(cancelled)
     }
 
     pub async fn inspect_session_context(
@@ -7454,6 +7512,24 @@ impl MorphzRuntime {
     }
 }
 
+fn new_runtime_instance_id() -> String {
+    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
+    let instance = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+    let mut random = [0_u8; 16];
+    let nonce = if getrandom::fill(&mut random).is_ok() {
+        random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    } else {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos().to_string())
+            .unwrap_or_default()
+    };
+    format!("{}:{nonce}:{instance}", std::process::id())
+}
+
 fn runtime_overview_principals_by_session(
     bindings: Vec<SessionPrincipalBinding>,
 ) -> HashMap<String, Vec<String>> {
@@ -8212,6 +8288,10 @@ impl SessionHandle {
         self.runtime.cancel_session(&self.id)
     }
 
+    pub async fn cancel_durable(&self, reason: &str) -> Result<usize, RuntimeError> {
+        self.runtime.cancel_session_durable(&self.id, reason).await
+    }
+
     pub async fn inspect_context(&self) -> Result<crate::sexpr::SExpr, RuntimeError> {
         self.runtime.inspect_session_context(&self.id).await
     }
@@ -8224,19 +8304,12 @@ impl SessionHandle {
         self.runtime
             .query_events(QueryFilter {
                 session_id: Some(self.id.clone()),
-                top_k: Some(1_000),
+                after_sequence,
+                latest_k: after_sequence.is_none().then_some(1_000),
+                top_k: after_sequence.is_some().then_some(1_000),
                 ..Default::default()
             })
             .await
-            .map(|events| {
-                events
-                    .into_iter()
-                    .filter(|event| {
-                        after_sequence
-                            .is_none_or(|after| event.sequence.is_some_and(|seq| seq > after))
-                    })
-                    .collect()
-            })
     }
 
     pub async fn retry_dialogue_turn(
@@ -14563,10 +14636,10 @@ mod tests {
                 &activation.id,
                 activation.revision,
                 crate::memory::ThreadActivationStatus::Running,
-                Some(&format!(
-                    "runtime:{}:previous-process-instance",
-                    std::process::id()
-                )),
+                // A different nonce under this test process's own PID may be
+                // another live embedded Runtime. Use an impossible local PID
+                // to model a host process that the OS can prove has exited.
+                Some("runtime:2147483647:previous-process-instance"),
                 Some(chrono::Utc::now() + chrono::Duration::minutes(10)),
                 None,
             )

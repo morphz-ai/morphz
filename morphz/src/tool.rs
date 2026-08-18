@@ -42,7 +42,7 @@ use std::fs::{OpenOptions, Permissions};
 use std::future::Future;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use walkdir::WalkDir;
@@ -945,10 +945,32 @@ impl Tool for SessionSignalTool {
 /// Durable control plane for long-running Shell processes. ExecutionJob owns
 /// lifecycle truth; the process-local map only retains the live PGID and output
 /// cache required to interact with a process owned by this Runtime instance.
+fn new_background_claimant_id() -> String {
+    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
+    let instance = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+    let mut random = [0_u8; 16];
+    let nonce = if getrandom::fill(&mut random).is_ok() {
+        random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    } else {
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+            .to_string()
+    };
+    format!(
+        "background-runtime:{}:{nonce}:{instance}",
+        std::process::id()
+    )
+}
+
 pub struct BackgroundTaskScheduler {
     bus: Arc<InMemoryEventBus>,
     events: Arc<dyn EventStore>,
     timers: Arc<TimerEngine>,
+    claimant_id: String,
     execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
     sessions: Option<Arc<dyn SessionStore>>,
 }
@@ -963,6 +985,7 @@ impl BackgroundTaskScheduler {
             bus,
             events,
             timers,
+            claimant_id: new_background_claimant_id(),
             execution_jobs: None,
             sessions: None,
         }
@@ -978,6 +1001,7 @@ impl BackgroundTaskScheduler {
             bus,
             events,
             timers,
+            claimant_id: new_background_claimant_id(),
             execution_jobs: Some(execution_jobs),
             sessions: None,
         }
@@ -1043,6 +1067,7 @@ impl BackgroundTaskScheduler {
                 "process_group_id": task.pgid,
                 "started_at": task.started_at,
                 "artifact_path": task.artifact_path,
+                "keep_running": task.keep_running,
                 "effective_boundary": {
                     "network_enabled": task.effective_network,
                     "permission_request_available": task.permission_request_available,
@@ -1087,7 +1112,7 @@ impl BackgroundTaskScheduler {
         let claim_token = format!(
             "background-claim-{}-{}-{}",
             job.id,
-            std::process::id(),
+            self.claimant_id,
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
         );
         let lease_expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
@@ -1097,7 +1122,7 @@ impl BackgroundTaskScheduler {
                     &job.id,
                     job.revision,
                     JobClaim {
-                        worker_id: "morphz-background-executor",
+                        worker_id: &self.claimant_id,
                         claim_token: &claim_token,
                         lease_expires_at,
                         approval_ref: None,
@@ -1151,18 +1176,65 @@ impl BackgroundTaskScheduler {
         let Some(manager) = self.execution_jobs.clone() else {
             return;
         };
+        let timers = Arc::clone(&self.timers);
         tokio::spawn(async move {
+            let mut last_heartbeat_at = std::time::Instant::now();
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                // Cancellation can be requested by another Runtime process.
+                // Poll the fenced Job cheaply while keeping lease writes at
+                // their established 30-second cadence.
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let Ok(Some(job)) = manager.store().get_execution_job(&job_id).await else {
                     break;
                 };
-                if !should_renew_background_execution(
+                let owns_job = job.claim_token.as_deref() == Some(claim_token.as_str());
+                let renewable = should_renew_background_execution(
                     job.status,
-                    job.claim_token.as_deref() == Some(claim_token.as_str()),
+                    owns_job,
                     job.cancel_requested_at.is_some(),
-                ) {
+                );
+                if job.status.is_terminal() || !owns_job {
                     break;
+                }
+                if job.cancel_requested_at.is_some() {
+                    if let Err(error) = timers.cancel(&background_wake_timer_id(&job_id)).await {
+                        tracing::warn!(
+                            execution_job_id = %job_id,
+                            %error,
+                            event_code = "tool.background_job.remote_cancel_timer_failed",
+                            "Could not cancel a background checkpoint after observing a durable cancellation request"
+                        );
+                    }
+                    match terminate_local_background_process(&job_id) {
+                        Ok(Some((process_group_id, killed))) => tracing::info!(
+                            execution_job_id = %job_id,
+                            process_group_id,
+                            killed,
+                            event_code = "tool.background_job.remote_cancel_observed",
+                            "The physical background owner observed a cross-Runtime cancellation request"
+                        ),
+                        Ok(None) => tracing::debug!(
+                            execution_job_id = %job_id,
+                            event_code = "tool.background_job.remote_cancel_owner_gone",
+                            "The durable cancellation owner no longer has a live process handle"
+                        ),
+                        Err(error) => {
+                            tracing::error!(
+                                execution_job_id = %job_id,
+                                %error,
+                                event_code = "tool.background_job.remote_cancel_failed",
+                                "The physical background owner could not terminate its process group; retrying"
+                            );
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                if !renewable {
+                    break;
+                }
+                if last_heartbeat_at.elapsed() < std::time::Duration::from_secs(30) {
+                    continue;
                 }
                 let progress_ref = job
                     .request
@@ -1181,7 +1253,9 @@ impl BackgroundTaskScheduler {
                     )
                     .await
                 {
-                    Ok(JobReceipt::Applied { .. }) | Ok(JobReceipt::Existing { .. }) => {}
+                    Ok(JobReceipt::Applied { .. }) | Ok(JobReceipt::Existing { .. }) => {
+                        last_heartbeat_at = std::time::Instant::now();
+                    }
                     Ok(JobReceipt::Conflict { .. }) => continue,
                     Ok(_) | Err(_) => break,
                 }
@@ -1569,46 +1643,42 @@ impl BackgroundTaskScheduler {
                 "reason": "task_finished_during_cancel",
             }));
         }
-        let task_pgid = get_tasks_map()
-            .get(task_id)
-            .map(|task| task.pgid)
-            .ok_or_else(|| {
-                format!(
-                    "后台任务 '{task_id}' 没有当前 Runtime 的 live process owner；已持久化取消请求但不能伪造物理终止"
-                )
-            })?;
-        if let Some(mut task) = get_tasks_map().get_mut(task_id) {
-            task.status = BackgroundTaskStatus::KillRequested;
-            task.wake_generation = task.wake_generation.wrapping_add(1);
-            task.next_wakeup_at = None;
-        }
+        let Some((task_pgid, killed)) = terminate_local_background_process(task_id)? else {
+            return Ok(serde_json::json!({
+                "kind": "background_task_kill",
+                "task_id": task_id,
+                "execution_job_id": job.id,
+                "status": "cancel_requested",
+                "killed": false,
+                "owner_local": false,
+                "reason": "owned_by_another_runtime",
+                "guidance": "Cancellation intent is durable. The Runtime instance holding the physical process polls this fenced Job and will terminate the process group; observe the terminal ExecutionJob result instead of retrying kill_task."
+            }));
+        };
         self.cancel(task_id).await;
-        let pgid = nix::unistd::Pid::from_raw(-task_pgid);
-        match nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL) {
-            Ok(()) => Ok(serde_json::json!({
+        if killed {
+            Ok(serde_json::json!({
                 "kind": "background_task_kill",
                 "task_id": task_id,
                 "execution_job_id": job.id,
                 "status": "cancel_requested",
                 "process_group_id": task_pgid,
                 "killed": true,
+                "owner_local": true,
                 "guidance": "Cancellation intent is durable. The ExecutionJob reaches terminal cancelled only after the observed process exit is committed."
-            })),
-            Err(nix::errno::Errno::ESRCH) => Ok(serde_json::json!({
+            }))
+        } else {
+            Ok(serde_json::json!({
                 "kind": "background_task_kill",
                 "task_id": task_id,
                 "execution_job_id": job.id,
                 "status": "cancel_requested",
                 "process_group_id": task_pgid,
                 "killed": false,
+                "owner_local": true,
                 "reason": "process_group_not_found",
                 "guidance": "Cancellation intent is durable. Wait for the process watcher to commit the real terminal state; the Runtime does not guess cancelled from ESRCH."
-            })),
-            Err(error) => Err(format!(
-                "强杀进程组 {} 遭遇系统级错误: {:?}；取消请求仍保持持久化",
-                task_pgid, error
-            )
-            .into()),
+            }))
         }
     }
 
@@ -1800,23 +1870,34 @@ impl BackgroundTaskScheduler {
         };
         let mut payload = {
             let tasks = get_tasks_map();
-            let Some(mut task) = tasks.get_mut(&timer.owner_id) else {
-                return Ok(TimerDisposition::Complete);
-            };
-            if task.status.is_terminal() || task.wake_generation != generation {
-                return Ok(TimerDisposition::Complete);
+            match tasks.get_mut(&timer.owner_id) {
+                Some(mut task) => {
+                    if task.status.is_terminal() || task.wake_generation != generation {
+                        return Ok(TimerDisposition::Complete);
+                    }
+                    if task
+                        .next_wakeup_at
+                        .is_some_and(|due| due > chrono::Utc::now())
+                    {
+                        return Ok(TimerDisposition::Reschedule {
+                            due_at: task.next_wakeup_at.expect("checked Some"),
+                            reason: Some("后台任务检查点尚未到期".to_string()),
+                        });
+                    }
+                    task.next_wakeup_at = None;
+                    background_check_due_payload(&task, check_after_secs, wake_source)
+                }
+                None => {
+                    // Runtime Timers are claimed from a shared Store, while an
+                    // OS process handle exists only in the Runtime that
+                    // launched it. A peer must still deliver the durable
+                    // checkpoint instead of consuming the Timer as an orphan.
+                    let Some(job) = authoritative_job.as_ref() else {
+                        return Ok(TimerDisposition::Complete);
+                    };
+                    background_check_due_payload_from_job(job, check_after_secs, wake_source)
+                }
             }
-            if task
-                .next_wakeup_at
-                .is_some_and(|due| due > chrono::Utc::now())
-            {
-                return Ok(TimerDisposition::Reschedule {
-                    due_at: task.next_wakeup_at.expect("checked Some"),
-                    reason: Some("后台任务检查点尚未到期".to_string()),
-                });
-            }
-            task.next_wakeup_at = None;
-            background_check_due_payload(&task, check_after_secs, wake_source)
         };
         if let Some(job) = authoritative_job.as_ref() {
             payload.insert(
@@ -1850,6 +1931,30 @@ impl BackgroundTaskScheduler {
             })
         }
         .ok_or_else(|| format!("后台任务 '{}' 检查点缺少权威 Thread 路由", timer.owner_id))?;
+        if let Some(sessions) = self.sessions.as_ref() {
+            match sessions.get_thread(&thread_id).await? {
+                Some(thread) if thread.lifecycle.is_terminal() => {
+                    tracing::debug!(
+                        task_id = %timer.owner_id,
+                        thread_id,
+                        thread_lifecycle = thread.lifecycle.as_str(),
+                        event_code = "tool.background_checkpoint.thread_terminal",
+                        "Suppressed a background checkpoint after its owning Thread reached terminal state"
+                    );
+                    return Ok(TimerDisposition::Complete);
+                }
+                None => {
+                    tracing::warn!(
+                        task_id = %timer.owner_id,
+                        thread_id,
+                        event_code = "tool.background_checkpoint.thread_missing",
+                        "Suppressed a background checkpoint whose durable Thread owner is missing"
+                    );
+                    return Ok(TimerDisposition::Complete);
+                }
+                Some(_) => {}
+            }
+        }
         self.events
             .append_to_thread(event.clone(), &thread_id)
             .await?;
@@ -1998,6 +2103,16 @@ impl ThreadScheduler {
                 .get_thread_by_root(root)
                 .await?
                 .ok_or_else(|| format!("Schedule Event '{}' 缺少权威 Thread", event.id))?;
+            if thread.lifecycle.is_terminal() {
+                tracing::debug!(
+                    event_id = %event.id,
+                    thread_id = %thread.id,
+                    thread_lifecycle = thread.lifecycle.as_str(),
+                    event_code = "tool.schedule_recovery.thread_terminal",
+                    "Skipped redelivery of a persisted Schedule Event after its target Thread reached terminal state"
+                );
+                continue;
+            }
             self.events
                 .append_to_thread(event.clone(), &thread.id)
                 .await?;
@@ -3883,6 +3998,30 @@ pub fn get_tasks_map() -> &'static Arc<DashMap<String, BackgroundTask>> {
     BACKGROUND_TASKS.get_or_init(|| Arc::new(DashMap::new()))
 }
 
+/// Ask the process-local physical owner to terminate one background process.
+/// A missing entry means this Runtime is only a durable control-plane peer;
+/// callers must keep the cancellation request rather than guessing success.
+fn terminate_local_background_process(task_id: &str) -> Result<Option<(i32, bool)>, String> {
+    let Some(process_group_id) = get_tasks_map().get(task_id).map(|task| task.pgid) else {
+        return Ok(None);
+    };
+    if let Some(mut task) = get_tasks_map().get_mut(task_id) {
+        task.status = BackgroundTaskStatus::KillRequested;
+        task.wake_generation = task.wake_generation.wrapping_add(1);
+        task.next_wakeup_at = None;
+    }
+    match nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(process_group_id),
+        nix::sys::signal::Signal::SIGKILL,
+    ) {
+        Ok(()) => Ok(Some((process_group_id, true))),
+        Err(nix::errno::Errno::ESRCH) => Ok(Some((process_group_id, false))),
+        Err(error) => Err(format!(
+            "强杀进程组 {process_group_id} 遭遇系统级错误: {error:?}；取消请求仍保持持久化"
+        )),
+    }
+}
+
 const MAX_RETAINED_BACKGROUND_TASKS: usize = 256;
 
 fn prune_background_task_history() {
@@ -4108,6 +4247,84 @@ fn background_check_due_payload(
         task.id, check_after_secs, output_tail
     )));
     extend_causal_route(&mut payload, task.causal_route.as_ref());
+    payload
+}
+
+fn background_check_due_payload_from_job(
+    job: &ExecutionJobRecord,
+    check_after_secs: u64,
+    wake_source: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let started_at = job
+        .request
+        .get("started_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .or(job.started_at)
+        .unwrap_or(job.created_at);
+    let task_status = if job.cancel_requested_at.is_some() {
+        "cancel_requested"
+    } else {
+        job.status.as_str()
+    };
+    let mut payload = serde_json::Map::from_iter([
+        ("context_id".to_string(), serde_json::json!(job.context_id)),
+        ("session_id".to_string(), serde_json::json!(job.session_id)),
+        ("thread_id".to_string(), serde_json::json!(job.thread_id)),
+        (
+            "activation_id".to_string(),
+            serde_json::json!(job.activation_id),
+        ),
+        ("tool_name".to_string(), serde_json::json!("check_task_after")),
+        ("task_id".to_string(), serde_json::json!(job.id)),
+        (
+            "event".to_string(),
+            serde_json::json!("background_task_check_due"),
+        ),
+        (
+            "legacy_event".to_string(),
+            serde_json::json!("background_task_wait_elapsed"),
+        ),
+        ("wake_source".to_string(), serde_json::json!(wake_source)),
+        (
+            "check_after_secs".to_string(),
+            serde_json::json!(check_after_secs),
+        ),
+        ("wait_secs".to_string(), serde_json::json!(check_after_secs)),
+        (
+            "elapsed_secs".to_string(),
+            serde_json::json!((chrono::Utc::now() - started_at).num_seconds().max(0)),
+        ),
+        ("task_status".to_string(), serde_json::json!(task_status)),
+        ("last_output_age_secs".to_string(), serde_json::Value::Null),
+        ("output_bytes".to_string(), serde_json::Value::Null),
+        ("live_owner".to_string(), serde_json::json!(false)),
+        (
+            "artifact_path".to_string(),
+            job.request
+                .get("artifact_path")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "effective_boundary".to_string(),
+            job.request
+                .get("effective_boundary")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
+        ),
+        (
+            "text".to_string(),
+            serde_json::json!(format!(
+                "后台任务 {} 的 {} 秒检查点已经到达；任务由另一个 Runtime 实例持有，当前调度器没有它的进程内输出缓存，也没有终止它。请用 read_task 读取持久状态；若有明确的下一检查期限，调用 check_task_after；不应继续时调用 kill_task。",
+                job.id, check_after_secs
+            )),
+        ),
+    ]);
+    if let Some(principal_id) = &job.initiating_principal_id {
+        payload.insert("principal_id".to_string(), serde_json::json!(principal_id));
+    }
     payload
 }
 
@@ -7989,8 +8206,8 @@ mod tests {
     use crate::memory::{
         ActivationStore as _, NewAgent, NewCognitiveContext, NewPrincipal, NewSchedule, NewSession,
         NewThreadActivation, ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind,
-        SessionStore, ThreadGroupStore as _, ThreadLifecycle, ThreadMutation, ThreadStore as _,
-        TimerStore,
+        SessionStore, ThreadGroupStore as _, ThreadLifecycle, ThreadMutation, ThreadSignalStatus,
+        ThreadStore as _, TimerStore,
     };
     use crate::permission::PermissionMode;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -9346,6 +9563,60 @@ Body
             })
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn peer_runtime_can_claim_and_dispatch_a_durable_schedule_timer() {
+        let database = NamedTempFile::new().unwrap();
+        let owner_store = scheduler_store_with_threads(
+            &database,
+            &[("thread-peer-schedule", "root-peer-schedule")],
+        )
+        .await;
+        let peer_store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let owner_bus = Arc::new(InMemoryEventBus::new());
+        let (owner, _owner_timers) = build_test_scheduler(owner_bus, Arc::clone(&owner_store));
+        let peer_bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        peer_bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let (_peer, peer_timers) = build_test_scheduler(peer_bus, Arc::clone(&peer_store));
+        let intent = seed_test_schedule(
+            &owner_store,
+            "schedule-peer-runtime",
+            "thread-peer-schedule",
+            chrono::Utc::now() - chrono::Duration::seconds(1),
+        )
+        .await;
+        owner.arm(intent).await.unwrap();
+
+        assert_eq!(peer_timers.dispatch_due_once().await.unwrap(), 1);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.payload["schedule_id"], "schedule-peer-runtime");
+        assert_eq!(
+            peer_store
+                .list_context_thread_signals(
+                    "context-scheduler-test",
+                    Some(ThreadSignalStatus::Pending),
+                )
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "peer dispatch must persist the target Thread Signal"
+        );
     }
 
     #[tokio::test]
@@ -12312,14 +12583,14 @@ Body
             "side-effect boundary",
         )
         .unwrap();
-        job = applied_background_job(
-            manager
-                .request_cancel(&job.id, job.revision, Some("cancel before restart"))
-                .await
-                .unwrap(),
-            "cancel request",
-        )
-        .unwrap();
+        let cancellation = scheduler
+            .request_cancel_and_signal(&job.id, &parent.context_id)
+            .await
+            .expect("a peer Runtime must durably request cancellation without a local PGID");
+        assert_eq!(cancellation["status"], "cancel_requested");
+        assert_eq!(cancellation["owner_local"], false);
+        assert_eq!(cancellation["reason"], "owned_by_another_runtime");
+        job = store.get_execution_job(&job.id).await.unwrap().unwrap();
         assert_eq!(job.status, ExecutionJobStatus::Running);
         assert!(job.cancel_requested_at.is_some());
         assert!(job
@@ -12801,6 +13072,163 @@ Body
         }
 
         get_tasks_map().remove(&task_id);
+    }
+
+    #[tokio::test]
+    async fn peer_runtime_can_deliver_background_checkpoint_without_live_process_handle() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/tool_output".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let manager = Arc::new(ExecutionJobManager::new(
+            Arc::clone(&store) as Arc<dyn ExecutionJobStore>
+        ));
+        let scheduler = Arc::new(
+            BackgroundTaskScheduler::new_with_execution_jobs(
+                Arc::clone(&bus),
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::clone(&timers),
+                Arc::clone(&manager),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+        );
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-peer-checkpoint",
+                "exec-call-peer-checkpoint",
+            )
+            .unwrap(),
+            activation_id: "activation-peer-checkpoint".to_string(),
+            thread_id: "thread-peer-checkpoint".to_string(),
+            agent_id: "agent-peer-checkpoint".to_string(),
+            context_id: "context-peer-checkpoint".to_string(),
+            session_id: "session-peer-checkpoint".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "exec-call-peer-checkpoint".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-peer-checkpoint",
+            "trigger-peer-checkpoint",
+        )
+        .await;
+        let child_tool_call_id = format!("{}:background", parent.tool_call_id);
+        let task_id = deterministic_job_id(&parent.activation_id, &child_tool_call_id).unwrap();
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
+                target_id: parent.target_id.clone(),
+                tool_call_id: child_tool_call_id,
+                tool_name: "exec/background".to_string(),
+                request: serde_json::json!({
+                    "kind": "background_exec",
+                    "task_id": task_id,
+                    "command": "peer-owned-service",
+                    "process_group_id": 424242,
+                    "started_at": chrono::Utc::now(),
+                    "artifact_path": "/tmp/peer-owned-service.log",
+                    "effective_boundary": {}
+                }),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let claim_token = "peer-owned-background-claim";
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "peer-runtime",
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "claim",
+        )
+        .unwrap();
+        applied_background_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(chrono::Utc::now()),
+                        progress_ref: Some("/tmp/peer-owned-service.log"),
+                    },
+                )
+                .await
+                .unwrap(),
+            "side-effect boundary",
+        )
+        .unwrap();
+        get_tasks_map().remove(&task_id);
+
+        let timer = store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: background_wake_timer_id(&task_id),
+                generation: 1,
+                kind: RuntimeTimerKind::BackgroundWake,
+                owner_id: task_id.clone(),
+                due_at: chrono::Utc::now(),
+                payload: serde_json::json!({
+                    "task_id": task_id,
+                    "generation": 1,
+                    "check_after_secs": 1,
+                    "wake_source": "peer-runtime-test"
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            Arc::clone(&scheduler).dispatch_timer(timer).await.unwrap(),
+            TimerDisposition::Complete
+        );
+        let checkpoint = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("peer Runtime must deliver the durable checkpoint")
+            .expect("checkpoint channel must remain open");
+        assert_eq!(checkpoint.payload["event"], "background_task_check_due");
+        assert_eq!(checkpoint.payload["task_status"], "running");
+        assert_eq!(checkpoint.payload["live_owner"], false);
+        assert_eq!(checkpoint.payload["thread_id"], parent.thread_id);
+        assert_eq!(checkpoint.payload["activation_id"], parent.activation_id);
+        assert_eq!(
+            store
+                .list_context_thread_signals(&parent.context_id, None)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|signal| signal.event_id == checkpoint.id)
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

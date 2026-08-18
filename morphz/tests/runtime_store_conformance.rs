@@ -181,6 +181,196 @@ fn sqlite_two_process_context_cas_is_fenced() {
     assert_eq!(outcomes, ["committed", "conflict"]);
 }
 
+struct ProcessDelayedReplyClient {
+    call_marker: std::path::PathBuf,
+}
+
+#[async_trait::async_trait]
+impl Client for ProcessDelayedReplyClient {
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, TestError> {
+        std::fs::write(&self.call_marker, b"called")?;
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        Ok(Response {
+            content: "multi-process-delayed-ok".to_string(),
+            tool_calls: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn sqlite_two_process_runtimes_keep_one_long_activation_owner() {
+    const ROLE_ENV: &str = "MORPHZ_TEST_RUNTIME_PROCESS_ROLE";
+    const DB_ENV: &str = "MORPHZ_TEST_RUNTIME_PROCESS_DB";
+    const SYNC_ENV: &str = "MORPHZ_TEST_RUNTIME_PROCESS_SYNC";
+    if let Ok(role) = std::env::var(ROLE_ENV) {
+        let database = std::env::var(DB_ENV).unwrap();
+        let sync = std::path::PathBuf::from(std::env::var(SYNC_ENV).unwrap());
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let store = Arc::new(SqliteStore::new(&database).await.unwrap());
+            let mut config = AppConfig::default();
+            config.permissions.mode = PermissionMode::Custom;
+            config.permissions.reviewer = ReviewerKind::Deny;
+            config.orchestrator.activation_lease_secs = 2;
+            let client = Arc::new(ProcessDelayedReplyClient {
+                call_marker: sync.join(format!("call-{role}")),
+            });
+            let runtime = MorphzRuntime::builder(config, client)
+                .store(
+                    format!("sqlite:process-runtime-{role}"),
+                    store as Arc<dyn morphz::memory::RuntimeStore>,
+                )
+                .identity(RuntimeIdentity {
+                    agent_id: "sqlite-process-runtime-agent".to_string(),
+                    context_id: format!("sqlite-process-runtime-context-{role}"),
+                    principal_id: format!("principal:sqlite-process-runtime-{role}"),
+                })
+                .tool_policy(RuntimeToolPolicy {
+                    context_only: true,
+                    coding_eval: true,
+                })
+                .build()
+                .await
+                .unwrap();
+            runtime.start().await.unwrap();
+            let mut replies = runtime.subscribe("chat/reply", 4);
+            std::fs::write(sync.join(format!("ready-{role}")), b"ready").unwrap();
+            while !sync.join("go").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            if role == "a" {
+                runtime
+                    .session("sqlite-process-runtime-session-a")
+                    .send(
+                        "cross several lease windows",
+                        "Store-Conformance",
+                        Some("sqlite-process-runtime-message".to_string()),
+                    )
+                    .await
+                    .unwrap();
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(12), async {
+                loop {
+                    tokio::select! {
+                        reply = replies.recv() => {
+                            if let Some(reply) = reply {
+                                assert_eq!(reply.payload["text"], "multi-process-delayed-ok");
+                                std::fs::write(sync.join(format!("reply-{role}")), b"reply").unwrap();
+                                std::fs::write(sync.join("done"), b"done").unwrap();
+                                break;
+                            }
+                        }
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {
+                            if sync.join("done").exists() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("one process Runtime must finish the shared Activation");
+        });
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let database = temp.path().join("shared-runtime.db");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let store = SqliteStore::new(database.to_str().unwrap()).await.unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "sqlite-process-runtime-agent".to_string(),
+                    title: "SQLite Process Runtime Agent".to_string(),
+                    root_context_id: "sqlite-process-runtime-context-a".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "sqlite-process-runtime-context-a".to_string(),
+                    agent_id: "sqlite-process-runtime-agent".to_string(),
+                    title: "SQLite Process Runtime Context A".to_string(),
+                },
+                NewSession {
+                    id: "sqlite-process-runtime-session-a".to_string(),
+                    agent_id: "sqlite-process-runtime-agent".to_string(),
+                    context_id: "sqlite-process-runtime-context-a".to_string(),
+                    parent_session_id: None,
+                    title: "SQLite Process Runtime Session A".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "sqlite-process-runtime-context-b".to_string(),
+                agent_id: "sqlite-process-runtime-agent".to_string(),
+                title: "SQLite Process Runtime Context B".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "sqlite-process-runtime-session-b".to_string(),
+                agent_id: "sqlite-process-runtime-agent".to_string(),
+                context_id: "sqlite-process-runtime-context-b".to_string(),
+                parent_session_id: None,
+                title: "SQLite Process Runtime Session B".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+    });
+
+    let executable = std::env::current_exe().unwrap();
+    let spawn = |role: &str| {
+        Command::new(&executable)
+            .arg("--exact")
+            .arg("sqlite_two_process_runtimes_keep_one_long_activation_owner")
+            .arg("--nocapture")
+            .env(ROLE_ENV, role)
+            .env(DB_ENV, &database)
+            .env(SYNC_ENV, temp.path())
+            .spawn()
+            .unwrap()
+    };
+    let mut first = spawn("a");
+    let mut second = spawn("b");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !(temp.path().join("ready-a").exists() && temp.path().join("ready-b").exists()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "SQLite Runtime child processes did not reach the shared barrier"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::fs::write(temp.path().join("go"), b"go").unwrap();
+    assert!(first.wait().unwrap().success());
+    assert!(second.wait().unwrap().success());
+    let call_count = ["call-a", "call-b"]
+        .into_iter()
+        .filter(|path| temp.path().join(path).exists())
+        .count();
+    let reply_count = ["reply-a", "reply-b"]
+        .into_iter()
+        .filter(|path| temp.path().join(path).exists())
+        .count();
+    assert_eq!(call_count, 1, "only one process may own the model call");
+    assert_eq!(reply_count, 1, "only one process may publish the reply");
+}
+
 #[derive(Default)]
 struct MultiRuntimeReplyClient {
     calls: AtomicUsize,
@@ -196,6 +386,27 @@ impl Client for MultiRuntimeReplyClient {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(Response {
             content: "multi-runtime-ok".to_string(),
+            tool_calls: Vec::new(),
+        })
+    }
+}
+
+struct DelayedMultiRuntimeReplyClient {
+    calls: AtomicUsize,
+    delay: std::time::Duration,
+}
+
+#[async_trait::async_trait]
+impl Client for DelayedMultiRuntimeReplyClient {
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, TestError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(self.delay).await;
+        Ok(Response {
+            content: "multi-runtime-delayed-ok".to_string(),
             tool_calls: Vec::new(),
         })
     }
@@ -4593,7 +4804,14 @@ where
 
 async fn assert_action_group_conformance<S>(store: Arc<S>)
 where
-    S: ActionGroupStore + ActivationStore + EventStore + ExecutionJobStore + Send + Sync + 'static,
+    S: ActionGroupStore
+        + ActivationStore
+        + EventStore
+        + ExecutionJobStore
+        + ThreadStore
+        + Send
+        + Sync
+        + 'static,
 {
     let assistant_call = Event::new(
         "conformance-action-group-call".to_string(),
@@ -4968,6 +5186,162 @@ where
         .unwrap()
         .iter()
         .all(|signal| signal.event_id != result.id));
+
+    let late_group_call = Event::new(
+        "conformance-late-action-group-call".to_string(),
+        "Store-Conformance".to_string(),
+        morphz::event::TYPE_AGENT_CALL.to_string(),
+        "chat/assistant_call".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "activation_id": "conformance-activation",
+            "thread_id": "conformance-thread",
+            "root_turn_id": "root-conformance-thread"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store.append(late_group_call.clone()).await.unwrap();
+    let late_group = store
+        .create_action_group(
+            NewActionGroup {
+                id: "conformance-late-action-group".to_string(),
+                activation_id: "conformance-activation".to_string(),
+                thread_id: "conformance-thread".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: "conformance-session".to_string(),
+                assistant_call_event_id: late_group_call.id,
+                objective_id: None,
+                objective_evaluation_id: None,
+                objective_revision: None,
+            },
+            vec![
+                NewActionGroupMember {
+                    ordinal: 0,
+                    tool_call_id: "late-group-call-a".to_string(),
+                    tool_name: "read".to_string(),
+                    execution_job_id: None,
+                },
+                NewActionGroupMember {
+                    ordinal: 1,
+                    tool_call_id: "late-group-call-b".to_string(),
+                    tool_name: "search".to_string(),
+                    execution_job_id: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    let late_result = |call: &str| {
+        Event::new(
+            format!("conformance-late-action-result-{call}"),
+            "Store-Conformance".to_string(),
+            morphz::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            json!({
+                "context_id": "conformance-context",
+                "session_id": "conformance-session",
+                "activation_id": "conformance-activation",
+                "thread_id": "conformance-thread",
+                "root_turn_id": "root-conformance-thread",
+                "action_group_id": late_group.id.clone(),
+                "tool_call_id": call,
+                "tool_name": "read",
+                "tool_status": "success",
+                "text": call
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    };
+    let late_settled = Event::new(
+        "action_group_settled_conformance-late-action-group".to_string(),
+        "Store-Conformance".to_string(),
+        "runtime_control".to_string(),
+        "runtime/action_group_settled".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "activation_id": "conformance-activation",
+            "thread_id": "conformance-thread",
+            "root_turn_id": "root-conformance-thread",
+            "action_group_id": late_group.id.clone(),
+            "member_count": 2,
+            "wake_policy": "direct_signal"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store
+        .commit_action_group_member_result(
+            &late_group.id,
+            "late-group-call-a",
+            ActionGroupMemberStatus::Succeeded,
+            &late_result("late-group-call-a"),
+            &late_settled,
+        )
+        .await
+        .unwrap();
+    let thread = store
+        .get_thread("conformance-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        store
+            .control_thread(
+                &thread.id,
+                thread.revision,
+                ThreadControlAction::Close,
+                Some("terminal before the final Action result"),
+                Some("Store-Conformance"),
+            )
+            .await
+            .unwrap(),
+        ThreadMutation::Updated(_)
+    ));
+    let final_commit = store
+        .commit_action_group_member_result(
+            &late_group.id,
+            "late-group-call-b",
+            ActionGroupMemberStatus::Succeeded,
+            &late_result("late-group-call-b"),
+            &late_settled,
+        )
+        .await
+        .unwrap();
+    assert!(final_commit.settled_now);
+    assert_eq!(
+        store
+            .get_action_group(&late_group.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ActionGroupStatus::Settled
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(late_settled.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store
+        .list_context_thread_signals("conformance-context", None)
+        .await
+        .unwrap()
+        .iter()
+        .all(|signal| signal.event_id != late_settled.id));
 }
 
 fn execution_job(id: &str, tool_call_id: &str) -> NewExecutionJob {
@@ -6570,6 +6944,200 @@ async fn assert_two_postgres_runtimes_deliver_one_dialogue_once(
             .len(),
         1,
         "the shared Event Store must contain one reply Event"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_two_runtimes_with_different_contexts_keep_a_long_activation_single_owned() {
+    let database = NamedTempFile::new().unwrap();
+    let first = Arc::new(
+        SqliteStore::new(database.path().to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let second = Arc::new(
+        SqliteStore::new(database.path().to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    first
+        .create_agent_bundle(
+            NewAgent {
+                id: "sqlite-runtime-agent".to_string(),
+                title: "SQLite Runtime Agent".to_string(),
+                root_context_id: "sqlite-runtime-context-a".to_string(),
+            },
+            NewCognitiveContext {
+                id: "sqlite-runtime-context-a".to_string(),
+                agent_id: "sqlite-runtime-agent".to_string(),
+                title: "SQLite Runtime Context A".to_string(),
+            },
+            NewSession {
+                id: "sqlite-runtime-session-a".to_string(),
+                agent_id: "sqlite-runtime-agent".to_string(),
+                context_id: "sqlite-runtime-context-a".to_string(),
+                parent_session_id: None,
+                title: "SQLite Runtime Session A".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+    first
+        .create_context(NewCognitiveContext {
+            id: "sqlite-runtime-context-b".to_string(),
+            agent_id: "sqlite-runtime-agent".to_string(),
+            title: "SQLite Runtime Context B".to_string(),
+        })
+        .await
+        .unwrap();
+    first
+        .create_session(NewSession {
+            id: "sqlite-runtime-session-b".to_string(),
+            agent_id: "sqlite-runtime-agent".to_string(),
+            context_id: "sqlite-runtime-context-b".to_string(),
+            parent_session_id: None,
+            title: "SQLite Runtime Session B".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    config.permissions.mode = PermissionMode::Custom;
+    config.permissions.reviewer = ReviewerKind::Deny;
+    // The provider delay crosses multiple original lease windows. The owner
+    // must renew its own Activation while a peer Timer Engine is concurrently
+    // claiming due timers from the same SQLite file.
+    config.orchestrator.activation_lease_secs = 2;
+    let client = Arc::new(DelayedMultiRuntimeReplyClient {
+        calls: AtomicUsize::new(0),
+        delay: std::time::Duration::from_secs(5),
+    });
+    let policy = RuntimeToolPolicy {
+        context_only: true,
+        coding_eval: true,
+    };
+    let runtime_a = MorphzRuntime::builder(config.clone(), client.clone())
+        .store(
+            "sqlite:test-runtime-a",
+            Arc::clone(&first) as Arc<dyn morphz::memory::RuntimeStore>,
+        )
+        .identity(RuntimeIdentity {
+            agent_id: "sqlite-runtime-agent".to_string(),
+            context_id: "sqlite-runtime-context-a".to_string(),
+            principal_id: "principal:sqlite-runtime-a".to_string(),
+        })
+        .tool_policy(policy)
+        .build()
+        .await
+        .unwrap();
+    let runtime_b = MorphzRuntime::builder(config, client.clone())
+        .store(
+            "sqlite:test-runtime-b",
+            Arc::clone(&second) as Arc<dyn morphz::memory::RuntimeStore>,
+        )
+        .identity(RuntimeIdentity {
+            agent_id: "sqlite-runtime-agent".to_string(),
+            context_id: "sqlite-runtime-context-b".to_string(),
+            principal_id: "principal:sqlite-runtime-b".to_string(),
+        })
+        .tool_policy(policy)
+        .build()
+        .await
+        .unwrap();
+    runtime_a.start().await.unwrap();
+    runtime_b.start().await.unwrap();
+
+    let mut replies_a = runtime_a.subscribe("chat/reply", 4);
+    let mut replies_b = runtime_b.subscribe("chat/reply", 4);
+    runtime_a
+        .session("sqlite-runtime-session-a")
+        .send(
+            "hold this activation across lease windows",
+            "Store-Conformance",
+            Some("sqlite-runtime-long-message".to_string()),
+        )
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        tokio::select! {
+            event = replies_a.recv() => event,
+            event = replies_b.recv() => event,
+        }
+    })
+    .await
+    .expect("one SQLite Runtime must finish the long Activation")
+    .expect("reply subscription must remain open");
+    assert_eq!(reply.payload["text"], "multi-runtime-delayed-ok");
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        first
+            .query(QueryFilter {
+                context_id: Some("sqlite-runtime-context-a".to_string()),
+                session_id: Some("sqlite-runtime-session-a".to_string()),
+                topic: Some("chat/reply".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Route the operator action through the Runtime whose default Context is
+    // different from the active turn. It must close the durable Thread owned
+    // by its peer instead of only notifying its own process-local registry.
+    runtime_a
+        .session("sqlite-runtime-session-a")
+        .send(
+            "cancel this turn from the peer runtime",
+            "Store-Conformance",
+            Some("sqlite-runtime-cancel-message".to_string()),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while client.calls.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the second provider call must start before peer cancellation");
+    assert!(
+        runtime_b
+            .cancel_session_durable(
+                "sqlite-runtime-session-a",
+                "peer Runtime conformance cancellation",
+            )
+            .await
+            .unwrap()
+            > 0
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(6), async {
+            tokio::select! {
+                event = replies_a.recv() => event,
+                event = replies_b.recv() => event,
+            }
+        })
+        .await
+        .is_err(),
+        "the owner Runtime must drop its model future after durable peer cancellation"
+    );
+    assert_eq!(
+        first
+            .query(QueryFilter {
+                context_id: Some("sqlite-runtime-context-a".to_string()),
+                session_id: Some("sqlite-runtime-session-a".to_string()),
+                topic: Some("chat/reply".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "cancelled peer-owned Activation must not commit a late reply"
     );
 }
 

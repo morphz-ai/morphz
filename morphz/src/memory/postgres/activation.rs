@@ -870,6 +870,49 @@ impl ActivationStore for PostgresStore {
         .collect()
     }
 
+    async fn list_signal_outbox_page(
+        &self,
+        status: SignalOutboxStatus,
+        after_created_at: Option<DateTime<Utc>>,
+        after_event_id: Option<String>,
+        limit: usize,
+    ) -> Result<Vec<SignalOutboxRecord>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = if let (Some(after_created_at), Some(after_event_id)) =
+            (after_created_at, after_event_id)
+        {
+            let after_created_at =
+                after_created_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            sqlx::query(
+                r#"SELECT * FROM signal_outbox
+                   WHERE status = $1
+                     AND (created_at > $2 OR (created_at = $2 AND event_id > $3))
+                   ORDER BY created_at, event_id
+                   LIMIT $4"#,
+            )
+            .bind(status.as_str())
+            .bind(after_created_at)
+            .bind(after_event_id)
+            .bind(i64::try_from(limit)?)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"SELECT * FROM signal_outbox
+                   WHERE status = $1
+                   ORDER BY created_at, event_id
+                   LIMIT $2"#,
+            )
+            .bind(status.as_str())
+            .bind(i64::try_from(limit)?)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter().map(outbox_from_row).collect()
+    }
+
     async fn discard_signal_outbox(&self, event_id: &str) -> Result<bool, StoreError> {
         let result = sqlx::query(
             r#"UPDATE signal_outbox SET status = 'discarded', resolved_at = $1

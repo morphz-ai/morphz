@@ -33,6 +33,7 @@ pub struct TimerEngine {
     handlers: RwLock<HashMap<RuntimeTimerKind, TimerHandler>>,
     wakeup: Arc<tokio::sync::Notify>,
     started: AtomicBool,
+    claimant_id: String,
     claim_sequence: AtomicU64,
 }
 
@@ -43,6 +44,7 @@ impl TimerEngine {
             handlers: RwLock::new(HashMap::new()),
             wakeup: Arc::new(tokio::sync::Notify::new()),
             started: AtomicBool::new(false),
+            claimant_id: new_timer_claimant_id(),
             claim_sequence: AtomicU64::new(0),
         }
     }
@@ -127,7 +129,7 @@ impl TimerEngine {
         let sequence = self.claim_sequence.fetch_add(1, Ordering::Relaxed);
         let claim_token = format!(
             "timer-claim-{}-{}-{}",
-            std::process::id(),
+            self.claimant_id,
             now.timestamp_nanos_opt().unwrap_or_default(),
             sequence
         );
@@ -211,6 +213,24 @@ impl TimerEngine {
     }
 }
 
+fn new_timer_claimant_id() -> String {
+    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
+    let instance = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+    let mut random = [0_u8; 16];
+    let nonce = if getrandom::fill(&mut random).is_ok() {
+        random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    } else {
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+            .to_string()
+    };
+    format!("{}-{nonce}-{instance}", std::process::id())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +238,11 @@ mod tests {
     use crate::memory::RuntimeTimerStatus;
     use std::sync::atomic::AtomicUsize;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn timer_claimants_are_unique_inside_one_process() {
+        assert_ne!(new_timer_claimant_id(), new_timer_claimant_id());
+    }
 
     #[tokio::test]
     async fn timer_engine_fires_persisted_timer_once() {

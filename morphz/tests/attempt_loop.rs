@@ -9,11 +9,11 @@ use morphz::llm::{
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     ActionGroupFilter, ActionGroupStatus, ActionGroupStore as _, ActivationStore as _,
-    DelegationFilter, DelegationStatus, DelegationStore as _, EventStore, NewAgent,
-    NewCognitiveContext, NewSession, NewThread, NewThreadActivation, QueryFilter,
-    SessionDirectoryStore as _, SessionMountKind, SessionProjectionStore, SessionStore,
-    ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle,
-    ThreadSignalStatus, ThreadStore as _, TimerStore,
+    DelegationFilter, DelegationStatus, DelegationStore as _, EventStore, ExecutionJobStore as _,
+    ExecutionRetrySafety, NewAgent, NewCognitiveContext, NewExecutionJob, NewSession, NewThread,
+    NewThreadActivation, QueryFilter, SessionDirectoryStore as _, SessionMountKind,
+    SessionProjectionStore, SessionStore, ThreadActivationMutation, ThreadActivationStatus,
+    ThreadKind, ThreadLifecycle, ThreadSignalStatus, ThreadStore as _, TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -794,6 +794,7 @@ fn new_test_orchestrator(
         config,
         context_engine,
         Arc::clone(&timers),
+        None,
     )
     .unwrap()
 }
@@ -807,6 +808,9 @@ fn new_test_orchestrator_with_runtime_store(
     context_engine: Arc<ContextEngine>,
 ) -> Arc<Orchestrator> {
     let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+    let execution_jobs = Arc::new(morphz::execution::ExecutionJobManager::new(
+        Arc::clone(&store) as Arc<dyn morphz::memory::ExecutionJobStore>,
+    ));
     Orchestrator::new_test_with_context_engine(
         bus,
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -817,6 +821,7 @@ fn new_test_orchestrator_with_runtime_store(
         config,
         context_engine,
         Arc::clone(&timers),
+        Some(execution_jobs),
     )
     .unwrap()
 }
@@ -1468,6 +1473,107 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         )
         .await
         .unwrap();
+
+    // A peer Runtime can own physical work after the model Activation that
+    // created it has already succeeded. Startup recovery must treat the
+    // durable non-terminal Job as authoritative progress, even though this
+    // process has no local child-process handle or active Activation.
+    let active_job_session_id = "recovery-active-background-job";
+    store
+        .create_session(NewSession {
+            id: active_job_session_id.to_string(),
+            agent_id: "recovery-agent".to_string(),
+            context_id: "recovery-context".to_string(),
+            parent_session_id: None,
+            title: "Active background job".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let active_job_root = Event::new(
+        "recovery-active-background-job-root".to_string(),
+        "Test-User".to_string(),
+        TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        vec![
+            ("context_id".to_string(), json!("recovery-context")),
+            ("session_id".to_string(), json!(active_job_session_id)),
+            ("text".to_string(), json!("run in background")),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    store.append(active_job_root.clone()).await.unwrap();
+    let active_job_sequence = store
+        .query(QueryFilter {
+            event_id: Some(active_job_root.id.clone()),
+            session_id: Some(active_job_session_id.to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()[0]
+        .sequence
+        .unwrap();
+    store
+        .ensure_thread(NewThread {
+            id: "recovery-active-background-job-thread".to_string(),
+            agent_id: "recovery-agent".to_string(),
+            context_id: "recovery-context".to_string(),
+            session_id: active_job_session_id.to_string(),
+            initiating_principal_id: None,
+            root_turn_id: active_job_root.id.clone(),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: morphz::memory::ThreadSupervision::legacy(),
+        })
+        .await
+        .unwrap();
+    let finished_parent = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "recovery-finished-parent-activation".to_string(),
+            agent_id: "recovery-agent".to_string(),
+            context_id: "recovery-context".to_string(),
+            session_id: active_job_session_id.to_string(),
+            initiating_principal_id: None,
+            trigger_event_id: active_job_root.id.clone(),
+            trigger_sequence: active_job_sequence,
+            trigger_kind: active_job_root.topic,
+            parent_activation_id: None,
+            root_turn_id: active_job_root.id,
+        })
+        .await
+        .unwrap();
+    store
+        .update_thread_activation(
+            &finished_parent.id,
+            finished_parent.revision,
+            ThreadActivationStatus::Succeeded,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .create_execution_job(NewExecutionJob {
+            id: "recovery-active-background-job".to_string(),
+            activation_id: "recovery-finished-parent-activation".to_string(),
+            thread_id: "recovery-active-background-job-thread".to_string(),
+            agent_id: "recovery-agent".to_string(),
+            context_id: "recovery-context".to_string(),
+            session_id: active_job_session_id.to_string(),
+            initiating_principal_id: None,
+            target_id: morphz::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "recovery-active-background-tool-call".to_string(),
+            tool_name: "exec/background".to_string(),
+            request: json!({"command": "sleep 30", "keep_running": true}),
+            retry_safety: ExecutionRetrySafety::AtMostOnce,
+            requires_approval: false,
+        })
+        .await
+        .unwrap();
     let client = Arc::new(MockClient::new(vec![
         text_reply_response("recovered"),
         text_reply_response("recovered"),
@@ -1479,7 +1585,7 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
             .with_worker_coordination_mode(morphz::memory::WorkerCoordinationMode::SharedLeases),
     );
-    let orchestrator = new_test_orchestrator(
+    let orchestrator = new_test_orchestrator_with_runtime_store(
         Arc::clone(&bus),
         Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
@@ -1515,6 +1621,18 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         .as_deref()
         .unwrap_or_default()
         .contains("遗留孤儿状态"));
+    let active_job_thread = store
+        .get_thread("recovery-active-background-job-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active_job_thread.lifecycle, ThreadLifecycle::Open);
+    let active_job = store
+        .get_execution_job("recovery-active-background-job")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!active_job.status.is_terminal(), "{active_job:#?}");
     assert_eq!(
         wait_for_topic(&store, "runtime/thread_reconciled", orphan_session_id)
             .await
@@ -1533,7 +1651,7 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         .unwrap();
     assert_eq!(
         activations.len(),
-        recovery_sessions.len() + 2,
+        recovery_sessions.len() + 3,
         "recovery must retain the original orphan Activation and add exactly one fenced control Activation: {activations:#?}"
     );
     assert!(activations.iter().any(|activation| {
@@ -1548,6 +1666,268 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
             .count(),
         recovery_sessions.len()
     );
+}
+
+#[tokio::test]
+async fn runtime_start_drains_every_page_of_legacy_signal_outbox() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("legacy-signal-outbox.db");
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db_path.display()))
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let mut tx = pool.begin().await.unwrap();
+    for index in 0..(128 + 3) {
+        let event_id = format!("legacy-unroutable-{index:03}");
+        sqlx::query(
+            r#"INSERT INTO events (id, timestamp, actor, type, topic, payload)
+               VALUES (?, ?, 'Legacy-Runtime', 'tool', 'chat/tool_output', '{}')"#,
+        )
+        .bind(&event_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO signal_outbox (event_id, status, created_at)
+               VALUES (?, 'pending', ?)"#,
+        )
+        .bind(&event_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let bus = Arc::new(InMemoryEventBus::new());
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_worker_coordination_mode(
+                morphz::memory::WorkerCoordinationMode::SharedHostLeases,
+            ),
+    );
+    let orchestrator = new_test_orchestrator(
+        bus,
+        Arc::clone(&store),
+        Arc::new(MockClient::new(Vec::new())),
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    Arc::clone(&orchestrator).start().await.unwrap();
+
+    assert!(store
+        .list_signal_outbox(morphz::memory::SignalOutboxStatus::Pending, 256)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .list_signal_outbox(morphz::memory::SignalOutboxStatus::Discarded, 256)
+            .await
+            .unwrap()
+            .len(),
+        131
+    );
+}
+
+#[tokio::test]
+async fn runtime_start_pages_past_slow_legacy_signal_outbox_handlers() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("slow-legacy-signal-outbox.db");
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db_path.display()))
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let mut tx = pool.begin().await.unwrap();
+    for index in 0..(128 + 3) {
+        let event_id = format!("legacy-slow-{index:03}");
+        let payload = json!({
+            "context_id": "legacy-slow-context",
+            "session_id": "legacy-slow-session",
+            "text": "legacy wake"
+        });
+        sqlx::query(
+            r#"INSERT INTO events (id, timestamp, actor, type, topic, payload)
+               VALUES (?, ?, 'Legacy-Runtime', 'tool', 'legacy/slow', ?)"#,
+        )
+        .bind(&event_id)
+        .bind(&now)
+        .bind(payload.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO signal_outbox (event_id, status, created_at)
+               VALUES (?, 'pending', ?)"#,
+        )
+        .bind(&event_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let bus = Arc::new(InMemoryEventBus::new());
+    let seen = Arc::new(AtomicUsize::new(0));
+    let seen_handler = Arc::clone(&seen);
+    bus.subscribe(
+        "legacy/slow".to_string(),
+        Arc::new(move |_| {
+            let seen = Arc::clone(&seen_handler);
+            Box::pin(async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }),
+    );
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_worker_coordination_mode(
+                morphz::memory::WorkerCoordinationMode::SharedHostLeases,
+            ),
+    );
+    let orchestrator = new_test_orchestrator(
+        bus,
+        Arc::clone(&store),
+        Arc::new(MockClient::new(Vec::new())),
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        Arc::clone(&orchestrator).start(),
+    )
+    .await
+    .expect("startup must not wait for asynchronous outbox handlers")
+    .unwrap();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while seen.load(Ordering::SeqCst) != 131 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("every keyset page should be dispatched once");
+    assert_eq!(seen.load(Ordering::SeqCst), 131);
+    assert_eq!(
+        store
+            .list_signal_outbox(morphz::memory::SignalOutboxStatus::Pending, 256)
+            .await
+            .unwrap()
+            .len(),
+        131,
+        "asynchronous handlers own resolution; startup must not require it"
+    );
+}
+
+#[tokio::test]
+async fn runtime_start_retires_legacy_outbox_for_direct_supervisor_wake() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("legacy-direct-supervisor-outbox.db");
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db_path.display()))
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let event_id = "thread_group_barrier_legacy-direct-group_g7";
+    sqlx::query(
+        r#"INSERT INTO events (id, timestamp, actor, type, topic, payload)
+           VALUES (?, ?, 'Legacy-Runtime', 'runtime_control',
+                   'runtime/thread_group_terminal', ?)"#,
+    )
+    .bind(event_id)
+    .bind(&now)
+    .bind(
+        json!({
+            "context_id": "legacy-direct-context",
+            "session_id": "legacy-direct-session",
+            "objective_id": "legacy-direct-objective",
+            "thread_group_id": "legacy-direct-group",
+            "wake_policy": "direct_signal"
+        })
+        .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO signal_outbox (event_id, status, created_at)
+           VALUES (?, 'pending', ?)"#,
+    )
+    .bind(event_id)
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let bus = Arc::new(InMemoryEventBus::new());
+    let observed = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let observed_handler = Arc::clone(&observed);
+    let release_handler = Arc::clone(&release);
+    bus.subscribe(
+        "runtime/thread_group_terminal".to_string(),
+        Arc::new(move |_| {
+            let observed = Arc::clone(&observed_handler);
+            let release = Arc::clone(&release_handler);
+            Box::pin(async move {
+                observed.notify_one();
+                release.notified().await;
+                Ok(())
+            })
+        }),
+    );
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_worker_coordination_mode(
+                morphz::memory::WorkerCoordinationMode::SharedHostLeases,
+            ),
+    );
+    let orchestrator = new_test_orchestrator(
+        bus,
+        Arc::clone(&store),
+        Arc::new(MockClient::new(Vec::new())),
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        Arc::clone(&orchestrator).start(),
+    )
+    .await
+    .expect("a direct supervisor wake must not block startup on handler completion")
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), observed.notified())
+        .await
+        .expect("the process-local supervisor wake should still be replayed");
+
+    assert!(store
+        .list_signal_outbox(morphz::memory::SignalOutboxStatus::Pending, 8)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .list_signal_outbox(morphz::memory::SignalOutboxStatus::Discarded, 8)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    release.notify_one();
 }
 
 #[tokio::test]
