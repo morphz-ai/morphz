@@ -11,9 +11,9 @@ use super::{
 use crate::event::Event;
 use crate::memory::{
     ArtifactTransferExecutionRecord, ExecutionJobContextCounts, ExecutionJobFilter,
-    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionRetrySafety, NewArtifactTransferExecution, NewExecutionJob,
-    ThreadKind,
+    ExecutionJobMonitorRecord, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, NewArtifactTransferExecution,
+    NewExecutionJob, ThreadKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -227,6 +227,22 @@ pub(super) fn execution_job_from_row(row: &PgRow) -> Result<ExecutionJobRecord, 
         started_at: optional_time(row, "started_at")?,
         updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
         finished_at: optional_time(row, "finished_at")?,
+    })
+}
+
+fn execution_job_monitor_from_row(row: &PgRow) -> Result<ExecutionJobMonitorRecord, StoreError> {
+    Ok(ExecutionJobMonitorRecord {
+        id: row.get("id"),
+        activation_id: row.get("activation_id"),
+        thread_id: row.get("thread_id"),
+        context_id: row.get("context_id"),
+        session_id: row.get("session_id"),
+        target_id: row.get("target_id"),
+        tool_name: row.get("tool_name"),
+        status: parse_status(&row.get::<String, _>("status"))?,
+        progress_ref: row.get("progress_ref"),
+        error: row.get("error"),
+        updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
     })
 }
 
@@ -616,6 +632,32 @@ impl ExecutionJobStore for PostgresStore {
         }
         let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(execution_job_from_row).collect()
+    }
+
+    async fn list_active_execution_jobs_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ExecutionJobMonitorRecord>, StoreError> {
+        if context_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<Postgres>::new(
+            "SELECT id, activation_id, thread_id, context_id, session_id, target_id, tool_name, status, progress_ref, error, updated_at FROM execution_jobs WHERE status IN ('queued', 'waiting_approval', 'running') AND context_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for context_id in context_ids {
+            separated.push_bind(context_id);
+        }
+        separated.push_unseparated(") ORDER BY updated_at DESC, id LIMIT ");
+        query.push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(execution_job_monitor_from_row)
+            .collect()
     }
 
     async fn count_context_active_execution_jobs(

@@ -2208,6 +2208,43 @@ pub struct ExecutionJobRecord {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+/// Lightweight, nonterminal Execution Job projection for operator/runtime
+/// monitoring. Deliberately excludes the request body, result references and
+/// worker fencing fields so a monitor refresh cannot deserialize large tool
+/// arguments or turn an observability read into an Execution history scan.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExecutionJobMonitorRecord {
+    pub id: String,
+    pub activation_id: String,
+    pub thread_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub target_id: String,
+    pub tool_name: String,
+    pub status: ExecutionJobStatus,
+    pub progress_ref: Option<String>,
+    pub error: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<ExecutionJobRecord> for ExecutionJobMonitorRecord {
+    fn from(job: ExecutionJobRecord) -> Self {
+        Self {
+            id: job.id,
+            activation_id: job.activation_id,
+            thread_id: job.thread_id,
+            context_id: job.context_id,
+            session_id: job.session_id,
+            target_id: job.target_id,
+            tool_name: job.tool_name,
+            status: job.status,
+            progress_ref: job.progress_ref,
+            error: job.error,
+            updated_at: job.updated_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NewExecutionJob {
     pub id: String,
@@ -4758,6 +4795,45 @@ pub trait ExecutionJobStore: Send + Sync {
         &self,
         filter: ExecutionJobFilter,
     ) -> Result<Vec<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded active Job rows for an already selected operator Context set.
+    /// Production stores push the Context predicate before LIMIT so the
+    /// Runtime monitor never scans or truncates against unrelated tenants.
+    async fn list_active_execution_jobs_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ExecutionJobMonitorRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if context_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut selected = std::collections::HashSet::new();
+        let mut jobs = Vec::new();
+        for context_id in context_ids {
+            if !selected.insert(context_id) {
+                continue;
+            }
+            jobs.extend(
+                self.list_execution_jobs(ExecutionJobFilter {
+                    context_id: Some(context_id.clone()),
+                    include_terminal: false,
+                    newest_first: true,
+                    limit: Some(limit),
+                    ..ExecutionJobFilter::default()
+                })
+                .await?
+                .into_iter()
+                .map(ExecutionJobMonitorRecord::from),
+            );
+        }
+        jobs.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        jobs.truncate(limit);
+        Ok(jobs)
+    }
     async fn count_context_active_execution_jobs(
         &self,
         context_id: &str,

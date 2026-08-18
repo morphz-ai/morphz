@@ -20,41 +20,42 @@ use crate::memory::{
     DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
     EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
     EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobContextCounts,
-    ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord,
-    ExecutionNodeStatus, ExecutionRetrySafety, ExecutionTargetAuthorizationFilter,
-    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
-    ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
-    ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetKind,
-    ExecutionTargetMutation, ExecutionTargetRecord, ExecutionTargetRegistration,
-    ExecutionTargetStatus, ExecutionTargetStore, InterruptedDialogueTurn, MessageClaim,
-    MessageDispatchMode, MindProjectionCommit, MindProjectionHead, MindProjectionRecord,
-    MindProjectionStore, MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent,
-    NewApprovalRequest, NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext,
-    NewDelegation, NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge,
-    NewExecutionTargetAuthorization, NewMindProjection, NewNodePairingCode, NewObjective,
-    NewPrincipal, NewRuntimeTimer, NewSchedule, NewScheduledObjective, NewSession, NewThread,
-    NewThreadActivation, NewThreadGroupPlan, NewThreadSignal, ObjectiveCompletionIntent,
-    ObjectiveMutation, ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
-    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
-    ProviderAccountAffinityRecord, ProviderAccountStateRecord, ProviderAccountStateStore,
-    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
-    ProviderRefreshLeaseRecord, QueryFilter, RecallDocument, RecallDocumentKind,
-    RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
-    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
-    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
-    ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
-    SessionProjectionStore, SessionRecord, SessionSignalClaim, SessionStatus, SessionUpdate,
-    SignalOutboxRecord, SignalOutboxStatus, StorageMaintenanceReport, StorageMaintenanceStore,
-    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
-    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus,
-    ThreadGroupPolicy, ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind,
-    ThreadLifecycle, ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
-    ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
-    TransientStorageRetention, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    ExecutionJobFilter, ExecutionJobMonitorRecord, ExecutionJobMutation, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation,
+    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
+    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
+    ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
+    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore,
+    InterruptedDialogueTurn, MessageClaim, MessageDispatchMode, MindProjectionCommit,
+    MindProjectionHead, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord,
+    NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
+    NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext, NewDelegation,
+    NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
+    NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
+    NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
+    NewThreadGroupPlan, NewThreadSignal, ObjectiveCompletionIntent, ObjectiveMutation,
+    ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
+    PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
+    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
+    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
+    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
+    ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
+    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
+    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionSignalClaim,
+    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, StorageMaintenanceReport,
+    StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
+    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
+    ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime,
+    ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord,
+    ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore,
+    ThreadSupervision, ThreadSupervisorKind, TimerStore, TransientStorageRetention,
+    DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
@@ -4799,6 +4800,24 @@ fn execution_job_from_row(
     })
 }
 
+fn execution_job_monitor_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ExecutionJobMonitorRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ExecutionJobMonitorRecord {
+        id: row.get("id"),
+        activation_id: row.get("activation_id"),
+        thread_id: row.get("thread_id"),
+        context_id: row.get("context_id"),
+        session_id: row.get("session_id"),
+        target_id: row.get("target_id"),
+        tool_name: row.get("tool_name"),
+        status: parse_execution_job_status(&row.get::<String, _>("status"))?,
+        progress_ref: row.get("progress_ref"),
+        error: row.get("error"),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
 fn execution_target_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<ExecutionTargetRecord, Box<dyn std::error::Error + Send + Sync>> {
@@ -6944,13 +6963,18 @@ impl SessionDirectoryStore for SqliteStore {
                       c.seed_context_id, c.seed_context_version, c.seed_snapshot_hash,
                       c.seed_projection, c.requested_hard_token_limit, c.token_budget_revision
                FROM cognitive_contexts c
-               LEFT JOIN (
-                   SELECT context_id, MAX(last_activity_at) AS last_activity_at
-                   FROM sessions
-                   GROUP BY context_id
-               ) activity ON activity.context_id = c.id
                WHERE (? OR c.status = 'active')
-               ORDER BY MAX(c.updated_at, COALESCE(activity.last_activity_at, c.updated_at)) DESC,
+               ORDER BY MAX(
+                          c.updated_at,
+                          COALESCE(
+                            (SELECT s.last_activity_at
+                             FROM sessions s
+                             WHERE s.context_id = c.id
+                             ORDER BY s.last_activity_at DESC, s.id
+                             LIMIT 1),
+                            c.updated_at
+                          )
+                        ) DESC,
                         c.id
                LIMIT ?"#,
         )
@@ -18162,6 +18186,32 @@ impl ExecutionJobStore for SqliteStore {
         rows.iter().map(execution_job_from_row).collect()
     }
 
+    async fn list_active_execution_jobs_for_contexts(
+        &self,
+        context_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ExecutionJobMonitorRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if context_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT id, activation_id, thread_id, context_id, session_id, target_id, tool_name, status, progress_ref, error, updated_at FROM execution_jobs WHERE status IN ('queued', 'waiting_approval', 'running') AND context_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for context_id in context_ids {
+            separated.push_bind(context_id);
+        }
+        separated.push_unseparated(") ORDER BY updated_at DESC, id LIMIT ");
+        query.push_bind(i64::try_from(limit)?);
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(execution_job_monitor_from_row)
+            .collect()
+    }
+
     async fn count_context_active_execution_jobs(
         &self,
         context_id: &str,
@@ -25491,6 +25541,73 @@ mod tests {
                 .unwrap(),
             succeeded
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_monitor_execution_jobs_are_context_bounded_and_nonterminal() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let selected = seed_execution_job(
+            &store,
+            "runtime-monitor-selected",
+            false,
+            ExecutionRetrySafety::Idempotent,
+        )
+        .await;
+        let unrelated = seed_execution_job(
+            &store,
+            "runtime-monitor-unrelated",
+            false,
+            ExecutionRetrySafety::Idempotent,
+        )
+        .await;
+
+        let projected = store
+            .list_active_execution_jobs_for_contexts(std::slice::from_ref(&selected.context_id), 16)
+            .await
+            .unwrap();
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].id, selected.id);
+        assert_ne!(projected[0].id, unrelated.id);
+
+        let claimed = match store
+            .claim_execution_job(
+                &selected.id,
+                selected.revision,
+                "runtime-monitor-worker",
+                "runtime-monitor-claim",
+                Utc::now() + chrono::Duration::minutes(1),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected claim: {other:?}"),
+        };
+        let terminal = store
+            .finish_execution_job(
+                &claimed.id,
+                claimed.revision,
+                Some("runtime-monitor-claim"),
+                ExecutionJobTerminal {
+                    status: ExecutionJobStatus::Succeeded,
+                    result_event_id: None,
+                    result_refs: Vec::new(),
+                    error: None,
+                    exit_code: Some(0),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(terminal, ExecutionJobMutation::Updated(_)));
+        assert!(store
+            .list_active_execution_jobs_for_contexts(&[selected.context_id], 16)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -32966,6 +33083,12 @@ mod tests {
                 false,
             ),
             (
+                "runtime monitor active jobs",
+                "EXPLAIN QUERY PLAN SELECT id, activation_id, thread_id, context_id, session_id, target_id, tool_name, status, progress_ref, error, updated_at FROM execution_jobs WHERE status IN ('queued', 'waiting_approval', 'running') AND context_id IN ('ctx', 'other') ORDER BY updated_at DESC, id LIMIT 4000",
+                "idx_execution_jobs_context_status",
+                true,
+            ),
+            (
                 "pending approvals by Context",
                 "EXPLAIN QUERY PLAN SELECT approvals.* FROM approval_requests approvals INNER JOIN execution_jobs jobs ON jobs.id = approvals.job_id WHERE jobs.context_id = 'ctx' AND approvals.status IN ('pending_auto', 'pending_human') ORDER BY approvals.created_at, approvals.id",
                 "idx_approval_requests_status",
@@ -33014,6 +33137,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn recent_contexts_use_per_context_session_index_instead_of_global_session_aggregation() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let rows = sqlx::query(
+            r#"EXPLAIN QUERY PLAN
+               SELECT c.id
+               FROM cognitive_contexts c
+               WHERE c.status = 'active'
+               ORDER BY MAX(
+                 c.updated_at,
+                 COALESCE(
+                   (SELECT s.last_activity_at
+                    FROM sessions s
+                    WHERE s.context_id = c.id
+                    ORDER BY s.last_activity_at DESC, s.id
+                    LIMIT 1),
+                   c.updated_at
+                 )
+               ) DESC, c.id
+               LIMIT 41"#,
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("idx_sessions_context_activity"),
+            "recent Context lookup must use the per-Context Session activity index: {plan}"
+        );
+        assert!(
+            !plan.contains("SCAN sessions") && !plan.contains("SCAN s"),
+            "recent Context lookup must not aggregate the complete Session table: {plan}"
+        );
     }
 
     #[tokio::test]

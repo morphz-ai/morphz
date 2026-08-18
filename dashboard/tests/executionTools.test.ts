@@ -70,6 +70,56 @@ test('a selected call remains running until its Tool Output arrives', () => {
   }])[0]?.status, 'running')
 })
 
+test('a successful background launch remains running until its durable Job terminates', () => {
+  const launchEvents = [{
+    timestamp: '2026-08-18T14:32:00Z',
+    topic: 'chat/assistant_call',
+    payload: {
+      tool_calls: [{
+        id: 'call-background',
+        type: 'function',
+        function: { name: 'exec', arguments: '{"command":"./morphz exec benchmark","background":true}' },
+      }],
+    },
+  }, {
+    timestamp: '2026-08-18T14:32:01Z',
+    type: 'tool_output',
+    topic: 'chat/tool_output',
+    payload: {
+      tool_call_id: 'call-background',
+      tool_name: 'exec',
+      tool_status: 'success',
+      execution: 'background',
+      task_id: 'job-background',
+      task_status: 'running',
+      text: 'background task started',
+    },
+  }]
+
+  const running = buildToolTimeline(launchEvents)
+  assert.equal(running.length, 1)
+  assert.equal(running[0]?.status, 'running')
+  assert.equal(running[0]?.backgroundTaskId, 'job-background')
+
+  const completed = buildToolTimeline([...launchEvents, {
+    timestamp: '2026-08-18T14:42:01Z',
+    type: 'tool_output',
+    topic: 'chat/tool_output',
+    payload: {
+      tool_call_id: 'call-background:background',
+      tool_name: 'exec/background',
+      tool_status: 'succeeded',
+      task_id: 'job-background',
+      task_status: 'succeeded',
+      text: 'background task completed',
+    },
+  }])
+  assert.equal(completed.length, 1)
+  assert.equal(completed[0]?.id, 'call-background')
+  assert.equal(completed[0]?.status, 'succeeded')
+  assert.equal(completed[0]?.result, 'background task completed')
+})
+
 test('a truncated Runtime preview never replaces complete Assistant Call arguments', () => {
   const completeArguments = JSON.stringify({
     content: 'x'.repeat(6_000),

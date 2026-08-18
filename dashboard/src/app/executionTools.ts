@@ -11,6 +11,8 @@ export interface ToolTimelineItem extends PresentedToolCall {
   timestamp: string
   status: string
   result?: string
+  /** Durable physical task launched by an asynchronous tool invocation. */
+  backgroundTaskId?: string
 }
 
 export interface ExecutionTargetLabelSource {
@@ -83,6 +85,7 @@ export function executionTargetIds(argumentsText: string): string[] {
 /** Build the durable call/result projection used by execution-output cards. */
 export function buildToolTimeline(events: ReadonlyArray<ToolTimelineEvent>): ToolTimelineItem[] {
   const calls = new Map<string, ToolTimelineItem>()
+  const backgroundTaskOwners = new Map<string, string>()
   for (const event of events) {
     const selectedCalls = event.topic === 'chat/assistant_call'
       ? assistantToolCalls(event.payload)
@@ -119,7 +122,36 @@ export function buildToolTimeline(events: ReadonlyArray<ToolTimelineEvent>): Too
     if (event.type !== 'tool_output' && event.topic !== 'chat/tool_output') continue
     const id = typeof event.payload.tool_call_id === 'string' ? event.payload.tool_call_id : ''
     if (!id) continue
+    const taskId = nonEmptyString(event.payload.task_id)
+    const taskStatus = nonEmptyString(event.payload.task_status)
+    const isBackgroundLaunch = event.payload.execution === 'background'
+    const isBackgroundCompletion = event.payload.tool_name === 'exec/background'
+      || id.endsWith(':background')
+
+    // `exec(background=true)` has two distinct lifecycles: the foreground
+    // tool invocation completes once the process is launched, while the
+    // durable Execution Job remains queued/running until its own terminal
+    // output arrives. Keep the original Assistant Call as the visual owner and
+    // project the physical Job state onto it instead of claiming that the
+    // whole operation completed when only the launcher succeeded.
+    if (taskId && isBackgroundCompletion) {
+      const ownerCallId = backgroundTaskOwners.get(taskId)
+      const owner = ownerCallId ? calls.get(ownerCallId) : undefined
+      if (owner) {
+        calls.set(owner.id, {
+          ...owner,
+          status: taskStatus ?? nonEmptyString(event.payload.tool_status) ?? owner.status,
+          result: typeof event.payload.text === 'string' ? event.payload.text : owner.result,
+          backgroundTaskId: taskId,
+        })
+        continue
+      }
+    }
     const previous = calls.get(id)
+    const backgroundTaskId = taskId && (isBackgroundLaunch || isBackgroundCompletion)
+      ? taskId
+      : previous?.backgroundTaskId
+    if (backgroundTaskId && isBackgroundLaunch) backgroundTaskOwners.set(backgroundTaskId, id)
     calls.set(id, {
       id,
       name: typeof event.payload.tool_name === 'string' ? event.payload.tool_name : previous?.name ?? 'tool',
@@ -127,8 +159,11 @@ export function buildToolTimeline(events: ReadonlyArray<ToolTimelineEvent>): Too
       arguments_chars: previous?.arguments_chars,
       truncated: previous?.truncated,
       timestamp: previous?.timestamp ?? event.timestamp,
-      status: typeof event.payload.tool_status === 'string' ? event.payload.tool_status : 'success',
+      status: backgroundTaskId && taskStatus
+        ? taskStatus
+        : typeof event.payload.tool_status === 'string' ? event.payload.tool_status : 'success',
       result: typeof event.payload.text === 'string' ? event.payload.text : '',
+      backgroundTaskId,
     })
   }
   return [...calls.values()].sort((left, right) => left.timestamp.localeCompare(right.timestamp))

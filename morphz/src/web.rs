@@ -10516,6 +10516,10 @@ account = "xai-account"
             runtime_overview_json["contexts"][0]["sessions"][0]["session"]["id"],
             json!("api-observability-session")
         );
+        assert!(runtime_overview_json["summary"]["active_execution_jobs"].is_number());
+        assert!(runtime_overview_json["summary"]["waiting"].is_number());
+        assert!(runtime_overview_json["contexts"][0]["sessions"][0]["objectives"].is_array());
+        assert!(runtime_overview_json["contexts"][0]["sessions"][0]["threads"].is_array());
 
         let full_context = handle_get_session_context(
             State(Arc::clone(&state)),

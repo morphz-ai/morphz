@@ -2777,6 +2777,166 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .runtime-diagnostics header { margin-bottom: 9px; color: var(--accent); font: 700 9px/1 var(--mono); text-transform: uppercase; }
 .runtime-diagnostics pre { max-height: 300px; margin: 0; overflow: auto; color: var(--text-secondary); font: 9px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
+.runtime-monitor { overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface-soft); box-shadow: var(--shadow-sm); }
+.runtime-monitor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 17px 18px 15px; border-bottom: 1px solid var(--line); }
+.runtime-monitor-heading > div { display: grid; min-width: 0; gap: 4px; }
+.runtime-monitor-heading span { color: var(--accent); font: 700 8px/1 var(--mono); letter-spacing: .12em; }
+.runtime-monitor-heading h2 { margin: 0; color: var(--text); font-size: 17px; letter-spacing: -.02em; }
+.runtime-monitor-heading p { max-width: 760px; margin: 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
+.runtime-monitor-heading > button { display: inline-flex; min-height: 31px; flex: 0 0 auto; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--text-soft); background: var(--surface); font-size: 9px; }
+.runtime-monitor-heading > button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-strong); }
+.runtime-monitor-summary { display: grid; grid-template-columns: repeat(4, minmax(92px, .65fr)) minmax(230px, 1.4fr); gap: 1px; border-bottom: 1px solid var(--line); background: var(--line); }
+.runtime-monitor-summary > button,
+.runtime-monitor-summary > span { min-width: 0; min-height: 62px; padding: 11px 14px; background: var(--surface); }
+.runtime-monitor-summary > button { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; color: var(--muted); text-align: left; }
+.runtime-monitor-summary > button:hover { background: var(--surface-elevated); }
+.runtime-monitor-summary > button.is-active { box-shadow: inset 0 -2px var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+.runtime-monitor-summary > button.has-attention strong { color: var(--red); }
+.runtime-monitor-summary small { overflow: hidden; color: inherit; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-summary strong { color: var(--text); font: 700 19px/1 var(--mono); }
+.runtime-monitor-summary > span { display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--faint); }
+.runtime-monitor-summary > span small { margin-right: auto; }
+.runtime-monitor-summary > span em { color: var(--muted); font: 8px/1 var(--mono); font-style: normal; }
+.runtime-monitor-summary > span strong { color: var(--accent); font-size: 15px; }
+.runtime-monitor-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface-soft); }
+.runtime-monitor-toolbar label { display: flex; min-width: 220px; max-width: 560px; flex: 1; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface); color: var(--muted); }
+.runtime-monitor-toolbar label:focus-within { border-color: var(--accent); }
+.runtime-monitor-toolbar input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--text-soft); background: transparent; font: 9px var(--sans); }
+.runtime-monitor-toolbar time { flex: 0 0 auto; color: var(--faint); font: 8px/1 var(--mono); }
+.runtime-monitor-list { display: grid; }
+.runtime-monitor-session { border-bottom: 1px solid var(--line); background: var(--surface); }
+.runtime-monitor-session:last-child { border-bottom: 0; }
+.runtime-monitor-session > header { display: grid; grid-template-columns: max-content 13px minmax(170px, 1fr) minmax(80px, auto) auto; align-items: center; gap: 9px; padding: 11px 14px; border-left: 2px solid transparent; background: var(--surface-soft); }
+.runtime-monitor-session.state-running > header { border-left-color: var(--green); }
+.runtime-monitor-session.state-queued > header,
+.runtime-monitor-session.state-waiting > header,
+.runtime-monitor-session.state-paused > header,
+.runtime-monitor-session.state-waiting_user > header { border-left-color: var(--yellow); }
+.runtime-monitor-session.state-needs_attention > header { border-left-color: var(--red); }
+.runtime-monitor-session > header > svg { color: var(--accent); }
+.runtime-monitor-session > header > button { display: flex; min-width: 0; align-items: baseline; gap: 8px; text-align: left; }
+.runtime-monitor-session > header > button strong { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-session > header > button small { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-session > header > button:hover strong { color: var(--accent-strong); }
+.runtime-monitor-session > header > em { display: inline-flex; min-width: 0; align-items: center; gap: 4px; overflow: hidden; color: var(--faint); font: 8px/1 var(--mono); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-session-counts { color: var(--muted); font: 8px/1 var(--mono); white-space: nowrap; }
+.runtime-monitor-session-body { display: grid; gap: 8px; padding: 10px 12px 12px 28px; }
+.runtime-monitor-state { display: inline-flex; min-width: 76px; align-items: center; gap: 5px; color: var(--muted); font: 700 8px/1 var(--mono); white-space: nowrap; }
+.runtime-monitor-state.state-running { color: var(--green); }
+.runtime-monitor-state.state-queued,
+.runtime-monitor-state.state-waiting,
+.runtime-monitor-state.state-paused,
+.runtime-monitor-state.state-waiting_user { color: var(--yellow); }
+.runtime-monitor-state.state-needs_attention { color: var(--red); }
+.runtime-monitor-state.state-running svg,
+.runtime-monitor-state.state-queued svg { animation: pulse 1.8s ease-in-out infinite; }
+.runtime-monitor-objective { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
+.runtime-monitor-objective > header { display: grid; grid-template-columns: max-content 13px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 10px 12px; }
+.runtime-monitor-objective > header > svg { color: var(--accent); }
+.runtime-monitor-objective > header > strong { overflow: hidden; color: var(--text-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-objective > header > code,
+.runtime-monitor-objective > header > time { color: var(--faint); font: 8px/1 var(--mono); }
+.runtime-monitor-objective-meta { display: flex; min-height: 0; flex-wrap: wrap; gap: 7px; padding: 0 12px 9px 109px; }
+.runtime-monitor-objective-meta > span:not(.runtime-monitor-wait) { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-wait { display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px; border-radius: var(--radius-xs); color: var(--yellow); background: var(--yellow-soft); font: 700 8px/1 var(--mono); }
+.runtime-monitor-wait code { color: inherit; font: inherit; opacity: .85; }
+.runtime-monitor-thread-list { display: grid; border-top: 1px solid var(--line); }
+.runtime-monitor-thread { border-bottom: 1px solid var(--line); background: var(--surface); }
+.runtime-monitor-thread:last-child { border-bottom: 0; }
+.runtime-monitor-thread > summary { display: grid; grid-template-columns: max-content 13px minmax(110px, .5fr) minmax(80px, .5fr) minmax(60px, .5fr) auto 12px; align-items: center; gap: 8px; padding: 9px 12px; list-style: none; cursor: pointer; }
+.runtime-monitor-thread > summary::-webkit-details-marker { display: none; }
+.runtime-monitor-thread > summary > svg { color: var(--accent); }
+.runtime-monitor-thread > summary > svg:last-child { color: var(--faint); transition: transform .15s ease; }
+.runtime-monitor-thread[open] > summary > svg:last-child { transform: rotate(180deg); }
+.runtime-monitor-thread > summary strong { overflow: hidden; color: var(--text-soft); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-thread > summary code,
+.runtime-monitor-thread > summary em,
+.runtime-monitor-thread > summary time { overflow: hidden; color: var(--faint); font: 8px/1 var(--mono); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-thread-detail { display: grid; gap: 1px; padding: 0 12px 10px 109px; }
+.runtime-monitor-activation,
+.runtime-monitor-job { display: grid; min-width: 0; grid-template-columns: 7px 13px minmax(130px, 1fr) minmax(80px, auto) auto; align-items: center; gap: 8px; padding: 7px 9px; border-radius: var(--radius-xs); background: var(--surface-soft); }
+.runtime-monitor-activation { grid-template-columns: 7px minmax(130px, 1fr) minmax(80px, auto) auto; }
+.runtime-monitor-activation > i,
+.runtime-monitor-job > i { width: 6px; height: 6px; border-radius: 50%; background: var(--yellow); }
+.runtime-monitor-activation > i[data-status="running"],
+.runtime-monitor-job > i[data-status="running"] { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+.runtime-monitor-job > i[data-status="waiting_approval"] { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
+.runtime-monitor-activation > span,
+.runtime-monitor-job > span { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.runtime-monitor-activation small { color: var(--muted); font-size: 8px; }
+.runtime-monitor-activation code,
+.runtime-monitor-job code { overflow: hidden; color: var(--faint); font: 8px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-job strong { overflow: hidden; color: var(--text-soft); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-activation em,
+.runtime-monitor-job em { overflow: hidden; color: var(--muted); font: 8px/1 var(--mono); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-activation b,
+.runtime-monitor-job b { color: var(--muted); font: 700 8px/1 var(--mono); white-space: nowrap; }
+.runtime-monitor-thread-detail > p,
+.runtime-monitor-thread-list > p { margin: 0; padding: 9px; color: var(--faint); font-size: 8px; }
+.runtime-monitor-thread-detail > button { justify-self: end; margin-top: 5px; padding: 5px 7px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--muted); font-size: 8px; }
+.runtime-monitor-thread-detail > button:hover { border-color: var(--accent); color: var(--accent-strong); }
+.runtime-monitor-standalone { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+.runtime-monitor-standalone > header { display: flex; align-items: center; gap: 7px; padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--accent); }
+.runtime-monitor-standalone > header strong { color: var(--text-soft); font-size: 9px; }
+.runtime-monitor-session-jobs > .runtime-monitor-thread-detail { padding: 8px; }
+.runtime-monitor-error,
+.runtime-monitor-loading,
+.runtime-monitor-empty { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 90px; padding: 18px; color: var(--muted); font-size: 9px; }
+.runtime-monitor-error { min-height: 44px; color: var(--red); }
+.runtime-monitor-empty { flex-direction: column; }
+.runtime-monitor-empty strong { color: var(--text-soft); font-size: 10px; }
+.runtime-monitor-empty span { color: var(--faint); }
+.runtime-monitor-bounded { margin: 0; padding: 9px 12px; border-top: 1px solid var(--line); color: var(--faint); font-size: 8px; text-align: center; }
+.runtime-infrastructure { margin-top: 14px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-soft); }
+.runtime-infrastructure > summary { display: grid; grid-template-columns: 15px minmax(0, 1fr) 14px; align-items: center; gap: 10px; padding: 12px 14px; list-style: none; cursor: pointer; }
+.runtime-infrastructure > summary::-webkit-details-marker { display: none; }
+.runtime-infrastructure > summary > svg { color: var(--accent); }
+.runtime-infrastructure > summary > svg:last-child { color: var(--faint); transition: transform .15s ease; }
+.runtime-infrastructure[open] > summary > svg:last-child { transform: rotate(180deg); }
+.runtime-infrastructure > summary span { display: grid; gap: 3px; }
+.runtime-infrastructure > summary strong { color: var(--text-soft); font-size: 10px; }
+.runtime-infrastructure > summary small { color: var(--faint); font-size: 8px; }
+.runtime-infrastructure > div { display: grid; gap: 14px; padding: 0 14px 14px; border-top: 1px solid var(--line); }
+.runtime-infrastructure .runtime-health-grid { margin-top: 14px; }
+.runtime-infrastructure-toolbar { display: flex; justify-content: flex-end; padding-top: 12px; }
+.runtime-infrastructure-toolbar > button { display: inline-flex; min-height: 31px; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--text-soft); background: var(--surface); font-size: 9px; }
+.runtime-infrastructure-toolbar > button:hover { border-color: var(--accent); color: var(--accent-strong); }
+
+@media (max-width: 900px) {
+  .runtime-monitor-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .runtime-monitor-summary > span { grid-column: 1 / -1; min-height: 46px; }
+  .runtime-monitor-session > header { grid-template-columns: max-content 13px minmax(0, 1fr) auto; }
+  .runtime-monitor-session > header > em { display: none; }
+  .runtime-monitor-objective > header { grid-template-columns: max-content 13px minmax(0, 1fr) auto; }
+  .runtime-monitor-objective > header > time { display: none; }
+  .runtime-monitor-objective-meta,
+  .runtime-monitor-thread-detail { padding-left: 12px; }
+  .runtime-monitor-thread > summary { grid-template-columns: max-content 13px minmax(0, 1fr) auto 12px; }
+  .runtime-monitor-thread > summary > em,
+  .runtime-monitor-thread > summary > time { display: none; }
+}
+
+@media (max-width: 620px) {
+  .runtime-monitor-heading { align-items: stretch; flex-direction: column; }
+  .runtime-monitor-heading > button { align-self: flex-start; }
+  .runtime-monitor-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .runtime-monitor-toolbar { align-items: stretch; flex-direction: column; gap: 7px; }
+  .runtime-monitor-toolbar label { min-width: 0; max-width: none; }
+  .runtime-monitor-toolbar time { align-self: flex-end; }
+  .runtime-monitor-session > header { grid-template-columns: max-content 13px minmax(0, 1fr); }
+  .runtime-monitor-session-counts { grid-column: 3; }
+  .runtime-monitor-session-body { padding-left: 10px; }
+  .runtime-monitor-objective > header { grid-template-columns: max-content 13px minmax(0, 1fr); }
+  .runtime-monitor-objective > header > code { display: none; }
+  .runtime-monitor-thread > summary { grid-template-columns: max-content 13px minmax(0, 1fr) 12px; }
+  .runtime-monitor-thread > summary > code { display: none; }
+  .runtime-monitor-activation,
+  .runtime-monitor-job { grid-template-columns: 7px minmax(0, 1fr) auto; }
+  .runtime-monitor-job > svg,
+  .runtime-monitor-activation > em,
+  .runtime-monitor-job > em { display: none; }
+}
+
 .composer-area { position: relative; z-index: 16; padding: 0 var(--space-xl) 14px; background: linear-gradient(180deg, transparent 0%, var(--bg) 18%); }
 .composer-status { display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-items: start; align-items: center; gap: 12px; padding: 11px 1px; color: var(--muted); font-family: var(--mono); font-size: 10px; }
 .composer-status.has-approval { grid-template-columns: minmax(0, 1fr) auto auto; }

@@ -614,21 +614,25 @@ impl SessionDirectoryStore for PostgresStore {
                     c.seed_context_id, c.seed_context_version, c.seed_snapshot_hash, \
                     c.seed_projection, c.requested_hard_token_limit, c.token_budget_revision \
              FROM cognitive_contexts c \
-             LEFT JOIN ( \
-                 SELECT context_id, MAX(last_activity_at) AS last_activity_at \
-                 FROM sessions GROUP BY context_id \
-             ) activity ON activity.context_id = c.id \
              WHERE ($1 OR c.status = 'active') \
-             ORDER BY GREATEST(c.updated_at, COALESCE(activity.last_activity_at, c.updated_at)) DESC, \
+             ORDER BY GREATEST( \
+                       c.updated_at, \
+                       COALESCE( \
+                         (SELECT s.last_activity_at FROM sessions s \
+                          WHERE s.context_id = c.id \
+                          ORDER BY s.last_activity_at DESC, s.id LIMIT 1), \
+                         c.updated_at \
+                       ) \
+                     ) DESC, \
                       c.id ASC LIMIT $2",
         )
-            .bind(include_archived)
-            .bind(i64::try_from(limit)?)
-            .fetch_all(&self.pool)
-            .await?
-            .iter()
-            .map(context_from_row)
-            .collect()
+        .bind(include_archived)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(context_from_row)
+        .collect()
     }
 
     async fn update_context(

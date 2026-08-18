@@ -494,10 +494,12 @@
     "emptyDescription": "当前上下文尚未产生匹配的持久事实。"
   },
   "runtime": {
-    "eyebrow": "系统控制面",
-    "heading": "运行时状态",
-    "description": "模型提供方、模型、容量、上下文压力和服务连接的统一权威视图。",
+    "eyebrow": "运行控制面",
+    "heading": "运行监视",
+    "description": "查看此刻正在执行、排队、等待或需要关注的持久化工作。",
     "refresh": "刷新",
+    "infrastructure": "基础设施与内核状态",
+    "infrastructureHint": "执行节点、容量、凭证、恢复与诊断",
     "connection": "连接",
     "model": "模型",
     "providerUnknown": "模型提供方未知",
@@ -591,6 +593,62 @@
     "reservedSlots": "对话/交付预留",
     "boundaryTitle": "运行时页面不从前端猜测系统状态",
     "boundaryDescription": "当前缺少的存储、沙箱、身份和恢复统计会先成为运行时开发接口的查询对象，再由此页面呈现。"
+  },
+  "runtimeMonitor": {
+    "eyebrow": "实时执行树",
+    "title": "当前工作",
+    "description": "按上下文、会话和因果归属展示非终态目标、线程、求值激活与执行作业。",
+    "refresh": "刷新快照",
+    "loading": "正在读取当前运行快照…",
+    "search": "搜索会话、目标、线程、工具或执行目标…",
+    "snapshotAt": "快照 {{time}}",
+    "filters": {
+      "live": "全部活动",
+      "running": "执行与排队",
+      "waiting": "等待与暂停",
+      "attention": "需要关注"
+    },
+    "states": {
+      "needs_attention": "需要关注",
+      "waiting_user": "等待用户",
+      "running": "执行中",
+      "queued": "已排队",
+      "paused": "已暂停",
+      "waiting": "等待中",
+      "idle": "空闲"
+    },
+    "physicalWork": "物理工作",
+    "activations": "求值",
+    "jobs": "作业",
+    "activation": "求值激活",
+    "activationStates": {
+      "queued": "排队",
+      "running": "执行中"
+    },
+    "jobStates": {
+      "queued": "排队",
+      "waiting_approval": "等待审批",
+      "running": "执行中"
+    },
+    "waitKinds": {
+      "tool_task": "等待工具任务",
+      "delegation": "等待委派",
+      "thread_group": "等待线程组",
+      "timer": "等待定时器",
+      "permission": "等待权限",
+      "user_input": "等待用户输入",
+      "external_event": "等待外部事件",
+      "resource_available": "等待资源"
+    },
+    "sessionCounts": "{{objectives}} 目标 · {{threads}} 线程 · {{jobs}} 作业",
+    "sessionJobs": "仍在运行的执行作业",
+    "standaloneThreads": "独立线程",
+    "objectiveWithoutThread": "目标当前没有开放线程；运行时正在等待下一项满足条件的工作。",
+    "threadWaiting": "线程当前没有活动求值或执行作业。",
+    "openThread": "查看因果链",
+    "empty": "当前没有匹配的活动工作",
+    "emptyHint": "所有工作均已收敛，或当前筛选条件下没有运行项。",
+    "bounded": "监视器只读取有界的非终态权威投影，不扫描完整事件历史。"
   },
   "header": {
     "context": "上下文",

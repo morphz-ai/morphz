@@ -1,4 +1,4 @@
-export type AuthoritativeQuery = 'catalog' | 'session' | 'overview' | 'scheduler' | 'events' | 'thread' | 'mind-transactions'
+export type AuthoritativeQuery = 'catalog' | 'session' | 'overview' | 'scheduler' | 'events' | 'thread' | 'mind-transactions' | 'execution-jobs'
 
 const ephemeralTopics = new Set([
   'runtime/model_stream',
@@ -37,6 +37,9 @@ export function invalidatedQueriesForTopic(topic: string): AuthoritativeQuery[] 
     || topic === 'chat/tool_output'
   ) {
     queries.push('thread')
+  }
+  if (topic.startsWith('runtime/execution') || topic === 'chat/tool_output') {
+    queries.push('execution-jobs')
   }
   return queries
 }

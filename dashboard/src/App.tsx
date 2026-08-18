@@ -3125,6 +3125,17 @@ export default function App() {
     }
   }, [])
 
+  const loadExecutionJobs = useCallback(async () => {
+    try {
+      const result = await DASHBOARD_API.tryGet<{ jobs?: ExecutionJobSummary[] }>(
+        '/api/execution-jobs?include_terminal=true&newest_first=true&limit=100',
+      )
+      if (result) setExecutionJobs(result.jobs ?? [])
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [])
+
   const searchPrincipalDirectory = useCallback(async (
     query: string,
     cursor = '',
@@ -3518,8 +3529,9 @@ export default function App() {
   const loadRuntimeOverview = useCallback(async () => {
     setRuntimeOverviewLoading(true)
     try {
+      const sessionsPerContext = activeViewRef.current === 'runtime' ? 24 : 6
       const snapshot = await DASHBOARD_API.get<RuntimeOverview>(
-        '/api/overview?context_limit=40&sessions_per_context=6',
+        `/api/overview?context_limit=40&sessions_per_context=${sessionsPerContext}`,
       )
       setRuntimeOverview(snapshot)
       setRuntimeOverviewError('')
@@ -3917,14 +3929,72 @@ export default function App() {
   }, [loadOverview, route.contextId, selectedContextId, selectedSessionId, view])
 
   useEffect(() => {
-    if (view !== 'overview' || route.contextId) return
+    const globalOverview = view === 'overview' && !route.contextId
+    if (!globalOverview && view !== 'runtime') return
     const initial = window.setTimeout(() => void loadRuntimeOverview(), 0)
-    const interval = window.setInterval(() => void loadRuntimeOverview(), 10_000)
+    // The Runtime monitor is invalidation-driven while visible. Do not add a
+    // periodic scheduler scan merely to animate a dashboard; durable Runtime
+    // events already invalidate this bounded projection. Keep the established
+    // global Overview fallback interval only on its original page.
+    const interval = globalOverview
+      ? window.setInterval(() => void loadRuntimeOverview(), 10_000)
+      : undefined
     return () => {
       window.clearTimeout(initial)
-      window.clearInterval(interval)
+      if (interval !== undefined) window.clearInterval(interval)
     }
   }, [loadRuntimeOverview, route.contextId, view])
+
+  useEffect(() => {
+    if (view !== 'runtime') return
+    let socket: WebSocket | undefined
+    let refreshTimer: number | undefined
+    let jobsRefreshTimer: number | undefined
+    let reconnectTimer: number | undefined
+    let disposed = false
+    const scheduleRefresh = () => {
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+      refreshTimer = window.setTimeout(() => void loadRuntimeOverview(), 500)
+    }
+    const scheduleExecutionJobsRefresh = () => {
+      if (jobsRefreshTimer !== undefined) window.clearTimeout(jobsRefreshTimer)
+      jobsRefreshTimer = window.setTimeout(() => void loadExecutionJobs(), 500)
+    }
+    const connect = () => {
+      if (disposed) return
+      const params = new URLSearchParams()
+      if (CORE_TOKEN) params.set('token', CORE_TOKEN)
+      const query = params.size > 0 ? `?${params}` : ''
+      socket = new WebSocket(`${CORE_WS_URL}${query}`)
+      socket.onopen = () => {
+        scheduleRefresh()
+        scheduleExecutionJobsRefresh()
+      }
+      socket.onmessage = messageEvent => {
+        try {
+          const event = JSON.parse(messageEvent.data) as MorphzEvent
+          const invalidated = invalidatedQueriesForTopic(event.topic)
+          if (invalidated.includes('overview')) scheduleRefresh()
+          if (invalidated.includes('execution-jobs')) scheduleExecutionJobsRefresh()
+        } catch {
+          // The primary Session socket owns user-facing parse diagnostics.
+          // This connection is only an invalidation channel.
+        }
+      }
+      socket.onclose = () => {
+        if (!disposed) reconnectTimer = window.setTimeout(connect, 3_000)
+      }
+      socket.onerror = () => socket?.close()
+    }
+    connect()
+    return () => {
+      disposed = true
+      socket?.close()
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+      if (jobsRefreshTimer !== undefined) window.clearTimeout(jobsRefreshTimer)
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
+    }
+  }, [loadExecutionJobs, loadRuntimeOverview, view])
 
   useEffect(() => {
     if (view === 'overview' && !route.contextId) return
@@ -4057,7 +4127,11 @@ export default function App() {
       if (!refreshesSession && invalidated.includes('overview')) {
         void loadOverview(selectedContextId, selectedSessionId)
       }
-      if (activeViewRef.current === 'overview' && !route.contextId && invalidated.includes('overview')) {
+      if (
+        activeViewRef.current === 'overview'
+        && !route.contextId
+        && invalidated.includes('overview')
+      ) {
         void loadRuntimeOverview()
       }
       if (view === 'cognition' && invalidated.includes('session')) {
@@ -7926,6 +8000,9 @@ export default function App() {
 
           {view === 'runtime' && (
             <RuntimePage
+              overview={runtimeOverview}
+              overviewLoading={runtimeOverviewLoading}
+              overviewError={runtimeOverviewError}
               connection={t(`connection.${wsStatus}`)}
               endpoint={CORE_HTTP_URL}
               model={status?.model ?? t('model.unavailable')}
@@ -7959,6 +8036,15 @@ export default function App() {
               capabilityLeases={capabilityLeases}
               executionJobs={executionJobs}
               onRefresh={() => void loadCatalog()}
+              onRefreshOverview={() => void loadRuntimeOverview()}
+              onOpenSession={(contextId, sessionId) => {
+                const session = sessions.find(item => item.id === sessionId)
+                if (session) setSelectedAgentId(session.agent_id)
+                setSelectedContextId(contextId)
+                setSelectedSessionId(sessionId)
+                navigate(dashboardPath('dialogue', contextId, sessionId))
+              }}
+              onOpenThread={(contextId, threadId) => navigate(threadPath(contextId, threadId))}
               onOpenCredentials={() => setView('credentials')}
               onAuditProjection={() => void auditMindProjection()}
               onSetTargetStatus={(targetId, revision, nextStatus) => void setExecutionTargetStatus(targetId, revision, nextStatus)}

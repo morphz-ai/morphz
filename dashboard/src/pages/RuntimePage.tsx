@@ -1,9 +1,14 @@
-import { Brain, CheckCircle2, Database, GitBranch, KeyRound, Layers3, Radio, RefreshCw, Server, ShieldCheck, Terminal, TriangleAlert } from 'lucide-react'
+import { Brain, CheckCircle2, ChevronDown, Database, GitBranch, KeyRound, Layers3, Radio, RefreshCw, Server, ShieldCheck, Terminal, TriangleAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { statusLabel } from '../app/presentation'
+import { RuntimeMonitor } from './RuntimeMonitor'
+import type { RuntimeOverview } from './RuntimeOverviewPage'
 
 interface RuntimePageProps {
+  overview: RuntimeOverview | null
+  overviewLoading: boolean
+  overviewError: string
   connection: string
   endpoint: string
   model: string
@@ -54,6 +59,9 @@ interface RuntimePageProps {
   capabilityLeases: Array<{ id: string; revision: number; thread_id: string; target_id: string; capabilities: string[]; status: string; expires_at: string }>
   executionJobs: Array<{ id: string; revision: number; thread_id: string; target_id: string; tool_name: string; status: string; claimed_by?: string; progress_ref?: string; created_at: string }>
   onRefresh: () => void
+  onRefreshOverview: () => void
+  onOpenSession: (contextId: string, sessionId: string) => void
+  onOpenThread: (contextId: string, threadId: string) => void
   onOpenCredentials: () => void
   onAuditProjection: () => void
   onSetTargetStatus: (targetId: string, revision: number, status: 'online' | 'disabled') => void
@@ -96,8 +104,21 @@ export function RuntimePage(props: RuntimePageProps) {
     <section className="runtime-view">
       <header className="workspace-heading">
         <div><span>{t('runtime.eyebrow').toUpperCase()}</span><h1>{t('runtime.heading')}</h1><p>{t('runtime.description')}</p></div>
-        <button type="button" onClick={props.onRefresh}><RefreshCw size={14} /> {t('runtime.refresh')}</button>
       </header>
+      <RuntimeMonitor
+        overview={props.overview}
+        loading={props.overviewLoading}
+        error={props.overviewError}
+        onRefresh={props.onRefreshOverview}
+        onOpenSession={props.onOpenSession}
+        onOpenThread={props.onOpenThread}
+      />
+      <details className="runtime-infrastructure">
+        <summary><Server size={14} /><span><strong>{t('runtime.infrastructure')}</strong><small>{t('runtime.infrastructureHint')}</small></span><ChevronDown size={14} /></summary>
+        <div>
+      <div className="runtime-infrastructure-toolbar">
+        <button type="button" onClick={props.onRefresh}><RefreshCw size={13} /> {t('runtime.refresh')}</button>
+      </div>
       <div className="runtime-health-grid">
         <article><Radio size={18} /><span><small>{t('runtime.connection').toUpperCase()}</small><strong>{props.connection}</strong><em>{props.endpoint}</em></span></article>
         <article><Brain size={18} /><span><small>{t('runtime.model').toUpperCase()}</small><strong>{props.model}</strong><em>{props.provider}</em></span></article>
@@ -261,6 +282,8 @@ export function RuntimePage(props: RuntimePageProps) {
         ) : <p>{t('runtime.projectionAuditNotRun')}</p>}
       </section>
       <div className="runtime-boundary-note"><Database size={16} /><span><strong>{t('runtime.boundaryTitle')}</strong><small>{t('runtime.boundaryDescription')}</small></span></div>
+        </div>
+      </details>
     </section>
   )
 }

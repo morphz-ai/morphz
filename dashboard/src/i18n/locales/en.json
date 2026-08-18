@@ -494,10 +494,12 @@
     "emptyDescription": "The current Context has no matching durable facts yet."
   },
   "runtime": {
-    "eyebrow": "System control plane",
-    "heading": "Runtime status",
-    "description": "A unified authoritative view of Provider, model, capacity, Context pressure and service connectivity.",
+    "eyebrow": "Runtime control plane",
+    "heading": "Runtime Monitor",
+    "description": "Inspect durable work that is running, queued, waiting, paused, or requires attention now.",
     "refresh": "Refresh",
+    "infrastructure": "Infrastructure and kernel state",
+    "infrastructureHint": "Execution nodes, capacity, credentials, recovery, and diagnostics",
     "connection": "Connection",
     "model": "Model",
     "providerUnknown": "Provider unknown",
@@ -591,6 +593,62 @@
     "reservedSlots": "Dialogue/delivery reserve",
     "boundaryTitle": "The Runtime page does not infer system state in the browser",
     "boundaryDescription": "Missing Storage, Sandbox, Identity and recovery statistics will first become Runtime/SDK query objects, then be presented here."
+  },
+  "runtimeMonitor": {
+    "eyebrow": "LIVE EXECUTION TREE",
+    "title": "Current work",
+    "description": "Group non-terminal Objectives, Threads, Activations, and Execution Jobs by Context, Session, and causal ownership.",
+    "refresh": "Refresh snapshot",
+    "loading": "Loading the current Runtime snapshot…",
+    "search": "Search Session, Objective, Thread, tool, or Execution Target…",
+    "snapshotAt": "Snapshot {{time}}",
+    "filters": {
+      "live": "All live",
+      "running": "Running & queued",
+      "waiting": "Waiting & paused",
+      "attention": "Needs attention"
+    },
+    "states": {
+      "needs_attention": "Needs attention",
+      "waiting_user": "Waiting for you",
+      "running": "Running",
+      "queued": "Queued",
+      "paused": "Paused",
+      "waiting": "Waiting",
+      "idle": "Idle"
+    },
+    "physicalWork": "Physical work",
+    "activations": "Activations",
+    "jobs": "Jobs",
+    "activation": "Evaluation Activation",
+    "activationStates": {
+      "queued": "Queued",
+      "running": "Running"
+    },
+    "jobStates": {
+      "queued": "Queued",
+      "waiting_approval": "Waiting approval",
+      "running": "Running"
+    },
+    "waitKinds": {
+      "tool_task": "Waiting for tool task",
+      "delegation": "Waiting for delegation",
+      "thread_group": "Waiting for Thread Group",
+      "timer": "Waiting for timer",
+      "permission": "Waiting for permission",
+      "user_input": "Waiting for user input",
+      "external_event": "Waiting for external event",
+      "resource_available": "Waiting for resource"
+    },
+    "sessionCounts": "{{objectives}} Objectives · {{threads}} Threads · {{jobs}} Jobs",
+    "sessionJobs": "Execution Jobs still running",
+    "standaloneThreads": "Independent Threads",
+    "objectiveWithoutThread": "This Objective has no open Thread; the Runtime is waiting for its next satisfied condition.",
+    "threadWaiting": "This Thread has no active Evaluation or Execution Job.",
+    "openThread": "Inspect causal chain",
+    "empty": "No matching live work",
+    "emptyHint": "All work has converged, or no item matches the current filter.",
+    "bounded": "The monitor reads a bounded non-terminal authority projection; it never scans complete Event History."
   },
   "header": {
     "context": "Context",

@@ -29,16 +29,42 @@ export interface RuntimeOverviewThread {
   id: string
   kind: string
   phase: string
+  state: RuntimeOverviewSessionState
   control_state: string
   objective_id?: string
   target_id?: string
+  activations: RuntimeOverviewActivation[]
+  execution_jobs: RuntimeOverviewExecutionJob[]
+  updated_at: string
+}
+
+export interface RuntimeOverviewActivation {
+  id: string
+  status: string
+  trigger_kind: string
+  parent_activation_id?: string
+  updated_at: string
+}
+
+export interface RuntimeOverviewExecutionJob {
+  id: string
+  activation_id: string
+  thread_id: string
+  status: string
+  tool_name: string
+  target_id: string
+  progress_ref?: string
+  error?: string
   updated_at: string
 }
 
 export interface RuntimeOverviewObjective {
   id: string
+  coordinator_session_id: string
+  delivery_session_id: string
   stated_objective: string
   status: string
+  state: RuntimeOverviewSessionState
   status_reason?: string
   wait_condition?: { kind?: string; [key: string]: unknown }
   revision: number
@@ -60,6 +86,10 @@ export interface RuntimeOverviewSession {
   pending_dialogue_turns: number
   open_thread_count: number
   running_activation_count: number
+  active_execution_job_count: number
+  objectives: RuntimeOverviewObjective[]
+  threads: RuntimeOverviewThread[]
+  execution_jobs?: RuntimeOverviewExecutionJob[]
   current_thread?: RuntimeOverviewThread
   current_objective?: RuntimeOverviewObjective
 }
@@ -86,6 +116,7 @@ export interface RuntimeOverviewContext {
   objective_count: number
   open_thread_count: number
   running_activation_count: number
+  active_execution_job_count: number
   attention_count: number
   last_activity_at: string
   sessions: RuntimeOverviewSession[]
@@ -100,6 +131,10 @@ export interface RuntimeOverview {
     objectives: number
     open_threads: number
     running_activations: number
+    active_execution_jobs: number
+    waiting: number
+    queued: number
+    paused: number
     attention_required: number
   }
   contexts: RuntimeOverviewContext[]

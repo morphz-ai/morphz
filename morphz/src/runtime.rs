@@ -39,8 +39,8 @@ use crate::memory::{
     ContextTokenBudgetMutation, ContextUpdate, DelegationFilter, DelegationRecord,
     DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
     EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore,
-    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
+    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMonitorRecord, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
     ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
@@ -497,17 +497,45 @@ pub struct RuntimeOverviewThread {
     pub id: String,
     pub kind: ThreadKind,
     pub phase: ThreadPhase,
+    pub state: RuntimeSessionState,
     pub control_state: ThreadControlState,
     pub objective_id: Option<String>,
     pub target_id: Option<String>,
+    pub activations: Vec<RuntimeOverviewActivation>,
+    pub execution_jobs: Vec<RuntimeOverviewExecutionJob>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverviewActivation {
+    pub id: String,
+    pub status: ThreadActivationStatus,
+    pub trigger_kind: String,
+    pub parent_activation_id: Option<String>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeOverviewExecutionJob {
+    pub id: String,
+    pub activation_id: String,
+    pub thread_id: String,
+    pub status: ExecutionJobStatus,
+    pub tool_name: String,
+    pub target_id: String,
+    pub progress_ref: Option<String>,
+    pub error: Option<String>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeOverviewObjective {
     pub id: String,
+    pub coordinator_session_id: String,
+    pub delivery_session_id: String,
     pub stated_objective: String,
     pub status: ObjectiveStatus,
+    pub state: RuntimeSessionState,
     pub status_reason: Option<String>,
     pub wait_condition: Option<ObjectiveWaitCondition>,
     pub revision: u64,
@@ -523,6 +551,12 @@ pub struct RuntimeOverviewSession {
     pub pending_dialogue_turns: usize,
     pub open_thread_count: usize,
     pub running_activation_count: usize,
+    pub active_execution_job_count: usize,
+    pub objectives: Vec<RuntimeOverviewObjective>,
+    pub threads: Vec<RuntimeOverviewThread>,
+    /// Every active physical Job in the Session, including asynchronous Jobs
+    /// whose causal Thread has already reached a terminal state.
+    pub execution_jobs: Vec<RuntimeOverviewExecutionJob>,
     pub current_thread: Option<RuntimeOverviewThread>,
     pub current_objective: Option<RuntimeOverviewObjective>,
 }
@@ -548,6 +582,7 @@ pub struct RuntimeOverviewContext {
     pub objective_count: usize,
     pub open_thread_count: usize,
     pub running_activation_count: usize,
+    pub active_execution_job_count: usize,
     pub attention_count: usize,
     pub last_activity_at: chrono::DateTime<chrono::Utc>,
     pub sessions: Vec<RuntimeOverviewSession>,
@@ -561,6 +596,10 @@ pub struct RuntimeOverviewSummary {
     pub objectives: usize,
     pub open_threads: usize,
     pub running_activations: usize,
+    pub active_execution_jobs: usize,
+    pub waiting: usize,
+    pub queued: usize,
+    pub paused: usize,
     pub attention_required: usize,
 }
 
@@ -6355,6 +6394,7 @@ impl MorphzRuntime {
             mind_heads,
             open_threads,
             active_activations,
+            active_execution_jobs,
             objectives,
             delegations,
         ) = tokio::try_join!(
@@ -6371,6 +6411,9 @@ impl MorphzRuntime {
             self.inner
                 .store
                 .list_active_thread_activations_for_contexts(&context_ids, activity_limit),
+            self.inner
+                .store
+                .list_active_execution_jobs_for_contexts(&context_ids, activity_limit),
             self.inner
                 .store
                 .list_recoverable_objectives_for_contexts(&context_ids, activity_limit),
@@ -6446,9 +6489,39 @@ impl MorphzRuntime {
                 .push(activation);
         }
 
+        let mut attention_sessions_by_context: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut execution_jobs_by_session: HashMap<String, Vec<ExecutionJobMonitorRecord>> =
+            HashMap::new();
+        let mut execution_job_count_by_context: HashMap<String, usize> = HashMap::new();
+        for job in active_execution_jobs
+            .into_iter()
+            .filter(|job| context_id_set.contains(&job.context_id))
+        {
+            *execution_job_count_by_context
+                .entry(job.context_id.clone())
+                .or_default() += 1;
+            if job.status == ExecutionJobStatus::WaitingApproval {
+                attention_sessions_by_context
+                    .entry(job.context_id.clone())
+                    .or_default()
+                    .insert(job.session_id.clone());
+            }
+            execution_jobs_by_session
+                .entry(job.session_id.clone())
+                .or_default()
+                .push(job);
+        }
+        for jobs in execution_jobs_by_session.values_mut() {
+            jobs.sort_by(|left, right| {
+                right
+                    .updated_at
+                    .cmp(&left.updated_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+        }
+
         let mut objectives_by_session: HashMap<String, Vec<ObjectiveRecord>> = HashMap::new();
         let mut objectives_by_context: HashMap<String, usize> = HashMap::new();
-        let mut attention_sessions_by_context: HashMap<String, HashSet<String>> = HashMap::new();
         for objective in objectives
             .into_iter()
             .filter(|objective| context_id_set.contains(&objective.context_id))
@@ -6460,6 +6533,7 @@ impl MorphzRuntime {
                 || matches!(
                     objective.wait_condition.as_ref(),
                     Some(ObjectiveWaitCondition::UserInput { .. })
+                        | Some(ObjectiveWaitCondition::Permission { .. })
                 )
             {
                 let attention_sessions = attention_sessions_by_context
@@ -6524,6 +6598,10 @@ impl MorphzRuntime {
                         .get(&session.id)
                         .map(Vec::as_slice)
                         .unwrap_or(&[]);
+                    let execution_jobs = execution_jobs_by_session
+                        .get(&session.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
                     let principal_ids = bindings_by_session
                         .get(&session.id)
                         .cloned()
@@ -6533,6 +6611,7 @@ impl MorphzRuntime {
                         principal_ids,
                         threads,
                         activations,
+                        execution_jobs,
                         objectives,
                         &thread_by_root,
                     )
@@ -6560,6 +6639,10 @@ impl MorphzRuntime {
                 .copied()
                 .unwrap_or_default();
             let running_activation_count = running_activation_count_by_context
+                .get(&context.id)
+                .copied()
+                .unwrap_or_default();
+            let active_execution_job_count = execution_job_count_by_context
                 .get(&context.id)
                 .copied()
                 .unwrap_or_default();
@@ -6597,6 +6680,7 @@ impl MorphzRuntime {
                 objective_count: objectives_by_context.get(&context.id).copied().unwrap_or(0),
                 open_thread_count,
                 running_activation_count,
+                active_execution_job_count,
                 attention_count,
                 last_activity_at,
                 sessions: projected_sessions,
@@ -6638,6 +6722,30 @@ impl MorphzRuntime {
                 .iter()
                 .map(|context| context.running_activation_count)
                 .sum(),
+            active_execution_jobs: projected_contexts
+                .iter()
+                .map(|context| context.active_execution_job_count)
+                .sum(),
+            waiting: projected_contexts
+                .iter()
+                .flat_map(|context| &context.sessions)
+                .filter(|session| {
+                    matches!(
+                        session.state,
+                        RuntimeSessionState::Waiting | RuntimeSessionState::WaitingUser
+                    )
+                })
+                .count(),
+            queued: projected_contexts
+                .iter()
+                .flat_map(|context| &context.sessions)
+                .filter(|session| session.state == RuntimeSessionState::Queued)
+                .count(),
+            paused: projected_contexts
+                .iter()
+                .flat_map(|context| &context.sessions)
+                .filter(|session| session.state == RuntimeSessionState::Paused)
+                .count(),
             attention_required: projected_contexts
                 .iter()
                 .map(|context| context.attention_count)
@@ -7371,16 +7479,13 @@ fn runtime_overview_session(
     principal_ids: Vec<String>,
     threads: &[ThreadRecord],
     activations: &[ThreadActivationRecord],
+    execution_jobs: &[ExecutionJobMonitorRecord],
     objectives: &[ObjectiveRecord],
     thread_by_root: &HashMap<String, ThreadRecord>,
 ) -> RuntimeOverviewSession {
     let running_activation_count = activations
         .iter()
         .filter(|activation| activation.status == ThreadActivationStatus::Running)
-        .count();
-    let queued_activation_count = activations
-        .iter()
-        .filter(|activation| activation.status == ThreadActivationStatus::Queued)
         .count();
     let pending_dialogue_turns = activations
         .iter()
@@ -7391,90 +7496,208 @@ fn runtime_overview_session(
                 .is_some_and(|thread| thread.kind == ThreadKind::DialogueTurn)
         })
         .count();
-    let current_objective = objectives
-        .first()
+    let projected_objectives = objectives
+        .iter()
         .map(|objective| RuntimeOverviewObjective {
             id: objective.id.clone(),
+            coordinator_session_id: objective.coordinator_session_id.clone(),
+            delivery_session_id: objective.delivery_session_id.clone(),
             stated_objective: objective.stated_objective.clone(),
             status: objective.status,
+            state: runtime_overview_objective_state(objective),
             status_reason: objective.status_reason.clone(),
             wait_condition: objective.wait_condition.clone(),
             revision: objective.revision,
             updated_at: objective.updated_at,
-        });
-    let current_thread = threads.first().map(|thread| {
-        let activation_statuses = activations
-            .iter()
-            .filter(|activation| activation.root_turn_id == thread.root_turn_id)
-            .map(|activation| activation.status)
-            .collect::<Vec<_>>();
-        let phase = if activation_statuses.contains(&ThreadActivationStatus::Running) {
-            ThreadPhase::Running
-        } else if activation_statuses.contains(&ThreadActivationStatus::Queued) {
-            ThreadPhase::Runnable
-        } else if thread.control_state == ThreadControlState::Paused {
-            ThreadPhase::Waiting
-        } else {
-            ThreadPhase::Idle
-        };
-        RuntimeOverviewThread {
-            id: thread.id.clone(),
-            kind: thread.kind,
-            phase,
-            control_state: thread.control_state,
-            objective_id: (thread.supervision.supervisor_kind == ThreadSupervisorKind::Objective)
-                .then(|| thread.supervision.supervisor_id.clone())
-                .flatten(),
-            target_id: thread.target_id.clone(),
-            updated_at: thread.updated_at,
-        }
-    });
+        })
+        .collect::<Vec<_>>();
+    let projected_execution_jobs = execution_jobs
+        .iter()
+        .map(|job| RuntimeOverviewExecutionJob {
+            id: job.id.clone(),
+            activation_id: job.activation_id.clone(),
+            thread_id: job.thread_id.clone(),
+            status: job.status,
+            tool_name: job.tool_name.clone(),
+            target_id: job.target_id.clone(),
+            progress_ref: job.progress_ref.clone(),
+            error: job.error.clone(),
+            updated_at: job.updated_at,
+        })
+        .collect::<Vec<_>>();
+    let projected_threads = threads
+        .iter()
+        .map(|thread| {
+            let thread_activations = activations
+                .iter()
+                .filter(|activation| activation.root_turn_id == thread.root_turn_id)
+                .collect::<Vec<_>>();
+            let thread_job_records = execution_jobs
+                .iter()
+                .filter(|job| job.thread_id == thread.id)
+                .collect::<Vec<_>>();
+            let thread_jobs = projected_execution_jobs
+                .iter()
+                .filter(|job| job.thread_id == thread.id)
+                .collect::<Vec<_>>();
+            let activation_statuses = thread_activations
+                .iter()
+                .map(|activation| activation.status)
+                .collect::<Vec<_>>();
+            let phase = if activation_statuses.contains(&ThreadActivationStatus::Running) {
+                ThreadPhase::Running
+            } else if activation_statuses.contains(&ThreadActivationStatus::Queued) {
+                ThreadPhase::Runnable
+            } else if thread.control_state == ThreadControlState::Paused {
+                ThreadPhase::Waiting
+            } else {
+                ThreadPhase::Idle
+            };
+            RuntimeOverviewThread {
+                id: thread.id.clone(),
+                kind: thread.kind,
+                phase,
+                state: runtime_overview_thread_state(
+                    thread,
+                    &thread_activations,
+                    &thread_job_records,
+                ),
+                control_state: thread.control_state,
+                objective_id: (thread.supervision.supervisor_kind
+                    == ThreadSupervisorKind::Objective)
+                    .then(|| thread.supervision.supervisor_id.clone())
+                    .flatten(),
+                target_id: thread.target_id.clone(),
+                activations: thread_activations
+                    .into_iter()
+                    .map(|activation| RuntimeOverviewActivation {
+                        id: activation.id.clone(),
+                        status: activation.status,
+                        trigger_kind: activation.trigger_kind.clone(),
+                        parent_activation_id: activation.parent_activation_id.clone(),
+                        updated_at: activation.updated_at,
+                    })
+                    .collect(),
+                execution_jobs: thread_jobs.into_iter().cloned().collect(),
+                updated_at: thread.updated_at,
+            }
+        })
+        .collect::<Vec<_>>();
+    let current_objective = projected_objectives.first().cloned();
+    let current_thread = projected_threads.first().cloned();
 
-    let waiting_for_user = objectives.iter().any(|objective| {
-        matches!(
-            objective.wait_condition,
-            Some(ObjectiveWaitCondition::UserInput { .. })
-        )
-    });
-    let blocked = objectives
-        .iter()
-        .any(|objective| objective.status == ObjectiveStatus::Blocked);
-    let paused = objectives
-        .iter()
-        .any(|objective| objective.status == ObjectiveStatus::Paused)
-        || threads
-            .iter()
-            .any(|thread| thread.control_state == ThreadControlState::Paused);
-    let waiting = objectives
-        .iter()
-        .any(|objective| objective.wait_condition.is_some())
-        || !threads.is_empty();
-    let state = if blocked {
-        RuntimeSessionState::NeedsAttention
-    } else if waiting_for_user {
-        RuntimeSessionState::WaitingUser
-    } else if running_activation_count > 0 {
-        RuntimeSessionState::Running
-    } else if queued_activation_count > 0 {
-        RuntimeSessionState::Queued
-    } else if paused {
-        RuntimeSessionState::Paused
-    } else if waiting {
-        RuntimeSessionState::Waiting
-    } else {
-        RuntimeSessionState::Idle
-    };
+    let state = runtime_overview_effective_session_state(
+        &projected_objectives,
+        &projected_threads,
+        &projected_execution_jobs,
+        pending_dialogue_turns,
+    );
+    let attention_required = matches!(
+        state,
+        RuntimeSessionState::NeedsAttention | RuntimeSessionState::WaitingUser
+    );
 
     RuntimeOverviewSession {
         session,
         principal_ids,
         state,
-        attention_required: blocked || waiting_for_user,
+        attention_required,
         pending_dialogue_turns,
         open_thread_count: threads.len(),
         running_activation_count,
+        active_execution_job_count: execution_jobs.len(),
+        objectives: projected_objectives,
+        threads: projected_threads,
+        execution_jobs: projected_execution_jobs,
         current_thread,
         current_objective,
+    }
+}
+
+fn runtime_overview_effective_session_state(
+    objectives: &[RuntimeOverviewObjective],
+    threads: &[RuntimeOverviewThread],
+    execution_jobs: &[RuntimeOverviewExecutionJob],
+    pending_dialogue_turns: usize,
+) -> RuntimeSessionState {
+    objectives
+        .iter()
+        .map(|objective| objective.state)
+        .chain(threads.iter().map(|thread| thread.state))
+        .chain(
+            execution_jobs
+                .iter()
+                .map(|job| runtime_overview_execution_job_state(job.status)),
+        )
+        .chain((pending_dialogue_turns > 0).then_some(RuntimeSessionState::Queued))
+        .max_by_key(|state| state.priority())
+        .unwrap_or(RuntimeSessionState::Idle)
+}
+
+fn runtime_overview_execution_job_state(status: ExecutionJobStatus) -> RuntimeSessionState {
+    match status {
+        ExecutionJobStatus::WaitingApproval => RuntimeSessionState::WaitingUser,
+        ExecutionJobStatus::Running => RuntimeSessionState::Running,
+        ExecutionJobStatus::Queued => RuntimeSessionState::Queued,
+        // The overview only receives active Jobs. Keep this exhaustive mapping
+        // defensive so an inconsistent Store row cannot manufacture activity.
+        ExecutionJobStatus::Succeeded
+        | ExecutionJobStatus::Failed
+        | ExecutionJobStatus::Cancelled
+        | ExecutionJobStatus::Lost => RuntimeSessionState::Idle,
+    }
+}
+
+fn runtime_overview_objective_state(objective: &ObjectiveRecord) -> RuntimeSessionState {
+    if objective.status == ObjectiveStatus::Blocked {
+        RuntimeSessionState::NeedsAttention
+    } else if matches!(
+        objective.wait_condition,
+        Some(ObjectiveWaitCondition::UserInput { .. })
+            | Some(ObjectiveWaitCondition::Permission { .. })
+    ) {
+        RuntimeSessionState::WaitingUser
+    } else if objective.status == ObjectiveStatus::Paused {
+        RuntimeSessionState::Paused
+    } else if objective.wait_condition.is_some() {
+        RuntimeSessionState::Waiting
+    } else if objective.active_evaluation_id.is_some() || objective.completion_intent.is_some() {
+        RuntimeSessionState::Running
+    } else {
+        RuntimeSessionState::Queued
+    }
+}
+
+fn runtime_overview_thread_state(
+    thread: &ThreadRecord,
+    activations: &[&ThreadActivationRecord],
+    execution_jobs: &[&ExecutionJobMonitorRecord],
+) -> RuntimeSessionState {
+    if execution_jobs
+        .iter()
+        .any(|job| job.status == ExecutionJobStatus::WaitingApproval)
+    {
+        RuntimeSessionState::WaitingUser
+    } else if activations
+        .iter()
+        .any(|activation| activation.status == ThreadActivationStatus::Running)
+        || execution_jobs
+            .iter()
+            .any(|job| job.status == ExecutionJobStatus::Running)
+    {
+        RuntimeSessionState::Running
+    } else if activations
+        .iter()
+        .any(|activation| activation.status == ThreadActivationStatus::Queued)
+        || execution_jobs
+            .iter()
+            .any(|job| job.status == ExecutionJobStatus::Queued)
+    {
+        RuntimeSessionState::Queued
+    } else if thread.control_state == ThreadControlState::Paused {
+        RuntimeSessionState::Paused
+    } else {
+        RuntimeSessionState::Waiting
     }
 }
 
@@ -8310,6 +8533,48 @@ mod tests {
                 '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
             )
         })
+    }
+
+    #[test]
+    fn runtime_overview_keeps_a_background_job_live_after_its_thread_is_terminal() {
+        let now = chrono::Utc::now();
+        let session = SessionRecord {
+            id: "session-background".to_string(),
+            agent_id: "agent-default".to_string(),
+            context_id: "context-default".to_string(),
+            parent_session_id: None,
+            title: "Background work".to_string(),
+            status: SessionStatus::Active,
+            created_at: now,
+            updated_at: now,
+            last_activity_at: now,
+            attention_state: crate::memory::SessionAttentionState::Active,
+            attention_revision: 0,
+            attention_reason: None,
+            attention_changed_at: None,
+            attention_event_id: None,
+        };
+        let job = ExecutionJobMonitorRecord {
+            id: "job-background".to_string(),
+            activation_id: "activation-background".to_string(),
+            thread_id: "thread-completed".to_string(),
+            context_id: "context-default".to_string(),
+            session_id: "session-background".to_string(),
+            status: ExecutionJobStatus::Running,
+            tool_name: "exec/background".to_string(),
+            target_id: "target-default".to_string(),
+            progress_ref: None,
+            error: None,
+            updated_at: now,
+        };
+        let overview =
+            runtime_overview_session(session, Vec::new(), &[], &[], &[job], &[], &HashMap::new());
+
+        assert_eq!(overview.state, RuntimeSessionState::Running);
+        assert_eq!(overview.open_thread_count, 0);
+        assert_eq!(overview.active_execution_job_count, 1);
+        assert_eq!(overview.execution_jobs[0].id, "job-background");
+        assert!(overview.threads.is_empty());
     }
 
     #[test]
