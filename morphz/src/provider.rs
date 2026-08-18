@@ -3,9 +3,10 @@ use crate::config::{
     ProviderModelConfig,
 };
 use crate::llm::{
-    model_attachments, Client, Message, ModelAttachment, ModelFailure, ModelFailureKind,
-    ModelStreamEvent, ModelStreamSender, ModelUsage, PromptTokenAccuracy, PromptTokenCount,
-    ReasoningEffort, Response, ToolCallRepr, ToolDefinition,
+    model_attachments, provider_continuation, Client, Message, ModelAttachment, ModelFailure,
+    ModelFailureKind, ModelStreamEvent, ModelStreamSender, ModelUsage, PromptTokenAccuracy,
+    PromptTokenCount, ProviderContinuation, ReasoningEffort, Response, ToolCallRepr,
+    ToolDefinition,
 };
 use base64::Engine;
 use futures_util::StreamExt;
@@ -1477,6 +1478,8 @@ fn anthropic_usage(usage: &Value) -> ModelUsage {
 struct StreamAccumulator {
     content: String,
     tools: BTreeMap<usize, StreamingToolCall>,
+    chat_reasoning_content: String,
+    responses_reasoning_items: BTreeMap<usize, Value>,
     gemini_tool_index: usize,
     terminal: bool,
     prompt_tokens: Option<u64>,
@@ -1648,6 +1651,12 @@ impl StreamAccumulator {
             }
         }
         let delta = choice.get("delta").unwrap_or(&Value::Null);
+        if let Some(reasoning_content) = delta.get("reasoning_content").and_then(Value::as_str) {
+            // DeepSeek Chat continuation requires this exact Provider-authored
+            // value on the assistant tool-call message. It is deliberately
+            // kept out of both public text and reasoning-summary UI events.
+            self.chat_reasoning_content.push_str(reasoning_content);
+        }
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             self.text(text, stream);
         }
@@ -1696,11 +1705,13 @@ impl StreamAccumulator {
             }
             "response.output_item.added" => {
                 let item = event.get("item").unwrap_or(&Value::Null);
-                if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                    let index = event
-                        .get("output_index")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as usize;
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                    self.responses_reasoning_items.insert(index, item.clone());
+                } else if item.get("type").and_then(Value::as_str) == Some("function_call") {
                     self.tool(
                         index,
                         item.get("call_id")
@@ -1738,11 +1749,15 @@ impl StreamAccumulator {
             }
             "response.output_item.done" => {
                 let item = event.get("item").unwrap_or(&Value::Null);
-                if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                    let index = event
-                        .get("output_index")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as usize;
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                    // The done item is authoritative and can add opaque fields
+                    // (notably encrypted_content) absent from the added event.
+                    self.responses_reasoning_items.insert(index, item.clone());
+                } else if item.get("type").and_then(Value::as_str) == Some("function_call") {
                     self.tool(
                         index,
                         item.get("call_id")
@@ -1765,6 +1780,17 @@ impl StreamAccumulator {
             }
             "response.completed" => {
                 self.terminal = true;
+                for (index, item) in event
+                    .pointer("/response/output")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                        self.responses_reasoning_items.insert(index, item.clone());
+                    }
+                }
                 if let Some(usage) = event.pointer("/response/usage") {
                     let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
                     let cached_input_tokens = usage
@@ -1975,6 +2001,20 @@ impl StreamAccumulator {
                 },
             })
             .collect();
+        let provider_continuation = if !self.chat_reasoning_content.is_empty() {
+            Some(ProviderContinuation::OpenaiChat {
+                reasoning_content: self.chat_reasoning_content,
+            })
+        } else if !self.responses_reasoning_items.is_empty() {
+            Some(ProviderContinuation::OpenaiResponses {
+                reasoning_items: self.responses_reasoning_items.into_values().collect(),
+            })
+        } else {
+            None
+        };
+        if let Some(continuation) = provider_continuation {
+            let _ = stream.send(ModelStreamEvent::ProviderContinuation { continuation });
+        }
         ensure_nonempty(Response {
             content: self.content,
             tool_calls,
@@ -2043,19 +2083,31 @@ fn build_openai_chat_request(
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Value {
-    let converted = messages
-        .iter()
-        .map(|message| {
-            let Some(attachments) = model_attachments(message) else {
-                return serde_json::to_value(message).unwrap_or_else(|_| json!({}));
-            };
+    let mut converted = Vec::new();
+    let mut pending_continuation = None;
+    for message in messages {
+        if let Some(continuation) = provider_continuation(message) {
+            pending_continuation = Some(continuation);
+            continue;
+        }
+        if let Some(attachments) = model_attachments(message) {
             let content = attachments
                 .iter()
                 .map(openai_chat_attachment_block)
                 .collect::<Vec<_>>();
-            json!({"role": "user", "content": content})
-        })
-        .collect::<Vec<_>>();
+            converted.push(json!({"role": "user", "content": content}));
+            continue;
+        }
+        let mut converted_message = serde_json::to_value(message).unwrap_or_else(|_| json!({}));
+        if message.role == "assistant" {
+            if let Some(ProviderContinuation::OpenaiChat { reasoning_content }) =
+                pending_continuation.take()
+            {
+                converted_message["reasoning_content"] = json!(reasoning_content);
+            }
+        }
+        converted.push(converted_message);
+    }
     let mut request = json!({"model": model, "messages": converted});
     if let Some(max_tokens) = max_output_tokens {
         request["max_completion_tokens"] = json!(max_tokens);
@@ -2092,6 +2144,12 @@ fn build_openai_responses_request(
 ) -> Value {
     let mut input = Vec::new();
     for message in messages {
+        if let Some(continuation) = provider_continuation(message) {
+            if let ProviderContinuation::OpenaiResponses { reasoning_items } = continuation {
+                input.extend(reasoning_items);
+            }
+            continue;
+        }
         if let Some(attachments) = model_attachments(message) {
             input.push(json!({
                 "role": "user",

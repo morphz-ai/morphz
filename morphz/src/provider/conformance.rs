@@ -6,7 +6,7 @@
 //! wire shape.
 
 use super::*;
-use crate::llm::{FunctionCall, ToolCall};
+use crate::llm::{provider_continuation_message, FunctionCall, ProviderContinuation, ToolCall};
 use axum::{
     body::Body, http::StatusCode, response::Response as AxumResponse, routing::post, Router,
 };
@@ -71,6 +71,148 @@ fn openai_chat_uses_the_current_completion_budget_field() {
 
     assert_eq!(request["max_completion_tokens"], 4096);
     assert!(request.get("max_tokens").is_none());
+}
+
+#[test]
+fn openai_chat_replays_reasoning_content_on_the_assistant_tool_call_message() {
+    let continuation = ProviderContinuation::OpenaiChat {
+        reasoning_content: "opaque deepseek reasoning".to_string(),
+    };
+    let messages = vec![
+        provider_continuation_message(continuation).unwrap(),
+        Message {
+            role: "assistant".to_string(),
+            content: String::new(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call-1".to_string(),
+                r#type: "function".to_string(),
+                function: FunctionCall {
+                    name: "lookup".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            }]),
+        },
+        Message {
+            role: "tool".to_string(),
+            content: "result".to_string(),
+            name: None,
+            tool_call_id: Some("call-1".to_string()),
+            tool_calls: None,
+        },
+    ];
+
+    let request = build_openai_chat_request("deepseek", None, None, &messages, &[]);
+
+    assert_eq!(request["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        request["messages"][0]["reasoning_content"],
+        "opaque deepseek reasoning"
+    );
+    assert_eq!(request["messages"][0]["tool_calls"][0]["id"], "call-1");
+}
+
+#[test]
+fn openai_responses_replays_the_exact_reasoning_item_before_tool_protocol_items() {
+    let reasoning_item = json!({
+        "id": "rs_1",
+        "type": "reasoning",
+        "encrypted_content": "opaque-ciphertext",
+        "summary": [{"type": "summary_text", "text": "safe summary"}]
+    });
+    let messages = vec![
+        provider_continuation_message(ProviderContinuation::OpenaiResponses {
+            reasoning_items: vec![reasoning_item.clone()],
+        })
+        .unwrap(),
+        Message {
+            role: "assistant".to_string(),
+            content: String::new(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call-1".to_string(),
+                r#type: "function".to_string(),
+                function: FunctionCall {
+                    name: "lookup".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            }]),
+        },
+        Message {
+            role: "tool".to_string(),
+            content: "result".to_string(),
+            name: None,
+            tool_call_id: Some("call-1".to_string()),
+            tool_calls: None,
+        },
+    ];
+
+    let request = build_openai_responses_request("gateway-model", None, None, &messages, &[]);
+    let input = request["input"].as_array().unwrap();
+
+    assert_eq!(input[0], reasoning_item);
+    assert_eq!(input[1]["type"], "function_call");
+    assert_eq!(input[2]["type"], "function_call_output");
+}
+
+#[test]
+fn provider_continuation_state_is_not_promoted_to_public_text_or_summary() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut chat = StreamAccumulator::default();
+    for event in [
+        json!({"choices":[{"delta":{"reasoning_content":"private "}}]}),
+        json!({"choices":[{"delta":{"reasoning_content":"state","tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}),
+    ] {
+        chat.apply(ModelProtocol::OpenaiChat, event, &tx).unwrap();
+    }
+    let response = chat.finish(&tx).unwrap();
+    assert!(response.content.is_empty());
+    assert_eq!(response.tool_calls.len(), 1);
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ModelStreamEvent::ProviderContinuation {
+            continuation: ProviderContinuation::OpenaiChat { reasoning_content }
+        } if reasoning_content == "private state"
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        ModelStreamEvent::TextDelta { .. } | ModelStreamEvent::ReasoningSummaryDelta { .. }
+    )));
+}
+
+#[test]
+fn responses_done_reasoning_item_becomes_opaque_continuation_state() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    let reasoning_item = json!({
+        "id": "rs_2",
+        "type": "reasoning",
+        "encrypted_content": "gateway-state",
+        "summary": []
+    });
+    for event in [
+        json!({"type":"response.output_item.done","output_index":0,"item":reasoning_item.clone()}),
+        json!({"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call-2","name":"lookup","arguments":"{}"}}),
+        json!({"type":"response.completed","response":{}}),
+    ] {
+        accumulator
+            .apply(ModelProtocol::OpenaiResponses, event, &tx)
+            .unwrap();
+    }
+    let response = accumulator.finish(&tx).unwrap();
+    assert_eq!(response.tool_calls.len(), 1);
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+            event,
+            ModelStreamEvent::ProviderContinuation {
+                continuation: ProviderContinuation::OpenaiResponses { reasoning_items }
+            } if reasoning_items == vec![reasoning_item.clone()]
+        ))
+    );
 }
 
 #[test]

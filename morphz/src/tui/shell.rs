@@ -199,11 +199,11 @@ impl EmbeddedShell {
             format!("Shell I/O error: {error}")
         } else if self.parser.screen().scrollback() > 0 {
             format!(
-                "history {} lines · wheel scroll · Ctrl+P hide",
+                "history {} lines · wheel scroll · Ctrl+] hide",
                 self.parser.screen().scrollback()
             )
         } else {
-            "Ctrl+P hide · exit close · mouse wheel history".to_string()
+            "Ctrl+] hide · exit close · mouse wheel history".to_string()
         };
         frame.render_widget(
             Paragraph::new(status)

@@ -4,7 +4,8 @@ use morphz::event::{
 };
 use morphz::llm::{
     Client, Message, ModelFailure, ModelFailureKind, ModelStreamEvent, ModelStreamSender,
-    PromptTokenAccuracy, PromptTokenCount, Response, ToolCallRepr, ToolDefinition,
+    PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, Response, ToolCallRepr,
+    ToolDefinition, PROVIDER_CONTINUATION_MESSAGE_NAME,
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
@@ -90,6 +91,13 @@ struct CancellableClient {
 struct ReasoningContinuationClient {
     calls: AtomicUsize,
     messages_seen: Mutex<Vec<Vec<Message>>>,
+}
+
+struct ProviderStateToolContinuationClient {
+    calls: AtomicUsize,
+    messages_seen: Mutex<Vec<Vec<Message>>>,
+    read_path: String,
+    continuation: ProviderContinuation,
 }
 
 struct SharedTransientFailureClient {
@@ -685,6 +693,58 @@ impl Client for ReasoningContinuationClient {
         let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
             text: "second reasoning segment".to_string(),
         });
+        let _ = stream.send(ModelStreamEvent::TextDelta {
+            text: response.content.clone(),
+        });
+        let _ = stream.send(ModelStreamEvent::Completed);
+        Ok(response)
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for ProviderStateToolContinuationClient {
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        unreachable!("provider-state continuation probe uses the streaming entrypoint")
+    }
+
+    async fn create_completion_measured_stream(
+        &self,
+        messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+        _measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(response) = pending_delivery_response(&messages) {
+            return Ok(response);
+        }
+        self.messages_seen.lock().unwrap().push(messages);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = stream.send(ModelStreamEvent::Started);
+        if call == 0 {
+            let tool_call = ToolCallRepr {
+                id: "provider-state-read".to_string(),
+                r#type: "function".to_string(),
+                func_name: "read".to_string(),
+                arguments: json!({ "path": self.read_path }).to_string(),
+            };
+            let _ = stream.send(ModelStreamEvent::ProviderContinuation {
+                continuation: self.continuation.clone(),
+            });
+            let _ = stream.send(ModelStreamEvent::Completed);
+            return Ok(Response {
+                content: String::new(),
+                tool_calls: vec![tool_call],
+            });
+        }
+        let response = text_reply_response("continued with opaque provider state");
         let _ = stream.send(ModelStreamEvent::TextDelta {
             text: response.content.clone(),
         });
@@ -3418,6 +3478,111 @@ async fn test_attempt_loop_preserves_wait_task_shaped_call_id_in_standard_tool_r
         "unexpected tool envelope: {envelope}"
     );
     assert!(!continuation[1].content.contains("hello from note"));
+}
+
+#[tokio::test]
+async fn test_tool_continuation_persists_and_replays_opaque_provider_state() {
+    let session_id = "attempt_provider_state_tool_continuation";
+    let note = NamedTempFile::new_in(".").unwrap();
+    std::fs::write(note.path(), "provider state evidence").unwrap();
+    let continuation = ProviderContinuation::OpenaiResponses {
+        reasoning_items: vec![json!({
+            "type": "reasoning",
+            "id": "rs_gateway_state",
+            "encrypted_content": "opaque-gateway-state-must-not-become-chat-text",
+            "summary": []
+        })],
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("provider-state-continuation.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(ProviderStateToolContinuationClient {
+        calls: AtomicUsize::new(0),
+        messages_seen: Mutex::new(Vec::new()),
+        read_path: note
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        continuation: continuation.clone(),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let context_engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(ReadFileTool::default()));
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        context_engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "read with provider continuation state").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
+
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload.get("text"),
+        Some(&json!("continued with opaque provider state"))
+    );
+    assert!(!serde_json::to_string(&replies[0].payload)
+        .unwrap()
+        .contains("opaque-gateway-state"));
+    let provider_state_call = assistant_calls
+        .iter()
+        .find(|event| event.payload.get("provider_continuation").is_some())
+        .expect("tool-calling assistant boundary must persist Provider continuation state");
+    assert_eq!(
+        provider_state_call.payload.get("provider_continuation"),
+        Some(&serde_json::to_value(&continuation).unwrap())
+    );
+
+    {
+        let requests = client.messages_seen.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let marker = requests[1]
+            .iter()
+            .find(|message| message.name.as_deref() == Some(PROVIDER_CONTINUATION_MESSAGE_NAME))
+            .expect("the next physical request must replay Provider continuation state");
+        assert_eq!(
+            serde_json::from_str::<ProviderContinuation>(&marker.content).unwrap(),
+            continuation
+        );
+        let assistant_index = requests[1]
+            .iter()
+            .position(|message| message.role == "assistant" && message.tool_calls.is_some())
+            .unwrap();
+        let marker_index = requests[1]
+            .iter()
+            .position(|message| message.name.as_deref() == Some(PROVIDER_CONTINUATION_MESSAGE_NAME))
+            .unwrap();
+        assert!(marker_index < assistant_index);
+    }
+
+    let summaries = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/model_reasoning_summary".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(summaries
+        .iter()
+        .all(|event| !serde_json::to_string(&event.payload)
+            .unwrap()
+            .contains("opaque-gateway-state")));
 }
 
 #[tokio::test]

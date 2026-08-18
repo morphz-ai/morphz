@@ -11,13 +11,13 @@ use crate::approval::ApprovalDecision;
 use crate::config::TuiTheme;
 use crate::event::Event as RuntimeEvent;
 use crate::i18n::Locale;
-use crate::llm::ModelStreamEvent;
+use crate::llm::{ModelStreamEvent, ReasoningEffort};
 use crate::memory::{
     DelegationRecord, DelegationStatus, MessageDispatchMode, ObjectiveRecord, ObjectiveStatus,
     ObjectiveWaitCondition, SessionRecord, SessionStatus,
 };
 use crate::orchestrator::context::ContextView;
-use crate::runtime::{MorphzRuntime, SessionHandle};
+use crate::runtime::{InferenceModelOption, MorphzRuntime, SessionHandle};
 use crate::sdk::{MorphzSdk, SendMessageCommand};
 use crate::sexpr::SExpr;
 use crate::sexpr_vm_contract::{MORPHZ_MACHINE_NAME_EN, MORPHZ_MACHINE_NAME_ZH};
@@ -42,7 +42,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::io::{self, Stdout};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -51,6 +51,7 @@ type TuiError = Box<dyn std::error::Error + Send + Sync>;
 const USER_MESSAGE_PREFIX: &str = "✨ ";
 const COMPOSER_PREFIX: &str = "❯ ";
 const REASONING_PREVIEW_LINES: usize = 2;
+const TUI_RECENT_EVENT_ID_CAPACITY: usize = 16_384;
 const MORPHZ_WORDMARK: [&str; 6] = [
     r"███╗   ███╗ ██████╗ ██████╗ ██████╗ ██╗  ██╗ ███████╗",
     r"████╗ ████║██╔═══██╗██╔══██╗██╔══██╗██║  ██║ ╚══███╔╝",
@@ -418,6 +419,117 @@ enum UiFocus {
     Composer,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ControlAction {
+    ShowHelp,
+    ShowConversation,
+    ShowTasks,
+    ShowMind,
+    ShowSessions,
+    ShowObjectives,
+    ShowTools,
+    ShowExecutionJobs,
+    ShowDelegations,
+    InspectContext,
+    OpenShell,
+    SetToolDetails(bool),
+    SetReasoningDetails(bool),
+    CycleTheme,
+    SetTheme(TuiTheme),
+    SetModel(String),
+    SetReasoningEffort(Option<ReasoningEffort>),
+    CancelEvaluation,
+    ClearView,
+    Quit,
+}
+
+#[derive(Debug, Clone)]
+struct ControlItem {
+    action: ControlAction,
+    command: String,
+    label: String,
+    description: String,
+    shortcut: Option<&'static str>,
+    enabled: bool,
+    disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct InfoPanel {
+    title: String,
+    body: String,
+    formatted_sexpr: bool,
+}
+
+impl ControlItem {
+    fn new(
+        action: ControlAction,
+        command: impl Into<String>,
+        label: impl Into<String>,
+        description: impl Into<String>,
+        shortcut: Option<&'static str>,
+    ) -> Self {
+        Self {
+            action,
+            command: command.into(),
+            label: label.into(),
+            description: description.into(),
+            shortcut,
+            enabled: true,
+            disabled_reason: None,
+        }
+    }
+
+    fn enabled_if(mut self, enabled: bool, disabled_reason: impl Into<String>) -> Self {
+        self.enabled = enabled;
+        if !enabled {
+            self.disabled_reason = Some(disabled_reason.into());
+        }
+        self
+    }
+
+    fn searchable_text(&self) -> String {
+        format!("{} {} {}", self.command, self.label, self.description).to_lowercase()
+    }
+}
+
+fn control_item_matches(item: &ControlItem, query: &str) -> bool {
+    let searchable = item.searchable_text();
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .all(|term| searchable.contains(term) || is_subsequence(term, &searchable))
+}
+
+fn control_match_rank(item: &ControlItem, query: &str) -> u8 {
+    let query = query.to_lowercase();
+    let command = item.command.to_lowercase();
+    let label = item.label.to_lowercase();
+    if command == query || label == query {
+        0
+    } else if command.starts_with(&query) || label.starts_with(&query) {
+        1
+    } else if command.contains(&query) || label.contains(&query) {
+        2
+    } else {
+        3
+    }
+}
+
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut chars = needle.chars();
+    let mut next = chars.next();
+    for character in haystack.chars() {
+        if next == Some(character) {
+            next = chars.next();
+            if next.is_none() {
+                return true;
+            }
+        }
+    }
+    next.is_none()
+}
+
 #[derive(Debug, Clone)]
 struct TranscriptEntry {
     kind: EntryKind,
@@ -559,6 +671,8 @@ struct UiState {
     sessions: Vec<SessionRecord>,
     session_selection: usize,
     session_drafts: BTreeMap<String, String>,
+    model_options: Vec<InferenceModelOption>,
+    tool_names: Vec<String>,
     active_view: UiView,
     focus: UiFocus,
     selected_objective_id: Option<String>,
@@ -576,6 +690,12 @@ struct UiState {
     show_task_diagnostics: bool,
     show_objectives: bool,
     show_sessions: bool,
+    show_control: bool,
+    control_input: Composer,
+    control_selection: usize,
+    control_feedback: Option<String>,
+    info_panel: Option<InfoPanel>,
+    info_scroll: u16,
     objective_scroll: u16,
     cancel_confirmation_armed: bool,
     appearance: TerminalAppearance,
@@ -621,6 +741,8 @@ impl UiState {
             sessions: Vec::new(),
             session_selection: 0,
             session_drafts: BTreeMap::new(),
+            model_options: Vec::new(),
+            tool_names: runtime.tool_names(),
             active_view: UiView::Conversation,
             focus: UiFocus::Composer,
             selected_objective_id: None,
@@ -638,6 +760,12 @@ impl UiState {
             show_task_diagnostics: false,
             show_objectives: false,
             show_sessions: false,
+            show_control: false,
+            control_input: Composer::new(),
+            control_selection: 0,
+            control_feedback: None,
+            info_panel: None,
+            info_scroll: 0,
             objective_scroll: 0,
             cancel_confirmation_armed: false,
             appearance,
@@ -657,15 +785,357 @@ impl UiState {
     }
 
     fn cycle_theme(&mut self) -> TuiTheme {
-        let next = match self.theme_kind {
+        let next = self.next_theme();
+        self.set_theme(next);
+        next
+    }
+
+    fn next_theme(&self) -> TuiTheme {
+        match self.theme_kind {
             TuiTheme::Cyan => TuiTheme::Iris,
             TuiTheme::Iris => TuiTheme::Coral,
             TuiTheme::Coral => TuiTheme::Mono,
             TuiTheme::Mono => TuiTheme::Cyan,
             TuiTheme::System | TuiTheme::NoColor => TuiTheme::Cyan,
-        };
-        self.set_theme(next);
-        next
+        }
+    }
+
+    fn close_nonapproval_overlays(&mut self) {
+        self.show_help = false;
+        self.show_objectives = false;
+        self.show_sessions = false;
+        self.show_control = false;
+        self.info_panel = None;
+    }
+
+    fn open_control(&mut self) {
+        self.close_nonapproval_overlays();
+        self.show_control = true;
+        self.control_input.clear();
+        self.control_selection = 0;
+        self.control_feedback = None;
+    }
+
+    fn close_control(&mut self) {
+        self.show_control = false;
+        self.control_input.clear();
+        self.control_selection = 0;
+        self.control_feedback = None;
+    }
+
+    fn show_info_panel(&mut self, title: impl Into<String>, body: impl Into<String>) {
+        self.close_nonapproval_overlays();
+        self.info_panel = Some(InfoPanel {
+            title: title.into(),
+            body: body.into(),
+            formatted_sexpr: false,
+        });
+        self.info_scroll = 0;
+    }
+
+    fn show_sexpr_panel(&mut self, title: impl Into<String>, body: impl Into<String>) {
+        self.close_nonapproval_overlays();
+        self.info_panel = Some(InfoPanel {
+            title: title.into(),
+            body: body.into(),
+            formatted_sexpr: true,
+        });
+        self.info_scroll = 0;
+    }
+
+    fn control_items(&self) -> Vec<ControlItem> {
+        let mut items = vec![
+            ControlItem::new(
+                ControlAction::ShowHelp,
+                "help",
+                self.tr("Show keyboard help", "查看键盘帮助"),
+                self.tr(
+                    "Open the localized shortcut and interaction reference.",
+                    "打开本地化的快捷键与交互说明。",
+                ),
+                Some("?"),
+            ),
+            ControlItem::new(
+                ControlAction::ShowConversation,
+                "view conversation",
+                self.tr("Open Conversation", "打开对话"),
+                self.tr("Return to the conversational input and transcript.", "返回对话输入与消息流。"),
+                Some("Esc"),
+            ),
+            ControlItem::new(
+                ControlAction::ShowTasks,
+                "view tasks",
+                self.tr("Open Tasks", "打开任务"),
+                self.tr("Inspect active Objectives and Runtime work.", "查看活跃目标与 Runtime 工作。"),
+                Some("Ctrl+T"),
+            ),
+            ControlItem::new(
+                ControlAction::ShowMind,
+                "view mind",
+                self.tr("Open Mind", "打开认知"),
+                self.tr("Inspect selectable Mind Frames and provenance.", "查看可选择的认知帧及其来源。"),
+                Some("Ctrl+K"),
+            ),
+            ControlItem::new(
+                ControlAction::ShowSessions,
+                "session list",
+                self.tr("Switch Session", "切换会话"),
+                self.tr("Open the authorized active Session directory.", "打开已授权的活跃会话目录。"),
+                Some("Ctrl+G"),
+            ),
+            ControlItem::new(
+                ControlAction::ShowObjectives,
+                "objective list",
+                self.tr("Inspect Objectives", "查看目标"),
+                self.tr("Open the current Context Objective lifecycle view.", "打开当前 Context 的目标生命周期视图。"),
+                Some("Ctrl+O"),
+            ),
+            ControlItem::new(
+                ControlAction::ShowTools,
+                "tool list",
+                self.tr("List available tools", "列出可用工具"),
+                self.tr("Show every tool currently exposed by Runtime.", "显示 Runtime 当前暴露的全部工具。"),
+                None,
+            )
+            .enabled_if(
+                !self.tool_names.is_empty(),
+                self.tr("Runtime currently exposes no tools.", "Runtime 当前没有暴露工具。"),
+            ),
+            ControlItem::new(
+                ControlAction::ShowDelegations,
+                "delegation list",
+                self.tr("List delegations", "列出委派"),
+                self.tr("Show subagent delegations without mixing them with Execution Jobs.", "显示子代理委派，不与 Execution Job 混用。"),
+                None,
+            ),
+            ControlItem::new(
+                ControlAction::ShowExecutionJobs,
+                "execution job list",
+                self.tr("List Execution Jobs", "列出执行任务"),
+                self.tr(
+                    "Show Runtime-managed background process jobs for the current Context.",
+                    "显示当前 Context 中由 Runtime 托管的后台进程任务。",
+                ),
+                None,
+            ),
+            ControlItem::new(
+                ControlAction::InspectContext,
+                "context inspect",
+                self.tr("Inspect Context", "检查 Context"),
+                self.tr("Open the formatted current Context encoding outside the dialogue stream.", "在对话流之外打开格式化的当前 Context 编码。"),
+                None,
+            ),
+            ControlItem::new(
+                ControlAction::OpenShell,
+                "shell open",
+                self.tr("Open embedded Shell", "打开内嵌终端"),
+                self.tr("Enter the persistent PTY. Ctrl+] returns to Morphz.", "进入持久 PTY；按 Ctrl+] 返回 Morphz。"),
+                None,
+            ),
+            ControlItem::new(
+                ControlAction::SetToolDetails(!self.show_tool_details),
+                if self.show_tool_details {
+                    "tool details off"
+                } else {
+                    "tool details on"
+                },
+                if self.show_tool_details {
+                    self.tr("Hide raw tool details", "收起工具原始详情")
+                } else {
+                    self.tr("Show raw tool details", "展开工具原始详情")
+                },
+                self.tr("Change presentation only; no dialogue Event is created.", "仅改变显示，不创建对话 Event。"),
+                None,
+            ),
+            ControlItem::new(
+                ControlAction::SetReasoningDetails(!self.show_reasoning_details),
+                if self.show_reasoning_details {
+                    "reasoning details off"
+                } else {
+                    "reasoning details on"
+                },
+                if self.show_reasoning_details {
+                    self.tr("Hide reasoning summaries", "收起推理摘要")
+                } else {
+                    self.tr("Show reasoning summaries", "展开推理摘要")
+                },
+                self.tr("Change presentation only; no dialogue Event is created.", "仅改变显示，不创建对话 Event。"),
+                Some("Ctrl+R"),
+            ),
+            ControlItem::new(
+                ControlAction::CancelEvaluation,
+                "runtime cancel",
+                self.tr("Cancel current evaluation", "取消当前求值"),
+                self.tr("Cancel only the active Session evaluation; background work keeps its lifecycle.", "只取消当前 Session 求值；后台工作保持自身生命周期。"),
+                Some("Ctrl+C"),
+            )
+            .enabled_if(
+                self.busy,
+                self.tr("There is no active evaluation to cancel.", "当前没有可取消的求值。"),
+            ),
+            ControlItem::new(
+                ControlAction::ClearView,
+                "view clear",
+                self.tr("Clear local transcript view", "清空本地对话显示"),
+                self.tr("Clear transient presentation only; durable Session history is unchanged.", "只清空临时显示；持久化 Session 历史不变。"),
+                None,
+            ),
+            ControlItem::new(
+                ControlAction::Quit,
+                "app quit",
+                self.tr("Quit Morphz TUI", "退出 Morphz TUI"),
+                self.tr("Leave the terminal client without cancelling durable background work.", "退出终端客户端，不取消持久后台工作。"),
+                Some("Ctrl+D"),
+            ),
+            ControlItem::new(
+                ControlAction::CycleTheme,
+                "theme cycle",
+                self.tr("Cycle terminal theme", "循环切换终端主题"),
+                self.tr(
+                    "Advance to the next terminal theme without creating a dialogue Event.",
+                    "切换到下一个终端主题，不创建对话 Event。",
+                ),
+                Some("Alt+T"),
+            ),
+        ];
+
+        for theme in [
+            TuiTheme::System,
+            TuiTheme::Cyan,
+            TuiTheme::Iris,
+            TuiTheme::Coral,
+            TuiTheme::Mono,
+            TuiTheme::NoColor,
+        ] {
+            items.push(ControlItem::new(
+                ControlAction::SetTheme(theme),
+                format!("theme set {}", theme.as_str()),
+                if self.locale.is_chinese() {
+                    format!("切换主题 · {}", theme.as_str())
+                } else {
+                    format!("Set theme · {}", theme.as_str())
+                },
+                if theme == self.theme_kind {
+                    self.tr("Current terminal theme.", "当前终端主题。")
+                } else {
+                    self.tr(
+                        "Apply this theme for the current terminal session.",
+                        "为当前终端会话应用此主题。",
+                    )
+                },
+                None,
+            ));
+        }
+
+        if self.model_options.is_empty() {
+            items.push(
+                ControlItem::new(
+                    ControlAction::SetModel(String::new()),
+                    "model select",
+                    self.tr("Select model", "选择模型"),
+                    self.tr(
+                        "Select an enabled inference model route.",
+                        "选择已启用的推理模型路由。",
+                    ),
+                    None,
+                )
+                .enabled_if(
+                    false,
+                    self.tr(
+                        "No enabled model is currently available.",
+                        "当前没有已启用的可用模型。",
+                    ),
+                ),
+            );
+        } else {
+            for option in &self.model_options {
+                items.push(ControlItem::new(
+                    ControlAction::SetModel(option.id.clone()),
+                    format!("model select {}", option.id),
+                    if self.locale.is_chinese() {
+                        format!("选择模型 · {}", option.label)
+                    } else {
+                        format!("Select model · {}", option.label)
+                    },
+                    if option.id == self.model {
+                        self.tr("Current model route.", "当前模型路由。")
+                    } else {
+                        self.tr(
+                            "Use this model route for subsequent evaluations.",
+                            "后续求值使用此模型路由。",
+                        )
+                    },
+                    None,
+                ));
+            }
+        }
+
+        items.push(ControlItem::new(
+            ControlAction::SetReasoningEffort(None),
+            "reasoning effort default",
+            self.tr("Use provider-default reasoning", "使用服务默认推理强度"),
+            self.tr(
+                "Omit the reasoning field and preserve the provider default.",
+                "省略推理字段并保留服务默认值。",
+            ),
+            None,
+        ));
+        let supported_efforts = self
+            .model_options
+            .iter()
+            .find(|option| option.id == self.model)
+            .and_then(|option| option.supported_reasoning_efforts.as_ref());
+        for effort in [
+            ReasoningEffort::Off,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::Max,
+        ] {
+            let native = supported_efforts
+                .is_none_or(|supported| supported.iter().any(|value| value == effort.as_str()));
+            items.push(
+                ControlItem::new(
+                    ControlAction::SetReasoningEffort(Some(effort)),
+                    format!("reasoning effort {}", effort.as_str()),
+                    if self.locale.is_chinese() {
+                        format!("设置推理强度 · {}", effort.as_str())
+                    } else {
+                        format!("Set reasoning effort · {}", effort.as_str())
+                    },
+                    self.tr(
+                        "Apply this native effort to subsequent evaluations.",
+                        "后续求值使用此原生推理强度。",
+                    ),
+                    None,
+                )
+                .enabled_if(
+                    native,
+                    self.tr(
+                        "The selected model does not expose this native effort.",
+                        "当前模型不提供这一原生推理强度。",
+                    ),
+                ),
+            );
+        }
+        items
+    }
+
+    fn filtered_control_items(&self) -> Vec<ControlItem> {
+        let query = self.control_input.text();
+        let query = query.trim();
+        let mut items = self.control_items();
+        if query.is_empty() {
+            return items;
+        }
+        items.retain(|item| control_item_matches(item, query));
+        items.sort_by_key(|item| control_match_rank(item, query));
+        items
+    }
+
+    fn reconcile_control_selection(&mut self) {
+        let len = self.filtered_control_items().len();
+        self.control_selection = self.control_selection.min(len.saturating_sub(1));
     }
 
     fn set_active_view(&mut self, active_view: UiView) {
@@ -1316,6 +1786,10 @@ impl UiState {
                     )
                     .to_string();
             }
+            // Consumed inside the Orchestrator before presentation events are
+            // broadcast. Keep this defensive arm so a future transport bug
+            // still cannot expose opaque reasoning continuation state.
+            ModelStreamEvent::ProviderContinuation { .. } => {}
             ModelStreamEvent::ToolCallStarted { index, name, .. } => {
                 if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
                     attempt.tools.entry(index).or_default().name = name.clone();
@@ -1411,6 +1885,12 @@ impl UiState {
         }
         if self.show_sessions {
             self.render_sessions(frame, centered_rect(88, 82, size));
+        }
+        if self.info_panel.is_some() {
+            self.render_info_panel(frame, centered_rect(88, 84, size));
+        }
+        if self.show_control {
+            self.render_control(frame, centered_rect(88, 82, size));
         }
         if self.pending_approval.is_some() {
             self.render_approval(frame, centered_rect(78, 62, size));
@@ -3489,6 +3969,8 @@ impl UiState {
             && !self.show_help
             && !self.show_objectives
             && !self.show_sessions
+            && !self.show_control
+            && self.info_panel.is_none()
         {
             let (row, column) = self.composer.row_col();
             let x = inner
@@ -3546,26 +4028,26 @@ impl UiState {
             return;
         }
         let hints = if area.width < 112 {
-            self.tr("F1 help · F3 Sessions", "F1 帮助 · F3 会话")
+            self.tr("Ctrl+P Control · ? Help", "Ctrl+P 控制 · ? 帮助")
         } else if self.active_view == UiView::Tasks && self.focus == UiFocus::Content {
             self.tr(
-                "↑↓ select · D diagnostics · Tab input · Esc chat",
-                "↑↓ 选择 · D 诊断 · Tab 输入 · Esc 对话",
+                "↑↓ · D diagnostics · Tab · Ctrl+P Control",
+                "↑↓ · D 诊断 · Tab · Ctrl+P 控制",
             )
         } else if self.active_view == UiView::Mind && self.focus == UiFocus::Content {
             self.tr(
-                "↑↓ select · Tab input · Esc chat",
-                "↑↓ 选择 · Tab 输入 · Esc 对话",
+                "↑↓ select · Tab · Ctrl+P Control",
+                "↑↓ 选择 · Tab · Ctrl+P 控制",
             )
         } else if self.active_view != UiView::Conversation {
             self.tr(
-                "Tab content · Esc content · F1 help",
-                "Tab 内容 · Esc 内容 · F1 帮助",
+                "Tab content · Ctrl+P Control · ? help",
+                "Tab 内容 · Ctrl+P 控制 · ? 帮助",
             )
         } else {
             self.tr(
-                "F1 help · F2 theme · F3 Sessions",
-                "F1 帮助 · F2 主题 · F3 会话",
+                "Ctrl+P Control · Ctrl+T Tasks · Ctrl+K Mind",
+                "Ctrl+P 控制 · Ctrl+T 任务 · Ctrl+K 认知",
             )
         };
         let mut state = vec![
@@ -3624,9 +4106,9 @@ impl UiState {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(if area.width >= 160 { 42 } else { 44 }),
-                Constraint::Percentage(if area.width >= 160 { 33 } else { 30 }),
+                Constraint::Percentage(40),
                 Constraint::Percentage(26),
+                Constraint::Percentage(34),
             ])
             .split(inner);
         frame.render_widget(Paragraph::new(Line::from(state)), columns[0]);
@@ -3670,8 +4152,8 @@ impl UiState {
                 Line::from("  Ctrl/Command+Enter 跟进  ·  Shift+Enter/Ctrl+J 换行"),
                 Line::from(""),
                 Line::from("导航与视图"),
-                Line::from("  F1/? 帮助  ·  F2 主题  ·  F3 会话"),
-                Line::from("  Ctrl+T 任务  ·  Ctrl+K 认知帧  ·  Ctrl+P 终端"),
+                Line::from("  ? 帮助  ·  Alt+T 主题  ·  Ctrl+G 会话"),
+                Line::from("  Ctrl+T 任务  ·  Ctrl+K 认知帧  ·  Ctrl+P 控制"),
                 Line::from("  Tab 切换焦点  ·  ↑/↓ 选择  ·  Home/End 首项/末项"),
                 Line::from("  D 任务诊断  ·  Ctrl+O 目标  ·  Ctrl+R 推理摘要"),
                 Line::from("  PageUp/PageDown 滚动/跨页  ·  Ctrl+Home/End 对话首尾"),
@@ -3679,10 +4161,9 @@ impl UiState {
                 Line::from(""),
                 Line::from("鼠标拖选使用终端原生选择与复制；Morphz 默认不捕获鼠标。"),
                 Line::from(""),
-                Line::from("命令"),
-                Line::from(
-                    "  /ctx   /sessions   /objectives   /jobs   /tools   /theme   /cancel   /clear   /quit",
-                ),
+                Line::from("控制面"),
+                Line::from("  Ctrl+P 搜索并执行当前可用操作；Composer 中的 / 始终作为消息发送。"),
+                Line::from("  内嵌终端中 Ctrl+P 保持 Shell 历史语义；按 Ctrl+] 返回 Morphz。"),
                 Line::from(""),
                 Line::from("按 Esc 或 ? 关闭。"),
             ]
@@ -3693,8 +4174,8 @@ impl UiState {
                 Line::from("  Ctrl/Command+Enter follow-up  ·  Shift+Enter/Ctrl+J newline"),
                 Line::from(""),
                 Line::from("Navigation and views"),
-                Line::from("  F1/? help  ·  F2 theme  ·  F3 Sessions"),
-                Line::from("  Ctrl+T Tasks  ·  Ctrl+K Mind  ·  Ctrl+P shell"),
+                Line::from("  ? help  ·  Alt+T theme  ·  Ctrl+G Sessions"),
+                Line::from("  Ctrl+T Tasks  ·  Ctrl+K Mind  ·  Ctrl+P Control"),
                 Line::from("  Tab focus  ·  ↑/↓ select  ·  Home/End first/last"),
                 Line::from("  D diagnostics  ·  Ctrl+O Objectives  ·  Ctrl+R reasoning"),
                 Line::from("  PageUp/PageDown scroll/page  ·  Ctrl+Home/End transcript ends"),
@@ -3702,10 +4183,9 @@ impl UiState {
                 Line::from(""),
                 Line::from("Mouse drag uses native terminal selection and copy; Morphz does not capture it."),
                 Line::from(""),
-                Line::from("Commands"),
-                Line::from(
-                    "  /ctx   /sessions   /objectives   /jobs   /tools   /theme   /cancel   /clear   /quit",
-                ),
+                Line::from("Control plane"),
+                Line::from("  Ctrl+P searches and runs available actions; / in Composer is always message text."),
+                Line::from("  Inside the embedded shell Ctrl+P keeps shell-history semantics; Ctrl+] returns to Morphz."),
                 Line::from(""),
                 Line::from("Press Esc or ? to close."),
             ]
@@ -3861,6 +4341,193 @@ impl UiState {
         frame.render_widget(panel, area);
     }
 
+    fn render_control(&self, frame: &mut Frame<'_>, area: Rect) {
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .title(self.tr(" Control ", " 控制 "))
+            .title_bottom(Line::from(self.tr(
+                " ↑/↓ select  ·  Enter run  ·  Esc close ",
+                " ↑/↓ 选择  ·  Enter 执行  ·  Esc 关闭 ",
+            )))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.theme.focus))
+            .padding(ratatui::widgets::Padding::uniform(1));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+        let query = self.control_input.text();
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    self.tr("Control › ", "控制 › "),
+                    Style::default()
+                        .fg(self.theme.focus)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(query.clone(), Style::default().fg(self.theme.text_primary)),
+                if query.is_empty() {
+                    Span::styled(
+                        self.tr("Search actions…", "搜索操作…"),
+                        Style::default().fg(self.theme.text_muted),
+                    )
+                } else {
+                    Span::raw("")
+                },
+            ])),
+            rows[0],
+        );
+        frame.render_widget(
+            Paragraph::new("─".repeat(usize::from(rows[1].width)))
+                .style(Style::default().fg(self.theme.border_subtle)),
+            rows[1],
+        );
+
+        let items = self.filtered_control_items();
+        let visible_items = usize::from(rows[2].height / 2).max(1);
+        let scroll = self
+            .control_selection
+            .saturating_add(1)
+            .saturating_sub(visible_items);
+        let mut lines = Vec::new();
+        if items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                self.tr("No matching actions", "没有匹配的操作"),
+                Style::default().fg(self.theme.text_muted),
+            )));
+        } else {
+            for (index, item) in items.iter().enumerate().skip(scroll).take(visible_items) {
+                let selected = index == self.control_selection;
+                let primary = if item.enabled {
+                    if selected {
+                        self.theme.focus
+                    } else {
+                        self.theme.text_primary
+                    }
+                } else {
+                    self.theme.text_muted
+                };
+                let mut headline = vec![
+                    Span::styled(
+                        if selected { "▌ " } else { "  " },
+                        Style::default().fg(if selected {
+                            self.theme.focus
+                        } else {
+                            self.theme.border_subtle
+                        }),
+                    ),
+                    Span::styled(
+                        item.label.clone(),
+                        Style::default().fg(primary).add_modifier(if selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                    ),
+                    Span::styled(
+                        format!("  {}", item.command),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ];
+                if let Some(shortcut) = item.shortcut {
+                    headline.push(Span::styled(
+                        format!("  {shortcut}"),
+                        Style::default().fg(self.theme.brand),
+                    ));
+                }
+                lines.push(Line::from(headline));
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        item.disabled_reason
+                            .as_deref()
+                            .unwrap_or(item.description.as_str())
+                            .to_string(),
+                        Style::default().fg(if item.enabled {
+                            self.theme.text_secondary
+                        } else {
+                            self.theme.warning
+                        }),
+                    ),
+                ]));
+            }
+        }
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[2]);
+        let feedback = self.control_feedback.as_deref().unwrap_or_else(|| {
+            self.tr(
+                "Composer draft is preserved; Control actions never enter the dialogue.",
+                "Composer 草稿保持不变；控制操作不会进入对话。",
+            )
+        });
+        frame.render_widget(
+            Paragraph::new(feedback).style(Style::default().fg(
+                if self.control_feedback.is_some() {
+                    self.theme.warning
+                } else {
+                    self.theme.text_muted
+                },
+            )),
+            rows[3],
+        );
+
+        let (_, column) = self.control_input.row_col();
+        frame.set_cursor_position((
+            rows[0]
+                .x
+                .saturating_add(UnicodeWidthStr::width(self.tr("Control › ", "控制 › ")) as u16)
+                .saturating_add(column as u16)
+                .min(rows[0].right().saturating_sub(1)),
+            rows[0].y,
+        ));
+    }
+
+    fn render_info_panel(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some(panel) = self.info_panel.as_ref() else {
+            return;
+        };
+        frame.render_widget(Clear, area);
+        let content = if panel.formatted_sexpr {
+            sexpr_reader_lines(&panel.body, &self.theme)
+        } else {
+            panel
+                .body
+                .lines()
+                .map(|line| Line::from(line.to_string()))
+                .collect()
+        };
+        frame.render_widget(
+            Paragraph::new(content)
+                .wrap(Wrap { trim: false })
+                .scroll((self.info_scroll, 0))
+                .block(
+                    Block::default()
+                        .title(format!(" {} ", panel.title))
+                        .title_bottom(Line::from(self.tr(
+                            " PageUp/PageDown scroll  ·  Esc close ",
+                            " PageUp/PageDown 滚动  ·  Esc 关闭 ",
+                        )))
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(self.theme.focus))
+                        .padding(ratatui::widgets::Padding::uniform(1)),
+                )
+                .style(Style::default().fg(self.theme.text_primary)),
+            area,
+        );
+    }
+
     fn render_approval(&self, frame: &mut Frame<'_>, area: Rect) {
         let Some(approval) = &self.pending_approval else {
             return;
@@ -3982,11 +4649,16 @@ enum UiAction {
         text: String,
         dispatch_mode: Option<MessageDispatchMode>,
     },
-    OpenSessions,
+    OpenControl,
+    ExecuteControl(ControlAction),
     SwitchSession(String),
-    Quit,
-    Cancel,
     Approve(bool),
+}
+
+enum ControlEffect {
+    None,
+    OpenShell,
+    Quit,
 }
 
 struct TerminalSession {
@@ -4058,16 +4730,27 @@ pub async fn run(
         state.context_id = record.context_id;
         state.session_title = Some(record.title);
     }
-    if let Ok(history) = session.events(None).await {
-        for event in &history {
-            state.ingest_history(event);
-        }
+    let history = session.events(None).await.unwrap_or_default();
+    for event in &history {
+        state.ingest_history(event);
+    }
+    let mut durable_event_cursor = history
+        .iter()
+        .filter_map(|event| event.sequence)
+        .max()
+        .unwrap_or_default();
+    let mut recent_event_ids = RecentTuiEventIds::default();
+    for event in &history {
+        recent_event_ids.insert(event.id.clone());
     }
     if let Ok(view) = session.inspect_context_view().await {
         state.update_context(&view);
     }
     if let Ok(delegations) = runtime.list_delegations().await {
         state.delegations = delegations;
+    }
+    if let Ok(model_options) = runtime.inference_model_options().await {
+        state.model_options = model_options;
     }
     let sdk = MorphzSdk::new(runtime.clone());
     let principal = sdk.default_principal();
@@ -4096,6 +4779,8 @@ pub async fn run(
     let mut input_events = EventStream::new();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut durable_event_tick = tokio::time::interval(std::time::Duration::from_millis(500));
+    durable_event_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let shell_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut embedded_shell: Option<shell::EmbeddedShell> = None;
     let mut shell_visible = false;
@@ -4127,53 +4812,16 @@ pub async fn run(
                 let Some(event) = maybe_event else { break; };
                 match event? {
                     Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
-                        if is_shell_toggle_key(key) && state.pending_approval.is_none() {
-                            if shell_visible {
-                                shell_visible = false;
-                            } else {
-                                let needs_shell = embedded_shell
-                                    .as_mut()
-                                    .is_none_or(shell::EmbeddedShell::is_finished);
-                                if needs_shell {
-                                    match shell::EmbeddedShell::spawn(&shell_cwd) {
-                                        Ok(shell) => embedded_shell = Some(shell),
-                                        Err(error) => {
-                                            state.push(
-                                                EntryKind::Error,
-                                                if state.locale.is_chinese() {
-                                                    format!("无法打开内嵌终端：{error}")
-                                                } else {
-                                                    format!("Could not open the embedded shell: {error}")
-                                                },
-                                            );
-                                            embedded_shell = None;
-                                        }
-                                    }
-                                }
-                                shell_visible = embedded_shell.is_some();
-                            }
-                            continue;
-                        }
                         if shell_visible && state.pending_approval.is_none() {
-                            if let Some(shell) = embedded_shell.as_mut() {
+                            if is_shell_escape_key(key) {
+                                shell_visible = false;
+                            } else if let Some(shell) = embedded_shell.as_mut() {
                                 shell.send_key(key);
                             }
                             continue;
                         }
                         match key_action(&mut state, key) {
                             UiAction::None => {}
-                            UiAction::Quit => break,
-                            UiAction::Cancel => {
-                                if session.cancel() {
-                                    state.push(EntryKind::System, state.tr(
-                                        "Cancellation requested for the current session evaluation. Background tasks keep their own lifecycles.",
-                                        "已请求取消当前会话求值。后台任务仍按各自的生命周期运行。",
-                                    ));
-                                    state.status = state.tr("cancelling", "正在取消").to_string();
-                                } else {
-                                    state.status = state.tr("nothing to cancel", "没有可取消的求值").to_string();
-                                }
-                            }
                             UiAction::Approve(allow) => {
                                 if let Some(approval) = state.pending_approval.take() {
                                     let decision = if allow {
@@ -4204,9 +4852,6 @@ pub async fn run(
                                 }
                             }
                             UiAction::Submit { text, dispatch_mode } => {
-                                if handle_command(&runtime, &session, &mut state, &text).await? {
-                                    continue;
-                                }
                                 submit_prompt(
                                     &runtime,
                                     &session,
@@ -4217,24 +4862,36 @@ pub async fn run(
                                 )
                                 .await;
                             }
-                            UiAction::OpenSessions => {
-                                let sdk = MorphzSdk::new(runtime.clone());
-                                let principal = sdk.default_principal();
-                                match sdk.list_sessions(&principal.principal_id, false).await {
-                                    Ok(sessions) => {
-                                        state.set_sessions(sessions);
-                                        state.show_help = false;
-                                        state.show_objectives = false;
-                                        state.show_sessions = true;
+                            UiAction::OpenControl => {
+                                if let Ok(model_options) = runtime.inference_model_options().await {
+                                    state.model_options = model_options;
+                                }
+                                state.tool_names = runtime.tool_names();
+                                state.open_control();
+                            }
+                            UiAction::ExecuteControl(action) => {
+                                match execute_control_action(&runtime, &session, &mut state, action).await {
+                                    ControlEffect::None => {}
+                                    ControlEffect::Quit => break,
+                                    ControlEffect::OpenShell => {
+                                        let needs_shell = embedded_shell
+                                            .as_mut()
+                                            .is_none_or(shell::EmbeddedShell::is_finished);
+                                        if needs_shell {
+                                            match shell::EmbeddedShell::spawn(&shell_cwd) {
+                                                Ok(shell) => embedded_shell = Some(shell),
+                                                Err(error) => {
+                                                    state.status = if state.locale.is_chinese() {
+                                                        format!("无法打开内嵌终端：{error}")
+                                                    } else {
+                                                        format!("Could not open the embedded shell: {error}")
+                                                    };
+                                                    embedded_shell = None;
+                                                }
+                                            }
+                                        }
+                                        shell_visible = embedded_shell.is_some();
                                     }
-                                    Err(error) => state.push(
-                                        EntryKind::Error,
-                                        if state.locale.is_chinese() {
-                                            format!("读取会话列表失败：{error}")
-                                        } else {
-                                            format!("Could not load Sessions: {error}")
-                                        },
-                                    ),
                                 }
                             }
                             UiAction::SwitchSession(session_id) => {
@@ -4252,6 +4909,13 @@ pub async fn run(
                                             format!("Could not switch Session: {error}")
                                         },
                                     );
+                                } else if let Ok(history) = session.events(None).await {
+                                    for event in history {
+                                        if let Some(sequence) = event.sequence {
+                                            durable_event_cursor = durable_event_cursor.max(sequence);
+                                        }
+                                        recent_event_ids.insert(event.id);
+                                    }
                                 }
                             }
                         }
@@ -4261,11 +4925,20 @@ pub async fn run(
                             shell.send_paste(&text);
                         }
                     }
+                    Event::Paste(text) if state.show_control && state.pending_approval.is_none() => {
+                        state
+                            .control_input
+                            .insert_str(&text.replace(['\r', '\n'], " "));
+                        state.control_selection = 0;
+                        state.control_feedback = None;
+                        state.reconcile_control_selection();
+                    }
                     Event::Paste(_)
                         if state.pending_approval.is_some()
                             || state.show_help
                             || state.show_objectives
-                            || state.show_sessions => {}
+                            || state.show_sessions
+                            || state.info_panel.is_some() => {}
                     Event::Paste(text) => {
                         state.focus = UiFocus::Composer;
                         state.composer.insert_str(&text);
@@ -4282,26 +4955,25 @@ pub async fn run(
                     state.busy = false;
                     continue;
                 };
-                let refresh = matches!(
-                    event.topic.as_str(),
-                    "chat/user_message"
-                        | "chat/reply"
-                        | "chat/no_reply"
-                        | "chat/outbound_message"
-                        | "chat/session_signal"
-                        | "chat/tool_output"
-                        | "context/transaction"
-                        | "runtime/model_attempt_state"
-                        | "runtime/tool_calls_selected"
-                        | "runtime/session_restored"
-                ) || event.topic.starts_with("objective/");
-                state.on_runtime_event(event);
-                if refresh {
-                    if let Ok(view) = session.inspect_context_view().await {
-                        state.update_context(&view);
-                    }
-                    if let Ok(delegations) = runtime.list_delegations().await {
-                        state.delegations = delegations;
+                if let Some(sequence) = event.sequence {
+                    durable_event_cursor = durable_event_cursor.max(sequence);
+                }
+                if recent_event_ids.insert(event.id.clone()) {
+                    ingest_tui_runtime_event(&runtime, &session, &mut state, event).await;
+                }
+            }
+            _ = durable_event_tick.tick() => {
+                // EventBus is intentionally process-local. Tail the durable
+                // Session log as the cross-Runtime observation channel while
+                // retaining EventBus for low-latency and transient model deltas.
+                if let Ok(events) = session.events(Some(durable_event_cursor)).await {
+                    for event in events {
+                        if let Some(sequence) = event.sequence {
+                            durable_event_cursor = durable_event_cursor.max(sequence);
+                        }
+                        if recent_event_ids.insert(event.id.clone()) {
+                            ingest_tui_runtime_event(&runtime, &session, &mut state, event).await;
+                        }
                     }
                 }
             }
@@ -4311,6 +4983,324 @@ pub async fn run(
         }
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct RecentTuiEventIds {
+    ids: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl RecentTuiEventIds {
+    fn insert(&mut self, event_id: String) -> bool {
+        if !self.ids.insert(event_id.clone()) {
+            return false;
+        }
+        self.order.push_back(event_id);
+        while self.order.len() > TUI_RECENT_EVENT_ID_CAPACITY {
+            if let Some(expired) = self.order.pop_front() {
+                self.ids.remove(&expired);
+            }
+        }
+        true
+    }
+}
+
+async fn ingest_tui_runtime_event(
+    runtime: &MorphzRuntime,
+    session: &SessionHandle,
+    state: &mut UiState,
+    event: RuntimeEvent,
+) {
+    let refresh = matches!(
+        event.topic.as_str(),
+        "chat/user_message"
+            | "chat/reply"
+            | "chat/no_reply"
+            | "chat/outbound_message"
+            | "chat/session_signal"
+            | "chat/tool_output"
+            | "context/transaction"
+            | "runtime/model_attempt_state"
+            | "runtime/tool_calls_selected"
+            | "runtime/session_restored"
+    ) || event.topic.starts_with("objective/");
+    state.on_runtime_event(event);
+    if refresh {
+        if let Ok(view) = session.inspect_context_view().await {
+            state.update_context(&view);
+        }
+        if let Ok(delegations) = runtime.list_delegations().await {
+            state.delegations = delegations;
+        }
+    }
+}
+
+async fn execute_control_action(
+    runtime: &MorphzRuntime,
+    session: &SessionHandle,
+    state: &mut UiState,
+    action: ControlAction,
+) -> ControlEffect {
+    state.close_control();
+    match action {
+        ControlAction::ShowHelp => {
+            state.close_nonapproval_overlays();
+            state.show_help = true;
+        }
+        ControlAction::ShowConversation => state.set_active_view(UiView::Conversation),
+        ControlAction::ShowTasks => state.set_active_view(UiView::Tasks),
+        ControlAction::ShowMind => state.set_active_view(UiView::Mind),
+        ControlAction::ShowSessions => {
+            let sdk = MorphzSdk::new(runtime.clone());
+            let principal = sdk.default_principal();
+            match sdk.list_sessions(&principal.principal_id, false).await {
+                Ok(sessions) => {
+                    state.set_sessions(sessions);
+                    state.close_nonapproval_overlays();
+                    state.show_sessions = true;
+                }
+                Err(error) => {
+                    state.status = if state.locale.is_chinese() {
+                        format!("读取会话列表失败：{error}")
+                    } else {
+                        format!("Could not load Sessions: {error}")
+                    };
+                }
+            }
+        }
+        ControlAction::ShowObjectives => {
+            state.close_nonapproval_overlays();
+            state.show_objectives = true;
+            state.objective_scroll = 0;
+        }
+        ControlAction::ShowTools => {
+            let mut tools = runtime.tool_names();
+            tools.sort();
+            tools.dedup();
+            let body = if tools.is_empty() {
+                state
+                    .tr(
+                        "Runtime currently exposes no tools.",
+                        "Runtime 当前没有暴露工具。",
+                    )
+                    .to_string()
+            } else {
+                tools
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| format!("{:>3}. {name}", index + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let title = if state.locale.is_chinese() {
+                format!("可用工具 · {}", tools.len())
+            } else {
+                format!("Available tools · {}", tools.len())
+            };
+            state.show_info_panel(title, body);
+        }
+        ControlAction::ShowExecutionJobs => {
+            let tasks = get_tasks_map();
+            let mut jobs = tasks
+                .iter()
+                .filter(|task| task.context_id == state.context_id)
+                .map(|task| {
+                    (
+                        task.id.clone(),
+                        task.session_id.clone(),
+                        task.cmd_str.clone(),
+                        task.status,
+                        task.started_at,
+                    )
+                })
+                .collect::<Vec<_>>();
+            jobs.sort_by(|left, right| right.4.cmp(&left.4).then_with(|| left.0.cmp(&right.0)));
+            let body = if jobs.is_empty() {
+                state
+                    .tr(
+                        "The current Context has no retained Execution Jobs.",
+                        "当前 Context 没有保留的执行任务。",
+                    )
+                    .to_string()
+            } else {
+                jobs.iter()
+                    .map(|(id, session_id, command, status, started_at)| {
+                        format!(
+                            "{}  [{}]\n  {} · {}\n  {}",
+                            id,
+                            localized_background_status(state.locale, *status),
+                            state.tr("session", "会话"),
+                            short_id(session_id),
+                            truncate(&command.replace('\n', " "), 160),
+                        ) + &format!(
+                            "\n  {}",
+                            crate::local_time::format_utc_for_local(*started_at)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            };
+            let title = if state.locale.is_chinese() {
+                format!("执行任务 · {}", jobs.len())
+            } else {
+                format!("Execution Jobs · {}", jobs.len())
+            };
+            state.show_info_panel(title, body);
+        }
+        ControlAction::ShowDelegations => match runtime.list_delegations().await {
+            Ok(delegations) => {
+                state.delegations.clone_from(&delegations);
+                let body = if delegations.is_empty() {
+                    state
+                        .tr("There are no subagent delegations.", "当前没有子代理委派。")
+                        .to_string()
+                } else {
+                    delegations
+                        .iter()
+                        .map(|delegation| {
+                            format!(
+                                "{}  [{}]\n  {}",
+                                delegation.id,
+                                localized_delegation_status(state.locale, &delegation.status),
+                                delegation.task.replace('\n', " ")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                };
+                let title = if state.locale.is_chinese() {
+                    format!("子代理委派 · {}", delegations.len())
+                } else {
+                    format!("Delegations · {}", delegations.len())
+                };
+                state.show_info_panel(title, body);
+            }
+            Err(error) => {
+                state.status = if state.locale.is_chinese() {
+                    format!("读取委派失败：{error}")
+                } else {
+                    format!("Could not read delegations: {error}")
+                };
+            }
+        },
+        ControlAction::InspectContext => match session.inspect_context_view().await {
+            Ok(view) => {
+                let body = view.sexpr.clone();
+                state.update_context(&view);
+                state.show_sexpr_panel(state.tr("Context encoding", "Context 编码"), body);
+            }
+            Err(error) => {
+                state.status = if state.locale.is_chinese() {
+                    format!("读取 Context 失败：{error}")
+                } else {
+                    format!("Could not inspect the Context: {error}")
+                };
+            }
+        },
+        ControlAction::OpenShell => return ControlEffect::OpenShell,
+        ControlAction::SetToolDetails(show) => {
+            state.show_tool_details = show;
+            state.status = if show {
+                state.tr("tool details shown", "已展开工具详情")
+            } else {
+                state.tr("tool details hidden", "已收起工具详情")
+            }
+            .to_string();
+        }
+        ControlAction::SetReasoningDetails(show) => {
+            state.show_reasoning_details = show;
+            state.follow_tail = true;
+            state.status = if show {
+                state.tr("reasoning summaries shown", "已展开推理摘要")
+            } else {
+                state.tr("reasoning summaries hidden", "已收起推理摘要")
+            }
+            .to_string();
+        }
+        ControlAction::CycleTheme => {
+            let theme = state.cycle_theme();
+            state.status = if state.locale.is_chinese() {
+                format!("主题 · {}", theme.as_str())
+            } else {
+                format!("theme · {}", theme.as_str())
+            };
+        }
+        ControlAction::SetTheme(theme) => {
+            state.set_theme(theme);
+            state.status = if state.locale.is_chinese() {
+                format!("主题 · {}", theme.as_str())
+            } else {
+                format!("theme · {}", theme.as_str())
+            };
+        }
+        ControlAction::SetModel(model) => match runtime.set_model(&model) {
+            Ok(()) => {
+                state.model = runtime.model();
+                state.status = if state.locale.is_chinese() {
+                    format!("模型 · {}", state.model)
+                } else {
+                    format!("model · {}", state.model)
+                };
+            }
+            Err(error) => {
+                state.status = if state.locale.is_chinese() {
+                    format!("切换模型失败：{error}")
+                } else {
+                    format!("Could not switch model: {error}")
+                };
+            }
+        },
+        ControlAction::SetReasoningEffort(effort) => match runtime.set_reasoning_effort(effort) {
+            Ok(()) => {
+                let value = effort.map(ReasoningEffort::as_str).unwrap_or("default");
+                state.status = if state.locale.is_chinese() {
+                    format!("推理强度 · {value}")
+                } else {
+                    format!("reasoning effort · {value}")
+                };
+            }
+            Err(error) => {
+                state.status = if state.locale.is_chinese() {
+                    format!("设置推理强度失败：{error}")
+                } else {
+                    format!("Could not set reasoning effort: {error}")
+                };
+            }
+        },
+        ControlAction::CancelEvaluation => {
+            state.status = match session
+                .cancel_durable("Session evaluation cancelled from terminal UI")
+                .await
+            {
+                Ok(cancelled) if cancelled > 0 => state
+                    .tr("cancelling current evaluation", "正在取消当前求值")
+                    .to_string(),
+                Ok(_) => state
+                    .tr("nothing to cancel", "没有可取消的求值")
+                    .to_string(),
+                Err(error) => {
+                    if state.locale.is_chinese() {
+                        format!("取消求值失败：{error}")
+                    } else {
+                        format!("Could not cancel evaluation: {error}")
+                    }
+                }
+            };
+        }
+        ControlAction::ClearView => {
+            state.entries.clear();
+            state.live_attempts.clear();
+            state.status = state
+                .tr(
+                    "local transcript cleared · durable history unchanged",
+                    "已清空本地显示 · 持久历史未改变",
+                )
+                .to_string();
+        }
+        ControlAction::Quit => return ControlEffect::Quit,
+    }
+    ControlEffect::None
 }
 
 async fn switch_tui_session(
@@ -4362,9 +5352,7 @@ async fn switch_tui_session(
     state.max_scroll = 0;
     state.follow_tail = true;
     state.view_scroll = 0;
-    state.show_sessions = false;
-    state.show_help = false;
-    state.show_objectives = false;
+    state.close_nonapproval_overlays();
     state.cancel_confirmation_armed = false;
     for event in &history {
         state.ingest_history(event);
@@ -4441,199 +5429,7 @@ async fn submit_prompt(
     }
 }
 
-async fn handle_command(
-    runtime: &MorphzRuntime,
-    session: &SessionHandle,
-    state: &mut UiState,
-    input: &str,
-) -> Result<bool, TuiError> {
-    let command = input.trim();
-    if command == "/theme" {
-        let theme_kind = state.cycle_theme();
-        state.push(
-            EntryKind::System,
-            if state.locale.is_chinese() {
-                format!(
-                    "已切换到 {} 主题；本次终端会话立即生效。",
-                    theme_kind.as_str()
-                )
-            } else {
-                format!(
-                    "Switched to the {} theme for this terminal session.",
-                    theme_kind.as_str()
-                )
-            },
-        );
-        return Ok(true);
-    }
-    if let Some(value) = command.strip_prefix("/theme ") {
-        match TuiTheme::parse(value) {
-            Some(theme_kind) => {
-                state.set_theme(theme_kind);
-                state.push(
-                    EntryKind::System,
-                    if state.locale.is_chinese() {
-                        format!("已切换到 {} 主题；本次终端会话立即生效。", theme_kind.as_str())
-                    } else {
-                        format!(
-                            "Switched to the {} theme for this terminal session.",
-                            theme_kind.as_str()
-                        )
-                    },
-                );
-            }
-            None => state.push(
-                EntryKind::Error,
-                if state.locale.is_chinese() {
-                    format!(
-                        "未知主题 '{}'；可用值为 system、mono、iris、cyan、coral、no-color。",
-                        value.trim()
-                    )
-                } else {
-                    format!(
-                        "Unknown theme '{}'; available values: system, mono, iris, cyan, coral, no-color.",
-                        value.trim()
-                    )
-                },
-            ),
-        }
-        return Ok(true);
-    }
-    match command {
-        "/help" => {
-            state.show_objectives = false;
-            state.show_sessions = false;
-            state.show_help = true;
-            Ok(true)
-        }
-        "/clear" => {
-            state.entries.clear();
-            state.live_attempts.clear();
-            Ok(true)
-        }
-        "/cancel" => {
-            if session.cancel() {
-                state.push(
-                    EntryKind::System,
-                    state.tr(
-                        "Cancellation requested for the current session evaluation.",
-                        "已请求取消当前会话求值。",
-                    ),
-                );
-            } else {
-                state.push(
-                    EntryKind::System,
-                    state.tr(
-                        "The current session has no cancellable evaluation.",
-                        "当前会话没有可取消的求值。",
-                    ),
-                );
-            }
-            Ok(true)
-        }
-        "/ctx" => {
-            match session.inspect_context_view().await {
-                Ok(view) => {
-                    state.update_context(&view);
-                    state.push(EntryKind::System, view.sexpr);
-                }
-                Err(error) => state.push(
-                    EntryKind::Error,
-                    if state.locale.is_chinese() {
-                        format!("读取上下文失败：{error}")
-                    } else {
-                        format!("Could not read the context: {error}")
-                    },
-                ),
-            }
-            Ok(true)
-        }
-        "/objective" | "/objectives" => {
-            state.show_objectives = !state.show_objectives;
-            state.show_help = false;
-            state.show_sessions = false;
-            state.objective_scroll = 0;
-            Ok(true)
-        }
-        "/sessions" => {
-            let sdk = MorphzSdk::new(runtime.clone());
-            let principal = sdk.default_principal();
-            match sdk.list_sessions(&principal.principal_id, false).await {
-                Ok(sessions) => {
-                    state.set_sessions(sessions);
-                    state.show_help = false;
-                    state.show_objectives = false;
-                    state.show_sessions = true;
-                }
-                Err(error) => state.push(
-                    EntryKind::Error,
-                    if state.locale.is_chinese() {
-                        format!("读取会话列表失败：{error}")
-                    } else {
-                        format!("Could not load Sessions: {error}")
-                    },
-                ),
-            }
-            Ok(true)
-        }
-        "/tools" => {
-            state.show_tool_details = !state.show_tool_details;
-            state.push(
-                EntryKind::System,
-                if state.show_tool_details {
-                    state.tr(
-                        "Expanded raw tool arguments and results.",
-                        "已展开工具调用的原始参数与结果。",
-                    )
-                } else {
-                    state.tr(
-                        "Collapsed raw tool arguments and results.",
-                        "已收起工具调用的原始参数与结果。",
-                    )
-                },
-            );
-            Ok(true)
-        }
-        "/jobs" => {
-            match runtime.list_delegations().await {
-                Ok(jobs) if jobs.is_empty() => state.push(
-                    EntryKind::System,
-                    state.tr("There are no subagent delegations.", "当前没有子代理委派。"),
-                ),
-                Ok(jobs) => {
-                    let body = jobs
-                        .into_iter()
-                        .map(|job| {
-                            format!(
-                                "{}  [{}]  {}",
-                                job.id,
-                                localized_delegation_status(state.locale, &job.status),
-                                truncate(&job.task.replace('\n', " "), 120)
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    state.push(EntryKind::System, body);
-                }
-                Err(error) => state.push(
-                    EntryKind::Error,
-                    if state.locale.is_chinese() {
-                        format!("读取委派失败：{error}")
-                    } else {
-                        format!("Could not read delegations: {error}")
-                    },
-                ),
-            }
-            Ok(true)
-        }
-        _ => Ok(false),
-    }
-}
-
 fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
-        return UiAction::Quit;
-    }
     if state.pending_approval.is_some() {
         return match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => UiAction::Approve(true),
@@ -4641,14 +5437,30 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
             _ => UiAction::None,
         };
     }
-    if is_theme_cycle_key(key) {
-        let theme = state.cycle_theme();
-        state.status = if state.locale.is_chinese() {
-            format!("主题 · {}", theme.as_str())
-        } else {
-            format!("theme · {}", theme.as_str())
-        };
+    if state.show_control {
+        return control_key_action(state, key);
+    }
+    if state.info_panel.is_some() {
+        if is_control_palette_key(key) {
+            return UiAction::OpenControl;
+        }
+        match key.code {
+            KeyCode::Esc => state.info_panel = None,
+            KeyCode::PageUp => state.info_scroll = state.info_scroll.saturating_sub(8),
+            KeyCode::PageDown => state.info_scroll = state.info_scroll.saturating_add(8),
+            KeyCode::Home => state.info_scroll = 0,
+            _ => {}
+        }
         return UiAction::None;
+    }
+    if is_control_palette_key(key) {
+        return UiAction::OpenControl;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+        return UiAction::ExecuteControl(ControlAction::Quit);
+    }
+    if is_theme_cycle_key(key) {
+        return UiAction::ExecuteControl(ControlAction::CycleTheme);
     }
     if state.show_help {
         if key.code == KeyCode::Esc || is_shortcuts_key(key) {
@@ -4658,7 +5470,7 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     }
     if state.show_sessions {
         return match key.code {
-            KeyCode::Esc | KeyCode::F(3) => {
+            KeyCode::Esc => {
                 state.show_sessions = false;
                 UiAction::None
             }
@@ -4690,6 +5502,10 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
                 .selected_session_id()
                 .map(|id| UiAction::SwitchSession(id.to_string()))
                 .unwrap_or(UiAction::None),
+            _ if is_session_directory_key(key) => {
+                state.show_sessions = false;
+                UiAction::None
+            }
             _ => UiAction::None,
         };
     }
@@ -4710,14 +5526,11 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
         }
         return UiAction::None;
     }
-    if key.code == KeyCode::F(1) || (is_shortcuts_key(key) && state.composer.text().is_empty()) {
-        state.show_objectives = false;
-        state.show_sessions = false;
-        state.show_help = true;
-        return UiAction::None;
+    if is_shortcuts_key(key) && state.composer.text().is_empty() {
+        return UiAction::ExecuteControl(ControlAction::ShowHelp);
     }
     if is_session_directory_key(key) {
-        return UiAction::OpenSessions;
+        return UiAction::ExecuteControl(ControlAction::ShowSessions);
     }
     if !state.busy || (state.cancel_confirmation_armed && key.code != KeyCode::Esc) {
         state.cancel_confirmation_armed = false;
@@ -4725,7 +5538,7 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     if state.busy && state.active_view == UiView::Conversation && key.code == KeyCode::Esc {
         if state.cancel_confirmation_armed {
             state.cancel_confirmation_armed = false;
-            return UiAction::Cancel;
+            return UiAction::ExecuteControl(ControlAction::CancelEvaluation);
         }
         state.cancel_confirmation_armed = true;
         return UiAction::None;
@@ -4733,41 +5546,34 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('r') | KeyCode::Char('R'))
     {
-        state.show_reasoning_details = !state.show_reasoning_details;
-        state.follow_tail = true;
-        return UiAction::None;
+        return UiAction::ExecuteControl(ControlAction::SetReasoningDetails(
+            !state.show_reasoning_details,
+        ));
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return if state.busy {
-            UiAction::Cancel
+        return UiAction::ExecuteControl(if state.busy {
+            ControlAction::CancelEvaluation
         } else {
-            UiAction::Quit
-        };
+            ControlAction::Quit
+        });
     }
     if key.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(
-            key.code,
-            KeyCode::Char('t') | KeyCode::Char('T') | KeyCode::Char('w') | KeyCode::Char('W')
-        )
+        && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
     {
-        let next = if state.active_view == UiView::Tasks {
-            UiView::Conversation
+        return UiAction::ExecuteControl(if state.active_view == UiView::Tasks {
+            ControlAction::ShowConversation
         } else {
-            UiView::Tasks
-        };
-        state.set_active_view(next);
-        return UiAction::None;
+            ControlAction::ShowTasks
+        });
     }
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
     {
-        let next = if state.active_view == UiView::Mind {
-            UiView::Conversation
+        return UiAction::ExecuteControl(if state.active_view == UiView::Mind {
+            ControlAction::ShowConversation
         } else {
-            UiView::Mind
-        };
-        state.set_active_view(next);
-        return UiAction::None;
+            ControlAction::ShowMind
+        });
     }
     if key.code == KeyCode::Tab && state.active_view != UiView::Conversation {
         state.toggle_secondary_focus();
@@ -4782,11 +5588,7 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
         return UiAction::None;
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
-        state.show_help = false;
-        state.show_sessions = false;
-        state.show_objectives = true;
-        state.objective_scroll = 0;
-        return UiAction::None;
+        return UiAction::ExecuteControl(ControlAction::ShowObjectives);
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Home {
         if state.active_view == UiView::Conversation {
@@ -4892,11 +5694,78 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     UiAction::None
 }
 
+fn control_key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
+    match key.code {
+        KeyCode::Esc => state.close_control(),
+        _ if is_control_palette_key(key) => state.close_control(),
+        KeyCode::Up => {
+            state.control_selection = state.control_selection.saturating_sub(1);
+            state.control_feedback = None;
+        }
+        KeyCode::Down => {
+            let len = state.filtered_control_items().len();
+            state.control_selection = (state.control_selection + 1).min(len.saturating_sub(1));
+            state.control_feedback = None;
+        }
+        KeyCode::PageUp => {
+            state.control_selection = state.control_selection.saturating_sub(8);
+            state.control_feedback = None;
+        }
+        KeyCode::PageDown => {
+            let len = state.filtered_control_items().len();
+            state.control_selection = (state.control_selection + 8).min(len.saturating_sub(1));
+            state.control_feedback = None;
+        }
+        KeyCode::Home => state.control_selection = 0,
+        KeyCode::End => {
+            state.control_selection = state.filtered_control_items().len().saturating_sub(1)
+        }
+        KeyCode::Enter => {
+            let items = state.filtered_control_items();
+            if let Some(item) = items.get(state.control_selection) {
+                if item.enabled {
+                    return UiAction::ExecuteControl(item.action.clone());
+                }
+                state.control_feedback = item.disabled_reason.clone();
+            }
+        }
+        KeyCode::Backspace => {
+            state.control_input.backspace();
+            state.control_selection = 0;
+            state.control_feedback = None;
+        }
+        KeyCode::Delete => {
+            state.control_input.delete();
+            state.control_selection = 0;
+            state.control_feedback = None;
+        }
+        KeyCode::Left => state.control_input.cursor = state.control_input.cursor.saturating_sub(1),
+        KeyCode::Right => {
+            state.control_input.cursor =
+                (state.control_input.cursor + 1).min(state.control_input.chars.len())
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.control_input.clear();
+            state.control_selection = 0;
+            state.control_feedback = None;
+        }
+        KeyCode::Char(character)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) =>
+        {
+            state.control_input.insert(character);
+            state.control_selection = 0;
+            state.control_feedback = None;
+        }
+        _ => {}
+    }
+    state.reconcile_control_selection();
+    UiAction::None
+}
+
 fn submit_composer(state: &mut UiState, dispatch_mode: Option<MessageDispatchMode>) -> UiAction {
     let text = state.composer.take_trimmed();
-    if text == "/quit" || text == "/exit" {
-        return UiAction::Quit;
-    }
     if text.is_empty() {
         return UiAction::None;
     }
@@ -4926,28 +5795,34 @@ fn moved_selection_id(current: Option<&str>, ids: &[String], amount: isize) -> O
 }
 
 fn is_shortcuts_key(key: KeyEvent) -> bool {
-    key.code == KeyCode::F(1)
-        || (key.code == KeyCode::Char('?')
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT))
+    key.code == KeyCode::Char('?')
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
 fn is_theme_cycle_key(key: KeyEvent) -> bool {
-    key.code == KeyCode::F(2)
-        || (key.modifiers.contains(KeyModifiers::ALT)
-            && !key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T')))
+    key.modifiers.contains(KeyModifiers::ALT)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
 }
 
 fn is_session_directory_key(key: KeyEvent) -> bool {
-    key.code == KeyCode::F(3)
+    key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G'))
 }
 
-fn is_shell_toggle_key(key: KeyEvent) -> bool {
+fn is_control_palette_key(key: KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL)
         && !key.modifiers.contains(KeyModifiers::ALT)
         && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P'))
+}
+
+fn is_shell_escape_key(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && key.code == KeyCode::Char(']')
 }
 
 fn section_title(
@@ -5816,6 +6691,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use std::collections::BTreeSet;
 
     fn test_state(composer: Composer) -> UiState {
         UiState {
@@ -5837,6 +6713,8 @@ mod tests {
             sessions: Vec::new(),
             session_selection: 0,
             session_drafts: BTreeMap::new(),
+            model_options: Vec::new(),
+            tool_names: vec!["read".to_string(), "search".to_string()],
             active_view: UiView::Conversation,
             focus: UiFocus::Composer,
             selected_objective_id: None,
@@ -5854,12 +6732,66 @@ mod tests {
             show_task_diagnostics: false,
             show_objectives: false,
             show_sessions: false,
+            show_control: false,
+            control_input: Composer::new(),
+            control_selection: 0,
+            control_feedback: None,
+            info_panel: None,
+            info_scroll: 0,
             objective_scroll: 0,
             cancel_confirmation_armed: false,
             appearance: TerminalAppearance::Dark,
             theme_kind: TuiTheme::Mono,
             theme: Theme::for_appearance(TuiTheme::Mono, TerminalAppearance::Dark),
         }
+    }
+
+    fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
+        let action = super::key_action(state, key);
+        match &action {
+            UiAction::OpenControl => state.open_control(),
+            UiAction::ExecuteControl(action) => match action {
+                ControlAction::ShowHelp => {
+                    state.close_nonapproval_overlays();
+                    state.show_help = true;
+                }
+                ControlAction::ShowConversation => state.set_active_view(UiView::Conversation),
+                ControlAction::ShowTasks => state.set_active_view(UiView::Tasks),
+                ControlAction::ShowMind => state.set_active_view(UiView::Mind),
+                ControlAction::ShowSessions => {
+                    state.close_nonapproval_overlays();
+                    state.show_sessions = true;
+                }
+                ControlAction::ShowObjectives => {
+                    state.close_nonapproval_overlays();
+                    state.show_objectives = true;
+                }
+                ControlAction::SetToolDetails(show) => state.show_tool_details = *show,
+                ControlAction::SetReasoningDetails(show) => state.show_reasoning_details = *show,
+                ControlAction::CycleTheme => {
+                    state.cycle_theme();
+                }
+                ControlAction::SetTheme(theme) => state.set_theme(*theme),
+                ControlAction::ClearView => {
+                    state.entries.clear();
+                    state.live_attempts.clear();
+                }
+                ControlAction::ShowTools
+                | ControlAction::ShowExecutionJobs
+                | ControlAction::ShowDelegations
+                | ControlAction::InspectContext
+                | ControlAction::OpenShell
+                | ControlAction::SetModel(_)
+                | ControlAction::SetReasoningEffort(_)
+                | ControlAction::CancelEvaluation
+                | ControlAction::Quit => {}
+            },
+            UiAction::None
+            | UiAction::Submit { .. }
+            | UiAction::SwitchSession(_)
+            | UiAction::Approve(_) => {}
+        }
+        action
     }
 
     fn stream_runtime_event(
@@ -6174,14 +7106,20 @@ mod tests {
         assert!(collapsed.contains("2 more lines · Ctrl+R to expand"));
 
         let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
-        assert!(matches!(key_action(&mut state, ctrl_r), UiAction::None));
+        assert!(matches!(
+            key_action(&mut state, ctrl_r),
+            UiAction::ExecuteControl(ControlAction::SetReasoningDetails(true))
+        ));
         assert!(state.show_reasoning_details);
         let expanded = transcript_text(&state);
         assert!(expanded.contains("third line"));
         assert!(expanded.contains("fourth line"));
         assert!(!expanded.contains("more lines · Ctrl+R to expand"));
 
-        assert!(matches!(key_action(&mut state, ctrl_r), UiAction::None));
+        assert!(matches!(
+            key_action(&mut state, ctrl_r),
+            UiAction::ExecuteControl(ControlAction::SetReasoningDetails(false))
+        ));
         assert!(!state.show_reasoning_details);
     }
 
@@ -6515,6 +7453,136 @@ mod tests {
     }
 
     #[test]
+    fn composer_never_interprets_slash_prefixed_text_as_local_control() {
+        for text in ["/quit", "/tools", "/theme iris", "/sessions"] {
+            let mut state = test_state(Composer::new());
+            state.composer.insert_str(text);
+            assert!(matches!(
+                super::key_action(
+                    &mut state,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+                ),
+                UiAction::Submit {
+                    text: submitted,
+                    dispatch_mode: None,
+                } if submitted == text
+            ));
+        }
+    }
+
+    #[test]
+    fn ctrl_p_opens_control_without_destroying_the_composer_draft() {
+        let mut state = test_state(Composer::new());
+        state.composer.insert_str("unfinished thought");
+        let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+
+        assert!(matches!(
+            key_action(&mut state, ctrl_p),
+            UiAction::OpenControl
+        ));
+        assert!(state.show_control);
+        assert_eq!(state.composer.text(), "unfinished thought");
+        assert!(state.control_input.text().is_empty());
+
+        assert!(matches!(key_action(&mut state, ctrl_p), UiAction::None));
+        assert!(!state.show_control);
+        assert_eq!(state.composer.text(), "unfinished thought");
+    }
+
+    #[test]
+    fn control_searches_localized_labels_and_stable_command_keys() {
+        let mut state = test_state(Composer::new());
+        state.locale = Locale::SimplifiedChinese;
+        state.open_control();
+        state.control_input.insert_str("工具");
+        let localized = state.filtered_control_items();
+        assert!(localized
+            .iter()
+            .any(|item| item.action == ControlAction::ShowTools));
+
+        state.control_input.clear();
+        state.control_input.insert_str("reasoning effort high");
+        let stable = state.filtered_control_items();
+        assert!(stable.iter().any(|item| {
+            item.action == ControlAction::SetReasoningEffort(Some(ReasoningEffort::High))
+        }));
+    }
+
+    #[test]
+    fn unavailable_control_action_is_visible_but_cannot_execute() {
+        let mut state = test_state(Composer::new());
+        state.open_control();
+        state.control_input.insert_str("runtime cancel");
+        let items = state.filtered_control_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].action, ControlAction::CancelEvaluation);
+        assert!(!items[0].enabled);
+
+        assert!(matches!(
+            super::key_action(
+                &mut state,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            ),
+            UiAction::None
+        ));
+        assert!(state
+            .control_feedback
+            .as_deref()
+            .is_some_and(|message| { message.contains("no active evaluation") }));
+    }
+
+    #[test]
+    fn control_commands_are_unique_and_shell_has_a_distinct_escape_key() {
+        let state = test_state(Composer::new());
+        let items = state.control_items();
+        let commands = items
+            .iter()
+            .map(|item| item.command.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(commands.len(), items.len());
+
+        let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        let ctrl_bracket = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+        assert!(is_control_palette_key(ctrl_p));
+        assert!(!is_shell_escape_key(ctrl_p));
+        assert!(is_shell_escape_key(ctrl_bracket));
+    }
+
+    #[test]
+    fn control_and_help_render_the_separate_control_plane_contract() {
+        let mut state = test_state(Composer::new());
+        state.open_control();
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| state.render(frame)).unwrap();
+        let control = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(control.contains("Control"));
+        assert!(control.contains("List available tools"));
+        assert!(control.contains("tool list"));
+        assert!(control.contains("Composer draft is preserved"));
+        assert!(!control.contains("/tools"));
+
+        state.close_control();
+        state.show_help = true;
+        terminal.draw(|frame| state.render(frame)).unwrap();
+        let help = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(help.contains("Ctrl+P Control"));
+        assert!(help.contains("Ctrl+] returns to Morphz"));
+        assert!(!help.contains("/sessions"));
+    }
+
+    #[test]
     fn secondary_views_have_real_content_focus_and_stable_objective_selection() {
         let mut first = test_objective();
         first.id = "objective-first".to_string();
@@ -6601,12 +7669,15 @@ mod tests {
     }
 
     #[test]
-    fn f3_opens_the_session_directory_without_destroying_the_draft() {
+    fn ctrl_g_opens_the_session_directory_without_destroying_the_draft() {
         let mut state = test_state(Composer::new());
         state.composer.insert_str("unfinished message");
         assert!(matches!(
-            key_action(&mut state, KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE)),
-            UiAction::OpenSessions
+            key_action(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)
+            ),
+            UiAction::ExecuteControl(ControlAction::ShowSessions)
         ));
         assert_eq!(state.composer.text(), "unfinished message");
     }
@@ -6663,7 +7734,7 @@ mod tests {
 
         assert!(matches!(
             key_action(&mut state, question_mark),
-            UiAction::None
+            UiAction::ExecuteControl(ControlAction::ShowHelp)
         ));
         assert!(state.show_help);
 
@@ -6680,19 +7751,24 @@ mod tests {
         ));
         assert_eq!(state.composer.text(), "why?");
         assert!(!state.show_help);
+    }
 
-        let mut function_key = test_state(Composer::new());
-        key_action(
-            &mut function_key,
-            KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
-        );
-        assert!(function_key.show_help);
-
-        let mut draft = test_state(Composer::new());
-        draft.composer.insert_str("keep this draft");
-        key_action(&mut draft, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
-        assert!(draft.show_help);
-        assert_eq!(draft.composer.text(), "keep this draft");
+    #[test]
+    fn function_keys_are_not_application_shortcuts() {
+        let mut state = test_state(Composer::new());
+        let original_theme = state.theme_kind;
+        for number in [1, 2, 3] {
+            assert!(matches!(
+                key_action(
+                    &mut state,
+                    KeyEvent::new(KeyCode::F(number), KeyModifiers::NONE)
+                ),
+                UiAction::None
+            ));
+        }
+        assert!(!state.show_help);
+        assert!(!state.show_sessions);
+        assert_eq!(state.theme_kind, original_theme);
     }
 
     #[test]
@@ -6776,15 +7852,24 @@ mod tests {
         let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
 
         let mut normal = test_state(Composer::new());
-        assert!(matches!(key_action(&mut normal, ctrl_d), UiAction::Quit));
+        assert!(matches!(
+            key_action(&mut normal, ctrl_d),
+            UiAction::ExecuteControl(ControlAction::Quit)
+        ));
 
         let mut busy = test_state(Composer::new());
         busy.busy = true;
-        assert!(matches!(key_action(&mut busy, ctrl_d), UiAction::Quit));
+        assert!(matches!(
+            key_action(&mut busy, ctrl_d),
+            UiAction::ExecuteControl(ControlAction::Quit)
+        ));
 
         let mut modal = test_state(Composer::new());
         modal.show_help = true;
-        assert!(matches!(key_action(&mut modal, ctrl_d), UiAction::Quit));
+        assert!(matches!(
+            key_action(&mut modal, ctrl_d),
+            UiAction::ExecuteControl(ControlAction::Quit)
+        ));
     }
 
     #[test]
@@ -6833,7 +7918,10 @@ mod tests {
 
         key_action(&mut state, escape);
         assert!(state.cancel_confirmation_armed);
-        assert!(matches!(key_action(&mut state, escape), UiAction::Cancel));
+        assert!(matches!(
+            key_action(&mut state, escape),
+            UiAction::ExecuteControl(ControlAction::CancelEvaluation)
+        ));
         assert!(!state.cancel_confirmation_armed);
     }
 
@@ -6852,7 +7940,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_t_toggles_tasks_view_and_ctrl_w_remains_an_alias() {
+    fn ctrl_t_toggles_tasks_view_and_ctrl_w_is_not_an_alias() {
         let mut state = test_state(Composer::new());
         assert!(!state.show_tool_details);
         assert!(matches!(
@@ -6860,7 +7948,7 @@ mod tests {
                 &mut state,
                 KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)
             ),
-            UiAction::None
+            UiAction::ExecuteControl(ControlAction::ShowTasks)
         ));
         assert_eq!(state.active_view, UiView::Tasks);
         assert!(!state.show_tool_details);
@@ -6874,7 +7962,7 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
         );
-        assert_eq!(state.active_view, UiView::Tasks);
+        assert_eq!(state.active_view, UiView::Conversation);
     }
 
     #[test]
@@ -6886,7 +7974,7 @@ mod tests {
                 &mut state,
                 KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)
             ),
-            UiAction::None
+            UiAction::ExecuteControl(ControlAction::ShowObjectives)
         ));
         assert!(state.show_objectives);
         assert!(matches!(
@@ -7165,8 +8253,8 @@ mod tests {
             .collect::<String>();
         assert!(screen.contains("Morphz"));
         assert_eq!(state.tagline(), MORPHZ_MACHINE_NAME_ZH);
-        assert!(compact_screen.contains("F1帮助"));
-        assert!(!screen.contains("F1 shortcuts"));
+        assert!(compact_screen.contains("Ctrl+P控制"));
+        assert!(!screen.contains("F1"));
         assert!(compact_screen.contains("输入消息"));
         assert!(!screen.contains("OBJECTIVE"));
         assert!(!screen.contains("Objective  none"));
@@ -7202,13 +8290,13 @@ mod tests {
 
         let english = render(Locale::English);
         assert!(english.contains("Typeamessage"));
-        assert!(english.contains("F1help"));
+        assert!(english.contains("Ctrl+PControl"));
         assert!(!english.contains("输入消息"));
         assert!(!english.contains("快捷键"));
 
         let chinese = render(Locale::SimplifiedChinese);
         assert!(chinese.contains("输入消息") || chinese.contains("请选择会话"));
-        assert!(chinese.contains("F1帮助"));
+        assert!(chinese.contains("Ctrl+P控制"));
         assert!(!chinese.contains("Typeamessage"));
         assert!(!chinese.contains("shortcuts"));
     }
@@ -7286,9 +8374,9 @@ mod tests {
     }
 
     #[test]
-    fn f2_cycles_the_four_terminal_palettes_and_alt_t_remains_an_alias() {
+    fn alt_t_cycles_the_four_terminal_palettes() {
         let mut state = test_state(Composer::new());
-        let f2 = KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE);
+        let alt_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT);
         for expected in [
             TuiTheme::Cyan,
             TuiTheme::Iris,
@@ -7296,7 +8384,10 @@ mod tests {
             TuiTheme::Mono,
             TuiTheme::Cyan,
         ] {
-            assert!(matches!(key_action(&mut state, f2), UiAction::None));
+            assert!(matches!(
+                key_action(&mut state, alt_t),
+                UiAction::ExecuteControl(ControlAction::CycleTheme)
+            ));
             assert_eq!(state.theme_kind, expected);
             assert_eq!(
                 state.theme,
@@ -7304,15 +8395,15 @@ mod tests {
             );
         }
 
-        let alt_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT);
-        assert!(matches!(key_action(&mut state, alt_t), UiAction::None));
-        assert_eq!(state.theme_kind, TuiTheme::Iris);
-
         let before = state.theme_kind;
         let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
-        assert!(is_shell_toggle_key(ctrl_p));
-        assert!(matches!(key_action(&mut state, ctrl_p), UiAction::None));
-        assert_eq!(state.theme_kind, before, "Ctrl+P is reserved for the shell");
+        assert!(is_control_palette_key(ctrl_p));
+        assert!(matches!(
+            key_action(&mut state, ctrl_p),
+            UiAction::OpenControl
+        ));
+        assert!(state.show_control);
+        assert_eq!(state.theme_kind, before, "Ctrl+P opens Control");
     }
 
     #[test]
@@ -7326,7 +8417,7 @@ mod tests {
                 &mut state,
                 KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)
             ),
-            UiAction::None
+            UiAction::ExecuteControl(ControlAction::ShowTasks)
         ));
         assert_eq!(state.active_view, UiView::Tasks);
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();

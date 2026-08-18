@@ -23,8 +23,9 @@ use crate::harness_package::{
     persist_evaluation_harness_binding,
 };
 use crate::llm::{
-    attachment_message, Client, Message, ModelFailure, ModelFailureKind, ModelRequestContext,
-    ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
+    attachment_message, provider_continuation_message, Client, Message, ModelFailure,
+    ModelFailureKind, ModelRequestContext, ModelUsage, PromptTokenAccuracy, PromptTokenCount,
+    ProviderContinuation, ToolDefinition,
 };
 use crate::memory::{
     stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberRecord,
@@ -1130,6 +1131,7 @@ struct ToolExecutionOptions {
     allowed_tool_names: HashSet<String>,
     record_assistant_call: bool,
     model_attempt_id: Option<String>,
+    provider_continuation: Option<ProviderContinuation>,
 }
 
 #[derive(Debug, Default)]
@@ -1303,11 +1305,18 @@ struct ActivationRoute {
 struct ModelReasoningSummaryAccumulator {
     text: String,
     public_text: String,
+    provider_continuation: Option<ProviderContinuation>,
     complete: bool,
     persist_started: bool,
     usage: ModelUsage,
     usage_persist_started: bool,
     failure: Option<String>,
+}
+
+#[derive(Debug)]
+struct ModelCompletion {
+    response: crate::llm::Response,
+    provider_continuation: Option<ProviderContinuation>,
 }
 
 #[derive(Debug)]
@@ -6889,6 +6898,17 @@ impl Orchestrator {
                 continue;
             }
 
+            if let Some(provider_continuation) = event
+                .payload
+                .get("provider_continuation")
+                .and_then(|value| {
+                    serde_json::from_value::<ProviderContinuation>(value.clone()).ok()
+                })
+            {
+                continuation
+                    .messages
+                    .push(provider_continuation_message(provider_continuation)?);
+            }
             continuation.messages.push(Message {
                 role: "assistant".to_string(),
                 content: event
@@ -6990,7 +7010,7 @@ impl Orchestrator {
         messages: Vec<Message>,
         tools: Vec<crate::llm::ToolDefinition>,
         prompt_measurement: Option<PromptTokenCount>,
-    ) -> Result<crate::llm::Response, ModelCompletionError> {
+    ) -> Result<ModelCompletion, ModelCompletionError> {
         let stream_context_id = self
             .context_id_for_session(session_id)
             .map_err(ModelCompletionError::internal)?;
@@ -7176,6 +7196,14 @@ impl Orchestrator {
                         {
                             tracing::warn!(event_code = "orchestrator.model_stream.reasoning_completion_persist_failed", %error, "Failed to persist reasoning-completion state");
                         }
+                    }
+                    crate::llm::ModelStreamEvent::ProviderContinuation { continuation } => {
+                        // This is opaque protocol state, not a presentation
+                        // event. Keep it inside the physical Attempt and never
+                        // broadcast raw reasoning to Dashboard/TUI clients.
+                        forward_reasoning_summary.lock().await.provider_continuation =
+                            Some(continuation.clone());
+                        continue;
                     }
                     crate::llm::ModelStreamEvent::Usage { usage } => {
                         let mut summary = forward_reasoning_summary.lock().await;
@@ -7441,7 +7469,10 @@ impl Orchestrator {
                 ModelCompletionErrorOrigin::RuntimePersistence,
             )
             .await),
-            (Ok(response), Ok(Ok(()))) => Ok(response),
+            (Ok(response), Ok(Ok(()))) => Ok(ModelCompletion {
+                response,
+                provider_continuation: reasoning_summary.lock().await.provider_continuation.clone(),
+            }),
         };
         match &outcome {
             Ok(_) => self.record_provider_success().await,
@@ -8036,6 +8067,7 @@ impl Orchestrator {
                 allowed_tool_names,
                 record_assistant_call: false,
                 model_attempt_id,
+                provider_continuation: None,
             },
         )
         .await?;
@@ -8903,7 +8935,12 @@ impl Orchestrator {
         let mut reasoning_history = Vec::new();
         let mut interrupted_public_text = String::new();
         let mut completion_prepared = recovering_completion_intent;
-        let (response, terminal_decision, terminal_model_attempt_id) = loop {
+        let (
+            response,
+            terminal_decision,
+            terminal_model_attempt_id,
+            terminal_provider_continuation,
+        ) = loop {
             let request_index = model_request_index;
             model_request_index = model_request_index.saturating_add(1);
             let model_attempt_id = if request_index == 0 {
@@ -8987,8 +9024,11 @@ impl Orchestrator {
                         .flatten(),
                 )
                 .await;
-            let response = match completion {
-                Ok(mut response) => {
+            let (response, provider_continuation) = match completion {
+                Ok(ModelCompletion {
+                    mut response,
+                    provider_continuation,
+                }) => {
                     if !interrupted_public_text.is_empty() {
                         response.content = format!("{interrupted_public_text}{}", response.content);
                         interrupted_public_text.clear();
@@ -9000,7 +9040,7 @@ impl Orchestrator {
                         Some("provider response received"),
                     )
                     .await?;
-                    response
+                    (response, provider_continuation)
                 }
                 Err(error) if error.is_runtime_failure() => {
                     let failure_origin = match error.origin {
@@ -9411,6 +9451,7 @@ impl Orchestrator {
                                 allowed_tool_names: allowed_tool_names.clone(),
                                 record_assistant_call: true,
                                 model_attempt_id: Some(model_attempt_id.clone()),
+                                provider_continuation: provider_continuation.clone(),
                             },
                         )
                         .await?;
@@ -9419,6 +9460,10 @@ impl Orchestrator {
                         .into_iter()
                         .next()
                         .ok_or("Objective completion 工具没有产生持久结果")?;
+                    if let Some(provider_continuation) = provider_continuation {
+                        protocol_messages
+                            .push(provider_continuation_message(provider_continuation)?);
+                    }
                     protocol_messages.push(Message {
                         role: "assistant".to_string(),
                         content: String::new(),
@@ -9519,9 +9564,12 @@ impl Orchestrator {
                         response,
                         Some(TerminalDecision::NoReply(NoReplyMode::Wait)),
                         model_attempt_id,
+                        provider_continuation,
                     );
                 }
-                Ok(decision) => break (response, decision, model_attempt_id),
+                Ok(decision) => {
+                    break (response, decision, model_attempt_id, provider_continuation)
+                }
                 Err(reason) => {
                     protocol_errors += 1;
                     self.record_response_protocol_error(
@@ -9740,6 +9788,7 @@ impl Orchestrator {
                         allowed_tool_names,
                         record_assistant_call: true,
                         model_attempt_id: Some(terminal_model_attempt_id.clone()),
+                        provider_continuation: terminal_provider_continuation,
                     },
                 )
                 .await;
@@ -12308,6 +12357,7 @@ impl Orchestrator {
                 allowed_tool_names: HashSet::from([tool]),
                 record_assistant_call: false,
                 model_attempt_id: None,
+                provider_continuation: None,
             },
         )
         .await?;
@@ -13252,6 +13302,7 @@ impl Orchestrator {
         let active_principal_id = self
             .principal_for_activation_route(&context_id, activation_route.as_ref())
             .await?;
+        let provider_continuation = options.provider_continuation.clone();
         let requested_tool_calls = response.tool_calls;
         let mapped_tool_calls = requested_tool_calls
             .iter()
@@ -13478,6 +13529,12 @@ impl Orchestrator {
         ];
         if let Some(model_attempt_id) = options.model_attempt_id.as_deref() {
             assistant_call_payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
+        }
+        if let Some(provider_continuation) = provider_continuation {
+            assistant_call_payload.push((
+                "provider_continuation".to_string(),
+                json!(provider_continuation),
+            ));
         }
         let durable_attempt_id = options.model_attempt_id.as_deref().unwrap_or(attempt_id);
         let assistant_call_event_id = format!("call_{durable_attempt_id}");
@@ -14989,6 +15046,7 @@ impl Orchestrator {
                 allowed_tool_names: HashSet::from(["eval".to_string()]),
                 record_assistant_call: true,
                 model_attempt_id: None,
+                provider_continuation: None,
             },
         )
         .await?;
@@ -15973,7 +16031,10 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             .collect::<Vec<_>>();
 
         for round in 0..crate::sexpr_eval::MAX_INFER_ROUNDS {
-            let response = orchestrator
+            let ModelCompletion {
+                response,
+                provider_continuation,
+            } = orchestrator
                 .request_model_completion(
                     &self.session_id,
                     &self.attempt_id,
@@ -15995,6 +16056,9 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                     crate::sexpr_eval::MAX_INFER_ROUNDS
                 )
                 .into());
+            }
+            if let Some(provider_continuation) = provider_continuation {
+                messages.push(provider_continuation_message(provider_continuation)?);
             }
             messages.push(Message {
                 role: "assistant".to_string(),

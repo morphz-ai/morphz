@@ -324,6 +324,45 @@ pub struct Message {
 /// never persisted as conversational text.
 pub const MODEL_ATTACHMENT_MESSAGE_NAME: &str = "__morphz_model_attachments__";
 
+/// Ephemeral marker carrying Provider-native state that is required to
+/// continue a tool-calling response. The Runtime persists the typed value at
+/// the assistant-call boundary, then reconstructs this marker immediately
+/// before the next physical model request. It is protocol state, not Context
+/// content, and must never be compiled into Mind, Inbox, Recall, or visible
+/// conversation text.
+pub const PROVIDER_CONTINUATION_MESSAGE_NAME: &str = "__morphz_provider_continuation__";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "protocol", rename_all = "kebab-case")]
+pub enum ProviderContinuation {
+    /// OpenAI-compatible Chat providers such as DeepSeek require the exact
+    /// assistant `reasoning_content` to accompany the assistant tool_calls
+    /// message on the next request.
+    OpenaiChat { reasoning_content: String },
+    /// The Responses protocol represents continuation state as output items.
+    /// Keep the complete Provider-authored JSON so opaque fields such as
+    /// `encrypted_content` survive without Morphz interpreting them.
+    OpenaiResponses { reasoning_items: Vec<JsonValue> },
+}
+
+pub fn provider_continuation_message(
+    continuation: ProviderContinuation,
+) -> Result<Message, serde_json::Error> {
+    Ok(Message {
+        role: "system".to_string(),
+        content: serde_json::to_string(&continuation)?,
+        name: Some(PROVIDER_CONTINUATION_MESSAGE_NAME.to_string()),
+        tool_call_id: None,
+        tool_calls: None,
+    })
+}
+
+pub fn provider_continuation(message: &Message) -> Option<ProviderContinuation> {
+    (message.name.as_deref() == Some(PROVIDER_CONTINUATION_MESSAGE_NAME))
+        .then(|| serde_json::from_str(&message.content).ok())
+        .flatten()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelAttachment {
     pub name: String,
@@ -489,6 +528,12 @@ pub enum ModelStreamEvent {
     /// Provider explicitly closed its reasoning-summary item, while the
     /// overall response may still be waiting for public text or tool calls.
     ReasoningSummaryCompleted,
+    /// Opaque protocol state needed to continue a Provider tool-call turn.
+    /// The Orchestrator consumes this event internally; unlike a reasoning
+    /// summary, it must never be published to presentation clients.
+    ProviderContinuation {
+        continuation: ProviderContinuation,
+    },
     ToolCallStarted {
         index: usize,
         id: String,
