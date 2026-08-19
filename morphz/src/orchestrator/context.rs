@@ -6302,7 +6302,11 @@ fn render_thread_scheduler(
             if let Some(target_id) = &thread.target_id {
                 fields.push(pair("execution-target", atom(target_id)));
             }
-            if let Some(result) = &thread.result_text {
+            if thread_result_visible_in_scheduler(thread) {
+                let result = thread
+                    .result_text
+                    .as_deref()
+                    .expect("visibility requires a Thread result");
                 let (preview, truncated) = preview_text(result, 640);
                 fields.push(pair("result", atom(&preview)));
                 if truncated {
@@ -6399,6 +6403,28 @@ fn render_thread_scheduler(
             list("queue", scheduled_entries),
         ],
     )
+}
+
+/// A delivered result already has an immutable delivery Event and therefore
+/// appears in the Inbox. Keeping the same text in the scheduler duplicates a
+/// historical fact and makes long-lived Contexts grow with completed work.
+///
+/// Legacy records that claim `delivered` without a delivery Event remain
+/// visible: until the durable replacement can be proven, the scheduler copy
+/// is still the only safe representation.
+fn thread_result_visible_in_scheduler(thread: &ThreadRecord) -> bool {
+    thread.result_text.is_some()
+        && !delivered_thread_result_has_durable_replacement(
+            thread.delivery_status,
+            thread.delivery_event_id.as_deref(),
+        )
+}
+
+fn delivered_thread_result_has_durable_replacement(
+    delivery_status: DeliveryStatus,
+    delivery_event_id: Option<&str>,
+) -> bool {
+    delivery_status == DeliveryStatus::Delivered && delivery_event_id.is_some()
 }
 
 fn derive_thread_phase(
@@ -7240,41 +7266,9 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         // Mutable projection metadata lives after the long Inbox so changes
         // in protection, residency, freshness, or usage do not invalidate the
         // cached prefix containing earlier observations.
-        let mut state_fields = vec![
-            pair("ref", atom(&observation.reference)),
-            pair(
-                "protected",
-                atom(if observation.protected {
-                    "true"
-                } else {
-                    "false"
-                }),
-            ),
-            list(
-                "residency",
-                vec![
-                    pair("state", atom("active")),
-                    pair(
-                        "retrievable",
-                        atom(if observation.retrievable {
-                            "true"
-                        } else {
-                            "false"
-                        }),
-                    ),
-                ],
-            ),
-        ];
-        if observation.freshness.latest.is_some()
-            || !observation.freshness.supersedes.is_empty()
-            || !observation.freshness.superseded_by.is_empty()
-        {
-            state_fields.push(render_freshness(&observation.freshness, references));
+        if let Some(state) = render_observation_state(observation, references) {
+            observation_state.push(state);
         }
-        if observation.usage != ContextUsage::default() {
-            state_fields.push(render_usage(&observation.usage));
-        }
-        observation_state.push(list("state", state_fields));
     }
 
     // Prefix-cache order is a physical request invariant. The immutable
@@ -7314,6 +7308,32 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         ));
     }
     SExpr::List(context).to_string()
+}
+
+fn render_observation_state(
+    observation: &ContextObservation,
+    references: &ContextReferences,
+) -> Option<SExpr> {
+    let mut state_fields = vec![pair("ref", atom(&observation.reference))];
+    if observation.protected {
+        state_fields.push(pair("protected", atom("true")));
+    }
+    // Presence in Inbox already means active and observations produced by the
+    // current projection are retrievable by default. Emit residency only when
+    // a future or legacy projection explicitly differs from those defaults.
+    if !observation.retrievable {
+        state_fields.push(list("residency", vec![pair("retrievable", atom("false"))]));
+    }
+    if observation.freshness.latest.is_some()
+        || !observation.freshness.supersedes.is_empty()
+        || !observation.freshness.superseded_by.is_empty()
+    {
+        state_fields.push(render_freshness(&observation.freshness, references));
+    }
+    if observation.usage != ContextUsage::default() {
+        state_fields.push(render_usage(&observation.usage));
+    }
+    (state_fields.len() > 1).then(|| list("state", state_fields))
 }
 
 fn freshness_for_id(state: &MindState, id: &str) -> ContextFreshness {
@@ -7570,7 +7590,7 @@ fn render_protocol() -> SExpr {
                     pair("caused-by", atom("the call or event that produced this observation")),
                     pair(
                         "residency",
-                        atom("current projection state in observation-state; content.representation is full, preview, or recalled-chunk"),
+                        atom("non-default current projection state in observation-state; Inbox presence defaults to active and retrievable, while content.representation is full, preview, or recalled-chunk"),
                     ),
                     pair(
                         "freshness",
@@ -7586,7 +7606,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "observation-state",
-                        atom("overlays mutable protection, residency, freshness, and usage by ref; causal identity and content in Inbox are projections of persisted Events"),
+                        atom("overlays only non-default mutable protection, residency, freshness, and usage by ref; absence means unprotected, active, retrievable, and no freshness or usage annotations. Causal identity and content in Inbox are projections of persisted Events"),
                     ),
                 ],
             ),
@@ -9795,7 +9815,8 @@ mod tests {
     use crate::memory::{
         ActivationStore as _, DeliveryIngressStore as _, NewAgent, NewCognitiveContext,
         NewPrincipal, NewSession, NewThread, NewThreadActivation, ObjectiveStatus,
-        SessionDirectoryStore as _, SessionMountKind, SessionStore, ThreadKind, ThreadStore as _,
+        SessionDirectoryStore as _, SessionMountKind, SessionStore, ThreadControlState, ThreadKind,
+        ThreadLifecycle, ThreadStore as _, ThreadSupervision,
     };
     use std::sync::atomic::AtomicBool;
     use tempfile::TempDir;
@@ -9881,6 +9902,107 @@ mod tests {
             text_weight_units("ascii中文"),
             text_weight_units("ascii") + text_weight_units("中文")
         );
+    }
+
+    #[test]
+    fn default_observation_projection_state_is_an_implicit_overlay() {
+        let mut observation = ContextObservation {
+            id: "event-1".to_string(),
+            reference: "@e1".to_string(),
+            session_id: Some("session-1".to_string()),
+            principal_id: Some("principal-1".to_string()),
+            sequence: 1,
+            turn: 1,
+            attempt: None,
+            caused_by: None,
+            kind: "user_message".to_string(),
+            topic: "chat/user_message".to_string(),
+            actor: "User".to_string(),
+            timestamp: "2026-08-19T00:00:00Z".to_string(),
+            preview: "hello".to_string(),
+            truncated: false,
+            representation: "full".to_string(),
+            visible_chars: 5,
+            total_chars: 5,
+            retrievable: true,
+            protected: false,
+            tool_name: None,
+            tool_status: None,
+            output_empty: None,
+            resource: None,
+            freshness: ContextFreshness::default(),
+            usage: ContextUsage::default(),
+        };
+        let references = ContextReferences::default();
+
+        assert!(render_observation_state(&observation, &references).is_none());
+
+        observation.protected = true;
+        assert_eq!(
+            render_observation_state(&observation, &references)
+                .unwrap()
+                .to_string(),
+            "(state (ref @e1) (protected true))"
+        );
+
+        observation.protected = false;
+        observation.retrievable = false;
+        assert_eq!(
+            render_observation_state(&observation, &references)
+                .unwrap()
+                .to_string(),
+            "(state (ref @e1) (residency (retrievable false)))"
+        );
+    }
+
+    #[test]
+    fn delivered_thread_result_is_suppressed_only_with_a_durable_delivery_event() {
+        assert!(delivered_thread_result_has_durable_replacement(
+            DeliveryStatus::Delivered,
+            Some("event-delivered")
+        ));
+        assert!(!delivered_thread_result_has_durable_replacement(
+            DeliveryStatus::Delivered,
+            None
+        ));
+        assert!(!delivered_thread_result_has_durable_replacement(
+            DeliveryStatus::Pending,
+            Some("event-not-yet-delivered")
+        ));
+
+        let now = Utc::now();
+        let mut thread = ThreadRecord {
+            id: "thread-delivered".to_string(),
+            revision: 3,
+            generation: 1,
+            agent_id: "agent-1".to_string(),
+            context_id: "context-1".to_string(),
+            session_id: "session-1".to_string(),
+            initiating_principal_id: Some("principal-1".to_string()),
+            root_turn_id: "event-root".to_string(),
+            kind: ThreadKind::Execution,
+            lifecycle: ThreadLifecycle::Completed,
+            control_state: ThreadControlState::Active,
+            executor_kind: "model".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::runtime("delivery"),
+            result_text: Some("already delivered result".to_string()),
+            result_event_id: Some("event-result".to_string()),
+            delivery_status: DeliveryStatus::Delivered,
+            delivery_event_id: Some("event-delivered".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        let rendered =
+            render_thread_scheduler(&[thread.clone()], &[], &[], &[], &[], &[], &[], &[])
+                .to_string();
+        assert!(!rendered.contains("already delivered result"));
+
+        thread.delivery_event_id = None;
+        let legacy =
+            render_thread_scheduler(&[thread], &[], &[], &[], &[], &[], &[], &[]).to_string();
+        assert!(legacy.contains("already delivered result"));
     }
 
     #[tokio::test]
