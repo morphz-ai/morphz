@@ -5,15 +5,15 @@
 
 ## Runtime 基线
 
-论文实验的首个冻结工程基线为 [`paper-eval-runtime-v1`](./runtime_baseline_v1.md)，对应完整 commit `45ed92a1535f952cdac1b5b08dcce19b7d627c55`。每个 Run 必须记录实际 commit；后续修复不得静默改写该基线。
+论文和路演当前默认 Runtime 源码基线为 [`paper-eval-runtime-v2`](./runtime_baseline_v2.md)，对应完整 commit `03a32f864a3c38026672b4076855137e0bbb5627`。历史 v1 在 author/committer 重写后对应 [`cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`](./runtime_baseline_v1.md)。每个 Run 必须记录实际 Runtime 与实验包 commit；后续修复不得静默改写既有基线。
 
 ## 总览
 
 | ID | 实验 | RQ | 优先级 | 当前证据 | 状态 | 当前协议 | 下一门槛 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | ME-00 | 实验基础设施与校准 | 全部 | P0 | 部分既有 runner | `planned` | — | 冻结 manifest、目录、评分与重放规范 |
-| ME-01 | 结构化 Context 与结果回流消融 | RQ2 | P0 | 零散 `F` | `protocol-draft` | p1 待写 | 三核心 arm 的任务/评分器设计 |
-| ME-02 | 等信息表示形式消融 | RQ1 | P0 | `F` | `protocol-draft` | 历史 v1；正式 p1 待写 | 修正信息量和样本设计 |
+| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | 零散 `F` | `protocol-draft` | p1 待写 | 三核心 arm 的任务/评分器设计 |
+| ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F` | `protocol-draft` | 历史 v1；正式 p1 待写 | 修正信息量和样本设计 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | 多项 `D` 分散存在 | `planned` | — | 建立面向论文主张的覆盖矩阵 |
 | ME-05 | 跨模型能力与采用倾向 | RQ5 | P1 | `F` | `planned` | — | 冻结模型矩阵与 capacity/adoption 分组 |
@@ -50,8 +50,11 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-17
 
+- 将新论文实验与路演 Runtime 默认基线提升为 `paper-eval-runtime-v2`；
+- v2 对应 commit `03a32f864a3c38026672b4076855137e0bbb5627`；
+- 记录 v1 在 Git 历史作者邮箱重写后的等价 commit `cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`；
 - 冻结论文实验 Runtime 基线 `paper-eval-runtime-v1`；
-- 基线对应 commit `45ed92a1535f952cdac1b5b08dcce19b7d627c55`；
+- v1 原始历史中的 commit 为 `45ed92a1535f952cdac1b5b08dcce19b7d627c55`；
 - 记录全量测试、release 构建、真实数据库迁移和部署运行验证状态；
 - 从该基线开始，核心语义进入实验期冻结，阻塞性修复须建立新的版本化基线。
 

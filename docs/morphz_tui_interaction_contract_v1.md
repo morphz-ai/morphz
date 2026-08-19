@@ -18,11 +18,11 @@ The minimum complete product consists of:
 5. a reliable theme action;
 6. a usable composer, including Morphz message dispatch modes;
 7. native terminal text selection and copy;
-8. one discoverable, localized shortcut reference.
+8. one discoverable, localized Control Plane and shortcut reference.
 
-Model/service/account management, Context creation, archived Session
-administration and other configuration workflows remain Dashboard/CLI
-responsibilities.
+Service/account management, Context creation, archived Session administration
+and other configuration workflows remain Dashboard/CLI responsibilities. The
+TUI may select already enabled model routes, but does not configure providers.
 
 ## Audited capability inventory
 
@@ -35,9 +35,10 @@ responsibilities.
 | Tasks | Active Objective selection and detail, execution/delegation summaries, optional diagnostics |
 | Mind | Mind Frame selection, formatted S-expression body, provenance sources, relations and Context pressure |
 | Sessions | Principal-authorized active Session directory, stable-ID switching, local activity time |
-| Shell | Persistent embedded PTY toggled explicitly; it does not replace the Conversation home view |
+| Control | `Ctrl+P` opens a searchable, state-aware action surface; actions never become dialogue messages |
+| Shell | Persistent embedded PTY opened from Control; `Ctrl+]` returns to Morphz while `Ctrl+P` keeps its Shell meaning |
 | Appearance | English/Chinese product copy, terminal light/dark adaptation, four live-switchable palettes |
-| Discoverability | Localized F1 reference and concise context-sensitive hints in the bottom status line |
+| Discoverability | Localized `?` reference and concise context-sensitive hints in the bottom status line |
 | Text access | Native terminal selection/copy; no default mouse capture |
 
 The audit deliberately rejects controls that only look interactive. A visible
@@ -84,8 +85,9 @@ sections remain status summaries until they have a distinct detail contract.
 
 ### Overlays
 
-- `F1` or `?` (with an empty composer): shortcuts.
-- `F3`: visible Session directory.
+- `Ctrl+P`: searchable Control Plane.
+- `?` (with an empty composer): shortcuts.
+- `Ctrl+G`: visible Session directory (go to Session).
 - `Ctrl+O`: Objective lifecycle overlay.
 - approval prompts remain modal and take precedence over every other input.
 
@@ -94,22 +96,43 @@ directory navigation uses the same selection keys; `Enter` switches Session.
 
 ## Reliable global shortcuts
 
-Function keys are the portable primary actions; existing control bindings stay
-as compatibility aliases.
+Morphz does not assign application actions to function keys. Function-key
+delivery varies across terminals and frequently requires a hardware `Fn`
+modifier on laptop keyboards. Primary actions use ordinary terminal control or
+meta bindings and remain discoverable through Control.
 
 | Key | Action |
 |---|---|
-| `F1` | shortcuts |
-| `F2` | cycle theme |
-| `F3` | Sessions |
+| `Ctrl+P` | Control Plane |
+| `?` | shortcuts |
+| `Alt+T` | cycle theme |
+| `Ctrl+G` | Sessions |
 | `Ctrl+T` | Tasks |
 | `Ctrl+K` | Mind |
-| `Ctrl+P` | embedded shell |
 | `Ctrl+O` | Objectives |
 | `Ctrl+R` | reasoning summary details |
 
-`Alt+T` remains a compatibility alias for theme cycling, but is not advertised
-as the primary shortcut because Alt key reporting varies across terminals.
+The bottom status line always exposes `Ctrl+P`, including on narrow terminals.
+Other bindings remain discoverable through Control and `?`.
+
+### Cognitive input and Control Plane
+
+The Composer has one semantic role: create user dialogue input. Morphz never
+interprets a leading `/` as an application command. This prevents local
+control intent from being persisted, recalled or sent to the model as if it
+were cognition.
+
+`Ctrl+P` opens a separate Control Plane backed by typed actions. It preserves
+the Composer draft, supports localized label and stable command-key search,
+shows unavailable actions as disabled with a reason, and executes the same
+actions used by direct shortcuts. Initial actions cover views, Sessions,
+Objectives, Context inspection, actual Runtime tool inventory, Execution Jobs, delegations,
+presentation controls, theme, model, reasoning effort, cancellation, Shell
+and application lifecycle.
+
+The embedded Shell is entered through Control. Once the PTY owns input,
+`Ctrl+P` is forwarded unchanged for normal Shell history navigation; `Ctrl+]`
+is the explicit escape back to Morphz.
 
 ## Composer and dispatch
 
@@ -169,7 +192,8 @@ The TUI does not create or archive Sessions in this contract.
 - Objective selection;
 - focus model;
 - Session directory and switching;
-- reliable `F2` theme shortcut;
+- searchable, state-aware Control Plane;
+- reliable `Alt+T` theme shortcut;
 - native text selection;
 - dispatch-mode shortcuts;
 - updated help/status localization and behavioral tests.
@@ -177,7 +201,7 @@ The TUI does not create or archive Sessions in this contract.
 ### Deliberately deferred
 
 - transcript full-text search;
-- command palette;
+- arbitrary action arguments beyond the typed v1 controls;
 - mouse navigation mode;
 - Session creation/archive/rename;
 - model/provider/account management;

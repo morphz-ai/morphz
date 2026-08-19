@@ -11,7 +11,8 @@
 
 ## 文档入口
 
-- [Runtime 实验基线 v1](./runtime_baseline_v1.md)：冻结论文实验开始时的代码 commit、验证状态与变更规则；
+- [Runtime 实验基线 v2](./runtime_baseline_v2.md)：论文新实验与路演当前默认的 Runtime 源码 commit；
+- [Runtime 实验基线 v1](./runtime_baseline_v1.md)：历史基线及 author/committer 重写后的 SHA 映射；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；
@@ -32,7 +33,7 @@
 
 1. 有唯一实验编号和冻结的协议版本；
 2. 预先指定主要指标、对照组、排除规则和停止条件；
-3. Pilot 与 confirmatory 批次隔离；
+3. 预实验（Pilot）与确认性实验（confirmatory）批次隔离；
 4. 模型、Provider、解码参数、Runtime commit、dirty 状态和预算完整记录；
 5. 原始输入、响应、工具轨迹、状态快照、评分器输出和错误均落盘；
 6. 失败样本不得删除，服务故障与模型失败按协议分别处理；
@@ -45,7 +46,7 @@
 | --- | --- | --- |
 | `D` | 确定性实现/故障测试 | Runtime 实现满足某项可机械验证的性质 |
 | `F` | 可行性探针或历史探索 | 机制曾在有限条件下工作 |
-| `P` | Pilot | 任务、指标和样本量设计可行；不能作为最终显著性结论 |
+| `P` | 预实验（Pilot） | 小规模试跑，用于校准任务、指标、成本和样本量；不能作为最终显著性结论 |
 | `C` | 冻结协议后的确认性实验 | 在声明范围内支持或反驳论文假设 |
 | `X` | 公开 Benchmark | 提供外部有效性和与公开任务的可比性 |
 
@@ -55,7 +56,7 @@
 
 允许的旁路状态：
 
-- `needs-redesign`：Pilot 暴露构造或评分问题；
+- `needs-redesign`：预实验暴露构造或评分问题；
 - `blocked`：缺少外部环境、预算或实现能力；
 - `retired`：研究问题被替代，但历史材料保留；
 - `external-complete`：公开 Benchmark 完成且可复现。

@@ -11,11 +11,15 @@
 | 字段 | 值 |
 | --- | --- |
 | Git tag | `paper-eval-runtime-v1` |
-| Morphz commit | `45ed92a1535f952cdac1b5b08dcce19b7d627c55` |
+| Morphz commit | `cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5` |
 | Commit subject | `fix: recover durable activation causality` |
 | Commit time | `2026-08-17T02:54:25+08:00` |
 
 上述完整 commit 是论文实验开始前冻结的 Runtime 代码边界。实验运行记录必须保存实际 commit；只有实际 commit 等于本基线，才能简写为 `paper-eval-runtime-v1`。
+
+> 2026-08-17 仓库统一重写历史 author/committer 邮箱后，本基线由原 SHA
+> `45ed92a1535f952cdac1b5b08dcce19b7d627c55` 映射为上述 SHA；代码树和提交主题未变。
+> 当前新实验默认使用 [Runtime 基线 v2](./runtime_baseline_v2.md)，本文件仅保留历史追溯。
 
 ## 2. 冻结依据
 

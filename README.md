@@ -73,10 +73,13 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 
    交互式 TTY 默认进入 Ratatui 界面：Enter 按配置的默认方式发送，Option+Enter 并发发送，
    Ctrl/Command+Enter 排到前一条消息之后，Shift+Enter 或 Ctrl+J 换行；Ctrl+T 打开任务视图，
-   Ctrl+K 打开 Mind，F2 切换主题，F3 浏览并切换 Session。任务与 Mind 视图用方向键选择、
+   Ctrl+K 打开 Mind，Ctrl+G 浏览并切换 Session，Alt+T 切换主题，`?` 打开帮助。Ctrl+P 打开独立控制面，
+   可搜索会话、目标、Context、真实工具清单、执行任务、委派、主题、模型、推理强度、取消和内嵌终端等当前可用操作；
+   Composer 始终只发送对话，开头的 `/` 不再解释为本地命令。进入内嵌终端后按 Ctrl+] 返回 Morphz。
+   任务与 Mind 视图用方向键选择、
    Tab 切换内容/输入焦点，任务诊断使用 D。Morphz 默认不捕获鼠标，终端原生文本选择和复制
-   可以直接使用；`/ctx`、`/sessions`、`/jobs`、`/tools`、`/cancel`、`/help` 可检查或控制当前运行。Provider 返回的模型正文和工具参数按统一流式事件
-   展示；无工具正文完整返回后会提交为持久化 Session 消息。`/theme` 可在与 Dashboard
+   可以直接使用。Provider 返回的模型正文和工具参数按统一流式事件
+   展示；无工具正文完整返回后会提交为持久化 Session 消息。控制面可在与 Dashboard
    一致的电光青、鸢尾紫、暖珊瑚和纯单色四套主题间切换。`--plain` 可选择
    行式界面；非 TTY 与 `morphz exec` 自动使用纯文本，适合脚本和管道。
 

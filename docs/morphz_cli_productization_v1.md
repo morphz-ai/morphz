@@ -167,8 +167,10 @@ TUI 使用 Ratatui/Crossterm，只依赖公开 Runtime 事件和命令接口，�
 - 主体：历史消息、Agent 增量进度、工具活动和审批请求
 - 底部：多行 Composer 与唯一的运行状态栏；TUI 不保留固定 Header
 - 辅助视图：可选择的 Tasks 与 Mind Frame 主从视图
-- F1/F2/F3：帮助、主题和可切换的 Session 目录
-- 内置命令：`/ctx`、`/sessions`、`/jobs`、`/cancel`、`/clear`、`/help`、`/quit`
+- `?`：帮助；Alt+T：主题；Ctrl+G：可切换的 Session 目录
+- `Ctrl+P`：独立 Control Plane；按当前状态搜索和执行视图、资源、模型、推理、取消与 Shell 等操作
+- Composer 只创建对话输入；`/` 没有本地命令语义，控制动作不会进入认知通道
+- 内嵌 Shell 从 Control 打开，Shell 内的 `Ctrl+P` 原样保留，`Ctrl+]` 返回 Morphz
 
 视觉原则：
 
