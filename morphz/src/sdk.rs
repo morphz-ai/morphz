@@ -909,6 +909,7 @@ impl MorphzSdk {
             .insert(provider_id.to_string(), provider);
         self.runtime
             .replace_provider_catalog(live)
+            .await
             .map_err(SdkError::internal)?;
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ProviderInstance,
@@ -1005,6 +1006,7 @@ impl MorphzSdk {
         live.llm.model = selected_model;
         self.runtime
             .replace_provider_catalog(live)
+            .await
             .map_err(SdkError::internal)?;
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ProviderCatalog,
@@ -1134,6 +1136,7 @@ impl MorphzSdk {
         remove_accounts_from_catalog(&mut live, &account_ids);
         self.runtime
             .replace_provider_catalog(live)
+            .await
             .map_err(SdkError::internal)?;
         Ok(account_ids.len())
     }
@@ -1194,6 +1197,7 @@ impl MorphzSdk {
         .map_err(SdkError::internal)?;
         self.runtime
             .replace_provider_catalog(live)
+            .await
             .map_err(SdkError::internal)?;
         self.runtime
             .mark_provider_auth_account_ready(&setup.account_id)
@@ -1238,6 +1242,7 @@ impl MorphzSdk {
         live.auth_accounts.insert(account_id.to_string(), account);
         self.runtime
             .replace_provider_catalog(live)
+            .await
             .map_err(SdkError::internal)?;
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::AuthAccount,
@@ -1306,6 +1311,7 @@ impl MorphzSdk {
             .map_err(SdkError::internal)?;
         self.runtime
             .replace_provider_catalog(live.clone())
+            .await
             .map_err(SdkError::internal)?;
         self.runtime
             .remove_provider_auth_account(account_id)
@@ -1349,6 +1355,7 @@ impl MorphzSdk {
         live.model_routes.insert(route_id.to_string(), route);
         self.runtime
             .replace_provider_catalog(live)
+            .await
             .map_err(SdkError::internal)?;
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ModelRoute,
@@ -1694,6 +1701,7 @@ impl MorphzSdk {
         }
         self.runtime
             .replace_provider_catalog(live)
+            .await
             .map_err(SdkError::internal)?;
         Ok(ProviderCatalogMutationReceipt::new(
             ProviderCatalogObjectKind::ProviderCatalog,

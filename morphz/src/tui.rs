@@ -5231,7 +5231,7 @@ async fn execute_control_action(
                 format!("theme · {}", theme.as_str())
             };
         }
-        ControlAction::SetModel(model) => match runtime.set_model(&model) {
+        ControlAction::SetModel(model) => match runtime.set_model(&model).await {
             Ok(()) => {
                 state.model = runtime.model();
                 state.status = if state.locale.is_chinese() {
@@ -5248,23 +5248,25 @@ async fn execute_control_action(
                 };
             }
         },
-        ControlAction::SetReasoningEffort(effort) => match runtime.set_reasoning_effort(effort) {
-            Ok(()) => {
-                let value = effort.map(ReasoningEffort::as_str).unwrap_or("default");
-                state.status = if state.locale.is_chinese() {
-                    format!("推理强度 · {value}")
-                } else {
-                    format!("reasoning effort · {value}")
-                };
+        ControlAction::SetReasoningEffort(effort) => {
+            match runtime.set_reasoning_effort(effort).await {
+                Ok(()) => {
+                    let value = effort.map(ReasoningEffort::as_str).unwrap_or("default");
+                    state.status = if state.locale.is_chinese() {
+                        format!("推理强度 · {value}")
+                    } else {
+                        format!("reasoning effort · {value}")
+                    };
+                }
+                Err(error) => {
+                    state.status = if state.locale.is_chinese() {
+                        format!("设置推理强度失败：{error}")
+                    } else {
+                        format!("Could not set reasoning effort: {error}")
+                    };
+                }
             }
-            Err(error) => {
-                state.status = if state.locale.is_chinese() {
-                    format!("设置推理强度失败：{error}")
-                } else {
-                    format!("Could not set reasoning effort: {error}")
-                };
-            }
-        },
+        }
         ControlAction::CancelEvaluation => {
             state.status = match session
                 .cancel_durable("Session evaluation cancelled from terminal UI")

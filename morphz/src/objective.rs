@@ -32,6 +32,13 @@ use tokio::sync::{watch, Mutex, Notify};
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 pub const TYPE_OBJECTIVE_CONTROL: &str = "objective_control";
+/// A durable operator-controlled recovery boundary for request/model settings
+/// which can make a previously invalid physical model request valid. Unlike
+/// Provider health resources, this resource is never produced by a timer or a
+/// health probe: only a successfully applied configuration change may release
+/// it.
+pub const MODEL_CONFIGURATION_RESOURCE: &str = "model-configuration";
+pub const TYPE_MODEL_CONFIGURATION_CHANGED: &str = "runtime/model_configuration_changed";
 const OBJECTIVE_CONTINUATION_INSTRUCTION: &str = "Continue the stated objective autonomously. Audit remaining requirements against current evidence. If complete, call objective_update before the final reply; if waiting, record a precise wait condition; otherwise make new progress.";
 const OBJECTIVE_RECONCILE_BATCH: usize = 128;
 const OBJECTIVE_RECONCILE_DIRTY_CONTEXT_BATCH: usize = 32;
@@ -3186,15 +3193,27 @@ impl ObjectiveSupervisor {
         let Some(wait) = objective.wait_condition.as_ref() else {
             return Ok(None);
         };
-        let topic = match wait {
-            ObjectiveWaitCondition::Permission { .. } => "runtime/approval_decision".to_string(),
-            ObjectiveWaitCondition::ExternalEvent { topic, .. } => topic.clone(),
-            ObjectiveWaitCondition::ResourceAvailable { .. } => {
-                "runtime/resource_available".to_string()
+        let (topic, context_id) = match wait {
+            ObjectiveWaitCondition::Permission { .. } => (
+                "runtime/approval_decision".to_string(),
+                Some(objective.context_id.clone()),
+            ),
+            ObjectiveWaitCondition::ExternalEvent { topic, .. } => {
+                (topic.clone(), Some(objective.context_id.clone()))
             }
-            ObjectiveWaitCondition::ThreadGroup { .. } => {
-                "runtime/thread_group_terminal".to_string()
+            ObjectiveWaitCondition::ResourceAvailable { resource }
+                if resource == MODEL_CONFIGURATION_RESOURCE =>
+            {
+                (TYPE_MODEL_CONFIGURATION_CHANGED.to_string(), None)
             }
+            ObjectiveWaitCondition::ResourceAvailable { .. } => (
+                "runtime/resource_available".to_string(),
+                Some(objective.context_id.clone()),
+            ),
+            ObjectiveWaitCondition::ThreadGroup { .. } => (
+                "runtime/thread_group_terminal".to_string(),
+                Some(objective.context_id.clone()),
+            ),
             ObjectiveWaitCondition::ToolTask { .. }
             | ObjectiveWaitCondition::Delegation { .. }
             | ObjectiveWaitCondition::Timer { .. }
@@ -3203,15 +3222,27 @@ impl ObjectiveSupervisor {
         let events = self
             .audit_store
             .query(QueryFilter {
-                context_id: Some(objective.context_id.clone()),
+                context_id,
                 start_time: Some(objective.updated_at),
                 topic: Some(topic),
                 ..QueryFilter::default()
             })
             .await?;
-        Ok(events
-            .into_iter()
-            .find(|event| wait_matches_event(wait, event)))
+        Ok(events.into_iter().find_map(|mut event| {
+            if !wait_matches_event(wait, &event) {
+                return None;
+            }
+            // The configuration epoch is one global durable fact. During
+            // crash recovery, project the waiting Objective's exact Context
+            // onto that fact for the normal context-scoped wake path; do not
+            // duplicate the Event once per Context merely for persistence.
+            if event.topic == TYPE_MODEL_CONFIGURATION_CHANGED {
+                event
+                    .payload
+                    .insert("context_id".to_string(), json!(&objective.context_id));
+            }
+            Some(event)
+        }))
     }
 
     pub async fn terminal_outcome(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {
@@ -3336,13 +3367,28 @@ impl ObjectiveSupervisor {
             .get("runtime_failure_stage")
             .and_then(|value| value.as_str())
             == Some("critical_maintenance_minimum_projection");
+        let invalid_request = failure_kind == "invalid_model_or_request";
         let provider_recoverable = provider_failure_is_recoverable(failure_kind);
-        let recoverable =
-            !maintenance_exhausted && (failure_kind == "context_limit" || provider_recoverable);
-        let (status, wait_condition, reason) = if recoverable {
-            let resource = wait_resource
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| format!("runtime-recovery:{failure_kind}"));
+        let recoverable = !maintenance_exhausted
+            && (failure_kind == "context_limit" || provider_recoverable || invalid_request);
+        let configuration_already_changed = invalid_request
+            && self
+                .model_configuration_changed_since_attempt(event)
+                .await?;
+        let (status, wait_condition, reason) = if configuration_already_changed {
+            (
+                ObjectiveStatus::Active,
+                None,
+                "本轮模型请求使用的配置已经被替换；立即以当前配置重新求值".to_string(),
+            )
+        } else if recoverable {
+            let resource = wait_resource.map(ToOwned::to_owned).unwrap_or_else(|| {
+                if invalid_request {
+                    MODEL_CONFIGURATION_RESOURCE.to_string()
+                } else {
+                    format!("runtime-recovery:{failure_kind}")
+                }
+            });
             (
                 ObjectiveStatus::Active,
                 Some(ObjectiveWaitCondition::ResourceAvailable {
@@ -3372,6 +3418,49 @@ impl ObjectiveSupervisor {
             ObjectiveMutation::Updated(updated) => {
                 self.publish_state_event("runtime_failure", &updated, Some(&event.id))
                     .await?;
+                // Close the remaining interleaving around the first epoch
+                // check: the configuration Event may commit after that read
+                // but before this wait/dependency transaction commits. A
+                // second read after the wait is durable either observes the
+                // epoch and clears the stale wait itself, or establishes that
+                // any later publisher must observe the pending dependency.
+                if invalid_request
+                    && updated.wait_condition.as_ref().is_some_and(|wait| {
+                        matches!(
+                            wait,
+                            ObjectiveWaitCondition::ResourceAvailable { resource }
+                                if resource == MODEL_CONFIGURATION_RESOURCE
+                        )
+                    })
+                    && self
+                        .model_configuration_changed_since_attempt(event)
+                        .await?
+                {
+                    let reason = "模型配置在失败状态提交期间发生变化；取消过期等待并以当前配置继续";
+                    match self
+                        .transition_objective(
+                            &updated,
+                            ObjectiveStatus::Active,
+                            None,
+                            Some(reason),
+                            &event.id,
+                            "ObjectiveSupervisor-ModelConfigurationRace",
+                        )
+                        .await?
+                    {
+                        ObjectiveMutation::Updated(released) => {
+                            self.publish_state_event(
+                                "configuration_wait_released",
+                                &released,
+                                Some(&event.id),
+                            )
+                            .await?;
+                            return Ok(released);
+                        }
+                        ObjectiveMutation::Conflict { current } => return Ok(current),
+                        ObjectiveMutation::NotFound => return Ok(updated),
+                    }
+                }
                 Ok(updated)
             }
             ObjectiveMutation::Conflict { current } => {
@@ -3387,6 +3476,36 @@ impl ObjectiveSupervisor {
             }
             ObjectiveMutation::NotFound => Ok(objective),
         }
+    }
+
+    /// A model/configuration update may commit while an old immutable Model
+    /// Attempt is still in flight. If that old request fails afterwards, the
+    /// update Event necessarily predates the Objective wait transition and a
+    /// normal wait lookup would miss it. Compare against the physical request
+    /// start boundary before installing the wait so that interleaving yields
+    /// one fresh attempt instead of a permanently stranded Objective.
+    async fn model_configuration_changed_since_attempt(
+        &self,
+        event: &Event,
+    ) -> Result<bool, DynError> {
+        let Some(started_at) = event
+            .payload
+            .get("model_request_started_at")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<DateTime<Utc>>(value).ok())
+        else {
+            return Ok(false);
+        };
+        Ok(!self
+            .audit_store
+            .query(QueryFilter {
+                start_time: Some(started_at),
+                topic: Some(TYPE_MODEL_CONFIGURATION_CHANGED.to_string()),
+                latest_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await?
+            .is_empty())
     }
 
     pub async fn record_prompt_tokens_for_activation(
@@ -4657,7 +4776,6 @@ fn provider_failure_is_recoverable(failure_kind: &str) -> bool {
             | "transient_network"
             | "server_unavailable"
             | "authentication"
-            | "invalid_model_or_request"
             | "first_byte_timeout"
             | "stream_stalled"
             | "hard_deadline_exceeded"
@@ -4722,8 +4840,10 @@ fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {
             event.topic == *topic && payload_str("correlation_id") == Some(correlation_id.as_str())
         }
         ObjectiveWaitCondition::ResourceAvailable { resource } => {
-            event.topic == "runtime/resource_available"
-                && payload_str("resource") == Some(resource.as_str())
+            matches!(
+                event.topic.as_str(),
+                "runtime/resource_available" | TYPE_MODEL_CONFIGURATION_CHANGED
+            ) && payload_str("resource") == Some(resource.as_str())
         }
     }
 }
@@ -4882,6 +5002,41 @@ mod tests {
             })
             .await
             .unwrap()
+    }
+
+    fn invalid_model_failure_event(
+        objective: &ObjectiveRecord,
+        evaluation_id: &str,
+        event_id: &str,
+        model_request_started_at: DateTime<Utc>,
+    ) -> Event {
+        Event::new(
+            event_id.to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "agent_call".to_string(),
+            "chat/no_reply".to_string(),
+            [
+                ("context_id".to_string(), json!(&objective.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(&objective.coordinator_session_id),
+                ),
+                ("objective_id".to_string(), json!(&objective.id)),
+                ("objective_evaluation_id".to_string(), json!(evaluation_id)),
+                ("objective_revision".to_string(), json!(objective.revision)),
+                (
+                    "runtime_failure_kind".to_string(),
+                    json!("invalid_model_or_request"),
+                ),
+                ("runtime_failure_stage".to_string(), json!("llm_completion")),
+                (
+                    "model_request_started_at".to_string(),
+                    json!(model_request_started_at),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        )
     }
 
     #[tokio::test]
@@ -6066,11 +6221,167 @@ mod tests {
         // The Provider circuit/maintenance owner is process-local. After a
         // restart no old process can publish its recovery signal, so startup
         // must release only Runtime-owned resources and create a fresh probe.
-        supervisor.start().await.unwrap();
+        Arc::clone(&supervisor).start().await.unwrap();
         let recovered = store.get_objective(&objective.id).await.unwrap().unwrap();
         assert_eq!(recovered.status, ObjectiveStatus::Active);
         assert!(recovered.wait_condition.is_none());
         assert!(recovered.active_evaluation_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn invalid_model_request_waits_for_an_explicit_configuration_change() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "invalid-model-wait").await;
+        let evaluation_id = "evaluation-invalid-model-wait";
+        let claimed = match store
+            .claim_objective_evaluation(
+                &objective.id,
+                objective.revision,
+                evaluation_id,
+                Utc::now() + Duration::minutes(10),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected claim: {mutation:?}"),
+        };
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::new(InMemoryEventBus::new()),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+            std::time::Duration::from_secs(600),
+        ));
+        let terminal = invalid_model_failure_event(
+            &claimed,
+            evaluation_id,
+            "invalid-model-terminal",
+            Utc::now() - Duration::seconds(1),
+        );
+        supervisor.terminal_outcome(&terminal).await.unwrap();
+
+        let waiting = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert_eq!(waiting.status, ObjectiveStatus::Active);
+        assert!(matches!(
+            waiting.wait_condition,
+            Some(ObjectiveWaitCondition::ResourceAvailable { ref resource })
+                if resource == MODEL_CONFIGURATION_RESOURCE
+        ));
+        assert!(waiting.active_evaluation_id.is_none());
+
+        // The configuration epoch is the crash-recovery authority. Even if
+        // the live context-local resource Event was not dispatched before a
+        // process stop, startup observes this durable fact and continues.
+        store
+            .append(Event::new(
+                "model-configuration-changed-after-wait".to_string(),
+                "Runtime-ModelConfiguration".to_string(),
+                "runtime_control".to_string(),
+                TYPE_MODEL_CONFIGURATION_CHANGED.to_string(),
+                [("resource".to_string(), json!(MODEL_CONFIGURATION_RESOURCE))]
+                    .into_iter()
+                    .collect(),
+            ))
+            .await
+            .unwrap();
+        let persisted = supervisor
+            .find_persisted_wait_event(&waiting)
+            .await
+            .unwrap();
+        assert!(
+            persisted.is_some(),
+            "configuration epoch must satisfy the persisted wait"
+        );
+        Arc::clone(&supervisor).start().await.unwrap();
+        let recovered = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert!(recovered.wait_condition.is_none());
+        assert!(recovered.active_evaluation_id.is_some());
+
+        // Replaying or publishing another configuration epoch after the wait
+        // has been satisfied must not create a second physical Evaluation.
+        let active_evaluation_id = recovered.active_evaluation_id.clone();
+        let duplicate = Event::new(
+            "model-configuration-changed-duplicate".to_string(),
+            "Runtime-ModelConfiguration".to_string(),
+            "runtime_control".to_string(),
+            "runtime/resource_available".to_string(),
+            [
+                ("context_id".to_string(), json!(&recovered.context_id)),
+                ("resource".to_string(), json!(MODEL_CONFIGURATION_RESOURCE)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        supervisor.wake_non_routed_event(&duplicate).await.unwrap();
+        let after_duplicate = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert_eq!(after_duplicate.active_evaluation_id, active_evaluation_id);
+    }
+
+    #[tokio::test]
+    async fn invalid_old_request_does_not_miss_a_concurrent_configuration_change() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "invalid-model-concurrent-change").await;
+        let evaluation_id = "evaluation-invalid-model-concurrent-change";
+        let claimed = match store
+            .claim_objective_evaluation(
+                &objective.id,
+                objective.revision,
+                evaluation_id,
+                Utc::now() + Duration::minutes(10),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected claim: {mutation:?}"),
+        };
+        let request_started_at = Utc::now() - Duration::seconds(1);
+        store
+            .append(Event::new(
+                "model-configuration-changed-in-flight".to_string(),
+                "Runtime-ModelConfiguration".to_string(),
+                "runtime_control".to_string(),
+                TYPE_MODEL_CONFIGURATION_CHANGED.to_string(),
+                [("resource".to_string(), json!(MODEL_CONFIGURATION_RESOURCE))]
+                    .into_iter()
+                    .collect(),
+            ))
+            .await
+            .unwrap();
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::new(InMemoryEventBus::new()),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+            std::time::Duration::from_secs(600),
+        ));
+        let terminal = invalid_model_failure_event(
+            &claimed,
+            evaluation_id,
+            "invalid-model-terminal-after-change",
+            request_started_at,
+        );
+        supervisor.terminal_outcome(&terminal).await.unwrap();
+
+        let retried = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert_eq!(retried.status, ObjectiveStatus::Active);
+        assert!(retried.wait_condition.is_none());
+        supervisor.start().await.unwrap();
+        let retried = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert!(retried.active_evaluation_id.is_some());
     }
 
     #[tokio::test]

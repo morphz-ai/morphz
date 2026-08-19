@@ -2848,16 +2848,20 @@ async fn handle_update_inference(
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
     }
     if model != current_model {
-        if let Err(error) = state.runtime.set_model(model) {
+        if let Err(error) = state.runtime.set_model(model).await {
             return error_response(StatusCode::BAD_REQUEST, error.to_string());
         }
     }
     if let Some(limit) = prompt_token_limit {
-        if let Err(error) = state.runtime.set_model_prompt_token_limit(model, limit) {
+        if let Err(error) = state
+            .runtime
+            .set_model_prompt_token_limit(model, limit)
+            .await
+        {
             return error_response(StatusCode::BAD_REQUEST, error.to_string());
         }
     }
-    if let Err(error) = state.runtime.set_reasoning_effort(effort) {
+    if let Err(error) = state.runtime.set_reasoning_effort(effort).await {
         return error_response(StatusCode::NOT_IMPLEMENTED, error.to_string());
     }
     Json(json!({

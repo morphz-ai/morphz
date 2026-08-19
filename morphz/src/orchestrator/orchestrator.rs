@@ -23,9 +23,9 @@ use crate::harness_package::{
     persist_evaluation_harness_binding,
 };
 use crate::llm::{
-    attachment_message, provider_continuation_message, Client, Message, ModelFailure,
-    ModelFailureKind, ModelRequestContext, ModelUsage, PromptTokenAccuracy, PromptTokenCount,
-    ProviderContinuation, ToolDefinition,
+    attachment_message, provider_continuation_message, Client, Message, ModelAttemptBinding,
+    ModelFailure, ModelFailureKind, ModelRequestContext, ModelUsage, PromptTokenAccuracy,
+    PromptTokenCount, ProviderContinuation, ToolDefinition,
 };
 use crate::memory::{
     stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberRecord,
@@ -64,7 +64,7 @@ use crate::tool::{
     Registry, ThreadScheduler, Tool,
 };
 use base64::Engine;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -1325,6 +1325,10 @@ struct ModelCompletionError {
     reasoning_summary: String,
     partial_text: String,
     provider_continuation: Option<ProviderContinuation>,
+    /// Physical request boundary used to distinguish an invalid request under
+    /// an old catalog/settings snapshot from a failure under the current one.
+    model_request_started_at: Option<DateTime<Utc>>,
+    model_binding: Option<ModelAttemptBinding>,
     origin: ModelCompletionErrorOrigin,
 }
 
@@ -1518,6 +1522,8 @@ impl ModelCompletionError {
             reasoning_summary: String::new(),
             partial_text: String::new(),
             provider_continuation: None,
+            model_request_started_at: None,
+            model_binding: None,
             origin: ModelCompletionErrorOrigin::Provider,
         }
     }
@@ -1528,6 +1534,8 @@ impl ModelCompletionError {
             reasoning_summary: String::new(),
             partial_text: String::new(),
             provider_continuation: None,
+            model_request_started_at: None,
+            model_binding: None,
             origin: ModelCompletionErrorOrigin::RuntimePersistence,
         }
     }
@@ -1538,6 +1546,8 @@ impl ModelCompletionError {
             reasoning_summary: String::new(),
             partial_text: String::new(),
             provider_continuation: None,
+            model_request_started_at: None,
+            model_binding: None,
             origin: ModelCompletionErrorOrigin::RuntimeInternal,
         }
     }
@@ -1548,6 +1558,8 @@ impl ModelCompletionError {
             reasoning_summary: String::new(),
             partial_text: String::new(),
             provider_continuation: None,
+            model_request_started_at: None,
+            model_binding: None,
             origin: ModelCompletionErrorOrigin::RuntimeInput,
         }
     }
@@ -1563,8 +1575,24 @@ impl ModelCompletionError {
             reasoning_summary: accumulator.text.clone(),
             partial_text: accumulator.public_text.clone(),
             provider_continuation: accumulator.provider_continuation.clone(),
+            model_request_started_at: None,
+            model_binding: None,
             origin,
         }
+    }
+
+    fn with_model_configuration_snapshot(
+        mut self,
+        started_at: DateTime<Utc>,
+        binding: ModelAttemptBinding,
+    ) -> Self {
+        self.model_request_started_at = Some(started_at);
+        self.model_binding = Some(binding);
+        self
+    }
+
+    fn model_configuration_snapshot(&self) -> Option<(DateTime<Utc>, &ModelAttemptBinding)> {
+        Some((self.model_request_started_at?, self.model_binding.as_ref()?))
     }
 
     fn is_runtime_failure(&self) -> bool {
@@ -7213,6 +7241,7 @@ impl Orchestrator {
             })
             .await
             .map_err(|error| ModelCompletionError::internal(error.into()))?;
+        let model_request_started_at = Utc::now();
         let effective_model_input_limits =
             host_model_input_limits.stricter(model_binding.model_input_limits);
         stream_route.push(("model_binding".to_string(), json!(&model_binding)));
@@ -7611,7 +7640,10 @@ impl Orchestrator {
                 response,
                 provider_continuation: reasoning_summary.lock().await.provider_continuation.clone(),
             }),
-        };
+        }
+        .map_err(|error| {
+            error.with_model_configuration_snapshot(model_request_started_at, model_binding.clone())
+        });
         match &outcome {
             Ok(_) => self.record_provider_success().await,
             // A completed response that contains provider-authored reasoning
@@ -9278,6 +9310,7 @@ impl Orchestrator {
                                 "critical_maintenance_minimum_projection",
                                 &failure,
                                 context.parent_session_id.as_deref(),
+                                error.model_configuration_snapshot(),
                             ))
                             .await;
                         }
@@ -9489,6 +9522,7 @@ impl Orchestrator {
                             "reasoning_continuation",
                             &failure,
                             context.parent_session_id.as_deref(),
+                            None,
                         ))
                         .await;
                     }
@@ -9564,6 +9598,7 @@ impl Orchestrator {
                         "llm_completion",
                         &failure,
                         context.parent_session_id.as_deref(),
+                        error.model_configuration_snapshot(),
                     ))
                     .await;
                 }
@@ -11588,6 +11623,7 @@ impl Orchestrator {
         stage: &str,
         failure: &ModelFailure,
         parent_session_id: Option<&str>,
+        model_configuration_snapshot: Option<(DateTime<Utc>, &ModelAttemptBinding)>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let error_text: String = failure.to_string().chars().take(2_000).collect();
@@ -11769,6 +11805,10 @@ impl Orchestrator {
         }
         if let Some(seconds) = failure.retry_after_secs {
             attributes.push(("retry_after_secs".to_string(), json!(seconds)));
+        }
+        if let Some((started_at, model_binding)) = model_configuration_snapshot {
+            attributes.push(("model_request_started_at".to_string(), json!(started_at)));
+            attributes.push(("model_binding".to_string(), json!(model_binding)));
         }
         if should_notify_user {
             self.publish_reply_with_attributes(

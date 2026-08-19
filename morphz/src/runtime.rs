@@ -59,7 +59,7 @@ use crate::memory::{
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
-    ObjectiveUpdateTool,
+    ObjectiveUpdateTool, MODEL_CONFIGURATION_RESOURCE, TYPE_MODEL_CONFIGURATION_CHANGED,
 };
 use crate::orchestrator::context::{
     ContextAttribution, ContextEngine, ContextPressure, ContextRecallService, ContextTokenBudget,
@@ -84,9 +84,9 @@ use crate::provider::{
 };
 use crate::scheduler::{
     audit_scheduler_invariants, derive_objective_readiness, KernelResult,
-    SchedulerDependencyFilter, SchedulerDependencyOwnerKind, SchedulerInvariantCode,
-    SchedulerInvariantInput, SchedulerInvariantSeverity, SchedulerInvariantViolation,
-    SchedulerKernel,
+    SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
+    SchedulerDependencyStatus, SchedulerInvariantCode, SchedulerInvariantInput,
+    SchedulerInvariantSeverity, SchedulerInvariantViolation, SchedulerKernel,
 };
 pub use crate::scheduler::{
     SchedulerActivationSnapshot, SchedulerAdmissionSnapshot, SchedulerDeliverySnapshot,
@@ -1804,7 +1804,10 @@ impl MorphzRuntime {
             .map_err(|_| std::io::Error::other("Provider catalog lock poisoned").into())
     }
 
-    pub fn replace_provider_catalog(&self, mut config: AppConfig) -> Result<(), RuntimeError> {
+    pub async fn replace_provider_catalog(
+        &self,
+        mut config: AppConfig,
+    ) -> Result<(), RuntimeError> {
         // Replace the actual request router before publishing the control-plane
         // snapshot. A failed catalog never becomes visible as active state.
         let reviewer_client = self
@@ -1818,18 +1821,105 @@ impl MorphzRuntime {
         }
         self.inner.client.replace_provider_catalog(&config)?;
         config.permissions.auto_review_model = self.inner.permissions.auto_review_model();
-        let mut current = self
-            .inner
-            .provider_catalog_config
-            .write()
-            .map_err(|_| std::io::Error::other("Provider catalog lock poisoned"))?;
-        *current = config;
-        let capacity = resolve_model_context_capacity(&current, &self.model());
+        let capacity = resolve_model_context_capacity(&config, &self.model());
+        {
+            let mut current = self
+                .inner
+                .provider_catalog_config
+                .write()
+                .map_err(|_| std::io::Error::other("Provider catalog lock poisoned"))?;
+            *current = config;
+        }
         *self
             .inner
             .model_context_capacity
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
+        self.publish_model_configuration_changed("provider_catalog_replaced")
+            .await?;
+        Ok(())
+    }
+
+    /// Commit one durable configuration epoch and wake only Objectives whose
+    /// exact pending dependency is the operator-controlled model-configuration
+    /// resource. The indexed dependency lookup avoids Context/Objectives
+    /// sweeps, while the global epoch Event closes restart and in-flight
+    /// request races even if a process stops before all context-local wake
+    /// Events are dispatched.
+    async fn publish_model_configuration_changed(&self, reason: &str) -> Result<(), RuntimeError> {
+        let changed = Event::new(
+            format!(
+                "model_configuration_changed_{}_{}",
+                self.inner.runtime_instance_id,
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            ),
+            "Runtime-ModelConfiguration".to_string(),
+            "runtime_control".to_string(),
+            TYPE_MODEL_CONFIGURATION_CHANGED.to_string(),
+            [
+                ("resource".to_string(), json!(MODEL_CONFIGURATION_RESOURCE)),
+                ("reason".to_string(), json!(reason)),
+                ("model".to_string(), json!(self.model())),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        self.inner.bus.publish(changed.clone()).await?;
+
+        let dependencies = self
+            .inner
+            .store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+                dependency_kind: Some(SchedulerDependencyKind::Resource),
+                dependency_id: Some(MODEL_CONFIGURATION_RESOURCE.to_string()),
+                status: Some(SchedulerDependencyStatus::Pending),
+                required_only: true,
+                ..SchedulerDependencyFilter::default()
+            })
+            .await?;
+        let mut contexts = BTreeMap::<String, Vec<String>>::new();
+        for dependency in dependencies {
+            let Some(objective) = self.inner.store.get_objective(&dependency.owner_id).await?
+            else {
+                continue;
+            };
+            if objective.status != ObjectiveStatus::Active
+                || dependency.owner_generation != objective.generation
+                || !matches!(
+                    objective.wait_condition,
+                    Some(ObjectiveWaitCondition::ResourceAvailable { ref resource })
+                        if resource == MODEL_CONFIGURATION_RESOURCE
+                )
+            {
+                continue;
+            }
+            contexts
+                .entry(objective.context_id)
+                .or_default()
+                .push(objective.id);
+        }
+
+        for (index, (context_id, objective_ids)) in contexts.into_iter().enumerate() {
+            self.inner
+                .bus
+                .publish(Event::new(
+                    format!("model_configuration_available_{}_{}", changed.id, index),
+                    "Runtime-ModelConfiguration".to_string(),
+                    "runtime_control".to_string(),
+                    "runtime/resource_available".to_string(),
+                    [
+                        ("context_id".to_string(), json!(context_id)),
+                        ("resource".to_string(), json!(MODEL_CONFIGURATION_RESOURCE)),
+                        ("reason".to_string(), json!(reason)),
+                        ("configuration_event_id".to_string(), json!(&changed.id)),
+                        ("objective_ids".to_string(), json!(objective_ids)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await?;
+        }
         Ok(())
     }
 
@@ -2022,6 +2112,12 @@ impl MorphzRuntime {
             .collect::<Vec<_>>();
         Arc::clone(&self.inner.orchestrator).start().await?;
         Arc::clone(&self.inner.objective_supervisor).start().await?;
+        // Loading the operator's persisted catalog/settings establishes a new
+        // configuration epoch. This is an explicit recovery fact rather than
+        // an unconditional Objective wait reset: only the exact indexed
+        // model-configuration dependencies are released.
+        self.publish_model_configuration_changed("runtime_started_with_loaded_configuration")
+            .await?;
         self.inner.thread_scheduler.recover().await?;
         self.inner.timer_engine.start();
         for job_id in artifact_transfer_jobs {
@@ -2929,7 +3025,7 @@ impl MorphzRuntime {
         Ok(options)
     }
 
-    pub fn set_model(&self, model: &str) -> Result<(), RuntimeError> {
+    pub async fn set_model(&self, model: &str) -> Result<(), RuntimeError> {
         let model = model.trim();
         if !self
             .configured_models()
@@ -2957,6 +3053,8 @@ impl MorphzRuntime {
             .model_context_capacity
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
+        self.publish_model_configuration_changed("selected_model_changed")
+            .await?;
         Ok(())
     }
 
@@ -2968,7 +3066,7 @@ impl MorphzRuntime {
             .clone()
     }
 
-    pub fn set_model_prompt_token_limit(
+    pub async fn set_model_prompt_token_limit(
         &self,
         model: &str,
         prompt_token_limit: usize,
@@ -3000,6 +3098,8 @@ impl MorphzRuntime {
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
         }
+        self.publish_model_configuration_changed("model_prompt_token_limit_changed")
+            .await?;
         Ok(())
     }
 
@@ -3035,14 +3135,16 @@ impl MorphzRuntime {
         }
     }
 
-    pub fn set_reasoning_effort(
+    pub async fn set_reasoning_effort(
         &self,
         effort: Option<ReasoningEffort>,
     ) -> Result<(), RuntimeError> {
         self.inner
             .client
             .set_reasoning_effort(effort)
-            .map_err(Into::into)
+            .map_err(|error| -> RuntimeError { error.into() })?;
+        self.publish_model_configuration_changed("reasoning_effort_changed")
+            .await
     }
 
     pub fn tool_names(&self) -> Vec<String> {
@@ -8698,6 +8800,131 @@ mod tests {
         assert_eq!(fallback.prompt_token_limit, 262_144);
         assert_eq!(fallback.context_window_tokens, None);
         assert_eq!(fallback.source, "runtime-default");
+    }
+
+    #[tokio::test]
+    async fn model_configuration_change_targets_only_exact_pending_objective_dependencies() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .create_agent_bundle(
+                NewAgent {
+                    id: runtime.identity().agent_id.clone(),
+                    title: "Configuration wake agent".to_string(),
+                    root_context_id: runtime.identity().context_id.clone(),
+                },
+                NewCognitiveContext {
+                    id: runtime.identity().context_id.clone(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    title: "Configuration wake context".to_string(),
+                },
+                NewSession {
+                    id: "session-model-configuration-wake".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    parent_session_id: None,
+                    title: "Configuration wake session".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let objective = runtime
+            .inner
+            .store
+            .create_objective(NewObjective {
+                id: "objective-model-configuration-wake".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                coordinator_session_id: "session-model-configuration-wake".to_string(),
+                delivery_session_id: "session-model-configuration-wake".to_string(),
+                parent_objective_id: None,
+                source_event_id: "source-model-configuration-wake".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "Resume after an explicit model configuration change".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        match runtime
+            .inner
+            .store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::ResourceAvailable {
+                    resource: MODEL_CONFIGURATION_RESOURCE.to_string(),
+                }),
+                Some("test configuration wait"),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(_) => {}
+            mutation => panic!("unexpected objective wait mutation: {mutation:?}"),
+        }
+        let dependencies = runtime
+            .inner
+            .store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+                owner_id: Some(objective.id.clone()),
+                dependency_kind: Some(SchedulerDependencyKind::Resource),
+                dependency_id: Some(MODEL_CONFIGURATION_RESOURCE.to_string()),
+                status: Some(SchedulerDependencyStatus::Pending),
+                required_only: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(dependencies.len(), 1);
+
+        // Runtime::start installs the durable Event writer before publishing
+        // the startup configuration epoch. This focused test starts the same
+        // persistence boundary without starting unrelated Runtime workers.
+        Arc::clone(&runtime.inner.orchestrator)
+            .start()
+            .await
+            .unwrap();
+
+        let mut available = runtime.subscribe("runtime/resource_available", 4);
+        runtime
+            .publish_model_configuration_changed("test_catalog_change")
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), available.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event.payload.get("context_id").and_then(Value::as_str),
+            Some(runtime.identity().context_id.as_str())
+        );
+        assert_eq!(
+            event.payload.get("resource").and_then(Value::as_str),
+            Some(MODEL_CONFIGURATION_RESOURCE)
+        );
+        assert_eq!(event.payload["objective_ids"], json!([objective.id]));
+
+        let epochs = runtime
+            .query_events(QueryFilter {
+                topic: Some(TYPE_MODEL_CONFIGURATION_CHANGED.to_string()),
+                top_k: Some(4),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(epochs.len(), 1);
+        assert_eq!(
+            epochs[0].payload.get("resource").and_then(Value::as_str),
+            Some(MODEL_CONFIGURATION_RESOURCE)
+        );
     }
 
     #[test]
