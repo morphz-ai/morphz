@@ -1103,7 +1103,7 @@ const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
 const CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT: usize = 256;
 const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
-const EMPTY_RESPONSE_ERROR: &str = "neither non-empty content nor a tool call was returned";
+const EMPTY_RESPONSE_DETAIL: &str = "模型响应既没有非空正文，也没有工具调用";
 const RESPONSE_PROTOCOL_ERROR: &str = "Response protocol error: this Evaluation has not produced a valid terminal result. To reply to the active Session, return non-empty ordinary assistant text with no tools. For intentional silence, call no_reply(mode=silent) exclusively. Use no_reply(mode=wait) only while the Runtime can verify a nonterminal event. Empty output, a missing or invalid mode, mixing no_reply with another tool, or combining no_reply with content is invalid.";
 const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error: the Runtime reports only that all direct child objectives are terminal; it does not decide whether the parent is complete. This evaluation cannot end with ordinary text or no_reply while leaving closure unresolved. Persist one decision: objective_update to completed, blocked, or an exact wait; perform real work; or create a necessary child objective.";
 const OBJECTIVE_FINALIZATION_PROMPT: &str = r#"The Runtime persisted your Objective completion decision but has not ended the Objective. You are still in the same Activation. Produce the user-facing final delivery from the complete evidence you just audited:
@@ -1324,7 +1324,107 @@ struct ModelCompletionError {
     source: DynError,
     reasoning_summary: String,
     partial_text: String,
+    provider_continuation: Option<ProviderContinuation>,
     origin: ModelCompletionErrorOrigin,
+}
+
+#[derive(Debug, Default)]
+struct DurableReasoningContinuationState {
+    /// Number of already committed physical reasoning-only boundaries for the
+    /// Activation. It keeps retry Attempt IDs monotonic after process restart.
+    physical_continuations: usize,
+    continuation_count: usize,
+    stalled_count: usize,
+    summaries: Vec<String>,
+    provider_continuations: Vec<ProviderContinuation>,
+}
+
+fn durable_reasoning_continuation_state_from_events(
+    activation_id: &str,
+    events: &[Event],
+) -> Result<DurableReasoningContinuationState, DynError> {
+    let summaries_by_attempt = events
+        .iter()
+        .filter(|event| event.topic == "runtime/model_reasoning_summary")
+        .filter_map(|event| {
+            Some((
+                event.payload.get("attempt_id")?.as_str()?.to_string(),
+                event.payload.get("text")?.as_str()?.trim().to_string(),
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut restored = DurableReasoningContinuationState::default();
+    let mut seen_attempts = HashSet::new();
+    for event in events
+        .iter()
+        .filter(|event| event.topic == "runtime/reasoning_continuation")
+    {
+        let Some(attempt_id) = event
+            .payload
+            .get("attempt_id")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        if !seen_attempts.insert(attempt_id.to_string()) {
+            continue;
+        }
+        restored.physical_continuations = restored.physical_continuations.saturating_add(1);
+        let continuation_count = event
+            .payload
+            .get("continuation_count")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or_else(|| restored.continuation_count.saturating_add(1));
+        // Context-limit maintenance deliberately starts a new reasoning
+        // chain inside the same logical Activation. Its first checkpoint
+        // resets the persisted suffix while physical request numbering
+        // remains monotonic.
+        if continuation_count == 1 && restored.continuation_count > 0 {
+            restored.continuation_count = 0;
+            restored.stalled_count = 0;
+            restored.summaries.clear();
+            restored.provider_continuations.clear();
+        } else if continuation_count <= restored.continuation_count {
+            continue;
+        }
+        let summary = summaries_by_attempt
+            .get(attempt_id)
+            .filter(|summary| !summary.is_empty())
+            .cloned();
+        let provider_continuation = event
+            .payload
+            .get("provider_continuation")
+            .map(|value| {
+                serde_json::from_value::<ProviderContinuation>(value.clone()).map_err(|error| {
+                    format!(
+                        "Activation '{activation_id}' 的 reasoning continuation '{}' 包含无效 Provider 状态：{error}",
+                        event.id
+                    )
+                })
+            })
+            .transpose()?;
+        if summary.is_none() && provider_continuation.is_none() {
+            return Err(format!(
+                "Activation '{activation_id}' 的 reasoning continuation '{}' 缺少可恢复的摘要或 Provider 状态",
+                event.id
+            )
+            .into());
+        }
+        if let Some(summary) = summary {
+            if restored.summaries.last() == Some(&summary) {
+                restored.stalled_count = restored.stalled_count.saturating_add(1);
+            } else {
+                restored.stalled_count = 0;
+            }
+            restored.summaries.push(summary);
+        }
+        if let Some(provider_continuation) = provider_continuation {
+            restored.provider_continuations.push(provider_continuation);
+        }
+        restored.continuation_count = continuation_count;
+    }
+    Ok(restored)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1417,6 +1517,7 @@ impl ModelCompletionError {
             source,
             reasoning_summary: String::new(),
             partial_text: String::new(),
+            provider_continuation: None,
             origin: ModelCompletionErrorOrigin::Provider,
         }
     }
@@ -1426,6 +1527,7 @@ impl ModelCompletionError {
             source,
             reasoning_summary: String::new(),
             partial_text: String::new(),
+            provider_continuation: None,
             origin: ModelCompletionErrorOrigin::RuntimePersistence,
         }
     }
@@ -1435,6 +1537,7 @@ impl ModelCompletionError {
             source,
             reasoning_summary: String::new(),
             partial_text: String::new(),
+            provider_continuation: None,
             origin: ModelCompletionErrorOrigin::RuntimeInternal,
         }
     }
@@ -1444,6 +1547,7 @@ impl ModelCompletionError {
             source,
             reasoning_summary: String::new(),
             partial_text: String::new(),
+            provider_continuation: None,
             origin: ModelCompletionErrorOrigin::RuntimeInput,
         }
     }
@@ -1458,6 +1562,7 @@ impl ModelCompletionError {
             source,
             reasoning_summary: accumulator.text.clone(),
             partial_text: accumulator.public_text.clone(),
+            provider_continuation: accumulator.provider_continuation.clone(),
             origin,
         }
     }
@@ -2247,7 +2352,7 @@ async fn persist_model_usage(
     Ok(())
 }
 
-fn reasoning_continuation_prompt(summaries: &[String]) -> String {
+fn reasoning_continuation_prompt(summaries: &[String], has_provider_continuation: bool) -> String {
     let reasoning = summaries
         .iter()
         .enumerate()
@@ -2260,9 +2365,41 @@ fn reasoning_continuation_prompt(summaries: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let prior_progress = if reasoning.is_empty() && has_provider_continuation {
+        "<provider_continuation>Runtime 已在请求协议中附带 Provider 原生推理续接状态；该状态不是用户消息，也不是可见 assistant 正文。</provider_continuation>".to_string()
+    } else {
+        format!("<previous_reasoning>\n{reasoning}\n</previous_reasoning>")
+    };
     format!(
-        "之前的物理模型请求只生成了推理摘要，没有生成可提交的正文或工具调用。下面是 Runtime 按顺序保存的全部推理进度；它们不是用户消息，也不是已发送给用户的 assistant 正文。请沿用这些进度继续完成你的推理，不要从头重复分析；推理完成后再产生一种合法终态：返回非空普通 assistant 文本且不调用工具，或执行所需工具调用，或在确实无需消息时独占调用 no_reply。\n\n<previous_reasoning>\n{reasoning}\n</previous_reasoning>"
+        "之前的物理模型请求只生成了推理进度，没有生成可提交的正文或工具调用。Runtime 已按顺序恢复可用的推理摘要和 Provider 原生续接状态；它们不是用户消息，也不是已发送给用户的 assistant 正文。请沿用这些进度继续完成你的推理，不要从头重复分析；推理完成后再产生一种合法终态：返回非空普通 assistant 文本且不调用工具，或执行所需工具调用，或在确实无需消息时独占调用 no_reply。\n\n{prior_progress}"
     )
+}
+
+fn append_reasoning_continuation_input(
+    messages: &mut Vec<Message>,
+    provider_continuations: &[ProviderContinuation],
+    reasoning_history: &[String],
+) -> Result<(), DynError> {
+    // OpenAI Responses continuation items are self-contained input items and
+    // can be replayed before the next user instruction. OpenAI Chat's
+    // reasoning_content, by contrast, is only legal on the assistant message
+    // which owns a tool call; a reasoning-only response has no such message,
+    // so Chat-compatible providers use the durable summary prompt instead.
+    let mut has_provider_continuation = false;
+    for continuation in provider_continuations {
+        if matches!(continuation, ProviderContinuation::OpenaiResponses { .. }) {
+            messages.push(provider_continuation_message(continuation.clone())?);
+            has_provider_continuation = true;
+        }
+    }
+    messages.push(Message {
+        role: "user".to_string(),
+        content: reasoning_continuation_prompt(reasoning_history, has_provider_continuation),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+    });
+    Ok(())
 }
 
 fn interrupted_text_continuation_prompt() -> &'static str {
@@ -7490,8 +7627,7 @@ impl Orchestrator {
             // causes the model to reason about the same work repeatedly.
             Err(error)
                 if error.origin == ModelCompletionErrorOrigin::Provider
-                    && !error.reasoning_summary.trim().is_empty()
-                    && error.to_string().contains(EMPTY_RESPONSE_ERROR) =>
+                    && error.failure().kind == ModelFailureKind::EmptyResponse =>
             {
                 self.record_provider_success().await;
             }
@@ -8901,7 +9037,23 @@ impl Orchestrator {
             }
         }
         let mut base_protocol_messages = messages;
+        let restored_reasoning = self
+            .restore_reasoning_continuation_state(&context_id, session_id, &activation.id)
+            .await?;
         let mut protocol_messages = base_protocol_messages.clone();
+        if restored_reasoning.physical_continuations > 0 {
+            append_reasoning_continuation_input(
+                &mut protocol_messages,
+                &restored_reasoning.provider_continuations,
+                &restored_reasoning.summaries,
+            )?;
+            // The restored protocol envelope is part of the next physical
+            // request. Re-measure it instead of reporting the pre-restart base
+            // Context as the request size.
+            request_prompt_measurement = self
+                .count_projected_prompt_tokens(&context, &protocol_messages, &tools)
+                .await;
+        }
         if let Some(supervisor) = &self.objective_supervisor {
             let tokens = request_prompt_measurement
                 .as_ref()
@@ -8929,11 +9081,12 @@ impl Orchestrator {
         let mut context_maintenance_owner = None;
         let mut context_maintenance_gate = None;
         let mut protocol_errors = 0usize;
-        let mut model_request_index = 0usize;
-        let mut reasoning_continuations = 0usize;
-        let mut stalled_reasoning_continuations = 0usize;
-        let mut previous_reasoning_summary: Option<String> = None;
-        let mut reasoning_history = Vec::new();
+        let mut model_request_index = restored_reasoning.physical_continuations;
+        let mut reasoning_continuations = restored_reasoning.continuation_count;
+        let mut stalled_reasoning_continuations = restored_reasoning.stalled_count;
+        let mut previous_reasoning_summary = restored_reasoning.summaries.last().cloned();
+        let mut reasoning_history = restored_reasoning.summaries;
+        let mut reasoning_provider_continuations = restored_reasoning.provider_continuations;
         let mut interrupted_public_text = String::new();
         let mut completion_prepared = recovering_completion_intent;
         let (
@@ -9221,6 +9374,7 @@ impl Orchestrator {
                     stalled_reasoning_continuations = 0;
                     previous_reasoning_summary = None;
                     reasoning_history.clear();
+                    reasoning_provider_continuations.clear();
                     interrupted_public_text.clear();
                     tracing::warn!(
                         context_id = %context_id,
@@ -9265,9 +9419,10 @@ impl Orchestrator {
                     continue;
                 }
                 Err(error)
-                    if !error.reasoning_summary.trim().is_empty()
+                    if (!error.reasoning_summary.trim().is_empty()
+                        || error.provider_continuation.is_some())
                         && (error.failure().kind.is_request_scoped_latency()
-                            || error.to_string().contains(EMPTY_RESPONSE_ERROR)) =>
+                            || error.failure().kind == ModelFailureKind::EmptyResponse) =>
                 {
                     let provider_error = error.to_string();
                     self.record_model_attempt_terminal_state(
@@ -9291,6 +9446,7 @@ impl Orchestrator {
                         reasoning_continuations,
                         reasoning_summary.chars().count(),
                         &provider_error,
+                        error.provider_continuation.as_ref(),
                     )
                     .await?;
                     let continuation_exhausted = self
@@ -9342,24 +9498,27 @@ impl Orchestrator {
                     // unchanged so the model can finish its reasoning on its
                     // own terms. Replace older recovery prompts to avoid
                     // repeatedly inflating Context across retries.
-                    previous_reasoning_summary = Some(reasoning_summary.clone());
-                    reasoning_history.push(reasoning_summary);
+                    if !reasoning_summary.is_empty() {
+                        previous_reasoning_summary = Some(reasoning_summary.clone());
+                        reasoning_history.push(reasoning_summary);
+                    }
+                    if let Some(provider_continuation) = error.provider_continuation {
+                        reasoning_provider_continuations.push(provider_continuation);
+                    }
                     protocol_messages = base_protocol_messages.clone();
-                    protocol_messages.push(Message {
-                        role: "user".to_string(),
-                        content: reasoning_continuation_prompt(&reasoning_history),
-                        name: None,
-                        tool_call_id: None,
-                        tool_calls: None,
-                    });
+                    append_reasoning_continuation_input(
+                        &mut protocol_messages,
+                        &reasoning_provider_continuations,
+                        &reasoning_history,
+                    )?;
                     continue;
                 }
-                Err(error) if error.to_string().contains(EMPTY_RESPONSE_ERROR) => {
+                Err(error) if error.failure().kind == ModelFailureKind::EmptyResponse => {
                     self.record_model_attempt_terminal_state(
                         session_id,
                         &model_attempt_id,
                         "protocol_invalid",
-                        Some(EMPTY_RESPONSE_ERROR),
+                        Some(EMPTY_RESPONSE_DETAIL),
                     )
                     .await?;
                     protocol_errors += 1;
@@ -9917,6 +10076,30 @@ impl Orchestrator {
         Ok(())
     }
 
+    async fn restore_reasoning_continuation_state(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        activation_id: &str,
+    ) -> Result<DurableReasoningContinuationState, DynError> {
+        let events = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                session_id: Some(session_id.to_string()),
+                activation_id: Some(activation_id.to_string()),
+                topics: vec![
+                    "runtime/model_reasoning_summary".to_string(),
+                    "runtime/reasoning_continuation".to_string(),
+                ],
+                // Event sequence is the only authoritative replay order.
+                after_sequence: Some(0),
+                ..Default::default()
+            })
+            .await?;
+        durable_reasoning_continuation_state_from_events(activation_id, &events)
+    }
+
     async fn record_reasoning_continuation(
         &self,
         session_id: &str,
@@ -9924,6 +10107,7 @@ impl Orchestrator {
         continuation_count: usize,
         reasoning_chars: usize,
         provider_error: &str,
+        provider_continuation: Option<&ProviderContinuation>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let mut payload = vec![
@@ -9936,6 +10120,12 @@ impl Orchestrator {
             ("reason".to_string(), json!(REASONING_ONLY_RESPONSE_REASON)),
             ("provider_error".to_string(), json!(provider_error)),
         ];
+        if let Some(provider_continuation) = provider_continuation {
+            payload.push((
+                "provider_continuation".to_string(),
+                json!(provider_continuation),
+            ));
+        }
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
@@ -17322,8 +17512,8 @@ mod tests {
         baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         completed_objective_update_call, compose_context_encoding,
         critical_maintenance_transaction_available, derived_thread_kind,
-        durable_activation_revocation_reason, extend_exec_output_facts,
-        harness_entry_callable_tools, legacy_plan_effect_sequence,
+        durable_activation_revocation_reason, durable_reasoning_continuation_state_from_events,
+        extend_exec_output_facts, harness_entry_callable_tools, legacy_plan_effect_sequence,
         model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
         plan_infer_tool_scope, production_system_prompt_inspection, provider_delivery_retry_delay,
@@ -17347,7 +17537,8 @@ mod tests {
     };
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
     use crate::llm::{
-        FunctionCall, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolCall, ToolDefinition,
+        FunctionCall, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation,
+        ToolCall, ToolDefinition,
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
@@ -17416,6 +17607,119 @@ mod tests {
         assert_eq!(provider_delivery_retry_delay(5).as_secs(), 16);
         assert_eq!(provider_delivery_retry_delay(6).as_secs(), 30);
         assert_eq!(provider_delivery_retry_delay(u32::MAX).as_secs(), 30);
+    }
+
+    #[test]
+    fn reasoning_continuation_rebuilds_durable_restart_state_in_event_order() {
+        let summary = |attempt_id: &str, text: &str| {
+            Event::new(
+                format!("summary-{attempt_id}"),
+                "Model-Provider".to_string(),
+                "runtime_control".to_string(),
+                "runtime/model_reasoning_summary".to_string(),
+                [
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("text".to_string(), json!(text)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let continuation = |attempt_id: &str, count: usize, opaque: &str| {
+            Event::new(
+                format!("continuation-{attempt_id}"),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                "runtime/reasoning_continuation".to_string(),
+                [
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("continuation_count".to_string(), json!(count)),
+                    (
+                        "provider_continuation".to_string(),
+                        json!(ProviderContinuation::OpenaiResponses {
+                            reasoning_items: vec![json!({
+                                "type": "reasoning",
+                                "id": attempt_id,
+                                "encrypted_content": opaque,
+                            })],
+                        }),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let events = vec![
+            summary("attempt-0", "segment one"),
+            continuation("attempt-0", 1, "opaque-1"),
+            summary("attempt-1", "segment two"),
+            continuation("attempt-1", 2, "opaque-2"),
+        ];
+
+        let restored =
+            durable_reasoning_continuation_state_from_events("activation-a", &events).unwrap();
+        assert_eq!(restored.physical_continuations, 2);
+        assert_eq!(restored.continuation_count, 2);
+        assert_eq!(restored.stalled_count, 0);
+        assert_eq!(restored.summaries, ["segment one", "segment two"]);
+        assert_eq!(restored.provider_continuations.len(), 2);
+        assert!(matches!(
+            &restored.provider_continuations[1],
+            ProviderContinuation::OpenaiResponses { reasoning_items }
+                if reasoning_items[0]["encrypted_content"] == "opaque-2"
+        ));
+    }
+
+    #[test]
+    fn reasoning_continuation_restart_restores_only_latest_maintenance_generation() {
+        let event = |topic: &str, id: &str, attempt_id: &str, count: Option<usize>| {
+            let mut payload = serde_json::Map::from_iter([
+                ("attempt_id".to_string(), json!(attempt_id)),
+                ("text".to_string(), json!(id)),
+            ]);
+            if let Some(count) = count {
+                payload.insert("continuation_count".to_string(), json!(count));
+            }
+            Event::new(
+                id.to_string(),
+                "Runtime".to_string(),
+                "runtime_control".to_string(),
+                topic.to_string(),
+                payload,
+            )
+        };
+        let events = vec![
+            event(
+                "runtime/model_reasoning_summary",
+                "old-summary",
+                "attempt-0",
+                None,
+            ),
+            event(
+                "runtime/reasoning_continuation",
+                "old-continuation",
+                "attempt-0",
+                Some(1),
+            ),
+            event(
+                "runtime/model_reasoning_summary",
+                "new-summary",
+                "attempt-1",
+                None,
+            ),
+            event(
+                "runtime/reasoning_continuation",
+                "new-continuation",
+                "attempt-1",
+                Some(1),
+            ),
+        ];
+
+        let restored =
+            durable_reasoning_continuation_state_from_events("activation-a", &events).unwrap();
+        assert_eq!(restored.physical_continuations, 2);
+        assert_eq!(restored.continuation_count, 1);
+        assert_eq!(restored.summaries, ["new-summary"]);
     }
 
     #[derive(Default)]

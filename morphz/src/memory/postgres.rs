@@ -607,6 +607,8 @@ impl PostgresStore {
                ON events(context_id, topic, timestamp, sequence)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_events_context_session_topic_thread_time
                ON events(context_id, session_id, topic, thread_id, timestamp, sequence)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_events_activation_topic_sequence
+               ON events(activation_id, topic, sequence)"#,
             r#"CREATE TABLE IF NOT EXISTS event_causal_projection_backfills (
                 context_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,

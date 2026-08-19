@@ -318,6 +318,8 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_events_context_time ON events(context_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_context_topic_time
             ON events(context_id, topic, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_events_activation_topic
+            ON events(activation_id, topic);
         CREATE TABLE IF NOT EXISTS event_causal_projection_backfills (
             context_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
@@ -23958,6 +23960,40 @@ mod tests {
             plan.contains("idx_events_context_topic_time"),
             "unexpected query plan: {plan}"
         );
+    }
+
+    #[tokio::test]
+    async fn activation_reasoning_recovery_uses_activation_topic_index() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let rows = sqlx::query(
+            r#"EXPLAIN QUERY PLAN
+               SELECT rowid, id, timestamp FROM events
+               WHERE context_id = ? AND session_id = ? AND activation_id = ?
+                 AND topic IN (?, ?) AND rowid > ?
+               ORDER BY rowid ASC"#,
+        )
+        .bind("index-context")
+        .bind("index-session")
+        .bind("index-activation")
+        .bind("runtime/model_reasoning_summary")
+        .bind("runtime/reasoning_continuation")
+        .bind(0_i64)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("idx_events_activation_topic"),
+            "unexpected query plan: {plan}"
+        );
+        assert!(!plan.contains("SCAN events"), "unexpected scan: {plan}");
     }
 
     #[tokio::test]

@@ -2569,7 +2569,10 @@ fn parse_response(protocol: ModelProtocol, value: Value) -> Result<Response, Pro
 
 fn ensure_nonempty(response: Response) -> Result<Response, ProviderError> {
     if response.content.trim().is_empty() && response.tool_calls.is_empty() {
-        Err("模型响应既没有非空正文，也没有工具调用".into())
+        Err(boxed_model_failure(ModelFailure::new(
+            ModelFailureKind::EmptyResponse,
+            "模型响应既没有非空正文，也没有工具调用",
+        )))
     } else {
         Ok(response)
     }
@@ -4074,6 +4077,78 @@ mod tests {
                 "protocol={protocol:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn responses_reasoning_only_completion_is_typed_and_preserves_native_continuation() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    sse(concat!(
+                        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"reasoning-1\"}}\n\n",
+                        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"still reasoning\"}\n\n",
+                        "data: {\"type\":\"response.reasoning_summary_text.done\"}\n\n",
+                        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"reasoning-1\",\"encrypted_content\":\"opaque-state\"}}\n\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":4096,\"total_tokens\":4106}}}\n\n"
+                    ))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "glm-5.3".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 5,
+                initial_backoff_secs: 0,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+        let (stream, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let error = client
+            .create_completion_measured_stream(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "continue".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+                None,
+                stream,
+            )
+            .await
+            .unwrap_err();
+
+        let failure = error.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::EmptyResponse);
+        assert!(!failure.kind.uses_provider_recovery());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let events = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ProviderContinuation {
+                continuation: ProviderContinuation::OpenaiResponses { reasoning_items }
+            } if reasoning_items.iter().any(|item| {
+                item["id"] == "reasoning-1" && item["encrypted_content"] == "opaque-state"
+            })
+        )));
     }
 
     #[tokio::test]

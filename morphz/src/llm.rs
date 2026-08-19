@@ -38,6 +38,12 @@ pub enum ModelFailureKind {
     /// Runtime stopped a reasoning-only continuation loop at its configured
     /// safety boundary. The Provider completed its requests successfully.
     ReasoningContinuationExhausted,
+    /// The Provider completed a syntactically valid response, but emitted
+    /// neither public assistant text nor a tool call. This is a response
+    /// protocol boundary, not evidence that the shared Provider is down.
+    /// The Orchestrator may continue it when reasoning progress exists, or
+    /// request one bounded protocol correction otherwise.
+    EmptyResponse,
     StreamIdleTimeout,
     Unknown,
 }
@@ -57,6 +63,7 @@ impl ModelFailureKind {
             Self::HardDeadlineExceeded => "hard_deadline_exceeded",
             Self::ProviderQueueTimeout => "provider_queue_timeout",
             Self::ReasoningContinuationExhausted => "reasoning_continuation_exhausted",
+            Self::EmptyResponse => "empty_response",
             Self::StreamIdleTimeout => "stream_idle_timeout",
             Self::Unknown => "unknown",
         }
@@ -103,6 +110,7 @@ impl ModelFailureKind {
                 | Self::HardDeadlineExceeded
                 | Self::ProviderQueueTimeout
                 | Self::ReasoningContinuationExhausted
+                | Self::EmptyResponse
         )
     }
 
@@ -226,6 +234,15 @@ impl ModelFailure {
             ],
         ) {
             ModelFailureKind::InvalidModelOrRequest
+        } else if contains_any(
+            &normalized,
+            &[
+                "neither non-empty content nor a tool call",
+                "neither nonempty content nor a tool call",
+                "既没有非空正文，也没有工具调用",
+            ],
+        ) {
+            ModelFailureKind::EmptyResponse
         } else if contains_any(
             &normalized,
             &[
@@ -506,6 +523,7 @@ mod tests {
         assert!(!ModelFailureKind::HardDeadlineExceeded.uses_provider_recovery());
         assert!(!ModelFailureKind::ProviderQueueTimeout.uses_provider_recovery());
         assert!(!ModelFailureKind::ReasoningContinuationExhausted.uses_provider_recovery());
+        assert!(!ModelFailureKind::EmptyResponse.uses_provider_recovery());
         assert!(ModelFailureKind::Authentication.uses_provider_recovery());
         assert!(ModelFailureKind::TransientNetwork.uses_provider_recovery());
         assert!(ModelFailureKind::ServerUnavailable.uses_provider_recovery());

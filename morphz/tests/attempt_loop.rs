@@ -3,9 +3,9 @@ use morphz::event::{
     Event, InMemoryEventBus, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use morphz::llm::{
-    Client, Message, ModelFailure, ModelFailureKind, ModelStreamEvent, ModelStreamSender,
-    PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, Response, ToolCallRepr,
-    ToolDefinition, PROVIDER_CONTINUATION_MESSAGE_NAME,
+    provider_continuation, Client, Message, ModelFailure, ModelFailureKind, ModelStreamEvent,
+    ModelStreamSender, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, Response,
+    ToolCallRepr, ToolDefinition, PROVIDER_CONTINUATION_MESSAGE_NAME,
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
@@ -91,6 +91,11 @@ struct CancellableClient {
 struct ReasoningContinuationClient {
     calls: AtomicUsize,
     messages_seen: Mutex<Vec<Vec<Message>>>,
+}
+
+struct EmptyResponseClient {
+    calls: AtomicUsize,
+    health_probe_calls: AtomicUsize,
 }
 
 struct ProviderStateToolContinuationClient {
@@ -686,8 +691,20 @@ impl Client for ReasoningContinuationClient {
             // not a broken Provider stream: Runtime must feed this segment
             // back into the immediately following continuation request.
             let _ = stream.send(ModelStreamEvent::ReasoningSummaryCompleted);
+            let _ = stream.send(ModelStreamEvent::ProviderContinuation {
+                continuation: ProviderContinuation::OpenaiResponses {
+                    reasoning_items: vec![json!({
+                        "type": "reasoning",
+                        "id": format!("reasoning-{}", call + 1),
+                        "encrypted_content": format!("opaque-{}", call + 1),
+                    })],
+                },
+            });
             let _ = stream.send(ModelStreamEvent::Completed);
-            return Err("neither non-empty content nor a tool call was returned".into());
+            return Err(Box::new(ModelFailure::new(
+                ModelFailureKind::EmptyResponse,
+                "生产适配器的本地化错误文案不参与调度判断",
+            )));
         }
         let response = text_reply_response("continued into final text");
         let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
@@ -698,6 +715,34 @@ impl Client for ReasoningContinuationClient {
         });
         let _ = stream.send(ModelStreamEvent::Completed);
         Ok(response)
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for EmptyResponseClient {
+    fn provider_resource_key(&self) -> String {
+        "model-provider:test-empty-response".to_string()
+    }
+
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(Box::new(ModelFailure::new(
+            ModelFailureKind::EmptyResponse,
+            "completed response was empty",
+        )))
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -2587,12 +2632,36 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
                 && message.content.contains("<previous_reasoning>")
                 && message.content.contains("reasoning segment 1")
         }));
+        assert!(requests[1].iter().any(|message| {
+            matches!(
+                provider_continuation(message),
+                Some(ProviderContinuation::OpenaiResponses { reasoning_items })
+                    if reasoning_items.iter().any(|item| item["id"] == "reasoning-1")
+            )
+        }));
         assert!(requests[3].iter().any(|message| {
             message.role == "user"
                 && message.content.contains("reasoning segment 1")
                 && message.content.contains("reasoning segment 2")
                 && message.content.contains("reasoning segment 3")
         }));
+        let restored_reasoning_ids = requests[3]
+            .iter()
+            .filter_map(provider_continuation)
+            .flat_map(|continuation| match continuation {
+                ProviderContinuation::OpenaiResponses { reasoning_items } => reasoning_items,
+                ProviderContinuation::OpenaiChat { .. } => Vec::new(),
+            })
+            .filter_map(|item| {
+                item.get("id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            restored_reasoning_ids,
+            ["reasoning-1", "reasoning-2", "reasoning-3"]
+        );
     }
     let inspections = wait_for_captured_count(&snapshots, 4).await;
     assert_eq!(
@@ -2809,6 +2878,53 @@ async fn test_response_protocol_fuses_after_two_failed_corrections() {
         .and_then(|value| value.as_str())
         .unwrap()
         .contains("安全熔断"));
+}
+
+#[tokio::test]
+async fn typed_empty_response_uses_bounded_protocol_correction_not_provider_recovery() {
+    let session_id = "attempt_typed_empty_response";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("typed-empty-response.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(EmptyResponseClient {
+        calls: AtomicUsize::new(0),
+        health_probe_calls: AtomicUsize::new(0),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "return a valid terminal response").await;
+    let protocol_errors =
+        wait_for_topic_count(&store, "runtime/response_protocol_error", session_id, 3).await;
+    let fused = wait_for_topic(&store, "runtime/response_protocol_fused", session_id).await;
+    let provider_waits = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/provider_wait".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(client.health_probe_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(protocol_errors.len(), 3);
+    assert_eq!(fused.len(), 1);
+    assert!(provider_waits.is_empty());
 }
 
 #[tokio::test]
