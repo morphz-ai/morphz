@@ -148,8 +148,10 @@ impl DurableEventDeliveryQueue {
 /// changing it in only one layer would make the online Projection disagree
 /// with a full replay of persisted Events.
 pub fn is_context_observation(event: &Event) -> bool {
-    if event.topic == "chat/assistant_call"
-        || event.topic == "chat/progress"
+    if event.topic == "chat/assistant_call" {
+        return assistant_call_has_tool_history(event);
+    }
+    if event.topic == "chat/progress"
         || event.topic == "chat/no_reply"
         || event.topic == "chat/context_inspect"
         || event.topic == "chat/context_tx_committed"
@@ -177,6 +179,23 @@ pub fn is_context_observation(event: &Event) -> bool {
             | TYPE_FILE_CHANGE
             | TYPE_INFER_REQUEST
     )
+}
+
+/// Whether an Assistant-call Event records a model-selected tool action.
+///
+/// Ordinary Assistant text is delivered by `chat/reply` and must not be
+/// duplicated in the Observation stream. A non-empty tool-call list is the
+/// structured equivalent of an Assistant tool-call message in a conventional
+/// message-list Agent: it records what the model chose before the matching
+/// `chat/tool_output` records what the Runtime observed. Both Events remain
+/// independently retireable.
+pub fn assistant_call_has_tool_history(event: &Event) -> bool {
+    event.topic == "chat/assistant_call"
+        && event
+            .payload
+            .get("tool_calls")
+            .and_then(JsonValue::as_array)
+            .is_some_and(|calls| !calls.is_empty())
 }
 
 /// Whether accepting an immutable Event into a newly-created Activation adds
@@ -1114,5 +1133,34 @@ mod tests {
             "integration/github",
             serde_json::json!({}),
         )));
+    }
+
+    #[test]
+    fn assistant_tool_calls_are_observations_without_aging_cognition() {
+        let event = |payload: serde_json::Value| {
+            Event::new(
+                "assistant-call".to_string(),
+                "Agent-Morphz".to_string(),
+                TYPE_AGENT_CALL.to_string(),
+                "chat/assistant_call".to_string(),
+                payload.as_object().cloned().unwrap_or_default(),
+            )
+        };
+        let tool_call = event(serde_json::json!({
+            "tool_calls": [{
+                "id": "call-1",
+                "function": {"name": "read", "arguments": "{\"path\":\"README.md\"}"}
+            }]
+        }));
+        assert!(assistant_call_has_tool_history(&tool_call));
+        assert!(is_context_observation(&tool_call));
+        assert!(!advances_cognitive_clock(&tool_call));
+
+        let ordinary_reply = event(serde_json::json!({
+            "text": "done",
+            "tool_calls": []
+        }));
+        assert!(!assistant_call_has_tool_history(&ordinary_reply));
+        assert!(!is_context_observation(&ordinary_reply));
     }
 }

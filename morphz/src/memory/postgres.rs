@@ -260,6 +260,12 @@ impl PostgresStore {
                     store.enqueue_recall_whole_document_event_backfill(),
                 )
                 .await?;
+            store
+                .run_versioned_migration(
+                    "20260820_01_tool_call_history",
+                    store.migrate_tool_call_history(),
+                )
+                .await?;
             // These indexes were introduced after the component migrations
             // above had already shipped. Keep them in a new migration so an
             // existing PostgreSQL deployment receives the same hot-path
@@ -1254,6 +1260,51 @@ impl PostgresStore {
                 }
             }
         }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn migrate_tool_call_history(&self) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        let active_tool_calls = r#"e.topic = 'chat/assistant_call'
+            AND jsonb_typeof(e.payload->'tool_calls') = 'array'
+            AND jsonb_array_length(e.payload->'tool_calls') > 0
+            AND NOT EXISTS (
+                SELECT 1
+                FROM mind_projections m,
+                     jsonb_array_elements_text(
+                         COALESCE(m.state_json->'retired', '[]'::jsonb)
+                     ) retired(event_id)
+                WHERE m.context_id = e.context_id AND retired.event_id = e.id
+            )"#;
+        sqlx::query(&format!(
+            r#"INSERT INTO session_projections
+               (event_id, context_id, session_id, event_sequence)
+               SELECT e.id, e.context_id, e.session_id, e.sequence
+               FROM events e
+               WHERE e.context_id IS NOT NULL AND e.session_id IS NOT NULL
+                 AND {active_tool_calls}
+               ON CONFLICT(event_id) DO NOTHING"#,
+        ))
+        .execute(&mut *tx)
+        .await?;
+
+        let now = now_text();
+        sqlx::query(&format!(
+            r#"INSERT INTO recall_projection_outbox
+               (context_id, document_kind, document_id, generation, document_json,
+                status, attempts, available_at, claimed_by, claim_expires_at,
+                last_error, created_at, updated_at)
+               SELECT e.context_id, 'event', e.id, GREATEST(e.sequence, 1),
+                      jsonb_build_object('retired', FALSE),
+                      'pending', 0, $1, NULL, NULL, NULL, $1, $1
+               FROM events e
+               WHERE e.context_id IS NOT NULL AND {active_tool_calls}
+               ON CONFLICT(context_id, document_kind, document_id) DO NOTHING"#,
+        ))
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }

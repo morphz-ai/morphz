@@ -347,6 +347,7 @@ fn recall_event_text(event: &Event) -> String {
         .get("text")
         .or_else(|| event.payload.get("delegation"))
         .and_then(|value| value.as_str())
+        .filter(|text| !text.is_empty())
         .map(ToOwned::to_owned)
         .or_else(|| event.payload.get("tool_calls").map(ToString::to_string))
         .unwrap_or_else(|| serde_json::Value::Object(event.payload.clone()).to_string())

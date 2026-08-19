@@ -333,18 +333,19 @@ pub const RECALL_PREVIEW_MAX_CHARS: usize = 500;
 /// lexical memory. Keeping this allow-list small prevents internal duplicate
 /// events and large inspection payloads from dominating Recall.
 pub fn event_has_recall_value(event: &crate::event::Event) -> bool {
-    matches!(
-        event.topic.as_str(),
-        "chat/user_message"
-            | "chat/reply"
-            | "chat/tool_output"
-            | "chat/file_change"
-            | "chat/outbound_message"
-            | "chat/session_signal"
-            | "chat/context_tx_committed"
-            | "runtime/thread_result"
-            | "runtime/delegation_result"
-    )
+    crate::event::assistant_call_has_tool_history(event)
+        || matches!(
+            event.topic.as_str(),
+            "chat/user_message"
+                | "chat/reply"
+                | "chat/tool_output"
+                | "chat/file_change"
+                | "chat/outbound_message"
+                | "chat/session_signal"
+                | "chat/context_tx_committed"
+                | "runtime/thread_result"
+                | "runtime/delegation_result"
+        )
 }
 
 /// Deterministic lexical normalization shared by indexing and querying.

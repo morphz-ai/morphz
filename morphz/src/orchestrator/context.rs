@@ -12791,13 +12791,21 @@ mod tests {
     }
 
     #[test]
-    fn control_plane_events_do_not_feed_the_agent_inbox() {
+    fn tool_call_history_enters_the_inbox_but_control_events_do_not() {
         let assistant_call = Event::new(
             "call:1".to_string(),
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
             "chat/assistant_call".to_string(),
-            serde_json::Map::new(),
+            vec![(
+                "tool_calls".to_string(),
+                json!([{
+                    "id": "tool-call:1",
+                    "function": {"name": "read", "arguments": "{\"path\":\"README.md\"}"}
+                }]),
+            )]
+            .into_iter()
+            .collect(),
         );
         let context_receipt = Event::new(
             "output:ctx".to_string(),
@@ -12849,7 +12857,7 @@ mod tests {
             .collect(),
         );
 
-        assert!(!is_observation(&assistant_call));
+        assert!(is_observation(&assistant_call));
         assert!(!is_observation(&context_receipt));
         assert!(!is_observation(&tool_activity));
         assert!(!is_observation(&reasoning_summary));

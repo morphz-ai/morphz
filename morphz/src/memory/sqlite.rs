@@ -1668,6 +1668,7 @@ impl SqliteStore {
         migrate_session_projections(&pool).await?;
         migrate_event_causal_columns(&pool).await?;
         migrate_recall_projection(&pool).await?;
+        migrate_tool_call_history(&pool).await?;
         migrate_attention_acknowledgements(&pool).await?;
         backfill_objective_wait_dependencies(&pool).await?;
         // Let SQLite refresh only statistics it considers stale after schema
@@ -1695,6 +1696,7 @@ const BOUNDED_READ_MODEL_MIGRATION: &str = "20260816_05_bounded_read_model";
 const RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION: &str = "20260815_01_recall_whole_document_index";
 const RECALL_WHOLE_DOCUMENT_EVENT_BACKFILL_MIGRATION: &str =
     "20260815_02_recall_whole_document_event_backfill";
+const TOOL_CALL_HISTORY_MIGRATION: &str = "20260820_01_tool_call_history";
 
 async fn sqlite_migration_applied(
     pool: &SqlitePool,
@@ -2881,6 +2883,67 @@ async fn migrate_session_projections(
             }
         }
     }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Backfill model-selected tool actions into the same retireable Session and
+/// Recall projections used by their tool results. Canonical Events remain the
+/// authority; this migration only repairs derived read models created before
+/// Assistant tool calls became model-visible execution history.
+async fn migrate_tool_call_history(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut tx = pool.begin().await?;
+    let claimed =
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(TOOL_CALL_HISTORY_MIGRATION)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .execute(&mut *tx)
+            .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(());
+    }
+
+    let active_tool_calls = r#"e.topic = 'chat/assistant_call'
+        AND json_type(e.payload, '$.tool_calls') = 'array'
+        AND json_array_length(json_extract(e.payload, '$.tool_calls')) > 0
+        AND NOT EXISTS (
+            SELECT 1
+            FROM mind_projections m, json_each(
+                COALESCE(json_extract(m.state_json, '$.retired'), '[]')
+            ) retired
+            WHERE m.context_id = e.context_id AND retired.value = e.id
+        )"#;
+    sqlx::query(&format!(
+        r#"INSERT OR IGNORE INTO session_projections
+           (event_id, context_id, session_id, event_sequence)
+           SELECT e.id, e.context_id, e.session_id, e.rowid
+           FROM events e
+           WHERE e.context_id IS NOT NULL AND e.session_id IS NOT NULL
+             AND {active_tool_calls}"#,
+    ))
+    .execute(&mut *tx)
+    .await?;
+
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    sqlx::query(&format!(
+        r#"INSERT OR IGNORE INTO recall_projection_outbox
+           (context_id, document_kind, document_id, generation, document_json,
+            status, attempts, available_at, claimed_by, claim_expires_at,
+            last_error, created_at, updated_at)
+           SELECT e.context_id, 'event', e.id,
+                  CASE WHEN e.rowid > 0 THEN e.rowid ELSE 1 END,
+                  '{{"retired":false}}', 'pending', 0, ?, NULL, NULL, NULL, ?, ?
+           FROM events e
+           WHERE e.context_id IS NOT NULL AND {active_tool_calls}"#,
+    ))
+    .bind(&now)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -33671,6 +33734,141 @@ mod tests {
             .await
             .unwrap(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_call_history_migration_backfills_active_calls_and_preserves_retirement() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let context_id = "tool-history-migration-context";
+        let session_id = "tool-history-migration-session";
+        let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        store
+            .create_test_context(NewCognitiveContext {
+                id: context_id.to_string(),
+                agent_id: "tool-history-migration-agent".to_string(),
+                title: "Tool History Migration".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .initialize_mind_projection(NewMindProjection {
+                context_id: context_id.to_string(),
+                revision: 0,
+                state: serde_json::json!({"version": 0, "frames": [], "retired": []}),
+                state_hash: "tool-history-hash-0".to_string(),
+                head_event_id: None,
+                recall_documents: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let call = |id: &str, tool_name: &str| {
+            Event::new(
+                id.to_string(),
+                "Agent-Morphz".to_string(),
+                crate::event::TYPE_AGENT_CALL.to_string(),
+                "chat/assistant_call".to_string(),
+                serde_json::json!({
+                    "context_id": context_id,
+                    "session_id": session_id,
+                    "attempt_id": format!("attempt-{id}"),
+                    "text": "",
+                    "tool_calls": [{
+                        "id": format!("tool-{id}"),
+                        "function": {"name": tool_name, "arguments": "{}"}
+                    }]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            )
+        };
+        let retired = call("tool-history-retired", "search");
+        let active = call("tool-history-active", "read");
+        store.append(retired.clone()).await.unwrap();
+        store.append(active.clone()).await.unwrap();
+
+        let transaction = Event::new(
+            "tool-history-retire-tx".to_string(),
+            "Agent-Context".to_string(),
+            crate::event::TYPE_CONTEXT_TRANSACTION.to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": context_id})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        store
+            .commit_mind_projection_transaction(
+                &transaction,
+                &[],
+                &SessionProjectionMutation {
+                    retired_event_ids: vec![retired.id.clone()],
+                    restored_event_ids: Vec::new(),
+                },
+                0,
+                NewMindProjection {
+                    context_id: context_id.to_string(),
+                    revision: 1,
+                    state: serde_json::json!({
+                        "version": 1,
+                        "frames": [],
+                        "retired": [retired.id.clone()]
+                    }),
+                    state_hash: "tool-history-hash-1".to_string(),
+                    head_event_id: Some(transaction.id.clone()),
+                    recall_documents: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        sqlx::query("DELETE FROM session_projections WHERE event_id IN (?, ?)")
+            .bind(&retired.id)
+            .bind(&active.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM recall_projection_outbox WHERE document_id IN (?, ?)")
+            .bind(&retired.id)
+            .bind(&active.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
+            .bind(TOOL_CALL_HISTORY_MIGRATION)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.pool.close().await;
+
+        let reopened = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        let projected = reopened
+            .query_session_projections(context_id, &[session_id.to_string()], true)
+            .await
+            .unwrap();
+        assert!(projected.iter().any(|event| event.id == active.id));
+        assert!(projected.iter().all(|event| event.id != retired.id));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM recall_projection_outbox WHERE document_id = ?",
+            )
+            .bind(&active.id)
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM recall_projection_outbox WHERE document_id = ?",
+            )
+            .bind(&retired.id)
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap(),
+            0
         );
     }
 
