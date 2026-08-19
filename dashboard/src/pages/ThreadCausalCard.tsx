@@ -99,6 +99,8 @@ function ExecutionJobRow({
           <div><dt>{t('work.causal.target')}</dt><dd>{job.target_id}</dd></div>
           <div><dt>{t('work.causal.retrySafety')}</dt><dd>{job.retry_safety}</dd></div>
           <div><dt>{t('work.causal.revision')}</dt><dd>r{job.revision}</dd></div>
+          {job.checkpoint_generation != null && <div><dt>{t('work.causal.checkpointGeneration')}</dt><dd>g{job.checkpoint_generation}</dd></div>}
+          {job.checkpoint_due_at && <div><dt>{t('work.causal.checkpointDueAt')}</dt><dd>{formatTime(job.checkpoint_due_at, locale)}</dd></div>}
           {job.claimed_by && <div><dt>{t('work.causal.worker')}</dt><dd>{job.claimed_by}</dd></div>}
         </dl>
         {approval && (

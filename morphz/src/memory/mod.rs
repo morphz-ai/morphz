@@ -2196,6 +2196,12 @@ pub struct ExecutionJobRecord {
     pub cancel_requested_at: Option<DateTime<Utc>>,
     pub cancel_reason: Option<String>,
     pub progress_ref: Option<String>,
+    /// Semantic `check_task_after` checkpoint contract. `checkpoint_generation`
+    /// is deliberately separate from `revision`: heartbeats, claims and other
+    /// unrelated Job mutations bump `revision` but must not arm, validate or
+    /// invalidate a checkpoint Timer.
+    pub checkpoint_generation: Option<u64>,
+    pub checkpoint_due_at: Option<DateTime<Utc>>,
     pub result_event_id: Option<String>,
     /// Durable references to stdout/stderr/artifacts or provider-owned result
     /// objects. Empty output is valid and is represented by an empty vector.
@@ -2225,6 +2231,12 @@ pub struct ExecutionJobMonitorRecord {
     pub progress_ref: Option<String>,
     pub error: Option<String>,
     pub updated_at: DateTime<Utc>,
+    /// Durable `check_task_after` generation. Independent of Job revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_generation: Option<u64>,
+    /// Due instant for the armed background-task checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_due_at: Option<DateTime<Utc>>,
 }
 
 impl From<ExecutionJobRecord> for ExecutionJobMonitorRecord {
@@ -2241,6 +2253,8 @@ impl From<ExecutionJobRecord> for ExecutionJobMonitorRecord {
             progress_ref: job.progress_ref,
             error: job.error,
             updated_at: job.updated_at,
+            checkpoint_generation: job.checkpoint_generation,
+            checkpoint_due_at: job.checkpoint_due_at,
         }
     }
 }
@@ -2494,6 +2508,20 @@ pub enum ExecutionJobMutation {
         reason: String,
     },
     NotFound,
+}
+
+/// Durable result of arming one background-task checkpoint. Callers reconcile
+/// process-local supervision state from this registration instead of trusting
+/// local counters, so a peer or restarted Runtime cannot diverge from the
+/// durable Job/Timer contract.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionJobCheckpointRegistration {
+    pub job_id: String,
+    pub timer_id: String,
+    pub checkpoint_generation: u64,
+    pub due_at: DateTime<Utc>,
+    pub check_after_secs: u64,
+    pub wake_source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4380,6 +4408,93 @@ pub enum SessionSignalClaim {
     ForbiddenPrincipal { principal_id: String },
 }
 
+/// Atomic ingress result for one Runtime-authored background-task wake that
+/// must be escalated from a terminal (or vanished) owning Execution Thread to
+/// the owning Session as a fresh DialogueTurn.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundSessionWakeClaim {
+    Accepted {
+        event: crate::event::Event,
+    },
+    /// Exact replay of an already committed wake; no new DialogueTurn.
+    Existing {
+        event_id: String,
+    },
+    /// The durable checkpoint generation no longer matches (a newer checkpoint
+    /// was armed or the Job advanced); this wake is stale and must be dropped.
+    StaleCheckpoint,
+    ArchivedSession,
+    /// ExecutionJobs carry a Session foreign key, so this is an integrity
+    /// anomaly requiring operator attention, not ordinary suppression.
+    MissingSession,
+    /// The wake named a Context different from the Session registry. The
+    /// checkpoint is closed with an operator-attention audit fact rather than
+    /// retried forever.
+    RouteConflict {
+        registered_context_id: String,
+    },
+    ForbiddenPrincipal {
+        principal_id: String,
+    },
+}
+
+/// Atomic ingress result for one due background checkpoint delivered to its
+/// still-live owning Thread.  The checkpoint CAS, immutable Event, and direct
+/// Thread Signal are one Store transaction: a peer Runtime can therefore
+/// neither deliver an obsolete generation nor leave a cleared Timer paired
+/// with a still-armed Job projection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundThreadWakeClaim {
+    Accepted { event: crate::event::Event },
+    Existing { event_id: String },
+    StaleCheckpoint,
+    MissingThread,
+    InactiveThread { status: String },
+}
+
+/// Build the immutable audit fact that closes a background wake which cannot
+/// be delivered to its owning Session.  Both stores call this while holding
+/// the same transaction that clears the checkpoint (when one exists), so a
+/// crash cannot leave the durable projection cleared without a reason.
+pub(crate) fn background_wake_audit_event(
+    wake: &crate::event::Event,
+    job_id: &str,
+    expected_checkpoint_generation: Option<u64>,
+    outcome: &str,
+    operator_attention: bool,
+) -> crate::event::Event {
+    let id = expected_checkpoint_generation.map_or_else(
+        || format!("background_wake_audit_result_{job_id}"),
+        |generation| format!("background_wake_audit_{job_id}_g{generation}"),
+    );
+    let mut payload = wake.payload.clone();
+    payload.insert("event".to_string(), serde_json::json!(outcome));
+    payload.insert("execution_job_id".to_string(), serde_json::json!(job_id));
+    payload.insert(
+        "suppressed_wake_event_id".to_string(),
+        serde_json::json!(wake.id),
+    );
+    payload.insert(
+        "operator_attention".to_string(),
+        serde_json::json!(operator_attention),
+    );
+    if let Some(generation) = expected_checkpoint_generation {
+        payload.insert(
+            "checkpoint_generation".to_string(),
+            serde_json::json!(generation),
+        );
+    }
+    crate::event::Event {
+        id,
+        sequence: None,
+        timestamp: wake.timestamp,
+        actor: "System-TaskMonitor".to_string(),
+        event_type: crate::event::TYPE_EXCEPTION.to_string(),
+        topic: "runtime/audit".to_string(),
+        payload,
+    }
+}
+
 /// Stable identity of one logical user-message request. The database key says
 /// where the request lives; this digest says what immutable intent that key
 /// names. Generated Event IDs, timestamps, and storage paths are deliberately
@@ -4779,6 +4894,28 @@ pub(crate) fn execution_job_result_topic_matches(tool_name: &str, topic: &str) -
 /// token. This keeps process ownership separate from semantic Thread outcome.
 #[async_trait::async_trait]
 pub trait ExecutionJobStore: Send + Sync {
+    /// Durably arms one background-task checkpoint as a composite Job+Timer
+    /// transaction: validates the Job is nonterminal, increments
+    /// `checkpoint_generation`, writes `checkpoint_due_at`, and upserts the
+    /// physical BackgroundWake Timer in one transaction. `runtime_timers`
+    /// remains the single durable clock source; the Job fields are the
+    /// semantic contract used at dispatch to validate generation and route.
+    async fn register_background_checkpoint(
+        &self,
+        id: &str,
+        check_after_secs: u64,
+        wake_source: &str,
+    ) -> Result<ExecutionJobCheckpointRegistration, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Clears one armed checkpoint only if its generation still matches.
+    /// Used when a typed route intentionally suppresses a stale/undeliverable
+    /// wake instead of creating a DialogueTurn.
+    async fn clear_background_checkpoint(
+        &self,
+        id: &str,
+        expected_generation: u64,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+
     /// Atomically materializes one Runtime-owned direct Artifact Transfer.
     /// Exact replay is idempotent; reuse of any causal identity for different
     /// immutable content is rejected.
@@ -4880,9 +5017,10 @@ pub trait ExecutionJobStore: Send + Sync {
             .collect())
     }
     /// Terminal result outboxes which still need their one deterministic
-    /// directed Signal. Production stores implement this as an anti-join over
-    /// open Threads and `thread_signals`, keeping startup recovery proportional
-    /// to unresolved crash windows rather than all historical Jobs.
+    /// directed Signal or Session fallback. Production stores use indexed
+    /// anti-joins over `thread_signals` and deterministic Runtime Wake/audit
+    /// Event ids, keeping startup recovery proportional to unresolved crash
+    /// windows even when the original Thread is already terminal or missing.
     async fn list_terminal_execution_jobs_needing_signal(
         &self,
         tool_name: &str,
@@ -6353,6 +6491,46 @@ pub trait DeliveryIngressStore: Send + Sync {
         &self,
         event: &crate::event::Event,
     ) -> Result<SessionSignalClaim, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically validates and clears one durable checkpoint generation,
+    /// persists its Event, and appends the direct Signal to a live Thread.
+    async fn claim_background_thread_wake(
+        &self,
+        event: &crate::event::Event,
+        job_id: &str,
+        expected_checkpoint_generation: u64,
+        thread_id: &str,
+    ) -> Result<BackgroundThreadWakeClaim, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically close a checkpoint that typed routing deliberately cannot
+    /// deliver (for example, a terminal supervisor-owned child) and persist
+    /// the immutable suppression reason. `false` means the generation was
+    /// already stale and no audit fact was created.
+    async fn suppress_background_checkpoint(
+        &self,
+        event: &crate::event::Event,
+        job_id: &str,
+        expected_checkpoint_generation: u64,
+        outcome: &str,
+        operator_attention: bool,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically escalate one durable background-task wake into a fresh
+    /// DialogueTurn in the owning Session when the owning Execution Thread is
+    /// terminal or missing. The wake Event itself becomes the new
+    /// `root_turn_id`; the original Thread/Activation are recorded in the
+    /// payload as `source_thread_id`/`source_activation_id`.
+    ///
+    /// When `expected_checkpoint_generation` is `Some`, the same transaction
+    /// validates and clears the Job checkpoint state (`checkpoint_generation`
+    /// must still equal that value). Pass `None` for terminal-result Session
+    /// fallback: that path must not require a live checkpoint generation and
+    /// must not clobber an unrelated armed checkpoint.
+    /// Route resolution, Event persistence, DialogueTurn creation, and any
+    /// checkpoint clear happen in one transaction, removing the TOCTOU window.
+    async fn claim_background_session_wake(
+        &self,
+        event: &crate::event::Event,
+        job_id: &str,
+        expected_checkpoint_generation: Option<u64>,
+    ) -> Result<BackgroundSessionWakeClaim, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Parent/child delegation routing and result handoff.

@@ -526,6 +526,10 @@ pub struct RuntimeOverviewExecutionJob {
     pub progress_ref: Option<String>,
     pub error: Option<String>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_due_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3221,6 +3225,8 @@ impl MorphzRuntime {
             cancel_requested_at: None,
             cancel_reason: None,
             progress_ref: command.progress.clone(),
+            checkpoint_generation: None,
+            checkpoint_due_at: None,
             result_event_id: None,
             result_refs: Vec::new(),
             error: None,
@@ -7599,6 +7605,8 @@ fn runtime_overview_session(
             progress_ref: job.progress_ref.clone(),
             error: job.error.clone(),
             updated_at: job.updated_at,
+            checkpoint_generation: job.checkpoint_generation,
+            checkpoint_due_at: job.checkpoint_due_at,
         })
         .collect::<Vec<_>>();
     let projected_threads = threads
@@ -8639,6 +8647,8 @@ mod tests {
             progress_ref: None,
             error: None,
             updated_at: now,
+            checkpoint_generation: None,
+            checkpoint_due_at: None,
         };
         let overview =
             runtime_overview_session(session, Vec::new(), &[], &[], &[job], &[], &HashMap::new());

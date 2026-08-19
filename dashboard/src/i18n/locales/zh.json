@@ -628,8 +628,10 @@
     "jobStates": {
       "queued": "排队",
       "waiting_approval": "等待审批",
-      "running": "执行中"
+      "running": "执行中",
+      "cancel_requested": "等待终止"
     },
+    "checkpointGeneration": "g{{generation}}",
     "waitKinds": {
       "tool_task": "等待工具任务",
       "delegation": "等待委派",
@@ -1051,6 +1053,8 @@
       "target": "执行目标",
       "retrySafety": "重试安全性",
       "revision": "修订",
+      "checkpointGeneration": "检查点代次",
+      "checkpointDueAt": "检查点到期",
       "worker": "执行节点",
       "result": "物理执行结果",
       "exitCode": "退出码 {{code}}",

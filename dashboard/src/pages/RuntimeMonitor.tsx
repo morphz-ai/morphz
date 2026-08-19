@@ -80,7 +80,7 @@ function WaitCondition({ objective }: { objective: RuntimeOverviewObjective }) {
 }
 
 function ExecutionJobRow({ job }: { job: RuntimeOverviewExecutionJob }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   return (
     <div className="runtime-monitor-job">
       <i data-status={job.status} />
@@ -91,6 +91,17 @@ function ExecutionJobRow({ job }: { job: RuntimeOverviewExecutionJob }) {
       </span>
       <em title={job.target_id}>{shortId(job.target_id, 18)}</em>
       <b>{t(`runtimeMonitor.jobStates.${job.status}`, { defaultValue: job.status })}</b>
+      {(job.checkpoint_due_at || job.checkpoint_generation != null) && (
+        <span className="runtime-monitor-wait" title={job.checkpoint_due_at}>
+          <Clock3 size={10} />
+          {job.checkpoint_generation != null && (
+            <code>{t('runtimeMonitor.checkpointGeneration', { generation: job.checkpoint_generation })}</code>
+          )}
+          {job.checkpoint_due_at && (
+            <time dateTime={job.checkpoint_due_at}>{formatClock(job.checkpoint_due_at, i18n.language)}</time>
+          )}
+        </span>
+      )}
     </div>
   )
 }

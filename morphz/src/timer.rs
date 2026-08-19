@@ -75,6 +75,14 @@ impl TimerEngine {
         Ok(timer)
     }
 
+    /// Wake the dispatcher after a Timer row was committed directly to the
+    /// Store by an owner-side composite transaction instead of `schedule`.
+    /// Without this the engine keeps sleeping on its previously computed
+    /// deadline and a near-term due time is only observed after that sleep.
+    pub fn notify_schedule_changed(&self) {
+        self.wakeup.notify_one();
+    }
+
     pub async fn cancel(&self, id: &str) -> Result<bool, DynError> {
         let cancelled = self.store.cancel_runtime_timer(id).await?;
         if cancelled {

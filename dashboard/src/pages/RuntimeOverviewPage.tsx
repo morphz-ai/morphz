@@ -56,6 +56,8 @@ export interface RuntimeOverviewExecutionJob {
   progress_ref?: string
   error?: string
   updated_at: string
+  checkpoint_generation?: number
+  checkpoint_due_at?: string
 }
 
 export interface RuntimeOverviewObjective {

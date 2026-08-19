@@ -870,6 +870,8 @@ impl SqliteStore {
             cancel_requested_at TEXT,
             cancel_reason TEXT,
             progress_ref TEXT,
+            checkpoint_generation INTEGER CHECK(checkpoint_generation IS NULL OR checkpoint_generation >= 1),
+            checkpoint_due_at TEXT,
             result_event_id TEXT,
             result_refs_json TEXT NOT NULL DEFAULT '[]',
             error TEXT,
@@ -1344,6 +1346,7 @@ impl SqliteStore {
         }
         migrate_execution_targets(&pool).await?;
         migrate_edge_execution(&pool).await?;
+        migrate_execution_job_checkpoints(&pool).await?;
         for (table, column) in [
             ("thread_activations", "initiating_principal_id"),
             ("thread_activations", "dialogue_lane_released_at"),
@@ -2607,6 +2610,40 @@ async fn migrate_attention_acknowledgements(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+const EXECUTION_JOB_CHECKPOINT_MIGRATION: &str = "20260819_01_execution_job_checkpoints";
+
+async fn migrate_execution_job_checkpoints(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Semantic background-checkpoint fields are additive; legacy Jobs keep
+    // running with NULL until their first `check_task_after` arms one.
+    let columns = sqlx::query("PRAGMA table_info(execution_jobs)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<std::collections::HashSet<_>>();
+    if !columns.contains("checkpoint_generation") {
+        sqlx::query(
+            "ALTER TABLE execution_jobs ADD COLUMN checkpoint_generation INTEGER CHECK(checkpoint_generation IS NULL OR checkpoint_generation >= 1)",
+        )
+        .execute(pool)
+        .await?;
+    }
+    if !columns.contains("checkpoint_due_at") {
+        sqlx::query("ALTER TABLE execution_jobs ADD COLUMN checkpoint_due_at TEXT")
+            .execute(pool)
+            .await?;
+    }
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .bind(EXECUTION_JOB_CHECKPOINT_MIGRATION)
+        .bind(&now)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -4783,6 +4820,15 @@ fn execution_job_from_row(
             .map(parse_time),
         cancel_reason: row.get("cancel_reason"),
         progress_ref: row.get("progress_ref"),
+        checkpoint_generation: row
+            .get::<Option<i64>, _>("checkpoint_generation")
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| "Execution Job checkpoint_generation 不能为负数")?,
+        checkpoint_due_at: row
+            .get::<Option<String>, _>("checkpoint_due_at")
+            .as_deref()
+            .map(parse_time),
         result_event_id: row.get("result_event_id"),
         result_refs: serde_json::from_str(&row.get::<String, _>("result_refs_json"))?,
         error: row.get("error"),
@@ -4815,6 +4861,15 @@ fn execution_job_monitor_from_row(
         progress_ref: row.get("progress_ref"),
         error: row.get("error"),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        checkpoint_generation: row
+            .get::<Option<i64>, _>("checkpoint_generation")
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| "Execution Job checkpoint_generation 不能为负数")?,
+        checkpoint_due_at: row
+            .get::<Option<String>, _>("checkpoint_due_at")
+            .as_deref()
+            .map(parse_time),
     })
 }
 
@@ -14570,6 +14625,535 @@ impl DeliveryIngressStore for SqliteStore {
             event: event.clone(),
         })
     }
+
+    async fn claim_background_thread_wake(
+        &self,
+        event: &Event,
+        job_id: &str,
+        expected_checkpoint_generation: u64,
+        thread_id: &str,
+    ) -> Result<crate::memory::BackgroundThreadWakeClaim, Box<dyn std::error::Error + Send + Sync>>
+    {
+        if event.event_type != crate::event::TYPE_TOOL_OUTPUT || event.topic != "chat/tool_output" {
+            return Err("Background Thread Wake Event 类型或 topic 不正确".into());
+        }
+        let expected_generation_sql = i64::try_from(expected_checkpoint_generation)
+            .map_err(|_| "Background Wake checkpoint_generation 超出 SQLite INTEGER 范围")?;
+        let mut tx = self.pool.begin().await?;
+        // One harmless UPDATE acquires SQLite's writer slot and makes the Job
+        // generation read, Thread route decision, Event, Signal, and clear a
+        // single serialized mutation.
+        let locked = sqlx::query("UPDATE execution_jobs SET revision = revision WHERE id = ?")
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+        if locked.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(crate::memory::BackgroundThreadWakeClaim::StaleCheckpoint);
+        }
+        let job = sqlx::query(
+            "SELECT thread_id, context_id, session_id, tool_name, status, checkpoint_generation, checkpoint_due_at \
+             FROM execution_jobs WHERE id = ?",
+        )
+        .bind(job_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if job.get::<String, _>("thread_id") != thread_id
+            || job.get::<String, _>("tool_name") != "exec/background"
+        {
+            return Err(format!(
+                "Background Thread Wake Job '{}' 的 Thread/tool route 不一致",
+                job_id
+            )
+            .into());
+        }
+        let job_context_id = job.get::<String, _>("context_id");
+        let job_session_id = job.get::<String, _>("session_id");
+        for (field, expected) in [
+            ("task_id", job_id),
+            ("thread_id", thread_id),
+            ("context_id", job_context_id.as_str()),
+            ("session_id", job_session_id.as_str()),
+        ] {
+            if event.payload.get(field).and_then(JsonValue::as_str) != Some(expected) {
+                return Err(format!(
+                    "Background Thread Wake Event '{}' 的 {field} 与 Job route 不一致",
+                    event.id
+                )
+                .into());
+            }
+        }
+        if let Some(existing) = sqlx::query(
+            "SELECT s.thread_id, e.actor, e.type, e.topic, e.payload \
+             FROM thread_signals s JOIN events e ON e.id = s.event_id \
+             WHERE s.event_id = ?",
+        )
+        .bind(&event.id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            let existing_thread_id = existing.get::<String, _>("thread_id");
+            if existing_thread_id != thread_id {
+                return Err(format!(
+                    "Background Thread Wake Event '{}' 已路由到不同 Thread",
+                    event.id
+                )
+                .into());
+            }
+            let existing_payload = serde_json::from_str::<serde_json::Map<String, JsonValue>>(
+                &existing.get::<String, _>("payload"),
+            )?;
+            if existing.get::<String, _>("actor") != event.actor
+                || existing.get::<String, _>("type") != event.event_type
+                || existing.get::<String, _>("topic") != event.topic
+                || existing_payload != event.payload
+            {
+                return Err(format!(
+                    "Background Thread Wake Event ID '{}' 已绑定到不同事实",
+                    event.id
+                )
+                .into());
+            }
+            // Heal checkpoint projections created by the pre-atomic path.
+            sqlx::query(
+                "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                 updated_at = ? WHERE id = ? AND checkpoint_generation = ? \
+                 AND checkpoint_due_at IS NOT NULL",
+            )
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .bind(job_id)
+            .bind(expected_generation_sql)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(crate::memory::BackgroundThreadWakeClaim::Existing {
+                event_id: event.id.clone(),
+            });
+        }
+        let generation_matches = job
+            .get::<Option<i64>, _>("checkpoint_generation")
+            .is_some_and(|value| value == expected_generation_sql)
+            && job.get::<Option<String>, _>("checkpoint_due_at").is_some();
+        let status = job.get::<String, _>("status");
+        if !generation_matches
+            || matches!(
+                status.as_str(),
+                "succeeded" | "failed" | "cancelled" | "lost"
+            )
+        {
+            tx.rollback().await?;
+            return Ok(crate::memory::BackgroundThreadWakeClaim::StaleCheckpoint);
+        }
+        let thread_status =
+            sqlx::query_scalar::<_, String>("SELECT status FROM threads WHERE id = ?")
+                .bind(thread_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(thread_status) = thread_status else {
+            tx.rollback().await?;
+            return Ok(crate::memory::BackgroundThreadWakeClaim::MissingThread);
+        };
+        if matches!(thread_status.as_str(), "completed" | "failed" | "cancelled") {
+            tx.rollback().await?;
+            return Ok(crate::memory::BackgroundThreadWakeClaim::InactiveThread {
+                status: thread_status,
+            });
+        }
+
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let cleared = sqlx::query(
+            "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+             updated_at = ? WHERE id = ? AND checkpoint_generation = ? \
+             AND checkpoint_due_at IS NOT NULL",
+        )
+        .bind(&now)
+        .bind(job_id)
+        .bind(expected_generation_sql)
+        .execute(&mut *tx)
+        .await?;
+        if cleared.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(crate::memory::BackgroundThreadWakeClaim::StaleCheckpoint);
+        }
+        append_event_in_transaction(&mut tx, event).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, event, thread_id).await?;
+        tx.commit().await?;
+        Ok(crate::memory::BackgroundThreadWakeClaim::Accepted {
+            event: event.clone(),
+        })
+    }
+
+    async fn suppress_background_checkpoint(
+        &self,
+        event: &Event,
+        job_id: &str,
+        expected_checkpoint_generation: u64,
+        outcome: &str,
+        operator_attention: bool,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_generation_sql = i64::try_from(expected_checkpoint_generation)
+            .map_err(|_| "Background Wake checkpoint_generation 超出 SQLite INTEGER 范围")?;
+        let mut tx = self.pool.begin().await?;
+        let cleared = sqlx::query(
+            "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+             updated_at = ? WHERE id = ? AND checkpoint_generation = ? \
+             AND checkpoint_due_at IS NOT NULL",
+        )
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(job_id)
+        .bind(expected_generation_sql)
+        .execute(&mut *tx)
+        .await?;
+        if cleared.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let audit = crate::memory::background_wake_audit_event(
+            event,
+            job_id,
+            Some(expected_checkpoint_generation),
+            outcome,
+            operator_attention,
+        );
+        append_event_in_transaction(&mut tx, &audit).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    async fn claim_background_session_wake(
+        &self,
+        event: &Event,
+        job_id: &str,
+        expected_checkpoint_generation: Option<u64>,
+    ) -> Result<crate::memory::BackgroundSessionWakeClaim, Box<dyn std::error::Error + Send + Sync>>
+    {
+        if event.event_type != crate::event::TYPE_RUNTIME_WAKE
+            || event.topic != "runtime/background_wake"
+        {
+            return Err("Background Session Wake Event 类型或 topic 不正确".into());
+        }
+        let target_session_id = event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Background Wake 缺少目标 session_id")?;
+        let target_context_id = event
+            .payload
+            .get("context_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Background Wake 缺少目标 context_id")?;
+
+        let mut tx = self.pool.begin().await?;
+        // Lock the Job before trusting any route carried by the Event.  The
+        // caller constructs this payload, but the Store owns the invariant
+        // that a wake can only target the Job's immutable Session/Context.
+        let job_locked = sqlx::query("UPDATE execution_jobs SET revision = revision WHERE id = ?")
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+        if job_locked.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(crate::memory::BackgroundSessionWakeClaim::StaleCheckpoint);
+        }
+        let job_route = sqlx::query(
+            "SELECT session_id, context_id, tool_name FROM execution_jobs WHERE id = ?",
+        )
+        .bind(job_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let registered_session_id = job_route.get::<String, _>("session_id");
+        let registered_context_id = job_route.get::<String, _>("context_id");
+        if job_route.get::<String, _>("tool_name") != "exec/background" {
+            return Err(format!("Background Wake Job '{job_id}' 不是 exec/background").into());
+        }
+        if registered_session_id != target_session_id || registered_context_id != target_context_id
+        {
+            if let Some(generation) = expected_checkpoint_generation {
+                let cleared = sqlx::query(
+                    "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                     updated_at = ? WHERE id = ? AND checkpoint_generation = ? \
+                     AND checkpoint_due_at IS NOT NULL",
+                )
+                .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                .bind(job_id)
+                .bind(i64::try_from(generation)?)
+                .execute(&mut *tx)
+                .await?;
+                if cleared.rows_affected() != 1 {
+                    tx.rollback().await?;
+                    return Ok(crate::memory::BackgroundSessionWakeClaim::StaleCheckpoint);
+                }
+            }
+            let audit = crate::memory::background_wake_audit_event(
+                event,
+                job_id,
+                expected_checkpoint_generation,
+                "background_wake_job_route_conflict",
+                true,
+            );
+            append_event_in_transaction(&mut tx, &audit).await?;
+            tx.commit().await?;
+            return Ok(crate::memory::BackgroundSessionWakeClaim::RouteConflict {
+                registered_context_id,
+            });
+        }
+        // Acquire SQLite's writer before validating mutable Session state so
+        // an archive cannot race this Event + DialogueTurn commit (same
+        // discipline as claim_session_signal).
+        let locked = sqlx::query("UPDATE sessions SET updated_at = updated_at WHERE id = ?")
+            .bind(target_session_id)
+            .execute(&mut *tx)
+            .await?;
+        if locked.rows_affected() != 1 {
+            if let Some(generation) = expected_checkpoint_generation {
+                let cleared = sqlx::query(
+                    "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                     updated_at = ? WHERE id = ? AND checkpoint_generation = ? \
+                     AND checkpoint_due_at IS NOT NULL",
+                )
+                .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                .bind(job_id)
+                .bind(i64::try_from(generation)?)
+                .execute(&mut *tx)
+                .await?;
+                if cleared.rows_affected() != 1 {
+                    tx.rollback().await?;
+                    return Ok(crate::memory::BackgroundSessionWakeClaim::StaleCheckpoint);
+                }
+            }
+            let audit = crate::memory::background_wake_audit_event(
+                event,
+                job_id,
+                expected_checkpoint_generation,
+                "background_wake_session_missing",
+                true,
+            );
+            append_event_in_transaction(&mut tx, &audit).await?;
+            tx.commit().await?;
+            return Ok(crate::memory::BackgroundSessionWakeClaim::MissingSession);
+        }
+        let target_row = sqlx::query(
+            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                      s.created_at, s.updated_at, s.last_activity_at,
+                      sm.attention_state, sm.attention_revision, sm.attention_reason,
+                      sm.attention_changed_at, sm.attention_event_id
+               FROM sessions s
+               JOIN session_mounts sm ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+               WHERE s.id = ?"#,
+        )
+        .bind(target_session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let target = session_from_row(&target_row);
+        if target.context_id != target_context_id {
+            if let Some(generation) = expected_checkpoint_generation {
+                let cleared = sqlx::query(
+                    "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                     updated_at = ? WHERE id = ? AND checkpoint_generation = ? \
+                     AND checkpoint_due_at IS NOT NULL",
+                )
+                .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                .bind(job_id)
+                .bind(i64::try_from(generation)?)
+                .execute(&mut *tx)
+                .await?;
+                if cleared.rows_affected() != 1 {
+                    tx.rollback().await?;
+                    return Ok(crate::memory::BackgroundSessionWakeClaim::StaleCheckpoint);
+                }
+            }
+            let registered_context_id = target.context_id.clone();
+            let audit = crate::memory::background_wake_audit_event(
+                event,
+                job_id,
+                expected_checkpoint_generation,
+                "background_wake_context_route_conflict",
+                true,
+            );
+            append_event_in_transaction(&mut tx, &audit).await?;
+            tx.commit().await?;
+            return Ok(crate::memory::BackgroundSessionWakeClaim::RouteConflict {
+                registered_context_id,
+            });
+        }
+        if target.status == SessionStatus::Archived {
+            if let Some(generation) = expected_checkpoint_generation {
+                let cleared = sqlx::query(
+                    "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                     updated_at = ? WHERE id = ? AND checkpoint_generation = ? \
+                     AND checkpoint_due_at IS NOT NULL",
+                )
+                .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                .bind(job_id)
+                .bind(i64::try_from(generation)?)
+                .execute(&mut *tx)
+                .await?;
+                if cleared.rows_affected() != 1 {
+                    tx.rollback().await?;
+                    return Ok(crate::memory::BackgroundSessionWakeClaim::StaleCheckpoint);
+                }
+            }
+            let audit = crate::memory::background_wake_audit_event(
+                event,
+                job_id,
+                expected_checkpoint_generation,
+                "background_wake_session_archived",
+                false,
+            );
+            append_event_in_transaction(&mut tx, &audit).await?;
+            tx.commit().await?;
+            return Ok(crate::memory::BackgroundSessionWakeClaim::ArchivedSession);
+        }
+        if let Some(principal_id) = event
+            .payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str)
+        {
+            let principal_is_bound = sqlx::query_scalar::<_, i64>(
+                r#"SELECT EXISTS(
+                     SELECT 1 FROM session_principal_bindings
+                     WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL
+                   )"#,
+            )
+            .bind(target_session_id)
+            .bind(principal_id)
+            .fetch_one(&mut *tx)
+            .await?
+                != 0;
+            if !principal_is_bound {
+                if let Some(generation) = expected_checkpoint_generation {
+                    let cleared = sqlx::query(
+                        "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                         updated_at = ? WHERE id = ? AND checkpoint_generation = ? \
+                         AND checkpoint_due_at IS NOT NULL",
+                    )
+                    .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                    .bind(job_id)
+                    .bind(i64::try_from(generation)?)
+                    .execute(&mut *tx)
+                    .await?;
+                    if cleared.rows_affected() != 1 {
+                        tx.rollback().await?;
+                        return Ok(crate::memory::BackgroundSessionWakeClaim::StaleCheckpoint);
+                    }
+                }
+                let audit = crate::memory::background_wake_audit_event(
+                    event,
+                    job_id,
+                    expected_checkpoint_generation,
+                    "background_wake_principal_unbound",
+                    true,
+                );
+                append_event_in_transaction(&mut tx, &audit).await?;
+                tx.commit().await?;
+                return Ok(
+                    crate::memory::BackgroundSessionWakeClaim::ForbiddenPrincipal {
+                        principal_id: principal_id.to_string(),
+                    },
+                );
+            }
+        }
+        // Exact replay is idempotent and must not create another DialogueTurn.
+        if let Some(existing_payload) =
+            sqlx::query_scalar::<_, String>("SELECT payload FROM events WHERE id = ?")
+                .bind(&event.id)
+                .fetch_optional(&mut *tx)
+                .await?
+        {
+            let existing_payload =
+                serde_json::from_str::<serde_json::Map<String, JsonValue>>(&existing_payload)?;
+            if existing_payload != event.payload {
+                return Err(
+                    format!("Background Wake Event ID '{}' 已绑定到不同消息", event.id).into(),
+                );
+            }
+            tx.commit().await?;
+            return Ok(crate::memory::BackgroundSessionWakeClaim::Existing {
+                event_id: event.id.clone(),
+            });
+        }
+        // Generation-guarded checkpoint clear: a concurrently armed newer
+        // checkpoint or a Job that no longer exists must not be clobbered.
+        // Terminal-result Session fallback passes None and must not require a
+        // live checkpoint generation.
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        if let Some(expected_checkpoint_generation) = expected_checkpoint_generation {
+            let expected_generation_sql = i64::try_from(expected_checkpoint_generation)
+                .map_err(|_| "Background Wake checkpoint_generation 超出 SQLite INTEGER 范围")?;
+            let cleared = sqlx::query(
+                "UPDATE execution_jobs
+                    SET revision = revision + 1, checkpoint_due_at = NULL, updated_at = ?
+                  WHERE id = ? AND checkpoint_generation = ?",
+            )
+            .bind(&now)
+            .bind(job_id)
+            .bind(expected_generation_sql)
+            .execute(&mut *tx)
+            .await?;
+            if cleared.rows_affected() != 1 {
+                tx.rollback().await?;
+                return Ok(crate::memory::BackgroundSessionWakeClaim::StaleCheckpoint);
+            }
+        }
+        append_event_in_transaction(&mut tx, event).await?;
+        // The wake Event is its own root: a fresh DialogueTurn that never
+        // carries the terminal Thread's root_turn_id.
+        let principal_id = event
+            .payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str);
+        let thread_id = stable_thread_id(&event.id);
+        sqlx::query(
+            r#"INSERT INTO threads
+               (id, revision, generation, agent_id, context_id, session_id,
+                initiating_principal_id, root_turn_id, kind, status, control_state,
+                executor_kind, lifetime, supervisor_kind, supervisor_id,
+                supervision_generation, completion_contract_json, delivery_status,
+                created_at, updated_at)
+               VALUES (?, 1, 1, ?, ?, ?, ?, ?, 'dialogue_turn', 'open', 'active',
+                       'self', 'durable', 'runtime', 'dialogue-router', 1, '{}',
+                       'none', ?, ?)"#,
+        )
+        .bind(&thread_id)
+        .bind(&target.agent_id)
+        .bind(&target.context_id)
+        .bind(&target.id)
+        .bind(principal_id)
+        .bind(&event.id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let sequence = sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
+            .bind(&event.id)
+            .fetch_one(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"INSERT INTO thread_signals
+               (id, thread_id, thread_generation, event_id, principal_id, sequence, kind,
+                parent_activation_id, status, created_at)
+               VALUES (?, ?, 1, ?, ?, ?, ?, NULL, 'pending', ?)"#,
+        )
+        .bind(stable_thread_signal_id(&event.id))
+        .bind(&thread_id)
+        .bind(&event.id)
+        .bind(principal_id)
+        .bind(sequence)
+        .bind(&event.topic)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
+            .bind(target_session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(crate::memory::BackgroundSessionWakeClaim::Accepted {
+            event: event.clone(),
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -18292,7 +18876,7 @@ impl ExecutionJobStore for SqliteStore {
             return Ok(Vec::new());
         }
         let mut query = QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT id, activation_id, thread_id, context_id, session_id, target_id, tool_name, status, progress_ref, error, updated_at FROM execution_jobs WHERE status IN ('queued', 'waiting_approval', 'running') AND context_id IN (",
+            "SELECT id, activation_id, thread_id, context_id, session_id, target_id, tool_name, status, progress_ref, error, updated_at, checkpoint_generation, checkpoint_due_at FROM execution_jobs WHERE status IN ('queued', 'waiting_approval', 'running') AND context_id IN (",
         );
         let mut separated = query.separated(", ");
         for context_id in context_ids {
@@ -18372,13 +18956,17 @@ impl ExecutionJobStore for SqliteStore {
         let rows = sqlx::query(
             r#"SELECT j.*
                FROM execution_jobs j
-               JOIN threads t ON t.id = j.thread_id AND t.status = 'open'
                WHERE j.tool_name = ?
                  AND j.status IN ('succeeded', 'failed', 'cancelled', 'lost')
                  AND j.result_event_id IS NOT NULL
                  AND NOT EXISTS (
                      SELECT 1 FROM thread_signals s
                      WHERE s.event_id = j.result_event_id
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM events e
+                     WHERE e.id = 'background_wake_result_' || j.id
+                        OR e.id = 'background_wake_audit_result_' || j.id
                  )
                ORDER BY j.finished_at, j.id"#,
         )
@@ -18700,7 +19288,8 @@ impl ExecutionJobStore for SqliteStore {
             sqlx::query(
                 r#"UPDATE execution_jobs
                    SET revision = revision + 1, status = ?, lease_expires_at = NULL,
-                       result_event_id = ?, result_refs_json = ?, error = ?,
+                       checkpoint_due_at = NULL, result_event_id = ?,
+                       result_refs_json = ?, error = ?,
                        exit_code = ?, updated_at = ?, finished_at = ?
                    WHERE id = ? AND revision = ? AND status = 'running'
                      AND claim_token = ?"#,
@@ -18721,7 +19310,8 @@ impl ExecutionJobStore for SqliteStore {
             sqlx::query(
                 r#"UPDATE execution_jobs
                    SET revision = revision + 1, status = ?, lease_expires_at = NULL,
-                       result_event_id = ?, result_refs_json = ?, error = ?,
+                       checkpoint_due_at = NULL, result_event_id = ?,
+                       result_refs_json = ?, error = ?,
                        exit_code = ?, updated_at = ?, finished_at = ?
                    WHERE id = ? AND revision = ?
                      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
@@ -18914,7 +19504,8 @@ impl ExecutionJobStore for SqliteStore {
             sqlx::query(
                 r#"UPDATE execution_jobs
                    SET revision = revision + 1, status = ?, lease_expires_at = NULL,
-                       result_event_id = ?, result_refs_json = ?, error = ?,
+                       checkpoint_due_at = NULL, result_event_id = ?,
+                       result_refs_json = ?, error = ?,
                        exit_code = ?, updated_at = ?, finished_at = ?
                    WHERE id = ? AND revision = ? AND status = 'running'
                      AND claim_token = ?"#,
@@ -18935,7 +19526,8 @@ impl ExecutionJobStore for SqliteStore {
             sqlx::query(
                 r#"UPDATE execution_jobs
                    SET revision = revision + 1, status = ?, lease_expires_at = NULL,
-                       result_event_id = ?, result_refs_json = ?, error = ?,
+                       checkpoint_due_at = NULL, result_event_id = ?,
+                       result_refs_json = ?, error = ?,
                        exit_code = ?, updated_at = ?, finished_at = ?
                    WHERE id = ? AND revision = ?
                      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
@@ -18973,6 +19565,135 @@ impl ExecutionJobStore for SqliteStore {
         let updated = execution_job_from_row(&updated)?;
         tx.commit().await?;
         Ok(ExecutionJobMutation::Updated(updated))
+    }
+
+    async fn register_background_checkpoint(
+        &self,
+        id: &str,
+        check_after_secs: u64,
+        wake_source: &str,
+    ) -> Result<
+        crate::memory::ExecutionJobCheckpointRegistration,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let mut tx = self.pool.begin().await?;
+        // Acquire SQLite's writer slot before reading the revision. Without
+        // this, two concurrent registrations can both take a deferred read
+        // snapshot and one later fails the read-to-write upgrade with BUSY.
+        sqlx::query("UPDATE execution_jobs SET revision = revision WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let row = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("未找到后台 ExecutionJob '{id}'"))?;
+        let current = execution_job_from_row(&row)?;
+        if current.tool_name != "exec/background" {
+            return Err(format!("ExecutionJob '{id}' 不是后台 exec 任务，无法注册检查点").into());
+        }
+        if current.status.is_terminal() {
+            return Err(format!(
+                "后台任务 '{id}' 已经以 {} 结束，无需注册检查点",
+                current.status.as_str()
+            )
+            .into());
+        }
+        let checkpoint_generation = current.checkpoint_generation.unwrap_or(0) + 1;
+        let generation_sql = i64::try_from(checkpoint_generation)
+            .map_err(|_| "Execution Job checkpoint_generation 超出 SQLite INTEGER 范围")?;
+        let revision_sql = i64::try_from(current.revision)
+            .map_err(|_| "Execution Job revision 超出 SQLite INTEGER 范围")?;
+        let due_at = chrono::Utc::now()
+            + chrono::Duration::seconds(i64::try_from(check_after_secs).unwrap_or(i64::MAX));
+        let due_text = due_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let updated = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, checkpoint_generation = ?, checkpoint_due_at = ?,
+                   updated_at = ?
+               WHERE id = ? AND revision = ?
+                 AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
+        )
+        .bind(generation_sql)
+        .bind(&due_text)
+        .bind(&now)
+        .bind(id)
+        .bind(revision_sql)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Err(format!("后台任务 '{id}' 检查点注册发生 revision 冲突，请重试").into());
+        }
+        let timer_id = format!("background-wake:{id}");
+        let payload_json = serde_json::to_string(&serde_json::json!({
+            "task_id": id,
+            "generation": checkpoint_generation,
+            "check_after_secs": check_after_secs,
+            "wake_source": wake_source,
+        }))?;
+        sqlx::query(
+            r#"INSERT INTO runtime_timers
+               (id, generation, kind, owner_id, due_at, status, payload_json,
+                created_at, updated_at)
+               VALUES (?, ?, 'background_wake', ?, ?, 'pending', ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 generation = excluded.generation,
+                 kind = excluded.kind,
+                 owner_id = excluded.owner_id,
+                 due_at = excluded.due_at,
+                 status = 'pending',
+                 payload_json = excluded.payload_json,
+                 claimed_by = NULL,
+                 claim_expires_at = NULL,
+                 last_error = NULL,
+                 updated_at = excluded.updated_at,
+                 fired_at = NULL
+               WHERE excluded.generation > runtime_timers.generation
+                  OR (excluded.generation = runtime_timers.generation
+                      AND runtime_timers.status = 'cancelled')"#,
+        )
+        .bind(&timer_id)
+        .bind(generation_sql)
+        .bind(id)
+        .bind(&due_text)
+        .bind(payload_json)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(crate::memory::ExecutionJobCheckpointRegistration {
+            job_id: id.to_string(),
+            timer_id,
+            checkpoint_generation,
+            due_at,
+            check_after_secs,
+            wake_source: wake_source.to_string(),
+        })
+    }
+
+    async fn clear_background_checkpoint(
+        &self,
+        id: &str,
+        expected_generation: u64,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_generation = i64::try_from(expected_generation)
+            .map_err(|_| "Execution Job checkpoint_generation 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, checkpoint_due_at = NULL, updated_at = ?
+               WHERE id = ? AND checkpoint_generation = ? AND checkpoint_due_at IS NOT NULL"#,
+        )
+        .bind(now)
+        .bind(id)
+        .bind(expected_generation)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn reconcile_execution_job_from_event(
@@ -19045,7 +19766,8 @@ impl ExecutionJobStore for SqliteStore {
         let result = sqlx::query(
             r#"UPDATE execution_jobs
                SET revision = revision + 1, status = ?, lease_expires_at = NULL,
-                   result_event_id = ?, result_refs_json = ?, error = ?,
+                   checkpoint_due_at = NULL, result_event_id = ?,
+                   result_refs_json = ?, error = ?,
                    exit_code = ?, updated_at = ?, finished_at = ?
                WHERE id = ? AND revision = ?
                  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,

@@ -28,6 +28,13 @@ pub const TYPE_INFER_REQUEST: &str = "infer_request";
 /// Assistant delivery: the Runtime routes it into the target Session's own
 /// DialogueTurn and evaluates it there.
 pub const TYPE_SESSION_SIGNAL: &str = "session_signal";
+/// A Runtime-authored wake addressed to the owning Session of a durable
+/// background task whose Execution Thread is no longer reachable (for example
+/// a `check_task_after` checkpoint that came due after the owning Thread
+/// completed). It is deliberately not a user message, a session signal, or a
+/// tool output bound to the old causal route: the Event itself becomes the
+/// fresh DialogueTurn root in the target Session.
+pub const TYPE_RUNTIME_WAKE: &str = "runtime_wake";
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 

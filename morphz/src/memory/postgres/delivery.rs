@@ -1,7 +1,10 @@
-use super::{append_event_in_tx, now_text, PostgresStore, StoreError};
-use crate::event::{Event, TYPE_SESSION_SIGNAL};
+use super::{
+    append_direct_thread_signal_in_tx, append_event_in_tx, now_text, PostgresStore, StoreError,
+};
+use crate::event::{Event, TYPE_RUNTIME_WAKE, TYPE_SESSION_SIGNAL};
 use crate::memory::{
-    message_request_fingerprint, stable_thread_id, stable_thread_signal_id, DeliveryIngressStore,
+    message_request_fingerprint, stable_thread_id, stable_thread_signal_id,
+    BackgroundSessionWakeClaim, BackgroundThreadWakeClaim, DeliveryIngressStore,
     InterruptedDialogueTurn, MessageClaim, MessageDispatchMode, SessionSignalClaim,
     DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
@@ -863,6 +866,508 @@ impl DeliveryIngressStore for PostgresStore {
             .await?;
         tx.commit().await?;
         Ok(SessionSignalClaim::Accepted {
+            event: event.clone(),
+        })
+    }
+
+    /// SQLite 对等的原子升级入口：路由校验、Event 持久化、新 DialogueTurn
+    /// 创建与检查点状态清除在同一事务内完成，消除 TOCTOU。Postgres 没有
+    /// session_mounts 表，路由锁与 claim_session_signal 一致采用
+    /// SELECT ... FOR UPDATE。Wake Event 自身成为新 root_turn_id，原
+    /// Thread/Activation 仅记入 payload 的 source_thread_id /
+    /// source_activation_id。
+    async fn claim_background_thread_wake(
+        &self,
+        event: &Event,
+        job_id: &str,
+        expected_checkpoint_generation: u64,
+        thread_id: &str,
+    ) -> Result<BackgroundThreadWakeClaim, StoreError> {
+        if event.event_type != crate::event::TYPE_TOOL_OUTPUT || event.topic != "chat/tool_output" {
+            return Err("Background Thread Wake Event 类型或 topic 不正确".into());
+        }
+        let expected_generation_sql = i64::try_from(expected_checkpoint_generation)?;
+        let mut tx = self.pool.begin().await?;
+        let job = sqlx::query(
+            "SELECT thread_id, context_id, session_id, tool_name, status, checkpoint_generation, checkpoint_due_at \
+             FROM execution_jobs WHERE id = $1 FOR UPDATE",
+        )
+        .bind(job_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(job) = job else {
+            tx.rollback().await?;
+            return Ok(BackgroundThreadWakeClaim::StaleCheckpoint);
+        };
+        if job.get::<String, _>("thread_id") != thread_id
+            || job.get::<String, _>("tool_name") != "exec/background"
+        {
+            return Err(format!(
+                "Background Thread Wake Job '{}' 的 Thread/tool route 不一致",
+                job_id
+            )
+            .into());
+        }
+        let job_context_id = job.get::<String, _>("context_id");
+        let job_session_id = job.get::<String, _>("session_id");
+        for (field, expected) in [
+            ("task_id", job_id),
+            ("thread_id", thread_id),
+            ("context_id", job_context_id.as_str()),
+            ("session_id", job_session_id.as_str()),
+        ] {
+            if event.payload.get(field).and_then(JsonValue::as_str) != Some(expected) {
+                return Err(format!(
+                    "Background Thread Wake Event '{}' 的 {field} 与 Job route 不一致",
+                    event.id
+                )
+                .into());
+            }
+        }
+        if let Some(existing) = sqlx::query(
+            "SELECT s.thread_id, e.actor, e.type, e.topic, e.payload \
+             FROM thread_signals s JOIN events e ON e.id = s.event_id \
+             WHERE s.event_id = $1",
+        )
+        .bind(&event.id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            let existing_thread_id = existing.get::<String, _>("thread_id");
+            if existing_thread_id != thread_id {
+                return Err(format!(
+                    "Background Thread Wake Event '{}' 已路由到不同 Thread",
+                    event.id
+                )
+                .into());
+            }
+            if existing.get::<String, _>("actor") != event.actor
+                || existing.get::<String, _>("type") != event.event_type
+                || existing.get::<String, _>("topic") != event.topic
+                || existing.get::<JsonValue, _>("payload")
+                    != JsonValue::Object(event.payload.clone())
+            {
+                return Err(format!(
+                    "Background Thread Wake Event ID '{}' 已绑定到不同事实",
+                    event.id
+                )
+                .into());
+            }
+            sqlx::query(
+                "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                 updated_at = $1 WHERE id = $2 AND checkpoint_generation = $3 \
+                 AND checkpoint_due_at IS NOT NULL",
+            )
+            .bind(now_text())
+            .bind(job_id)
+            .bind(expected_generation_sql)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(BackgroundThreadWakeClaim::Existing {
+                event_id: event.id.clone(),
+            });
+        }
+        let generation_matches = job
+            .get::<Option<i64>, _>("checkpoint_generation")
+            .is_some_and(|value| value == expected_generation_sql)
+            && job.get::<Option<String>, _>("checkpoint_due_at").is_some();
+        let status = job.get::<String, _>("status");
+        if !generation_matches
+            || matches!(
+                status.as_str(),
+                "succeeded" | "failed" | "cancelled" | "lost"
+            )
+        {
+            tx.rollback().await?;
+            return Ok(BackgroundThreadWakeClaim::StaleCheckpoint);
+        }
+        let thread_status =
+            sqlx::query_scalar::<_, String>("SELECT status FROM threads WHERE id = $1 FOR SHARE")
+                .bind(thread_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(thread_status) = thread_status else {
+            tx.rollback().await?;
+            return Ok(BackgroundThreadWakeClaim::MissingThread);
+        };
+        if matches!(thread_status.as_str(), "completed" | "failed" | "cancelled") {
+            tx.rollback().await?;
+            return Ok(BackgroundThreadWakeClaim::InactiveThread {
+                status: thread_status,
+            });
+        }
+        let cleared = sqlx::query(
+            "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+             updated_at = $1 WHERE id = $2 AND checkpoint_generation = $3 \
+             AND checkpoint_due_at IS NOT NULL",
+        )
+        .bind(now_text())
+        .bind(job_id)
+        .bind(expected_generation_sql)
+        .execute(&mut *tx)
+        .await?;
+        if cleared.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(BackgroundThreadWakeClaim::StaleCheckpoint);
+        }
+        if !append_event_in_tx(&mut tx, event).await? {
+            return Err(format!(
+                "Background Thread Wake Event '{}' 在原子提交期间发生冲突",
+                event.id
+            )
+            .into());
+        }
+        append_direct_thread_signal_in_tx(&mut tx, event, thread_id).await?;
+        tx.commit().await?;
+        Ok(BackgroundThreadWakeClaim::Accepted {
+            event: event.clone(),
+        })
+    }
+
+    async fn suppress_background_checkpoint(
+        &self,
+        event: &Event,
+        job_id: &str,
+        expected_checkpoint_generation: u64,
+        outcome: &str,
+        operator_attention: bool,
+    ) -> Result<bool, StoreError> {
+        let expected_generation_sql = i64::try_from(expected_checkpoint_generation)?;
+        let mut tx = self.pool.begin().await?;
+        let cleared = sqlx::query(
+            "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+             updated_at = $1 WHERE id = $2 AND checkpoint_generation = $3 \
+             AND checkpoint_due_at IS NOT NULL",
+        )
+        .bind(now_text())
+        .bind(job_id)
+        .bind(expected_generation_sql)
+        .execute(&mut *tx)
+        .await?;
+        if cleared.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let audit = crate::memory::background_wake_audit_event(
+            event,
+            job_id,
+            Some(expected_checkpoint_generation),
+            outcome,
+            operator_attention,
+        );
+        append_event_in_tx(&mut tx, &audit).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    async fn claim_background_session_wake(
+        &self,
+        event: &Event,
+        job_id: &str,
+        expected_checkpoint_generation: Option<u64>,
+    ) -> Result<BackgroundSessionWakeClaim, StoreError> {
+        if event.event_type != TYPE_RUNTIME_WAKE || event.topic != "runtime/background_wake" {
+            return Err("Background Session Wake Event 类型或 topic 不正确".into());
+        }
+        let target_session_id = event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Background Wake 缺少目标 session_id")?;
+        let target_context_id = event
+            .payload
+            .get("context_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Background Wake 缺少目标 context_id")?;
+
+        let mut tx = self.pool.begin().await?;
+        let job_route = sqlx::query(
+            "SELECT session_id, context_id, tool_name FROM execution_jobs WHERE id = $1 FOR UPDATE",
+        )
+        .bind(job_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(job_route) = job_route else {
+            tx.rollback().await?;
+            return Ok(BackgroundSessionWakeClaim::StaleCheckpoint);
+        };
+        let registered_session_id = job_route.get::<String, _>("session_id");
+        let registered_context_id = job_route.get::<String, _>("context_id");
+        if job_route.get::<String, _>("tool_name") != "exec/background" {
+            return Err(format!("Background Wake Job '{job_id}' 不是 exec/background").into());
+        }
+        if registered_session_id != target_session_id || registered_context_id != target_context_id
+        {
+            if let Some(generation) = expected_checkpoint_generation {
+                let cleared = sqlx::query(
+                    "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                     updated_at = $1 WHERE id = $2 AND checkpoint_generation = $3 \
+                     AND checkpoint_due_at IS NOT NULL",
+                )
+                .bind(now_text())
+                .bind(job_id)
+                .bind(i64::try_from(generation)?)
+                .execute(&mut *tx)
+                .await?;
+                if cleared.rows_affected() != 1 {
+                    tx.rollback().await?;
+                    return Ok(BackgroundSessionWakeClaim::StaleCheckpoint);
+                }
+            }
+            let audit = crate::memory::background_wake_audit_event(
+                event,
+                job_id,
+                expected_checkpoint_generation,
+                "background_wake_job_route_conflict",
+                true,
+            );
+            append_event_in_tx(&mut tx, &audit).await?;
+            tx.commit().await?;
+            return Ok(BackgroundSessionWakeClaim::RouteConflict {
+                registered_context_id,
+            });
+        }
+        let target = sqlx::query(
+            "SELECT agent_id, context_id, status FROM sessions WHERE id = $1 FOR UPDATE",
+        )
+        .bind(target_session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(target) = target else {
+            if let Some(generation) = expected_checkpoint_generation {
+                let cleared = sqlx::query(
+                    "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                     updated_at = $1 WHERE id = $2 AND checkpoint_generation = $3 \
+                     AND checkpoint_due_at IS NOT NULL",
+                )
+                .bind(now_text())
+                .bind(job_id)
+                .bind(i64::try_from(generation)?)
+                .execute(&mut *tx)
+                .await?;
+                if cleared.rows_affected() != 1 {
+                    tx.rollback().await?;
+                    return Ok(BackgroundSessionWakeClaim::StaleCheckpoint);
+                }
+            }
+            let audit = crate::memory::background_wake_audit_event(
+                event,
+                job_id,
+                expected_checkpoint_generation,
+                "background_wake_session_missing",
+                true,
+            );
+            append_event_in_tx(&mut tx, &audit).await?;
+            tx.commit().await?;
+            return Ok(BackgroundSessionWakeClaim::MissingSession);
+        };
+        let target_agent_id = target.get::<String, _>("agent_id");
+        let target_registry_context_id = target.get::<String, _>("context_id");
+        if target_registry_context_id != target_context_id {
+            if let Some(generation) = expected_checkpoint_generation {
+                let cleared = sqlx::query(
+                    "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                     updated_at = $1 WHERE id = $2 AND checkpoint_generation = $3 \
+                     AND checkpoint_due_at IS NOT NULL",
+                )
+                .bind(now_text())
+                .bind(job_id)
+                .bind(i64::try_from(generation)?)
+                .execute(&mut *tx)
+                .await?;
+                if cleared.rows_affected() != 1 {
+                    tx.rollback().await?;
+                    return Ok(BackgroundSessionWakeClaim::StaleCheckpoint);
+                }
+            }
+            let audit = crate::memory::background_wake_audit_event(
+                event,
+                job_id,
+                expected_checkpoint_generation,
+                "background_wake_context_route_conflict",
+                true,
+            );
+            append_event_in_tx(&mut tx, &audit).await?;
+            tx.commit().await?;
+            return Ok(BackgroundSessionWakeClaim::RouteConflict {
+                registered_context_id: target_registry_context_id,
+            });
+        }
+        if target.get::<String, _>("status") == "archived" {
+            if let Some(generation) = expected_checkpoint_generation {
+                let cleared = sqlx::query(
+                    "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                     updated_at = $1 WHERE id = $2 AND checkpoint_generation = $3 \
+                     AND checkpoint_due_at IS NOT NULL",
+                )
+                .bind(now_text())
+                .bind(job_id)
+                .bind(i64::try_from(generation)?)
+                .execute(&mut *tx)
+                .await?;
+                if cleared.rows_affected() != 1 {
+                    tx.rollback().await?;
+                    return Ok(BackgroundSessionWakeClaim::StaleCheckpoint);
+                }
+            }
+            let audit = crate::memory::background_wake_audit_event(
+                event,
+                job_id,
+                expected_checkpoint_generation,
+                "background_wake_session_archived",
+                false,
+            );
+            append_event_in_tx(&mut tx, &audit).await?;
+            tx.commit().await?;
+            return Ok(BackgroundSessionWakeClaim::ArchivedSession);
+        }
+        if let Some(principal_id) = event
+            .payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str)
+        {
+            let principal_is_bound = sqlx::query_scalar::<_, String>(
+                r#"SELECT principal_id FROM session_principal_bindings
+                   WHERE session_id = $1 AND principal_id = $2 AND unbound_at IS NULL
+                   FOR SHARE"#,
+            )
+            .bind(target_session_id)
+            .bind(principal_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+            if !principal_is_bound {
+                if let Some(generation) = expected_checkpoint_generation {
+                    let cleared = sqlx::query(
+                        "UPDATE execution_jobs SET revision = revision + 1, checkpoint_due_at = NULL, \
+                         updated_at = $1 WHERE id = $2 AND checkpoint_generation = $3 \
+                         AND checkpoint_due_at IS NOT NULL",
+                    )
+                    .bind(now_text())
+                    .bind(job_id)
+                    .bind(i64::try_from(generation)?)
+                    .execute(&mut *tx)
+                    .await?;
+                    if cleared.rows_affected() != 1 {
+                        tx.rollback().await?;
+                        return Ok(BackgroundSessionWakeClaim::StaleCheckpoint);
+                    }
+                }
+                let audit = crate::memory::background_wake_audit_event(
+                    event,
+                    job_id,
+                    expected_checkpoint_generation,
+                    "background_wake_principal_unbound",
+                    true,
+                );
+                append_event_in_tx(&mut tx, &audit).await?;
+                tx.commit().await?;
+                return Ok(BackgroundSessionWakeClaim::ForbiddenPrincipal {
+                    principal_id: principal_id.to_string(),
+                });
+            }
+        }
+        // Exact replay is idempotent and must not create another DialogueTurn.
+        if let Some(existing_payload) =
+            sqlx::query_scalar::<_, JsonValue>("SELECT payload FROM events WHERE id = $1")
+                .bind(&event.id)
+                .fetch_optional(&mut *tx)
+                .await?
+        {
+            if existing_payload != JsonValue::Object(event.payload.clone()) {
+                return Err(
+                    format!("Background Wake Event ID '{}' 已绑定到不同消息", event.id).into(),
+                );
+            }
+            tx.commit().await?;
+            return Ok(BackgroundSessionWakeClaim::Existing {
+                event_id: event.id.clone(),
+            });
+        }
+        // Generation-guarded checkpoint clear: a concurrently armed newer
+        // checkpoint or a Job that no longer exists must not be clobbered.
+        // Terminal-result Session fallback passes None and must not require a
+        // live checkpoint generation.
+        if let Some(expected_checkpoint_generation) = expected_checkpoint_generation {
+            let expected_generation_sql = i64::try_from(expected_checkpoint_generation)
+                .map_err(|_| "Background Wake checkpoint_generation 超出 INTEGER 范围")?;
+            let cleared = sqlx::query(
+                "UPDATE execution_jobs
+                    SET revision = revision + 1, checkpoint_due_at = NULL, updated_at = $1
+                  WHERE id = $2 AND checkpoint_generation = $3",
+            )
+            .bind(now_text())
+            .bind(job_id)
+            .bind(expected_generation_sql)
+            .execute(&mut *tx)
+            .await?;
+            if cleared.rows_affected() != 1 {
+                tx.rollback().await?;
+                return Ok(BackgroundSessionWakeClaim::StaleCheckpoint);
+            }
+        }
+        if !append_event_in_tx(&mut tx, event).await? {
+            return Err(format!(
+                "Background Wake Event '{}' 在原子提交期间发生冲突",
+                event.id
+            )
+            .into());
+        }
+        // The wake Event is its own root: a fresh DialogueTurn that never
+        // carries the terminal Thread's root_turn_id.
+        let principal_id = event
+            .payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str);
+        let now = now_text();
+        let thread_id = stable_thread_id(&event.id);
+        sqlx::query(
+            r#"INSERT INTO threads
+               (id, revision, generation, agent_id, context_id, session_id,
+                initiating_principal_id, root_turn_id, kind, status, control_state,
+                executor_kind, lifetime, supervisor_kind, supervisor_id,
+                supervision_generation, completion_contract_json, delivery_status,
+                created_at, updated_at)
+               VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'dialogue_turn', 'open',
+                       'active', 'self', 'durable', 'runtime', 'dialogue-router', 1,
+                       '{}'::jsonb, 'none', $7, $7)"#,
+        )
+        .bind(&thread_id)
+        .bind(&target_agent_id)
+        .bind(&target_registry_context_id)
+        .bind(target_session_id)
+        .bind(principal_id)
+        .bind(&event.id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let sequence: i64 = sqlx::query_scalar("SELECT sequence FROM events WHERE id = $1")
+            .bind(&event.id)
+            .fetch_one(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"INSERT INTO thread_signals
+               (id, thread_id, thread_generation, event_id, principal_id, sequence, kind,
+                parent_activation_id, status, created_at)
+               VALUES ($1, $2, 1, $3, $4, $5, $6, NULL, 'pending', $7)"#,
+        )
+        .bind(stable_thread_signal_id(&event.id))
+        .bind(&thread_id)
+        .bind(&event.id)
+        .bind(principal_id)
+        .bind(sequence)
+        .bind(&event.topic)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE sessions SET updated_at = $1, last_activity_at = $1 WHERE id = $2")
+            .bind(&now)
+            .bind(target_session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(BackgroundSessionWakeClaim::Accepted {
             event: event.clone(),
         })
     }

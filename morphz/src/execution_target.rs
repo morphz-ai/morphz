@@ -6130,6 +6130,8 @@ mod tests {
             cancel_requested_at: None,
             cancel_reason: None,
             progress_ref: None,
+            checkpoint_generation: None,
+            checkpoint_due_at: None,
             result_event_id: None,
             result_refs: Vec::new(),
             error: None,

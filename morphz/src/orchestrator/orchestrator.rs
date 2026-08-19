@@ -12,7 +12,7 @@ use crate::approval_authority::stable_approval_identity;
 use crate::config::OrchestratorConfig;
 use crate::event::{
     DurableEventDeliveryQueue, Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_INFER_REQUEST,
-    TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
+    TYPE_RUNTIME_WAKE, TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::execution::{
     ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
@@ -5710,6 +5710,7 @@ impl Orchestrator {
         }
         if event.event_type != TYPE_USER_MESSAGE
             && event.event_type != TYPE_SESSION_SIGNAL
+            && event.event_type != TYPE_RUNTIME_WAKE
             && event.event_type != TYPE_TOOL_OUTPUT
             && event.event_type != TYPE_INFER_REQUEST
             && event.topic != "runtime/action_group_settled"
@@ -5862,7 +5863,7 @@ impl Orchestrator {
         if let Some(cancelled_at) = self.cancelled_at.get(&session_id).map(|value| *value) {
             if matches!(
                 event.event_type.as_str(),
-                TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+                TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL | TYPE_RUNTIME_WAKE
             ) && event.timestamp > cancelled_at
             {
                 // A later directed user or internal coordination message
@@ -17203,7 +17204,7 @@ fn legacy_plan_effect_sequence(
 fn is_dialogue_trigger(event: &Event) -> bool {
     matches!(
         event.event_type.as_str(),
-        TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+        TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL | TYPE_RUNTIME_WAKE
     ) || event.topic == "chat/dialogue_retry"
 }
 

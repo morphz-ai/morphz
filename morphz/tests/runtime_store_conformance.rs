@@ -6236,6 +6236,682 @@ where
     );
 }
 
+fn background_wake_event(
+    id: &str,
+    session_id: &str,
+    job_id: &str,
+    generation: u64,
+    wake_kind: &str,
+) -> Event {
+    Event::new(
+        id.to_string(),
+        "System-TaskMonitor".to_string(),
+        morphz::event::TYPE_RUNTIME_WAKE.to_string(),
+        "runtime/background_wake".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": session_id,
+            "task_id": job_id,
+            "checkpoint_generation": generation,
+            "wake_kind": wake_kind,
+            "source_thread_id": "conformance-thread",
+            "source_activation_id": "conformance-activation",
+            "event": "background_task_check_due"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    )
+}
+
+/// One shared contract for the durable `check_task_after` checkpoint and the
+/// Thread -> Session wake upgrade. Both backends run this helper so parity is
+/// proven by construction rather than by reading two implementations.
+async fn assert_background_wake_checkpoint_conformance<S>(store: Arc<S>)
+where
+    S: morphz::memory::RuntimeStore + 'static,
+{
+    let mut specification = execution_job("conformance-wake-job", "tool-call-wake");
+    specification.tool_name = "exec/background".to_string();
+    let created = store.create_execution_job(specification).await.unwrap();
+    assert_eq!(created.checkpoint_generation, None);
+    assert_eq!(created.checkpoint_due_at, None);
+
+    // Direct delivery has the same atomic contract as Session escalation.
+    // This separate Job lets both backends prove Event + Signal + generation
+    // clear without consuming the Session-fallback fixture below.
+    let direct_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-wake-direct-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: "root-conformance-wake-direct".to_string(),
+            kind: ThreadKind::Execution,
+            executor_kind: "runtime".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::legacy(),
+        })
+        .await
+        .unwrap();
+    let direct_activation = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "conformance-wake-direct-activation".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            initiating_principal_id: None,
+            trigger_event_id: "trigger-conformance-wake-direct".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "conformance".to_string(),
+            parent_activation_id: None,
+            root_turn_id: direct_thread.root_turn_id.clone(),
+        })
+        .await
+        .unwrap();
+    let mut direct_specification =
+        execution_job("conformance-wake-direct-job", "tool-call-wake-direct");
+    direct_specification.tool_name = "exec/background".to_string();
+    direct_specification.thread_id = direct_thread.id.clone();
+    direct_specification.activation_id = direct_activation.id.clone();
+    let direct_job = store
+        .create_execution_job(direct_specification)
+        .await
+        .unwrap();
+    let direct_registration = store
+        .register_background_checkpoint(&direct_job.id, 60, "conformance-direct")
+        .await
+        .unwrap();
+    let direct_event = Event::new(
+        "conformance-wake-direct".to_string(),
+        "System-TaskMonitor".to_string(),
+        morphz::event::TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        json!({
+            "context_id": direct_job.context_id,
+            "session_id": direct_job.session_id,
+            "thread_id": direct_job.thread_id,
+            "activation_id": direct_job.activation_id,
+            "tool_call_id": direct_job.tool_call_id,
+            "tool_name": direct_job.tool_name,
+            "task_id": direct_job.id,
+            "event": "background_task_check_due"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(matches!(
+        store
+            .claim_background_thread_wake(
+                &direct_event,
+                &direct_job.id,
+                direct_registration.checkpoint_generation,
+                &direct_job.thread_id,
+            )
+            .await
+            .unwrap(),
+        morphz::memory::BackgroundThreadWakeClaim::Accepted { .. }
+    ));
+    assert!(store
+        .get_execution_job(&direct_job.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .checkpoint_due_at
+        .is_none());
+    assert!(matches!(
+        store
+            .claim_background_thread_wake(
+                &direct_event,
+                &direct_job.id,
+                direct_registration.checkpoint_generation,
+                &direct_job.thread_id,
+            )
+            .await
+            .unwrap(),
+        morphz::memory::BackgroundThreadWakeClaim::Existing { .. }
+    ));
+    let mut conflicting_direct_event = direct_event.clone();
+    conflicting_direct_event
+        .payload
+        .insert("event".to_string(), json!("different_checkpoint_payload"));
+    assert!(
+        store
+            .claim_background_thread_wake(
+                &conflicting_direct_event,
+                &direct_job.id,
+                direct_registration.checkpoint_generation,
+                &direct_job.thread_id,
+            )
+            .await
+            .is_err(),
+        "an idempotent Thread wake must validate immutable Event content, not only its route"
+    );
+    assert_eq!(
+        store
+            .list_context_thread_signals("conformance-context", None)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|signal| signal.event_id == direct_event.id)
+            .count(),
+        1
+    );
+
+    // 1. Arming is monotonic in `checkpoint_generation` and keeps exactly one
+    //    durable Timer row; `runtime_timers` stays the single physical clock.
+    let first = store
+        .register_background_checkpoint(&created.id, 60, "conformance")
+        .await
+        .unwrap();
+    assert_eq!(first.checkpoint_generation, 1);
+    let second = store
+        .register_background_checkpoint(&created.id, 90, "conformance")
+        .await
+        .unwrap();
+    assert_eq!(second.checkpoint_generation, 2);
+    assert_eq!(
+        second.timer_id, first.timer_id,
+        "one background Job must own exactly one durable Timer"
+    );
+    assert_eq!(
+        store
+            .list_runtime_timers(None)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|timer| timer.id == first.timer_id)
+            .count(),
+        1,
+        "re-arming must upsert the same Timer instead of creating a second one"
+    );
+    let timer = store
+        .get_runtime_timer(&first.timer_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(timer.generation, 2);
+    assert_eq!(timer.kind, RuntimeTimerKind::BackgroundWake);
+    assert_eq!(timer.status, RuntimeTimerStatus::Pending);
+    let armed = store.get_execution_job(&created.id).await.unwrap().unwrap();
+    assert_eq!(armed.checkpoint_generation, Some(2));
+    assert!(armed.checkpoint_due_at.is_some());
+
+    // 2. A superseded generation must converge silently: no Event, no Thread.
+    let stale = background_wake_event(
+        "conformance-wake-stale",
+        "conformance-session",
+        &created.id,
+        1,
+        "checkpoint",
+    );
+    assert!(matches!(
+        store
+            .claim_background_session_wake(&stale, &created.id, Some(1))
+            .await
+            .unwrap(),
+        morphz::memory::BackgroundSessionWakeClaim::StaleCheckpoint
+    ));
+    assert!(store
+        .query(QueryFilter {
+            event_id: Some(stale.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+
+    // 3. The live generation upgrades the terminal Thread to a fresh
+    //    DialogueTurn rooted at the wake Event and clears the checkpoint.
+    let due = background_wake_event(
+        "conformance-wake-due",
+        "conformance-session",
+        &created.id,
+        2,
+        "checkpoint",
+    );
+    assert!(matches!(
+        store
+            .claim_background_session_wake(&due, &created.id, Some(2))
+            .await
+            .unwrap(),
+        morphz::memory::BackgroundSessionWakeClaim::Accepted { .. }
+    ));
+    let woken = store
+        .get_thread_by_root(&due.id)
+        .await
+        .unwrap()
+        .expect("an accepted Background Wake must create its own DialogueTurn");
+    assert_eq!(woken.session_id, "conformance-session");
+    assert_eq!(woken.kind, ThreadKind::DialogueTurn);
+    assert_eq!(
+        woken.root_turn_id, due.id,
+        "the wake Event itself must become the new root turn"
+    );
+    assert_eq!(
+        store
+            .list_context_thread_signals("conformance-context", None)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|signal| signal.event_id == due.id)
+            .count(),
+        1
+    );
+    let cleared = store.get_execution_job(&created.id).await.unwrap().unwrap();
+    assert_eq!(cleared.checkpoint_generation, Some(2));
+    assert_eq!(
+        cleared.checkpoint_due_at, None,
+        "a delivered checkpoint must clear its due instant in the same transaction"
+    );
+
+    // 4. Exact replay covers the committed-Event-but-unfired-Timer crash
+    //    window: idempotent, and never a second DialogueTurn.
+    assert!(matches!(
+        store
+            .claim_background_session_wake(&due, &created.id, Some(2))
+            .await
+            .unwrap(),
+        morphz::memory::BackgroundSessionWakeClaim::Existing { event_id } if event_id == due.id
+    ));
+    assert_eq!(
+        store
+            .list_context_thread_signals("conformance-context", None)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|signal| signal.event_id == due.id)
+            .count(),
+        1,
+        "replayed wake must not create a second Thread Signal"
+    );
+
+    // Deliberate typed suppression closes the same generation and records its
+    // reason in the very same Store transaction.
+    let suppressed_registration = store
+        .register_background_checkpoint(&direct_job.id, 60, "conformance-suppressed")
+        .await
+        .unwrap();
+    let suppressed_event = Event::new(
+        "conformance-wake-suppressed".to_string(),
+        "System-TaskMonitor".to_string(),
+        morphz::event::TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        json!({"task_id": direct_job.id, "event": "background_task_check_due"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    assert!(store
+        .suppress_background_checkpoint(
+            &suppressed_event,
+            &direct_job.id,
+            suppressed_registration.checkpoint_generation,
+            "background_checkpoint_supervisor_owned_child",
+            false,
+        )
+        .await
+        .unwrap());
+    let suppression_audit_id = format!(
+        "background_wake_audit_{}_g{}",
+        direct_job.id, suppressed_registration.checkpoint_generation
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(suppression_audit_id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // 5. Terminal-result fallback carries no generation and must not clobber a
+    //    freshly armed newer checkpoint.
+    let rearmed = store
+        .register_background_checkpoint(&created.id, 120, "conformance")
+        .await
+        .unwrap();
+    assert_eq!(rearmed.checkpoint_generation, 3);
+    let terminal_wake = background_wake_event(
+        "conformance-wake-terminal-result",
+        "conformance-session",
+        &created.id,
+        3,
+        "terminal_result",
+    );
+    assert!(matches!(
+        store
+            .claim_background_session_wake(&terminal_wake, &created.id, None)
+            .await
+            .unwrap(),
+        morphz::memory::BackgroundSessionWakeClaim::Accepted { .. }
+    ));
+    let preserved = store.get_execution_job(&created.id).await.unwrap().unwrap();
+    assert_eq!(preserved.checkpoint_generation, Some(3));
+    assert!(
+        preserved.checkpoint_due_at.is_some(),
+        "terminal-result fallback must not clear an unrelated armed checkpoint"
+    );
+
+    // 6. Route failures are typed rather than silently upgraded.
+    store
+        .create_session(NewSession {
+            id: "conformance-wake-archived".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            parent_session_id: None,
+            title: "Archived wake target".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let archived_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-wake-archived-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-wake-archived".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: "root-conformance-wake-archived".to_string(),
+            kind: ThreadKind::Execution,
+            executor_kind: "runtime".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::legacy(),
+        })
+        .await
+        .unwrap();
+    let archived_activation = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "conformance-wake-archived-activation".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-wake-archived".to_string(),
+            initiating_principal_id: None,
+            trigger_event_id: "trigger-conformance-wake-archived".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "conformance".to_string(),
+            parent_activation_id: None,
+            root_turn_id: archived_thread.root_turn_id.clone(),
+        })
+        .await
+        .unwrap();
+    let mut archived_specification =
+        execution_job("conformance-wake-archived-job", "tool-call-wake-archived");
+    archived_specification.tool_name = "exec/background".to_string();
+    archived_specification.session_id = "conformance-wake-archived".to_string();
+    archived_specification.thread_id = archived_thread.id.clone();
+    archived_specification.activation_id = archived_activation.id.clone();
+    let archived_job = store
+        .create_execution_job(archived_specification)
+        .await
+        .unwrap();
+    store
+        .update_session(
+            "conformance-wake-archived",
+            SessionUpdate {
+                title: None,
+                status: Some(SessionStatus::Archived),
+            },
+        )
+        .await
+        .unwrap();
+    let archived_registration = store
+        .register_background_checkpoint(&archived_job.id, 60, "conformance-archived")
+        .await
+        .unwrap();
+    let archived = background_wake_event(
+        "conformance-wake-archived-event",
+        "conformance-wake-archived",
+        &archived_job.id,
+        archived_registration.checkpoint_generation,
+        "checkpoint",
+    );
+    assert!(matches!(
+        store
+            .claim_background_session_wake(
+                &archived,
+                &archived_job.id,
+                Some(archived_registration.checkpoint_generation),
+            )
+            .await
+            .unwrap(),
+        morphz::memory::BackgroundSessionWakeClaim::ArchivedSession
+    ));
+    assert!(store
+        .query(QueryFilter {
+            event_id: Some(archived.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .get_execution_job(&archived_job.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .checkpoint_due_at
+        .is_none());
+    let archived_audit_id = format!(
+        "background_wake_audit_{}_g{}",
+        archived_job.id, archived_registration.checkpoint_generation
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(archived_audit_id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "archival suppression and checkpoint clear must commit atomically"
+    );
+    let wrong_session_registration = store
+        .register_background_checkpoint(&created.id, 60, "conformance-missing")
+        .await
+        .unwrap();
+    let wrong_session = background_wake_event(
+        "conformance-wake-missing-event",
+        "conformance-wake-unknown-session",
+        &created.id,
+        wrong_session_registration.checkpoint_generation,
+        "checkpoint",
+    );
+    assert!(matches!(
+        store
+            .claim_background_session_wake(
+                &wrong_session,
+                &created.id,
+                Some(wrong_session_registration.checkpoint_generation),
+            )
+            .await
+            .unwrap(),
+        morphz::memory::BackgroundSessionWakeClaim::RouteConflict {
+            registered_context_id
+        } if registered_context_id == "conformance-context"
+    ));
+    assert!(store
+        .query(QueryFilter {
+            event_id: Some(wrong_session.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .get_execution_job(&created.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .checkpoint_due_at
+        .is_none());
+    let wrong_session_audit_id = format!(
+        "background_wake_audit_{}_g{}",
+        created.id, wrong_session_registration.checkpoint_generation
+    );
+    let wrong_session_audit = store
+        .query(QueryFilter {
+            event_id: Some(wrong_session_audit_id),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(wrong_session_audit.len(), 1);
+    assert_eq!(
+        wrong_session_audit[0]
+            .payload
+            .get("operator_attention")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    let route_conflict_registration = store
+        .register_background_checkpoint(&created.id, 60, "conformance-route-conflict")
+        .await
+        .unwrap();
+    let mut route_conflict = background_wake_event(
+        "conformance-wake-route-conflict",
+        "conformance-session",
+        &created.id,
+        route_conflict_registration.checkpoint_generation,
+        "checkpoint",
+    );
+    route_conflict
+        .payload
+        .insert("context_id".to_string(), json!("conformance-wrong-context"));
+    assert!(matches!(
+        store
+            .claim_background_session_wake(
+                &route_conflict,
+                &created.id,
+                Some(route_conflict_registration.checkpoint_generation),
+            )
+            .await
+            .unwrap(),
+        morphz::memory::BackgroundSessionWakeClaim::RouteConflict {
+            registered_context_id
+        } if registered_context_id == "conformance-context"
+    ));
+    assert!(store
+        .get_execution_job(&created.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .checkpoint_due_at
+        .is_none());
+
+    // 7. A Job that reaches terminal state concurrently with a due Timer must
+    //    not be re-armed; the stale Timer converges instead.
+    let current = store.get_execution_job(&created.id).await.unwrap().unwrap();
+    let lease = chrono::Utc::now() + chrono::Duration::seconds(30);
+    let claimed = match store
+        .claim_execution_job(
+            &current.id,
+            current.revision,
+            "worker-wake",
+            "claim-wake",
+            lease,
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ExecutionJobMutation::Updated(job) => job,
+        mutation => panic!("unexpected background claim: {mutation:?}"),
+    };
+    let owner = store
+        .get_thread(&claimed.thread_id)
+        .await
+        .unwrap()
+        .expect("background Job owner");
+    match store
+        .update_thread(
+            &owner.id,
+            owner.revision,
+            None,
+            Some(ThreadLifecycle::Completed),
+            Some("conformance terminal-owner recovery"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadMutation::Updated(_) => {}
+        mutation => panic!("unexpected owner terminal mutation: {mutation:?}"),
+    }
+    let result_event = Event::new(
+        "conformance-wake-job-output".to_string(),
+        "Store-Conformance".to_string(),
+        morphz::event::TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        json!({
+            "context_id": claimed.context_id,
+            "session_id": claimed.session_id,
+            "activation_id": claimed.activation_id,
+            "thread_id": claimed.thread_id,
+            "tool_call_id": claimed.tool_call_id,
+            "tool_name": claimed.tool_name,
+            "output": ""
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let kernel = SchedulerKernel::new(Arc::clone(&store) as Arc<dyn morphz::memory::RuntimeStore>);
+    let finished = match kernel
+        .execute(
+            morphz::controllers::ExecutionController::commit_job_outcome(
+                &claimed.id,
+                claimed.revision,
+                claimed.claim_token.as_deref(),
+                ExecutionJobTerminal {
+                    status: ExecutionJobStatus::Succeeded,
+                    result_event_id: Some(result_event.id.clone()),
+                    result_refs: Vec::new(),
+                    error: None,
+                    exit_code: Some(0),
+                },
+                Some(result_event),
+                false,
+                "Store-Conformance",
+            ),
+        )
+        .await
+        .unwrap()
+    {
+        KernelResult::ExecutionJobOutcomeCommitted(ExecutionJobMutation::Updated(job)) => job,
+        result => panic!("unexpected background terminal result: {result:?}"),
+    };
+    assert_eq!(finished.status, ExecutionJobStatus::Succeeded);
+    assert!(
+        store
+            .list_terminal_execution_jobs_needing_signal("exec/background")
+            .await
+            .unwrap()
+            .iter()
+            .any(|job| job.id == finished.id),
+        "terminal-owner crash windows must remain visible to startup recovery"
+    );
+    assert!(
+        store
+            .register_background_checkpoint(&created.id, 60, "conformance")
+            .await
+            .is_err(),
+        "a terminal background Job must not arm another checkpoint"
+    );
+}
+
 fn approval_bundle(
     job_id: &str,
     tool_call_id: &str,
@@ -7218,6 +7894,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_capability_lease_conformance(Arc::clone(&store)).await;
     assert_edge_execution_conformance(Arc::clone(&store)).await;
     assert_execution_job_conformance(Arc::clone(&store)).await;
+    assert_background_wake_checkpoint_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(store).await;
 }
 
@@ -7541,6 +8218,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_capability_lease_conformance(Arc::clone(&store)).await;
     assert_edge_execution_conformance(Arc::clone(&store)).await;
     assert_execution_job_conformance(Arc::clone(&store)).await;
+    assert_background_wake_checkpoint_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(Arc::clone(&store)).await;
 
     let migration_observation = Event::new(

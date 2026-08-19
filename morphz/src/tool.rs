@@ -1278,6 +1278,7 @@ impl BackgroundTaskScheduler {
                 return Err(format!("后台 ExecutionJob '{task_id}' 不存在").into());
             };
             if job.status.is_terminal() {
+                self.maybe_escalate_terminal_background_result(&job).await?;
                 return Ok(false);
             }
             let cancelled = job.cancel_requested_at.is_some();
@@ -1403,23 +1404,48 @@ impl BackgroundTaskScheduler {
             // Event must still commit, but a terminal (or deleted) owner can
             // no longer accept a Direct Signal. Re-evaluate on every retry so
             // a Thread racing to terminal state cannot permanently strand the
-            // Job in running + cancel_requested.
-            let wake_thread = if let Some(sessions) = self.sessions.as_ref() {
-                match sessions.get_thread(&job.thread_id).await? {
-                    Some(thread) => !thread.lifecycle.is_terminal(),
-                    None => {
-                        tracing::warn!(
-                            execution_job_id = %job.id,
-                            thread_id = %job.thread_id,
-                            event_code = "tool.background_result.owner_missing",
-                            "Committing a background result without a Direct Signal because its Thread owner is missing"
-                        );
-                        false
-                    }
+            // Job in running + cancel_requested. Supervisor-owned attached
+            // children must not Session-escalate: that would steal the result
+            // from their parent Thread supervisor.
+            let owner = if let Some(sessions) = self.sessions.as_ref() {
+                sessions.get_thread(&job.thread_id).await?
+            } else {
+                None
+            };
+            let route = if self.sessions.is_none() {
+                WakeRoute::DirectThread {
+                    thread_id: job.thread_id.clone(),
                 }
             } else {
-                true
+                resolve_wake_route(
+                    BackgroundWakeKind::TerminalResult,
+                    false,
+                    &job.session_id,
+                    owner.as_ref(),
+                )
             };
+            let wake_thread = matches!(route, WakeRoute::DirectThread { .. });
+            match &route {
+                WakeRoute::DirectThread { .. } => {}
+                WakeRoute::SessionEscalation { .. } if owner.is_none() => {
+                    tracing::warn!(
+                        execution_job_id = %job.id,
+                        thread_id = %job.thread_id,
+                        event_code = "tool.background_result.owner_missing",
+                        "Committing a background result without a Direct Signal because its Thread owner is missing"
+                    );
+                }
+                WakeRoute::SessionEscalation { .. } => {}
+                WakeRoute::Suppress { reason } => {
+                    tracing::info!(
+                        execution_job_id = %job.id,
+                        thread_id = %job.thread_id,
+                        ?reason,
+                        event_code = "tool.background_result.supervisor_owned_suppressed",
+                        "Persisting a background result without Session escalation because typed wake routing forbids upgrading a supervisor-owned child"
+                    );
+                }
+            }
             match manager
                 .finish_with_event(
                     &job.id,
@@ -1439,7 +1465,15 @@ impl BackgroundTaskScheduler {
                     // commit no_reply, and terminalize the Thread before this
                     // causal result reaches its mailbox.
                     mark_background_task_terminal(task_id, exit_code);
-                    self.bus.dispatch_persisted(event).await?;
+                    if wake_thread {
+                        self.bus.dispatch_persisted(event).await?;
+                    } else if matches!(route, WakeRoute::SessionEscalation { .. }) {
+                        self.bus.dispatch_persisted(event.clone()).await?;
+                        self.escalate_terminal_result_to_session(&job, &event)
+                            .await?;
+                    } else {
+                        self.bus.dispatch_persisted(event).await?;
+                    }
                     return Ok(true);
                 }
                 JobReceipt::Conflict { .. } => continue,
@@ -1483,24 +1517,31 @@ impl BackgroundTaskScheduler {
         let mut armed = 0;
         for job in jobs {
             if let Some(sessions) = self.sessions.as_ref() {
-                let Some(thread) = sessions.get_thread(&job.thread_id).await? else {
-                    tracing::warn!(
-                            execution_job_id = %job.id,
-                            thread_id = %job.thread_id,
-                    event_code = "tool.background_result.owner_missing",
-                    "Skipped recovery of a terminal background result whose Thread owner is missing"
-                        );
-                    continue;
-                };
-                if thread.lifecycle.is_terminal() {
-                    tracing::debug!(
+                match sessions.get_thread(&job.thread_id).await? {
+                    Some(thread) if !thread.lifecycle.is_terminal() => {}
+                    Some(thread) => {
+                        tracing::debug!(
                             execution_job_id = %job.id,
                             thread_id = %thread.id,
                             thread_lifecycle = thread.lifecycle.as_str(),
-                    event_code = "tool.background_result.thread_terminal",
-                    "Background result belongs to a terminal Thread; Signal redelivery is unnecessary"
+                            event_code = "tool.background_result.thread_terminal_escalation",
+                            "Recovering a terminal background result by escalating to the owning Session"
                         );
-                    continue;
+                        self.maybe_escalate_terminal_background_result(&job).await?;
+                        armed += 1;
+                        continue;
+                    }
+                    None => {
+                        tracing::warn!(
+                            execution_job_id = %job.id,
+                            thread_id = %job.thread_id,
+                            event_code = "tool.background_result.owner_missing_escalation",
+                            "Recovering a terminal background result whose Thread owner is missing by escalating to the owning Session"
+                        );
+                        self.maybe_escalate_terminal_background_result(&job).await?;
+                        armed += 1;
+                        continue;
+                    }
                 }
             }
             let event_id = job
@@ -1776,18 +1817,36 @@ impl BackgroundTaskScheduler {
                 "check_after_secs 必须在 1 到 {MAX_TASK_WAIT_SECS} 秒之间"
             ));
         }
-        if self.execution_jobs.is_some() {
-            let job = self
-                .get_background_job(task_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("未找到后台 ExecutionJob '{task_id}'"))?;
-            if job.status.is_terminal() {
-                return Err(format!(
-                    "后台任务 '{task_id}' 已经以 {} 结束，无需继续等待",
-                    job.status.as_str()
-                ));
+        if let Some(manager) = self.execution_jobs.as_ref() {
+            // Durable path: the semantic checkpoint (generation + due_at) and
+            // the physical BackgroundWake timer are committed in one Store
+            // transaction, so a peer Runtime claiming the timer sees the same
+            // authoritative state. The local task map is refreshed only after
+            // the commit and remains a same-process convenience hint.
+            match get_tasks_map().get(task_id) {
+                Some(task) if task.status.is_terminal() => {
+                    return Err(format!("后台任务 '{task_id}' 已经结束，无需继续等待"));
+                }
+                Some(_) => {}
+                None => {
+                    return Err(format!(
+                        "未找到后台任务 '{task_id}'，它可能已被历史保留策略清理"
+                    ));
+                }
             }
+            let registration = manager
+                .store()
+                .register_background_checkpoint(task_id, check_after_secs, wake_source)
+                .await
+                .map_err(|error| format!("持久化后台任务检查点失败: {error}"))?;
+            if let Some(mut task) = get_tasks_map().get_mut(task_id) {
+                task.wake_generation = registration.checkpoint_generation;
+                task.next_wakeup_at = Some(registration.due_at);
+            }
+            // The composite transaction wrote the Timer row directly, so the
+            // dispatcher never observed it through TimerEngine::schedule.
+            self.timers.notify_schedule_changed();
+            return Ok(registration.due_at);
         }
         let (generation, wakeup_at) = {
             let tasks = get_tasks_map();
@@ -1857,12 +1916,28 @@ impl BackgroundTaskScheduler {
             .get("wake_source")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("runtime");
-        let authoritative_job = if self.execution_jobs.is_some() {
+        let authoritative_job = if let Some(manager) = self.execution_jobs.as_ref() {
             let Some(job) = self.get_background_job(&timer.owner_id).await? else {
                 return Ok(TimerDisposition::Complete);
             };
-            if job.status.is_terminal() {
+            if job.checkpoint_generation != Some(generation) || job.checkpoint_due_at.is_none() {
                 return Ok(TimerDisposition::Complete);
+            }
+            if job.status.is_terminal() {
+                manager
+                    .store()
+                    .clear_background_checkpoint(&job.id, generation)
+                    .await?;
+                return Ok(TimerDisposition::Complete);
+            }
+            if job
+                .checkpoint_due_at
+                .is_some_and(|due| due > chrono::Utc::now())
+            {
+                return Ok(TimerDisposition::Reschedule {
+                    due_at: job.checkpoint_due_at.expect("checked Some"),
+                    reason: Some("durable background checkpoint is not due yet".to_string()),
+                });
             }
             Some(job)
         } else {
@@ -1872,19 +1947,25 @@ impl BackgroundTaskScheduler {
             let tasks = get_tasks_map();
             match tasks.get_mut(&timer.owner_id) {
                 Some(mut task) => {
-                    if task.status.is_terminal() || task.wake_generation != generation {
-                        return Ok(TimerDisposition::Complete);
+                    // In durable mode the local map is output/PGID cache only;
+                    // lifecycle, generation, and due time came from the Job
+                    // above. Keep the old checks solely for the memory-only
+                    // scheduler used by isolated tests/embedders.
+                    if authoritative_job.is_none() {
+                        if task.status.is_terminal() || task.wake_generation != generation {
+                            return Ok(TimerDisposition::Complete);
+                        }
+                        if task
+                            .next_wakeup_at
+                            .is_some_and(|due| due > chrono::Utc::now())
+                        {
+                            return Ok(TimerDisposition::Reschedule {
+                                due_at: task.next_wakeup_at.expect("checked Some"),
+                                reason: Some("background checkpoint is not due yet".to_string()),
+                            });
+                        }
+                        task.next_wakeup_at = None;
                     }
-                    if task
-                        .next_wakeup_at
-                        .is_some_and(|due| due > chrono::Utc::now())
-                    {
-                        return Ok(TimerDisposition::Reschedule {
-                            due_at: task.next_wakeup_at.expect("checked Some"),
-                            reason: Some("后台任务检查点尚未到期".to_string()),
-                        });
-                    }
-                    task.next_wakeup_at = None;
                     background_check_due_payload(&task, check_after_secs, wake_source)
                 }
                 None => {
@@ -1931,35 +2012,382 @@ impl BackgroundTaskScheduler {
             })
         }
         .ok_or_else(|| format!("后台任务 '{}' 检查点缺少权威 Thread 路由", timer.owner_id))?;
-        if let Some(sessions) = self.sessions.as_ref() {
-            match sessions.get_thread(&thread_id).await? {
-                Some(thread) if thread.lifecycle.is_terminal() => {
-                    tracing::debug!(
-                        task_id = %timer.owner_id,
-                        thread_id,
-                        thread_lifecycle = thread.lifecycle.as_str(),
-                        event_code = "tool.background_checkpoint.thread_terminal",
-                        "Suppressed a background checkpoint after its owning Thread reached terminal state"
-                    );
-                    return Ok(TimerDisposition::Complete);
+        // Typed routing owns the Thread→Session decision. An early terminal/
+        // missing-owner escalate would steal supervisor-owned attached children.
+        let owner = if let Some(sessions) = self.sessions.as_ref() {
+            sessions.get_thread(&thread_id).await?
+        } else {
+            None
+        };
+        // Without a Session store the original Thread mailbox is the only route.
+        let route = if self.sessions.is_none() {
+            WakeRoute::DirectThread {
+                thread_id: thread_id.clone(),
+            }
+        } else {
+            resolve_wake_route(
+                BackgroundWakeKind::Checkpoint,
+                authoritative_job
+                    .as_ref()
+                    .is_some_and(|job| job.status.is_terminal()),
+                authoritative_job
+                    .as_ref()
+                    .map(|job| job.session_id.as_str())
+                    .unwrap_or(""),
+                owner.as_ref(),
+            )
+        };
+        match route {
+            WakeRoute::DirectThread { thread_id: target } => {
+                if let (Some(job), Some(sessions)) =
+                    (authoritative_job.as_ref(), self.sessions.as_ref())
+                {
+                    match sessions
+                        .claim_background_thread_wake(&event, &job.id, generation, &target)
+                        .await?
+                    {
+                        crate::memory::BackgroundThreadWakeClaim::Accepted { event } => {
+                            self.bus.dispatch_persisted(event).await?;
+                        }
+                        crate::memory::BackgroundThreadWakeClaim::Existing { .. }
+                        | crate::memory::BackgroundThreadWakeClaim::StaleCheckpoint => {}
+                        crate::memory::BackgroundThreadWakeClaim::MissingThread
+                        | crate::memory::BackgroundThreadWakeClaim::InactiveThread { .. } => {
+                            // The Thread changed after the optimistic route
+                            // read. Re-resolve through the atomic Session path;
+                            // it owns the same generation CAS.
+                            return self
+                                .escalate_checkpoint_to_session(
+                                    Some(job),
+                                    event.payload.clone(),
+                                    generation,
+                                )
+                                .await;
+                        }
+                    }
+                } else {
+                    self.events.append_to_thread(event.clone(), &target).await?;
+                    self.bus.dispatch_persisted(event).await?;
                 }
-                None => {
+                Ok(TimerDisposition::Complete)
+            }
+            WakeRoute::SessionEscalation { .. } => {
+                if owner.is_none() {
                     tracing::warn!(
                         task_id = %timer.owner_id,
                         thread_id,
-                        event_code = "tool.background_checkpoint.thread_missing",
-                        "Suppressed a background checkpoint whose durable Thread owner is missing"
+                        event_code = "tool.background_checkpoint.thread_missing_escalation",
+                        "Escalating a background checkpoint to the owning Session because its durable Thread owner is missing"
                     );
-                    return Ok(TimerDisposition::Complete);
+                } else {
+                    tracing::info!(
+                        task_id = %timer.owner_id,
+                        thread_id,
+                        thread_lifecycle = owner
+                            .as_ref()
+                            .map(|thread| thread.lifecycle.as_str())
+                            .unwrap_or("missing"),
+                        event_code = "tool.background_checkpoint.thread_terminal_escalation",
+                        "Escalating a background checkpoint to the owning Session because its Execution Thread is terminal"
+                    );
                 }
-                Some(_) => {}
+                self.escalate_checkpoint_to_session(
+                    authoritative_job.as_ref(),
+                    event.payload.clone(),
+                    generation,
+                )
+                .await
+            }
+            WakeRoute::Suppress { reason } => {
+                if let Some(job) = authoritative_job.as_ref() {
+                    if let Some(sessions) = self.sessions.as_ref() {
+                        let outcome = match reason {
+                            WakeSuppression::JobAlreadyTerminal => {
+                                "background_checkpoint_job_terminal"
+                            }
+                            WakeSuppression::SupervisorOwnedChild => {
+                                "background_checkpoint_supervisor_owned_child"
+                            }
+                        };
+                        sessions
+                            .suppress_background_checkpoint(
+                                &event, &job.id, generation, outcome, false,
+                            )
+                            .await?;
+                    } else if let Some(manager) = self.execution_jobs.as_ref() {
+                        manager
+                            .store()
+                            .clear_background_checkpoint(&job.id, generation)
+                            .await?;
+                    }
+                }
+                tracing::debug!(
+                    task_id = %timer.owner_id,
+                    thread_id,
+                    ?reason,
+                    event_code = "tool.background_checkpoint.wake_suppressed",
+                    "Background checkpoint wake was suppressed by typed wake routing"
+                );
+                Ok(TimerDisposition::Complete)
             }
         }
-        self.events
-            .append_to_thread(event.clone(), &thread_id)
-            .await?;
-        self.bus.dispatch_persisted(event).await?;
+    }
+
+    /// Controlled Thread→Session escalation for one due background checkpoint.
+    /// The checkpoint payload becomes a fresh DialogueTurn root in the owning
+    /// Session (a Runtime Wake Event); the terminal Thread identity is
+    /// preserved only as `source_thread_id`/`source_activation_id` provenance.
+    /// Route resolution, Event persistence, DialogueTurn creation, and
+    /// checkpoint clearing happen in one Store transaction.
+    async fn escalate_checkpoint_to_session(
+        &self,
+        job: Option<&ExecutionJobRecord>,
+        mut payload: serde_json::Map<String, serde_json::Value>,
+        generation: u64,
+    ) -> Result<TimerDisposition, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(job) = job else {
+            // Without the durable Job there is no authoritative Session route;
+            // silent convergence is the only safe disposition for a stale timer.
+            return Ok(TimerDisposition::Complete);
+        };
+        let Some(sessions) = self.sessions.as_ref() else {
+            return Ok(TimerDisposition::Complete);
+        };
+        payload.insert("session_id".to_string(), serde_json::json!(job.session_id));
+        payload.insert("context_id".to_string(), serde_json::json!(job.context_id));
+        payload.insert(
+            "source_thread_id".to_string(),
+            serde_json::json!(job.thread_id),
+        );
+        payload.insert(
+            "source_activation_id".to_string(),
+            serde_json::json!(job.activation_id),
+        );
+        payload.insert(
+            "checkpoint_generation".to_string(),
+            serde_json::json!(generation),
+        );
+        payload.insert("wake_kind".to_string(), serde_json::json!("checkpoint"));
+        let event = Event::new(
+            format!("background_wake_{}_g{}", job.id, generation),
+            "System-TaskMonitor".to_string(),
+            crate::event::TYPE_RUNTIME_WAKE.to_string(),
+            "runtime/background_wake".to_string(),
+            payload,
+        );
+        match sessions
+            .claim_background_session_wake(&event, &job.id, Some(generation))
+            .await?
+        {
+            crate::memory::BackgroundSessionWakeClaim::Accepted { event } => {
+                self.bus.dispatch_persisted(event).await?;
+            }
+            crate::memory::BackgroundSessionWakeClaim::Existing { event_id } => {
+                tracing::debug!(
+                    execution_job_id = %job.id,
+                    event_id,
+                    event_code = "tool.background_checkpoint.wake_replay",
+                    "Background checkpoint wake was already committed; skipping redelivery"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::StaleCheckpoint => {
+                tracing::debug!(
+                    execution_job_id = %job.id,
+                    generation,
+                    event_code = "tool.background_checkpoint.stale_generation",
+                    "Dropped a background checkpoint wake whose durable generation no longer matches"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::ArchivedSession => {
+                tracing::warn!(
+                    execution_job_id = %job.id,
+                    session_id = %job.session_id,
+                    event_code = "tool.background_checkpoint.session_archived",
+                    "Background checkpoint wake was suppressed for an archived Session and recorded atomically"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::MissingSession => {
+                tracing::error!(
+                    execution_job_id = %job.id,
+                    session_id = %job.session_id,
+                    event_code = "tool.background_checkpoint.session_missing",
+                    "Background checkpoint wake found no owning Session; ExecutionJob Session foreign key integrity is broken"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::RouteConflict {
+                registered_context_id,
+            } => {
+                tracing::error!(
+                    execution_job_id = %job.id,
+                    session_id = %job.session_id,
+                    event_context_id = %job.context_id,
+                    registered_context_id,
+                    event_code = "tool.background_checkpoint.context_route_conflict",
+                    "Background checkpoint wake Context route conflicted with its Session registry; checkpoint was closed with operator attention"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::ForbiddenPrincipal { principal_id } => {
+                tracing::warn!(
+                    execution_job_id = %job.id,
+                    principal_id,
+                    event_code = "tool.background_checkpoint.principal_unbound",
+                    "Dropped a background checkpoint wake whose principal is no longer bound to the Session"
+                );
+            }
+        }
         Ok(TimerDisposition::Complete)
+    }
+
+    /// Controlled Thread→Session escalation for one terminal background result
+    /// whose owning Execution Thread can no longer accept a Direct Signal.
+    /// The physical TYPE_TOOL_OUTPUT result Event remains the Job's
+    /// `result_event_id`; this wake Event is a fresh DialogueTurn root.
+    /// Pass `expected_checkpoint_generation = None` so an unrelated armed
+    /// checkpoint is not cleared.
+    async fn escalate_terminal_result_to_session(
+        &self,
+        job: &ExecutionJobRecord,
+        result_event: &Event,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(sessions) = self.sessions.as_ref() else {
+            return Ok(());
+        };
+        let mut payload = result_event.payload.clone();
+        payload.insert("session_id".to_string(), serde_json::json!(job.session_id));
+        payload.insert("context_id".to_string(), serde_json::json!(job.context_id));
+        payload.insert(
+            "source_thread_id".to_string(),
+            serde_json::json!(job.thread_id),
+        );
+        payload.insert(
+            "source_activation_id".to_string(),
+            serde_json::json!(job.activation_id),
+        );
+        payload.insert(
+            "result_event_id".to_string(),
+            serde_json::json!(result_event.id),
+        );
+        payload.insert(
+            "wake_kind".to_string(),
+            serde_json::json!("terminal_result"),
+        );
+        payload.insert(
+            "event".to_string(),
+            serde_json::json!("background_task_terminal"),
+        );
+        if let Some(principal_id) = job.initiating_principal_id.as_deref() {
+            payload.insert("principal_id".to_string(), serde_json::json!(principal_id));
+        }
+        let event = Event::new(
+            format!("background_wake_result_{}", job.id),
+            "System-TaskMonitor".to_string(),
+            crate::event::TYPE_RUNTIME_WAKE.to_string(),
+            "runtime/background_wake".to_string(),
+            payload,
+        );
+        match sessions
+            .claim_background_session_wake(&event, &job.id, None)
+            .await?
+        {
+            crate::memory::BackgroundSessionWakeClaim::Accepted { event } => {
+                self.bus.dispatch_persisted(event).await?;
+            }
+            crate::memory::BackgroundSessionWakeClaim::Existing { event_id } => {
+                tracing::debug!(
+                    execution_job_id = %job.id,
+                    event_id,
+                    event_code = "tool.background_result.wake_replay",
+                    "Background terminal-result Session wake was already committed; skipping redelivery"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::StaleCheckpoint => {
+                tracing::debug!(
+                    execution_job_id = %job.id,
+                    event_code = "tool.background_result.stale_generation",
+                    "Dropped a terminal-result Session wake whose durable generation no longer matches"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::ArchivedSession => {
+                tracing::warn!(
+                    execution_job_id = %job.id,
+                    session_id = %job.session_id,
+                    event_code = "tool.background_result.session_archived",
+                    "Terminal-result Session wake was suppressed for an archived Session and recorded atomically"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::MissingSession => {
+                tracing::error!(
+                    execution_job_id = %job.id,
+                    session_id = %job.session_id,
+                    event_code = "tool.background_result.session_missing",
+                    "Terminal-result Session wake found no owning Session; ExecutionJob Session foreign key integrity is broken"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::RouteConflict {
+                registered_context_id,
+            } => {
+                tracing::error!(
+                    execution_job_id = %job.id,
+                    session_id = %job.session_id,
+                    event_context_id = %job.context_id,
+                    registered_context_id,
+                    event_code = "tool.background_result.context_route_conflict",
+                    "Terminal-result Session wake Context route conflicted with its Session registry and was closed with operator attention"
+                );
+            }
+            crate::memory::BackgroundSessionWakeClaim::ForbiddenPrincipal { principal_id } => {
+                tracing::warn!(
+                    execution_job_id = %job.id,
+                    principal_id,
+                    event_code = "tool.background_result.principal_unbound",
+                    "Dropped a terminal-result Session wake whose principal is no longer bound to the Session"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn maybe_escalate_terminal_background_result(
+        &self,
+        job: &ExecutionJobRecord,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(sessions) = self.sessions.as_ref() else {
+            return Ok(());
+        };
+        let owner = sessions.get_thread(&job.thread_id).await?;
+        match resolve_wake_route(
+            BackgroundWakeKind::TerminalResult,
+            false,
+            &job.session_id,
+            owner.as_ref(),
+        ) {
+            WakeRoute::DirectThread { .. } => return Ok(()),
+            WakeRoute::Suppress { reason } => {
+                tracing::debug!(
+                    execution_job_id = %job.id,
+                    ?reason,
+                    event_code = "tool.background_result.wake_suppressed",
+                    "Skipped terminal-result Session escalation by typed wake routing"
+                );
+                return Ok(());
+            }
+            WakeRoute::SessionEscalation { .. } => {}
+        }
+        let Some(event_id) = job.result_event_id.as_deref() else {
+            return Ok(());
+        };
+        let mut events = self
+            .events
+            .query(QueryFilter {
+                event_id: Some(event_id.to_string()),
+                ..Default::default()
+            })
+            .await?;
+        if events.len() != 1 {
+            return Ok(());
+        }
+        self.escalate_terminal_result_to_session(job, &events.remove(0))
+            .await
     }
 }
 
@@ -1987,8 +2415,222 @@ fn applied_background_job(
     }
 }
 
+/// Why a background wake is being delivered. Shared owner-state resolution
+/// never implies a shared fallback: TerminalResult and Checkpoint choose
+/// independently among DirectThread, Session upgrade, and suppression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundWakeKind {
+    TerminalResult,
+    Checkpoint,
+}
+
+/// Typed reason a wake must not be upgraded to a Session DialogueTurn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WakeSuppression {
+    /// Stale BackgroundWake Timer whose Job already reached a terminal status.
+    JobAlreadyTerminal,
+    /// Attached child owned by a Thread/Evaluation supervisor. Session
+    /// escalation would steal the result from that supervisor.
+    SupervisorOwnedChild,
+}
+
+/// Authoritative delivery target for one background wake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WakeRoute {
+    DirectThread { thread_id: String },
+    SessionEscalation { session_id: String },
+    Suppress { reason: WakeSuppression },
+}
+
+fn owner_accepts_direct_signal(owner: &ThreadRecord) -> bool {
+    !owner.lifecycle.is_terminal()
+}
+
+fn supervisor_owned_child(owner: &ThreadRecord) -> bool {
+    matches!(
+        owner.supervision.supervisor_kind,
+        ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation
+    )
+}
+
+fn resolve_wake_route(
+    kind: BackgroundWakeKind,
+    job_is_terminal: bool,
+    session_id: &str,
+    owner: Option<&ThreadRecord>,
+) -> WakeRoute {
+    // Checkpoints of an already-terminal Job are stale Timers. Terminal-result
+    // recovery still needs a Session upgrade even though the Job row is terminal,
+    // so this guard is kind-specific.
+    if job_is_terminal && kind == BackgroundWakeKind::Checkpoint {
+        return WakeRoute::Suppress {
+            reason: WakeSuppression::JobAlreadyTerminal,
+        };
+    }
+    match owner {
+        Some(thread) if owner_accepts_direct_signal(thread) => WakeRoute::DirectThread {
+            thread_id: thread.id.clone(),
+        },
+        Some(thread) if supervisor_owned_child(thread) => WakeRoute::Suppress {
+            reason: WakeSuppression::SupervisorOwnedChild,
+        },
+        Some(thread) => WakeRoute::SessionEscalation {
+            session_id: if session_id.is_empty() {
+                thread.session_id.clone()
+            } else {
+                session_id.to_string()
+            },
+        },
+        None => WakeRoute::SessionEscalation {
+            session_id: session_id.to_string(),
+        },
+    }
+}
+
 fn background_wake_timer_id(task_id: &str) -> String {
     format!("background-wake:{task_id}")
+}
+
+#[cfg(test)]
+mod wake_route_tests {
+    use super::*;
+    use crate::memory::{DeliveryStatus, ThreadControlState};
+
+    fn thread(lifecycle: ThreadLifecycle, supervision: ThreadSupervision) -> ThreadRecord {
+        ThreadRecord {
+            id: "thread-wake".into(),
+            revision: 1,
+            generation: 1,
+            agent_id: "agent-wake".into(),
+            context_id: "context-wake".into(),
+            session_id: "session-wake".into(),
+            initiating_principal_id: None,
+            root_turn_id: "root-wake".into(),
+            kind: ThreadKind::Execution,
+            lifecycle,
+            control_state: ThreadControlState::Active,
+            executor_kind: "self".into(),
+            executor_id: None,
+            target_id: None,
+            supervision,
+            result_text: None,
+            result_event_id: None,
+            delivery_status: DeliveryStatus::None,
+            delivery_event_id: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn evaluation_attached() -> ThreadSupervision {
+        let mut supervision = ThreadSupervision::attached("parent-thread", 1, "eval-wake");
+        supervision.supervisor_kind = ThreadSupervisorKind::Evaluation;
+        supervision
+    }
+
+    #[test]
+    fn open_owner_always_takes_the_direct_thread() {
+        let owner = thread(
+            ThreadLifecycle::Open,
+            ThreadSupervision::attached("parent-thread", 1, "eval-wake"),
+        );
+        for kind in [
+            BackgroundWakeKind::TerminalResult,
+            BackgroundWakeKind::Checkpoint,
+        ] {
+            assert_eq!(
+                resolve_wake_route(kind, false, "session-job", Some(&owner)),
+                WakeRoute::DirectThread {
+                    thread_id: owner.id.clone(),
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_supervisor_owned_child_is_suppressed() {
+        for supervision in [
+            ThreadSupervision::attached("parent-thread", 1, "eval-wake"),
+            evaluation_attached(),
+        ] {
+            let owner = thread(ThreadLifecycle::Completed, supervision);
+            for kind in [
+                BackgroundWakeKind::TerminalResult,
+                BackgroundWakeKind::Checkpoint,
+            ] {
+                assert_eq!(
+                    resolve_wake_route(kind, false, "session-job", Some(&owner)),
+                    WakeRoute::Suppress {
+                        reason: WakeSuppression::SupervisorOwnedChild,
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_non_child_owner_escalates_to_session() {
+        let owner = thread(ThreadLifecycle::Completed, ThreadSupervision::legacy());
+        assert_eq!(
+            resolve_wake_route(
+                BackgroundWakeKind::TerminalResult,
+                false,
+                "session-job",
+                Some(&owner),
+            ),
+            WakeRoute::SessionEscalation {
+                session_id: "session-job".into(),
+            },
+        );
+        assert_eq!(
+            resolve_wake_route(BackgroundWakeKind::Checkpoint, false, "", Some(&owner),),
+            WakeRoute::SessionEscalation {
+                session_id: owner.session_id.clone(),
+            },
+        );
+    }
+
+    #[test]
+    fn missing_owner_escalates_to_the_job_session() {
+        assert_eq!(
+            resolve_wake_route(
+                BackgroundWakeKind::TerminalResult,
+                false,
+                "session-job",
+                None,
+            ),
+            WakeRoute::SessionEscalation {
+                session_id: "session-job".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn terminal_job_suppresses_only_stale_checkpoints() {
+        let owner = thread(ThreadLifecycle::Open, ThreadSupervision::legacy());
+        assert_eq!(
+            resolve_wake_route(
+                BackgroundWakeKind::Checkpoint,
+                true,
+                "session-job",
+                Some(&owner),
+            ),
+            WakeRoute::Suppress {
+                reason: WakeSuppression::JobAlreadyTerminal,
+            },
+        );
+        assert_eq!(
+            resolve_wake_route(
+                BackgroundWakeKind::TerminalResult,
+                true,
+                "session-job",
+                Some(&owner),
+            ),
+            WakeRoute::DirectThread {
+                thread_id: owner.id.clone(),
+            },
+        );
+    }
 }
 
 /// Durable timer and dependency dispatcher for schedule_tx. Timers are only
@@ -4111,7 +4753,9 @@ fn background_execution_snapshot(
         "last_output_age_secs": live.map(|task| (now - task.last_output_at).num_seconds().max(0)),
         "output_bytes": live.map_or(0, |task| task.output_bytes),
         "output_tail": live.map_or("", |task| task.output_tail.as_str()),
-        "next_wakeup_at": live.and_then(|task| task.next_wakeup_at),
+        "next_wakeup_at": job.checkpoint_due_at,
+        "checkpoint_generation": job.checkpoint_generation,
+        "checkpoint_due_at": job.checkpoint_due_at,
         "exit_code": job.exit_code,
         "error": job.error,
         "cancel_reason": job.cancel_reason,
@@ -8531,6 +9175,23 @@ Body
         root_turn_id: &str,
         trigger_event_id: &str,
     ) {
+        seed_test_execution_route_with(
+            store,
+            parent,
+            root_turn_id,
+            trigger_event_id,
+            crate::memory::ThreadSupervision::legacy(),
+        )
+        .await;
+    }
+
+    async fn seed_test_execution_route_with(
+        store: &Arc<SqliteStore>,
+        parent: &ToolExecutionJobContext,
+        root_turn_id: &str,
+        trigger_event_id: &str,
+        supervision: crate::memory::ThreadSupervision,
+    ) {
         store
             .ensure_agent(NewAgent {
                 id: parent.agent_id.clone(),
@@ -8570,7 +9231,7 @@ Body
                 executor_kind: "self".to_string(),
                 executor_id: None,
                 target_id: None,
-                supervision: crate::memory::ThreadSupervision::legacy(),
+                supervision,
             })
             .await
             .unwrap();
@@ -11748,7 +12409,7 @@ Body
     }
 
     #[tokio::test]
-    async fn background_completion_skips_signal_after_owner_thread_is_terminal() {
+    async fn background_completion_escalates_to_session_after_owner_thread_is_terminal() {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
@@ -11756,9 +12417,19 @@ Body
                 .unwrap(),
         );
         let bus = Arc::new(InMemoryEventBus::new());
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        {
+            let sender = sender.clone();
+            bus.subscribe(
+                "chat/tool_output".to_string(),
+                Arc::new(move |event| {
+                    let sender = sender.clone();
+                    Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+                }),
+            );
+        }
         bus.subscribe(
-            "chat/tool_output".to_string(),
+            "runtime/background_wake".to_string(),
             Arc::new(move |event| {
                 let sender = sender.clone();
                 Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
@@ -11890,6 +12561,7 @@ Body
             .await
             .expect("terminal result Event must still be dispatched")
             .expect("completion channel must remain open");
+        assert_eq!(completion.topic, "chat/tool_output");
         assert_eq!(completion.payload["task_status"], "cancelled");
         let terminal = store.get_execution_job(&task_id).await.unwrap().unwrap();
         assert_eq!(terminal.status, ExecutionJobStatus::Cancelled);
@@ -11908,6 +12580,228 @@ Body
             0,
             "a terminal owner Thread must not receive a new Direct Signal"
         );
+
+        let wake = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .expect(
+                "a terminal background result must escalate to the owning Session as a Runtime Wake",
+            )
+            .expect("wake channel must remain open");
+        assert_eq!(wake.topic, "runtime/background_wake");
+        assert_eq!(wake.event_type, crate::event::TYPE_RUNTIME_WAKE);
+        assert_eq!(wake.payload["event"], "background_task_terminal");
+        assert_eq!(wake.payload["wake_kind"], "terminal_result");
+        assert_eq!(wake.payload["task_status"], "cancelled");
+        assert_eq!(wake.payload["session_id"], parent.session_id);
+        assert_eq!(wake.payload["context_id"], parent.context_id);
+        assert_eq!(wake.payload["source_thread_id"], parent.thread_id);
+        assert_eq!(wake.payload["source_activation_id"], parent.activation_id);
+        assert_eq!(wake.payload["result_event_id"], completion.id);
+        let wake_signal_count = store
+            .list_context_thread_signals(&parent.context_id, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|signal| signal.event_id == wake.id)
+            .count();
+        assert_eq!(wake_signal_count, 1);
+        let owning_after = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        assert_eq!(owning_after.lifecycle, ThreadLifecycle::Completed);
+    }
+
+    #[tokio::test]
+    async fn terminal_supervisor_owned_child_completion_is_not_session_escalated() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        {
+            let sender = sender.clone();
+            bus.subscribe(
+                "chat/tool_output".to_string(),
+                Arc::new(move |event| {
+                    let sender = sender.clone();
+                    Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+                }),
+            );
+        }
+        bus.subscribe(
+            "runtime/background_wake".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let scheduler =
+            start_test_durable_background_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-attached-owner-background",
+                "exec-call-attached-owner-background",
+            )
+            .unwrap(),
+            activation_id: "activation-attached-owner-background".to_string(),
+            thread_id: "thread-attached-owner-background".to_string(),
+            agent_id: "agent-attached-owner-background".to_string(),
+            context_id: "context-attached-owner-background".to_string(),
+            session_id: "session-attached-owner-background".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "exec-call-attached-owner-background".to_string(),
+        };
+        seed_test_execution_route_with(
+            &store,
+            &parent,
+            "root-attached-owner-background",
+            "trigger-attached-owner-background",
+            ThreadSupervision::attached(
+                "thread-attached-supervisor",
+                1,
+                "eval-attached-owner-background",
+            ),
+        )
+        .await;
+
+        let manager = scheduler.execution_jobs.as_ref().unwrap();
+        let child_call_id = format!("{}:background", parent.tool_call_id);
+        let task_id = deterministic_job_id(&parent.activation_id, &child_call_id).unwrap();
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
+                target_id: parent.target_id.clone(),
+                tool_call_id: child_call_id,
+                tool_name: "exec/background".to_string(),
+                request: serde_json::json!({
+                    "kind": "background_exec",
+                    "task_id": task_id,
+                    "command": "service-owned-by-attached-child",
+                    "process_group_id": 464646,
+                    "artifact_path": "/tmp/attached-owner-background.log",
+                    "started_at": chrono::Utc::now(),
+                    "effective_boundary": {}
+                }),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let claim_token = "attached-owner-background-claim";
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "attached-owner-background-worker",
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "claim",
+        )
+        .unwrap();
+        job = applied_background_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(chrono::Utc::now()),
+                        progress_ref: Some("/tmp/attached-owner-background.log"),
+                    },
+                )
+                .await
+                .unwrap(),
+            "side-effect boundary",
+        )
+        .unwrap();
+        job = applied_background_job(
+            manager
+                .request_cancel(
+                    &job.id,
+                    job.revision,
+                    Some("attached child already terminal"),
+                )
+                .await
+                .unwrap(),
+            "cancel request",
+        )
+        .unwrap();
+        assert!(job.cancel_requested_at.is_some());
+
+        let owner = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        assert_eq!(
+            owner.supervision.supervisor_kind,
+            ThreadSupervisorKind::Thread
+        );
+        let owner = match store
+            .update_thread(
+                &owner.id,
+                owner.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected Thread mutation: {other:?}"),
+        };
+        assert_eq!(owner.lifecycle, ThreadLifecycle::Completed);
+
+        assert!(scheduler
+            .finish_background_execution(&task_id, -9, "", "")
+            .await
+            .unwrap());
+        let completion = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("terminal result Event must still be dispatched")
+            .expect("completion channel must remain open");
+        assert_eq!(completion.topic, "chat/tool_output");
+        assert_eq!(completion.payload["task_status"], "cancelled");
+        let terminal = store.get_execution_job(&task_id).await.unwrap().unwrap();
+        assert_eq!(terminal.status, ExecutionJobStatus::Cancelled);
+        assert_eq!(
+            terminal.result_event_id.as_deref(),
+            Some(completion.id.as_str())
+        );
+        assert_eq!(
+            store
+                .list_context_thread_signals(&parent.context_id, None)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.event_id == completion.id)
+                .count(),
+            0,
+            "a terminal attached child must not receive a new Direct Signal"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), receiver.recv())
+                .await
+                .is_err(),
+            "a terminal supervisor-owned attached child must not Session-escalate its result"
+        );
+        let owning_after = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        assert_eq!(owning_after.lifecycle, ThreadLifecycle::Completed);
     }
 
     #[tokio::test]
@@ -13075,6 +13969,184 @@ Body
     }
 
     #[tokio::test]
+    async fn restart_recovers_terminal_result_after_owner_thread_completed() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "runtime/background_wake".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let manager = Arc::new(ExecutionJobManager::new(
+            Arc::clone(&store) as Arc<dyn ExecutionJobStore>
+        ));
+        let scheduler = Arc::new(
+            BackgroundTaskScheduler::new_with_execution_jobs(
+                Arc::clone(&bus),
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                timers,
+                Arc::clone(&manager),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+        );
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-terminal-owner-recovery",
+                "exec-call-terminal-owner-recovery",
+            )
+            .unwrap(),
+            activation_id: "activation-terminal-owner-recovery".to_string(),
+            thread_id: "thread-terminal-owner-recovery".to_string(),
+            agent_id: "agent-terminal-owner-recovery".to_string(),
+            context_id: "context-terminal-owner-recovery".to_string(),
+            session_id: "session-terminal-owner-recovery".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "exec-call-terminal-owner-recovery".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-terminal-owner-recovery",
+            "trigger-terminal-owner-recovery",
+        )
+        .await;
+        let child_tool_call_id = format!("{}:background", parent.tool_call_id);
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
+                target_id: parent.target_id.clone(),
+                tool_call_id: child_tool_call_id,
+                tool_name: "exec/background".to_string(),
+                request: serde_json::json!({
+                    "kind": "background_exec",
+                    "task_id": "terminal-owner-recovery",
+                    "command": "completed-before-wake",
+                    "process_group_id": 454545,
+                    "artifact_path": "/tmp/terminal-owner-recovery.log",
+                    "started_at": chrono::Utc::now(),
+                    "effective_boundary": {}
+                }),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let claim_token = "terminal-owner-recovery-claim";
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "crashed-runtime",
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "claim",
+        )
+        .unwrap();
+        let owner = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        assert!(matches!(
+            store
+                .update_thread(
+                    &owner.id,
+                    owner.revision,
+                    None,
+                    Some(ThreadLifecycle::Completed),
+                    Some("turn completed before detached result"),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap(),
+            ThreadMutation::Updated(_)
+        ));
+        let result_event = Event::new(
+            format!("background_output_{}", job.id),
+            "System-TaskMonitor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::json!({
+                "context_id": job.context_id.clone(),
+                "session_id": job.session_id.clone(),
+                "activation_id": job.activation_id.clone(),
+                "thread_id": job.thread_id.clone(),
+                "tool_call_id": job.tool_call_id.clone(),
+                "tool_name": job.tool_name.clone(),
+                "task_id": job.id.clone(),
+                "task_status": "succeeded",
+                "process_status": "succeeded",
+                "exit_code": 0,
+                "text": ""
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        applied_background_job(
+            manager
+                .finish_with_event(
+                    &job.id,
+                    job.revision,
+                    job.claim_token.as_deref(),
+                    JobOutcome::Succeeded {
+                        result_event_id: Some(result_event.id.clone()),
+                        result_refs: Vec::new(),
+                        exit_code: Some(0),
+                    },
+                    &result_event,
+                    false,
+                )
+                .await
+                .unwrap(),
+            "terminal result without wake",
+        )
+        .unwrap();
+
+        assert_eq!(
+            scheduler
+                .recover_terminal_background_outboxes()
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            scheduler
+                .recover_terminal_background_outboxes()
+                .await
+                .unwrap(),
+            0
+        );
+        let wake = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("startup recovery must publish the persisted Session wake")
+            .expect("wake receiver must remain open");
+        assert_eq!(wake.payload["wake_kind"], "terminal_result");
+        assert_eq!(wake.payload["result_event_id"], result_event.id);
+        assert_eq!(wake.payload["source_thread_id"], parent.thread_id);
+    }
+
+    #[tokio::test]
     async fn peer_runtime_can_deliver_background_checkpoint_without_live_process_handle() {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
@@ -13190,22 +14262,16 @@ Body
         .unwrap();
         get_tasks_map().remove(&task_id);
 
-        let timer = store
-            .upsert_runtime_timer(NewRuntimeTimer {
-                id: background_wake_timer_id(&task_id),
-                generation: 1,
-                kind: RuntimeTimerKind::BackgroundWake,
-                owner_id: task_id.clone(),
-                due_at: chrono::Utc::now(),
-                payload: serde_json::json!({
-                    "task_id": task_id,
-                    "generation": 1,
-                    "check_after_secs": 1,
-                    "wake_source": "peer-runtime-test"
-                }),
-            })
+        let registration = store
+            .register_background_checkpoint(&job.id, 1, "peer-runtime-test")
             .await
             .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_050)).await;
+        let timer = store
+            .get_runtime_timer(&registration.timer_id)
+            .await
+            .unwrap()
+            .expect("registered background wake timer must exist");
         assert_eq!(
             Arc::clone(&scheduler).dispatch_timer(timer).await.unwrap(),
             TimerDisposition::Complete
@@ -13219,6 +14285,13 @@ Body
         assert_eq!(checkpoint.payload["live_owner"], false);
         assert_eq!(checkpoint.payload["thread_id"], parent.thread_id);
         assert_eq!(checkpoint.payload["activation_id"], parent.activation_id);
+        assert!(store
+            .get_execution_job(&job.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .checkpoint_due_at
+            .is_none());
         assert_eq!(
             store
                 .list_context_thread_signals(&parent.context_id, None)
@@ -13228,6 +14301,413 @@ Body
                 .filter(|signal| signal.event_id == checkpoint.id)
                 .count(),
             1
+        );
+    }
+
+    /// Regression for the check-task-wake bug (Mind frames
+    /// check-task-wake-audit-v1 / check-task-wake-fix-design-v1).
+    ///
+    /// Normal usage arms a background checkpoint and then ends the turn with
+    /// a terminal reply, which completes the owning Execution Thread. When
+    /// the checkpoint timer later becomes due, the dispatch path must not
+    /// silently discard it just because the owning Thread is terminal; the
+    /// checkpoint must escalate to the owning Session as a fresh wake.
+    ///
+    /// This test pins the desired contract: it fails while the suppression
+    /// bug exists (no Event is ever dispatched, so the receive times out)
+    /// and passes once Thread -> Session escalation is implemented.
+    #[tokio::test]
+    async fn terminal_thread_background_checkpoint_escalates_to_session() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "runtime/background_wake".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let manager = Arc::new(ExecutionJobManager::new(
+            Arc::clone(&store) as Arc<dyn ExecutionJobStore>
+        ));
+        let scheduler = Arc::new(
+            BackgroundTaskScheduler::new_with_execution_jobs(
+                Arc::clone(&bus),
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::clone(&timers),
+                Arc::clone(&manager),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+        );
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-terminal-escalation",
+                "exec-call-terminal-escalation",
+            )
+            .unwrap(),
+            activation_id: "activation-terminal-escalation".to_string(),
+            thread_id: "thread-terminal-escalation".to_string(),
+            agent_id: "agent-terminal-escalation".to_string(),
+            context_id: "context-terminal-escalation".to_string(),
+            session_id: "session-terminal-escalation".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "exec-call-terminal-escalation".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-terminal-escalation",
+            "trigger-terminal-escalation",
+        )
+        .await;
+
+        // The owning Thread completes after the background work was
+        // launched. This is the exact production shape of the bug: the turn
+        // ends with a terminal reply while the task checkpoint is still
+        // armed.
+        let owning_thread = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        store
+            .update_thread(
+                &parent.thread_id,
+                owning_thread.revision,
+                None,
+                Some(crate::memory::ThreadLifecycle::Completed),
+                Some("turn ended while the background task kept running"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let child_tool_call_id = format!("{}:background", parent.tool_call_id);
+        let task_id = deterministic_job_id(&parent.activation_id, &child_tool_call_id).unwrap();
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
+                target_id: parent.target_id.clone(),
+                tool_call_id: child_tool_call_id,
+                tool_name: "exec/background".to_string(),
+                request: serde_json::json!({
+                    "kind": "background_exec",
+                    "task_id": task_id,
+                    "command": "terminal-escalation-service",
+                    "process_group_id": 434343,
+                    "started_at": chrono::Utc::now(),
+                    "artifact_path": "/tmp/terminal-escalation-service.log",
+                    "effective_boundary": {}
+                }),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let claim_token = "terminal-escalation-background-claim";
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "owner-runtime",
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "claim",
+        )
+        .unwrap();
+        applied_background_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(chrono::Utc::now()),
+                        progress_ref: Some("/tmp/terminal-escalation-service.log"),
+                    },
+                )
+                .await
+                .unwrap(),
+            "side-effect boundary",
+        )
+        .unwrap();
+        get_tasks_map().remove(&task_id);
+
+        // Arm the checkpoint through the durable composite Job+Timer
+        // registration: ExecutionJob.checkpoint_generation/checkpoint_due_at
+        // and the physical runtime_timers row commit in one transaction.
+        let registration = store
+            .register_background_checkpoint(&job.id, 1, "terminal-escalation-regression")
+            .await
+            .unwrap();
+        let timer = store
+            .get_runtime_timer(&registration.timer_id)
+            .await
+            .unwrap()
+            .expect("registered background wake timer must exist");
+        tokio::time::sleep(std::time::Duration::from_millis(1_050)).await;
+        assert_eq!(
+            Arc::clone(&scheduler).dispatch_timer(timer).await.unwrap(),
+            TimerDisposition::Complete
+        );
+
+        // Desired contract: the due checkpoint escalates to the owning
+        // Session as a fresh Runtime Wake DialogueTurn instead of being
+        // discarded by the terminal-owning-Thread branch.
+        let checkpoint = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .expect(
+                "a due background checkpoint must not be silently discarded when its owning Thread is terminal; it must escalate to the owning Session (check-task-wake-fix-design-v1)",
+            )
+            .expect("checkpoint channel must remain open");
+        assert_eq!(checkpoint.topic, "runtime/background_wake");
+        assert_eq!(checkpoint.payload["event"], "background_task_check_due");
+        assert_eq!(checkpoint.payload["task_status"], "running");
+        assert_eq!(checkpoint.payload["execution_job_id"], job.id);
+        assert_eq!(checkpoint.payload["session_id"], parent.session_id);
+        assert_eq!(checkpoint.payload["context_id"], parent.context_id);
+        assert_eq!(checkpoint.payload["source_thread_id"], parent.thread_id);
+        assert!(store
+            .get_execution_job(&job.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .checkpoint_due_at
+            .is_none());
+        // The wake Event becomes its own DialogueTurn root with exactly one
+        // pending Signal; the terminal Thread survives only as provenance.
+        let wake_signal_count = store
+            .list_context_thread_signals(&parent.context_id, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|signal| signal.event_id == checkpoint.id)
+            .count();
+        assert_eq!(wake_signal_count, 1);
+
+        // Escalation must never revive the completed owning Thread.
+        let owning_after = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        assert_eq!(owning_after.lifecycle.as_str(), "completed");
+    }
+
+    #[tokio::test]
+    async fn terminal_supervisor_owned_child_checkpoint_is_not_session_escalated() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        {
+            let sender = sender.clone();
+            bus.subscribe(
+                "chat/tool_output".to_string(),
+                Arc::new(move |event| {
+                    let sender = sender.clone();
+                    Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+                }),
+            );
+        }
+        bus.subscribe(
+            "runtime/background_wake".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let manager = Arc::new(ExecutionJobManager::new(
+            Arc::clone(&store) as Arc<dyn ExecutionJobStore>
+        ));
+        let scheduler = Arc::new(
+            BackgroundTaskScheduler::new_with_execution_jobs(
+                Arc::clone(&bus),
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::clone(&timers),
+                Arc::clone(&manager),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+        );
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-attached-checkpoint",
+                "exec-call-attached-checkpoint",
+            )
+            .unwrap(),
+            activation_id: "activation-attached-checkpoint".to_string(),
+            thread_id: "thread-attached-checkpoint".to_string(),
+            agent_id: "agent-attached-checkpoint".to_string(),
+            context_id: "context-attached-checkpoint".to_string(),
+            session_id: "session-attached-checkpoint".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "exec-call-attached-checkpoint".to_string(),
+        };
+        seed_test_execution_route_with(
+            &store,
+            &parent,
+            "root-attached-checkpoint",
+            "trigger-attached-checkpoint",
+            ThreadSupervision::attached(
+                "thread-attached-supervisor",
+                1,
+                "eval-attached-checkpoint",
+            ),
+        )
+        .await;
+
+        let owning_thread = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        assert_eq!(
+            owning_thread.supervision.supervisor_kind,
+            ThreadSupervisorKind::Thread
+        );
+        store
+            .update_thread(
+                &parent.thread_id,
+                owning_thread.revision,
+                None,
+                Some(crate::memory::ThreadLifecycle::Completed),
+                Some("attached child completed while the background task kept running"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let child_tool_call_id = format!("{}:background", parent.tool_call_id);
+        let task_id = deterministic_job_id(&parent.activation_id, &child_tool_call_id).unwrap();
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
+                target_id: parent.target_id.clone(),
+                tool_call_id: child_tool_call_id,
+                tool_name: "exec/background".to_string(),
+                request: serde_json::json!({
+                    "kind": "background_exec",
+                    "task_id": task_id,
+                    "command": "attached-checkpoint-service",
+                    "process_group_id": 454545,
+                    "started_at": chrono::Utc::now(),
+                    "artifact_path": "/tmp/attached-checkpoint-service.log",
+                    "effective_boundary": {}
+                }),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let claim_token = "attached-checkpoint-background-claim";
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "owner-runtime",
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "claim",
+        )
+        .unwrap();
+        applied_background_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(chrono::Utc::now()),
+                        progress_ref: Some("/tmp/attached-checkpoint-service.log"),
+                    },
+                )
+                .await
+                .unwrap(),
+            "side-effect boundary",
+        )
+        .unwrap();
+        get_tasks_map().remove(&task_id);
+
+        let registration = store
+            .register_background_checkpoint(&job.id, 1, "attached-checkpoint-regression")
+            .await
+            .unwrap();
+        let timer = store
+            .get_runtime_timer(&registration.timer_id)
+            .await
+            .unwrap()
+            .expect("registered background wake timer must exist");
+        tokio::time::sleep(std::time::Duration::from_millis(1_050)).await;
+        assert_eq!(
+            Arc::clone(&scheduler).dispatch_timer(timer).await.unwrap(),
+            TimerDisposition::Complete
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), receiver.recv())
+                .await
+                .is_err(),
+            "a terminal supervisor-owned attached child must not Session-escalate a due checkpoint"
+        );
+        assert_eq!(
+            store
+                .list_context_thread_signals(&parent.context_id, None)
+                .await
+                .unwrap()
+                .len(),
+            0,
+            "suppressed attached-child checkpoints must not create a DialogueTurn"
+        );
+        let owning_after = store.get_thread(&parent.thread_id).await.unwrap().unwrap();
+        assert_eq!(owning_after.lifecycle.as_str(), "completed");
+        let job_after = store.get_execution_job(&job.id).await.unwrap().unwrap();
+        assert!(job_after.checkpoint_due_at.is_none());
+        let audit_id = format!(
+            "background_wake_audit_{}_g{}",
+            job.id, registration.checkpoint_generation
+        );
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(audit_id),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "suppressed attached-child checkpoint must retain a durable reason"
         );
     }
 

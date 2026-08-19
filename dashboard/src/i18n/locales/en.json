@@ -628,8 +628,10 @@
     "jobStates": {
       "queued": "Queued",
       "waiting_approval": "Waiting approval",
-      "running": "Running"
+      "running": "Running",
+      "cancel_requested": "Cancel requested"
     },
+    "checkpointGeneration": "g{{generation}}",
     "waitKinds": {
       "tool_task": "Waiting for tool task",
       "delegation": "Waiting for delegation",
@@ -1052,6 +1054,8 @@
       "target": "Execution target",
       "retrySafety": "Retry safety",
       "revision": "Revision",
+      "checkpointGeneration": "Checkpoint generation",
+      "checkpointDueAt": "Checkpoint due",
       "worker": "Execution worker",
       "result": "Physical result",
       "exitCode": "Exit code {{code}}",

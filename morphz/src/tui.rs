@@ -1908,10 +1908,7 @@ impl UiState {
             .iter()
             .filter(|objective| !objective.status.is_terminal())
             .count();
-        let background = get_tasks_map()
-            .iter()
-            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
-            .count();
+        let background = self.context_background_tasks().len();
         let delegations = self
             .delegations
             .iter()
@@ -1924,6 +1921,13 @@ impl UiState {
             })
             .count();
         (activations, objectives, background, delegations)
+    }
+
+    fn context_background_tasks(&self) -> &[crate::orchestrator::context::BackgroundTaskView] {
+        self.context_view
+            .as_ref()
+            .map(|view| view.background_tasks.as_slice())
+            .unwrap_or(&[])
     }
 
     fn task_overview_lines(&self) -> Vec<Line<'static>> {
@@ -2076,11 +2080,7 @@ impl UiState {
             lines.push(Line::from(""));
         }
 
-        let tasks = get_tasks_map();
-        let background = tasks
-            .iter()
-            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
-            .collect::<Vec<_>>();
+        let background = self.context_background_tasks();
         if !background.is_empty() {
             lines.push(section_title(
                 self.tr("BACKGROUND TASKS", "后台任务"),
@@ -2092,13 +2092,13 @@ impl UiState {
                 lines.push(Line::from(vec![
                     Span::styled("  ●  ", Style::default().fg(self.theme.success)),
                     Span::styled(
-                        truncate(&task.cmd_str.replace('\n', " "), 110),
+                        truncate(&task.command_preview.replace('\n', " "), 110),
                         Style::default().fg(self.theme.text_primary),
                     ),
                     Span::styled(
                         format!(
                             "  ·  {}",
-                            localized_background_status(self.locale, task.status)
+                            localized_runtime_status(self.locale, &task.status)
                         ),
                         Style::default().fg(self.theme.text_muted),
                     ),
@@ -2301,11 +2301,7 @@ impl UiState {
         }
         lines.push(Line::from(""));
 
-        let tasks = get_tasks_map();
-        let background = tasks
-            .iter()
-            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
-            .collect::<Vec<_>>();
+        let background = self.context_background_tasks();
         lines.push(section_title(
             self.tr("BACKGROUND TASKS", "后台任务"),
             background.len(),
@@ -2316,42 +2312,57 @@ impl UiState {
             lines.push(Line::from(vec![
                 Span::styled("  ◒ ", Style::default().fg(self.theme.warning)),
                 Span::styled(
-                    localized_background_status(self.locale, task.status),
+                    localized_runtime_status(self.locale, &task.status),
                     Style::default()
-                        .fg(task_status_color(
-                            background_status_str(task.status),
-                            &self.theme,
-                        ))
+                        .fg(task_status_color(&task.status, &self.theme))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     if self.locale.is_chinese() {
                         format!(
                             "  {}  ·  会话/{}  ·  {}秒",
-                            short_id(&task.id),
+                            short_id(&task.task_id),
                             short_id(&task.session_id),
-                            (Utc::now() - task.started_at).num_seconds().max(0)
+                            task.elapsed_secs
                         )
                     } else {
                         format!(
                             "  {}  ·  session/{}  ·  {}s",
-                            short_id(&task.id),
+                            short_id(&task.task_id),
                             short_id(&task.session_id),
-                            (Utc::now() - task.started_at).num_seconds().max(0)
+                            task.elapsed_secs
                         )
                     },
                     Style::default().fg(self.theme.text_muted),
                 ),
             ]));
             lines.push(Line::from(Span::styled(
-                format!("     {}", truncate(&task.cmd_str.replace('\n', " "), 180)),
+                format!(
+                    "     {}",
+                    truncate(&task.command_preview.replace('\n', " "), 180)
+                ),
                 Style::default().fg(self.theme.text_primary),
             )));
+            if let Some(due) = task.checkpoint_due_at.as_deref() {
+                lines.push(Line::from(Span::styled(
+                    if self.locale.is_chinese() {
+                        format!(
+                            "     检查点 g{} · {}",
+                            task.checkpoint_generation.unwrap_or(0),
+                            due
+                        )
+                    } else {
+                        format!(
+                            "     checkpoint g{} · {}",
+                            task.checkpoint_generation.unwrap_or(0),
+                            due
+                        )
+                    },
+                    Style::default().fg(self.theme.warning),
+                )));
+            }
         }
-        if !get_tasks_map()
-            .iter()
-            .any(|task| task.context_id == self.context_id && !task.status.is_terminal())
-        {
+        if background.is_empty() {
             lines.push(empty_state_line(
                 self.tr("No running background tasks", "没有运行中的后台任务"),
                 self.theme.text_muted,
@@ -2658,20 +2669,7 @@ impl UiState {
     }
 
     fn background_panel_lines(&self, detailed: bool) -> Vec<Line<'static>> {
-        let tasks = get_tasks_map();
-        let tasks = tasks
-            .iter()
-            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
-            .map(|task| {
-                (
-                    task.id.clone(),
-                    task.session_id.clone(),
-                    task.cmd_str.clone(),
-                    task.status,
-                    task.started_at,
-                )
-            })
-            .collect::<Vec<_>>();
+        let tasks = self.context_background_tasks();
         if tasks.is_empty() {
             return vec![empty_state_line(
                 self.tr("No running background tasks", "没有运行中的后台任务"),
@@ -2679,32 +2677,41 @@ impl UiState {
             )];
         }
         tasks
-            .into_iter()
-            .flat_map(|(id, session_id, command, status, started_at)| {
+            .iter()
+            .flat_map(|task| {
                 let mut lines = vec![Line::from(vec![
                     Span::styled("● ", Style::default().fg(self.theme.success)),
                     Span::styled(
-                        truncate(&command.replace('\n', " "), 120),
+                        truncate(&task.command_preview.replace('\n', " "), 120),
                         Style::default().fg(self.theme.text_primary),
                     ),
                     Span::styled(
-                        format!("  ·  {}", localized_background_status(self.locale, status)),
-                        Style::default().fg(task_status_color(
-                            background_status_str(status),
-                            &self.theme,
-                        )),
+                        format!(
+                            "  ·  {}",
+                            localized_runtime_status(self.locale, &task.status)
+                        ),
+                        Style::default().fg(task_status_color(&task.status, &self.theme)),
                     ),
                 ])];
                 if detailed {
+                    let mut detail = format!(
+                        "  {} · {}/{} · {}{}",
+                        short_id(&task.task_id),
+                        self.tr("session", "会话"),
+                        short_id(&task.session_id),
+                        task.elapsed_secs,
+                        self.tr("s", "秒"),
+                    );
+                    if let Some(due) = task.checkpoint_due_at.as_deref() {
+                        detail.push_str(&format!(
+                            " · {} g{} {}",
+                            self.tr("checkpoint", "检查点"),
+                            task.checkpoint_generation.unwrap_or(0),
+                            due
+                        ));
+                    }
                     lines.push(Line::from(Span::styled(
-                        format!(
-                            "  {} · {}/{} · {}{}",
-                            short_id(&id),
-                            self.tr("session", "会话"),
-                            short_id(&session_id),
-                            (Utc::now() - started_at).num_seconds().max(0),
-                            self.tr("s", "秒"),
-                        ),
+                        detail,
                         Style::default().fg(self.theme.text_muted),
                     )));
                 }
@@ -2719,10 +2726,7 @@ impl UiState {
             .as_ref()
             .map(|view| view.active_activations.len())
             .unwrap_or_default();
-        let background = get_tasks_map()
-            .iter()
-            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
-            .count();
+        let background = self.context_background_tasks().len();
         if activations + background == 0 {
             return vec![empty_state_line(
                 self.tr(
@@ -2852,11 +2856,7 @@ impl UiState {
             .as_ref()
             .map(|view| view.thread_groups.as_slice())
             .unwrap_or_default();
-        let background = get_tasks_map()
-            .iter()
-            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
-            .map(|task| (task.cmd_str.clone(), task.status))
-            .collect::<Vec<_>>();
+        let background = self.context_background_tasks();
         let delegations = self
             .delegations
             .iter()
@@ -2942,19 +2942,16 @@ impl UiState {
                 ),
             ]));
         }
-        for (command, status) in background.iter().take(4) {
+        for task in background.iter().take(4) {
             lines.push(Line::from(vec![
                 Span::styled("  ● ", Style::default().fg(self.theme.success)),
                 Span::styled(
-                    truncate(&command.replace('\n', " "), 34),
+                    truncate(&task.command_preview.replace('\n', " "), 34),
                     Style::default().fg(self.theme.text_secondary),
                 ),
                 Span::styled(
-                    format!("  {}", localized_background_status(self.locale, *status)),
-                    Style::default().fg(task_status_color(
-                        background_status_str(*status),
-                        &self.theme,
-                    )),
+                    format!("  {}", localized_runtime_status(self.locale, &task.status)),
+                    Style::default().fg(task_status_color(&task.status, &self.theme)),
                 ),
             ]));
         }
@@ -5871,9 +5868,8 @@ fn empty_state_line(message: impl Into<String>, color: Color) -> Line<'static> {
 fn task_status_color(status: &str, theme: &Theme) -> Color {
     match status {
         "running" | "active" | "succeeded" | "completed" => theme.success,
-        "queued" | "waiting_tool" | "waiting_external" | "starting" | "kill_requested" => {
-            theme.warning
-        }
+        "queued" | "waiting_tool" | "waiting_external" | "starting" | "kill_requested"
+        | "cancel_requested" => theme.warning,
         "failed" | "killed" | "cancelled" => theme.error,
         _ => theme.text_secondary,
     }
@@ -5908,7 +5904,7 @@ fn localized_runtime_status(locale: Locale, status: &str) -> String {
         "waiting_tool" => "等待工具",
         "waiting_external" => "等待外部事件",
         "starting" => "正在启动",
-        "kill_requested" => "等待终止",
+        "kill_requested" | "cancel_requested" => "等待终止",
         "succeeded" | "completed" => "已完成",
         "failed" => "已失败",
         "killed" => "已终止",

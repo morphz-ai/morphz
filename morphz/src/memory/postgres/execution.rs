@@ -156,6 +156,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             UNIQUE(activation_id, tool_call_id)
         )"#,
         r#"ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+        r#"ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS checkpoint_generation BIGINT CHECK(checkpoint_generation IS NULL OR checkpoint_generation >= 1)"#,
+        r#"ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS checkpoint_due_at TEXT"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_queue
            ON execution_jobs(status, created_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_context_status
@@ -243,6 +245,11 @@ pub(super) fn execution_job_from_row(row: &PgRow) -> Result<ExecutionJobRecord, 
         cancel_requested_at: optional_time(row, "cancel_requested_at")?,
         cancel_reason: row.get("cancel_reason"),
         progress_ref: row.get("progress_ref"),
+        checkpoint_generation: row
+            .get::<Option<i64>, _>("checkpoint_generation")
+            .map(u64::try_from)
+            .transpose()?,
+        checkpoint_due_at: optional_time(row, "checkpoint_due_at")?,
         result_event_id: row.get("result_event_id"),
         result_refs: serde_json::from_value(row.get("result_refs_json"))?,
         error: row.get("error"),
@@ -267,6 +274,11 @@ fn execution_job_monitor_from_row(row: &PgRow) -> Result<ExecutionJobMonitorReco
         progress_ref: row.get("progress_ref"),
         error: row.get("error"),
         updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+        checkpoint_generation: row
+            .get::<Option<i64>, _>("checkpoint_generation")
+            .map(u64::try_from)
+            .transpose()?,
+        checkpoint_due_at: optional_time(row, "checkpoint_due_at")?,
     })
 }
 
@@ -667,7 +679,7 @@ impl ExecutionJobStore for PostgresStore {
             return Ok(Vec::new());
         }
         let mut query = QueryBuilder::<Postgres>::new(
-            "SELECT id, activation_id, thread_id, context_id, session_id, target_id, tool_name, status, progress_ref, error, updated_at FROM execution_jobs WHERE status IN ('queued', 'waiting_approval', 'running') AND context_id IN (",
+            "SELECT id, activation_id, thread_id, context_id, session_id, target_id, tool_name, status, progress_ref, error, updated_at, checkpoint_generation, checkpoint_due_at FROM execution_jobs WHERE status IN ('queued', 'waiting_approval', 'running') AND context_id IN (",
         );
         let mut separated = query.separated(", ");
         for context_id in context_ids {
@@ -746,13 +758,17 @@ impl ExecutionJobStore for PostgresStore {
         let rows = sqlx::query(
             r#"SELECT j.*
                FROM execution_jobs j
-               JOIN threads t ON t.id = j.thread_id AND t.status = 'open'
                WHERE j.tool_name = $1
                  AND j.status IN ('succeeded', 'failed', 'cancelled', 'lost')
                  AND j.result_event_id IS NOT NULL
                  AND NOT EXISTS (
                      SELECT 1 FROM thread_signals s
                      WHERE s.event_id = j.result_event_id
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM events e
+                     WHERE e.id = 'background_wake_result_' || j.id
+                        OR e.id = 'background_wake_audit_result_' || j.id
                  )
                ORDER BY j.finished_at, j.id"#,
         )
@@ -1020,7 +1036,7 @@ impl ExecutionJobStore for PostgresStore {
         );
         query
             .push_bind(terminal.status.as_str())
-            .push(", lease_expires_at = NULL, result_event_id = ")
+            .push(", lease_expires_at = NULL, checkpoint_due_at = NULL, result_event_id = ")
             .push_bind(terminal.result_event_id)
             .push(", result_refs_json = ")
             .push_bind(serde_json::to_value(terminal.result_refs)?)
@@ -1134,7 +1150,7 @@ impl ExecutionJobStore for PostgresStore {
         );
         query
             .push_bind(terminal.status.as_str())
-            .push(", lease_expires_at = NULL, result_event_id = ")
+            .push(", lease_expires_at = NULL, checkpoint_due_at = NULL, result_event_id = ")
             .push_bind(&terminal.result_event_id)
             .push(", result_refs_json = ")
             .push_bind(serde_json::to_value(&terminal.result_refs)?)
@@ -1184,6 +1200,120 @@ impl ExecutionJobStore for PostgresStore {
         let updated = execution_job_from_row(&updated)?;
         tx.commit().await?;
         Ok(ExecutionJobMutation::Updated(updated))
+    }
+
+    async fn register_background_checkpoint(
+        &self,
+        id: &str,
+        check_after_secs: u64,
+        wake_source: &str,
+    ) -> Result<
+        crate::memory::ExecutionJobCheckpointRegistration,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query("SELECT * FROM execution_jobs WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("未找到后台 ExecutionJob '{id}'"))?;
+        let current = execution_job_from_row(&row)?;
+        if current.tool_name != "exec/background" {
+            return Err(format!("ExecutionJob '{id}' 不是后台 exec 任务，无法注册检查点").into());
+        }
+        if current.status.is_terminal() {
+            return Err(format!(
+                "后台任务 '{id}' 已经以 {} 结束，无需注册检查点",
+                current.status.as_str()
+            )
+            .into());
+        }
+        let checkpoint_generation = current.checkpoint_generation.unwrap_or(0) + 1;
+        let due_at = chrono::Utc::now()
+            + chrono::Duration::seconds(
+                i64::try_from(check_after_secs).map_err(|_| "check_after_secs 超出范围")?,
+            );
+        let due_text = due_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let updated = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, checkpoint_generation = $1, checkpoint_due_at = $2,
+                   updated_at = $3
+               WHERE id = $4 AND revision = $5
+                 AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
+        )
+        .bind(i64::try_from(checkpoint_generation)?)
+        .bind(&due_text)
+        .bind(now_text())
+        .bind(id)
+        .bind(i64::try_from(current.revision)?)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(format!("后台任务 '{id}' 检查点注册发生 revision 冲突，请重试").into());
+        }
+        let timer_id = format!("background-wake:{id}");
+        let payload = serde_json::json!({
+            "task_id": id,
+            "generation": checkpoint_generation,
+            "check_after_secs": check_after_secs,
+            "wake_source": wake_source,
+        });
+        sqlx::query(
+            r#"INSERT INTO runtime_timers
+               (id, generation, kind, owner_id, due_at, status, payload_json,
+                created_at, updated_at)
+               VALUES ($1, $2, 'background_wake', $3, $4, 'pending', $5, $6, $6)
+               ON CONFLICT(id) DO UPDATE SET
+                 generation = EXCLUDED.generation,
+                 kind = EXCLUDED.kind,
+                 owner_id = EXCLUDED.owner_id,
+                 due_at = EXCLUDED.due_at,
+                 status = 'pending',
+                 payload_json = EXCLUDED.payload_json,
+                 claimed_by = NULL,
+                 claim_expires_at = NULL,
+                 last_error = NULL,
+                 updated_at = EXCLUDED.updated_at,
+                 fired_at = NULL
+               WHERE EXCLUDED.generation > runtime_timers.generation
+                  OR (EXCLUDED.generation = runtime_timers.generation
+                      AND runtime_timers.status = 'cancelled')"#,
+        )
+        .bind(&timer_id)
+        .bind(i64::try_from(checkpoint_generation)?)
+        .bind(id)
+        .bind(&due_text)
+        .bind(&payload)
+        .bind(now_text())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(crate::memory::ExecutionJobCheckpointRegistration {
+            job_id: id.to_string(),
+            timer_id,
+            checkpoint_generation,
+            due_at,
+            check_after_secs,
+            wake_source: wake_source.to_string(),
+        })
+    }
+
+    async fn clear_background_checkpoint(
+        &self,
+        id: &str,
+        expected_generation: u64,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let result = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, checkpoint_due_at = NULL, updated_at = $1
+               WHERE id = $2 AND checkpoint_generation = $3 AND checkpoint_due_at IS NOT NULL"#,
+        )
+        .bind(now_text())
+        .bind(id)
+        .bind(i64::try_from(expected_generation)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn reconcile_execution_job_from_event(
@@ -1246,7 +1376,8 @@ impl ExecutionJobStore for PostgresStore {
         let result = sqlx::query(
             r#"UPDATE execution_jobs
                SET revision = revision + 1, status = $1, lease_expires_at = NULL,
-                   result_event_id = $2, result_refs_json = $3, error = $4,
+                   checkpoint_due_at = NULL, result_event_id = $2,
+                   result_refs_json = $3, error = $4,
                    exit_code = $5, updated_at = $6, finished_at = $7
                WHERE id = $8 AND revision = $9
                  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,

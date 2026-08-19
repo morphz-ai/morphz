@@ -1,11 +1,11 @@
 use crate::config::OrchestratorConfig;
 use crate::event::{
-    Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_SESSION_SIGNAL,
-    TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
+    Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_RUNTIME_WAKE,
+    TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{
     CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventAppend, EventStore,
-    ExecutionJobFilter, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
+    ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetRecord, ExecutionTargetStore, MindProjectionCommit, MindProjectionRecord,
@@ -22,7 +22,7 @@ use crate::orchestrator::context_contract::{
     EPISTEMIC_CONTRACT_NAME, REALITY_CONTRACT, REALITY_CONTRACT_NAME,
 };
 use crate::sexpr::{parse, SExpr};
-use crate::tool::{active_background_task_count, get_tasks_map};
+use crate::tool::{active_background_task_count, get_tasks_map, BackgroundTask};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -794,6 +794,91 @@ pub struct BackgroundTaskView {
     pub elapsed_secs: i64,
     pub last_output_age_secs: i64,
     pub next_wakeup_at: Option<String>,
+    /// Durable `check_task_after` generation. Independent of Job revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_generation: Option<u64>,
+    /// Local-time rendering of the durable checkpoint due instant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_due_at: Option<String>,
+}
+
+fn background_task_view_from_live(task: &BackgroundTask, now: DateTime<Utc>) -> BackgroundTaskView {
+    let (command_preview, _) = preview_text(&task.cmd_str, 320);
+    BackgroundTaskView {
+        task_id: task.id.clone(),
+        session_id: task.session_id.clone(),
+        root_turn_id: task
+            .causal_route
+            .as_ref()
+            .map(|route| route.root_turn_id.clone()),
+        status: task.status.as_str().to_string(),
+        command_preview,
+        elapsed_secs: (now - task.started_at).num_seconds().max(0),
+        last_output_age_secs: (now - task.last_output_at).num_seconds().max(0),
+        next_wakeup_at: task
+            .next_wakeup_at
+            .map(crate::local_time::format_utc_for_local),
+        checkpoint_generation: None,
+        checkpoint_due_at: None,
+    }
+}
+
+fn background_task_view_from_job(
+    job: &ExecutionJobRecord,
+    live: Option<&BackgroundTask>,
+    threads: &[ThreadRecord],
+    now: DateTime<Utc>,
+) -> BackgroundTaskView {
+    let started_at = job
+        .request
+        .get("started_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .or(job.started_at)
+        .unwrap_or(job.created_at);
+    let command = live
+        .map(|task| task.cmd_str.as_str())
+        .or_else(|| {
+            job.request
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("");
+    let (command_preview, _) = preview_text(command, 320);
+    let status = if job.cancel_requested_at.is_some() && !job.status.is_terminal() {
+        "cancel_requested".to_string()
+    } else {
+        job.status.as_str().to_string()
+    };
+    let checkpoint_due_at = job
+        .checkpoint_due_at
+        .map(crate::local_time::format_utc_for_local);
+    let root_turn_id = threads
+        .iter()
+        .find(|thread| thread.id == job.thread_id)
+        .map(|thread| thread.root_turn_id.clone())
+        .or_else(|| {
+            live.and_then(|task| {
+                task.causal_route
+                    .as_ref()
+                    .map(|route| route.root_turn_id.clone())
+            })
+        });
+    BackgroundTaskView {
+        task_id: job.id.clone(),
+        session_id: job.session_id.clone(),
+        root_turn_id,
+        status,
+        command_preview,
+        elapsed_secs: (now - started_at).num_seconds().max(0),
+        last_output_age_secs: live
+            .map(|task| (now - task.last_output_at).num_seconds().max(0))
+            .unwrap_or(0),
+        next_wakeup_at: checkpoint_due_at.clone(),
+        checkpoint_generation: job.checkpoint_generation,
+        checkpoint_due_at,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2924,28 +3009,28 @@ impl ContextEngine {
             .map(|item| concurrent_activation_view(item, &events))
             .collect::<Vec<_>>();
         let now = Utc::now();
-        let background_tasks = get_tasks_map()
-            .iter()
-            .filter(|task| task.context_id == context_id && !task.status.is_terminal())
-            .map(|task| {
-                let (command_preview, _) = preview_text(&task.cmd_str, 320);
-                BackgroundTaskView {
-                    task_id: task.id.clone(),
-                    session_id: task.session_id.clone(),
-                    root_turn_id: task
-                        .causal_route
-                        .as_ref()
-                        .map(|route| route.root_turn_id.clone()),
-                    status: task.status.as_str().to_string(),
-                    command_preview,
-                    elapsed_secs: (now - task.started_at).num_seconds().max(0),
-                    last_output_age_secs: (now - task.last_output_at).num_seconds().max(0),
-                    next_wakeup_at: task
-                        .next_wakeup_at
-                        .map(crate::local_time::format_utc_for_local),
-                }
-            })
-            .collect::<Vec<_>>();
+        let background_tasks = if let Some(store) = self.execution_job_store.as_ref() {
+            store
+                .list_execution_jobs(ExecutionJobFilter {
+                    context_id: Some(context_id.to_string()),
+                    tool_name: Some("exec/background".to_string()),
+                    include_terminal: false,
+                    ..ExecutionJobFilter::default()
+                })
+                .await?
+                .into_iter()
+                .map(|job| {
+                    let live = get_tasks_map().get(&job.id);
+                    background_task_view_from_job(&job, live.as_deref(), &threads, now)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            get_tasks_map()
+                .iter()
+                .filter(|task| task.context_id == context_id && !task.status.is_terminal())
+                .map(|task| background_task_view_from_live(&task, now))
+                .collect::<Vec<_>>()
+        };
         let thread_phases = threads
             .iter()
             .map(|thread| {
@@ -4592,7 +4677,7 @@ fn observation_metadata(
     for event in events {
         if matches!(
             event.event_type.as_str(),
-            TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+            TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL | TYPE_RUNTIME_WAKE
         ) {
             current_turn += 1;
             current_attempt = 0;
@@ -6218,6 +6303,15 @@ fn render_background_tasks(tasks: &[BackgroundTaskView], references: &ContextRef
                 if let Some(next_wakeup_at) = &task.next_wakeup_at {
                     fields.push(pair("next-wakeup-at", atom(next_wakeup_at)));
                 }
+                if let Some(checkpoint_generation) = task.checkpoint_generation {
+                    fields.push(pair(
+                        "checkpoint-generation",
+                        atom(checkpoint_generation.to_string()),
+                    ));
+                }
+                if let Some(checkpoint_due_at) = &task.checkpoint_due_at {
+                    fields.push(pair("checkpoint-due-at", atom(checkpoint_due_at)));
+                }
                 list("task", fields)
             })
             .collect(),
@@ -6458,7 +6552,10 @@ fn derive_thread_phase(
         .any(|intent| intent.thread_id == thread.id && intent.status == ScheduleStatus::Queued)
         || background_tasks.iter().any(|task| {
             task.root_turn_id.as_deref() == Some(thread.root_turn_id.as_str())
-                && !matches!(task.status.as_str(), "completed" | "failed" | "cancelled")
+                && !matches!(
+                    task.status.as_str(),
+                    "completed" | "succeeded" | "failed" | "cancelled" | "killed" | "lost"
+                )
         })
     {
         return ThreadPhase::Waiting;
@@ -8073,7 +8170,7 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
         .rposition(|event| {
             matches!(
                 event.event_type.as_str(),
-                TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+                TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL | TYPE_RUNTIME_WAKE
             )
         })
         .map(|index| &events[index + 1..])
@@ -8139,6 +8236,7 @@ fn wake_for(events: &[Event]) -> WakeSignal {
     let latest = events.iter().rev().find(|event| {
         event.event_type == TYPE_USER_MESSAGE
             || event.event_type == TYPE_SESSION_SIGNAL
+            || event.event_type == TYPE_RUNTIME_WAKE
             || event.event_type == TYPE_TOOL_OUTPUT
             || event.event_type == TYPE_INFER_REQUEST
     });
@@ -8163,6 +8261,8 @@ fn wake_for_event(event: &Event) -> WakeSignal {
         "user-message"
     } else if event.event_type == TYPE_SESSION_SIGNAL {
         "session-signal"
+    } else if event.event_type == TYPE_RUNTIME_WAKE {
+        "runtime-wake"
     } else if event.topic == "chat/dialogue_retry" {
         // This is the same logical DialogueTurn with a new fenced generation,
         // not a new user utterance or an unrelated infer program.

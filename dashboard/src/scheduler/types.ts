@@ -124,6 +124,8 @@ export interface ExecutionJobRecord {
   cancel_requested_at?: string
   cancel_reason?: string
   progress_ref?: string
+  checkpoint_generation?: number
+  checkpoint_due_at?: string
   result_event_id?: string
   result_refs: string[]
   error?: string
