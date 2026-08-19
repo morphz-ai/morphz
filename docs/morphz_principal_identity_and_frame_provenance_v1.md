@@ -204,17 +204,20 @@ Session 参与关系回答“谁可以通过这个 Session 交流”；Event 和
 
 显示名称只用于交流；稳定 Principal ID 才是身份锚点。
 
-## 8. `verify_identity` 工具
+## 8. `principal` 边界工具
 
-身份系统启用时，Runtime 注册逻辑内联工具 `verify_identity`：
+Runtime 注册统一的逻辑内联工具 `principal`。它不让模型选择当前 Principal，而是始终从当前 Activation 的可信路由读取身份。工具提供三个动作。
+
+验证自然语言身份声明：
 
 ```json
 {
+  "action": "verify_identity",
   "claimed_principal_id": "principal:A"
 }
 ```
 
-工具不接受 `session_id`、`activation_id` 或“实际 Principal”参数。Runtime 从当前 Activation 自动取得可信身份并比较：
+Runtime 从当前 Activation 自动取得可信身份并比较：
 
 ```json
 {
@@ -225,6 +228,23 @@ Session 参与关系回答“谁可以通过这个 Session 交流”；Event 和
 }
 ```
 
+列出当前 Principal 在当前 Agent 内仍活跃的 Session，只返回稳定 ID，不暴露其他 Principal 的 Session 元数据：
+
+```json
+{ "action": "list_sessions" }
+```
+
+验证一个已知 Session 是否属于当前 Principal；不存在、跨 Agent 或属于其他 Principal 都只返回 `belongs: false`，避免把验证接口变成目录探针：
+
+```json
+{
+  "action": "verify_session",
+  "session_id": "session:example"
+}
+```
+
+工具不接受 `activation_id` 或“实际 Principal”参数。`session_id` 只在 `verify_session` 中作为待验证对象出现，不能改变当前身份。
+
 适用场景：
 
 - 用户声称自己是另一个 Principal；
@@ -232,7 +252,13 @@ Session 参与关系回答“谁可以通过这个 Session 交流”；Event 和
 - 模型准备基于身份等价关系作出重要判断；
 - 用户明确要求验证身份。
 
-不要求每次回复和每次工具调用都先调用 `verify_identity`。强制回显正确 ID 不能证明模型内部没有混淆，反而会增加循环、Token 和延迟。第一版应依靠每轮自动身份锚点和冲突时显式验证；是否增加严格模式由后续对照实验决定。
+不要求每次回复和每次工具调用都先调用 `principal`。强制回显正确 ID 不能证明模型内部没有混淆，反而会增加循环、Token 和延迟。第一版依靠每轮自动身份锚点、首次出现提示，以及冲突或跨 Session 操作时的显式验证。
+
+### 8.1 首次出现提示
+
+认证入口接纳某个 Principal 在一个 Context 中的第一条用户消息时，会在同一数据库事务中建立唯一 encounter，并只给该条权威 Event 标记 `principal_first_seen_in_context=true`。该事实按 `(context_id, principal_id)` 唯一：同一 Principal 切换 Session 不会再次被当作新人，Runtime 重启也不会丢失。
+
+Trusted Gateway `serve` 模式会把这一事实渲染为当前 Activation 的强提示：这是一个独立、此前在该 Context 中没有交互记录的认证 Principal，不得继承其他 Principal 的姓名、偏好、关系或经历。提示不会强迫模型发起身份问卷；如何进一步建立用户画像仍属于上层 Agent 策略。默认本地单用户模式不启用这项认知提示，嵌入式 SDK 可显式开启。
 
 ## 9. Frame 来源谱系
 
@@ -418,11 +444,12 @@ SQLite 对旧表执行幂等列检测与 `ALTER TABLE`；PostgreSQL 使用独立
 1. 已引入 `PrincipalAssertion`、可插拔 `IdentityProvider`、本地默认 Provider，以及 Principal–Session 多对多参与关系；
 2. 用户消息 Event、Signal、Activation、Thread、Execution Job、Action Group 结果、审批、后台任务、Schedule、Objective 与 Delegation 均保留发起 Principal；
 3. Context Encoding 已增加 active Principal、Session–Principal Directory 和 Observation Principal；
-4. 已加入不接受 Session 参数的 `verify_identity` 内联工具及 SExpr 自描述契约；
+4. 已加入统一的 `principal` 内联工具及 SExpr 自描述契约，支持身份声明验证、本人 Session 列表和 Session 归属验证；
 5. Frame 已增加形成位置、证据来源、三态归因，并覆盖 derive/revise/retire/restore/seed/exchange；
 6. 旧身份数据不猜测：无法可靠恢复的因果身份保持空，旧 Frame 标记为 `unknown`；
 7. 已加入身份目录、幂等冲突、并发/重启因果传播、真实 Context Encoding、Frame 谱系与旧 Projection 兼容测试；真实模型对照由 `morphz-evals principal_identity_eval` 提供；
-8. “每次回复/工具调用强制验证”的严格模式尚未启用，是否需要由后续对照实验决定。
+8. 已加入按 Context 持久化、事务内唯一的 Principal 首次出现标记；Trusted Gateway 会把它作为当前 Activation 的身份边界提示，默认本地模式保持关闭；
+9. “每次回复/工具调用强制验证”的严格模式尚未启用，是否需要由后续对照实验决定。
 
 ### 13.1 信任边界
 

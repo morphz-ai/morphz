@@ -673,6 +673,35 @@ impl DeliveryIngressStore for PostgresStore {
                     .insert("after_thread_id".to_string(), json!(predecessor));
             }
         }
+        let encounter_id = format!("principal_encounter_{}", claimed_event.id);
+        let first_seen = sqlx::query(
+            r#"INSERT INTO principal_context_encounters
+               (context_id, principal_id, encounter_id, first_event_id, first_session_id, first_seen_at)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT(context_id, principal_id) DO NOTHING"#,
+        )
+        .bind(event_context_id)
+        .bind(event_principal_id)
+        .bind(&encounter_id)
+        .bind(&claimed_event.id)
+        .bind(session_id)
+        .bind(
+            claimed_event
+                .timestamp
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        if first_seen {
+            claimed_event
+                .payload
+                .insert("principal_first_seen_in_context".to_string(), json!(true));
+            claimed_event
+                .payload
+                .insert("principal_encounter_id".to_string(), json!(encounter_id));
+        }
         append_event_in_tx(&mut tx, &claimed_event).await?;
         append_dialogue_signal_in_tx(
             &mut tx,

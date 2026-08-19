@@ -556,6 +556,18 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_session_principal_bindings_principal
             ON session_principal_bindings(principal_id, unbound_at, session_id);
 
+        CREATE TABLE IF NOT EXISTS principal_context_encounters (
+            context_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            encounter_id TEXT NOT NULL UNIQUE,
+            first_event_id TEXT NOT NULL,
+            first_session_id TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            PRIMARY KEY(context_id, principal_id),
+            FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+            FOREIGN KEY(principal_id) REFERENCES principals(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS session_mounts (
             session_id TEXT NOT NULL,
             generation INTEGER NOT NULL,
@@ -1669,6 +1681,7 @@ impl SqliteStore {
         migrate_event_causal_columns(&pool).await?;
         migrate_recall_projection(&pool).await?;
         migrate_tool_call_history(&pool).await?;
+        migrate_principal_context_encounters(&pool).await?;
         migrate_attention_acknowledgements(&pool).await?;
         backfill_objective_wait_dependencies(&pool).await?;
         // Let SQLite refresh only statistics it considers stale after schema
@@ -1697,6 +1710,7 @@ const RECALL_WHOLE_DOCUMENT_INDEX_MIGRATION: &str = "20260815_01_recall_whole_do
 const RECALL_WHOLE_DOCUMENT_EVENT_BACKFILL_MIGRATION: &str =
     "20260815_02_recall_whole_document_event_backfill";
 const TOOL_CALL_HISTORY_MIGRATION: &str = "20260820_01_tool_call_history";
+const PRINCIPAL_CONTEXT_ENCOUNTERS_MIGRATION: &str = "20260820_02_principal_context_encounters";
 
 async fn sqlite_migration_applied(
     pool: &SqlitePool,
@@ -2942,6 +2956,69 @@ async fn migrate_tool_call_history(
     .bind(&now)
     .bind(&now)
     .bind(&now)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Persist the first authenticated interaction of each Principal in a
+/// Cognitive Context. The marker is independent from Session membership: a
+/// Principal may use several Sessions, while first-seen is Context-scoped.
+async fn migrate_principal_context_encounters(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut tx = pool.begin().await?;
+    let claimed =
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(PRINCIPAL_CONTEXT_ENCOUNTERS_MIGRATION)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .execute(&mut *tx)
+            .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS principal_context_encounters (
+            context_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            encounter_id TEXT NOT NULL UNIQUE,
+            first_event_id TEXT NOT NULL,
+            first_session_id TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            PRIMARY KEY(context_id, principal_id),
+            FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+            FOREIGN KEY(principal_id) REFERENCES principals(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO principal_context_encounters
+           (context_id, principal_id, encounter_id, first_event_id, first_session_id, first_seen_at)
+           SELECT event.context_id,
+                  json_extract(event.payload, '$.principal_id'),
+                  'principal_encounter_' || event.id,
+                  event.id,
+                  event.session_id,
+                  event.timestamp
+           FROM events event
+           WHERE event.topic = 'chat/user_message'
+             AND event.context_id IS NOT NULL
+             AND event.session_id IS NOT NULL
+             AND json_type(event.payload, '$.principal_id') = 'text'
+             AND event.rowid = (
+                 SELECT candidate.rowid
+                 FROM events candidate
+                 WHERE candidate.topic = 'chat/user_message'
+                   AND candidate.context_id = event.context_id
+                   AND json_extract(candidate.payload, '$.principal_id') =
+                       json_extract(event.payload, '$.principal_id')
+                 ORDER BY candidate.rowid
+                 LIMIT 1
+             )"#,
+    )
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -14425,6 +14502,36 @@ impl DeliveryIngressStore for SqliteStore {
                         serde_json::json!(predecessor),
                     );
                 }
+            }
+            let encounter_id = format!("principal_encounter_{}", claimed_event.id);
+            let first_seen = sqlx::query(
+                r#"INSERT OR IGNORE INTO principal_context_encounters
+                   (context_id, principal_id, encounter_id, first_event_id, first_session_id, first_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?)"#,
+            )
+            .bind(event_context_id)
+            .bind(event_principal_id)
+            .bind(&encounter_id)
+            .bind(&claimed_event.id)
+            .bind(session_id)
+            .bind(
+                claimed_event
+                    .timestamp
+                    .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+            )
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                == 1;
+            if first_seen {
+                claimed_event.payload.insert(
+                    "principal_first_seen_in_context".to_string(),
+                    serde_json::json!(true),
+                );
+                claimed_event.payload.insert(
+                    "principal_encounter_id".to_string(),
+                    serde_json::json!(encounter_id),
+                );
             }
             let timestamp = event
                 .timestamp
@@ -33869,6 +33976,123 @@ mod tests {
             .await
             .unwrap(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn principal_encounter_migration_prevents_returning_principal_from_becoming_first_seen() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "encounter-migration-agent".to_string(),
+                    title: "Encounter Migration Agent".to_string(),
+                    root_context_id: "encounter-migration-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "encounter-migration-context".to_string(),
+                    agent_id: "encounter-migration-agent".to_string(),
+                    title: "Encounter Migration Context".to_string(),
+                },
+                NewSession {
+                    id: "encounter-migration-session".to_string(),
+                    agent_id: "encounter-migration-agent".to_string(),
+                    context_id: "encounter-migration-context".to_string(),
+                    parent_session_id: None,
+                    title: "Encounter Migration Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .ensure_principal(NewPrincipal {
+                id: "encounter-migration-principal".to_string(),
+                provider_id: "test".to_string(),
+                assurance: "verified".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal(
+                "encounter-migration-session",
+                "encounter-migration-principal",
+            )
+            .await
+            .unwrap();
+        let legacy = Event::new(
+            "encounter-migration-legacy-event".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "encounter-migration-context",
+                "session_id": "encounter-migration-session",
+                "principal_id": "encounter-migration-principal",
+                "text": "legacy authenticated interaction"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(legacy.clone()).await.unwrap();
+
+        sqlx::query("DELETE FROM principal_context_encounters")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
+            .bind(PRINCIPAL_CONTEXT_ENCOUNTERS_MIGRATION)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.pool.close().await;
+
+        let reopened = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        let returning = Event::new(
+            "encounter-migration-returning-event".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "encounter-migration-context",
+                "session_id": "encounter-migration-session",
+                "principal_id": "encounter-migration-principal",
+                "text": "returning after upgrade"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let claimed = reopened
+            .claim_message(
+                "encounter-migration-session",
+                "encounter-migration-returning-client",
+                &returning,
+                MessageDispatchMode::Parallel,
+            )
+            .await
+            .unwrap();
+        let returning = match claimed {
+            MessageClaim::Accepted { event, .. } => event,
+            other => panic!("unexpected returning message claim: {other:?}"),
+        };
+        assert!(!returning
+            .payload
+            .contains_key("principal_first_seen_in_context"));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT first_event_id FROM principal_context_encounters WHERE context_id = ? AND principal_id = ?",
+            )
+            .bind("encounter-migration-context")
+            .bind("encounter-migration-principal")
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap(),
+            legacy.id
         );
     }
 

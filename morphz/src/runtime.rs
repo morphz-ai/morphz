@@ -101,9 +101,9 @@ use crate::secret_store::{
 use crate::timer::TimerEngine;
 use crate::tool::{
     BackgroundTaskScheduler, CheckTaskAfterTool, DelegateTool, EditFileTool, ExecuteCommandTool,
-    KillTaskTool, ListFilesTool, ListSecretsTool, ListSkillsTool, ListTasksTool, ReadFileTool,
-    Registry, ScheduleTxTool, SearchTool, SendMessageTool, SessionSignalTool, TaskStatusTool,
-    ThreadScheduler, VerifyIdentityTool, WriteFileTool,
+    KillTaskTool, ListFilesTool, ListSecretsTool, ListSkillsTool, ListTasksTool, PrincipalTool,
+    ReadFileTool, Registry, ScheduleTxTool, SearchTool, SendMessageTool, SessionSignalTool,
+    TaskStatusTool, ThreadScheduler, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -858,6 +858,7 @@ pub struct MorphzRuntimeBuilder {
     approval_provider: Option<Arc<dyn ApprovalProvider>>,
     reviewer_client: Option<Arc<dyn Client>>,
     identity_provider: Option<Arc<dyn IdentityProvider>>,
+    principal_first_seen_cues: bool,
     secret_store: Option<Arc<SecretStore>>,
     provider_auth_registry: Option<crate::provider::auth::AuthAdapterRegistry>,
     execution_target_backends: Vec<Arc<dyn crate::execution_target::ExecutionTargetBackend>>,
@@ -875,6 +876,7 @@ impl MorphzRuntimeBuilder {
             approval_provider: None,
             reviewer_client: None,
             identity_provider: None,
+            principal_first_seen_cues: false,
             secret_store: None,
             provider_auth_registry: None,
             execution_target_backends: Vec::new(),
@@ -923,6 +925,14 @@ impl MorphzRuntimeBuilder {
 
     pub fn identity_provider(mut self, provider: Arc<dyn IdentityProvider>) -> Self {
         self.identity_provider = Some(provider);
+        self
+    }
+
+    /// Presents a durable first-interaction cue on the first authenticated
+    /// message from each Principal in a Cognitive Context. Trusted Gateway
+    /// hosts enable this by default; embedded SDK hosts may opt in explicitly.
+    pub fn principal_first_seen_cues(mut self, enabled: bool) -> Self {
+        self.principal_first_seen_cues = enabled;
         self
     }
 
@@ -1114,6 +1124,7 @@ impl MorphzRuntimeBuilder {
                 self.config.orchestrator.clone(),
             )
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_principal_first_seen_cues(self.principal_first_seen_cues)
             .with_model_context_capacity(Arc::clone(&model_context_capacity))
             .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
             .with_session_projection_store(
@@ -1626,7 +1637,7 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         .with_objective_store(objective_supervisor.store())
         .with_scheduler_kernel(Arc::clone(scheduler_kernel)),
     ));
-    registry.register(Arc::new(VerifyIdentityTool::new(
+    registry.register(Arc::new(PrincipalTool::new(
         context_engine
             .session_store()
             .expect("Runtime ContextEngine 必须配置 SessionStore"),

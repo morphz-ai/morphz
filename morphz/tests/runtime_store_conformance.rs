@@ -1923,6 +1923,142 @@ where
         .unwrap());
 }
 
+async fn assert_principal_first_seen_conformance<S>(store: Arc<S>)
+where
+    S: DeliveryIngressStore + SessionDirectoryStore + Send + Sync + 'static,
+{
+    const PRINCIPAL_A: &str = "conformance-first-seen-principal-a";
+    const PRINCIPAL_B: &str = "conformance-first-seen-principal-b";
+    for principal_id in [PRINCIPAL_A, PRINCIPAL_B] {
+        store
+            .ensure_principal(NewPrincipal {
+                id: principal_id.to_string(),
+                provider_id: "conformance".to_string(),
+                assurance: "verified".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+    }
+    for (session_id, principal_id) in [
+        ("conformance-first-seen-session-a1", PRINCIPAL_A),
+        ("conformance-first-seen-session-a2", PRINCIPAL_A),
+        ("conformance-first-seen-session-b", PRINCIPAL_B),
+    ] {
+        store
+            .create_session(NewSession {
+                id: session_id.to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                parent_session_id: Some("conformance-session".to_string()),
+                title: session_id.to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal(session_id, principal_id)
+            .await
+            .unwrap();
+    }
+
+    let claim = |session_id: &'static str,
+                 principal_id: &'static str,
+                 event_id: &'static str,
+                 client_message_id: &'static str| {
+        let store = Arc::clone(&store);
+        async move {
+            let event = Event::new(
+                event_id.to_string(),
+                "Store-Conformance".to_string(),
+                morphz::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                json!({
+                    "context_id": "conformance-context",
+                    "session_id": session_id,
+                    "principal_id": principal_id,
+                    "text": event_id
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
+            match store
+                .claim_message(
+                    session_id,
+                    client_message_id,
+                    &event,
+                    MessageDispatchMode::Parallel,
+                )
+                .await
+                .unwrap()
+            {
+                MessageClaim::Accepted { event, .. } => event,
+                other => panic!("unexpected first-seen message claim: {other:?}"),
+            }
+        }
+    };
+
+    let first_a = claim(
+        "conformance-first-seen-session-a1",
+        PRINCIPAL_A,
+        "conformance-first-seen-event-a1",
+        "conformance-first-seen-client-a1",
+    )
+    .await;
+    assert_eq!(
+        first_a
+            .payload
+            .get("principal_first_seen_in_context")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        first_a
+            .payload
+            .get("principal_encounter_id")
+            .and_then(serde_json::Value::as_str),
+        Some("principal_encounter_conformance-first-seen-event-a1")
+    );
+
+    let second_a = claim(
+        "conformance-first-seen-session-a1",
+        PRINCIPAL_A,
+        "conformance-first-seen-event-a2",
+        "conformance-first-seen-client-a2",
+    )
+    .await;
+    assert!(!second_a
+        .payload
+        .contains_key("principal_first_seen_in_context"));
+
+    let other_session_a = claim(
+        "conformance-first-seen-session-a2",
+        PRINCIPAL_A,
+        "conformance-first-seen-event-a3",
+        "conformance-first-seen-client-a3",
+    )
+    .await;
+    assert!(!other_session_a
+        .payload
+        .contains_key("principal_first_seen_in_context"));
+
+    let first_b = claim(
+        "conformance-first-seen-session-b",
+        PRINCIPAL_B,
+        "conformance-first-seen-event-b1",
+        "conformance-first-seen-client-b1",
+    )
+    .await;
+    assert_eq!(
+        first_b
+            .payload
+            .get("principal_first_seen_in_context")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
 async fn assert_scheduler_dependency_conformance<S>(store: Arc<S>)
 where
     S: EventStore + SchedulerDependencyStore + Send + Sync + 'static,
@@ -7849,6 +7985,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         .await
         .unwrap();
     assert_session_directory_conformance(Arc::clone(&store)).await;
+    assert_principal_first_seen_conformance(Arc::clone(&store)).await;
     assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
         Box::pin(async move {
             Ok(store.get_session(session_id).await?.map(|session| {
@@ -7962,6 +8099,8 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260816_02_edge_command_notifications",
         "20260816_03_directory_domain_constraints",
         "20260816_04_core_domain_constraints",
+        "20260820_01_tool_call_history",
+        "20260820_02_principal_context_encounters",
     ] {
         assert!(
             applied_migrations.contains(version),
@@ -8173,6 +8312,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .await
         .unwrap();
     assert_session_directory_conformance(Arc::clone(&store)).await;
+    assert_principal_first_seen_conformance(Arc::clone(&store)).await;
     assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
         Box::pin(async move {
             Ok(store.get_session(session_id).await?.map(|session| {

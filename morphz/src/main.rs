@@ -224,8 +224,11 @@ async fn main() -> Result<(), AppError> {
     };
     let needs_workers = command_needs_llm(&invocation);
     let client = build_client(&invocation, &app_config, needs_workers)?;
+    let trusted_gateway_serve = invocation.command_path() == ["serve"]
+        && app_config.server.identity.mode == config::ServerIdentityMode::TrustedGateway;
     let runtime = MorphzRuntime::builder(app_config.clone(), client)
         .identity(identity)
+        .principal_first_seen_cues(trusted_gateway_serve)
         .build()
         .await?;
     if needs_workers {
@@ -236,8 +239,6 @@ async fn main() -> Result<(), AppError> {
         // keeps the lack of an API key harmless and avoids background workers.
         ensure_cli_identity_records(&runtime, &default_agent_id, &default_context_id).await?;
     }
-    let trusted_gateway_serve = invocation.command_path() == ["serve"]
-        && app_config.server.identity.mode == config::ServerIdentityMode::TrustedGateway;
     if !trusted_gateway_serve {
         let sdk = MorphzSdk::new(runtime.clone());
         sdk.adopt_sessions_for_default_principal(sdk.default_principal(), true)

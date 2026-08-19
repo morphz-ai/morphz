@@ -226,6 +226,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260820_02_principal_context_encounters",
+                    store.migrate_principal_context_encounters(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260724_01_event_causal_projection",
                     store.migrate_event_causal_projection(),
                 )
@@ -586,6 +592,15 @@ impl PostgresStore {
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_session_principal_bindings_principal
                ON session_principal_bindings(principal_id, unbound_at, session_id)"#,
+            r#"CREATE TABLE IF NOT EXISTS principal_context_encounters (
+                context_id TEXT NOT NULL REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+                encounter_id TEXT NOT NULL UNIQUE,
+                first_event_id TEXT NOT NULL,
+                first_session_id TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                PRIMARY KEY(context_id, principal_id)
+            )"#,
             r#"CREATE TABLE IF NOT EXISTS events (
                 sequence BIGSERIAL PRIMARY KEY,
                 id TEXT NOT NULL UNIQUE,
@@ -1069,6 +1084,47 @@ impl PostgresStore {
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
+        Ok(())
+    }
+
+    async fn migrate_principal_context_encounters(&self) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS principal_context_encounters (
+                context_id TEXT NOT NULL REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+                encounter_id TEXT NOT NULL UNIQUE,
+                first_event_id TEXT NOT NULL,
+                first_session_id TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                PRIMARY KEY(context_id, principal_id)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO principal_context_encounters
+               (context_id, principal_id, encounter_id, first_event_id, first_session_id, first_seen_at)
+               SELECT first_event.context_id,
+                      first_event.principal_id,
+                      'principal_encounter_' || first_event.id,
+                      first_event.id,
+                      first_event.session_id,
+                      first_event.timestamp
+               FROM (
+                   SELECT DISTINCT ON (context_id, payload->>'principal_id')
+                          context_id, payload->>'principal_id' AS principal_id,
+                          id, session_id, timestamp
+                   FROM events
+                   WHERE topic = 'chat/user_message'
+                     AND context_id IS NOT NULL
+                     AND session_id IS NOT NULL
+                     AND jsonb_typeof(payload->'principal_id') = 'string'
+                   ORDER BY context_id, payload->>'principal_id', sequence
+               ) first_event
+               ON CONFLICT(context_id, principal_id) DO NOTHING"#,
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

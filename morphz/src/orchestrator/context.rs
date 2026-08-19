@@ -734,6 +734,12 @@ pub struct ActivationFocus {
     /// not inferred from Session membership or conversational content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_id: Option<String>,
+    /// Durable fact attached atomically to the first authenticated user Event
+    /// for this Principal in the current Cognitive Context.
+    #[serde(default)]
+    pub principal_first_seen_in_context: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_encounter_id: Option<String>,
     pub root_turn_id: String,
     /// Exact immutable Event carrying the original task. This differs from
     /// `root_turn_id` for scheduled Threads, whose stable route ID is
@@ -1246,6 +1252,7 @@ pub struct ContextEngine {
     execution_target_store: Option<Arc<dyn ExecutionTargetStore>>,
     execution_target_authorization_store: Option<Arc<dyn ExecutionTargetAuthorizationStore>>,
     worker_coordination_mode: WorkerCoordinationMode,
+    principal_first_seen_cues: bool,
     config: OrchestratorConfig,
     model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
     context_locks: DashMap<String, Weak<Mutex<()>>>,
@@ -1298,6 +1305,7 @@ impl ContextEngine {
             execution_target_store: None,
             execution_target_authorization_store: None,
             worker_coordination_mode: WorkerCoordinationMode::ExclusiveProcess,
+            principal_first_seen_cues: false,
             config,
             model_context_capacity: Arc::new(RwLock::new(fallback_capacity)),
             context_locks: DashMap::new(),
@@ -1307,6 +1315,14 @@ impl ContextEngine {
 
     pub fn with_session_store(mut self, session_store: Arc<dyn SessionStore>) -> Self {
         self.session_store = Some(session_store);
+        self
+    }
+
+    /// Enables presentation of the durable Principal-arrival fact to the
+    /// model. Ingress records encounter state regardless of this policy, so a
+    /// later policy change cannot misclassify a returning Principal as new.
+    pub fn with_principal_first_seen_cues(mut self, enabled: bool) -> Self {
+        self.principal_first_seen_cues = enabled;
         self
     }
 
@@ -2993,14 +3009,19 @@ impl ContextEngine {
             }
         }
         let activation = activation_record.map(|current| {
-            activation_focus(
+            let mut focus = activation_focus(
                 current,
                 &activation_signals,
                 &events,
                 activation_thread.as_ref(),
                 activation_root_event.as_ref(),
                 activation_trigger_event.as_ref(),
-            )
+            );
+            if !self.principal_first_seen_cues {
+                focus.principal_first_seen_in_context = false;
+                focus.principal_encounter_id = None;
+            }
+            focus
         });
         let concurrent_activations = active_activations
             .iter()
@@ -6001,27 +6022,35 @@ fn render_current_activation(
     evaluation: &ActivationFocus,
     references: &ContextReferences,
 ) -> SExpr {
+    let mut principal = vec![
+        pair(
+            "id",
+            atom(evaluation.principal_id.as_deref().unwrap_or("unknown")),
+        ),
+        pair("authority", atom("runtime")),
+        pair(
+            "binding",
+            atom(if evaluation.principal_id.is_some() {
+                "verified"
+            } else {
+                "unknown"
+            }),
+        ),
+    ];
+    if evaluation.principal_first_seen_in_context {
+        principal.extend([
+            pair("first-seen-in-context", atom("true")),
+            pair("prior-cognition", atom("none")),
+            pair("identity-equivalence", atom("none")),
+        ]);
+        if let Some(encounter_id) = &evaluation.principal_encounter_id {
+            principal.push(pair("encounter", atom(encounter_id)));
+        }
+    }
     let mut fields = vec![
         pair("id", atom(&evaluation.activation_id)),
         pair("session", atom(&evaluation.session_id)),
-        list(
-            "principal",
-            vec![
-                pair(
-                    "id",
-                    atom(evaluation.principal_id.as_deref().unwrap_or("unknown")),
-                ),
-                pair("authority", atom("runtime")),
-                pair(
-                    "binding",
-                    atom(if evaluation.principal_id.is_some() {
-                        "verified"
-                    } else {
-                        "unknown"
-                    }),
-                ),
-            ],
-        ),
+        list("principal", principal),
         list(
             "root-turn",
             vec![
@@ -6241,6 +6270,36 @@ fn render_evaluation_directive(
                 atom("every DialogueTurn input batch must produce one coherent ordinary-text reply to the current Session that covers all consecutive inputs, unless silence is semantically intentional and no_reply is called explicitly"),
             ),
         ];
+    if evaluation.principal_first_seen_in_context {
+        fields.insert(
+            1,
+            list(
+                "principal-arrival",
+                vec![
+                    pair(
+                        "principal",
+                        atom(evaluation.principal_id.as_deref().unwrap_or("unknown")),
+                    ),
+                    pair("first-seen-in-context", atom("true")),
+                    pair("prior-cognition", atom("none")),
+                    pair("identity-equivalence", atom("none")),
+                    pair(
+                        "encounter",
+                        atom(
+                            evaluation
+                                .principal_encounter_id
+                                .as_deref()
+                                .unwrap_or("unknown"),
+                        ),
+                    ),
+                    pair(
+                        "instruction",
+                        atom("treat this as a distinct authenticated Principal. Do not inherit another Principal's name, preferences, experiences, relationships, or claims; answer the current request normally without forcing an identity questionnaire"),
+                    ),
+                ],
+            ),
+        );
+    }
     if !objective_context.is_empty() {
         fields.push(list("objective-context", objective_context));
     }
@@ -7826,7 +7885,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "verify",
-                        atom("call verify_identity when an identity conflict or equivalence affects judgment, or when the user explicitly requests verification. Do not pass a Session ID; the Runtime verifies the current Activation"),
+                        atom("call principal with action=verify_identity when an identity conflict or equivalence affects judgment, or when the user explicitly requests verification. Use action=list_sessions or action=verify_session when a Session ownership boundary affects retrieval or sharing. The Runtime supplies the current Activation Principal; never infer or pass it"),
                     ),
                     pair(
                         "autonomy",
@@ -9085,6 +9144,17 @@ fn activation_focus(
             .find(|event| event.id == activation.trigger_event_id)
     });
     let effective_root = root.or(trigger);
+    let principal_first_seen_in_context = effective_root.is_some_and(|event| {
+        event
+            .payload
+            .get("principal_first_seen_in_context")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+    });
+    let principal_encounter_id = effective_root
+        .and_then(|event| event.payload.get("principal_encounter_id"))
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
     let objective_id = root
         .and_then(|event| event.payload.get("objective_id"))
         .and_then(|value| value.as_str())
@@ -9133,6 +9203,8 @@ fn activation_focus(
             .clone()
             .or_else(|| trigger.and_then(event_principal).map(ToOwned::to_owned))
             .or_else(|| root.and_then(event_principal).map(ToOwned::to_owned)),
+        principal_first_seen_in_context,
+        principal_encounter_id,
         root_turn_id: activation.root_turn_id.clone(),
         root_event_id: effective_root
             .map(|event| event.id.clone())
@@ -11561,6 +11633,8 @@ mod tests {
             activation_id: "work-current".to_string(),
             session_id: "s1".to_string(),
             principal_id: None,
+            principal_first_seen_in_context: false,
+            principal_encounter_id: None,
             root_turn_id: "user:1".to_string(),
             root_event_id: "user:1".to_string(),
             thread_kind: "dialogue_turn".to_string(),
@@ -11874,6 +11948,8 @@ mod tests {
             activation_id: "work-dialogue".to_string(),
             session_id: "session-a".to_string(),
             principal_id: Some("principal:a".to_string()),
+            principal_first_seen_in_context: false,
+            principal_encounter_id: None,
             root_turn_id: "message-new".to_string(),
             root_event_id: "message-new".to_string(),
             thread_kind: "dialogue_turn".to_string(),
@@ -11924,6 +12000,47 @@ mod tests {
         assert!(rendered.contains("(status active)"));
         assert!(rendered.contains("(role background-read-only)"));
         assert!(rendered.contains("(goal 继续后台编码任务)"));
+    }
+
+    #[test]
+    fn first_seen_principal_is_rendered_as_a_distinct_authenticated_arrival() {
+        let evaluation = ActivationFocus {
+            activation_id: "work-first-seen".to_string(),
+            session_id: "session-first-seen".to_string(),
+            principal_id: Some("principal:new".to_string()),
+            principal_first_seen_in_context: true,
+            principal_encounter_id: Some("principal_encounter_event-new".to_string()),
+            root_turn_id: "event-new".to_string(),
+            root_event_id: "event-new".to_string(),
+            thread_kind: "dialogue_turn".to_string(),
+            root_kind: "chat/user_message".to_string(),
+            root_preview: "hello".to_string(),
+            trigger_event_id: "event-new".to_string(),
+            trigger_kind: "chat/user_message".to_string(),
+            trigger_preview: "hello".to_string(),
+            trigger_fallback_preview: None,
+            signal_batch: Vec::new(),
+            objective_id: None,
+            objective_evaluation_id: None,
+            supervisor_kind: "runtime".to_string(),
+            supervisor_id: Some("dialogue-router".to_string()),
+        };
+
+        let current =
+            render_current_activation(&evaluation, &ContextReferences::default()).to_string();
+        assert!(current.contains("(first-seen-in-context true)"));
+        assert!(current.contains("(prior-cognition none)"));
+        assert!(current.contains("(identity-equivalence none)"));
+        assert!(current.contains("(encounter principal_encounter_event-new)"));
+
+        let directive =
+            render_evaluation_directive(&evaluation, &[], &ContextReferences::default())
+                .to_string();
+        assert!(directive.contains("(principal-arrival"));
+        assert!(directive.contains("(principal principal:new)"));
+        assert!(directive.contains("(first-seen-in-context true)"));
+        assert!(directive.contains("distinct authenticated Principal"));
+        assert!(directive.contains("without forcing an identity questionnaire"));
     }
 
     #[test]
@@ -12193,6 +12310,8 @@ mod tests {
             activation_id: "work-control".to_string(),
             session_id: "session-control".to_string(),
             principal_id: None,
+            principal_first_seen_in_context: false,
+            principal_encounter_id: None,
             root_turn_id: "user:root".to_string(),
             root_event_id: "user:root".to_string(),
             thread_kind: "execution".to_string(),

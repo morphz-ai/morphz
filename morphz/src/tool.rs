@@ -212,41 +212,89 @@ impl ToolExecutionResult {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VerifyIdentityArgs {
-    claimed_principal_id: String,
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum PrincipalArgs {
+    VerifyIdentity { claimed_principal_id: String },
+    ListSessions,
+    VerifySession { session_id: String },
 }
 
-pub struct VerifyIdentityTool {
+impl PrincipalArgs {
+    fn action(&self) -> &'static str {
+        match self {
+            Self::VerifyIdentity { .. } => "verify_identity",
+            Self::ListSessions => "list_sessions",
+            Self::VerifySession { .. } => "verify_session",
+        }
+    }
+}
+
+pub struct PrincipalTool {
     sessions: Arc<dyn SessionStore>,
 }
 
-impl VerifyIdentityTool {
+impl PrincipalTool {
     pub fn new(sessions: Arc<dyn SessionStore>) -> Self {
         Self { sessions }
+    }
+
+    async fn active_route(
+        &self,
+    ) -> Result<
+        Option<(String, crate::memory::SessionRecord)>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let session_id = CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "principal requires an active Session route")?;
+        let principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
+        let Some(principal_id) = principal_id else {
+            return Ok(None);
+        };
+        let Some(session) = self.sessions.get_session(&session_id).await? else {
+            return Err(format!("active Session '{session_id}' does not exist").into());
+        };
+        if !self
+            .sessions
+            .verify_session_principal(&session_id, &principal_id)
+            .await?
+        {
+            return Ok(None);
+        }
+        Ok(Some((principal_id, session)))
     }
 }
 
 #[async_trait::async_trait]
-impl Tool for VerifyIdentityTool {
+impl Tool for PrincipalTool {
     fn name(&self) -> &str {
-        "verify_identity"
+        "principal"
     }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Verify whether a Principal claimed in message content is the authoritative Runtime identity for the current Activation. Do not pass session_id; the Runtime uses the current evaluation route. Use when a claim conflicts with kernel.active-principal, identity equivalence affects judgment, or the user explicitly requests verification. This verifies identity facts but does not decide disclosure.".to_string(),
+            description: "Inspect Runtime-authoritative identity boundaries for the current Activation. The Runtime supplies the active Principal; the model cannot select or impersonate it. verify_identity checks a natural-language identity claim, list_sessions returns active Session IDs owned by this Principal within the current Agent, and verify_session checks whether one Session belongs to this Principal without disclosing foreign Session metadata. Identity facts do not decide disclosure.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["verify_identity", "list_sessions", "verify_session"],
+                        "description": "Operation to perform"
+                    },
                     "claimed_principal_id": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Stable Principal ID to verify, not a display name or Session ID"
+                        "description": "Required only for verify_identity. Stable Principal ID to verify, not a display name or Session ID"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Required only for verify_session. Session ID whose ownership should be checked"
                     }
                 },
-                "required": ["claimed_principal_id"],
+                "required": ["action"],
                 "additionalProperties": false
             }),
         }
@@ -260,36 +308,76 @@ impl Tool for VerifyIdentityTool {
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let args: VerifyIdentityArgs = serde_json::from_str(arguments)?;
-        let claimed = args.claimed_principal_id.trim();
-        if claimed.is_empty() {
-            return Err("claimed_principal_id 不能为空".into());
-        }
-        let session_id = CURRENT_SESSION_ID
-            .try_with(Clone::clone)
-            .map_err(|_| "verify_identity 缺少当前 Session 路由")?;
-        let active_principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
-        let Some(active_principal_id) = active_principal_id else {
+        let args: PrincipalArgs = serde_json::from_str(arguments)?;
+        let action = args.action();
+        let Some((active_principal_id, active_session)) = self.active_route().await? else {
             return Ok(serde_json::json!({
-                "verified": false,
-                "claimed_principal_id": claimed,
+                "action": action,
+                "available": false,
                 "reason": "no_active_principal",
                 "authority": "runtime"
             })
             .to_string());
         };
-        let binding_valid = self
-            .sessions
-            .verify_session_principal(&session_id, &active_principal_id)
-            .await?;
-        Ok(serde_json::json!({
-            "verified": binding_valid && claimed == active_principal_id,
-            "claimed_principal_id": claimed,
-            "active_principal_id": active_principal_id,
-            "session_binding_valid": binding_valid,
-            "authority": "runtime"
-        })
-        .to_string())
+        let result = match args {
+            PrincipalArgs::VerifyIdentity {
+                claimed_principal_id,
+            } => {
+                let claimed = claimed_principal_id.trim();
+                if claimed.is_empty() {
+                    return Err("claimed_principal_id must not be empty".into());
+                }
+                serde_json::json!({
+                    "action": "verify_identity",
+                    "verified": claimed == active_principal_id,
+                    "claimed_principal_id": claimed,
+                    "active_principal_id": active_principal_id,
+                    "session_binding_valid": true,
+                    "authority": "runtime"
+                })
+            }
+            PrincipalArgs::ListSessions => {
+                let session_ids = self
+                    .sessions
+                    .list_principal_sessions(&active_principal_id, false)
+                    .await?
+                    .into_iter()
+                    .filter(|candidate| candidate.agent_id == active_session.agent_id)
+                    .map(|candidate| candidate.id)
+                    .collect::<Vec<_>>();
+                serde_json::json!({
+                    "action": "list_sessions",
+                    "principal_id": active_principal_id,
+                    "agent_id": active_session.agent_id,
+                    "session_ids": session_ids,
+                    "authority": "runtime"
+                })
+            }
+            PrincipalArgs::VerifySession {
+                session_id: candidate_id,
+            } => {
+                let candidate_id = candidate_id.trim();
+                if candidate_id.is_empty() {
+                    return Err("session_id must not be empty".into());
+                }
+                let belongs = match self.sessions.get_session(candidate_id).await? {
+                    Some(candidate) if candidate.agent_id == active_session.agent_id => {
+                        self.sessions
+                            .verify_session_principal(candidate_id, &active_principal_id)
+                            .await?
+                    }
+                    _ => false,
+                };
+                serde_json::json!({
+                    "action": "verify_session",
+                    "session_id": candidate_id,
+                    "belongs": belongs,
+                    "principal_id": active_principal_id,
+                    "authority": "runtime"
+                })
+            }
+        };
+        Ok(result.to_string())
     }
 }
 
@@ -9028,7 +9116,7 @@ Body
     }
 
     #[tokio::test]
-    async fn verify_identity_uses_runtime_route_not_model_supplied_session() {
+    async fn principal_tool_uses_runtime_identity_and_returns_only_owned_sessions() {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
@@ -9071,16 +9159,66 @@ Body
             .bind_session_principal("verify-session", "principal:a")
             .await
             .unwrap();
-        let tool = VerifyIdentityTool::new(store as Arc<dyn SessionStore>);
+        store
+            .create_session(NewSession {
+                id: "owned-session".to_string(),
+                agent_id: "verify-agent".to_string(),
+                context_id: "verify-context".to_string(),
+                parent_session_id: None,
+                title: "Owned".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal("owned-session", "principal:a")
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "foreign-session".to_string(),
+                agent_id: "verify-agent".to_string(),
+                context_id: "verify-context".to_string(),
+                parent_session_id: None,
+                title: "Foreign".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_principal(NewPrincipal {
+                id: "principal:b".to_string(),
+                provider_id: "test".to_string(),
+                assurance: "verified".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal("foreign-session", "principal:b")
+            .await
+            .unwrap();
+        let tool = PrincipalTool::new(store as Arc<dyn SessionStore>);
+        let schema = tool.definition().parameters;
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("oneOf").is_none());
+        assert_eq!(schema["required"], serde_json::json!(["action"]));
+        assert_eq!(schema["additionalProperties"], false);
 
         let execute = |claim: &'static str| {
             let tool = &tool;
             CURRENT_SESSION_ID.scope(
                 "verify-session".to_string(),
                 CURRENT_PRINCIPAL_ID.scope(Some("principal:a".to_string()), async move {
-                    tool.execute(&serde_json::json!({"claimed_principal_id": claim}).to_string())
-                        .await
-                        .unwrap()
+                    tool.execute(
+                        &serde_json::json!({
+                            "action": "verify_identity",
+                            "claimed_principal_id": claim
+                        })
+                        .to_string(),
+                    )
+                    .await
+                    .unwrap()
                 }),
             )
         };
@@ -9092,6 +9230,46 @@ Body
             serde_json::from_str(&execute("principal:b").await).unwrap();
         assert_eq!(rejected["verified"], false);
         assert_eq!(rejected["active_principal_id"], "principal:a");
+
+        let listed = CURRENT_SESSION_ID
+            .scope(
+                "verify-session".to_string(),
+                CURRENT_PRINCIPAL_ID.scope(Some("principal:a".to_string()), async {
+                    tool.execute(r#"{"action":"list_sessions"}"#).await.unwrap()
+                }),
+            )
+            .await;
+        let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        let session_ids = listed["session_ids"].as_array().unwrap();
+        assert_eq!(session_ids.len(), 2);
+        assert!(session_ids.iter().any(|id| id == "verify-session"));
+        assert!(session_ids.iter().any(|id| id == "owned-session"));
+        assert!(!session_ids.iter().any(|id| id == "foreign-session"));
+
+        for (session_id, belongs) in [
+            ("owned-session", true),
+            ("foreign-session", false),
+            ("missing-session", false),
+        ] {
+            let result = CURRENT_SESSION_ID
+                .scope(
+                    "verify-session".to_string(),
+                    CURRENT_PRINCIPAL_ID.scope(Some("principal:a".to_string()), async {
+                        tool.execute(
+                            &serde_json::json!({
+                                "action": "verify_session",
+                                "session_id": session_id
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .unwrap()
+                    }),
+                )
+                .await;
+            let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(result["belongs"], belongs);
+        }
     }
 
     struct ReplacementDefinitionTool;
