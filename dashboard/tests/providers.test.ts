@@ -123,6 +123,10 @@ test('authenticated accounts discover and explicitly enable models outside the l
   assert.match(providersSource, /buildEnabledModelSelections/)
   assert.match(providerWorkflowSource, /alias: option\.alias\.trim\(\) \|\| undefined/)
   assert.match(providersSource, /placeholder=\{t\('providers\.notProvided'\)\}/)
+  assert.match(providersSource, /onModelCatalogChanged/)
+  assert.match(providersSource, /Promise\.all\(\[refresh\(\), onModelCatalogChanged\?\.\(\)\]\)/)
+  assert.match(appSource, /onModelCatalogChanged=\{reloadRuntimeStatus\}/)
+  assert.match(appSource, /setStatus\(await DASHBOARD_API\.get<RuntimeStatus>\('\/api\/status'\)\)/)
 })
 
 test('provider capacity is copied from catalog fields without speculative copy', () => {

@@ -3125,6 +3125,14 @@ export default function App() {
     }
   }, [])
 
+  const reloadRuntimeStatus = useCallback(async () => {
+    try {
+      setStatus(await DASHBOARD_API.get<RuntimeStatus>('/api/status'))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [])
+
   const loadExecutionJobs = useCallback(async () => {
     try {
       const result = await DASHBOARD_API.tryGet<{ jobs?: ExecutionJobSummary[] }>(
@@ -8057,7 +8065,11 @@ export default function App() {
           {view === 'credentials' && <CredentialsPage api={DASHBOARD_API} />}
 
           {view === 'providers' && (
-            <ProvidersPage api={DASHBOARD_API} startInSetup={route.providerSetup} />
+            <ProvidersPage
+              api={DASHBOARD_API}
+              startInSetup={route.providerSetup}
+              onModelCatalogChanged={reloadRuntimeStatus}
+            />
           )}
 
           {view === 'cognition' && (

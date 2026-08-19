@@ -208,6 +208,7 @@ type OAuthLoginProgress =
 interface ProvidersPageProps {
   api: DashboardApiClient
   startInSetup?: boolean
+  onModelCatalogChanged?: () => Promise<void> | void
 }
 
 type CatalogEditorKind = 'provider_instance' | 'auth_account' | 'model_route'
@@ -381,7 +382,7 @@ function stateSuffix(state?: string): string {
   return state ? `…${state.slice(-8)}` : ''
 }
 
-export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps) {
+export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged }: ProvidersPageProps) {
   const { t } = useTranslation()
   const [snapshot, setSnapshot] = useState<ProviderControlSnapshot>(EMPTY_SNAPSHOT)
   const [oauthSetupServices, setOAuthSetupServices] = useState<OAuthSetupServiceDescriptor[]>([])
@@ -614,7 +615,7 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
       )
       setCatalogNotice(t('providers.setupSaved', { path: receipt.managed_config_path }))
       setSetup(null)
-      await refresh()
+      await Promise.all([refresh(), onModelCatalogChanged?.()])
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason)
       setError(message)
@@ -1147,7 +1148,7 @@ export function ProvidersPage({ api, startInSetup = false }: ProvidersPageProps)
       )
       setCatalogNotice(t('providers.modelsSaved', { path: receipt.managed_config_path }))
       setModelEditor(null)
-      await refresh()
+      await Promise.all([refresh(), onModelCatalogChanged?.()])
     } catch (reason) {
       setModelEditor(current => current ? {
         ...current,
