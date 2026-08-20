@@ -1840,12 +1840,17 @@ impl MorphzRuntime {
         Ok(())
     }
 
-    /// Commit one durable configuration epoch and wake only Objectives whose
-    /// exact pending dependency is the operator-controlled model-configuration
-    /// resource. The indexed dependency lookup avoids Context/Objectives
-    /// sweeps, while the global epoch Event closes restart and in-flight
-    /// request races even if a process stops before all context-local wake
-    /// Events are dispatched.
+    /// Commit one durable configuration epoch and wake work whose next model
+    /// attempt is made runnable by that explicit configuration change.
+    ///
+    /// Objectives waiting on the abstract model-configuration resource and
+    /// Threads waiting on a concrete model route are deliberately separate:
+    /// the latter must be released when an operator switches routes, otherwise
+    /// they remain pinned forever to the route that originally failed. The
+    /// indexed dependency lookups avoid Context/Objectives/Threads sweeps,
+    /// while the global epoch Event closes restart and in-flight request races
+    /// even if a process stops before all context-local wake Events are
+    /// dispatched.
     async fn publish_model_configuration_changed(&self, reason: &str) -> Result<(), RuntimeError> {
         let changed = Event::new(
             format!(
@@ -1914,6 +1919,112 @@ impl MorphzRuntime {
                         ("reason".to_string(), json!(reason)),
                         ("configuration_event_id".to_string(), json!(&changed.id)),
                         ("objective_ids".to_string(), json!(objective_ids)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await?;
+        }
+
+        let mut provider_waits = BTreeMap::<(String, String), (Vec<String>, Vec<String>)>::new();
+        for owner_kind in [
+            SchedulerDependencyOwnerKind::Thread,
+            SchedulerDependencyOwnerKind::Objective,
+        ] {
+            let dependencies = self
+                .inner
+                .store
+                .list_scheduler_dependencies(SchedulerDependencyFilter {
+                    owner_kind: Some(owner_kind),
+                    dependency_kind: Some(SchedulerDependencyKind::Resource),
+                    status: Some(SchedulerDependencyStatus::Pending),
+                    required_only: true,
+                    ..SchedulerDependencyFilter::default()
+                })
+                .await?;
+            for dependency in dependencies {
+                if !dependency.dependency_id.starts_with("model-route:")
+                    && !dependency.dependency_id.starts_with("model-provider:")
+                {
+                    continue;
+                }
+                match dependency.owner_kind {
+                    SchedulerDependencyOwnerKind::Thread => {
+                        let Some(thread) =
+                            self.inner.store.get_thread(&dependency.owner_id).await?
+                        else {
+                            continue;
+                        };
+                        if thread.lifecycle != ThreadLifecycle::Open
+                            || thread.generation != dependency.owner_generation
+                        {
+                            continue;
+                        }
+                        provider_waits
+                            .entry((thread.context_id, dependency.dependency_id))
+                            .or_default()
+                            .1
+                            .push(thread.id);
+                    }
+                    SchedulerDependencyOwnerKind::Objective => {
+                        let Some(objective) =
+                            self.inner.store.get_objective(&dependency.owner_id).await?
+                        else {
+                            continue;
+                        };
+                        if objective.status != ObjectiveStatus::Active
+                            || objective.generation != dependency.owner_generation
+                            || !matches!(
+                                objective.wait_condition,
+                                Some(ObjectiveWaitCondition::ResourceAvailable {
+                                    ref resource
+                                }) if resource == &dependency.dependency_id
+                            )
+                        {
+                            continue;
+                        }
+                        provider_waits
+                            .entry((objective.context_id, dependency.dependency_id))
+                            .or_default()
+                            .0
+                            .push(objective.id);
+                    }
+                    SchedulerDependencyOwnerKind::Plan
+                    | SchedulerDependencyOwnerKind::Schedule
+                    | SchedulerDependencyOwnerKind::Delivery => continue,
+                }
+            }
+        }
+
+        for (index, ((context_id, resource), (objective_ids, thread_ids))) in
+            provider_waits.into_iter().enumerate()
+        {
+            self.inner
+                .bus
+                .publish(Event::new(
+                    format!(
+                        "model_configuration_provider_available_{}_{}",
+                        changed.id, index
+                    ),
+                    "Runtime-ModelConfiguration".to_string(),
+                    "runtime_control".to_string(),
+                    "runtime/resource_available".to_string(),
+                    [
+                        ("context_id".to_string(), json!(context_id)),
+                        ("resource".to_string(), json!(resource)),
+                        ("reason".to_string(), json!(reason)),
+                        ("configuration_event_id".to_string(), json!(&changed.id)),
+                        ("selected_model".to_string(), json!(self.model())),
+                        ("objective_ids".to_string(), json!(objective_ids)),
+                        ("thread_ids".to_string(), json!(thread_ids)),
+                        (
+                            "recovery_phase".to_string(),
+                            json!("explicit_model_configuration_changed"),
+                        ),
+                        (
+                            "recovery_reason".to_string(),
+                            json!("operator_selected_or_reconfigured_model"),
+                        ),
                     ]
                     .into_iter()
                     .collect(),
@@ -8803,7 +8914,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_configuration_change_targets_only_exact_pending_objective_dependencies() {
+    async fn model_configuration_change_wakes_configuration_objectives_and_provider_threads() {
         let database = NamedTempFile::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
@@ -8885,6 +8996,74 @@ mod tests {
             .unwrap();
         assert_eq!(dependencies.len(), 1);
 
+        let thread = runtime
+            .inner
+            .store
+            .ensure_thread(NewThread {
+                id: "thread-model-configuration-provider-wake".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-model-configuration-wake".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-model-configuration-provider-wake".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let provider_resource = "model-route:route-that-operator-replaced";
+        let thread_dependency_id = crate::scheduler::stable_scheduler_dependency_id(
+            SchedulerDependencyOwnerKind::Thread,
+            &thread.id,
+            thread.generation,
+            SchedulerDependencyKind::Resource,
+            provider_resource,
+            1,
+        );
+        runtime
+            .inner
+            .store
+            .register_scheduler_dependency(crate::scheduler::NewSchedulerDependency {
+                id: thread_dependency_id.clone(),
+                owner_kind: SchedulerDependencyOwnerKind::Thread,
+                owner_id: thread.id.clone(),
+                owner_generation: thread.generation,
+                dependency_kind: SchedulerDependencyKind::Resource,
+                dependency_id: provider_resource.to_string(),
+                dependency_generation: 1,
+                required: true,
+                metadata: json!({"source": "provider_wait"}),
+            })
+            .await
+            .unwrap();
+        let unrelated_dependency_id = crate::scheduler::stable_scheduler_dependency_id(
+            SchedulerDependencyOwnerKind::Thread,
+            &thread.id,
+            thread.generation,
+            SchedulerDependencyKind::Resource,
+            "external-capacity:test",
+            1,
+        );
+        runtime
+            .inner
+            .store
+            .register_scheduler_dependency(crate::scheduler::NewSchedulerDependency {
+                id: unrelated_dependency_id.clone(),
+                owner_kind: SchedulerDependencyOwnerKind::Thread,
+                owner_id: thread.id.clone(),
+                owner_generation: thread.generation,
+                dependency_kind: SchedulerDependencyKind::Resource,
+                dependency_id: "external-capacity:test".to_string(),
+                dependency_generation: 1,
+                required: true,
+                metadata: json!({"fixture": "must remain pending"}),
+            })
+            .await
+            .unwrap();
+
         // Runtime::start installs the durable Event writer before publishing
         // the startup configuration epoch. This focused test starts the same
         // persistence boundary without starting unrelated Runtime workers.
@@ -8893,14 +9072,26 @@ mod tests {
             .await
             .unwrap();
 
-        let mut available = runtime.subscribe("runtime/resource_available", 4);
+        let mut available = runtime.subscribe("runtime/resource_available", 8);
         runtime
             .publish_model_configuration_changed("test_catalog_change")
             .await
             .unwrap();
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), available.recv())
-            .await
-            .unwrap()
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            events.push(
+                tokio::time::timeout(std::time::Duration::from_secs(1), available.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let event = events
+            .iter()
+            .find(|event| {
+                event.payload.get("resource").and_then(Value::as_str)
+                    == Some(MODEL_CONFIGURATION_RESOURCE)
+            })
             .unwrap();
         assert_eq!(
             event.payload.get("context_id").and_then(Value::as_str),
@@ -8911,6 +9102,51 @@ mod tests {
             Some(MODEL_CONFIGURATION_RESOURCE)
         );
         assert_eq!(event.payload["objective_ids"], json!([objective.id]));
+
+        let provider_event = events
+            .iter()
+            .find(|event| {
+                event.payload.get("resource").and_then(Value::as_str) == Some(provider_resource)
+            })
+            .unwrap();
+        assert_eq!(provider_event.payload["thread_ids"], json!([thread.id]));
+        assert_eq!(
+            provider_event
+                .payload
+                .get("recovery_phase")
+                .and_then(Value::as_str),
+            Some("explicit_model_configuration_changed")
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let dependency = runtime
+                    .inner
+                    .store
+                    .get_scheduler_dependency(&thread_dependency_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if dependency.status == SchedulerDependencyStatus::Satisfied {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("an explicit model configuration change must release the stale route wait");
+        assert_eq!(
+            runtime
+                .inner
+                .store
+                .get_scheduler_dependency(&unrelated_dependency_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SchedulerDependencyStatus::Pending,
+            "model configuration changes must not satisfy unrelated external resources"
+        );
 
         let epochs = runtime
             .query_events(QueryFilter {
