@@ -11,11 +11,17 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 const NATIVE_KEYRING_SERVICE: &str = "ai.morphz.runtime.secrets.v1";
 const MAX_USAGE_AUDIT_BYTES: u64 = 4 * 1024 * 1024;
 const RETAINED_USAGE_AUDIT_RECORDS: usize = 2_000;
+const BACKEND_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
+const BACKEND_OPERATION_IDLE: u8 = 0;
+const BACKEND_OPERATION_IN_FLIGHT: u8 = 1;
+const BACKEND_OPERATION_STALLED: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -329,6 +335,8 @@ pub struct SecretStore {
     audit_path: PathBuf,
     default_backend_id: String,
     backends: BTreeMap<String, Arc<dyn SecretValueBackend>>,
+    backend_operation_states: BTreeMap<String, Arc<AtomicU8>>,
+    backend_operation_timeout: Duration,
     catalog: RwLock<BTreeMap<String, ManagedSecret>>,
     audit_lock: Mutex<()>,
 }
@@ -371,6 +379,20 @@ impl SecretStore {
         default_backend_id: impl Into<String>,
         backends: Vec<Arc<dyn SecretValueBackend>>,
     ) -> Result<Self, String> {
+        Self::with_backends_and_timeout(
+            catalog_path,
+            default_backend_id,
+            backends,
+            BACKEND_OPERATION_TIMEOUT,
+        )
+    }
+
+    fn with_backends_and_timeout(
+        catalog_path: impl Into<PathBuf>,
+        default_backend_id: impl Into<String>,
+        backends: Vec<Arc<dyn SecretValueBackend>>,
+        backend_operation_timeout: Duration,
+    ) -> Result<Self, String> {
         let catalog_path = catalog_path.into();
         let audit_path = catalog_path.with_file_name("managed-secret-usage.jsonl");
         let entries = match fs::read(&catalog_path) {
@@ -393,11 +415,18 @@ impl SecretStore {
                 "默认 Secret Value Backend '{default_backend_id}' 未注册"
             ));
         }
+        let backend_operation_states = backends
+            .keys()
+            .cloned()
+            .map(|backend_id| (backend_id, Arc::new(AtomicU8::new(BACKEND_OPERATION_IDLE))))
+            .collect();
         Ok(Self {
             catalog_path,
             audit_path,
             default_backend_id,
             backends,
+            backend_operation_states,
+            backend_operation_timeout: backend_operation_timeout.max(Duration::from_millis(1)),
             catalog: RwLock::new(catalog),
             audit_lock: Mutex::new(()),
         })
@@ -411,14 +440,21 @@ impl SecretStore {
         self.backends
             .values()
             .map(|backend| {
-                let health = backend.get(&secret_locator("__MORPHZ_BACKEND_HEALTH_CHECK__"));
+                let backend = Arc::clone(backend);
+                let backend_id = backend.backend_id().to_string();
+                let storage_kind = backend.storage_kind().to_string();
+                let supports_import = backend.supports_import();
+                let status_detail = backend.status_detail();
+                let health = self.run_backend_operation(&backend_id, "健康检查", move || {
+                    backend.get(&secret_locator("__MORPHZ_BACKEND_HEALTH_CHECK__"))
+                });
                 SecretBackendStatus {
-                    id: backend.backend_id().to_string(),
-                    storage_kind: backend.storage_kind().to_string(),
+                    id: backend_id,
+                    storage_kind,
                     available: health.is_ok(),
                     writable: health.is_ok(),
-                    supports_import: backend.supports_import(),
-                    detail: health.err().unwrap_or_else(|| backend.status_detail()),
+                    supports_import,
+                    detail: health.err().unwrap_or(status_detail),
                 }
             })
             .collect()
@@ -435,11 +471,16 @@ impl SecretStore {
             .values()
             .filter(|backend| backend.supports_import())
         {
-            for name in backend.list_aliases()? {
+            let backend = Arc::clone(backend);
+            let backend_id = backend.backend_id().to_string();
+            let names = self.run_backend_operation(&backend_id, "列出别名", move || {
+                backend.list_aliases()
+            })?;
+            for name in names {
                 if validate_name(&name).is_ok() && !managed.contains_key(&name) {
                     candidates.push(SecretImportCandidate {
                         name,
-                        value_backend: backend.backend_id().to_string(),
+                        value_backend: backend_id.clone(),
                     });
                 }
             }
@@ -495,10 +536,16 @@ impl SecretStore {
         validate_scope(&scope_kind, scope_id.as_deref())?;
 
         let backend = self.backend(value_backend)?;
+        let backend_id = backend.backend_id().to_string();
         let locator = secret_locator(name);
         // Persist the value first. The catalog never contains the value and a
         // catalog failure can at worst leave an unreachable credential.
-        backend.put(&locator, value)?;
+        let backend_for_put = Arc::clone(&backend);
+        let locator_for_put = locator.clone();
+        let value_for_put = zeroize::Zeroizing::new(value.to_string());
+        self.run_backend_operation(&backend_id, "写入", move || {
+            backend_for_put.put(&locator_for_put, value_for_put.as_str())
+        })?;
 
         let now = chrono::Utc::now();
         let mut guard = self
@@ -515,7 +562,7 @@ impl SecretStore {
             secret_ref: format!("secret://runtime/{name}"),
             scope_kind,
             scope_id,
-            value_backend: backend.backend_id().to_string(),
+            value_backend: backend_id.clone(),
             created_at,
             updated_at: now,
         };
@@ -524,12 +571,15 @@ impl SecretStore {
         self.persist_catalog(next.values())?;
         *guard = next;
         drop(guard);
-        if let Some(previous) = previous.filter(|entry| entry.value_backend != backend.backend_id())
-        {
-            if let Err(error) = self
-                .backend(&previous.value_backend)
-                .and_then(|backend| backend.delete(&locator))
-            {
+        if let Some(previous) = previous.filter(|entry| entry.value_backend != backend_id) {
+            let cleanup = self.backend(&previous.value_backend).and_then(|backend| {
+                let previous_backend_id = backend.backend_id().to_string();
+                let locator = locator.clone();
+                self.run_backend_operation(&previous_backend_id, "清理旧值", move || {
+                    backend.delete(&locator).map(|_| ())
+                })
+            });
+            if let Err(error) = cleanup {
                 tracing::warn!(
                     alias = name,
                     previous_backend = previous.value_backend,
@@ -552,6 +602,7 @@ impl SecretStore {
         validate_name(name)?;
         validate_scope(&scope_kind, scope_id.as_deref())?;
         let backend = self.backend(value_backend)?;
+        let backend_id = backend.backend_id().to_string();
         if !backend.supports_import() {
             return Err(format!(
                 "Secret Value Backend '{}' 不支持导入已有别名",
@@ -559,10 +610,13 @@ impl SecretStore {
             ));
         }
         let locator = secret_locator(name);
+        let backend_for_get = Arc::clone(&backend);
+        let locator_for_get = locator.clone();
         let value = zeroize::Zeroizing::new(
-            backend
-                .get(&locator)?
-                .ok_or_else(|| format!("后端 '{}' 中不存在别名 '{name}'", backend.backend_id()))?,
+            self.run_backend_operation(&backend_id, "导入读取", move || {
+                backend_for_get.get(&locator_for_get)
+            })?
+            .ok_or_else(|| format!("后端 '{backend_id}' 中不存在别名 '{name}'"))?,
         );
         validate_value(value.as_str())?;
         let now = chrono::Utc::now();
@@ -576,7 +630,7 @@ impl SecretStore {
             secret_ref: format!("secret://runtime/{name}"),
             scope_kind,
             scope_id,
-            value_backend: backend.backend_id().to_string(),
+            value_backend: backend_id,
             created_at,
             updated_at: now,
         };
@@ -595,8 +649,10 @@ impl SecretStore {
         let Some(entry) = guard.get(name).cloned() else {
             return Ok(false);
         };
-        self.backend(&entry.value_backend)?
-            .delete(&secret_locator(name))?;
+        let backend = self.backend(&entry.value_backend)?;
+        let backend_id = backend.backend_id().to_string();
+        let locator = secret_locator(name);
+        self.run_backend_operation(&backend_id, "删除", move || backend.delete(&locator))?;
         let mut next = guard.clone();
         next.remove(name);
         self.persist_catalog(next.values())?;
@@ -628,9 +684,11 @@ impl SecretStore {
             });
         };
         authorize_entry(&entry, usage.clone())?;
+        let backend = self.backend(&entry.value_backend)?;
+        let backend_id = backend.backend_id().to_string();
+        let locator = secret_locator(name);
         let value = self
-            .backend(&entry.value_backend)?
-            .get(&secret_locator(name))?
+            .run_backend_operation(&backend_id, "读取", move || backend.get(&locator))?
             .ok_or_else(|| {
                 format!(
                     "受管凭证 '{}' 的元数据存在，但值后端 '{}' 中没有对应值",
@@ -675,7 +733,7 @@ impl SecretStore {
             .collect())
     }
 
-    fn backend(&self, value_backend: &str) -> Result<&Arc<dyn SecretValueBackend>, String> {
+    fn backend(&self, value_backend: &str) -> Result<Arc<dyn SecretValueBackend>, String> {
         self.backends
             .get(value_backend)
             .or_else(|| {
@@ -683,7 +741,125 @@ impl SecretStore {
                     .then(|| self.backends.get(&self.default_backend_id))
                     .flatten()
             })
+            .cloned()
             .ok_or_else(|| format!("Secret Value Backend '{value_backend}' 未注册"))
+    }
+
+    /// Runs a potentially interactive or remote backend outside Tokio's blocking pool.
+    ///
+    /// Tokio waits indefinitely for `spawn_blocking` work while dropping a Runtime. A
+    /// platform credential API can wait for UI authorization forever, so owning that
+    /// call from Tokio turns an already-received Ctrl-C into an unbounded shutdown.
+    /// Detached standard threads do not participate in Runtime shutdown. A per-backend
+    /// gate also prevents one stalled OS credential request from accumulating more
+    /// permanently blocked threads.
+    fn run_backend_operation<T, F>(
+        &self,
+        backend_id: &str,
+        operation: &str,
+        callback: F,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+    {
+        let state = self
+            .backend_operation_states
+            .get(backend_id)
+            .cloned()
+            .ok_or_else(|| format!("Secret Value Backend '{backend_id}' 没有操作状态"))?;
+        let started = Instant::now();
+        loop {
+            match state.compare_exchange(
+                BACKEND_OPERATION_IDLE,
+                BACKEND_OPERATION_IN_FLIGHT,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(BACKEND_OPERATION_STALLED) => {
+                    return Err(format!(
+                        "Secret Value Backend '{backend_id}' 此前发生不可取消的阻塞，当前 Runtime 已将其熔断；请确认系统凭证库已解锁并授权后重启 Runtime"
+                    ));
+                }
+                Err(BACKEND_OPERATION_IN_FLIGHT) => {
+                    let Some(remaining) = self
+                        .backend_operation_timeout
+                        .checked_sub(started.elapsed())
+                    else {
+                        return Err(format!(
+                            "Secret Value Backend '{backend_id}' 的{operation}等待超过 {} ms；另一个后端操作仍未完成",
+                            self.backend_operation_timeout.as_millis()
+                        ));
+                    };
+                    std::thread::sleep(remaining.min(Duration::from_millis(10)));
+                }
+                Err(other) => {
+                    return Err(format!(
+                        "Secret Value Backend '{backend_id}' 的操作状态无效：{other}"
+                    ));
+                }
+            }
+        }
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let worker_state = Arc::clone(&state);
+        let spawn_result = std::thread::Builder::new()
+            .name("morphz-secret-backend".to_string())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback))
+                    .map_err(|_| "Secret Value Backend worker 发生 panic".to_string())
+                    .and_then(|result| result);
+                let _ = sender.send(result);
+                let _ = worker_state.compare_exchange(
+                    BACKEND_OPERATION_IN_FLIGHT,
+                    BACKEND_OPERATION_IDLE,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            });
+        if let Err(error) = spawn_result {
+            let _ = state.compare_exchange(
+                BACKEND_OPERATION_IN_FLIGHT,
+                BACKEND_OPERATION_IDLE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            return Err(format!(
+                "Secret Value Backend '{backend_id}' 无法启动隔离 worker：{error}"
+            ));
+        }
+
+        let remaining = self
+            .backend_operation_timeout
+            .checked_sub(started.elapsed())
+            .unwrap_or_default();
+        match receiver.recv_timeout(remaining) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let _ = state.compare_exchange(
+                    BACKEND_OPERATION_IN_FLIGHT,
+                    BACKEND_OPERATION_STALLED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                Err(format!(
+                    "Secret Value Backend '{backend_id}' 的{operation}操作超过 {} ms；该调用可能正在等待系统凭证库授权，当前 Runtime 已将此后端熔断以避免作业和退出流程永久阻塞",
+                    self.backend_operation_timeout.as_millis()
+                ))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = state.compare_exchange(
+                    BACKEND_OPERATION_IN_FLIGHT,
+                    BACKEND_OPERATION_STALLED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                Err(format!(
+                    "Secret Value Backend '{backend_id}' 的{operation} worker 异常断开；当前 Runtime 已将此后端熔断"
+                ))
+            }
+        }
     }
 
     fn append_usage_audit(
@@ -865,6 +1041,7 @@ fn atomic_private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -1226,5 +1403,100 @@ mod tests {
                 .as_deref(),
             Some("second")
         );
+    }
+
+    struct HangingGetBackend {
+        get_calls: AtomicUsize,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl SecretValueBackend for HangingGetBackend {
+        fn backend_id(&self) -> &'static str {
+            "hanging_test"
+        }
+
+        fn storage_kind(&self) -> &'static str {
+            "test"
+        }
+
+        fn put(&self, _locator: &str, _value: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn get(&self, _locator: &str) -> Result<Option<String>, String> {
+            self.get_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.release
+                .lock()
+                .map_err(|_| "hanging backend release lock poisoned".to_string())?
+                .recv()
+                .map_err(|_| "hanging backend release channel closed".to_string())?;
+            Ok(Some("eventually-returned".to_string()))
+        }
+
+        fn delete(&self, _locator: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn stalled_backend_is_bounded_and_circuit_broken_without_blocking_tokio_shutdown() {
+        let directory = tempfile::tempdir().unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend = Arc::new(HangingGetBackend {
+            get_calls: AtomicUsize::new(0),
+            release: Mutex::new(release_rx),
+        });
+        let store = Arc::new(
+            SecretStore::with_backends_and_timeout(
+                directory.path().join("managed-secrets.json"),
+                "hanging_test",
+                vec![backend.clone()],
+                Duration::from_millis(40),
+            )
+            .unwrap(),
+        );
+        store
+            .put(
+                "BLOCKED_TOKEN",
+                "not-persisted",
+                SecretScopeKind::Runtime,
+                None,
+            )
+            .unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let resolve_store = Arc::clone(&store);
+        let started = Instant::now();
+        let error = runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                resolve_store.resolve("BLOCKED_TOKEN", SecretUseContext::default())
+            })
+            .await
+            .unwrap()
+            .unwrap_err()
+        });
+        assert!(error.contains("超过 40 ms"), "{error}");
+        assert!(error.contains("熔断"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        let shutdown_started = Instant::now();
+        drop(runtime);
+        assert!(
+            shutdown_started.elapsed() < Duration::from_secs(1),
+            "Tokio shutdown must not join the detached backend worker"
+        );
+
+        let retry_started = Instant::now();
+        let retry_error = store
+            .resolve("BLOCKED_TOKEN", SecretUseContext::default())
+            .unwrap_err();
+        assert!(retry_error.contains("此前发生不可取消的阻塞"));
+        assert!(retry_started.elapsed() < Duration::from_millis(20));
+        assert_eq!(backend.get_calls.load(AtomicOrdering::SeqCst), 1);
+
+        release_tx.send(()).unwrap();
     }
 }

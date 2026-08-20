@@ -894,8 +894,7 @@ async fn dispatch_runtime_command(
             );
             server.start(&app_config.server.bind).await?;
             tracing::info!(event_code = "app.server.started", bind = %app_config.server.bind, "Morphz Server started");
-            shutdown_signal().await;
-            Ok(())
+            exit_after_shutdown_signal(shutdown_signal().await)
         }
         "dashboard" | "setup" => {
             let setup_mode = command == "setup";
@@ -931,8 +930,7 @@ async fn dispatch_runtime_command(
             } else {
                 tracing::info!(event_code = "app.dashboard.started", bind = %app_config.server.bind, "Morphz Dashboard started");
             }
-            shutdown_signal().await;
-            Ok(())
+            exit_after_shutdown_signal(shutdown_signal().await)
         }
         "edge pair" => pair_edge_node(&runtime, &invocation).await,
         "edge run" => run_edge_node(runtime, &app_config, &invocation).await,
@@ -4261,12 +4259,7 @@ async fn run_interactive(
     });
 
     tokio::select! {
-        _ = shutdown_signal() => {
-            tracing::info!(event_code = "app.shutdown.signal_received", "Shutdown signal received; forcing Morphz to exit");
-            // Important: the blocking stdin thread is in an uninterruptible system call, so dropping
-            // the Tokio runtime would hang while joining it. Exit the process directly instead.
-            std::process::exit(0);
-        }
+        signal = shutdown_signal() => exit_after_shutdown_signal(signal),
     }
 
     #[allow(unreachable_code)]
@@ -4803,13 +4796,41 @@ fn open_dashboard_browser(url: &str) -> std::io::Result<()> {
     }
 }
 
-async fn shutdown_signal() {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownSignal {
+    Interrupt,
+    Terminate,
+}
+
+impl ShutdownSignal {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Interrupt => "SIGINT",
+            Self::Terminate => "SIGTERM",
+        }
+    }
+}
+
+/// Do not make process shutdown depend on Tokio joining arbitrary blocking work.
+/// Native credential APIs and terminal reads can wait indefinitely, and Tokio's
+/// Runtime destructor otherwise waits forever for its blocking pool.
+fn exit_after_shutdown_signal(signal: ShutdownSignal) -> ! {
+    tracing::info!(
+        event_code = "app.shutdown.signal_received",
+        signal = signal.as_str(),
+        "Shutdown signal received; terminating Morphz without waiting for blocking workers"
+    );
+    std::process::exit(0)
+}
+
+async fn shutdown_signal() -> ShutdownSignal {
     use tokio::signal;
 
     let ctrl_c = async {
         signal::ctrl_c()
             .await
             .expect("failed to install Ctrl+C handler");
+        ShutdownSignal::Interrupt
     };
 
     #[cfg(unix)]
@@ -4818,14 +4839,15 @@ async fn shutdown_signal() {
             .expect("failed to install SIGTERM handler")
             .recv()
             .await;
+        ShutdownSignal::Terminate
     };
 
     #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    let terminate = std::future::pending::<ShutdownSignal>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        signal = ctrl_c => signal,
+        signal = terminate => signal,
     }
 }
 
