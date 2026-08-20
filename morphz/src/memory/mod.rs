@@ -6537,6 +6537,16 @@ pub trait DeliveryIngressStore: Send + Sync {
 /// Parent/child delegation routing and result handoff.
 #[async_trait::async_trait]
 pub trait DelegationStore: Send + Sync {
+    /// Atomically create the durable routing scaffold for one Delegation.
+    /// The child Context must never become externally visible without its
+    /// child Session and queued Delegation record: Dashboard/API readers may
+    /// observe the Store between later cognitive-seed operations.
+    async fn create_delegation_scaffold(
+        &self,
+        context: NewCognitiveContext,
+        session: NewSession,
+        delegation: NewDelegation,
+    ) -> Result<DelegationRecord, Box<dyn std::error::Error + Send + Sync>>;
     async fn create_delegation(
         &self,
         delegation: NewDelegation,
@@ -6956,6 +6966,19 @@ pub trait ProviderAccountStateStore: Send + Sync {
         account_id: &str,
     ) -> Result<Option<ProviderAccountStateRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn put_provider_account_state(
+        &self,
+        account_id: &str,
+        expected_revision: Option<u64>,
+        status: ProviderAccountStatus,
+        cooldown_until: Option<DateTime<Utc>>,
+        last_error_kind: Option<&str>,
+        mark_used: bool,
+    ) -> Result<ProviderAccountStateRecord, Box<dyn std::error::Error + Send + Sync>>;
+    /// Compare-and-set a Provider Account state. Unlike the compatibility
+    /// `put` operation above, `None` explicitly means that the row must not
+    /// exist. Runtime observations use this to avoid overwriting newer
+    /// operator or OAuth authority changes.
+    async fn compare_and_set_provider_account_state(
         &self,
         account_id: &str,
         expected_revision: Option<u64>,

@@ -1962,6 +1962,68 @@ impl ProviderAccountStateStore for PostgresStore {
         provider_account_state_from_pg_row(&row)
     }
 
+    async fn compare_and_set_provider_account_state(
+        &self,
+        account_id: &str,
+        expected_revision: Option<u64>,
+        status: ProviderAccountStatus,
+        cooldown_until: Option<DateTime<Utc>>,
+        last_error_kind: Option<&str>,
+        mark_used: bool,
+    ) -> Result<ProviderAccountStateRecord, StoreError> {
+        if account_id.trim().is_empty() {
+            return Err("Provider Account ID 不能为空".into());
+        }
+        let now = now_text();
+        let cooldown =
+            cooldown_until.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let row = if let Some(expected_revision) = expected_revision {
+            sqlx::query(
+                r#"UPDATE provider_account_states SET
+                     revision = revision + 1,
+                     status = $1,
+                     cooldown_until = $2,
+                     last_error_kind = $3,
+                     last_used_at = CASE WHEN $4 THEN $5 ELSE last_used_at END,
+                     updated_at = $5
+                   WHERE account_id = $6 AND revision = $7
+                   RETURNING *"#,
+            )
+            .bind(status.as_str())
+            .bind(cooldown)
+            .bind(last_error_kind)
+            .bind(mark_used)
+            .bind(&now)
+            .bind(account_id)
+            .bind(i64::try_from(expected_revision)?)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"INSERT INTO provider_account_states
+                   (account_id, revision, status, cooldown_until, last_error_kind, last_used_at, updated_at)
+                   VALUES ($1, 1, $2, $3, $4, $5, $5)
+                   ON CONFLICT(account_id) DO NOTHING
+                   RETURNING *"#,
+            )
+            .bind(account_id)
+            .bind(status.as_str())
+            .bind(cooldown)
+            .bind(last_error_kind)
+            .bind(&now)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let Some(row) = row else {
+            return Err(format!(
+                "Provider Account '{account_id}' revision 冲突：期望 {:?}",
+                expected_revision
+            )
+            .into());
+        };
+        provider_account_state_from_pg_row(&row)
+    }
+
     async fn delete_provider_account_records(&self, account_id: &str) -> Result<bool, StoreError> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM provider_account_affinities WHERE account_id = $1")

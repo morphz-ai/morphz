@@ -64,6 +64,8 @@ async fn append_dialogue_signal_in_tx(
            WHERE activation.session_id = $1
              AND activation.status = 'queued'
              AND activation.trigger_kind = 'chat/user_message'
+             AND root_event.type = 'user_message'
+             AND root_event.topic = 'chat/user_message'
              AND thread.kind = 'dialogue_turn'
              AND thread.status = 'open'
              AND thread.control_state = 'active'
@@ -104,6 +106,8 @@ async fn append_dialogue_signal_in_tx(
                  AND thread.status = 'open'
                  AND thread.control_state = 'active'
                  AND signal.status = 'pending'
+                 AND root_event.type = 'user_message'
+                 AND root_event.topic = 'chat/user_message'
                  AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
                  AND thread.initiating_principal_id IS NOT DISTINCT FROM $2
                  AND NOT EXISTS (

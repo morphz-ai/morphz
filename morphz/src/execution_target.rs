@@ -969,6 +969,7 @@ fn build_managed_ssh_exec_arguments(
         endpoint.auth_mode,
         endpoint.private_key_passphrase_secret.is_some(),
     );
+    append_managed_ssh_transport_liveness_options(&mut ssh);
     ssh.extend(["-o".to_string(), "StrictHostKeyChecking=yes".to_string()]);
     let destination = match endpoint.destination.as_deref() {
         Some(host) => {
@@ -1040,8 +1041,6 @@ fn append_managed_ssh_auth_options(
             "BatchMode=no".to_string(),
             "-o".to_string(),
             "PreferredAuthentications=publickey".to_string(),
-            "-o".to_string(),
-            "ConnectTimeout=30".to_string(),
         ]),
         ManagedSshAuthMode::PasswordOnly => arguments.extend([
             "-o".to_string(),
@@ -1052,8 +1051,6 @@ fn append_managed_ssh_auth_options(
             "PubkeyAuthentication=no".to_string(),
             "-o".to_string(),
             "NumberOfPasswordPrompts=1".to_string(),
-            "-o".to_string(),
-            "ConnectTimeout=30".to_string(),
         ]),
         ManagedSshAuthMode::KeyThenPassword => arguments.extend([
             "-o".to_string(),
@@ -1062,10 +1059,26 @@ fn append_managed_ssh_auth_options(
             "PreferredAuthentications=publickey,password".to_string(),
             "-o".to_string(),
             "NumberOfPasswordPrompts=1".to_string(),
-            "-o".to_string(),
-            "ConnectTimeout=30".to_string(),
         ]),
     }
+}
+
+fn append_managed_ssh_transport_liveness_options(arguments: &mut Vec<String>) {
+    // Authentication mode must not decide whether the transport can occupy a
+    // durable Execution Job forever. ConnectTimeout bounds connection setup,
+    // while protocol keepalives detect a dead established
+    // connection without imposing a wall-clock limit on a legitimate long
+    // remote command.
+    arguments.extend([
+        "-o".to_string(),
+        "ConnectTimeout=30".to_string(),
+        "-o".to_string(),
+        "ConnectionAttempts=1".to_string(),
+        "-o".to_string(),
+        "ServerAliveInterval=15".to_string(),
+        "-o".to_string(),
+        "ServerAliveCountMax=2".to_string(),
+    ]);
 }
 
 pub(crate) fn is_prepared_managed_ssh_exec_command(command: &str) -> bool {
@@ -6325,6 +6338,10 @@ mod tests {
 
         assert!(command.contains("'ssh' '-F' '/dev/null'"));
         assert!(command.contains("'IdentitiesOnly=no'"));
+        assert!(command.contains("'ConnectTimeout=30'"));
+        assert!(command.contains("'ConnectionAttempts=1'"));
+        assert!(command.contains("'ServerAliveInterval=15'"));
+        assert!(command.contains("'ServerAliveCountMax=2'"));
         assert!(command.contains("'StrictHostKeyChecking=yes'"));
         assert!(command.contains("'deploy@server.example'"));
         assert!(command.contains("'cd -- '\\''/srv/app dir'\\'' && printf"));
@@ -6607,6 +6624,10 @@ mod tests {
         assert!(command.starts_with("'ssh' "));
         assert!(!command.contains("'-F' '/dev/null'"));
         assert!(!command.contains("'IdentitiesOnly=no'"));
+        assert!(command.contains("'ConnectTimeout=30'"));
+        assert!(command.contains("'ConnectionAttempts=1'"));
+        assert!(command.contains("'ServerAliveInterval=15'"));
+        assert!(command.contains("'ServerAliveCountMax=2'"));
         assert!(command.contains("'StrictHostKeyChecking=yes'"));
         assert!(command.contains("'-l' 'deploy'"));
         assert!(command.contains("'-p' '2222'"));

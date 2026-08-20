@@ -27,14 +27,14 @@ use morphz::memory::{
     NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
     NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer, NewSession, NewThread,
     NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallDocument, RecallDocumentKind,
-    RecallProjectionStore, RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus,
-    ScheduleStore, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionProjectionMutation, SessionProjectionStore, SessionSignalClaim, SessionStatus,
-    SessionUpdate, SignalOutboxStatus, StorageMaintenanceStore, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadControlAction, ThreadGroupStore, ThreadKind, ThreadLifecycle,
-    ThreadMutation, ThreadSignalStatus, ThreadStore, ThreadSupervision, TimerStore,
-    TransientStorageRetention,
+    ObjectiveWaitCondition, PairExecutionNode, ProviderAccountStateStore, ProviderAccountStatus,
+    QueryFilter, RecallDocument, RecallDocumentKind, RecallProjectionStore, RuntimeTimerKind,
+    RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore, SessionAttentionState,
+    SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation, SessionProjectionStore,
+    SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxStatus, StorageMaintenanceStore,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction, ThreadGroupStore,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore,
+    ThreadSupervision, TimerStore, TransientStorageRetention,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
@@ -257,7 +257,13 @@ fn sqlite_two_process_runtimes_keep_one_long_activation_owner() {
                     .await
                     .unwrap();
             }
-            tokio::time::timeout(std::time::Duration::from_secs(12), async {
+            // The model call deliberately spans several two-second lease
+            // windows. Leave enough wall-clock headroom for this child
+            // process to share a loaded test host with the other
+            // multi-process conformance cases; the assertions below, rather
+            // than a tight scheduler deadline, define the ownership
+            // invariant under test.
+            tokio::time::timeout(std::time::Duration::from_secs(20), async {
                 loop {
                     tokio::select! {
                         reply = replies.recv() => {
@@ -3362,6 +3368,93 @@ async fn assert_delegation_store_conformance<S>(store: Arc<S>)
 where
     S: DelegationStore + EventStore + SessionDirectoryStore + Send + Sync + 'static,
 {
+    let scaffold_context_id = "conformance-delegation-scaffold-context";
+    let scaffold_session_id = "conformance-delegation-scaffold-session";
+    let scaffold = store
+        .create_delegation_scaffold(
+            NewCognitiveContext {
+                id: scaffold_context_id.to_string(),
+                agent_id: "conformance-agent".to_string(),
+                title: "Atomic Delegation Scaffold".to_string(),
+            },
+            NewSession {
+                id: scaffold_session_id.to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: scaffold_context_id.to_string(),
+                parent_session_id: None,
+                title: "Atomic Delegation Session".to_string(),
+                mount_kind: SessionMountKind::DelegationProjection,
+            },
+            NewDelegation {
+                id: "conformance-delegation-scaffold".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                parent_context_id: "conformance-context".to_string(),
+                parent_session_id: "conformance-session".to_string(),
+                child_context_id: scaffold_context_id.to_string(),
+                child_session_id: scaffold_session_id.to_string(),
+                initiating_principal_id: None,
+                task: "create one atomic delegation scaffold".to_string(),
+                success_when: None,
+                context_scope: "mind_only".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(scaffold.status, DelegationStatus::Queued);
+    assert!(store
+        .get_context(scaffold_context_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(store
+        .get_session(scaffold_session_id)
+        .await
+        .unwrap()
+        .is_some());
+
+    let rejected_context_id = "conformance-rejected-delegation-context";
+    let rejected_session_id = "conformance-rejected-delegation-session";
+    assert!(store
+        .create_delegation_scaffold(
+            NewCognitiveContext {
+                id: rejected_context_id.to_string(),
+                agent_id: "conformance-agent".to_string(),
+                title: "Must Roll Back".to_string(),
+            },
+            NewSession {
+                id: rejected_session_id.to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: rejected_context_id.to_string(),
+                parent_session_id: None,
+                title: "Must Roll Back".to_string(),
+                mount_kind: SessionMountKind::DelegationProjection,
+            },
+            NewDelegation {
+                id: "conformance-rejected-delegation".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                parent_context_id: "conformance-context".to_string(),
+                parent_session_id: "missing-parent-session".to_string(),
+                child_context_id: rejected_context_id.to_string(),
+                child_session_id: rejected_session_id.to_string(),
+                initiating_principal_id: None,
+                task: "must not leave half a scaffold".to_string(),
+                success_when: None,
+                context_scope: "mind_only".to_string(),
+            },
+        )
+        .await
+        .is_err());
+    assert!(store
+        .get_context(rejected_context_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_session(rejected_session_id)
+        .await
+        .unwrap()
+        .is_none());
+
     let child = store
         .create_session(NewSession {
             id: "conformance-delegation-child-session".to_string(),
@@ -3408,7 +3501,7 @@ where
         .list_delegations(DelegationFilter {
             related_context_id: Some(created.parent_context_id.clone()),
             include_terminal: false,
-            newest_first: false,
+            newest_first: true,
             limit: Some(1),
             ..Default::default()
         })
@@ -6627,16 +6720,79 @@ where
         woken.root_turn_id, due.id,
         "the wake Event itself must become the new root turn"
     );
+    let wake_signals = store
+        .list_context_thread_signals("conformance-context", None)
+        .await
+        .unwrap();
     assert_eq!(
-        store
-            .list_context_thread_signals("conformance-context", None)
-            .await
-            .unwrap()
+        wake_signals
             .iter()
             .filter(|signal| signal.event_id == due.id)
             .count(),
         1
     );
+
+    // A pending Runtime Wake is not a user-input batch. A later explicit
+    // Interrupt must get its own DialogueTurn rather than being folded into
+    // the wake merely because that wake lacks a `dispatch_mode` field.
+    store
+        .ensure_principal(NewPrincipal {
+            id: "conformance-wake-principal".to_string(),
+            provider_id: "conformance".to_string(),
+            assurance: "verified".to_string(),
+            display_name: None,
+        })
+        .await
+        .unwrap();
+    store
+        .bind_session_principal("conformance-session", "conformance-wake-principal")
+        .await
+        .unwrap();
+    let user_after_wake = Event::new(
+        "conformance-user-after-wake".to_string(),
+        "Store-Conformance".to_string(),
+        morphz::event::TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "principal_id": "conformance-wake-principal",
+            "dispatch_mode": "interrupt",
+            "text": "please continue"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(matches!(
+        store
+            .claim_message(
+                "conformance-session",
+                "conformance-user-after-wake-client",
+                &user_after_wake,
+                MessageDispatchMode::Interrupt,
+            )
+            .await
+            .unwrap(),
+        MessageClaim::Accepted { .. }
+    ));
+    let user_thread = store
+        .get_thread_by_root(&user_after_wake.id)
+        .await
+        .unwrap()
+        .expect("an explicit user message must retain its own DialogueTurn root");
+    assert_ne!(
+        user_thread.id, woken.id,
+        "user input must not coalesce into a pending Runtime Wake Thread"
+    );
+    let user_signal = store
+        .list_context_thread_signals("conformance-context", None)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|signal| signal.event_id == user_after_wake.id)
+        .expect("accepted user input must have one durable Signal");
+    assert_eq!(user_signal.thread_id, user_thread.id);
     let cleared = store.get_execution_job(&created.id).await.unwrap().unwrap();
     assert_eq!(cleared.checkpoint_generation, Some(2));
     assert_eq!(
@@ -7953,6 +8109,49 @@ async fn sqlite_two_runtimes_with_different_contexts_keep_a_long_activation_sing
     );
 }
 
+async fn assert_provider_account_state_cas_conformance<S>(store: Arc<S>)
+where
+    S: ProviderAccountStateStore + 'static,
+{
+    let account_id = "provider-account-cas-conformance";
+    let created = store
+        .compare_and_set_provider_account_state(
+            account_id,
+            None,
+            ProviderAccountStatus::Ready,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.revision, 1);
+    assert!(store
+        .compare_and_set_provider_account_state(
+            account_id,
+            None,
+            ProviderAccountStatus::Disabled,
+            None,
+            Some("stale_absence"),
+            false,
+        )
+        .await
+        .is_err());
+    let disabled = store
+        .compare_and_set_provider_account_state(
+            account_id,
+            Some(created.revision),
+            ProviderAccountStatus::Disabled,
+            None,
+            Some("operator_disabled"),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled.revision, 2);
+    assert_eq!(disabled.status, ProviderAccountStatus::Disabled);
+}
+
 #[tokio::test]
 async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     let database = NamedTempFile::new().unwrap();
@@ -8032,6 +8231,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_edge_execution_conformance(Arc::clone(&store)).await;
     assert_execution_job_conformance(Arc::clone(&store)).await;
     assert_background_wake_checkpoint_conformance(Arc::clone(&store)).await;
+    assert_provider_account_state_cas_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(store).await;
 }
 
@@ -8359,6 +8559,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_edge_execution_conformance(Arc::clone(&store)).await;
     assert_execution_job_conformance(Arc::clone(&store)).await;
     assert_background_wake_checkpoint_conformance(Arc::clone(&store)).await;
+    assert_provider_account_state_cas_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(Arc::clone(&store)).await;
 
     let migration_observation = Event::new(

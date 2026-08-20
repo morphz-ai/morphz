@@ -5,7 +5,8 @@ use super::{
 use crate::event::Event;
 use crate::memory::{
     stable_thread_id, DelegationFilter, DelegationRecord, DelegationStatus, DelegationStore,
-    NewDelegation, NewThread, SessionDirectoryStore, ThreadKind, ThreadSupervision,
+    NewCognitiveContext, NewDelegation, NewSession, NewThread, SessionDirectoryStore, ThreadKind,
+    ThreadSupervision,
 };
 use serde_json::Value as JsonValue;
 use sqlx::postgres::{PgRow, Postgres};
@@ -83,6 +84,84 @@ fn delegation_from_row(row: &PgRow) -> Result<DelegationRecord, StoreError> {
 
 #[async_trait::async_trait]
 impl DelegationStore for PostgresStore {
+    async fn create_delegation_scaffold(
+        &self,
+        context: NewCognitiveContext,
+        session: NewSession,
+        delegation: NewDelegation,
+    ) -> Result<DelegationRecord, StoreError> {
+        if context.id != session.context_id
+            || context.id != delegation.child_context_id
+            || session.id != delegation.child_session_id
+            || context.agent_id != session.agent_id
+            || context.agent_id != delegation.agent_id
+            || session.parent_session_id.is_some()
+        {
+            return Err("Delegation scaffold 的 Context/Session/Agent 路由不一致".into());
+        }
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        let parent = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = $1")
+            .bind(&delegation.parent_session_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("父 Session '{}' 不存在", delegation.parent_session_id))?;
+        if parent.get::<String, _>("context_id") != delegation.parent_context_id
+            || parent.get::<String, _>("agent_id") != delegation.agent_id
+        {
+            return Err("Delegation scaffold 的父 Session 路由不一致".into());
+        }
+        sqlx::query(
+            "INSERT INTO cognitive_contexts \
+             (id, agent_id, title, status, created_at, updated_at) \
+             VALUES ($1, $2, $3, 'active', $4, $4)",
+        )
+        .bind(&context.id)
+        .bind(&context.agent_id)
+        .bind(&context.title)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO sessions \
+             (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, \
+              last_activity_at, attention_state, attention_revision, mount_kind) \
+             VALUES ($1, $2, $3, NULL, $4, 'active', $5, $5, $5, 'active', 0, $6)",
+        )
+        .bind(&session.id)
+        .bind(&session.agent_id)
+        .bind(&session.context_id)
+        .bind(&session.title)
+        .bind(&now)
+        .bind(session.mount_kind.as_str())
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query(&format!(
+            r#"INSERT INTO delegations
+               (id, agent_id, parent_context_id, parent_session_id,
+                child_context_id, child_session_id, initiating_principal_id, task, success_when,
+                context_scope, status, result_event_id, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', NULL, $11, $11)
+               RETURNING {COLUMNS}"#
+        ))
+        .bind(&delegation.id)
+        .bind(&delegation.agent_id)
+        .bind(&delegation.parent_context_id)
+        .bind(&delegation.parent_session_id)
+        .bind(&delegation.child_context_id)
+        .bind(&delegation.child_session_id)
+        .bind(&delegation.initiating_principal_id)
+        .bind(&delegation.task)
+        .bind(&delegation.success_when)
+        .bind(&delegation.context_scope)
+        .bind(&now)
+        .fetch_one(&mut *tx)
+        .await?;
+        let created = delegation_from_row(&row)?;
+        tx.commit().await?;
+        Ok(created)
+    }
+
     async fn create_delegation(
         &self,
         delegation: NewDelegation,

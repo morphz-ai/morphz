@@ -3242,6 +3242,71 @@ impl ProviderAccountStateStore for SqliteStore {
         provider_account_state_from_sqlite_row(&row)
     }
 
+    async fn compare_and_set_provider_account_state(
+        &self,
+        account_id: &str,
+        expected_revision: Option<u64>,
+        status: ProviderAccountStatus,
+        cooldown_until: Option<DateTime<Utc>>,
+        last_error_kind: Option<&str>,
+        mark_used: bool,
+    ) -> Result<ProviderAccountStateRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if account_id.trim().is_empty() {
+            return Err("Provider Account ID 不能为空".into());
+        }
+        let now = Utc::now();
+        let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let cooldown =
+            cooldown_until.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let row = if let Some(expected_revision) = expected_revision {
+            sqlx::query(
+                r#"UPDATE provider_account_states SET
+                     revision = revision + 1,
+                     status = ?,
+                     cooldown_until = ?,
+                     last_error_kind = ?,
+                     last_used_at = CASE WHEN ? THEN ? ELSE last_used_at END,
+                     updated_at = ?
+                   WHERE account_id = ? AND revision = ?
+                   RETURNING *"#,
+            )
+            .bind(status.as_str())
+            .bind(cooldown)
+            .bind(last_error_kind)
+            .bind(mark_used)
+            .bind(&now_text)
+            .bind(&now_text)
+            .bind(account_id)
+            .bind(i64::try_from(expected_revision)?)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"INSERT INTO provider_account_states
+                   (account_id, revision, status, cooldown_until, last_error_kind, last_used_at, updated_at)
+                   VALUES (?, 1, ?, ?, ?, ?, ?)
+                   ON CONFLICT(account_id) DO NOTHING
+                   RETURNING *"#,
+            )
+            .bind(account_id)
+            .bind(status.as_str())
+            .bind(cooldown)
+            .bind(last_error_kind)
+            .bind(&now_text)
+            .bind(&now_text)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let Some(row) = row else {
+            return Err(format!(
+                "Provider Account '{account_id}' revision 冲突：期望 {:?}",
+                expected_revision
+            )
+            .into());
+        };
+        provider_account_state_from_sqlite_row(&row)
+    }
+
     async fn delete_provider_account_records(
         &self,
         account_id: &str,
@@ -5403,6 +5468,8 @@ async fn append_dialogue_signal_in_transaction(
            WHERE activation.session_id = ?
              AND activation.status = 'queued'
              AND activation.trigger_kind = 'chat/user_message'
+             AND root_event.type = 'user_message'
+             AND root_event.topic = 'chat/user_message'
              AND thread.kind = 'dialogue_turn'
              AND thread.status = 'open'
              AND thread.control_state = 'active'
@@ -5452,6 +5519,8 @@ async fn append_dialogue_signal_in_transaction(
                  AND thread.status = 'open'
                  AND thread.control_state = 'active'
                  AND signal.status = 'pending'
+                 AND root_event.type = 'user_message'
+                 AND root_event.topic = 'chat/user_message'
                  AND COALESCE(
                    json_extract(root_event.payload, '$.dispatch_mode'),
                    'interrupt'
@@ -15330,6 +15399,93 @@ impl DeliveryIngressStore for SqliteStore {
 
 #[async_trait::async_trait]
 impl DelegationStore for SqliteStore {
+    async fn create_delegation_scaffold(
+        &self,
+        context: NewCognitiveContext,
+        session: NewSession,
+        delegation: NewDelegation,
+    ) -> Result<DelegationRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if context.id != session.context_id
+            || context.id != delegation.child_context_id
+            || session.id != delegation.child_session_id
+            || context.agent_id != session.agent_id
+            || context.agent_id != delegation.agent_id
+            || session.parent_session_id.is_some()
+        {
+            return Err("Delegation scaffold 的 Context/Session/Agent 路由不一致".into());
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let parent = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = ?")
+            .bind(&delegation.parent_session_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("父 Session '{}' 不存在", delegation.parent_session_id))?;
+        if parent.get::<String, _>("context_id") != delegation.parent_context_id
+            || parent.get::<String, _>("agent_id") != delegation.agent_id
+        {
+            return Err("Delegation scaffold 的父 Session 路由不一致".into());
+        }
+        sqlx::query(
+            "INSERT INTO cognitive_contexts (id, agent_id, title, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)",
+        )
+        .bind(&context.id)
+        .bind(&context.agent_id)
+        .bind(&context.title)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO sessions
+               (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at)
+               VALUES (?, ?, ?, NULL, ?, 'active', ?, ?, ?)"#,
+        )
+        .bind(&session.id)
+        .bind(&session.agent_id)
+        .bind(&session.context_id)
+        .bind(&session.title)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO session_mounts (session_id, generation, context_id, mount_kind, mounted_at, unmounted_at) VALUES (?, 1, ?, ?, ?, NULL)",
+        )
+        .bind(&session.id)
+        .bind(&session.context_id)
+        .bind(session.mount_kind.as_str())
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO delegations
+               (id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id,
+                initiating_principal_id, task, success_when, context_scope, status, result_event_id,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, ?)"#,
+        )
+        .bind(&delegation.id)
+        .bind(&delegation.agent_id)
+        .bind(&delegation.parent_context_id)
+        .bind(&delegation.parent_session_id)
+        .bind(&delegation.child_context_id)
+        .bind(&delegation.child_session_id)
+        .bind(&delegation.initiating_principal_id)
+        .bind(&delegation.task)
+        .bind(&delegation.success_when)
+        .bind(&delegation.context_scope)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.get_delegation(&delegation.id)
+            .await?
+            .ok_or_else(|| "Delegation scaffold 创建后无法读取".into())
+    }
+
     async fn create_delegation(
         &self,
         delegation: NewDelegation,

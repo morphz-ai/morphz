@@ -190,6 +190,9 @@ impl ModelFailure {
                 "insufficient_quota",
                 "quota exceeded",
                 "usage limit reached",
+                "reached your usage limit",
+                "usage limit for this billing cycle",
+                "quota will be refreshed in the next cycle",
                 "used all the included free usage",
             ],
         ) {
@@ -281,6 +284,45 @@ impl std::fmt::Display for ModelFailure {
 }
 
 impl std::error::Error for ModelFailure {}
+
+/// Failure while resolving one immutable physical model binding.
+///
+/// This boundary is typed because an unavailable account is a Provider/auth
+/// condition, a malformed route is operator configuration, and a Store/lock
+/// failure is Runtime infrastructure. Flattening them into one String caused
+/// unavailable accounts to be reported as unrelated Runtime internal errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelAttemptBindingError {
+    AccountUnavailable(String),
+    Configuration(String),
+    Runtime(String),
+}
+
+impl ModelAttemptBindingError {
+    pub fn account_unavailable(message: impl Into<String>) -> Self {
+        Self::AccountUnavailable(message.into())
+    }
+
+    pub fn configuration(message: impl Into<String>) -> Self {
+        Self::Configuration(message.into())
+    }
+
+    pub fn runtime(message: impl Into<String>) -> Self {
+        Self::Runtime(message.into())
+    }
+}
+
+impl std::fmt::Display for ModelAttemptBindingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AccountUnavailable(message)
+            | Self::Configuration(message)
+            | Self::Runtime(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ModelAttemptBindingError {}
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
@@ -788,6 +830,14 @@ pub trait Client: Send + Sync {
         "model-provider:default".to_string()
     }
 
+    /// Stable Runtime resource identity for one already-bound physical
+    /// request. Routing and model selection may change while a request is in
+    /// flight, so recovery attribution must use the immutable binding rather
+    /// than recomputing the process-wide current selection afterwards.
+    fn provider_resource_key_for_binding(&self, binding: &ModelAttemptBinding) -> String {
+        binding.provider_instance_id.clone()
+    }
+
     /// Whether dropping an in-flight completion future reliably cancels its
     /// underlying I/O.
     ///
@@ -832,7 +882,7 @@ pub trait Client: Send + Sync {
     async fn bind_model_attempt(
         &self,
         _request: &ModelRequestContext,
-    ) -> Result<ModelAttemptBinding, String> {
+    ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
         let model = self.model().unwrap_or_else(|| "unknown".to_string());
         Ok(ModelAttemptBinding {
             requested_alias: model.clone(),
@@ -974,5 +1024,16 @@ pub trait Client: Send + Sync {
             )
             .await?;
         Ok(())
+    }
+
+    /// Probe the logical Provider resource represented by an immutable
+    /// binding. Single-resource clients can use their ordinary probe; routed
+    /// clients must not let a later model selection redirect the probe, while
+    /// they may still apply that route's configured account failover policy.
+    async fn probe_health_bound(
+        &self,
+        _binding: &ModelAttemptBinding,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.probe_health().await
     }
 }

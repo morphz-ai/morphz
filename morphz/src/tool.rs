@@ -2241,6 +2241,7 @@ impl BackgroundTaskScheduler {
         let Some(sessions) = self.sessions.as_ref() else {
             return Ok(TimerDisposition::Complete);
         };
+        prepare_background_session_wake_payload(&mut payload);
         payload.insert("session_id".to_string(), serde_json::json!(job.session_id));
         payload.insert("context_id".to_string(), serde_json::json!(job.context_id));
         payload.insert(
@@ -2341,6 +2342,7 @@ impl BackgroundTaskScheduler {
             return Ok(());
         };
         let mut payload = result_event.payload.clone();
+        prepare_background_session_wake_payload(&mut payload);
         payload.insert("session_id".to_string(), serde_json::json!(job.session_id));
         payload.insert("context_id".to_string(), serde_json::json!(job.context_id));
         payload.insert(
@@ -2528,6 +2530,31 @@ enum WakeRoute {
     DirectThread { thread_id: String },
     SessionEscalation { session_id: String },
     Suppress { reason: WakeSuppression },
+}
+
+/// Convert a physical background-result/checkpoint payload into a fresh
+/// Session DialogueTurn payload. The old physical route remains available as
+/// explicit `source_*` provenance, but must not be interpreted as the parent
+/// or root of the new Runtime Wake.
+fn prepare_background_session_wake_payload(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    for key in [
+        "wake_policy",
+        "activation_id",
+        "attempt_id",
+        "thread_id",
+        "root_turn_id",
+        "parent_activation_id",
+        "trigger_event_id",
+        "trigger_sequence",
+    ] {
+        payload.remove(key);
+    }
+    payload.insert(
+        "wake_policy".to_string(),
+        serde_json::json!("session_fallback"),
+    );
 }
 
 fn owner_accepts_direct_signal(owner: &ThreadRecord) -> bool {
@@ -12775,6 +12802,10 @@ Body
         assert_eq!(wake.payload["source_thread_id"], parent.thread_id);
         assert_eq!(wake.payload["source_activation_id"], parent.activation_id);
         assert_eq!(wake.payload["result_event_id"], completion.id);
+        assert_eq!(wake.payload["wake_policy"], "session_fallback");
+        assert!(wake.payload.get("thread_id").is_none());
+        assert!(wake.payload.get("activation_id").is_none());
+        assert!(wake.payload.get("root_turn_id").is_none());
         let wake_signal_count = store
             .list_context_thread_signals(&parent.context_id, None)
             .await
@@ -14664,6 +14695,10 @@ Body
         assert_eq!(checkpoint.payload["session_id"], parent.session_id);
         assert_eq!(checkpoint.payload["context_id"], parent.context_id);
         assert_eq!(checkpoint.payload["source_thread_id"], parent.thread_id);
+        assert_eq!(checkpoint.payload["wake_policy"], "session_fallback");
+        assert!(checkpoint.payload.get("thread_id").is_none());
+        assert!(checkpoint.payload.get("activation_id").is_none());
+        assert!(checkpoint.payload.get("root_turn_id").is_none());
         assert!(store
             .get_execution_job(&job.id)
             .await

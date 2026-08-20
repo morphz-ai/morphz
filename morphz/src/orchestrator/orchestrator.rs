@@ -24,8 +24,8 @@ use crate::harness_package::{
 };
 use crate::llm::{
     attachment_message, provider_continuation_message, Client, Message, ModelAttemptBinding,
-    ModelFailure, ModelFailureKind, ModelRequestContext, ModelUsage, PromptTokenAccuracy,
-    PromptTokenCount, ProviderContinuation, ToolDefinition,
+    ModelAttemptBindingError, ModelFailure, ModelFailureKind, ModelRequestContext, ModelUsage,
+    PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ToolDefinition,
 };
 use crate::memory::{
     stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberRecord,
@@ -36,13 +36,14 @@ use crate::memory::{
     ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
     ExecutionJobStatus, ExecutionJobStore, NewActionGroup, NewActionGroupMember,
     NewApprovalRequest, NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob,
-    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
-    PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus,
-    PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduleStatus,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore,
-    SessionUpdate, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter, ThreadKind, ThreadLifecycle,
-    ThreadMutation, ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
+    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal, ObjectiveStatus,
+    ObjectiveWaitCondition, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
+    PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
+    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus,
+    SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSupervision,
+    ThreadSupervisorKind,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
@@ -1103,8 +1104,9 @@ const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
 const CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT: usize = 256;
 const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
+const RESPONSE_PROTOCOL_CONTENT_PREVIEW_CHARS: usize = 2_048;
+const RESPONSE_PROTOCOL_TOOL_CALL_LIMIT: usize = 8;
 const EMPTY_RESPONSE_DETAIL: &str = "模型响应既没有非空正文，也没有工具调用";
-const RESPONSE_PROTOCOL_ERROR: &str = "Response protocol error: this Evaluation has not produced a valid terminal result. To reply to the active Session, return non-empty ordinary assistant text with no tools. For intentional silence, call no_reply(mode=silent) exclusively. Use no_reply(mode=wait) only while the Runtime can verify a nonterminal event. Empty output, a missing or invalid mode, mixing no_reply with another tool, or combining no_reply with content is invalid.";
 const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error: the Runtime reports only that all direct child objectives are terminal; it does not decide whether the parent is complete. This evaluation cannot end with ordinary text or no_reply while leaving closure unresolved. Persist one decision: objective_update to completed, blocked, or an exact wait; perform real work; or create a necessary child objective.";
 const OBJECTIVE_FINALIZATION_PROMPT: &str = r#"The Runtime persisted your Objective completion decision but has not ended the Objective. You are still in the same Activation. Produce the user-facing final delivery from the complete evidence you just audited:
 - Return a complete ordinary assistant response with no tool calls. Do not shorten or omit the final report because you explained parts earlier.
@@ -1457,6 +1459,85 @@ struct ProviderCircuitState {
     waiting_contexts: HashSet<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderCircuitAdmission {
+    Allowed,
+    ExplicitDialogueProbe,
+    Rejected { retry_after_secs: u64 },
+}
+
+fn decide_provider_circuit_admission(
+    state: &mut ProviderCircuitState,
+    context_id: &str,
+    explicit_dialogue_attempt: bool,
+    now: tokio::time::Instant,
+) -> ProviderCircuitAdmission {
+    state.waiting_contexts.insert(context_id.to_string());
+    match state.phase {
+        ProviderCircuitPhase::Confirming => ProviderCircuitAdmission::Allowed,
+        ProviderCircuitPhase::Open if explicit_dialogue_attempt => {
+            ProviderCircuitAdmission::ExplicitDialogueProbe
+        }
+        ProviderCircuitPhase::Open => ProviderCircuitAdmission::Rejected {
+            retry_after_secs: state
+                .retry_at
+                .saturating_duration_since(now)
+                .as_secs()
+                .max(1),
+        },
+    }
+}
+
+async fn persistent_provider_wait_contexts(
+    store: &dyn crate::memory::RuntimeStore,
+    resource: &str,
+) -> Result<BTreeSet<String>, DynError> {
+    let mut contexts = BTreeSet::new();
+    let dependencies = store
+        .list_scheduler_dependencies(SchedulerDependencyFilter {
+            dependency_kind: Some(SchedulerDependencyKind::Resource),
+            dependency_id: Some(resource.to_string()),
+            status: Some(SchedulerDependencyStatus::Pending),
+            required_only: true,
+            ..Default::default()
+        })
+        .await?;
+    for dependency in dependencies {
+        match dependency.owner_kind {
+            SchedulerDependencyOwnerKind::Thread => {
+                let Some(thread) = store.get_thread(&dependency.owner_id).await? else {
+                    continue;
+                };
+                if thread.lifecycle == ThreadLifecycle::Open
+                    && thread.generation == dependency.owner_generation
+                {
+                    contexts.insert(thread.context_id);
+                }
+            }
+            // An Objective intentionally owns no live Thread while suspended.
+            // Its Resource dependency must therefore be recovered directly
+            // rather than relying on a Thread scan to discover it by accident.
+            SchedulerDependencyOwnerKind::Objective => {
+                let Some(objective) = store.get_objective(&dependency.owner_id).await? else {
+                    continue;
+                };
+                if objective.status == ObjectiveStatus::Active
+                    && objective.generation == dependency.owner_generation
+                    && matches!(
+                        objective.wait_condition,
+                        Some(ObjectiveWaitCondition::ResourceAvailable { resource: ref wait_resource })
+                            if wait_resource == resource
+                    )
+                {
+                    contexts.insert(objective.context_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(contexts)
+}
+
 async fn publish_provider_probe_available(
     bus: &InMemoryEventBus,
     resource: &str,
@@ -1466,7 +1547,7 @@ async fn publish_provider_probe_available(
     contexts: Vec<String>,
 ) {
     let recovery_phase = match reason {
-        "health_probe_succeeded" => "closed",
+        "health_probe_succeeded" | "application_request_succeeded" => "closed",
         "request_retry_elapsed" => "request_retry",
         _ => "half_open",
     };
@@ -1637,6 +1718,23 @@ impl std::fmt::Display for ModelCompletionError {
 impl std::error::Error for ModelCompletionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.source.as_ref())
+    }
+}
+
+fn model_binding_completion_error(error: ModelAttemptBindingError) -> ModelCompletionError {
+    match error {
+        ModelAttemptBindingError::AccountUnavailable(message) => ModelCompletionError::provider(
+            Box::new(ModelFailure::new(ModelFailureKind::Authentication, message)) as DynError,
+        ),
+        ModelAttemptBindingError::Configuration(message) => {
+            ModelCompletionError::provider(Box::new(ModelFailure::new(
+                ModelFailureKind::InvalidModelOrRequest,
+                message,
+            )) as DynError)
+        }
+        ModelAttemptBindingError::Runtime(message) => {
+            ModelCompletionError::internal(message.into())
+        }
     }
 }
 
@@ -2430,6 +2528,84 @@ fn append_reasoning_continuation_input(
     Ok(())
 }
 
+fn response_protocol_snapshot(response: &crate::llm::Response) -> serde_json::Value {
+    let content_chars = response.content.chars().count();
+    let content_truncated = content_chars > RESPONSE_PROTOCOL_CONTENT_PREVIEW_CHARS;
+    let mut content = response
+        .content
+        .chars()
+        .take(RESPONSE_PROTOCOL_CONTENT_PREVIEW_CHARS)
+        .collect::<String>();
+    if content_truncated {
+        content.push_str(&format!(
+            "\n… <content preview truncated; {content_chars} characters total>"
+        ));
+    }
+    let tool_calls = response
+        .tool_calls
+        .iter()
+        .take(RESPONSE_PROTOCOL_TOOL_CALL_LIMIT)
+        .map(tool_call_activity_preview)
+        .collect::<Vec<_>>();
+    json!({
+        "content": content,
+        "content_chars": content_chars,
+        "content_truncated": content_truncated,
+        "tool_call_count": response.tool_calls.len(),
+        "tool_calls_truncated": response.tool_calls.len() > RESPONSE_PROTOCOL_TOOL_CALL_LIMIT,
+        "tool_calls": tool_calls,
+    })
+}
+
+fn response_protocol_correction_prompt(
+    reason: &str,
+    response: Option<&crate::llm::Response>,
+    has_provider_continuation: bool,
+) -> String {
+    let rejected_output = response
+        .map(response_protocol_snapshot)
+        .and_then(|snapshot| serde_json::to_string_pretty(&snapshot).ok())
+        .unwrap_or_else(|| "{\n  \"content\": \"\",\n  \"tool_calls\": []\n}".to_string());
+    let continuation = if has_provider_continuation {
+        "The Runtime also restored the Provider-native reasoning continuation immediately before this instruction. Continue from it; do not restart the analysis."
+    } else {
+        "No independently replayable Provider-native reasoning continuation is available for this retry."
+    };
+    format!(
+        "The previous model output was rejected by the Runtime response protocol. None of its tool calls was executed and none of its ordinary content was delivered to the Session.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action. Choose exactly one valid form:\n1. To reply: return non-empty ordinary assistant text and no tool calls.\n2. To act: call the required tool(s), without no_reply.\n3. To send nothing: call no_reply exactly once with mode=\"silent\" and no ordinary text.\n4. To yield for a Runtime-verifiable nonterminal event: call no_reply exactly once with mode=\"wait\" and no ordinary text.\nNever combine no_reply with ordinary text or another tool."
+    )
+}
+
+fn append_response_protocol_correction_input(
+    messages: &mut Vec<Message>,
+    provider_continuation: Option<&ProviderContinuation>,
+    response: Option<&crate::llm::Response>,
+    reason: &str,
+) -> Result<(), DynError> {
+    // Responses reasoning items are self-contained and can be replayed before
+    // a correction instruction. Chat reasoning_content is only legal on the
+    // assistant tool-call message it belongs to; the rejected tool call has
+    // deliberately not been committed, so replaying that envelope would make
+    // the request claim an action happened when it did not.
+    let has_provider_continuation =
+        if let Some(continuation @ ProviderContinuation::OpenaiResponses { .. }) =
+            provider_continuation
+        {
+            messages.push(provider_continuation_message(continuation.clone())?);
+            true
+        } else {
+            false
+        };
+    messages.push(Message {
+        role: "user".to_string(),
+        content: response_protocol_correction_prompt(reason, response, has_provider_continuation),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+    });
+    Ok(())
+}
+
 fn interrupted_text_continuation_prompt() -> &'static str {
     "上一条 assistant 正文在 Provider 流中断时只传输了一部分。该部分已由 Runtime 保留并作为紧邻的 assistant 消息提供。请从断点继续完成同一份正文，不要重新开头、不要复述已给出的内容；完成后返回剩余正文。"
 }
@@ -2456,11 +2632,15 @@ impl Orchestrator {
         self.context_engine.capacity_metrics()
     }
 
-    async fn admit_provider_circuit(&self, context_id: &str) -> Result<(), ModelFailure> {
-        let resource = self.client.provider_resource_key();
+    async fn admit_provider_circuit(
+        &self,
+        resource: &str,
+        context_id: &str,
+        explicit_dialogue_attempt: bool,
+    ) -> Result<(), ModelFailure> {
         let Some(circuit) = self
             .provider_circuits
-            .get(&resource)
+            .get(resource)
             .map(|entry| Arc::clone(entry.value()))
         else {
             return Ok(());
@@ -2468,33 +2648,53 @@ impl Orchestrator {
         let mut state = circuit
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.waiting_contexts.insert(context_id.to_string());
         let now = tokio::time::Instant::now();
-        match state.phase {
+        match decide_provider_circuit_admission(
+            &mut state,
+            context_id,
+            explicit_dialogue_attempt,
+            now,
+        ) {
             // A business request reported a Provider-scoped error, but the
             // independent small probes have not confirmed an outage. Keep
             // unrelated Sessions available during that confirmation window.
-            ProviderCircuitPhase::Confirming => Ok(()),
-            ProviderCircuitPhase::Open => {
-                let retry_after = state
-                    .retry_at
-                    .saturating_duration_since(now)
-                    .as_secs()
-                    .max(1);
-                Err(ModelFailure::new(
-                    ModelFailureKind::ServerUnavailable,
-                    format!("Provider circuit open; retry in {retry_after}s"),
-                )
-                .with_retry_after(Some(retry_after)))
+            ProviderCircuitAdmission::Allowed => Ok(()),
+            ProviderCircuitAdmission::ExplicitDialogueProbe => {
+                // The shared circuit suppresses automatic Objective/Thread
+                // replay storms, not an explicit new DialogueTurn. A user
+                // retry is valuable fresh evidence and must be allowed to
+                // reach the Provider; on success record_provider_success()
+                // closes the circuit and wakes every durable waiter. This
+                // also provides a recovery path when a Provider cannot answer
+                // the deliberately tiny synthetic health probe but can answer
+                // its normal routed request shape.
+                tracing::info!(
+                    provider_resource = %resource,
+                    context_id,
+                    event_code = "orchestrator.provider.explicit_dialogue_probe_admitted",
+                    "An explicit DialogueTurn is probing an open Provider circuit"
+                );
+                Ok(())
             }
+            ProviderCircuitAdmission::Rejected { retry_after_secs } => Err(ModelFailure::new(
+                ModelFailureKind::ServerUnavailable,
+                format!("Provider circuit open; retry in {retry_after_secs}s"),
+            )
+            .with_retry_after(Some(retry_after_secs))),
         }
     }
 
-    async fn record_provider_failure(&self, context_id: &str, failure: &ModelFailure) {
+    async fn record_provider_failure(
+        &self,
+        context_id: &str,
+        resource: &str,
+        binding: Option<ModelAttemptBinding>,
+        failure: &ModelFailure,
+    ) {
         if !failure.kind.uses_provider_recovery() {
             return;
         }
-        let resource = self.client.provider_resource_key();
+        let resource = resource.to_string();
         if failure.kind.is_request_scoped_latency() {
             // A large request with a slow first byte, or one stalled stream,
             // is request-local evidence. Wake only its owning Context after a
@@ -2559,6 +2759,7 @@ impl Orchestrator {
         );
         let bus = Arc::clone(&self.bus);
         let client = Arc::clone(&self.client);
+        let store = self.plan_store.clone();
         tokio::spawn(async move {
             const FAILURE_THRESHOLD: u32 = 3;
             tokio::time::sleep(initial_delay).await;
@@ -2572,9 +2773,14 @@ impl Orchestrator {
                         return;
                     }
                 }
-                match client.probe_health().await {
+                let probe_result = if let Some(binding) = binding.as_ref() {
+                    client.probe_health_bound(binding).await
+                } else {
+                    client.probe_health().await
+                };
+                match probe_result {
                     Ok(()) => {
-                        let contexts = {
+                        let mut contexts = {
                             let mut state = circuit
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2584,8 +2790,20 @@ impl Orchestrator {
                             state.phase = ProviderCircuitPhase::Confirming;
                             state.consecutive_failures = 0;
                             state.health_probe_in_flight = false;
-                            state.waiting_contexts.drain().collect::<Vec<_>>()
+                            state.waiting_contexts.drain().collect::<BTreeSet<_>>()
                         };
+                        if let Some(store) = store.as_ref() {
+                            match persistent_provider_wait_contexts(store.as_ref(), &resource).await
+                            {
+                                Ok(persistent) => contexts.extend(persistent),
+                                Err(error) => tracing::error!(
+                                    event_code = "orchestrator.provider.persistent_wait_read_failed",
+                                    provider_resource = %resource,
+                                    %error,
+                                    "Provider probe succeeded, but durable waiters could not be enumerated"
+                                ),
+                            }
+                        }
                         tracing::info!(event_code = "orchestrator.provider.probe_succeeded", provider_resource = %resource, generation, "Independent health probe succeeded; the shared Provider circuit remains or returns closed");
                         publish_provider_probe_available(
                             &bus,
@@ -2593,7 +2811,7 @@ impl Orchestrator {
                             generation,
                             None,
                             "health_probe_succeeded",
-                            contexts,
+                            contexts.into_iter().collect(),
                         )
                         .await;
                         return;
@@ -2637,41 +2855,51 @@ impl Orchestrator {
         });
     }
 
-    async fn record_provider_success(&self) {
-        let resource = self.client.provider_resource_key();
-        let Some((_, circuit)) = self.provider_circuits.remove(&resource) else {
-            return;
-        };
-        let contexts = {
+    async fn record_provider_success(&self, resource: &str) {
+        let mut contexts = BTreeSet::new();
+        let mut generation = 0;
+        if let Some((_, circuit)) = self.provider_circuits.remove(resource) {
             let mut state = circuit
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.health_probe_in_flight = false;
             state.generation = state.generation.saturating_add(1);
-            state.waiting_contexts.iter().cloned().collect::<Vec<_>>()
-        };
-        tracing::info!(event_code = "orchestrator.provider.recovery_probe_succeeded", provider_resource = %resource, "Provider recovery probe succeeded; the shared circuit closed");
-        for context_id in contexts {
-            let event = Event::new(
-                format!(
-                    "provider_recovered_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            generation = state.generation;
+            contexts.extend(state.waiting_contexts.iter().cloned());
+        }
+        // A successful application request is authoritative health evidence
+        // even after restart, process hand-off, or a route switch erased the
+        // corresponding process-local circuit. Durable dependencies are the
+        // source of truth for who must be resumed.
+        if let Some(store) = self.plan_store.as_ref() {
+            match persistent_provider_wait_contexts(store.as_ref(), resource).await {
+                Ok(persistent) => contexts.extend(persistent),
+                Err(error) => tracing::error!(
+                    event_code = "orchestrator.provider.persistent_wait_read_failed",
+                    provider_resource = %resource,
+                    %error,
+                    "A model request succeeded, but durable Provider waiters could not be enumerated"
                 ),
-                "Runtime-ProviderRecovery".to_string(),
-                "runtime_control".to_string(),
-                "runtime/resource_available".to_string(),
-                [
-                    ("context_id".to_string(), json!(context_id)),
-                    ("resource".to_string(), json!(&resource)),
-                    ("recovery_phase".to_string(), json!("closed")),
-                ]
-                .into_iter()
-                .collect(),
-            );
-            if let Err(error) = self.bus.publish(event).await {
-                tracing::error!(event_code = "orchestrator.provider.recovery_event_publish_failed", %error, provider_resource = %resource, "Failed to publish the Provider recovery Event");
             }
         }
+        if contexts.is_empty() {
+            return;
+        }
+        tracing::info!(
+            event_code = "orchestrator.provider.application_request_recovered",
+            provider_resource = %resource,
+            waiting_contexts = contexts.len(),
+            "A successful model request proved the bound Provider resource healthy"
+        );
+        publish_provider_probe_available(
+            &self.bus,
+            resource,
+            generation,
+            None,
+            "application_request_succeeded",
+            contexts.into_iter().collect(),
+        )
+        .await;
     }
 
     async fn handle_thread_resource_available(&self, event: Event) -> Result<(), DynError> {
@@ -2826,35 +3054,12 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn recover_thread_provider_waits(&self) -> Result<(), DynError> {
+    async fn recover_provider_waits(&self) -> Result<(), DynError> {
         let Some(store) = self.plan_store.as_ref() else {
             return Ok(());
         };
-        let Some(session_store) = self.context_engine.session_store() else {
-            return Ok(());
-        };
         let resource = self.client.provider_resource_key();
-        let dependencies = store
-            .list_scheduler_dependencies(SchedulerDependencyFilter {
-                owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
-                dependency_kind: Some(SchedulerDependencyKind::Resource),
-                dependency_id: Some(resource.clone()),
-                status: Some(SchedulerDependencyStatus::Pending),
-                required_only: true,
-                ..Default::default()
-            })
-            .await?;
-        let mut contexts = BTreeSet::new();
-        for dependency in dependencies {
-            let Some(thread) = session_store.get_thread(&dependency.owner_id).await? else {
-                continue;
-            };
-            if thread.lifecycle == ThreadLifecycle::Open
-                && thread.generation == dependency.owner_generation
-            {
-                contexts.insert(thread.context_id);
-            }
-        }
+        let contexts = persistent_provider_wait_contexts(store.as_ref(), &resource).await?;
         if contexts.is_empty() {
             return Ok(());
         }
@@ -2870,7 +3075,8 @@ impl Orchestrator {
         )
         .with_retry_after(Some(1));
         for context_id in contexts {
-            self.record_provider_failure(&context_id, &failure).await;
+            self.record_provider_failure(&context_id, &resource, None, &failure)
+                .await;
         }
         Ok(())
     }
@@ -3598,7 +3804,7 @@ impl Orchestrator {
         // fail with SQLITE_BUSY.
         self.rebuild_activation_admission_queue().await?;
         self.audit_active_supervision_invariants().await?;
-        self.recover_thread_provider_waits().await?;
+        self.recover_provider_waits().await?;
         self.reconcile_durable_plans().await?;
         self.recover_delegations().await?;
         self.reconcile_orphaned_threads().await?;
@@ -5715,12 +5921,41 @@ impl Orchestrator {
         } else {
             None
         };
+        // Publish the child routing scaffold as one durable fact. A Context
+        // without its Session used to be visible for the whole cognitive-seed
+        // operation, so Dashboard/API readers could cache a permanent-looking
+        // "no Session" Delegation even though creation eventually continued.
+        // Seed/import remains a later semantic operation; if it fails, the
+        // existing error path can now mark an actual Delegation failed and
+        // archive its actual child Session.
         session_store
-            .create_context(NewCognitiveContext {
-                id: child_context_id.clone(),
-                agent_id: parent.agent_id.clone(),
-                title: format!("Delegation {}", delegation_id),
-            })
+            .create_delegation_scaffold(
+                NewCognitiveContext {
+                    id: child_context_id.clone(),
+                    agent_id: parent.agent_id.clone(),
+                    title: format!("Delegation {}", delegation_id),
+                },
+                NewSession {
+                    id: child_session_id.clone(),
+                    agent_id: parent.agent_id.clone(),
+                    context_id: child_context_id.clone(),
+                    parent_session_id: None,
+                    title: format!("Sub Agent for {}", parent_session_id),
+                    mount_kind: SessionMountKind::DelegationProjection,
+                },
+                NewDelegation {
+                    id: delegation_id.clone(),
+                    agent_id: parent.agent_id.clone(),
+                    parent_context_id: parent_context_id.clone(),
+                    parent_session_id: parent_session_id.clone(),
+                    child_context_id: child_context_id.clone(),
+                    child_session_id: child_session_id.clone(),
+                    initiating_principal_id: initiating_principal_id.clone(),
+                    task: task.clone(),
+                    success_when: success_when.clone(),
+                    context_scope: context_scope.clone(),
+                },
+            )
             .await?;
         if let Some(projection) = session_projection.as_ref() {
             self.context_engine
@@ -5736,16 +5971,6 @@ impl Orchestrator {
                 .seed_context_from_mind(&parent_context_id, None, &child_context_id)
                 .await?;
         }
-        session_store
-            .create_session(NewSession {
-                id: child_session_id.clone(),
-                agent_id: parent.agent_id.clone(),
-                context_id: child_context_id.clone(),
-                parent_session_id: None,
-                title: format!("Sub Agent for {}", parent_session_id),
-                mount_kind: SessionMountKind::DelegationProjection,
-            })
-            .await?;
         if let Some(principal_id) = &initiating_principal_id {
             if session_store.get_principal(principal_id).await?.is_some() {
                 session_store
@@ -5778,20 +6003,6 @@ impl Orchestrator {
                 "Created a bounded cognitive snapshot for the Sub Agent from the parent Session active Projection"
             );
         }
-        session_store
-            .create_delegation(NewDelegation {
-                id: delegation_id.clone(),
-                agent_id: parent.agent_id,
-                parent_context_id: parent_context_id.clone(),
-                parent_session_id: parent_session_id.clone(),
-                child_context_id: child_context_id.clone(),
-                child_session_id: child_session_id.clone(),
-                initiating_principal_id: initiating_principal_id.clone(),
-                task: task.clone(),
-                success_when: success_when.clone(),
-                context_scope,
-            })
-            .await?;
         session_store
             .update_delegation_status(&delegation_id, DelegationStatus::Running, None)
             .await?;
@@ -5883,15 +6094,16 @@ impl Orchestrator {
             return Ok(());
         }
 
-        // `wake_policy:none` is an immutable semantic boundary: the Event is
-        // observable and may be consumed by its owning Plan, but it must not
-        // enter ordinary chat scheduling. This guard also protects direct
-        // in-process dispatch, not only the durable Signal Outbox path.
-        if event
-            .payload
-            .get("wake_policy")
-            .and_then(|value| value.as_str())
-            == Some("none")
+        // `wake_policy:none` suppresses the physical Tool Output from
+        // ordinary chat scheduling. A Runtime Wake is already the controlled
+        // Thread -> Session fallback and must remain schedulable even when a
+        // legacy row inherited `wake_policy:none` from that physical result.
+        if event.event_type == TYPE_TOOL_OUTPUT
+            && event
+                .payload
+                .get("wake_policy")
+                .and_then(|value| value.as_str())
+                == Some("none")
         {
             return Ok(());
         }
@@ -6562,13 +6774,20 @@ impl Orchestrator {
             .get("parent_activation_id")
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned);
-        let causal_activation_id = explicit_parent_activation_id.clone().or_else(|| {
-            event
-                .payload
-                .get("activation_id")
-                .and_then(|value| value.as_str())
-                .map(ToOwned::to_owned)
-        });
+        // A Runtime Wake is a fresh Session DialogueTurn root. Older builds
+        // copied the physical Tool Output's `activation_id` into the wake;
+        // only an explicit parent route may parent this fresh turn.
+        let causal_activation_id = if event.event_type == TYPE_RUNTIME_WAKE {
+            explicit_parent_activation_id.clone()
+        } else {
+            explicit_parent_activation_id.clone().or_else(|| {
+                event
+                    .payload
+                    .get("activation_id")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned)
+            })
+        };
         let parent = match causal_activation_id.as_deref() {
             Some(id) => session_store.get_thread_activation(id).await?,
             None => None,
@@ -6597,13 +6816,17 @@ impl Orchestrator {
                     .as_ref()
                     .and_then(|activation| activation.initiating_principal_id.clone())
             });
-        let root_turn_id = event
-            .payload
-            .get("root_turn_id")
-            .and_then(|value| value.as_str())
-            .map(ToOwned::to_owned)
-            .or_else(|| parent.as_ref().map(|item| item.root_turn_id.clone()))
-            .unwrap_or_else(|| event.id.clone());
+        let root_turn_id = if event.event_type == TYPE_RUNTIME_WAKE {
+            event.id.clone()
+        } else {
+            event
+                .payload
+                .get("root_turn_id")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+                .or_else(|| parent.as_ref().map(|item| item.root_turn_id.clone()))
+                .unwrap_or_else(|| event.id.clone())
+        };
         let objective_route = event
             .payload
             .get("objective_id")
@@ -7189,9 +7412,21 @@ impl Orchestrator {
             "最终模型请求（宿主策略）",
         )
         .map_err(ModelCompletionError::input)?;
-        self.admit_provider_circuit(&stream_context_id)
-            .await
-            .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
+        let explicit_dialogue_attempt = self.activation_route(attempt_id).is_some_and(|route| {
+            route.thread_kind == "dialogue_turn"
+                && self
+                    .objective_evaluations
+                    .get_for_activation(&route.activation_id)
+                    .is_none()
+        });
+        let admission_resource = self.client.provider_resource_key();
+        self.admit_provider_circuit(
+            &admission_resource,
+            &stream_context_id,
+            explicit_dialogue_attempt,
+        )
+        .await
+        .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
         let queue_timeout = std::time::Duration::from_secs(
             self.orchestrator_config
                 .model_provider_queue_timeout_secs
@@ -7240,7 +7475,17 @@ impl Orchestrator {
                 required_capabilities: Vec::new(),
             })
             .await
-            .map_err(|error| ModelCompletionError::internal(error.into()))?;
+            .map_err(model_binding_completion_error)?;
+        let bound_provider_resource = client.provider_resource_key_for_binding(&model_binding);
+        if bound_provider_resource != admission_resource {
+            self.admit_provider_circuit(
+                &bound_provider_resource,
+                &stream_context_id,
+                explicit_dialogue_attempt,
+            )
+            .await
+            .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
+        }
         let model_request_started_at = Utc::now();
         let effective_model_input_limits =
             host_model_input_limits.stricter(model_binding.model_input_limits);
@@ -7510,8 +7755,13 @@ impl Orchestrator {
                         // recovery signal.  The physical request still
                         // failed, so Objectives waiting on this Provider must
                         // enter the same durable reconnect loop.
-                        self.record_provider_failure(&stream_context_id, &failure)
-                            .await;
+                        self.record_provider_failure(
+                            &stream_context_id,
+                            &bound_provider_resource,
+                            Some(model_binding.clone()),
+                            &failure,
+                        )
+                        .await;
                         return Err(ModelCompletionError::with_summary_from(
                             Box::new(failure) as DynError,
                             &reasoning_summary,
@@ -7591,8 +7841,13 @@ impl Orchestrator {
                         .map_err(|persist_error| {
                             ModelCompletionError::persistence(persist_error)
                         })?;
-                        self.record_provider_failure(&stream_context_id, &failure)
-                            .await;
+                        self.record_provider_failure(
+                            &stream_context_id,
+                            &bound_provider_resource,
+                            Some(model_binding.clone()),
+                            &failure,
+                        )
+                        .await;
                         return Err(ModelCompletionError::with_summary_from(
                             Box::new(failure) as DynError,
                             &reasoning_summary,
@@ -7645,7 +7900,7 @@ impl Orchestrator {
             error.with_model_configuration_snapshot(model_request_started_at, model_binding.clone())
         });
         match &outcome {
-            Ok(_) => self.record_provider_success().await,
+            Ok(_) => self.record_provider_success(&bound_provider_resource).await,
             // A completed response that contains provider-authored reasoning
             // but no final text/tool call is not a Provider outage.  It is
             // the normal "reasoning-only" boundary used by long-thinking
@@ -7661,7 +7916,7 @@ impl Orchestrator {
                 if error.origin == ModelCompletionErrorOrigin::Provider
                     && error.failure().kind == ModelFailureKind::EmptyResponse =>
             {
-                self.record_provider_success().await;
+                self.record_provider_success(&bound_provider_resource).await;
             }
             Err(error)
                 if error.origin == ModelCompletionErrorOrigin::Provider
@@ -7679,8 +7934,13 @@ impl Orchestrator {
                 // that case: the next attempt must wait for a healthy
                 // Provider rather than mistake partial data for completion.
                 let failure = error.failure();
-                self.record_provider_failure(&stream_context_id, &failure)
-                    .await;
+                self.record_provider_failure(
+                    &stream_context_id,
+                    &bound_provider_resource,
+                    Some(model_binding.clone()),
+                    &failure,
+                )
+                .await;
             }
             Err(_) => {}
         }
@@ -9562,6 +9822,7 @@ impl Orchestrator {
                         protocol_errors,
                         "empty",
                         "模型返回空响应",
+                        None,
                     )
                     .await?;
                     if protocol_errors > MAX_RESPONSE_PROTOCOL_RETRIES {
@@ -9573,13 +9834,13 @@ impl Orchestrator {
                             )
                             .await;
                     }
-                    protocol_messages.push(Message {
-                        role: "user".to_string(),
-                        content: RESPONSE_PROTOCOL_ERROR.to_string(),
-                        name: None,
-                        tool_call_id: None,
-                        tool_calls: None,
-                    });
+                    protocol_messages = base_protocol_messages.clone();
+                    append_response_protocol_correction_input(
+                        &mut protocol_messages,
+                        None,
+                        None,
+                        "模型返回空响应",
+                    )?;
                     continue;
                 }
                 Err(error) => {
@@ -9735,6 +9996,7 @@ impl Orchestrator {
                             protocol_errors,
                             "invalid_wait",
                             reason,
+                            Some(&response),
                         )
                         .await?;
                         if protocol_errors > MAX_RESPONSE_PROTOCOL_RETRIES {
@@ -9746,13 +10008,13 @@ impl Orchestrator {
                                 )
                                 .await;
                         }
-                        protocol_messages.push(Message {
-                            role: "user".to_string(),
-                            content: format!("{reason}。{RESPONSE_PROTOCOL_ERROR}"),
-                            name: None,
-                            tool_call_id: None,
-                            tool_calls: None,
-                        });
+                        protocol_messages = base_protocol_messages.clone();
+                        append_response_protocol_correction_input(
+                            &mut protocol_messages,
+                            provider_continuation.as_ref(),
+                            Some(&response),
+                            reason,
+                        )?;
                         continue;
                     }
                     break (
@@ -9773,6 +10035,7 @@ impl Orchestrator {
                         protocol_errors,
                         "invalid",
                         &reason,
+                        Some(&response),
                     )
                     .await?;
                     if protocol_errors > MAX_RESPONSE_PROTOCOL_RETRIES {
@@ -9784,22 +10047,13 @@ impl Orchestrator {
                             )
                             .await;
                     }
-                    if response.tool_calls.is_empty() && !response.content.trim().is_empty() {
-                        protocol_messages.push(Message {
-                            role: "assistant".to_string(),
-                            content: response.content,
-                            name: None,
-                            tool_call_id: None,
-                            tool_calls: None,
-                        });
-                    }
-                    protocol_messages.push(Message {
-                        role: "user".to_string(),
-                        content: format!("{reason}。{RESPONSE_PROTOCOL_ERROR}"),
-                        name: None,
-                        tool_call_id: None,
-                        tool_calls: None,
-                    });
+                    protocol_messages = base_protocol_messages.clone();
+                    append_response_protocol_correction_input(
+                        &mut protocol_messages,
+                        provider_continuation.as_ref(),
+                        Some(&response),
+                        &reason,
+                    )?;
                 }
             }
         };
@@ -10081,6 +10335,7 @@ impl Orchestrator {
         error_count: usize,
         response_state: &str,
         reason: &str,
+        response: Option<&crate::llm::Response>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let mut payload = vec![
@@ -10095,6 +10350,35 @@ impl Orchestrator {
             ("response_state".to_string(), json!(response_state)),
             ("reason".to_string(), json!(reason)),
         ];
+        if let Some(response) = response {
+            let snapshot = response_protocol_snapshot(response);
+            payload.extend([
+                (
+                    "response_content_chars".to_string(),
+                    snapshot["content_chars"].clone(),
+                ),
+                (
+                    "response_content_preview".to_string(),
+                    snapshot["content"].clone(),
+                ),
+                (
+                    "response_content_truncated".to_string(),
+                    snapshot["content_truncated"].clone(),
+                ),
+                (
+                    "response_tool_call_count".to_string(),
+                    snapshot["tool_call_count"].clone(),
+                ),
+                (
+                    "response_tool_calls_truncated".to_string(),
+                    snapshot["tool_calls_truncated"].clone(),
+                ),
+                (
+                    "response_tool_calls".to_string(),
+                    snapshot["tool_calls"].clone(),
+                ),
+            ]);
+        }
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
@@ -11542,6 +11826,7 @@ impl Orchestrator {
         failure: &ModelFailure,
         parent_session_id: Option<&str>,
         provider_resource: &str,
+        model_binding: Option<&ModelAttemptBinding>,
         error_text: &str,
         incident: &RuntimeFailureObservation,
         user_message: &str,
@@ -11611,7 +11896,13 @@ impl Orchestrator {
             // Provider monitoring is normally armed at the physical failure
             // boundary. Re-arming after the durable dependency commit closes
             // the race where a fast probe publishes before the wait exists.
-            self.record_provider_failure(context_id, failure).await;
+            self.record_provider_failure(
+                context_id,
+                provider_resource,
+                model_binding.cloned(),
+                failure,
+            )
+            .await;
         }
         Ok(())
     }
@@ -11627,7 +11918,10 @@ impl Orchestrator {
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let error_text: String = failure.to_string().chars().take(2_000).collect();
-        let provider_resource = self.client.provider_resource_key();
+        let provider_resource = model_configuration_snapshot
+            .as_ref()
+            .map(|(_, binding)| self.client.provider_resource_key_for_binding(binding))
+            .unwrap_or_else(|| self.client.provider_resource_key());
         let wait_resource = match failure.kind {
             ModelFailureKind::ContextLimit => {
                 format!("context-maintenance:{context_id}")
@@ -11769,18 +12063,23 @@ impl Orchestrator {
             }
         };
         if ordinary_provider_wait {
-            Box::pin(self.publish_provider_wait(
-                &context_id,
-                session_id,
-                attempt_id,
-                stage,
-                failure,
-                parent_session_id,
-                &provider_resource,
-                &error_text,
-                &incident,
-                &user_message,
-            ))
+            Box::pin(
+                self.publish_provider_wait(
+                    &context_id,
+                    session_id,
+                    attempt_id,
+                    stage,
+                    failure,
+                    parent_session_id,
+                    &provider_resource,
+                    model_configuration_snapshot
+                        .as_ref()
+                        .map(|(_, binding)| *binding),
+                    &error_text,
+                    &incident,
+                    &user_message,
+                ),
+            )
             .await?;
             return Ok(());
         }
@@ -17551,12 +17850,14 @@ mod tests {
         action_group_reconcile_id, activation_admission_class, apply_prompt_estimate_delta,
         baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         completed_objective_update_call, compose_context_encoding,
-        critical_maintenance_transaction_available, derived_thread_kind,
-        durable_activation_revocation_reason, durable_reasoning_continuation_state_from_events,
-        extend_exec_output_facts, harness_entry_callable_tools, legacy_plan_effect_sequence,
+        critical_maintenance_transaction_available, decide_provider_circuit_admission,
+        derived_thread_kind, durable_activation_revocation_reason,
+        durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
+        harness_entry_callable_tools, legacy_plan_effect_sequence, model_binding_completion_error,
         model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
-        plan_infer_tool_scope, production_system_prompt_inspection, provider_delivery_retry_delay,
+        persistent_provider_wait_contexts, plan_infer_tool_scope,
+        production_system_prompt_inspection, provider_delivery_retry_delay,
         recover_action_group_from_durable_events, recovered_action_group_settled_event,
         recovery_owns_activation, render_harness_context, render_system_contract,
         restrict_tools_to_scope, retain_context_maintenance_tools,
@@ -17567,7 +17868,8 @@ mod tests {
         validate_objective_completion_call, ContextEngine, DialogueThreadGate, DialogueThreadLease,
         DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
         ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
-        ModelVisibleAttachmentReference, NoReplyMode, TerminalDecision,
+        ModelVisibleAttachmentReference, NoReplyMode, ProviderCircuitAdmission,
+        ProviderCircuitPhase, ProviderCircuitState, TerminalDecision,
         AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
@@ -17577,18 +17879,41 @@ mod tests {
     };
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
     use crate::llm::{
-        FunctionCall, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation,
-        ToolCall, ToolDefinition,
+        FunctionCall, ModelAttemptBindingError, ModelFailureKind, ModelUsage, PromptTokenAccuracy,
+        PromptTokenCount, ProviderContinuation, ToolCall, ToolDefinition,
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationStore,
         AttentionAcknowledgementRecord, EventAppend, EventStore, NewActionGroup,
-        NewActionGroupMember, NewAgent, NewCognitiveContext, NewSession, NewThread,
-        NewThreadActivation, QueryFilter, SessionDirectoryStore, SessionMountKind,
+        NewActionGroupMember, NewAgent, NewCognitiveContext, NewObjective, NewSession, NewThread,
+        NewThreadActivation, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
+        ObjectiveWaitCondition, QueryFilter, SessionDirectoryStore, SessionMountKind,
         ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadStore,
         WorkerCoordinationMode,
     };
+
+    #[test]
+    fn model_binding_failures_keep_provider_and_runtime_boundaries_distinct() {
+        let unavailable = model_binding_completion_error(
+            ModelAttemptBindingError::account_unavailable("no selectable account"),
+        );
+        assert_eq!(unavailable.origin, ModelCompletionErrorOrigin::Provider);
+        assert_eq!(unavailable.failure().kind, ModelFailureKind::Authentication);
+
+        let configuration = model_binding_completion_error(
+            ModelAttemptBindingError::configuration("unknown route"),
+        );
+        assert_eq!(configuration.origin, ModelCompletionErrorOrigin::Provider);
+        assert_eq!(
+            configuration.failure().kind,
+            ModelFailureKind::InvalidModelOrRequest
+        );
+
+        let runtime =
+            model_binding_completion_error(ModelAttemptBindingError::runtime("store unavailable"));
+        assert_eq!(runtime.origin, ModelCompletionErrorOrigin::RuntimeInternal);
+    }
     use std::collections::{BTreeSet, HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -17647,6 +17972,134 @@ mod tests {
         assert_eq!(provider_delivery_retry_delay(5).as_secs(), 16);
         assert_eq!(provider_delivery_retry_delay(6).as_secs(), 30);
         assert_eq!(provider_delivery_retry_delay(u32::MAX).as_secs(), 30);
+    }
+
+    #[test]
+    fn open_provider_circuit_admits_only_explicit_dialogue_probes() {
+        let retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut state = ProviderCircuitState {
+            phase: ProviderCircuitPhase::Open,
+            consecutive_failures: 3,
+            generation: 7,
+            retry_at,
+            health_probe_in_flight: false,
+            waiting_contexts: HashSet::new(),
+        };
+
+        assert!(matches!(
+            decide_provider_circuit_admission(
+                &mut state,
+                "context-automatic",
+                false,
+                tokio::time::Instant::now(),
+            ),
+            ProviderCircuitAdmission::Rejected { .. }
+        ));
+        assert_eq!(state.consecutive_failures, 3);
+        assert_eq!(state.generation, 7);
+        assert!(state.waiting_contexts.contains("context-automatic"));
+
+        assert_eq!(
+            decide_provider_circuit_admission(
+                &mut state,
+                "context-user-retry",
+                true,
+                tokio::time::Instant::now(),
+            ),
+            ProviderCircuitAdmission::ExplicitDialogueProbe
+        );
+        assert!(state.waiting_contexts.contains("context-user-retry"));
+
+        state.phase = ProviderCircuitPhase::Confirming;
+        assert_eq!(
+            decide_provider_circuit_admission(
+                &mut state,
+                "context-confirming",
+                false,
+                tokio::time::Instant::now(),
+            ),
+            ProviderCircuitAdmission::Allowed
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_restart_recovery_includes_objective_owned_resource_waits() {
+        let tmp = TempDir::new().unwrap();
+        let store = SqliteStore::new(
+            tmp.path()
+                .join("provider-objective-recovery.db")
+                .to_str()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "provider-recovery-agent".to_string(),
+                    title: "Provider Recovery Agent".to_string(),
+                    root_context_id: "provider-recovery-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "provider-recovery-context".to_string(),
+                    agent_id: "provider-recovery-agent".to_string(),
+                    title: "Provider Recovery Context".to_string(),
+                },
+                NewSession {
+                    id: "provider-recovery-session".to_string(),
+                    agent_id: "provider-recovery-agent".to_string(),
+                    context_id: "provider-recovery-context".to_string(),
+                    parent_session_id: None,
+                    title: "Provider Recovery Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let objective = store
+            .create_objective(NewObjective {
+                id: "provider-recovery-objective".to_string(),
+                agent_id: "provider-recovery-agent".to_string(),
+                context_id: "provider-recovery-context".to_string(),
+                coordinator_session_id: "provider-recovery-session".to_string(),
+                delivery_session_id: "provider-recovery-session".to_string(),
+                parent_objective_id: None,
+                source_event_id: "provider-recovery-source".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "resume after Provider recovery".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .update_objective_state(
+                    &objective.id,
+                    objective.revision,
+                    ObjectiveStatus::Active,
+                    Some(ObjectiveWaitCondition::ResourceAvailable {
+                        resource: "model-route:test".to_string(),
+                    }),
+                    Some("Provider unavailable"),
+                )
+                .await
+                .unwrap(),
+            ObjectiveMutation::Updated(_)
+        ));
+
+        let contexts = persistent_provider_wait_contexts(&store, "model-route:test")
+            .await
+            .unwrap();
+        assert_eq!(
+            contexts,
+            BTreeSet::from(["provider-recovery-context".to_string()])
+        );
+        assert!(
+            persistent_provider_wait_contexts(&store, "model-route:other")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

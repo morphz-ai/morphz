@@ -320,7 +320,11 @@ fn http_model_failure(
     retry_after: Option<u64>,
 ) -> ModelFailure {
     let message = format!("Provider returned HTTP {status}: {body}");
-    let semantic = ModelFailure::classify_message(message.clone());
+    // Classify the provider-authored body before adding the HTTP status text.
+    // Otherwise every 403 body contains our synthetic "403 Forbidden"
+    // prefix and is flattened into Authentication before quota/permission
+    // semantics can be observed.
+    let semantic = ModelFailure::classify_message(body.clone());
     let provider_code = provider_error_code(&body);
     let kind = if semantic.kind == ModelFailureKind::ContextLimit {
         ModelFailureKind::ContextLimit
@@ -339,7 +343,9 @@ fn http_model_failure(
         ModelFailureKind::QuotaExhausted
     } else if status.as_u16() == 429 {
         ModelFailureKind::RateLimited
-    } else if matches!(status.as_u16(), 401 | 403) {
+    } else if status.as_u16() == 401
+        || (status.as_u16() == 403 && semantic.kind == ModelFailureKind::Authentication)
+    {
         ModelFailureKind::Authentication
     } else if status.is_server_error() {
         ModelFailureKind::ServerUnavailable
@@ -2876,6 +2882,43 @@ mod tests {
             .header("content-type", "text/event-stream")
             .body(Body::from_stream(body))
             .unwrap()
+    }
+
+    #[test]
+    fn billing_cycle_quota_on_http_403_is_not_authentication() {
+        let failure = http_model_failure(
+            reqwest::StatusCode::FORBIDDEN,
+            serde_json::json!({
+                "error": {
+                    "type": "permission_error",
+                    "message": "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle."
+                },
+                "type": "error"
+            })
+            .to_string(),
+            None,
+        );
+
+        assert_eq!(failure.kind, ModelFailureKind::QuotaExhausted);
+        assert_eq!(failure.http_status, Some(403));
+    }
+
+    #[test]
+    fn generic_http_403_permission_error_does_not_poison_auth_account() {
+        let failure = http_model_failure(
+            reqwest::StatusCode::FORBIDDEN,
+            serde_json::json!({
+                "error": {
+                    "type": "permission_error",
+                    "message": "This model is not enabled for the current project."
+                }
+            })
+            .to_string(),
+            None,
+        );
+
+        assert_eq!(failure.kind, ModelFailureKind::InvalidModelOrRequest);
+        assert_eq!(failure.http_status, Some(403));
     }
 
     fn messages() -> Vec<Message> {

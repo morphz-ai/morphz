@@ -3,9 +3,10 @@ use morphz::event::{
     Event, InMemoryEventBus, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use morphz::llm::{
-    provider_continuation, Client, Message, ModelFailure, ModelFailureKind, ModelStreamEvent,
-    ModelStreamSender, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, Response,
-    ToolCallRepr, ToolDefinition, PROVIDER_CONTINUATION_MESSAGE_NAME,
+    provider_continuation, Client, Message, ModelAttemptBindingError, ModelFailure,
+    ModelFailureKind, ModelStreamEvent, ModelStreamSender, PromptTokenAccuracy, PromptTokenCount,
+    ProviderContinuation, Response, ToolCallRepr, ToolDefinition,
+    PROVIDER_CONTINUATION_MESSAGE_NAME,
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
@@ -93,6 +94,11 @@ struct ReasoningContinuationClient {
     messages_seen: Mutex<Vec<Vec<Message>>>,
 }
 
+struct InvalidProtocolContinuationClient {
+    calls: AtomicUsize,
+    messages_seen: Mutex<Vec<Vec<Message>>>,
+}
+
 struct EmptyResponseClient {
     calls: AtomicUsize,
     health_probe_calls: AtomicUsize,
@@ -114,6 +120,12 @@ struct SharedTransientFailureClient {
 struct RecoveringTransientClient {
     calls: AtomicUsize,
     health_probe_calls: AtomicUsize,
+}
+
+struct ManualSuccessRecoveryClient {
+    calls: AtomicUsize,
+    health_probe_calls: AtomicUsize,
+    selected_resource: AtomicUsize,
 }
 
 struct PersistentOutageClient;
@@ -335,8 +347,10 @@ impl Client for BindingFailureClient {
     async fn bind_model_attempt(
         &self,
         _request: &morphz::llm::ModelRequestContext,
-    ) -> Result<morphz::llm::ModelAttemptBinding, String> {
-        Err("simulated Runtime binding persistence failure".to_string())
+    ) -> Result<morphz::llm::ModelAttemptBinding, ModelAttemptBindingError> {
+        Err(ModelAttemptBindingError::runtime(
+            "simulated Runtime binding persistence failure",
+        ))
     }
 
     async fn create_completion(
@@ -457,6 +471,46 @@ impl Client for RecoveringTransientClient {
     async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for ManualSuccessRecoveryClient {
+    fn provider_resource_key(&self) -> String {
+        format!(
+            "model-provider:test-manual-success-recovery-{}",
+            self.selected_resource.load(Ordering::SeqCst)
+        )
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        match self.calls.fetch_add(1, Ordering::SeqCst) {
+            0 => Err(Box::new(
+                ModelFailure::new(
+                    ModelFailureKind::ServerUnavailable,
+                    "simulated outage before an explicit manual retry",
+                )
+                .with_retry_after(Some(30)),
+            )),
+            1 => {
+                // Simulate a Dashboard model selection racing with the
+                // response tail. Recovery must still be attributed to the
+                // immutable binding used to send this request (resource 0),
+                // not the process-wide selection observed afterwards.
+                self.selected_resource.store(1, Ordering::SeqCst);
+                Ok(text_reply_response("manual ping succeeded"))
+            }
+            _ => Ok(text_reply_response("original Thread resumed")),
+        }
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
+        std::future::pending().await
     }
 }
 
@@ -710,6 +764,67 @@ impl Client for ReasoningContinuationClient {
         let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
             text: "second reasoning segment".to_string(),
         });
+        let _ = stream.send(ModelStreamEvent::TextDelta {
+            text: response.content.clone(),
+        });
+        let _ = stream.send(ModelStreamEvent::Completed);
+        Ok(response)
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for InvalidProtocolContinuationClient {
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        unreachable!("response-protocol continuation probe uses the streaming entrypoint")
+    }
+
+    async fn create_completion_measured_stream(
+        &self,
+        messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+        _measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.messages_seen.lock().unwrap().push(messages);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = stream.send(ModelStreamEvent::Started);
+        if call == 0 {
+            let content = "I will wait for the background process.".to_string();
+            let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
+                text: "The background process is still running, so I should yield.".to_string(),
+            });
+            let _ = stream.send(ModelStreamEvent::ProviderContinuation {
+                continuation: ProviderContinuation::OpenaiResponses {
+                    reasoning_items: vec![json!({
+                        "type": "reasoning",
+                        "id": "protocol-reasoning-1",
+                        "encrypted_content": "opaque-protocol-state",
+                    })],
+                },
+            });
+            let _ = stream.send(ModelStreamEvent::TextDelta {
+                text: content.clone(),
+            });
+            let _ = stream.send(ModelStreamEvent::Completed);
+            return Ok(Response {
+                content,
+                tool_calls: vec![ToolCallRepr {
+                    id: "invalid-wait".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "no_reply".to_string(),
+                    arguments: json!({"mode":"wait"}).to_string(),
+                }],
+            });
+        }
+        let response = text_reply_response("The response boundary is corrected.");
         let _ = stream.send(ModelStreamEvent::TextDelta {
             text: response.content.clone(),
         });
@@ -2844,6 +2959,79 @@ async fn test_no_reply_wait_without_pending_runtime_fact_is_corrected() {
         replies[0].payload["text"],
         "后台结果已经终结，我现在交付结果。"
     );
+}
+
+#[tokio::test]
+async fn invalid_response_retry_restores_provider_state_and_rejected_output() {
+    let session_id = "attempt_invalid_response_continuation";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("invalid-response-continuation.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(InvalidProtocolContinuationClient {
+        calls: AtomicUsize::new(0),
+        messages_seen: Mutex::new(Vec::new()),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "wait for the background process").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let errors = wait_for_topic(&store, "runtime/response_protocol_error", session_id).await;
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload["text"],
+        "The response boundary is corrected."
+    );
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].payload["response_content_chars"], 39);
+    assert_eq!(
+        errors[0].payload["response_content_preview"],
+        "I will wait for the background process."
+    );
+    assert_eq!(errors[0].payload["response_tool_call_count"], 1);
+    assert_eq!(
+        errors[0].payload["response_tool_calls"][0]["name"],
+        "no_reply"
+    );
+
+    let requests = client.messages_seen.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].iter().any(|message| {
+        matches!(
+            provider_continuation(message),
+            Some(ProviderContinuation::OpenaiResponses { reasoning_items })
+                if reasoning_items.iter().any(|item| item["id"] == "protocol-reasoning-1")
+        )
+    }));
+    assert!(requests[1].iter().any(|message| {
+        message.role == "user"
+            && message.content.contains("no_reply 不能同时携带普通文本")
+            && message
+                .content
+                .contains("I will wait for the background process.")
+            && message
+                .content
+                .contains("None of its tool calls was executed")
+    }));
+    assert!(requests[1].iter().all(|message| {
+        message.role != "assistant" || message.content != "I will wait for the background process."
+    }));
 }
 
 #[tokio::test]
@@ -6246,6 +6434,85 @@ async fn provider_recovery_resumes_the_same_open_thread() {
 }
 
 #[tokio::test]
+async fn successful_explicit_request_resumes_durable_wait_without_probe_success() {
+    let context_id = "provider-manual-success-context";
+    let session_id = "provider-manual-success-session";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("provider-manual-success.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(ManualSuccessRecoveryClient {
+        calls: AtomicUsize::new(0),
+        health_probe_calls: AtomicUsize::new(0),
+        selected_resource: AtomicUsize::new(0),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator_with_runtime_store(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user_in_context(&bus, context_id, session_id, "first request waits").await;
+    assert_eq!(
+        wait_for_disposition_count(&store, context_id, "provider_wait", 1)
+            .await
+            .len(),
+        1
+    );
+
+    // This is the Dashboard user's later "ping". It is an explicit new turn,
+    // so it may probe the route even while automatic work remains suspended.
+    publish_user_in_context(&bus, context_id, session_id, "ping").await;
+    let replies = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        wait_for_topic_count(&store, "chat/reply", session_id, 2),
+    )
+    .await
+    .expect("a successful explicit request must wake the durable waiter");
+    let texts = replies
+        .iter()
+        .filter_map(|event| {
+            event
+                .payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        texts,
+        HashSet::from(["manual ping succeeded", "original Thread resumed"])
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        client.health_probe_calls.load(Ordering::SeqCst),
+        0,
+        "the delayed independent probe must not be required for manual recovery"
+    );
+
+    let dependencies = store
+        .list_scheduler_dependencies(SchedulerDependencyFilter {
+            dependency_kind: Some(morphz::scheduler::SchedulerDependencyKind::Resource),
+            dependency_id: Some("model-provider:test-manual-success-recovery-0".to_string()),
+            status: Some(SchedulerDependencyStatus::Satisfied),
+            required_only: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(dependencies.len(), 1);
+}
+
+#[tokio::test]
 async fn provider_wait_survives_runtime_restart() {
     let context_id = "provider-restart-context";
     let session_id = "provider-restart-session";
@@ -6443,7 +6710,11 @@ async fn shared_provider_outage_requires_three_small_probe_failures_before_openi
             .len(),
         4
     );
-    assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        client.calls.load(Ordering::SeqCst),
+        4,
+        "an explicit new DialogueTurn must reach the Provider even while automatic recovery is circuit-suppressed"
+    );
 
     let replies = store
         .query(QueryFilter {
