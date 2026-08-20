@@ -1,4 +1,4 @@
-# Morphz Structured Context Standards
+# Morphz Technical Standards
 
 > Status: Draft standards workspace
 >
@@ -11,12 +11,15 @@
 > 中文翻译：[zh-CN](zh-CN/README.md)
 
 This directory contains the public technical foundation through which Morphz intends to define,
-implement, and verify structured context systems.
+implement, and verify structured context systems and portable Harness execution.
 
 ## Naming roles
 
 - **Structured Context** is the implementation-neutral technical category.
 - **Morphz Structured Context** is the Newvar-stewarded standards family defined here.
+- **Harness** is the portable Evaluation Loop and practice-contract abstraction defined by the
+  Morphz Harness Specification.
+- **HNS** is the `.hns` Harness Package distribution profile; **Yao** is its current source language.
 - **Morphz Runtime** is Newvar's official reference implementation, not the definition of the
   standard.
 - **Morphz SC Compatible** is a reserved future compatibility mark whose use will require a
@@ -26,7 +29,7 @@ Independent implementations may satisfy the observable standard without copying 
 internals. This Draft intentionally retains Morphz in the standards-family name while keeping the
 category and conformance semantics implementation-independent.
 
-## Deliverables
+## Structured Context deliverables
 
 1. [Structured Context Constitution v1](structured_context_constitution_v1.md)
    defines the stable principles that give the category its identity.
@@ -35,16 +38,25 @@ category and conformance semantics implementation-independent.
    semantics.
 3. [Morphz Conformance Suite v1](morphz_conformance_suite_v1.md)
    defines how independent implementations demonstrate compatibility.
-4. [Project governance](../../GOVERNANCE.md) and
-   [MEP-0001](../meps/MEP-0001-specification-governance.md) define how the standard and official
-   implementation evolve.
-5. [IPR Status Notice](IPR_STATUS.md) records the provisional copyright, patent, contribution, and
-   trademark position while the documents remain Drafts.
+
+## Harness deliverables
+
+1. [Morphz Harness Specification v0.1](morphz_harness_specification_v0_1.md)
+   defines the portable execution semantics, control boundary, exact Binding, and lifecycle of a
+   Harness.
+2. [HNS Package Format Specification v0.1](hns_package_format_specification_v0_1.md)
+   defines the `.hns` physical forms, logical artifacts, normalization, identity, and Loader
+   behavior.
+
+[Project governance](../../GOVERNANCE.md) and
+[MEP-0001](../meps/MEP-0001-specification-governance.md) define how all standards and the official
+implementation evolve. The [IPR Status Notice](IPR_STATUS.md) records the provisional copyright,
+patent, contribution, and trademark position while the documents remain Drafts.
 
 ## Authority order
 
-The normative hierarchy is defined by Constitution section 4. As a non-normative index summary,
-conflicts are resolved in this order:
+For Structured Context, the normative hierarchy is defined by Constitution section 4. As a
+non-normative index summary, conflicts are resolved in this order:
 
 1. the Constitution;
 2. the current Final Structured Context Specification;
@@ -52,6 +64,17 @@ conflicts are resolved in this order:
 4. accepted Standards Track MEPs only after incorporation into a versioned normative release;
 5. Morphz Runtime, the official reference implementation;
 6. explanatory design documents and examples.
+
+For the Harness standards family, conflicts are resolved in this order until a Harness Constitution
+or equivalent governance instrument is adopted:
+
+1. the current Final Morphz Harness Specification;
+2. the matching Final HNS Package Format Specification for `.hns` Package claims;
+3. the matching Harness Conformance Suite, which may verify but cannot redefine either
+   Specification;
+4. accepted Standards Track MEPs only after incorporation into a versioned normative release;
+5. Morphz Runtime, the official reference implementation;
+6. explanatory architecture documents and examples.
 
 An MEP records and approves a change, but becomes normative only after the resulting requirement is
 incorporated into a versioned Constitution or Specification release.
@@ -68,3 +91,10 @@ The Draft standards use English as their canonical normative language because th
 be globally consumable. Chinese translations and explanatory material are maintained separately.
 Translations cannot silently change normative meaning; disagreements are resolved against the
 identified English canonical document.
+
+## Non-normative roadmap
+
+The [Morphz Standards and Interoperability Roadmap v1](../roadmap/morphz_standards_and_interoperability_roadmap_v1.md)
+describes the planned development of Causal Trace, Outcome and Verifier semantics, reference
+environments, independent implementations, and extension interfaces. It creates no conformance
+obligation and does not override the authority order in this directory.
