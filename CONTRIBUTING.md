@@ -1,5 +1,16 @@
 # Contributing to Morphz
 
+## Standards and governance
+
+Morphz uses founder-led open governance. Before changing Structured Context semantics, public
+compatibility, cross-module architecture, or project governance, read [GOVERNANCE.md](GOVERNANCE.md)
+and [MEP-0001](docs/meps/MEP-0001-specification-governance.md). Such changes require a Morphz
+Enhancement Proposal rather than an implementation-only pull request.
+
+The Draft standard workspace is indexed at
+[docs/standards/README.md](docs/standards/README.md). Until a document reaches Final status, the
+current source code and contract tests remain authoritative for claims about implemented behavior.
+
 ## Source language
 
 Morphz uses English for identifiers, developer comments, doc comments, commit messages, and raw
