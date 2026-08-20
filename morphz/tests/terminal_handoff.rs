@@ -2,7 +2,8 @@ use morphz::config::AppConfig;
 use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    ActivationStore as _, NewSession, NewThread, RuntimeStore, SessionMountKind,
+    ActivationStore as _, ExecutionJobStatus, ExecutionJobStore as _, ExecutionRetrySafety,
+    NewExecutionJob, NewSession, NewThread, NewThreadActivation, RuntimeStore, SessionMountKind,
     ThreadControlAction, ThreadKind, ThreadSignalStatus, ThreadStore as _, ThreadSupervision,
 };
 use morphz::runtime::MorphzRuntime;
@@ -30,7 +31,7 @@ impl Client for TerminalHandoffClient {
 }
 
 #[tokio::test]
-async fn operator_close_dispatches_the_durable_parent_signal_without_restart() {
+async fn operator_cancel_closes_physical_work_and_dispatches_the_parent_signal() {
     let database = NamedTempFile::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
@@ -97,17 +98,58 @@ async fn operator_close_dispatches_the_durable_parent_signal_without_restart() {
         })
         .await
         .unwrap();
+    let child_activation = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "terminal-handoff-child-activation".to_string(),
+            agent_id: child.agent_id.clone(),
+            context_id: child.context_id.clone(),
+            session_id: child.session_id.clone(),
+            initiating_principal_id: None,
+            trigger_event_id: "terminal-handoff-child-trigger".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "test".to_string(),
+            parent_activation_id: None,
+            root_turn_id: child.root_turn_id.clone(),
+        })
+        .await
+        .unwrap();
+    let child_job = store
+        .create_execution_job(NewExecutionJob {
+            id: "terminal-handoff-child-job".to_string(),
+            activation_id: child_activation.id.clone(),
+            thread_id: child.id.clone(),
+            agent_id: child.agent_id.clone(),
+            context_id: child.context_id.clone(),
+            session_id: child.session_id.clone(),
+            initiating_principal_id: None,
+            target_id: morphz::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "terminal-handoff-child-call".to_string(),
+            tool_name: "exec/background".to_string(),
+            request: serde_json::json!({"command": "test fixture"}),
+            retry_safety: ExecutionRetrySafety::ReconcileRequired,
+            requires_approval: false,
+        })
+        .await
+        .unwrap();
 
     runtime
         .control_thread(
             &runtime.identity().context_id,
             &child.id,
             child.revision,
-            ThreadControlAction::Close,
+            ThreadControlAction::Cancel,
             "operator cancelled the child",
         )
         .await
         .unwrap();
+
+    let cancelled_job = store
+        .get_execution_job(&child_job.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled_job.status, ExecutionJobStatus::Cancelled);
+    assert!(cancelled_job.cancel_requested_at.is_some());
 
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -126,7 +168,7 @@ async fn operator_close_dispatches_the_durable_parent_signal_without_restart() {
         .unwrap()
         .into_iter()
         .find(|signal| signal.thread_id == parent.id)
-        .expect("operator close should persist one direct parent Signal");
+        .expect("operator cancellation should persist one direct parent Signal");
     assert_ne!(signal.status, ThreadSignalStatus::Pending);
     let activations = store
         .list_thread_activations_by_root(

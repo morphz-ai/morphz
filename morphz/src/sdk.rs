@@ -721,6 +721,20 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    pub async fn supersede_thread(
+        &self,
+        context_id: &str,
+        thread_id: &str,
+        expected_revision: u64,
+        intent: &str,
+        reason: &str,
+    ) -> SdkResult<ThreadMutation> {
+        self.runtime
+            .supersede_thread(context_id, thread_id, expected_revision, intent, reason)
+            .await
+            .map_err(SdkError::internal)
+    }
+
     pub async fn query_event_history(
         &self,
         query: EventHistoryQuery,

@@ -1715,7 +1715,7 @@ fn scheduler_thread_command(locale: Locale) -> Command {
                 }
                 "resume" => "Example:\n  morphz scheduler thread resume thread_123",
                 _ => {
-                    "Example:\n  morphz scheduler thread close thread_123 --reason='No longer needed'"
+                    "Example:\n  morphz scheduler thread cancel thread_123 --reason='No longer needed'"
                 }
             },
         )
@@ -1741,7 +1741,38 @@ fn scheduler_thread_command(locale: Locale) -> Command {
             ),
             lifecycle_command("pause", "Pause a Thread", "暂停线程"),
             lifecycle_command("resume", "Resume a Thread", "继续线程"),
-            lifecycle_command("close", "Close a Thread", "关闭线程"),
+            lifecycle_command("cancel", "Cancel a Thread", "取消线程"),
+            output_examples(
+                locale,
+                Command::new("supersede")
+                    .about(locale.text(
+                        "Cancel the current generation and continue with a corrected intent",
+                        "取消当前代次并按修订后的要求继续",
+                    ))
+                    .arg(local_value_arg(
+                        "expected-revision",
+                        "expected-revision",
+                        "N",
+                        locale.text(
+                            "Require one exact Thread revision (defaults to the current revision)",
+                            "要求匹配精确线程修订号（默认读取当前修订号）",
+                        ),
+                    ))
+                    .arg(local_value_arg(
+                        "reason",
+                        "reason",
+                        "TEXT",
+                        locale.text(
+                            "Record an auditable supersede reason",
+                            "记录可审计的替换原因",
+                        ),
+                    ))
+                    .arg(prompt_arg("THREAD_ID INTENT", 2, None).help(locale.text(
+                        "Thread identity followed by the corrected intent",
+                        "线程标识以及修订后的要求",
+                    ))),
+                "Example:\n  morphz scheduler thread supersede thread_123 'Use the new API contract'",
+            ),
         ])
         .after_help(locale.text(
             "Thread controls are revision-checked and use the same Runtime contract as the SDK and HTTP API.",
@@ -2377,7 +2408,7 @@ mod tests {
             Some("context-a")
         );
 
-        for action in ["pause", "resume", "close"] {
+        for action in ["pause", "resume", "cancel"] {
             let invocation = parse(&[
                 "scheduler",
                 "thread",
@@ -2397,6 +2428,32 @@ mod tests {
                 Some("operator-control")
             );
         }
+
+        let supersede = parse(&[
+            "scheduler",
+            "thread",
+            "supersede",
+            "thread-123",
+            "Use the corrected API contract",
+            "--expected-revision=7",
+            "--reason=operator-correction",
+        ]);
+        assert_eq!(
+            supersede.command_path(),
+            ["scheduler", "thread", "supersede"]
+        );
+        assert_eq!(
+            supersede.prompt_args(),
+            ["thread-123", "Use the corrected API contract"]
+        );
+        assert_eq!(
+            supersede.option("expected-revision").unwrap().last_value(),
+            Some("7")
+        );
+        assert_eq!(
+            supersede.option("reason").unwrap().last_value(),
+            Some("operator-correction")
+        );
     }
 
     #[test]

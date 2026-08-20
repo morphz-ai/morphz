@@ -27,10 +27,23 @@ export type RuntimeOverviewSessionState =
 
 export interface RuntimeOverviewThread {
   id: string
+  revision: number
+  generation: number
   kind: string
+  lifecycle: string
   phase: string
   state: RuntimeOverviewSessionState
   control_state: string
+  supervision: {
+    lifetime: string
+    supervisor_kind: string
+    supervisor_id?: string
+    generation: number
+    origin_evaluation_id?: string
+    parent_thread_id?: string
+    thread_group_id?: string
+    completion_contract?: unknown
+  }
   objective_id?: string
   target_id?: string
   activations: RuntimeOverviewActivation[]

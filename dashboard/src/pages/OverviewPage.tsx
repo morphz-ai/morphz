@@ -30,7 +30,7 @@ interface OverviewPageProps {
   onRefresh: () => void
   onNavigate: (view: DashboardView) => void
   onOpenMind: () => void
-  onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => void
+  onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'cancel') => void
 }
 
 export function OverviewPage({
@@ -122,7 +122,7 @@ export function OverviewPage({
               <div className="overview-thread-actions">
                 {activity.thread.lifecycle === 'open' && activity.thread.control_state === 'active' && <button disabled={mutatingThreadId === activity.id} type="button" title={t('work.causal.pauseThread')} onClick={() => onThreadControl(activity.thread, 'pause')}><Pause size={12} /></button>}
                 {activity.thread.lifecycle === 'open' && activity.thread.control_state === 'paused' && <button disabled={mutatingThreadId === activity.id} type="button" title={t('work.causal.resumeThread')} onClick={() => onThreadControl(activity.thread, 'resume')}><Play size={12} /></button>}
-                {activity.thread.lifecycle === 'open' && <button disabled={mutatingThreadId === activity.id} className="danger" type="button" title={t('work.causal.closeThread')} onClick={() => onThreadControl(activity.thread, 'close')}><X size={12} /></button>}
+                {activity.thread.lifecycle === 'open' && <button disabled={mutatingThreadId === activity.id} className="danger" type="button" title={t('work.causal.cancelThread')} onClick={() => onThreadControl(activity.thread, 'cancel')}><X size={12} /></button>}
               </div>
             </article>
           ))}

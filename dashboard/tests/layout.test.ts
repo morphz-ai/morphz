@@ -8,6 +8,10 @@ const runtimeOverviewSource = readFileSync(
   new URL('../src/pages/RuntimeOverviewPage.tsx', import.meta.url),
   'utf8',
 )
+const runtimeMonitorSource = readFileSync(
+  new URL('../src/pages/RuntimeMonitor.tsx', import.meta.url),
+  'utf8',
+)
 const credentialsSource = readFileSync(
   new URL('../src/pages/CredentialsPage.tsx', import.meta.url),
   'utf8',
@@ -199,6 +203,34 @@ test('runtime overview follows the dashboard card typography hierarchy', () => {
     appCss,
     /\.runtime-overview-session-open > footer\s*\{[^}]*font:\s*[^;}]*var\(--mono\)/s,
     'Chinese session metadata must not inherit a monospace font',
+  )
+})
+
+test('runtime monitor exposes revision-fenced work controls without conflating steering and replacement', () => {
+  assert.match(
+    runtimeMonitorSource,
+    /onThreadControl:[\s\S]*?'pause' \| 'resume' \| 'cancel'/,
+    'live Threads must expose their lifecycle controls through one typed control contract',
+  )
+  assert.match(
+    runtimeMonitorSource,
+    /onThreadSupersede:[\s\S]*?RuntimeOverviewThread/,
+    'correcting a Thread must remain a distinct supersede operation rather than an enqueue alias',
+  )
+  assert.match(
+    appSource,
+    /threads\/\$\{encodeURIComponent\(thread\.id\)\}\/supersede[\s\S]*?expected_revision:\s*thread\.revision/,
+    'Dashboard replacement must carry the observed Thread revision so stale operator actions cannot win',
+  )
+  assert.match(
+    runtimeMonitorSource,
+    /onObjectiveControl:[\s\S]*?'pause' \| 'resume' \| 'cancel'/,
+    'Objective controls must be available beside their live state',
+  )
+  assert.match(
+    runtimeMonitorSource,
+    /onDelegationCancel:[\s\S]*?delegationId/,
+    'Delegation tree cancellation must be available from the same work monitor',
   )
 })
 

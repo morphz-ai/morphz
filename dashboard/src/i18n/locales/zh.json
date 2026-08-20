@@ -644,10 +644,17 @@
     },
     "sessionCounts": "{{objectives}} 目标 · {{threads}} 线程 · {{jobs}} 作业",
     "sessionJobs": "仍在运行的执行作业",
+    "delegation": "委派树",
     "standaloneThreads": "独立线程",
     "objectiveWithoutThread": "目标当前没有开放线程；运行时正在等待下一项满足条件的工作。",
     "threadWaiting": "线程当前没有活动求值或执行作业。",
     "openThread": "查看因果链",
+    "actions": {
+      "pause": "暂停",
+      "resume": "继续",
+      "supersede": "纠正",
+      "cancel": "取消"
+    },
     "empty": "当前没有匹配的活动工作",
     "emptyHint": "所有工作均已收敛，或当前筛选条件下没有运行项。",
     "bounded": "监视器只读取有界的非终态权威投影，不扫描完整事件历史。"
@@ -1122,7 +1129,8 @@
       "pauseThread": "暂停线程",
       "pauseThreadHint": "暂停后续调度；已经开始的外部副作用不会被伪装为冻结",
       "resumeThread": "继续线程",
-      "closeThread": "关闭线程"
+      "cancelThread": "取消线程",
+      "supersedeThread": "纠正线程"
     }
   },
   "mindView": {
@@ -1456,7 +1464,8 @@
     "deleteByUser": "用户通过控制台删除目标",
     "pauseThreadByUser": "用户通过控制台暂停线程后续调度",
     "resumeThreadByUser": "用户通过控制台继续线程调度",
-    "closeThreadByUser": "用户通过控制台关闭线程",
+    "cancelThreadByUser": "用户通过控制台取消线程",
+    "supersedeThreadByUser": "用户通过控制台纠正当前线程",
     "attentionAcknowledged": "用户已查看该精确版本的问题并确认已知；保留审计历史",
     "approval": {
       "allow_once": "用户通过控制台仅批准这一次能力申请",
@@ -1474,8 +1483,14 @@
     "archiveSession": "归档会话“{{title}}”？\n\n历史消息与审计记录仍会保留。",
     "deleteObjectiveTitle": "删除这个目标？",
     "deleteObjectiveBody": "{{objective}}\n\n删除会立即停止它的自动续跑；审计历史仍会保留。",
-    "closeThreadTitle": "关闭这个线程？",
-    "closeThreadBody": "{{thread}}（{{id}}）\n\n关闭会停止后续调度并取消当前代次的求值；已经发生的外部副作用和审计历史仍会保留。",
+    "cancelThreadTitle": "取消这个线程？",
+    "cancelThreadBody": "{{thread}}（{{id}}）\n\n取消会终结这项逻辑义务，并取消当前代次的求值；已经发生的外部副作用和审计历史仍会保留。",
+    "supersedeThreadTitle": "纠正这个线程",
+    "supersedeThreadBody": "线程 {{id}} 会保留原有逻辑身份与监督义务；运行时将取消旧代次，并按纠正后的指令启动新代次。",
+    "supersedeThreadInput": "纠正后的指令",
+    "supersedeThreadPlaceholder": "说明这个线程接下来应该改做什么…",
+    "cancelDelegationTitle": "取消这棵委派树？",
+    "cancelDelegationBody": "{{task}}\n\n运行时将取消当前委派及其所有非终态后代；已经发生的外部副作用和审计历史仍会保留。",
     "denyApprovalTitle": "拒绝能力申请？",
     "denyApproval": "拒绝后该执行作业将无法使用申请的能力。确定拒绝？",
     "cancelScheduleTitle": "取消调度计划？",

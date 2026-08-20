@@ -4,7 +4,7 @@ use crate::memory::{
 };
 use crate::scheduler::{
     ControlThreadCommand, KernelCommand, KernelCommandHeader, KernelCommandPayload,
-    RestartDialogueTurnCommand, TransitionActivationCommand,
+    RestartDialogueTurnCommand, SupersedeThreadCommand, TransitionActivationCommand,
 };
 use chrono::{DateTime, Utc};
 
@@ -98,6 +98,33 @@ impl DialogueController {
                 thread_id: thread.id.clone(),
                 action,
                 reason: Some(reason),
+            }),
+        }
+    }
+
+    pub fn supersede_thread(
+        thread: &ThreadRecord,
+        context_id: &str,
+        intent: &str,
+        reason: &str,
+        actor: &str,
+    ) -> KernelCommand {
+        let event = crate::memory::thread_supersede_event(thread, intent, reason, actor);
+        let material = format!(
+            "supersede-thread\0{}\0{}\0{}\0{}",
+            thread.id, thread.revision, thread.generation, event.id
+        );
+        KernelCommand {
+            header: KernelCommandHeader::new(
+                crate::scheduler::stable_command_id("thread-supersede", &material),
+                &event.id,
+                context_id,
+                actor,
+            )
+            .with_fence(thread.revision, Some(thread.generation)),
+            payload: KernelCommandPayload::SupersedeThread(SupersedeThreadCommand {
+                thread_id: thread.id.clone(),
+                event,
             }),
         }
     }

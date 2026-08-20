@@ -7,13 +7,14 @@ use crate::memory::{
     causal_payload_string, evaluate_thread_completion_contract, evaluate_thread_group_contract,
     message_request_fingerprint, stable_thread_id, stable_thread_signal_id,
     thread_cancellation_event, thread_group_barrier_event, thread_terminal_barrier_event,
-    ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus,
-    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationContextCounts,
-    ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
-    ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
-    ApprovalStatus, ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
-    CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
+    validate_thread_supersede_event, ActionGroupFilter, ActionGroupMemberCommit,
+    ActionGroupMemberRecord, ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus,
+    ActionGroupStore, ActivationContextCounts, ActivationOutcomeCommit, ActivationStore,
+    AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter, ApprovalMutation,
+    ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
+    CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
+    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
     ContextEncodingProjectionSnapshot, ContextSessionCount, ContextTokenBudgetMutation,
     ContextUpdate, DelegationFilter, DelegationRecord, DelegationStatus, DelegationStore,
     DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
@@ -12124,13 +12125,13 @@ impl ThreadStore for SqliteStore {
         let expected_revision = i64::try_from(expected_revision)
             .map_err(|_| "Thread revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        if action == ThreadControlAction::Close {
+        if action == ThreadControlAction::Cancel {
             let mut tx = self.pool.begin().await?;
             // SQLite begins a deferred transaction. If we read the Thread
             // first and a concurrent outcome transaction acquires the writer
             // slot, upgrading this read snapshot later fails immediately with
             // SQLITE_BUSY; busy_timeout cannot serialize that upgrade. Take
-            // the writer slot before reading so operator close and a late
+            // the writer slot before reading so operator cancellation and a late
             // physical outcome race on revision/generation fences instead of
             // leaking a storage error to the Scheduler Kernel.
             sqlx::query("UPDATE threads SET revision = revision WHERE id = ?")
@@ -12153,7 +12154,7 @@ impl ThreadStore for SqliteStore {
                 return Ok(ThreadMutation::Conflict { current });
             }
 
-            let reason = reason.unwrap_or("Thread 被操作员关闭");
+            let reason = reason.unwrap_or("Thread 被操作员取消");
             let actor = actor.unwrap_or("Runtime-Operator");
             let result_event = thread_cancellation_event(&current, reason, actor);
             append_event_in_transaction(&mut tx, &result_event).await?;
@@ -12187,7 +12188,7 @@ impl ThreadStore for SqliteStore {
             .bind(&now)
             .execute(&mut *tx)
             .await?;
-            // Closing a Thread is one terminal state transition, not merely a
+            // Cancelling a Thread is one terminal state transition, not merely a
             // synthetic cancellation outcome. Fence every physical
             // Activation and pending input from the generation being closed
             // in the same transaction; otherwise restart recovery can revive
@@ -12272,7 +12273,7 @@ impl ThreadStore for SqliteStore {
                 let current = self
                     .get_thread(id)
                     .await?
-                    .ok_or("Thread 关闭冲突后无法读取")?;
+                    .ok_or("Thread 取消冲突后无法读取")?;
                 return Ok(ThreadMutation::Conflict { current });
             }
             let updated = sqlx::query(
@@ -12294,7 +12295,7 @@ impl ThreadStore for SqliteStore {
                 let current = self
                     .get_thread(id)
                     .await?
-                    .ok_or("Thread 关闭冲突后无法读取")?;
+                    .ok_or("Thread 取消冲突后无法读取")?;
                 return Ok(ThreadMutation::Conflict { current });
             }
 
@@ -12332,7 +12333,7 @@ impl ThreadStore for SqliteStore {
                 .await?;
                 if member.rows_affected() != 1 {
                     return Err(format!(
-                        "关闭 Thread '{}' 时无法原子收口 Group '{}' 成员",
+                        "取消 Thread '{}' 时无法原子收口 Group '{}' 成员",
                         current.id, group_id
                     )
                     .into());
@@ -12436,7 +12437,7 @@ impl ThreadStore for SqliteStore {
                         ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
                             let parent = parent
                                 .as_ref()
-                                .ok_or("attached Thread Group 关闭缺少 parent Thread")?;
+                                .ok_or("attached Thread Group 取消缺少 parent Thread")?;
                             if parent.lifecycle == ThreadLifecycle::Open {
                                 append_direct_thread_signal_in_transaction(
                                     &mut tx, &barrier, &parent.id,
@@ -12504,7 +12505,7 @@ impl ThreadStore for SqliteStore {
                     ) {
                         let parent = parent
                             .as_ref()
-                            .ok_or("attached Thread 关闭缺少 parent Thread")?;
+                            .ok_or("attached Thread 取消缺少 parent Thread")?;
                         if parent.lifecycle == ThreadLifecycle::Open {
                             append_direct_thread_signal_in_transaction(
                                 &mut tx, &barrier, &parent.id,
@@ -12516,13 +12517,13 @@ impl ThreadStore for SqliteStore {
             }
             tx.commit().await?;
             return Ok(ThreadMutation::Updated(
-                self.get_thread(id).await?.ok_or("Thread 关闭后无法读取")?,
+                self.get_thread(id).await?.ok_or("Thread 取消后无法读取")?,
             ));
         }
         let (control_state, lifecycle, generation_delta, predicate) = match action {
             ThreadControlAction::Pause => ("paused", "open", 0_i64, "control_state = 'active'"),
             ThreadControlAction::Resume => ("active", "open", 0_i64, "control_state = 'paused'"),
-            ThreadControlAction::Close => unreachable!("Close 已由终态事务处理"),
+            ThreadControlAction::Cancel => unreachable!("Cancel 已由终态事务处理"),
         };
         let result = sqlx::query(&format!(
             "UPDATE threads SET revision = revision + 1, generation = generation + ?, control_state = ?, status = ?, updated_at = ? WHERE id = ? AND revision = ? AND status = 'open' AND {predicate}"
@@ -12544,6 +12545,118 @@ impl ThreadStore for SqliteStore {
             Some(current) => ThreadMutation::Conflict { current },
             None => ThreadMutation::NotFound,
         })
+    }
+
+    async fn supersede_thread(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        event: &Event,
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Thread revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        // Acquire SQLite's single writer slot before reading the revision we
+        // are about to fence. This avoids a deferred read-to-write upgrade
+        // racing a physical Activation outcome.
+        sqlx::query("UPDATE threads SET revision = revision WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(ThreadMutation::NotFound);
+        };
+        let current = thread_from_row(&row)?;
+        if i64::try_from(current.revision)? != expected_revision
+            || current.lifecycle != ThreadLifecycle::Open
+        {
+            tx.commit().await?;
+            return Ok(ThreadMutation::Conflict { current });
+        }
+        validate_thread_supersede_event(&current, event)?;
+
+        // Fence every old-generation input and physical Activation in the
+        // same transaction as publishing the corrected intent. A restarted
+        // Runtime can therefore observe either the old generation or the new
+        // generation, never an unfenced mixture of both.
+        sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = 'cancelled',
+                   claimed_by = NULL, lease_expires_at = NULL, updated_at = ?
+               WHERE root_turn_id = ? AND generation = ?
+                 AND status IN ('queued', 'running')"#,
+        )
+        .bind(&now)
+        .bind(&current.root_turn_id)
+        .bind(i64::try_from(current.generation)?)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE thread_signals
+               SET status = 'acknowledged', acknowledged_at = ?
+               WHERE thread_id = ? AND thread_generation = ?
+                 AND status IN ('pending', 'claimed')"#,
+        )
+        .bind(&now)
+        .bind(&current.id)
+        .bind(i64::try_from(current.generation)?)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE schedules
+               SET revision = revision + 1, status = 'cancelled', updated_at = ?
+               WHERE thread_id = ? AND status IN ('queued', 'paused')"#,
+        )
+        .bind(&now)
+        .bind(&current.id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE scheduler_dependencies
+               SET status = 'cancelled', updated_at = ?
+               WHERE owner_kind = 'thread' AND owner_id = ?
+                 AND owner_generation = ? AND status = 'pending'"#,
+        )
+        .bind(&now)
+        .bind(&current.id)
+        .bind(i64::try_from(current.generation)?)
+        .execute(&mut *tx)
+        .await?;
+        let updated = sqlx::query(
+            r#"UPDATE threads
+               SET revision = revision + 1, generation = generation + 1,
+                   control_state = 'active', result_text = NULL,
+                   result_event_id = NULL, delivery_status = 'none',
+                   delivery_event_id = NULL, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'open'"#,
+        )
+        .bind(&now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            let current = self
+                .get_thread(id)
+                .await?
+                .ok_or("Thread supersede 冲突后无法读取")?;
+            return Ok(ThreadMutation::Conflict { current });
+        }
+        append_event_in_transaction(&mut tx, event).await?;
+        append_direct_thread_signal_in_transaction(&mut tx, event, id).await?;
+        tx.commit().await?;
+        Ok(ThreadMutation::Updated(
+            self.get_thread(id)
+                .await?
+                .ok_or("Thread supersede 后无法读取")?,
+        ))
     }
 
     async fn bind_thread_target(
@@ -15416,6 +15529,20 @@ impl DelegationStore for SqliteStore {
         }
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
+        // Delegate requests are emitted while the parent Action Group is still
+        // committing its durable member results. SQLite begins transactions in
+        // deferred mode, so reading the parent first and writing the child
+        // scaffold later can fail with SQLITE_BUSY_SNAPSHOT when those commits
+        // overlap. Acquire the single-writer slot before the validation read;
+        // the parent Session is the stable causal row and the no-op update does
+        // not change its logical revision or timestamps.
+        let fenced = sqlx::query("UPDATE sessions SET updated_at = updated_at WHERE id = ?")
+            .bind(&delegation.parent_session_id)
+            .execute(&mut *tx)
+            .await?;
+        if fenced.rows_affected() != 1 {
+            return Err(format!("父 Session '{}' 不存在", delegation.parent_session_id).into());
+        }
         let parent = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = ?")
             .bind(&delegation.parent_session_id)
             .fetch_optional(&mut *tx)
@@ -30779,7 +30906,7 @@ mod tests {
             .control_thread(
                 &resumed.id,
                 resumed.revision,
-                ThreadControlAction::Close,
+                ThreadControlAction::Cancel,
                 Some("test close"),
                 Some("test"),
             )
@@ -30897,7 +31024,7 @@ mod tests {
             .control_thread(
                 &thread.id,
                 thread.revision,
-                ThreadControlAction::Close,
+                ThreadControlAction::Cancel,
                 Some("cancel required member"),
                 Some("test"),
             )
@@ -30941,7 +31068,7 @@ mod tests {
                 .control_thread(
                     &thread.id,
                     thread.revision,
-                    ThreadControlAction::Close,
+                    ThreadControlAction::Cancel,
                     Some("duplicate close"),
                     Some("test"),
                 )
@@ -31050,7 +31177,7 @@ mod tests {
             .control_thread(
                 &child.id,
                 child.revision,
-                ThreadControlAction::Close,
+                ThreadControlAction::Cancel,
                 Some("test barrier wake"),
                 Some("test"),
             )
@@ -31206,7 +31333,7 @@ mod tests {
                 .control_thread(
                     &child.id,
                     child.revision,
-                    ThreadControlAction::Close,
+                    ThreadControlAction::Cancel,
                     Some("close orphaned attached work"),
                     Some("test"),
                 )

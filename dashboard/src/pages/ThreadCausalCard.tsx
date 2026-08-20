@@ -205,7 +205,7 @@ export function ThreadCausalCard({
   mutatingThreadId: string
   onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
   onSchedule: (schedule: ScheduleRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
-  onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => void
+  onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'cancel') => void
   selectedSupervisorId?: string
   onSupervisorFilter?: (supervisorId: string) => void
   onInspect?: (threadId: string) => void
@@ -284,7 +284,7 @@ export function ThreadCausalCard({
             <button disabled={mutatingThreadId === thread.id} type="button" onClick={() => onThreadControl(thread, 'resume')}><Play size={12} /> {t('work.causal.resumeThread')}</button>
           )}
           {thread.lifecycle === 'open' && (
-            <button disabled={mutatingThreadId === thread.id} className="danger" type="button" onClick={() => onThreadControl(thread, 'close')}><X size={12} /> {t('work.causal.closeThread')}</button>
+            <button disabled={mutatingThreadId === thread.id} className="danger" type="button" onClick={() => onThreadControl(thread, 'cancel')}><X size={12} /> {t('work.causal.cancelThread')}</button>
           )}
         </div>
         {snapshot.pending_signals.map(signal => (

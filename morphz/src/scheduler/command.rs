@@ -89,6 +89,12 @@ pub struct ControlThreadCommand {
 }
 
 #[derive(Debug, Clone)]
+pub struct SupersedeThreadCommand {
+    pub thread_id: String,
+    pub event: crate::event::Event,
+}
+
+#[derive(Debug, Clone)]
 pub struct ControlObjectiveCommand {
     pub objective_id: String,
     pub status: ObjectiveStatus,
@@ -213,6 +219,7 @@ pub enum KernelCommandPayload {
     SpawnSupervisedGroup(SpawnSupervisedGroupCommand),
     PromoteThread(PromoteThreadCommand),
     ControlThread(ControlThreadCommand),
+    SupersedeThread(SupersedeThreadCommand),
     ControlObjective(ControlObjectiveCommand),
     ClaimObjectiveEvaluation(ClaimObjectiveEvaluationCommand),
     RenewObjectiveEvaluation(RenewObjectiveEvaluationCommand),

@@ -19,7 +19,7 @@ pub use commands::{
     KernelCommandPayload, KernelResult, PrepareObjectiveCompletionCommand, PromoteThreadCommand,
     RegisterDependencyCommand, RenewObjectiveEvaluationCommand, RestartDialogueTurnCommand,
     SatisfyDependencyCommand, SatisfyThreadResourceDependencyCommand, SpawnSupervisedGroupCommand,
-    TransitionActivationCommand,
+    SupersedeThreadCommand, TransitionActivationCommand,
 };
 pub use domain::{
     audit_scheduler_invariants, derive_objective_readiness, objective_wait_dependency_key,

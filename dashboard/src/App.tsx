@@ -117,7 +117,12 @@ import type { EventHistoryFilters } from './pages/EventHistoryPage'
 import { CredentialsPage } from './pages/CredentialsPage'
 import { ProvidersPage } from './pages/ProvidersPage'
 import { OverviewPage } from './pages/OverviewPage'
-import { RuntimeOverviewPage, type RuntimeOverview } from './pages/RuntimeOverviewPage'
+import {
+  RuntimeOverviewPage,
+  type RuntimeOverview,
+  type RuntimeOverviewObjective,
+  type RuntimeOverviewThread,
+} from './pages/RuntimeOverviewPage'
 import { RuntimePage } from './pages/RuntimePage'
 import { ThreadCausalCard } from './pages/ThreadCausalCard'
 import { DashboardApiClient } from './api/client'
@@ -1698,7 +1703,7 @@ function DialogueActivityDock({
   onResumeObjective: (objective: ObjectiveRecord) => void
   onEditObjective: (objective: ObjectiveRecord) => void
   onDeleteObjective: (objective: ObjectiveRecord) => void
-  onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => void
+  onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'cancel') => void
   onOpenDelegationContext: (delegation: DelegationRecord) => void
 }) {
   const [objectivesOpen, setObjectivesOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.objectives', false)
@@ -1933,7 +1938,7 @@ function DialogueActivityDock({
                           ) : (
                             <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.pauseThread')} aria-label={t('work.causal.pauseThread')} onClick={() => onThreadControl(effective.thread, 'pause')}><Pause size={12} /></button>
                           )}
-                          <button disabled={mutatingThreadId === effective.thread.id} className="danger" type="button" title={t('work.causal.closeThread')} aria-label={t('work.causal.closeThread')} onClick={() => onThreadControl(effective.thread, 'close')}><X size={12} /></button>
+                          <button disabled={mutatingThreadId === effective.thread.id} className="danger" type="button" title={t('work.causal.cancelThread')} aria-label={t('work.causal.cancelThread')} onClick={() => onThreadControl(effective.thread, 'cancel')}><X size={12} /></button>
                         </div>
                       )}
                       <button
@@ -3045,6 +3050,7 @@ export default function App() {
   const [editingObjectiveId, setEditingObjectiveId] = useState('')
   const [deletingObjectiveId, setDeletingObjectiveId] = useState('')
   const [mutatingThreadId, setMutatingThreadId] = useState('')
+  const [mutatingDelegationId, setMutatingDelegationId] = useState('')
   const [expandedObjectiveIds, setExpandedObjectiveIds] = useState<Set<string>>(() => new Set())
   const [decidingApprovalId, setDecidingApprovalId] = useState('')
   const [mutatingScheduleId, setMutatingScheduleId] = useState('')
@@ -6234,13 +6240,13 @@ export default function App() {
     }
   }
 
-  const controlThread = async (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => {
+  const controlThread = async (thread: ThreadRecord, action: 'pause' | 'resume' | 'cancel') => {
     if (!selectedContextId || mutatingThreadId) return
-    if (action === 'close') {
+    if (action === 'cancel') {
       const confirmed = await requestConfirmation({
-        title: t('dialog.closeThreadTitle'),
-        description: t('dialog.closeThreadBody', { thread: threadKindLabel(thread.kind, t), id: shortId(thread.id, 28) }),
-        confirmLabel: t('work.causal.closeThread'),
+        title: t('dialog.cancelThreadTitle'),
+        description: t('dialog.cancelThreadBody', { thread: threadKindLabel(thread.kind, t), id: shortId(thread.id, 28) }),
+        confirmLabel: t('work.causal.cancelThread'),
         cancelLabel: t('dialog.actions.cancel'),
         tone: 'danger',
       })
@@ -6270,6 +6276,179 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setMutatingThreadId('')
+    }
+  }
+
+  const controlRuntimeThread = async (
+    contextId: string,
+    thread: RuntimeOverviewThread,
+    action: 'pause' | 'resume' | 'cancel',
+  ) => {
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return
+    }
+    if (mutatingThreadId) return
+    if (action === 'cancel') {
+      const confirmed = await requestConfirmation({
+        title: t('dialog.cancelThreadTitle'),
+        description: t('dialog.cancelThreadBody', {
+          thread: t(`runtimeOverview.threadKinds.${thread.kind}`, { defaultValue: thread.kind }),
+          id: shortId(thread.id, 28),
+        }),
+        confirmLabel: t('work.causal.cancelThread'),
+        cancelLabel: t('dialog.actions.cancel'),
+        tone: 'danger',
+      })
+      if (!confirmed) return
+    }
+    setMutatingThreadId(thread.id)
+    try {
+      await DASHBOARD_API.command(
+        `/api/contexts/${encodeURIComponent(contextId)}/threads/${encodeURIComponent(thread.id)}`,
+        'POST',
+        {
+          action,
+          expected_revision: thread.revision,
+          reason: t(`reason.${action}ThreadByUser`),
+        },
+      )
+      await Promise.all([
+        loadRuntimeOverview(),
+        contextId === selectedContextId
+          ? loadSession(selectedSessionId, selectedContextId)
+          : Promise.resolve(),
+      ])
+      setError('')
+    } catch (reason) {
+      await loadRuntimeOverview().catch(() => {})
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setMutatingThreadId('')
+    }
+  }
+
+  const supersedeRuntimeThread = async (contextId: string, thread: RuntimeOverviewThread) => {
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return
+    }
+    if (mutatingThreadId) return
+    const intent = await requestText({
+      title: t('dialog.supersedeThreadTitle'),
+      description: t('dialog.supersedeThreadBody', { id: shortId(thread.id, 28) }),
+      inputLabel: t('dialog.supersedeThreadInput'),
+      multiline: true,
+      placeholder: t('dialog.supersedeThreadPlaceholder'),
+      confirmLabel: t('work.causal.supersedeThread'),
+      cancelLabel: t('dialog.actions.cancel'),
+    })
+    if (!intent?.trim()) return
+    setMutatingThreadId(thread.id)
+    try {
+      await DASHBOARD_API.command(
+        `/api/contexts/${encodeURIComponent(contextId)}/threads/${encodeURIComponent(thread.id)}/supersede`,
+        'POST',
+        {
+          expected_revision: thread.revision,
+          intent: intent.trim(),
+          reason: t('reason.supersedeThreadByUser'),
+        },
+      )
+      await Promise.all([
+        loadRuntimeOverview(),
+        contextId === selectedContextId
+          ? loadSession(selectedSessionId, selectedContextId)
+          : Promise.resolve(),
+      ])
+      setError('')
+    } catch (reason) {
+      await loadRuntimeOverview().catch(() => {})
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setMutatingThreadId('')
+    }
+  }
+
+  const controlRuntimeObjective = async (
+    objective: RuntimeOverviewObjective,
+    action: 'pause' | 'resume' | 'cancel',
+  ) => {
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return
+    }
+    if (pausingObjectiveId || resumingObjectiveId || deletingObjectiveId) return
+    if (action === 'cancel') {
+      const confirmed = await requestConfirmation({
+        title: t('dialog.deleteObjectiveTitle'),
+        description: t('dialog.deleteObjectiveBody', { objective: objective.stated_objective }),
+        confirmLabel: t('dialog.actions.delete'),
+        cancelLabel: t('dialog.actions.cancel'),
+        tone: 'danger',
+      })
+      if (!confirmed) return
+    }
+    const setBusy = action === 'pause'
+      ? setPausingObjectiveId
+      : action === 'resume'
+        ? setResumingObjectiveId
+        : setDeletingObjectiveId
+    setBusy(objective.id)
+    try {
+      if (action === 'cancel') {
+        await DASHBOARD_API.command(
+          `/api/objectives/${encodeURIComponent(objective.id)}`,
+          'DELETE',
+          { expected_revision: objective.revision, reason: t('reason.deleteByUser') },
+        )
+      } else {
+        await DASHBOARD_API.command(
+          `/api/objectives/${encodeURIComponent(objective.id)}/${action}`,
+          'POST',
+          {
+            expected_revision: objective.revision,
+            reason: t(action === 'pause' ? 'reason.pauseByUser' : 'reason.resumeByUser'),
+          },
+        )
+      }
+      await loadRuntimeOverview()
+      setError('')
+    } catch (reason) {
+      await loadRuntimeOverview().catch(() => {})
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const cancelRuntimeDelegation = async (delegationId: string, task: string) => {
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return
+    }
+    if (mutatingDelegationId) return
+    const confirmed = await requestConfirmation({
+      title: t('dialog.cancelDelegationTitle'),
+      description: t('dialog.cancelDelegationBody', { task }),
+      confirmLabel: t('runtimeMonitor.actions.cancel'),
+      cancelLabel: t('dialog.actions.cancel'),
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    setMutatingDelegationId(delegationId)
+    try {
+      await DASHBOARD_API.command(
+        `/api/delegations/${encodeURIComponent(delegationId)}/cancel`,
+        'POST',
+      )
+      await Promise.all([loadRuntimeOverview(), loadCatalog()])
+      setError('')
+    } catch (reason) {
+      await loadRuntimeOverview().catch(() => {})
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setMutatingDelegationId('')
     }
   }
 
@@ -8221,6 +8400,13 @@ export default function App() {
                 navigate(dashboardPath('dialogue', contextId, sessionId))
               }}
               onOpenThread={(contextId, threadId) => navigate(threadPath(contextId, threadId))}
+              onThreadControl={(contextId, thread, action) => void controlRuntimeThread(contextId, thread, action)}
+              onThreadSupersede={(contextId, thread) => void supersedeRuntimeThread(contextId, thread)}
+              onObjectiveControl={(objective, action) => void controlRuntimeObjective(objective, action)}
+              onDelegationCancel={(delegationId, task) => void cancelRuntimeDelegation(delegationId, task)}
+              mutatingThreadId={mutatingThreadId}
+              mutatingObjectiveId={pausingObjectiveId || resumingObjectiveId || deletingObjectiveId}
+              mutatingDelegationId={mutatingDelegationId}
               onOpenCredentials={() => setView('credentials')}
               onAuditProjection={() => void auditMindProjection()}
               onSetTargetStatus={(targetId, revision, nextStatus) => void setExecutionTargetStatus(targetId, revision, nextStatus)}

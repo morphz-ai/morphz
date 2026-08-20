@@ -644,10 +644,17 @@
     },
     "sessionCounts": "{{objectives}} Objectives · {{threads}} Threads · {{jobs}} Jobs",
     "sessionJobs": "Execution Jobs still running",
+    "delegation": "Delegation tree",
     "standaloneThreads": "Independent Threads",
     "objectiveWithoutThread": "This Objective has no open Thread; the Runtime is waiting for its next satisfied condition.",
     "threadWaiting": "This Thread has no active Evaluation or Execution Job.",
     "openThread": "Inspect causal chain",
+    "actions": {
+      "pause": "Pause",
+      "resume": "Resume",
+      "supersede": "Correct",
+      "cancel": "Cancel"
+    },
     "empty": "No matching live work",
     "emptyHint": "All work has converged, or no item matches the current filter.",
     "bounded": "The monitor reads a bounded non-terminal authority projection; it never scans complete Event History."
@@ -1123,7 +1130,8 @@
       "pauseThread": "Pause Thread",
       "pauseThreadHint": "Pause future scheduling; already-started external side effects are not presented as frozen",
       "resumeThread": "Resume Thread",
-      "closeThread": "Close Thread"
+      "cancelThread": "Cancel Thread",
+      "supersedeThread": "Correct Thread"
     }
   },
   "mindView": {
@@ -1451,7 +1459,8 @@
     "deleteByUser": "User deleted Objective via Dashboard",
     "pauseThreadByUser": "User paused future Thread scheduling via Dashboard",
     "resumeThreadByUser": "User resumed Thread scheduling via Dashboard",
-    "closeThreadByUser": "User closed Thread via Dashboard",
+    "cancelThreadByUser": "User cancelled Thread via Dashboard",
+    "supersedeThreadByUser": "User corrected the active Thread via Dashboard",
     "attentionAcknowledged": "User reviewed and acknowledged this exact issue revision; audit history is retained",
     "approval": {
       "allow_once": "User allowed this capability request once via Dashboard",
@@ -1469,8 +1478,14 @@
     "archiveSession": "Archive Session “{{title}}”?\n\nMessage history and audit records remain intact.",
     "deleteObjectiveTitle": "Delete this Objective?",
     "deleteObjectiveBody": "{{objective}}\n\nDeletion will stop automatic reruns immediately; audit history is retained.",
-    "closeThreadTitle": "Close this Thread?",
-    "closeThreadBody": "{{thread}} ({{id}})\n\nClosing stops future scheduling and cancels the current generation's evaluations. Existing external side effects and audit history remain intact.",
+    "cancelThreadTitle": "Cancel this Thread?",
+    "cancelThreadBody": "{{thread}} ({{id}})\n\nCancelling ends this logical obligation and cancels its current evaluations. Existing external side effects and audit history remain intact.",
+    "supersedeThreadTitle": "Correct this Thread",
+    "supersedeThreadBody": "Thread {{id}} keeps its logical identity and supervision obligation. Runtime cancels the old generation and starts a new generation from your corrected instruction.",
+    "supersedeThreadInput": "Corrected instruction",
+    "supersedeThreadPlaceholder": "Describe what this Thread should do instead…",
+    "cancelDelegationTitle": "Cancel this Delegation tree?",
+    "cancelDelegationBody": "{{task}}\n\nRuntime will cancel this Delegation and all of its non-terminal descendants. Completed external side effects and audit history remain intact.",
     "denyApprovalTitle": "Deny capability request?",
     "denyApproval": "Denying prevents this Execution Job from using the requested capability. Continue?",
     "cancelScheduleTitle": "Cancel this Schedule?",

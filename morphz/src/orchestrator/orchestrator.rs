@@ -5465,7 +5465,7 @@ impl Orchestrator {
                         .execute(crate::controllers::DialogueController::control_thread(
                             &thread,
                             &context.id,
-                            ThreadControlAction::Close,
+                            ThreadControlAction::Cancel,
                             reason,
                             "Runtime-Recovery",
                         ))
@@ -5481,7 +5481,7 @@ impl Orchestrator {
                         .control_thread(
                             &thread.id,
                             thread.revision,
-                            ThreadControlAction::Close,
+                            ThreadControlAction::Cancel,
                             Some(reason),
                             Some("Runtime-Recovery"),
                         )
@@ -5500,7 +5500,7 @@ impl Orchestrator {
                         tracing::warn!(
                             thread_id = %thread.id,
                             root_turn_id = %thread.root_turn_id,
-                            event_code = "orchestrator.startup.orphan_thread_closed",
+                            event_code = "orchestrator.startup.orphan_thread_cancelled",
                             "Closed an orphan Thread during Runtime startup"
                         );
                         self.bus
@@ -15711,7 +15711,7 @@ impl Orchestrator {
         Ok(was_running)
     }
 
-    /// Close every non-terminal Activation belonging to one exact logical
+    /// Cancel every non-terminal Activation belonging to one exact logical
     /// Thread generation. The Thread row is fenced by the caller first; this
     /// method then propagates cancellation to process-local model futures and
     /// durable physical Actions without touching sibling Threads in the same
@@ -15726,13 +15726,10 @@ impl Orchestrator {
             .session_store()
             .ok_or("Thread control 需要持久化 SessionStore")?;
         let activations = store
-            .list_context_thread_activations(&thread.context_id, false)
+            .list_thread_activations_by_root(&thread.context_id, &thread.root_turn_id)
             .await?
             .into_iter()
-            .filter(|activation| {
-                activation.root_turn_id == thread.root_turn_id
-                    && activation.generation == thread.generation
-            })
+            .filter(|activation| activation.generation == thread.generation)
             .collect::<Vec<_>>();
         let mut cancelled = 0usize;
         for activation in activations {
@@ -15761,7 +15758,7 @@ impl Orchestrator {
                     ThreadActivationMutation::Updated(updated) => {
                         self.activation_admission.forget(&updated.id);
                         if let Err(error) = self.cancel_activation_lease(&updated.id).await {
-                            tracing::warn!(event_code = "orchestrator.thread_close.activation_lease_cancel_failed", activation_id = %updated.id, %error, "Failed to cancel the Activation lease after closing the Thread");
+                            tracing::warn!(event_code = "orchestrator.thread_cancel.activation_lease_cancel_failed", activation_id = %updated.id, %error, "Failed to cancel the Activation lease after cancelling the Thread");
                         }
                         cancelled = cancelled.saturating_add(1);
                         break;
@@ -15802,7 +15799,7 @@ impl Orchestrator {
 
     /// Replays the live half of a terminal Thread/Group handoff whose Event
     /// and optional direct Signal are already durable. This is safe after an
-    /// operator close and after an idempotent outcome retry: EventBus and
+    /// operator cancellation and after an idempotent outcome retry: EventBus and
     /// Thread Signal claims both de-duplicate the exact persisted fact.
     pub async fn wake_terminal_thread_supervisor(
         &self,

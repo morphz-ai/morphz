@@ -7,8 +7,9 @@ use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     objective_primary_execution_root_id, stable_thread_id, stable_thread_signal_id,
-    ActivationStore, EdgeCommandMutation, EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream,
-    ExecutionNodeMutation, ExecutionNodeStatus, SessionDirectoryStore,
+    thread_supersede_event, ActivationStore, EdgeCommandMutation, EdgeCommandStatus,
+    EdgeExecutionStore, EdgeOutputStream, ExecutionNodeMutation, ExecutionNodeStatus,
+    SessionDirectoryStore,
 };
 use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
@@ -828,6 +829,121 @@ where
             .len(),
         1
     );
+
+    // Supersede is a generation transition of one logical obligation, not a
+    // replacement Thread. Both stores must fence old physical work and
+    // publish exactly one durable correction Signal without changing the
+    // supervision route which owns the eventual outcome.
+    let supersede_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-supersede-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: "root-conformance-supersede-thread".to_string(),
+            kind: ThreadKind::Execution,
+            executor_kind: "model".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::legacy(),
+        })
+        .await
+        .unwrap();
+    let old_activation = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "conformance-supersede-old-activation".to_string(),
+            agent_id: supersede_thread.agent_id.clone(),
+            context_id: supersede_thread.context_id.clone(),
+            session_id: supersede_thread.session_id.clone(),
+            initiating_principal_id: None,
+            trigger_event_id: "conformance-supersede-old-trigger".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "conformance".to_string(),
+            parent_activation_id: None,
+            root_turn_id: supersede_thread.root_turn_id.clone(),
+        })
+        .await
+        .unwrap();
+    let supersede_event = thread_supersede_event(
+        &supersede_thread,
+        "Use the corrected implementation contract",
+        "operator correction",
+        "Store-Conformance",
+    );
+    let superseded = match store
+        .supersede_thread(
+            &supersede_thread.id,
+            supersede_thread.revision,
+            &supersede_event,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadMutation::Updated(thread) => thread,
+        mutation => panic!("unexpected Thread supersede mutation: {mutation:?}"),
+    };
+    assert_eq!(superseded.id, supersede_thread.id);
+    assert_eq!(superseded.generation, supersede_thread.generation + 1);
+    assert_eq!(superseded.revision, supersede_thread.revision + 1);
+    assert_eq!(superseded.lifecycle, ThreadLifecycle::Open);
+    assert_eq!(superseded.supervision, supersede_thread.supervision);
+    assert_eq!(
+        store
+            .get_thread_activation(&old_activation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ThreadActivationStatus::Cancelled
+    );
+    let correction_signals = store
+        .list_context_thread_signals("conformance-context", Some(ThreadSignalStatus::Pending))
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|signal| signal.event_id == supersede_event.id)
+        .collect::<Vec<_>>();
+    assert_eq!(correction_signals.len(), 1);
+    assert_eq!(correction_signals[0].thread_id, superseded.id);
+    assert_eq!(
+        correction_signals[0].thread_generation,
+        superseded.generation
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(supersede_event.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        store
+            .supersede_thread(
+                &supersede_thread.id,
+                supersede_thread.revision,
+                &supersede_event,
+            )
+            .await
+            .unwrap(),
+        ThreadMutation::Conflict { .. }
+    ));
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(supersede_event.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "a stale supersede retry must not duplicate its durable correction"
+    );
 }
 
 async fn assert_activation_store_conformance<S>(store: Arc<S>)
@@ -1356,8 +1472,8 @@ where
                 .control_thread(
                     &thread_id,
                     race_thread.revision,
-                    ThreadControlAction::Close,
-                    Some("operator closes while result arrives"),
+                    ThreadControlAction::Cancel,
+                    Some("operator cancels while result arrives"),
                     Some("Store-Conformance"),
                 )
                 .await
@@ -5526,7 +5642,7 @@ where
             .control_thread(
                 &thread.id,
                 thread.revision,
-                ThreadControlAction::Close,
+                ThreadControlAction::Cancel,
                 Some("terminal before the final Action result"),
                 Some("Store-Conformance"),
             )

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import { statusLabel } from '../app/presentation'
 import { RuntimeMonitor } from './RuntimeMonitor'
-import type { RuntimeOverview } from './RuntimeOverviewPage'
+import type { RuntimeOverview, RuntimeOverviewObjective, RuntimeOverviewThread } from './RuntimeOverviewPage'
 
 interface RuntimePageProps {
   overview: RuntimeOverview | null
@@ -62,6 +62,13 @@ interface RuntimePageProps {
   onRefreshOverview: () => void
   onOpenSession: (contextId: string, sessionId: string) => void
   onOpenThread: (contextId: string, threadId: string) => void
+  onThreadControl: (contextId: string, thread: RuntimeOverviewThread, action: 'pause' | 'resume' | 'cancel') => void
+  onThreadSupersede: (contextId: string, thread: RuntimeOverviewThread) => void
+  onObjectiveControl: (objective: RuntimeOverviewObjective, action: 'pause' | 'resume' | 'cancel') => void
+  onDelegationCancel: (delegationId: string, task: string) => void
+  mutatingThreadId: string
+  mutatingObjectiveId: string
+  mutatingDelegationId: string
   onOpenCredentials: () => void
   onAuditProjection: () => void
   onSetTargetStatus: (targetId: string, revision: number, status: 'online' | 'disabled') => void
@@ -112,6 +119,13 @@ export function RuntimePage(props: RuntimePageProps) {
         onRefresh={props.onRefreshOverview}
         onOpenSession={props.onOpenSession}
         onOpenThread={props.onOpenThread}
+        onThreadControl={props.onThreadControl}
+        onThreadSupersede={props.onThreadSupersede}
+        onObjectiveControl={props.onObjectiveControl}
+        onDelegationCancel={props.onDelegationCancel}
+        mutatingThreadId={props.mutatingThreadId}
+        mutatingObjectiveId={props.mutatingObjectiveId}
+        mutatingDelegationId={props.mutatingDelegationId}
       />
       <details className="runtime-infrastructure">
         <summary><Server size={14} /><span><strong>{t('runtime.infrastructure')}</strong><small>{t('runtime.infrastructureHint')}</small></span><ChevronDown size={14} /></summary>

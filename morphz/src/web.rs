@@ -456,6 +456,13 @@ struct ControlThreadRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct SupersedeThreadRequest {
+    expected_revision: u64,
+    intent: String,
+    reason: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct MutateExecutionTargetRequest {
     expected_revision: u64,
     status: ExecutionTargetStatus,
@@ -1128,6 +1135,10 @@ impl Server {
             .route(
                 "/api/contexts/:context_id/threads/:thread_id",
                 get(handle_get_thread_detail).post(handle_control_thread),
+            )
+            .route(
+                "/api/contexts/:context_id/threads/:thread_id/supersede",
+                post(handle_supersede_thread),
             )
             .route(
                 "/api/contexts/:context_id/events",
@@ -4858,6 +4869,51 @@ async fn handle_control_thread(
             &thread_id,
             request.expected_revision,
             request.action,
+            reason,
+        )
+        .await
+    {
+        Ok(ThreadMutation::Updated(thread)) => Json(json!({
+            "updated": true,
+            "thread": thread,
+        }))
+        .into_response(),
+        Ok(ThreadMutation::Conflict { current }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Thread revision 冲突，请刷新后重试",
+                "current": current,
+            })),
+        )
+            .into_response(),
+        Ok(ThreadMutation::NotFound) => error_response(StatusCode::NOT_FOUND, "Thread 不存在"),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_supersede_thread(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<SupersedeThreadRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("用户通过 Dashboard 修订 Thread");
+    match state
+        .sdk
+        .supersede_thread(
+            &context_id,
+            &thread_id,
+            request.expected_revision,
+            &request.intent,
             reason,
         )
         .await
@@ -11216,6 +11272,81 @@ account = "xai-account"
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["outcome"], "conflict");
         assert_eq!(payload["schedule"]["status"], "paused");
+    }
+
+    #[tokio::test]
+    async fn thread_supersede_endpoint_advances_one_logical_thread_generation() {
+        use crate::memory::sqlite::SqliteStore;
+        use crate::memory::{NewThread, ThreadKind};
+
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "api-supersede-session".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Thread Supersede API".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let store = SqliteStore::new(runtime.sqlite_database_path().unwrap())
+            .await
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "api-supersede-thread".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "api-supersede-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "api-supersede-turn".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+
+        let superseded = handle_supersede_thread(
+            State(Arc::clone(&state)),
+            Path((thread.context_id.clone(), thread.id.clone())),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(SupersedeThreadRequest {
+                expected_revision: thread.revision,
+                intent: "Use the corrected contract".to_string(),
+                reason: Some("operator correction".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(superseded.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(superseded.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["thread"]["id"], thread.id);
+        assert_eq!(payload["thread"]["generation"], thread.generation + 1);
+        assert_eq!(payload["thread"]["lifecycle"], "open");
+
+        let stale = handle_supersede_thread(
+            State(state),
+            Path((thread.context_id, thread.id)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(SupersedeThreadRequest {
+                expected_revision: thread.revision,
+                intent: "Duplicate stale correction".to_string(),
+                reason: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]

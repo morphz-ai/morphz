@@ -5,10 +5,11 @@ use super::{
 use crate::event::Event;
 use crate::memory::{
     evaluate_thread_group_contract, thread_cancellation_event, thread_group_barrier_event,
-    thread_terminal_barrier_event, DeliveryFlushCommit, DeliveryStatus, NewThread,
-    ObjectiveWaitCondition, RuntimeTimerRecord, ThreadControlAction, ThreadControlState,
-    ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadLifetime, ThreadMutation,
-    ThreadOutcomeRecord, ThreadRecord, ThreadStore, ThreadSupervision, ThreadSupervisorKind,
+    thread_terminal_barrier_event, validate_thread_supersede_event, DeliveryFlushCommit,
+    DeliveryStatus, NewThread, ObjectiveWaitCondition, RuntimeTimerRecord, ThreadControlAction,
+    ThreadControlState, ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadLifetime,
+    ThreadMutation, ThreadOutcomeRecord, ThreadRecord, ThreadStore, ThreadSupervision,
+    ThreadSupervisorKind,
 };
 use chrono::Duration;
 use serde_json::{json, Value as JsonValue};
@@ -890,7 +891,7 @@ impl ThreadStore for PostgresStore {
         actor: Option<&str>,
     ) -> Result<ThreadMutation, StoreError> {
         let expected_revision = i64::try_from(expected_revision)?;
-        if action == ThreadControlAction::Close {
+        if action == ThreadControlAction::Cancel {
             let mut tx = self.pool.begin().await?;
             let row = sqlx::query("SELECT * FROM threads WHERE id = $1 FOR UPDATE")
                 .bind(id)
@@ -908,7 +909,7 @@ impl ThreadStore for PostgresStore {
                 return Ok(ThreadMutation::Conflict { current });
             }
 
-            let reason = reason.unwrap_or("Thread 被操作员关闭");
+            let reason = reason.unwrap_or("Thread 被操作员取消");
             let actor = actor.unwrap_or("Runtime-Operator");
             let now = now_text();
             let result_event = thread_cancellation_event(&current, reason, actor);
@@ -1028,7 +1029,7 @@ impl ThreadStore for PostgresStore {
                 let current = self
                     .get_thread(id)
                     .await?
-                    .ok_or("Thread 关闭冲突后无法读取")?;
+                    .ok_or("Thread 取消冲突后无法读取")?;
                 return Ok(ThreadMutation::Conflict { current });
             }
             let updated = sqlx::query(
@@ -1050,7 +1051,7 @@ impl ThreadStore for PostgresStore {
                 let current = self
                     .get_thread(id)
                     .await?
-                    .ok_or("Thread 关闭冲突后无法读取")?;
+                    .ok_or("Thread 取消冲突后无法读取")?;
                 return Ok(ThreadMutation::Conflict { current });
             }
 
@@ -1088,7 +1089,7 @@ impl ThreadStore for PostgresStore {
                 .await?;
                 if member.rows_affected() != 1 {
                     return Err(format!(
-                        "关闭 Thread '{}' 时无法原子收口 Group '{}' 成员",
+                        "取消 Thread '{}' 时无法原子收口 Group '{}' 成员",
                         current.id, group_id
                     )
                     .into());
@@ -1192,7 +1193,7 @@ impl ThreadStore for PostgresStore {
                         ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
                             let parent = parent
                                 .as_ref()
-                                .ok_or("attached Thread Group 关闭缺少 parent Thread")?;
+                                .ok_or("attached Thread Group 取消缺少 parent Thread")?;
                             if parent.lifecycle == ThreadLifecycle::Open {
                                 append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id)
                                     .await?;
@@ -1257,7 +1258,7 @@ impl ThreadStore for PostgresStore {
                     ) {
                         let parent = parent
                             .as_ref()
-                            .ok_or("attached Thread 关闭缺少 parent Thread")?;
+                            .ok_or("attached Thread 取消缺少 parent Thread")?;
                         if parent.lifecycle == ThreadLifecycle::Open {
                             append_direct_thread_signal_in_tx(&mut tx, &barrier, &parent.id)
                                 .await?;
@@ -1267,13 +1268,13 @@ impl ThreadStore for PostgresStore {
             }
             tx.commit().await?;
             return Ok(ThreadMutation::Updated(
-                self.get_thread(id).await?.ok_or("Thread 关闭后无法读取")?,
+                self.get_thread(id).await?.ok_or("Thread 取消后无法读取")?,
             ));
         }
         let (control_state, lifecycle, generation_delta, predicate) = match action {
             ThreadControlAction::Pause => ("paused", "open", 0_i64, "control_state = 'active'"),
             ThreadControlAction::Resume => ("active", "open", 0_i64, "control_state = 'paused'"),
-            ThreadControlAction::Close => unreachable!("Close 已由终态事务处理"),
+            ThreadControlAction::Cancel => unreachable!("Cancel 已由终态事务处理"),
         };
         let result = sqlx::query(&format!(
             "UPDATE threads SET revision = revision + 1, generation = generation + $1, control_state = $2, status = $3, updated_at = $4 WHERE id = $5 AND revision = $6 AND status = 'open' AND {predicate}"
@@ -1295,6 +1296,106 @@ impl ThreadStore for PostgresStore {
             Some(current) => ThreadMutation::Conflict { current },
             None => ThreadMutation::NotFound,
         })
+    }
+
+    async fn supersede_thread(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        event: &Event,
+    ) -> Result<ThreadMutation, StoreError> {
+        let expected_revision = i64::try_from(expected_revision)?;
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query("SELECT * FROM threads WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(ThreadMutation::NotFound);
+        };
+        let current = thread_from_row(&row)?;
+        if i64::try_from(current.revision)? != expected_revision
+            || current.lifecycle != ThreadLifecycle::Open
+        {
+            tx.commit().await?;
+            return Ok(ThreadMutation::Conflict { current });
+        }
+        validate_thread_supersede_event(&current, event)?;
+        let now = now_text();
+
+        sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = 'cancelled',
+                   claimed_by = NULL, lease_expires_at = NULL, updated_at = $1
+               WHERE root_turn_id = $2 AND generation = $3
+                 AND status IN ('queued', 'running')"#,
+        )
+        .bind(&now)
+        .bind(&current.root_turn_id)
+        .bind(i64::try_from(current.generation)?)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE thread_signals
+               SET status = 'acknowledged', acknowledged_at = $1
+               WHERE thread_id = $2 AND thread_generation = $3
+                 AND status IN ('pending', 'claimed')"#,
+        )
+        .bind(&now)
+        .bind(&current.id)
+        .bind(i64::try_from(current.generation)?)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE schedules
+               SET revision = revision + 1, status = 'cancelled', updated_at = $1
+               WHERE thread_id = $2 AND status IN ('queued', 'paused')"#,
+        )
+        .bind(&now)
+        .bind(&current.id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE scheduler_dependencies
+               SET status = 'cancelled', updated_at = $1
+               WHERE owner_kind = 'thread' AND owner_id = $2
+                 AND owner_generation = $3 AND status = 'pending'"#,
+        )
+        .bind(&now)
+        .bind(&current.id)
+        .bind(i64::try_from(current.generation)?)
+        .execute(&mut *tx)
+        .await?;
+        let updated = sqlx::query(
+            r#"UPDATE threads
+               SET revision = revision + 1, generation = generation + 1,
+                   control_state = 'active', result_text = NULL,
+                   result_event_id = NULL, delivery_status = 'none',
+                   delivery_event_id = NULL, updated_at = $1
+               WHERE id = $2 AND revision = $3 AND status = 'open'"#,
+        )
+        .bind(&now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            let current = self
+                .get_thread(id)
+                .await?
+                .ok_or("Thread supersede 冲突后无法读取")?;
+            return Ok(ThreadMutation::Conflict { current });
+        }
+        append_event_in_tx(&mut tx, event).await?;
+        append_direct_thread_signal_in_tx(&mut tx, event, id).await?;
+        tx.commit().await?;
+        Ok(ThreadMutation::Updated(
+            self.get_thread(id)
+                .await?
+                .ok_or("Thread supersede 后无法读取")?,
+        ))
     }
 
     async fn bind_thread_target(

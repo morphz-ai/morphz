@@ -495,10 +495,14 @@ impl RuntimeSessionState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeOverviewThread {
     pub id: String,
+    pub revision: u64,
+    pub generation: u64,
     pub kind: ThreadKind,
+    pub lifecycle: ThreadLifecycle,
     pub phase: ThreadPhase,
     pub state: RuntimeSessionState,
     pub control_state: ThreadControlState,
+    pub supervision: ThreadSupervision,
     pub objective_id: Option<String>,
     pub target_id: Option<String>,
     pub activations: Vec<RuntimeOverviewActivation>,
@@ -5613,7 +5617,7 @@ impl MorphzRuntime {
                         &session.context_id,
                         &current.id,
                         current.revision,
-                        ThreadControlAction::Close,
+                        ThreadControlAction::Cancel,
                         reason,
                     )
                     .await?
@@ -7426,7 +7430,7 @@ impl MorphzRuntime {
     ///
     /// Pause is an admission control operation: already-running external side
     /// effects are not pretended to be frozen, while pending mailbox signals
-    /// remain durable. Close advances the Thread generation and cancels every
+    /// remain durable. Cancel advances the Thread generation and cancels every
     /// Activation from the generation that was visible to the operator.
     pub async fn control_thread(
         &self,
@@ -7470,7 +7474,7 @@ impl MorphzRuntime {
                         .wake_resumed_thread(&updated.root_turn_id)
                         .await?;
                 }
-                ThreadControlAction::Close => {
+                ThreadControlAction::Cancel => {
                     self.inner
                         .orchestrator
                         .cancel_thread_activations(&current, reason)
@@ -7481,6 +7485,65 @@ impl MorphzRuntime {
                         .await?;
                 }
             }
+        }
+        Ok(mutation)
+    }
+
+    /// Replaces the current physical generation of one logical Thread with a
+    /// corrected intent. The store commits the generation fence and new
+    /// mailbox Signal atomically; process-local cancellation and wakeup are
+    /// merely latency optimizations over that durable fact.
+    pub async fn supersede_thread(
+        &self,
+        context_id: &str,
+        thread_id: &str,
+        expected_revision: u64,
+        intent: &str,
+        reason: &str,
+    ) -> Result<ThreadMutation, RuntimeError> {
+        let intent = intent.trim();
+        if intent.is_empty() {
+            return Err("Thread supersede 需要非空 corrected intent".into());
+        }
+        let reason = reason.trim();
+        let reason = if reason.is_empty() {
+            "用户修订了当前并发工作的要求"
+        } else {
+            reason
+        };
+        let Some(current) = self.inner.store.get_thread(thread_id).await? else {
+            return Ok(ThreadMutation::NotFound);
+        };
+        if current.context_id != context_id {
+            return Ok(ThreadMutation::NotFound);
+        }
+        if current.revision != expected_revision {
+            return Ok(ThreadMutation::Conflict { current });
+        }
+        let mutation = match self
+            .inner
+            .scheduler_kernel
+            .execute(crate::controllers::DialogueController::supersede_thread(
+                &current,
+                context_id,
+                intent,
+                reason,
+                "Runtime-Operator",
+            ))
+            .await?
+        {
+            KernelResult::ThreadControlled(mutation) => mutation,
+            _ => return Err("Scheduler Kernel 返回了错误的 Thread supersede 结果".into()),
+        };
+        if let ThreadMutation::Updated(updated) = &mutation {
+            self.inner
+                .orchestrator
+                .cancel_thread_activations(&current, reason)
+                .await?;
+            self.inner
+                .orchestrator
+                .wake_resumed_thread(&updated.root_turn_id)
+                .await?;
         }
         Ok(mutation)
     }
@@ -7863,7 +7926,10 @@ fn runtime_overview_session(
             };
             RuntimeOverviewThread {
                 id: thread.id.clone(),
+                revision: thread.revision,
+                generation: thread.generation,
                 kind: thread.kind,
+                lifecycle: thread.lifecycle,
                 phase,
                 state: runtime_overview_thread_state(
                     thread,
@@ -7871,6 +7937,7 @@ fn runtime_overview_session(
                     &thread_job_records,
                 ),
                 control_state: thread.control_state,
+                supervision: thread.supervision.clone(),
                 objective_id: (thread.supervision.supervisor_kind
                     == ThreadSupervisorKind::Objective)
                     .then(|| thread.supervision.supervisor_id.clone())
@@ -17417,11 +17484,13 @@ mod tests {
             })
             .await
             .unwrap();
-        // Keep the pre-deadline assertion deterministic under a parallel
-        // workspace test run. A 150 ms deadline could expire while the
-        // Runtime was still being constructed on a busy CI host, making the
-        // correctly claimed timer look like a persistence failure.
-        let deadline = chrono::Utc::now() + chrono::Duration::seconds(1);
+        // Keep the pre-deadline assertion deterministic under a fully parallel
+        // workspace test run. Runtime construction can legitimately take more
+        // than a second while hundreds of SQLite-backed tests are competing;
+        // if the deadline expires before `start`, a correctly claimed timer
+        // would look like a persistence failure. This test exercises restart
+        // recovery, not sub-second timer precision.
+        let deadline = chrono::Utc::now() + chrono::Duration::seconds(5);
         assert!(matches!(
             store
                 .update_objective_state(
@@ -17471,7 +17540,7 @@ mod tests {
             wait_timer.status,
             crate::memory::RuntimeTimerStatus::Pending
         );
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
             .await
             .unwrap()
             .unwrap();

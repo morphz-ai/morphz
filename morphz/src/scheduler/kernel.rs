@@ -155,6 +155,30 @@ impl SchedulerKernel {
                     .map_err(store_error)?;
                 Ok(KernelResult::ThreadControlled(mutation))
             }
+            KernelCommandPayload::SupersedeThread(payload) => {
+                let expected_revision = required_revision(&command.header)?;
+                if let Some(expected_generation) = command.header.generation {
+                    if let Some(current) = self
+                        .store
+                        .get_thread(&payload.thread_id)
+                        .await
+                        .map_err(store_error)?
+                    {
+                        if current.generation != expected_generation {
+                            return Err(KernelError::StaleFence(format!(
+                                "Thread '{}' generation {} != {}",
+                                payload.thread_id, current.generation, expected_generation
+                            )));
+                        }
+                    }
+                }
+                let mutation = self
+                    .store
+                    .supersede_thread(&payload.thread_id, expected_revision, &payload.event)
+                    .await
+                    .map_err(store_error)?;
+                Ok(KernelResult::ThreadControlled(mutation))
+            }
             KernelCommandPayload::ControlObjective(payload) => {
                 let expected_revision = required_revision(&command.header)?;
                 if let Some(expected_generation) = command.header.generation {

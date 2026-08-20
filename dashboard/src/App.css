@@ -2821,6 +2821,14 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .runtime-monitor-session > header > em { display: inline-flex; min-width: 0; align-items: center; gap: 4px; overflow: hidden; color: var(--faint); font: 8px/1 var(--mono); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-monitor-session-counts { color: var(--muted); font: 8px/1 var(--mono); white-space: nowrap; }
 .runtime-monitor-session-body { display: grid; gap: 8px; padding: 10px 12px 12px 28px; }
+.runtime-monitor-delegation { border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
+.runtime-monitor-delegation > header { display: grid; grid-template-columns: 13px max-content auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px 11px; }
+.runtime-monitor-delegation > header > svg { color: var(--accent); }
+.runtime-monitor-delegation > header > strong { color: var(--text-soft); font-size: 9px; }
+.runtime-monitor-delegation > header > code { color: var(--faint); font: 8px/1 var(--mono); }
+.runtime-monitor-delegation > header > span { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-monitor-delegation > header > button { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--muted); font-size: 8px; }
+.runtime-monitor-delegation > header > button:hover { border-color: var(--danger); color: var(--danger); }
 .runtime-monitor-state { display: inline-flex; min-width: 76px; align-items: center; gap: 5px; color: var(--muted); font: 700 8px/1 var(--mono); white-space: nowrap; }
 .runtime-monitor-state.state-running { color: var(--green); }
 .runtime-monitor-state.state-queued,
@@ -2831,7 +2839,7 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .runtime-monitor-state.state-running svg,
 .runtime-monitor-state.state-queued svg { animation: pulse 1.8s ease-in-out infinite; }
 .runtime-monitor-objective { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
-.runtime-monitor-objective > header { display: grid; grid-template-columns: max-content 13px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 10px 12px; }
+.runtime-monitor-objective > header { display: grid; grid-template-columns: max-content 13px minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px; padding: 10px 12px; }
 .runtime-monitor-objective > header > svg { color: var(--accent); }
 .runtime-monitor-objective > header > strong { overflow: hidden; color: var(--text-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-monitor-objective > header > code,
@@ -2873,8 +2881,11 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .runtime-monitor-job b { color: var(--muted); font: 700 8px/1 var(--mono); white-space: nowrap; }
 .runtime-monitor-thread-detail > p,
 .runtime-monitor-thread-list > p { margin: 0; padding: 9px; color: var(--faint); font-size: 8px; }
-.runtime-monitor-thread-detail > button { justify-self: end; margin-top: 5px; padding: 5px 7px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--muted); font-size: 8px; }
-.runtime-monitor-thread-detail > button:hover { border-color: var(--accent); color: var(--accent-strong); }
+.runtime-monitor-control-actions { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.runtime-monitor-control-actions > button { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--muted); font-size: 8px; white-space: nowrap; }
+.runtime-monitor-control-actions > button:hover { border-color: var(--accent); color: var(--accent-strong); }
+.runtime-monitor-control-actions > button.danger:hover { border-color: var(--danger); color: var(--danger); }
+.runtime-monitor-control-actions > button:disabled { opacity: .45; cursor: wait; }
 .runtime-monitor-standalone { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
 .runtime-monitor-standalone > header { display: flex; align-items: center; gap: 7px; padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--accent); }
 .runtime-monitor-standalone > header strong { color: var(--text-soft); font-size: 9px; }
@@ -2907,7 +2918,7 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
   .runtime-monitor-summary > span { grid-column: 1 / -1; min-height: 46px; }
   .runtime-monitor-session > header { grid-template-columns: max-content 13px minmax(0, 1fr) auto; }
   .runtime-monitor-session > header > em { display: none; }
-  .runtime-monitor-objective > header { grid-template-columns: max-content 13px minmax(0, 1fr) auto; }
+  .runtime-monitor-objective > header { grid-template-columns: max-content 13px minmax(0, 1fr) auto auto; }
   .runtime-monitor-objective > header > time { display: none; }
   .runtime-monitor-objective-meta,
   .runtime-monitor-thread-detail { padding-left: 12px; }
@@ -2926,8 +2937,9 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
   .runtime-monitor-session > header { grid-template-columns: max-content 13px minmax(0, 1fr); }
   .runtime-monitor-session-counts { grid-column: 3; }
   .runtime-monitor-session-body { padding-left: 10px; }
-  .runtime-monitor-objective > header { grid-template-columns: max-content 13px minmax(0, 1fr); }
+  .runtime-monitor-objective > header { grid-template-columns: max-content 13px minmax(0, 1fr) auto; }
   .runtime-monitor-objective > header > code { display: none; }
+  .runtime-monitor-objective > header > .runtime-monitor-control-actions { grid-column: 1 / -1; justify-content: flex-start; }
   .runtime-monitor-thread > summary { grid-template-columns: max-content 13px minmax(0, 1fr) 12px; }
   .runtime-monitor-thread > summary > code { display: none; }
   .runtime-monitor-activation,

@@ -1052,14 +1052,17 @@ async fn dispatch_runtime_command(
             )
             .await
         }
-        "scheduler thread close" => {
+        "scheduler thread cancel" => {
             control_scheduler_thread(
                 &runtime,
                 &invocation,
                 &default_context_id,
-                ThreadControlAction::Close,
+                ThreadControlAction::Cancel,
             )
             .await
+        }
+        "scheduler thread supersede" => {
+            supersede_scheduler_thread(&runtime, &invocation, &default_context_id).await
         }
         "session" | "session list" => list_sessions(&runtime, &invocation).await,
         "session show" => show_session(&runtime, &invocation).await,
@@ -2983,7 +2986,7 @@ async fn control_scheduler_thread(
     let thread_id = invocation
         .prompt_args()
         .first()
-        .ok_or("用法: morphz scheduler thread <pause|resume|close> <THREAD_ID> [--reason=TEXT]")?;
+        .ok_or("用法: morphz scheduler thread <pause|resume|cancel> <THREAD_ID> [--reason=TEXT]")?;
     let sdk = MorphzSdk::new(runtime.clone());
     let detail = sdk.thread_detail(context_id, thread_id).await?;
     let expected_revision = option_value(invocation, "expected-revision")
@@ -2994,7 +2997,7 @@ async fn control_scheduler_thread(
     let fallback_reason = match action {
         ThreadControlAction::Pause => "用户通过 CLI 暂停 Thread",
         ThreadControlAction::Resume => "用户通过 CLI 继续 Thread",
-        ThreadControlAction::Close => "用户通过 CLI 关闭 Thread",
+        ThreadControlAction::Cancel => "用户通过 CLI 取消 Thread",
     };
     let reason = option_value(invocation, "reason")
         .map(str::to_string)
@@ -3005,6 +3008,47 @@ async fn control_scheduler_thread(
         .unwrap_or_else(|| fallback_reason.to_string());
     match sdk
         .control_thread(context_id, thread_id, expected_revision, action, &reason)
+        .await?
+    {
+        ThreadMutation::Updated(thread) => {
+            println!("{}", serde_json::to_string_pretty(&thread)?);
+            Ok(())
+        }
+        ThreadMutation::Conflict { current } => Err(format!(
+            "Thread revision 冲突：期望 r{expected_revision}，当前 r{}",
+            current.revision
+        )
+        .into()),
+        ThreadMutation::NotFound => Err(format!("Thread '{thread_id}' 不存在").into()),
+    }
+}
+
+async fn supersede_scheduler_thread(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let context_id = option_value(invocation, "context").unwrap_or(default_context_id);
+    let args = invocation.prompt_args();
+    let thread_id = args
+        .first()
+        .ok_or("用法: morphz scheduler thread supersede <THREAD_ID> <INTENT> [--reason=TEXT]")?;
+    let intent = args.get(1..).unwrap_or_default().join(" ");
+    if intent.trim().is_empty() {
+        return Err("supersede 需要非空 INTENT".into());
+    }
+    let sdk = MorphzSdk::new(runtime.clone());
+    let detail = sdk.thread_detail(context_id, thread_id).await?;
+    let expected_revision = option_value(invocation, "expected-revision")
+        .map(str::parse::<u64>)
+        .transpose()
+        .map_err(|_| "--expected-revision 必须是非负整数")?
+        .unwrap_or(detail.snapshot.thread.revision);
+    let reason = option_value(invocation, "reason")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("用户通过 CLI 修订 Thread");
+    match sdk
+        .supersede_thread(context_id, thread_id, expected_revision, &intent, reason)
         .await?
     {
         ThreadMutation::Updated(thread) => {

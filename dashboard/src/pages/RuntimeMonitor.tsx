@@ -6,10 +6,13 @@ import {
   GitBranch,
   Layers3,
   MessageSquare,
+  Pause,
+  Play,
   RefreshCw,
   Search,
   Terminal,
   UserRound,
+  X,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -34,6 +37,13 @@ interface RuntimeMonitorProps {
   onRefresh: () => void
   onOpenSession: (contextId: string, sessionId: string) => void
   onOpenThread: (contextId: string, threadId: string) => void
+  onThreadControl: (contextId: string, thread: RuntimeOverviewThread, action: 'pause' | 'resume' | 'cancel') => void
+  onThreadSupersede: (contextId: string, thread: RuntimeOverviewThread) => void
+  onObjectiveControl: (objective: RuntimeOverviewObjective, action: 'pause' | 'resume' | 'cancel') => void
+  onDelegationCancel: (delegationId: string, task: string) => void
+  mutatingThreadId: string
+  mutatingObjectiveId: string
+  mutatingDelegationId: string
 }
 
 function shortId(value: string, size = 12) {
@@ -110,10 +120,16 @@ function ThreadRow({
   contextId,
   thread,
   onOpen,
+  onControl,
+  onSupersede,
+  mutating,
 }: {
   contextId: string
   thread: RuntimeOverviewThread
   onOpen: (contextId: string, threadId: string) => void
+  onControl: (contextId: string, thread: RuntimeOverviewThread, action: 'pause' | 'resume' | 'cancel') => void
+  onSupersede: (contextId: string, thread: RuntimeOverviewThread) => void
+  mutating: boolean
 }) {
   const { t, i18n } = useTranslation()
   return (
@@ -146,9 +162,31 @@ function ThreadRow({
         {thread.activations.length === 0 && thread.execution_jobs.length === 0 && (
           <p>{t('runtimeMonitor.threadWaiting')}</p>
         )}
-        <button type="button" onClick={() => onOpen(contextId, thread.id)}>
-          {t('runtimeMonitor.openThread')}
-        </button>
+        <div className="runtime-monitor-control-actions">
+          <button type="button" onClick={() => onOpen(contextId, thread.id)}>
+            {t('runtimeMonitor.openThread')}
+          </button>
+          {thread.lifecycle === 'open' && thread.control_state === 'active' && (
+            <button type="button" disabled={mutating} onClick={() => onControl(contextId, thread, 'pause')}>
+              <Pause size={11} />{t('runtimeMonitor.actions.pause')}
+            </button>
+          )}
+          {thread.lifecycle === 'open' && thread.control_state === 'paused' && (
+            <button type="button" disabled={mutating} onClick={() => onControl(contextId, thread, 'resume')}>
+              <Play size={11} />{t('runtimeMonitor.actions.resume')}
+            </button>
+          )}
+          {thread.lifecycle === 'open' && (
+            <button type="button" disabled={mutating} onClick={() => onSupersede(contextId, thread)}>
+              <RefreshCw size={11} />{t('runtimeMonitor.actions.supersede')}
+            </button>
+          )}
+          {thread.lifecycle === 'open' && (
+            <button className="danger" type="button" disabled={mutating} onClick={() => onControl(contextId, thread, 'cancel')}>
+              <X size={11} />{t('runtimeMonitor.actions.cancel')}
+            </button>
+          )}
+        </div>
       </div>
     </details>
   )
@@ -159,11 +197,21 @@ function ObjectiveBlock({
   objective,
   threads,
   onOpenThread,
+  onThreadControl,
+  onThreadSupersede,
+  onObjectiveControl,
+  mutatingThreadId,
+  mutatingObjectiveId,
 }: {
   contextId: string
   objective: RuntimeOverviewObjective
   threads: RuntimeOverviewThread[]
   onOpenThread: (contextId: string, threadId: string) => void
+  onThreadControl: (contextId: string, thread: RuntimeOverviewThread, action: 'pause' | 'resume' | 'cancel') => void
+  onThreadSupersede: (contextId: string, thread: RuntimeOverviewThread) => void
+  onObjectiveControl: (objective: RuntimeOverviewObjective, action: 'pause' | 'resume' | 'cancel') => void
+  mutatingThreadId: string
+  mutatingObjectiveId: string
 }) {
   const { t, i18n } = useTranslation()
   return (
@@ -177,6 +225,11 @@ function ObjectiveBlock({
         <strong>{objective.stated_objective}</strong>
         <code title={objective.id}>{shortId(objective.id)}</code>
         <time dateTime={objective.updated_at}>{formatClock(objective.updated_at, i18n.language)}</time>
+        <span className="runtime-monitor-control-actions">
+          {objective.status === 'active' && <button disabled={mutatingObjectiveId === objective.id} type="button" onClick={() => onObjectiveControl(objective, 'pause')}><Pause size={11} />{t('runtimeMonitor.actions.pause')}</button>}
+          {objective.status === 'paused' && <button disabled={mutatingObjectiveId === objective.id} type="button" onClick={() => onObjectiveControl(objective, 'resume')}><Play size={11} />{t('runtimeMonitor.actions.resume')}</button>}
+          {!['completed', 'cancelled', 'blocked'].includes(objective.status) && <button className="danger" disabled={mutatingObjectiveId === objective.id} type="button" onClick={() => onObjectiveControl(objective, 'cancel')}><X size={11} />{t('runtimeMonitor.actions.cancel')}</button>}
+        </span>
       </header>
       <div className="runtime-monitor-objective-meta">
         <WaitCondition objective={objective} />
@@ -184,7 +237,7 @@ function ObjectiveBlock({
       </div>
       <div className="runtime-monitor-thread-list">
         {threads.map(thread => (
-          <ThreadRow key={thread.id} contextId={contextId} thread={thread} onOpen={onOpenThread} />
+          <ThreadRow key={thread.id} contextId={contextId} thread={thread} onOpen={onOpenThread} onControl={onThreadControl} onSupersede={onThreadSupersede} mutating={mutatingThreadId === thread.id} />
         ))}
         {threads.length === 0 && <p>{t('runtimeMonitor.objectiveWithoutThread')}</p>}
       </div>
@@ -199,6 +252,13 @@ export function RuntimeMonitor({
   onRefresh,
   onOpenSession,
   onOpenThread,
+  onThreadControl,
+  onThreadSupersede,
+  onObjectiveControl,
+  onDelegationCancel,
+  mutatingThreadId,
+  mutatingObjectiveId,
+  mutatingDelegationId,
 }: RuntimeMonitorProps) {
   const { t, i18n } = useTranslation()
   const [filter, setFilter] = useState<RuntimeMonitorFilter>('live')
@@ -291,6 +351,22 @@ export function RuntimeMonitor({
                   </span>
                 </header>
                 <div className="runtime-monitor-session-body">
+                  {context.delegation && context.delegation.child_session_id === session.session.id && (
+                    <section className="runtime-monitor-delegation">
+                      <header>
+                        <GitBranch size={12} />
+                        <strong>{t('runtimeMonitor.delegation')}</strong>
+                        <code title={context.delegation.id}>{shortId(context.delegation.id, 16)}</code>
+                        <span>{context.delegation.task}</span>
+                        <button
+                          className="danger"
+                          type="button"
+                          disabled={mutatingDelegationId === context.delegation.id}
+                          onClick={() => onDelegationCancel(context.delegation!.id, context.delegation!.task)}
+                        ><X size={11} />{t('runtimeMonitor.actions.cancel')}</button>
+                      </header>
+                    </section>
+                  )}
                   {sessionJobs.length > 0 && (
                     <section className="runtime-monitor-standalone runtime-monitor-session-jobs">
                       <header><Terminal size={12} /><strong>{t('runtimeMonitor.sessionJobs')}</strong></header>
@@ -306,13 +382,18 @@ export function RuntimeMonitor({
                       objective={objective}
                       threads={session.threads.filter(thread => thread.objective_id === objective.id)}
                       onOpenThread={onOpenThread}
+                      onThreadControl={onThreadControl}
+                      onThreadSupersede={onThreadSupersede}
+                      onObjectiveControl={onObjectiveControl}
+                      mutatingThreadId={mutatingThreadId}
+                      mutatingObjectiveId={mutatingObjectiveId}
                     />
                   ))}
                   {standaloneThreads.length > 0 && (
                     <section className="runtime-monitor-standalone">
                       <header><GitBranch size={12} /><strong>{t('runtimeMonitor.standaloneThreads')}</strong></header>
                       {standaloneThreads.map(thread => (
-                        <ThreadRow key={thread.id} contextId={context.context.id} thread={thread} onOpen={onOpenThread} />
+                        <ThreadRow key={thread.id} contextId={context.context.id} thread={thread} onOpen={onOpenThread} onControl={onThreadControl} onSupersede={onThreadSupersede} mutating={mutatingThreadId === thread.id} />
                       ))}
                     </section>
                   )}

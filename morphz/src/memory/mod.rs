@@ -3205,6 +3205,90 @@ pub fn thread_cancellation_event(
     )
 }
 
+/// Builds the immutable operator correction that starts a new physical
+/// generation of the same logical Thread.
+///
+/// Supersede is deliberately not a terminal Thread outcome. The old
+/// generation is fenced and cancelled, while this Event becomes the first
+/// durable mailbox input for the next generation. Keeping the logical Thread
+/// identity preserves its Thread Group membership and Supervisor barrier.
+pub fn thread_supersede_event(
+    thread: &ThreadRecord,
+    intent: &str,
+    reason: &str,
+    actor: &str,
+) -> crate::event::Event {
+    crate::event::Event::new(
+        format!(
+            "thread_superseded_{}_r{}_g{}",
+            thread.id, thread.revision, thread.generation
+        ),
+        actor.to_string(),
+        "runtime_control".to_string(),
+        "runtime/thread_superseded".to_string(),
+        serde_json::json!({
+            "agent_id": thread.agent_id,
+            "context_id": thread.context_id,
+            "session_id": thread.session_id,
+            "thread_id": thread.id,
+            "root_turn_id": thread.root_turn_id,
+            "previous_generation": thread.generation,
+            "thread_generation": thread.generation.saturating_add(1),
+            "intent": intent,
+            "reason": reason,
+            "disposition": "continue",
+            "wake_policy": "direct_thread",
+            "text": format!(
+                "The operator superseded the previous generation of this Thread. Stop the old plan and continue under this corrected intent:\n\n{intent}\n\nReason: {reason}"
+            ),
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+    )
+}
+
+pub fn validate_thread_supersede_event(
+    thread: &ThreadRecord,
+    event: &crate::event::Event,
+) -> Result<(), String> {
+    let required = |key: &str| {
+        event
+            .payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("Thread supersede Event 缺少 '{key}'"))
+    };
+    if event.topic != "runtime/thread_superseded"
+        || event.event_type != "runtime_control"
+        || required("context_id")? != thread.context_id
+        || required("session_id")? != thread.session_id
+        || required("thread_id")? != thread.id
+        || required("root_turn_id")? != thread.root_turn_id
+        || event
+            .payload
+            .get("previous_generation")
+            .and_then(serde_json::Value::as_u64)
+            != Some(thread.generation)
+        || event
+            .payload
+            .get("thread_generation")
+            .and_then(serde_json::Value::as_u64)
+            != Some(thread.generation.saturating_add(1))
+        || event
+            .payload
+            .get("intent")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|intent| intent.trim().is_empty())
+    {
+        return Err(format!(
+            "Thread supersede Event '{}' 与 Thread '{}' 的 fenced route 不一致",
+            event.id, thread.id
+        ));
+    }
+    Ok(())
+}
+
 /// Builds the one direct supervisor wake for a terminal Thread which is not
 /// joined by a Thread Group.
 pub fn thread_terminal_barrier_event(
@@ -3856,7 +3940,7 @@ impl ThreadControlState {
 pub enum ThreadControlAction {
     Pause,
     Resume,
-    Close,
+    Cancel,
 }
 
 impl ThreadLifecycle {
@@ -6306,7 +6390,7 @@ pub trait ThreadStore: Send + Sync {
         delivery_event_id: Option<&str>,
     ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Revision-fenced operator control. Pause/resume only changes scheduler
-    /// admission; close is terminal and advances the generation fence so late
+    /// admission; cancel is terminal and advances the generation fence so late
     /// outcomes from already-running Activations cannot revive the Thread.
     async fn control_thread(
         &self,
@@ -6315,6 +6399,15 @@ pub trait ThreadStore: Send + Sync {
         action: ThreadControlAction,
         reason: Option<&str>,
         actor: Option<&str>,
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically fences the current physical generation and enqueues the
+    /// corrected intent as the first Signal of the next generation. The
+    /// logical Thread, Group membership and Supervisor barrier are preserved.
+    async fn supersede_thread(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        event: &crate::event::Event,
     ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Revision-fenced first binding of a Thread to one physical destination.
     /// A bound Thread cannot be silently moved to a different Target.
