@@ -1198,6 +1198,10 @@ impl Server {
                 get(handle_get_session_events),
             )
             .route(
+                "/api/sessions/:session_id/events/:event_id/attachments/:attachment_id",
+                get(handle_get_session_event_attachment),
+            )
+            .route(
                 "/api/sessions/:session_id/context",
                 get(handle_get_session_context),
             )
@@ -5581,6 +5585,93 @@ async fn handle_get_session_events(
             .into_response()
         }
         Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_get_session_event_attachment(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, event_id, attachment_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let session = match state
+        .sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
+    let event = match state
+        .runtime
+        .query_events(QueryFilter {
+            event_id: Some(event_id),
+            context_id: Some(session.context_id),
+            session_id: Some(session.id),
+            latest_k: Some(1),
+            ..QueryFilter::default()
+        })
+        .await
+    {
+        Ok(events) => match events.into_iter().next() {
+            Some(event) => event,
+            None => return error_response(StatusCode::NOT_FOUND, "附件所属 Event 不存在"),
+        },
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    let attachment = event
+        .payload
+        .get("attachments")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|attachments| {
+            attachments.iter().find(|attachment| {
+                attachment.get("id").and_then(serde_json::Value::as_str)
+                    == Some(attachment_id.as_str())
+            })
+        });
+    let Some(attachment) = attachment else {
+        return error_response(StatusCode::NOT_FOUND, "Event 中不存在该附件");
+    };
+    let media_type = attachment
+        .get("media_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("application/octet-stream");
+    if !media_type.starts_with("image/") {
+        return error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "该附件不是可预览图片");
+    }
+    let loaded = match crate::model_input::read_stored_attachment(
+        &state.runtime.config().background_task.artifact_dir,
+        attachment,
+    )
+    .await
+    {
+        Ok(loaded) => loaded,
+        Err(error) => return error_response(StatusCode::GONE, error.to_string()),
+    };
+    match Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, loaded.media_type)
+        .header(
+            header::CACHE_CONTROL,
+            "private, max-age=31536000, immutable",
+        )
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(Body::from(loaded.data))
+    {
+        Ok(response) => response,
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
@@ -10302,6 +10393,47 @@ account = "xai-account"
             .as_str()
             .unwrap();
         assert_eq!(tokio::fs::read(storage_path).await.unwrap(), b"same-image");
+        let attachment_id = user_message.payload["attachments"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let preview = handle_get_session_event_attachment(
+            State(Arc::clone(&state)),
+            Path((
+                "api-session".to_string(),
+                user_message.id.clone(),
+                attachment_id,
+            )),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(preview.status(), StatusCode::OK);
+        assert_eq!(
+            preview.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            axum::body::to_bytes(preview.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            b"same-image".as_slice()
+        );
+        let cross_session_preview = handle_get_session_event_attachment(
+            State(Arc::clone(&state)),
+            Path((
+                "api-session-target".to_string(),
+                user_message.id.clone(),
+                user_message.payload["attachments"][0]["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            )),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(cross_session_preview.status(), StatusCode::NOT_FOUND);
 
         // Wait for the reply itself rather than for a fixed span. The suite
         // runs in parallel, and under CPU contention the orchestrator needs

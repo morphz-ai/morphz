@@ -84,6 +84,33 @@ test('execution Thread toolchain escapes scroll clipping and flips into availabl
   assert.match(appCss, /\.message-thread-toolchain:popover-open\.is-positioned/)
 })
 
+test('message images use an authenticated top-layer hover preview', () => {
+  assert.match(
+    appSource,
+    /className="message-attachment-preview"[\s\S]*?popover="manual"/s,
+    'image previews must enter the browser top layer instead of being clipped by the conversation scroller',
+  )
+  assert.match(
+    appSource,
+    /DASHBOARD_API\.response\(path\)[\s\S]*?URL\.createObjectURL\(await response\.blob\(\)\)/s,
+    'stored image bytes must be read through the authenticated Dashboard transport',
+  )
+  assert.match(
+    appCss,
+    /\.message-attachment-preview\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*auto;/s,
+    'the preview must be positioned against the viewport while it is in the top layer',
+  )
+  assert.match(appCss, /\.message-attachment-preview:popover-open\.is-positioned/)
+})
+
+test('composer paste sends clipboard files through the existing attachment importer', () => {
+  assert.match(
+    appSource,
+    /onPaste=\{event => \{[\s\S]*?event\.clipboardData\.items[\s\S]*?item\.kind === 'file'[\s\S]*?event\.preventDefault\(\)[\s\S]*?void addFiles\(files\)/s,
+    'pasted images must reuse the same validated importer as drag-and-drop',
+  )
+})
+
 test('laptop viewports keep both dashboard chrome bands on one row', () => {
   assert.match(
     appSource,

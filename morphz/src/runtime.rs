@@ -8795,6 +8795,7 @@ mod tests {
     use crate::memory::{ActivationStore as _, ScheduleStatus, SessionDirectoryStore as _};
     use crate::permission::PermissionMode;
     use crate::sdk::MessageAttachmentInput;
+    use base64::Engine as _;
     use tempfile::NamedTempFile;
 
     struct ReplyClient;
@@ -9352,6 +9353,7 @@ mod tests {
         calls: AtomicU64,
         first_entered: Arc<tokio::sync::Notify>,
         observed_combined_input: Arc<AtomicBool>,
+        observed_interrupted_attachment: Arc<AtomicBool>,
     }
 
     struct PhysicalBatchClient {
@@ -9935,15 +9937,19 @@ mod tests {
     #[tokio::test]
     async fn new_message_interrupts_a_thinking_dialogue_and_replays_both_inputs() {
         let database = NamedTempFile::new().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
         let first_entered = Arc::new(tokio::sync::Notify::new());
         let observed_combined_input = Arc::new(AtomicBool::new(false));
+        let observed_interrupted_attachment = Arc::new(AtomicBool::new(false));
         let client = Arc::new(InterruptibleDialogueClient {
             calls: AtomicU64::new(0),
             first_entered: first_entered.clone(),
             observed_combined_input: observed_combined_input.clone(),
+            observed_interrupted_attachment: observed_interrupted_attachment.clone(),
         });
         let mut config = AppConfig::default();
         config.orchestrator.interrupt_dialogue_on_new_message = true;
+        config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
         let runtime = MorphzRuntime::builder(config, client.clone())
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -9965,12 +9971,23 @@ mod tests {
             })
             .await
             .unwrap();
+        runtime.bind_default_principal(&session.id).await.unwrap();
         let mut replies = runtime.subscribe("chat/reply", 4);
         let first = session
-            .send(
+            .send_as_principal_with_options(
                 "first unfinished message",
                 "User-Test",
+                runtime.identity().principal_id.clone(),
                 Some("client-dialogue-interruption-a".to_string()),
+                SessionMessageOptions {
+                    attachments: vec![MessageAttachmentInput {
+                        name: "interrupted-image.png".to_string(),
+                        media_type: "image/png".to_string(),
+                        data: b"interrupted-image-bytes".to_vec(),
+                    }],
+                    dispatch_mode: Some(MessageDispatchMode::Interrupt),
+                    ..SessionMessageOptions::default()
+                },
             )
             .await
             .unwrap();
@@ -9994,6 +10011,7 @@ mod tests {
             .unwrap();
         assert_eq!(reply.payload["text"], "combined-dialogue-reply");
         assert!(observed_combined_input.load(Ordering::SeqCst));
+        assert!(observed_interrupted_attachment.load(Ordering::SeqCst));
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
 
         let attempt_states = runtime
@@ -10342,6 +10360,20 @@ mod tests {
                     && prompt.contains("second clarifying message")
                     && prompt.find("first unfinished message")
                         < prompt.find("second clarifying message"),
+                Ordering::SeqCst,
+            );
+            self.observed_interrupted_attachment.store(
+                messages.iter().any(|message| {
+                    crate::llm::model_attachments(message).is_some_and(|attachments| {
+                        attachments.iter().any(|attachment| {
+                            attachment.name == "interrupted-image.png"
+                                && attachment.media_type == "image/png"
+                                && base64::engine::general_purpose::STANDARD
+                                    .decode(&attachment.data_base64)
+                                    .is_ok_and(|data| data == b"interrupted-image-bytes")
+                        })
+                    })
+                }),
                 Ordering::SeqCst,
             );
             Ok(text_response("combined-dialogue-reply"))

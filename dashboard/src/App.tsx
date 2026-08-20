@@ -1062,6 +1062,7 @@ interface EventPayload {
     media_type?: string
     size_bytes?: number
     sha256?: string
+    source_event_id?: string
   }>
   references?: Array<{
     kind: 'session'
@@ -2290,28 +2291,180 @@ const SelectionQuotePopup = memo(function SelectionQuotePopup({
 
 const MessageAttachments = memo(function MessageAttachments({
   attachments,
+  eventId,
+  principalId,
+  sessionId,
+  t,
 }: {
   attachments: EventPayload['attachments']
+  eventId: string
+  principalId?: string
+  sessionId: string
+  t: TFunction
 }) {
   if (!attachments?.length) return null
   return (
     <div className="message-attachments">
-      {attachments.map((attachment, index) => (
-        <span key={attachment.id ?? attachment.sha256 ?? `${attachment.name}-${index}`}>
-          <Paperclip size={12} />
-          <strong>{attachment.name ?? 'attachment'}</strong>
-          {typeof attachment.size_bytes === 'number' && (
-            <small>
-              {(attachment.size_bytes < 1024 * 1024
-                ? attachment.size_bytes / 1024
-                : attachment.size_bytes / 1024 / 1024
-              ).toFixed(attachment.size_bytes < 1024 * 1024 ? 0 : 1)}
-              {' '}{attachment.size_bytes < 1024 * 1024 ? 'KB' : 'MB'}
-            </small>
-          )}
-        </span>
-      ))}
+      {attachments.map((attachment, index) => {
+        const key = attachment.id ?? attachment.sha256 ?? `${attachment.name}-${index}`
+        return attachment.media_type?.startsWith('image/') && attachment.id
+          ? (
+              <MessageImageAttachment
+                attachment={attachment}
+                eventId={attachment.source_event_id ?? eventId}
+                key={key}
+                principalId={principalId}
+                sessionId={sessionId}
+                t={t}
+              />
+            )
+          : (
+              <span className="message-attachment-chip" key={key}>
+                <Paperclip size={12} />
+                <strong>{attachment.name ?? t('composer.attachments.unnamed')}</strong>
+                {typeof attachment.size_bytes === 'number' && <small>{formatFileSize(attachment.size_bytes)}</small>}
+              </span>
+            )
+      })}
     </div>
+  )
+})
+
+const MessageImageAttachment = memo(function MessageImageAttachment({
+  attachment,
+  eventId,
+  principalId,
+  sessionId,
+  t,
+}: {
+  attachment: NonNullable<EventPayload['attachments']>[number]
+  eventId: string
+  principalId?: string
+  sessionId: string
+  t: TFunction
+}) {
+  const anchorRef = useRef<HTMLButtonElement>(null)
+  const popoverRef = useRef<HTMLElement>(null)
+  const hideTimerRef = useRef<number | null>(null)
+  const requestRef = useRef<Promise<string> | null>(null)
+  const objectUrlRef = useRef('')
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [previewError, setPreviewError] = useState('')
+  const attachmentId = attachment.id ?? ''
+  const previewId = `attachment-preview-${eventId}-${attachmentId}`.replace(/[^a-zA-Z0-9_-]/g, '-')
+
+  const cancelHide = useCallback(() => {
+    if (hideTimerRef.current === null) return
+    window.clearTimeout(hideTimerRef.current)
+    hideTimerRef.current = null
+  }, [])
+
+  const positionPopover = useCallback(() => {
+    const anchor = anchorRef.current
+    const popover = popoverRef.current
+    if (!anchor || !popover) return
+    if (!popover.matches(':popover-open')) popover.showPopover()
+    const anchorBox = anchor.getBoundingClientRect()
+    const measured = popover.getBoundingClientRect()
+    const gap = 8
+    const availableAbove = anchorBox.top - gap - 12
+    const below = availableAbove < measured.height && window.innerHeight - anchorBox.bottom > availableAbove
+    const top = below
+      ? Math.min(window.innerHeight - measured.height - 12, anchorBox.bottom + gap)
+      : Math.max(12, anchorBox.top - measured.height - gap)
+    const left = Math.min(
+      Math.max(12, anchorBox.left),
+      window.innerWidth - measured.width - 12,
+    )
+    popover.style.top = `${top}px`
+    popover.style.left = `${Math.max(12, left)}px`
+    popover.dataset.placement = below ? 'below' : 'above'
+    popover.classList.add('is-positioned')
+  }, [])
+
+  const loadPreview = useCallback(() => {
+    if (previewUrl) return Promise.resolve(previewUrl)
+    if (requestRef.current) return requestRef.current
+    const path = scopedSessionReadPath(
+      `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      principalId,
+    )
+    requestRef.current = DASHBOARD_API.response(path)
+      .then(async response => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const url = URL.createObjectURL(await response.blob())
+        objectUrlRef.current = url
+        setPreviewUrl(url)
+        return url
+      })
+      .catch(reason => {
+        setPreviewError(reason instanceof Error ? reason.message : String(reason))
+        throw reason
+      })
+      .finally(() => { requestRef.current = null })
+    return requestRef.current
+  }, [attachmentId, eventId, previewUrl, principalId, sessionId])
+
+  const showPreview = useCallback(() => {
+    cancelHide()
+    setPreviewError('')
+    positionPopover()
+    void loadPreview().then(() => window.requestAnimationFrame(positionPopover)).catch(() => {})
+  }, [cancelHide, loadPreview, positionPopover])
+
+  const hidePreview = useCallback(() => {
+    cancelHide()
+    hideTimerRef.current = window.setTimeout(() => {
+      const popover = popoverRef.current
+      if (popover?.matches(':popover-open')) popover.hidePopover()
+      popover?.classList.remove('is-positioned')
+    }, 140)
+  }, [cancelHide])
+
+  useEffect(() => () => {
+    cancelHide()
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
+  }, [cancelHide])
+
+  return (
+    <span className="message-image-attachment" onPointerLeave={hidePreview}>
+      <button
+        ref={anchorRef}
+        className="message-attachment-chip"
+        type="button"
+        aria-describedby={previewId}
+        aria-label={t('composer.attachments.preview', { name: attachment.name ?? t('composer.attachments.unnamed') })}
+        onPointerEnter={showPreview}
+        onFocus={showPreview}
+        onBlur={hidePreview}
+        onClick={() => {
+          void loadPreview().then(url => window.open(url, '_blank', 'noopener,noreferrer')).catch(() => {})
+        }}
+      >
+        <Paperclip size={12} />
+        <strong>{attachment.name ?? t('composer.attachments.unnamed')}</strong>
+        {typeof attachment.size_bytes === 'number' && <small>{formatFileSize(attachment.size_bytes)}</small>}
+      </button>
+      <aside
+        ref={popoverRef}
+        className="message-attachment-preview"
+        id={previewId}
+        role="tooltip"
+        popover="manual"
+        onPointerEnter={cancelHide}
+        onPointerLeave={hidePreview}
+      >
+        {previewUrl
+          ? <img src={previewUrl} alt={attachment.name ?? t('composer.attachments.unnamed')} onLoad={positionPopover} />
+          : previewError
+            ? <span>{t('composer.attachments.previewUnavailable')}</span>
+            : <span><LoaderCircle className="is-spinning" size={16} />{t('composer.attachments.loadingPreview')}</span>}
+        <footer>
+          <strong>{attachment.name ?? t('composer.attachments.unnamed')}</strong>
+          {typeof attachment.size_bytes === 'number' && <small>{formatFileSize(attachment.size_bytes)}</small>}
+        </footer>
+      </aside>
+    </span>
   )
 })
 
@@ -2630,6 +2783,15 @@ const Composer = memo(function Composer({
           }}
           onCompositionStart={() => { composingInput.current = true }}
           onCompositionEnd={() => { composingInput.current = false }}
+          onPaste={event => {
+            const files = Array.from(event.clipboardData.items)
+              .filter(item => item.kind === 'file')
+              .map(item => item.getAsFile())
+              .filter((file): file is File => file !== null)
+            if (files.length === 0) return
+            event.preventDefault()
+            void addFiles(files)
+          }}
           onKeyDown={event => {
             if (composingInput.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
             if (mentionRange && mentionCandidates.length > 0) {
@@ -7291,7 +7453,13 @@ export default function App() {
                           ? <MarkdownBody text={event.payload.text} />
                           : event.payload.attachments?.length ? null : t('conversation.noText')}
                       </div>
-                      <MessageAttachments attachments={event.payload.attachments} />
+                      <MessageAttachments
+                        attachments={event.payload.attachments}
+                        eventId={event.id}
+                        principalId={principalScope?.principal.id}
+                        sessionId={selectedSessionId}
+                        t={t}
+                      />
                       <MessageSessionReferences
                         references={event.payload.references}
                         currentContextId={selectedContextId}

@@ -8505,29 +8505,66 @@ impl Orchestrator {
 
     async fn model_attachment_message(
         &self,
-        context_id: &str,
-        root_turn_id: &str,
+        activation: &ThreadActivationRecord,
     ) -> Result<Option<Message>, DynError> {
-        let Some(event) = self
-            .context_engine
-            .find_event(context_id, root_turn_id)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let mut items = event
-            .payload
-            .get("attachments")
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        items.extend(
-            self.resolve_model_visible_attachment_metadata(
-                context_id,
-                &serde_json::Value::Object(event.payload.clone()),
-            )
-            .await?,
-        );
+        // An Activation evaluates an ordered Signal batch, not only its latest
+        // root Event. Interrupt mode atomically reroutes the interrupted
+        // message's claimed Signal to the replacement DialogueTurn, so binary
+        // attachments must follow that same authoritative batch just as its
+        // text observations do. Events remain immutable; this is a bounded
+        // read projection over the already claimed mailbox facts.
+        let mut event_ids = Vec::new();
+        let mut seen_event_ids = HashSet::new();
+        if let Some(session_store) = self.context_engine.session_store() {
+            for signal in session_store
+                .list_activation_signals(&activation.id)
+                .await?
+            {
+                if seen_event_ids.insert(signal.event_id.clone()) {
+                    event_ids.push(signal.event_id);
+                }
+            }
+        }
+        // Lightweight test stores may not expose Activation bindings. The
+        // root remains the compatibility fallback and, when necessary, the
+        // final causal item after the ordered Signal batch.
+        if seen_event_ids.insert(activation.root_turn_id.clone()) {
+            event_ids.push(activation.root_turn_id.clone());
+        }
+
+        let events = self
+            .store
+            .query(QueryFilter {
+                event_ids: event_ids.clone(),
+                context_id: Some(activation.context_id.clone()),
+                ..QueryFilter::default()
+            })
+            .await?;
+        let mut events_by_id = events
+            .into_iter()
+            .map(|event| (event.id.clone(), event))
+            .collect::<HashMap<_, _>>();
+        let mut items = Vec::new();
+        for event_id in event_ids {
+            let Some(event) = events_by_id.remove(&event_id) else {
+                continue;
+            };
+            items.extend(
+                event
+                    .payload
+                    .get("attachments")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            items.extend(
+                self.resolve_model_visible_attachment_metadata(
+                    &activation.context_id,
+                    &serde_json::Value::Object(event.payload),
+                )
+                .await?,
+            );
+        }
         let mut seen = HashSet::new();
         items.retain(|item| {
             let key = (
@@ -8876,9 +8913,7 @@ impl Orchestrator {
             )
             .await?;
         let continuation_messages = continuation.messages.clone();
-        let attachment_message = self
-            .model_attachment_message(&context_id, &activation.root_turn_id)
-            .await?;
+        let attachment_message = self.model_attachment_message(activation).await?;
         if !continuation.delivered_output_ids.is_empty() {
             context = self
                 .context_engine

@@ -1278,6 +1278,10 @@
     "attachments": {
       "add": "Add images or files",
       "remove": "Remove attachment",
+      "unnamed": "attachment",
+      "preview": "Preview {{name}}",
+      "loadingPreview": "Loading preview…",
+      "previewUnavailable": "Preview unavailable",
       "tooMany": "A message can contain at most {{count}} attachments",
       "fileTooLarge": "Each attachment must be {{size}} or smaller",
       "totalTooLarge": "Attachments in one message must total {{size}} or less"

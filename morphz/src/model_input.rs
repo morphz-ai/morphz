@@ -588,50 +588,81 @@ pub async fn attachment_message_from_metadata(
     let root = tokio::fs::canonicalize(absolute_root(configured_root.as_ref())?).await?;
     let mut attachments = Vec::with_capacity(items.len());
     for item in items {
-        let name = item
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or("模型输入附件缺少 name")?;
-        let media_type = item
-            .get("media_type")
-            .and_then(Value::as_str)
-            .unwrap_or("application/octet-stream");
-        let expected_digest = item
-            .get("sha256")
-            .and_then(Value::as_str)
-            .ok_or("模型输入附件缺少 sha256")?;
-        let storage_path = item
-            .get("storage_path")
-            .and_then(Value::as_str)
-            .ok_or("模型输入附件缺少 storage_path")?;
-        let path = tokio::fs::canonicalize(storage_path).await?;
-        if !path.starts_with(&root) {
-            return Err(format!(
-                "模型输入附件 '{}' 位于 Artifact Store 之外，拒绝读取",
-                path.display()
-            )
-            .into());
-        }
-        let data = tokio::fs::read(&path).await?;
-        let expected_size = item
-            .get("size_bytes")
-            .and_then(Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .ok_or("模型输入附件缺少有效 size_bytes")?;
-        if data.len() != expected_size {
-            return Err(format!("模型输入附件 '{}' 大小校验失败", name).into());
-        }
-        let actual_digest = format!("{:x}", Sha256::digest(&data));
-        if actual_digest != expected_digest {
-            return Err(format!("模型输入附件 '{}' 摘要校验失败", name).into());
-        }
+        let loaded = read_stored_attachment_from_root(&root, item).await?;
         attachments.push(ModelAttachment {
-            name: name.to_string(),
-            media_type: media_type.to_string(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(data),
+            name: loaded.name,
+            media_type: loaded.media_type,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(loaded.data),
         });
     }
     Ok(Some(attachment_message(attachments)?))
+}
+
+/// A verified attachment loaded from the Runtime-owned Artifact Store.
+///
+/// Callers must obtain `metadata` from an authorized immutable Event. This
+/// helper deliberately refuses caller-supplied paths outside the configured
+/// store and verifies both the frozen size and digest before returning bytes.
+pub struct StoredAttachment {
+    pub name: String,
+    pub media_type: String,
+    pub data: Vec<u8>,
+}
+
+pub async fn read_stored_attachment(
+    configured_root: impl AsRef<Path>,
+    metadata: &Value,
+) -> Result<StoredAttachment, ModelInputError> {
+    let root = tokio::fs::canonicalize(absolute_root(configured_root.as_ref())?).await?;
+    read_stored_attachment_from_root(&root, metadata).await
+}
+
+async fn read_stored_attachment_from_root(
+    root: &Path,
+    metadata: &Value,
+) -> Result<StoredAttachment, ModelInputError> {
+    let name = metadata
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or("模型输入附件缺少 name")?;
+    let media_type = metadata
+        .get("media_type")
+        .and_then(Value::as_str)
+        .unwrap_or("application/octet-stream");
+    let expected_digest = metadata
+        .get("sha256")
+        .and_then(Value::as_str)
+        .ok_or("模型输入附件缺少 sha256")?;
+    let storage_path = metadata
+        .get("storage_path")
+        .and_then(Value::as_str)
+        .ok_or("模型输入附件缺少 storage_path")?;
+    let path = tokio::fs::canonicalize(storage_path).await?;
+    if !path.starts_with(root) {
+        return Err(format!(
+            "模型输入附件 '{}' 位于 Artifact Store 之外，拒绝读取",
+            path.display()
+        )
+        .into());
+    }
+    let data = tokio::fs::read(&path).await?;
+    let expected_size = metadata
+        .get("size_bytes")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or("模型输入附件缺少有效 size_bytes")?;
+    if data.len() != expected_size {
+        return Err(format!("模型输入附件 '{}' 大小校验失败", name).into());
+    }
+    let actual_digest = format!("{:x}", Sha256::digest(&data));
+    if actual_digest != expected_digest {
+        return Err(format!("模型输入附件 '{}' 摘要校验失败", name).into());
+    }
+    Ok(StoredAttachment {
+        name: name.to_string(),
+        media_type: media_type.to_string(),
+        data,
+    })
 }
 
 pub(crate) fn decoded_base64_len(value: &str) -> Result<usize, ModelInputError> {

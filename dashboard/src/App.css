@@ -3034,9 +3034,20 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .composer-attachment button { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; color: var(--faint); }
 .composer-attachment button:hover { background: var(--red-soft); color: var(--red); }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
-.message-attachments > span { display: inline-flex; min-width: 0; max-width: 320px; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface-elevated); color: var(--muted); }
+.message-image-attachment { display: inline-flex; min-width: 0; }
+.message-attachment-chip { display: inline-flex; min-width: 0; max-width: 320px; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface-elevated); color: var(--muted); }
+button.message-attachment-chip { cursor: zoom-in; transition: border-color .14s ease, background .14s ease, color .14s ease; }
+button.message-attachment-chip:hover, button.message-attachment-chip:focus-visible { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); background: var(--accent-soft); color: var(--accent-strong); }
 .message-attachments strong { overflow: hidden; color: var(--text-soft); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .message-attachments small { color: var(--faint); font-family: var(--mono); font-size: 8px; }
+.message-attachment-preview { position: fixed; inset: auto; z-index: 50; width: min(380px, calc(100vw - 24px)); max-width: calc(100vw - 24px); margin: 0; padding: 8px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--surface-strong) 98%, transparent); color: var(--muted); box-shadow: 0 20px 60px color-mix(in srgb, #000 36%, transparent); opacity: 0; transform: translateY(5px) scale(.985); visibility: hidden; backdrop-filter: blur(18px); }
+.message-attachment-preview[data-placement="below"] { transform: translateY(-5px) scale(.985); }
+.message-attachment-preview:popover-open.is-positioned { display: grid; gap: 7px; opacity: 1; transform: translateY(0) scale(1); visibility: visible; }
+.message-attachment-preview > img { display: block; width: 100%; max-height: min(420px, 56vh); border-radius: var(--radius-sm); background: var(--bg); object-fit: contain; }
+.message-attachment-preview > span { display: flex; min-height: 110px; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 10px; }
+.message-attachment-preview > footer { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 3px 0; }
+.message-attachment-preview > footer strong { overflow: hidden; color: var(--text-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.message-attachment-preview > footer small { flex: 0 0 auto; color: var(--faint); font: 8px/1 var(--mono); }
 .message-session-references { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .message-session-references > span { display: inline-flex; min-width: 0; max-width: 320px; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line)); border-radius: 999px; background: var(--accent-soft); color: var(--accent-strong); }
 .message-session-references strong { overflow: hidden; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
