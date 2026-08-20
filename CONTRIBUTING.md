@@ -11,6 +11,11 @@ The Draft standard workspace is indexed at
 [docs/standards/README.md](docs/standards/README.md). Until a document reaches Final status, the
 current source code and contract tests remain authoritative for claims about implemented behavior.
 
+Before contributing specification text, conformance fixtures, or code intended to implement the
+Draft standard, read the provisional
+[IPR Status Notice](docs/standards/IPR_STATUS.md). A contribution does not create an unrecorded
+patent, trademark, or certification promise.
+
 ## Source language
 
 Morphz uses English for identifiers, developer comments, doc comments, commit messages, and raw

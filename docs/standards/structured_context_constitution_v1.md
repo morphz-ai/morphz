@@ -4,7 +4,9 @@
 >
 > Steward: Newvar
 >
-> Reference implementation: Morphz
+> Reference implementation: Morphz Runtime
+>
+> Canonical language: English
 >
 > Date: 2026-08-21
 >
@@ -23,7 +25,15 @@ Morphz begins with the following proposition:
 > inspect and transform. It is not merely a prompt assembled by a Runtime or an automatically
 > compressed transcript.
 
-## 2. Constitutional principles
+## 2. Normative language
+
+The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD
+NOT**, **RECOMMENDED**, **NOT RECOMMENDED**, **MAY**, and **OPTIONAL** in this document are to be
+interpreted as described in BCP 14, [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119.html) and
+[RFC 8174](https://www.rfc-editor.org/rfc/rfc8174.html), when, and only when, they appear in all
+capitals.
+
+## 3. Constitutional principles
 
 ### Article 1: Context is first-class state
 
@@ -45,6 +55,10 @@ MUST NOT require a universal fixed ontology as the meaning of cognition.
 The Runtime is authoritative for identities, permissions, event order, direct causality, resource
 limits, transaction results, tool execution results, and control-state transitions. The Agent MAY
 interpret these facts but MUST NOT be able to rewrite them as if they had occurred differently.
+
+Runtime ordering, recency, frequency, and resource usage establish physical facts. They do not by
+themselves establish semantic truth or authority. A newer physical version alone does not justify a
+broader conclusion.
 
 ### Article 4: History and cognition are distinct
 
@@ -71,11 +85,17 @@ Retiring, swapping, excluding, compacting, or otherwise removing information fro
 MUST have explicit semantics. Temporary absence from a prompt MUST NOT be represented as physical
 deletion. Recoverable information MUST retain a stable path to recall or restoration.
 
-### Article 8: Session, Agent, and Context are different identities
+### Article 8: Principal, Session, Agent, and Context are different identities
 
-A Session is an interaction connection, not the cognitive identity itself. Multiple Sessions MAY
-share one Context; an Agent MAY use multiple Contexts; a Context MAY be branched or delegated under
-explicit rules. Implementations MUST NOT rely on "one chat equals one mind" as a hidden invariant.
+A Principal is an authenticated or authorized external actor or authority. A Session is an
+interaction connection, not the cognitive identity itself. Multiple Sessions MAY share one Context;
+an Agent MAY use multiple Contexts. Implementations MUST NOT rely on "one chat equals one mind" as a
+hidden invariant, and MUST NOT substitute a Principal, Session, Agent, or Context identity for
+another.
+
+An implementation MAY support Context branching or delegation. When it does, each branch or
+delegation MUST have explicit identity, provenance, authorization, and lifecycle semantics.
+Branching and delegation are not required by SC-Core unless a later profile says otherwise.
 
 ### Article 9: Concurrency cannot weaken truthfulness
 
@@ -86,7 +106,7 @@ fencing, and recovery are part of Context semantics rather than optional storage
 ### Article 10: Observable semantics are implementation-independent
 
 An implementation claiming compatibility MUST satisfy the published specification and the
-corresponding public conformance profile. Passing because it copies Morphz internals is not
+corresponding public conformance profile. Passing because it copies Morphz Runtime internals is not
 required; producing the required observable behavior is.
 
 ### Article 11: Evolution is explicit
@@ -97,12 +117,27 @@ detail does not automatically become part of the standard.
 
 ### Article 12: Authority must remain auditable
 
-Newvar stewards the official standard, releases, and compatibility marks during the founder-led
-stage. Decisions affecting the public standard MUST leave a durable proposal, rationale, and
-compatibility record. Stewardship is final authority with visible responsibility, not undocumented
-private mutation.
+Decisions affecting normative semantics, compatibility, or authoritative interpretation MUST leave
+a durable public proposal, rationale, and compatibility record. Stewardship is final authority with
+visible responsibility, not undocumented private mutation. Organizational roles, release control,
+and compatibility marks are defined in Governance rather than in this Constitution.
 
-## 3. Constitutional boundary
+## 4. Normative hierarchy
+
+When normative documents conflict, the following order controls:
+
+1. the current version of this Constitution;
+2. the current Final Morphz Structured Context Specification for the claimed version;
+3. the matching Conformance Suite, which verifies but MUST NOT redefine the Specification;
+4. accepted Standards Track MEPs only to the extent that they have been incorporated into a
+   versioned Constitution or Specification release;
+5. Morphz Runtime and other implementations, which provide evidence but do not define the standard;
+6. explanatory documents, examples, and non-normative implementation notes.
+
+Draft specifications and suites define review targets, not released compatibility obligations. A
+test that cannot be traced to a controlling normative requirement MUST NOT create one by itself.
+
+## 5. Constitutional boundary
 
 The Constitution does not standardize:
 
@@ -116,9 +151,13 @@ The Constitution does not standardize:
 Those concerns may be specified by lower-level profiles without changing the identity of Structured
 Context.
 
-## 4. Amendment rule
+## 6. Amendment and initial adoption
 
-An amendment requires a dedicated Constitutional MEP. It MUST explain why an ordinary specification
-change is insufficient, provide migration and ecosystem impact analysis, and be approved by the
-Project Lead after review by the Core Maintainers. The amendment becomes effective only when merged
-into a versioned Constitution release.
+The initial Constitution, Governance document, MEP process, Draft Specification, and Draft
+Conformance Suite MAY be adopted together through the bootstrap rule in MEP-0001. This exception
+exists only to establish the process and MUST NOT be used for later amendments.
+
+Every subsequent amendment requires a dedicated Constitutional MEP. It MUST explain why an ordinary
+specification change is insufficient, provide migration and ecosystem impact analysis, and be
+approved by the Project Lead after review by the Core Maintainers. The amendment becomes effective
+only when merged into a versioned Constitution release.

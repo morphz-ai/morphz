@@ -4,6 +4,8 @@
 >
 > Steward: Newvar
 >
+> Canonical language: English
+>
 > Date: 2026-08-21
 >
 > Chinese translation: [zh-CN](GOVERNANCE.zh-CN.md)
@@ -14,9 +16,10 @@ Morphz uses founder-led open governance during its formative stage. Discussion, 
 rationales, and compatibility effects are public. Final responsibility for the core Structured
 Context standard and official releases remains with Newvar and the Project Lead.
 
-Open source grants the right to use, study, modify, and fork the licensed code. It does not make all
-technical decisions a vote, transfer the Morphz trademarks, or make a fork an official Morphz
-release.
+When code is released under an adopted open-source license, that license defines the right to use,
+study, modify, and fork it. Open-source publication does not make all technical decisions a vote,
+transfer the Morphz trademarks, create a patent promise beyond the adopted policy, or make a fork an
+official Morphz release.
 
 This model exists to keep the core semantics coherent while giving sustained contributors a real,
 documented path to authority.
@@ -30,6 +33,8 @@ Newvar is the founding steward and is responsible for:
 - the Morphz name, marks, domains, and official project identity;
 - official repositories, documentation sites, registries, and release infrastructure;
 - release signing keys and compatibility marks;
+- publication and maintenance of source-code, specification-text, patent, contribution, and
+  trademark policies;
 - appointment of the Project Lead and initial Core Maintainers;
 - final stewardship of the Structured Context Constitution and public specification.
 
@@ -90,7 +95,7 @@ required, although Newvar retains the stewardship rights listed in section 2.
 | embargoed security response | Security Team under the emergency process |
 
 No implementation pull request can silently change a normative requirement. A core behavior change
-MUST update the specification, conformance coverage, and migration statement together.
+MUST update the Specification, conformance coverage, and migration statement together.
 
 ## 5. Morphz Enhancement Proposals
 
@@ -106,7 +111,17 @@ MEPs are required for changes that affect:
 Ordinary implementation work does not require an MEP. The complete process is defined in
 [MEP-0001](docs/meps/MEP-0001-specification-governance.md).
 
-## 6. Contributor path to authority
+## 6. Interpretations and errata
+
+The Constitution defines the normative hierarchy. Suspected errors and ambiguities follow the
+public process in [MEP-0001](docs/meps/MEP-0001-specification-governance.md).
+
+Editorial corrections may be approved by the responsible Maintainer only when they cannot change
+conformant behavior. Interpretations that could affect behavior or compatibility require Core
+Maintainer review and a durable public record. A normative change requires a Standards Track MEP and
+a versioned Specification or Suite update.
+
+## 7. Contributor path to authority
 
 Morphz intends to make upstream contribution more valuable than maintaining a divergent fork.
 Accordingly, the project SHOULD provide:
@@ -121,7 +136,7 @@ Accordingly, the project SHOULD provide:
 Authority is scoped rather than all-or-nothing. A leading Provider Maintainer need not control core
 Context semantics, while a Core Maintainer does not automatically control every community module.
 
-## 7. Core and extension boundaries
+## 8. Core and extension boundaries
 
 The core contains the Constitution, normative Structured Context semantics, Context transactions,
 Event/Projection authority, causal routing, compatibility, and the minimal reference Runtime needed
@@ -134,7 +149,7 @@ the core.
 Extensions MAY move quickly. The core SHOULD change slowly and only with specification evidence,
 conformance cases, and migration analysis.
 
-## 8. Releases and official status
+## 9. Releases and official status
 
 An official release MUST:
 
@@ -144,10 +159,10 @@ An official release MUST:
 - publish compatibility and migration notes;
 - pass the release's required test and conformance gates.
 
-Forks may use the open-source license according to its terms. They may not present themselves as an
-official Morphz release or use compatibility marks outside the future trademark policy.
+Forks may use an adopted open-source license according to its terms. They may not present themselves
+as an official Morphz Runtime release or use compatibility marks outside the trademark policy.
 
-## 9. Transparency and conflicts
+## 10. Transparency and conflicts
 
 Maintainers MUST disclose material conflicts when reviewing a proposal that privileges their own
 commercial service, employer, or implementation. A conflict does not automatically disqualify a
@@ -157,14 +172,14 @@ Private discussion is appropriate for embargoed security reports, personal condu
 obligations, and unreleased credentials. Semantic and compatibility decisions MUST return to a
 public durable record when the embargo or confidentiality need ends.
 
-## 10. Inactivity and removal
+## 11. Inactivity and removal
 
 Maintainer status reflects active responsibility, not permanent ownership. A Maintainer may move to
 emeritus status after sustained inactivity. Removal for security, conduct, or repeated breach of
 project responsibility requires a recorded decision by the Project Lead; sensitive personal detail
 need not be published.
 
-## 11. Future governance
+## 12. Future governance
 
 Founder-led governance is not declared permanent. A future MEP may introduce a technical steering
 council, independent standards body, or foundation when ecosystem adoption makes neutrality more
