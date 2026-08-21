@@ -464,7 +464,7 @@ PKCE verifier、Device Code 与回调 `state` 不属于值后端：v1 不恢复�
 
 ### 6.3 禁止保存的位置
 
-- `morphz.toml`；
+- `morphz.toml` 或 `models.toml`；
 - Event History payload；
 - Context Encoding；
 - Mind Frame；
@@ -476,13 +476,15 @@ Headless 环境可以显式选择 Morphz `.env` 或企业 Secret Backend，但 O
 
 ## 7. 配置模型
 
-用户配置统一位于 `~/.morphz/morphz.toml`。文件使用面向操作者的
+Runtime 核心配置位于 `~/.morphz/morphz.toml`；Provider、Account、Model Route 与推理
+配置位于 `~/.morphz/models.toml`。模型文件使用面向操作者的
 `accounts / services / models / targets`；Runtime 内部仍可把 Target 称为
 Candidate，但该术语不泄漏到配置文件：
 
 ```toml
 [llm]
 model = "cliproxy-default"
+allowed_evaluation_models = ["gpt-5-6"]
 
 [services.codex-subscription]
 adapter = "openai-codex"
@@ -535,6 +537,16 @@ service = "openrouter"
 physical_model = "openai/gpt-5.6"
 priority = 30
 ```
+
+`model` 是 Runtime 主模型，也是所有未显式选模求值的最终默认值。主模型始终允许 Agent
+使用；`allowed_evaluation_models` 只增加 Agent 在 `infer`、`schedule_tx` 等委托求值中
+显式选择其他 Route 的权限，空数组不授予额外模型。Operator 为 Session 选择模型属于控制面，
+只要求 Route 已启用，不受该 Agent allowlist 限制。
+
+普通 Evaluation 的模型解析优先级为：本次 Evaluation 的显式选择（包括 Schedule 持久选择）
+→ Session 选择 → Runtime 主模型。`infer` 是当前求值内发起的独立子求值：显式指定时使用所选
+Route，省略时使用 Runtime 主模型，不隐式继承 Session。解析结果在 Activation 首次执行前
+持久化；重启、续接与同模型内的账号故障转移继续使用这条逻辑 Route，不自动切换到不同模型。
 
 配置只描述静态意图。账号的动态配额、cooldown、refresh lease 和健康状态属于 Runtime Projection，不回写为配置事实。
 

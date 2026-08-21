@@ -113,14 +113,14 @@ impl ManagedSshEndpoint {
     pub fn load(endpoint_ref: &str) -> Result<Self, TargetExecutionError> {
         validate_endpoint_ref(endpoint_ref)?;
         let home = crate::config::morphz_home_dir()
-            .ok_or("无法确定 Morphz 用户配置目录，不能解析 Managed SSH endpoint")?;
+            .ok_or("Cannot resolve Managed SSH endpoint because the Morphz user configuration directory is unavailable")?;
         let path = home
             .join("edge")
             .join("ssh")
             .join(format!("{endpoint_ref}.json"));
         let endpoint: Self = serde_json::from_slice(&std::fs::read(&path).map_err(|error| {
             format!(
-                "Managed SSH endpoint '{}' 未配置（{}）：{error}",
+                "Managed SSH endpoint '{}' is not configured ({}): {error}",
                 endpoint_ref,
                 path.display()
             )
@@ -137,15 +137,19 @@ impl ManagedSshEndpoint {
             || self.host.starts_with('-')
             || self.host.chars().any(char::is_whitespace)
         {
-            return Err("Managed SSH host 不能为空、不能以 '-' 开头或包含空白".into());
+            return Err(
+                "Managed SSH host must not be empty, start with '-', or contain whitespace".into(),
+            );
         }
         if self.user.as_deref().is_some_and(|user| {
             user.is_empty() || user.starts_with('-') || user.chars().any(char::is_whitespace)
         }) {
-            return Err("Managed SSH user 不能为空、不能以 '-' 开头或包含空白".into());
+            return Err(
+                "Managed SSH user must not be empty, start with '-', or contain whitespace".into(),
+            );
         }
         if self.port == 0 {
-            return Err("Managed SSH port 必须大于 0".into());
+            return Err("Managed SSH port must be greater than 0".into());
         }
         match (
             self.auth_mode.uses_password(),
@@ -154,12 +158,14 @@ impl ManagedSshEndpoint {
             (true, Some(alias)) => validate_managed_ssh_secret_alias("password_secret", alias)?,
             (true, None) => {
                 return Err(format!(
-                    "Managed SSH auth_mode={} 必须绑定 password_secret",
+                    "Managed SSH auth_mode={} requires password_secret",
                     self.auth_mode.as_str()
                 )
                 .into())
             }
-            (false, Some(_)) => return Err("Managed SSH key_only 不能绑定 password_secret".into()),
+            (false, Some(_)) => {
+                return Err("Managed SSH key_only cannot bind password_secret".into())
+            }
             (false, None) => {}
         }
         if self.auth_mode.uses_keys() {
@@ -170,7 +176,7 @@ impl ManagedSshEndpoint {
                 validate_managed_ssh_secret_alias("private_key_passphrase_secret", alias)?;
                 if self.private_key_secret.is_none() {
                     return Err(
-                        "Managed SSH private_key_passphrase_secret 必须与 private_key_secret 一起使用"
+                        "Managed SSH private_key_passphrase_secret requires private_key_secret"
                             .into(),
                     );
                 }
@@ -178,7 +184,7 @@ impl ManagedSshEndpoint {
         } else if self.private_key_secret.is_some() || self.private_key_passphrase_secret.is_some()
         {
             return Err(
-                "Managed SSH password_only 不能绑定 private_key_secret 或 private_key_passphrase_secret"
+                "Managed SSH password_only must not bind private_key_secret or private_key_passphrase_secret"
                     .into(),
             );
         }
@@ -186,7 +192,7 @@ impl ManagedSshEndpoint {
             && (!self.known_hosts_file.is_absolute() || !self.known_hosts_file.is_file())
         {
             return Err(format!(
-                "Managed SSH known_hosts_file 必须是已存在的绝对文件：{}",
+                "Managed SSH known_hosts_file must be an existing absolute file: {}",
                 self.known_hosts_file.display()
             )
             .into());
@@ -197,7 +203,9 @@ impl ManagedSshEndpoint {
 
 fn validate_managed_ssh_secret_alias(field: &str, alias: &str) -> Result<(), TargetExecutionError> {
     if alias == "SSH_AUTH_SOCK" {
-        return Err(format!("Managed SSH {field} 不能使用保留的 SSH_AUTH_SOCK alias").into());
+        return Err(
+            format!("Managed SSH {field} cannot use the reserved SSH_AUTH_SOCK alias").into(),
+        );
     }
     if alias.is_empty()
         || alias.len() > 128
@@ -206,7 +214,7 @@ fn validate_managed_ssh_secret_alias(field: &str, alias: &str) -> Result<(), Tar
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '_')
     {
-        return Err(format!("Managed SSH {field} 必须是合法的 Secret Store alias").into());
+        return Err(format!("Managed SSH {field} must be a valid Secret Store alias").into());
     }
     Ok(())
 }
@@ -239,7 +247,7 @@ fn validate_ssh_host(host: &str) -> Result<(), TargetExecutionError> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
         return Err(
-            "Managed SSH host 只能包含字母、数字、点、横线和下划线，且不能以 '-' 开头".into(),
+            "Managed SSH host may contain only letters, digits, dots, hyphens, and underscores, and must not start with '-'".into(),
         );
     }
     Ok(())
@@ -247,7 +255,9 @@ fn validate_ssh_host(host: &str) -> Result<(), TargetExecutionError> {
 
 fn validate_ssh_user(user: &str) -> Result<(), TargetExecutionError> {
     if user.is_empty() || user.starts_with('-') || user.chars().any(char::is_whitespace) {
-        return Err("Managed SSH user 不能为空、不能以 '-' 开头或包含空白".into());
+        return Err(
+            "Managed SSH user must not be empty, start with '-', or contain whitespace".into(),
+        );
     }
     Ok(())
 }
@@ -262,7 +272,7 @@ async fn resolve_runtime_ssh_host(
         validate_ssh_user(user)?;
     }
     if port == Some(0) {
-        return Err("Managed SSH port 必须大于 0".into());
+        return Err("Managed SSH port must be greater than 0".into());
     }
     let mut command = tokio::process::Command::new("ssh");
     command.arg("-G");
@@ -278,13 +288,20 @@ async fn resolve_runtime_ssh_host(
         .stdin(std::process::Stdio::null());
     let output = tokio::time::timeout(std::time::Duration::from_secs(5), command.output())
         .await
-        .map_err(|_| format!("解析 SSH host '{host}' 超时"))??;
+        .map_err(|_| format!("Timed out while resolving SSH host '{host}'"))??;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Runtime 无法解析 SSH host '{}': {}", host, stderr.trim()).into());
+        return Err(format!(
+            "Runtime failed to resolve SSH host '{}': {}",
+            host,
+            stderr.trim()
+        )
+        .into());
     }
     if output.stdout.len() > 1024 * 1024 {
-        return Err(format!("SSH host '{host}' 的展开配置异常过大").into());
+        return Err(
+            format!("Expanded configuration for SSH host '{host}' is unexpectedly large").into(),
+        );
     }
     let expanded = String::from_utf8(output.stdout)?;
     managed_ssh_endpoint_from_expanded(host, &expanded)
@@ -302,13 +319,14 @@ fn managed_ssh_endpoint_from_expanded(
                 .map(|(_, value)| value.trim().to_string())
         })
     };
-    let host = field("hostname").ok_or_else(|| format!("SSH host '{ssh_host}' 缺少 hostname"))?;
+    let host =
+        field("hostname").ok_or_else(|| format!("SSH host '{ssh_host}' is missing hostname"))?;
     let user = field("user");
     let port = field("port")
         .as_deref()
         .unwrap_or("22")
         .parse::<u16>()
-        .map_err(|_| format!("SSH host '{ssh_host}' 的 port 无效"))?;
+        .map_err(|_| format!("SSH host '{ssh_host}' has an invalid port"))?;
     let endpoint = ManagedSshEndpoint {
         destination: Some(ssh_host.to_string()),
         host,
@@ -332,7 +350,7 @@ fn validate_endpoint_ref(endpoint_ref: &str) -> Result<(), TargetExecutionError>
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
-        return Err("Managed SSH endpoint_ref 只能包含字母、数字、点、横线和下划线".into());
+        return Err("Managed SSH endpoint_ref may contain only letters, digits, dots, hyphens, and underscores".into());
     }
     Ok(())
 }
@@ -360,7 +378,7 @@ impl ManagedSshAskpass {
         validate_managed_ssh_prompt_secret("password", password)?;
         validate_managed_ssh_prompt_secret("private key passphrase", key_passphrase)?;
         if password.is_none() && key_passphrase.is_none() {
-            return Err("Managed SSH askpass 至少需要一个提示凭证".into());
+            return Err("Managed SSH askpass requires at least one prompted credential".into());
         }
         let directory = tempfile::Builder::new()
             .prefix("morphz-ssh-askpass-")
@@ -439,10 +457,13 @@ fn validate_managed_ssh_prompt_secret(
         return Ok(());
     };
     if secret.is_empty() {
-        return Err(format!("Managed SSH {label} Secret 不能为空").into());
+        return Err(format!("Managed SSH {label} Secret must not be empty").into());
     }
     if secret.contains(['\0', '\r', '\n']) {
-        return Err(format!("Managed SSH {label} Secret 不能包含 NUL 或换行").into());
+        return Err(format!(
+            "Managed SSH {label} Secret must not contain NUL or newline characters"
+        )
+        .into());
     }
     Ok(())
 }
@@ -479,10 +500,10 @@ struct ManagedSshIdentityFile {
 impl ManagedSshIdentityFile {
     fn new(private_key: &str) -> Result<Self, TargetExecutionError> {
         if private_key.trim().is_empty() {
-            return Err("Managed SSH private key Secret 不能为空".into());
+            return Err("Managed SSH private-key Secret must not be empty".into());
         }
         if private_key.contains('\0') {
-            return Err("Managed SSH private key Secret 不能包含 NUL".into());
+            return Err("Managed SSH private-key Secret must not contain NUL".into());
         }
         let directory = tempfile::Builder::new()
             .prefix("morphz-ssh-identity-")
@@ -534,12 +555,9 @@ impl ManagedSshCredentialMaterial {
         authentication: &ManagedSshAuthentication,
     ) -> Result<Self, TargetExecutionError> {
         let private_key = match endpoint.private_key_secret.as_deref() {
-            Some(alias) => Some(
-                authentication
-                    .private_key
-                    .as_deref()
-                    .ok_or_else(|| format!("Managed SSH private key Secret '{alias}' 未解析"))?,
-            ),
+            Some(alias) => Some(authentication.private_key.as_deref().ok_or_else(|| {
+                format!("Managed SSH private-key Secret '{alias}' was not resolved")
+            })?),
             None => None,
         };
         let key_passphrase = match endpoint.private_key_passphrase_secret.as_deref() {
@@ -548,18 +566,17 @@ impl ManagedSshCredentialMaterial {
                     .private_key_passphrase
                     .as_deref()
                     .ok_or_else(|| {
-                        format!("Managed SSH private key passphrase Secret '{alias}' 未解析")
+                        format!(
+                            "Managed SSH private-key passphrase Secret '{alias}' was not resolved"
+                        )
                     })?,
             ),
             None => None,
         };
         let password = match endpoint.password_secret.as_deref() {
-            Some(alias) => Some(
-                authentication
-                    .password
-                    .as_deref()
-                    .ok_or_else(|| format!("Managed SSH password Secret '{alias}' 未解析"))?,
-            ),
+            Some(alias) => Some(authentication.password.as_deref().ok_or_else(|| {
+                format!("Managed SSH password Secret '{alias}' was not resolved")
+            })?),
             None => None,
         };
         let askpass = if password.is_some() || key_passphrase.is_some() {
@@ -740,7 +757,7 @@ pub fn attach_edge_artifact_data_channel(
 ) -> Result<(), TargetExecutionError> {
     route
         .as_object_mut()
-        .ok_or("Edge Artifact Route 必须编码为 JSON object")?
+        .ok_or("Edge Artifact Route must be encoded as a JSON object")?
         .insert(
             EDGE_ARTIFACT_DATA_CHANNEL_KEY.to_string(),
             serde_json::to_value(channel)?,
@@ -783,7 +800,7 @@ pub fn attach_route_snapshot(
 ) -> Result<(), TargetExecutionError> {
     let object = request
         .as_object_mut()
-        .ok_or("Execution Job request 必须是 JSON object")?;
+        .ok_or("Execution Job request must be a JSON object")?;
     object.insert(
         EXECUTION_ROUTE_REQUEST_KEY.to_string(),
         serde_json::to_value(route)?,
@@ -797,7 +814,7 @@ pub fn attach_artifact_transfer_routes(
 ) -> Result<(), TargetExecutionError> {
     let object = request
         .as_object_mut()
-        .ok_or("Artifact Transfer Execution Job request 必须是 JSON object")?;
+        .ok_or("Artifact Transfer Execution Job request must be a JSON object")?;
     object.insert(
         ARTIFACT_TRANSFER_ROUTES_REQUEST_KEY.to_string(),
         serde_json::to_value(routes)?,
@@ -819,10 +836,10 @@ pub fn artifact_transfer_routes_from_job(
         job.request
             .get(ARTIFACT_TRANSFER_ROUTES_REQUEST_KEY)
             .cloned()
-            .ok_or("Artifact Transfer Execution Job 缺少冻结的双 Route")?,
+            .ok_or("Artifact Transfer Execution Job is missing its frozen pair of Routes")?,
     )?;
     if routes.destination.target_id != job.target_id {
-        return Err("Artifact Transfer coordinator 与 destination Route 不一致".into());
+        return Err("Artifact Transfer coordinator and destination Route are inconsistent".into());
     }
     Ok(routes)
 }
@@ -833,10 +850,10 @@ pub fn route_snapshot_from_job(
     let route = job
         .request
         .get(EXECUTION_ROUTE_REQUEST_KEY)
-        .ok_or("Execution Job 缺少冻结的 Execution Route")?;
+        .ok_or("Execution Job is missing its frozen Execution Route")?;
     let route: ExecutionRouteSnapshot = serde_json::from_value(route.clone())?;
     if route.target_id != job.target_id {
-        return Err("Execution Job target_id 与冻结 Route 不一致".into());
+        return Err("Execution Job target_id and frozen Route are inconsistent".into());
     }
     Ok(route)
 }
@@ -848,10 +865,10 @@ pub fn edge_command_route_from_job(
     let principal_id = job
         .initiating_principal_id
         .clone()
-        .ok_or("远程 Execution Job 缺少权威 Principal")?;
+        .ok_or("Remote Execution Job is missing its authoritative Principal")?;
     value
         .as_object_mut()
-        .ok_or("Execution Route 必须编码为 JSON object")?
+        .ok_or("Execution Route must be encoded as a JSON object")?
         .insert(
             EDGE_EXECUTION_SCOPE_KEY.to_string(),
             serde_json::to_value(EdgeExecutionScope {
@@ -877,10 +894,10 @@ pub fn edge_artifact_transfer_route_from_job(
     let principal_id = job
         .initiating_principal_id
         .clone()
-        .ok_or("远程 Artifact Transfer Job 缺少权威 Principal")?;
+        .ok_or("Remote Artifact Transfer Job is missing its authoritative Principal")?;
     value
         .as_object_mut()
-        .ok_or("Artifact Transfer Route 必须编码为 JSON object")?
+        .ok_or("Artifact Transfer Route must be encoded as a JSON object")?
         .insert(
             EDGE_EXECUTION_SCOPE_KEY.to_string(),
             serde_json::to_value(EdgeExecutionScope {
@@ -899,7 +916,7 @@ pub fn edge_execution_scope_from_route(
 ) -> Result<EdgeExecutionScope, TargetExecutionError> {
     let value = route
         .get(EDGE_EXECUTION_SCOPE_KEY)
-        .ok_or("Edge Command 缺少权威 Execution Scope")?;
+        .ok_or("Edge Command is missing its authoritative Execution Scope")?;
     Ok(serde_json::from_value(value.clone())?)
 }
 
@@ -912,17 +929,20 @@ pub fn prepare_managed_ssh_exec_arguments(
     validate_endpoint_ref(endpoint_ref)?;
     endpoint.validate()?;
     if !endpoint.approved {
-        return Err(format!("Managed SSH endpoint '{endpoint_ref}' 尚未明确批准").into());
+        return Err(format!(
+            "Managed SSH endpoint '{endpoint_ref}' has not been explicitly approved"
+        )
+        .into());
     }
     if endpoint.destination.is_none()
         && std::env::var_os("SSH_AUTH_SOCK").is_none_or(|value| value.is_empty())
         && endpoint.auth_mode.uses_keys()
         && endpoint.private_key_secret.is_none()
     {
-        return Err("静态 Managed SSH endpoint 需要 Runtime 的 SSH_AUTH_SOCK".into());
+        return Err("Static Managed SSH endpoint requires Runtime SSH_AUTH_SOCK".into());
     }
     if endpoint.auth_mode.uses_password() || endpoint.private_key_secret.is_some() {
-        return Err("Managed SSH Secret 认证必须由 Runtime Secret Store 解析后执行".into());
+        return Err("Managed SSH Secret authentication must be resolved and executed by the Runtime Secret Store".into());
     }
     let credentials = ManagedSshCredentialMaterial {
         askpass: None,
@@ -942,13 +962,13 @@ fn build_managed_ssh_exec_arguments(
     let mut arguments: serde_json::Value = serde_json::from_str(arguments)?;
     let object = arguments
         .as_object_mut()
-        .ok_or("Managed SSH exec 参数必须是 JSON object")?;
+        .ok_or("Managed SSH exec arguments must be a JSON object")?;
     let remote_command = object
         .get("command")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|command| !command.is_empty())
-        .ok_or("Managed SSH exec 缺少非空 command")?;
+        .ok_or("Managed SSH exec is missing a non-empty command")?;
     let remote_command = match object.get("cwd").and_then(serde_json::Value::as_str) {
         Some(cwd) if !cwd.trim().is_empty() => {
             format!("cd -- {} && {remote_command}", shell_quote(cwd))
@@ -1021,7 +1041,7 @@ fn build_managed_ssh_exec_arguments(
             "secret_env": secret_env
         },
         "justification": format!(
-            "Runtime 使用本地预授权 Managed SSH endpoint '{}' 执行 Target '{}'",
+            "Runtime uses locally preauthorized Managed SSH endpoint '{}' to execute Target '{}'",
             endpoint_ref, target_id
         )
     }))?)
@@ -1135,11 +1155,11 @@ pub fn split_target_argument(arguments: &str) -> Result<TargetInvocation, Target
     let mut value: serde_json::Value = serde_json::from_str(arguments)?;
     let object = value
         .as_object_mut()
-        .ok_or("物理工具参数必须是 JSON object")?;
+        .ok_or("Physical-tool arguments must be a JSON object")?;
     let (target_id, explicit_target) = match object.remove("target") {
         None | Some(serde_json::Value::Null) => (DEFAULT_EXECUTION_TARGET_ID.to_string(), false),
         Some(serde_json::Value::String(value)) if !value.trim().is_empty() => (value, true),
-        Some(_) => return Err("物理工具 target 必须是非空字符串".into()),
+        Some(_) => return Err("Physical-tool target must be a non-empty string".into()),
     };
     Ok(TargetInvocation {
         target_id,
@@ -1160,7 +1180,7 @@ pub fn remote_target_approval_requirement(
     let value: serde_json::Value = serde_json::from_str(arguments)?;
     let object = value
         .as_object()
-        .ok_or("远程物理工具参数必须是 JSON object")?;
+        .ok_or("Remote physical-tool arguments must be a JSON object")?;
     let path = object
         .get("path")
         .or_else(|| object.get("cwd"))
@@ -1233,7 +1253,7 @@ pub fn remote_target_approval_requirement(
         },
         requested,
         justification: format!(
-            "当前 Thread 首次在非本地 Execution Target '{}'（{}）上使用物理能力 '{tool_name}'；{execution_location} 将按已冻结 Route 执行，仍须通过现有自动审批或人工审批",
+            "the current Thread is using physical capability '{tool_name}' on non-local Execution Target '{}' ({}) for the first time; {execution_location} will execute through the frozen Route and still requires existing automatic or human approval",
             target.id, target.name
         ),
     })
@@ -1268,11 +1288,11 @@ pub fn remote_artifact_transfer_approval_requirement(
         },
         requested,
         justification: format!(
-            "Artifact Transfer 将从 Target '{}' 的 '{}' 读取，并向 Target '{}' 的 '{}' 写入；源与目的仍各自通过 Target 本地 PermissionProfile",
-            source.id,
+            "Artifact Transfer will read '{}' from Target '{}' and write '{}' to Target '{}'; source and destination remain subject to each Target's local PermissionProfile",
             request.source.path,
+            source.id,
+            request.destination.path,
             destination.id,
-            request.destination.path
         ),
     }))
 }
@@ -1301,7 +1321,7 @@ fn managed_ssh_target_auth_mode(
         None | Some(serde_json::Value::Null) => Ok(ManagedSshAuthMode::KeyOnly),
         Some(value) => Ok(serde_json::from_value(value.clone()).map_err(|_| {
             format!(
-                "Runtime Managed SSH Target '{}' 的 auth_mode 无效",
+                "Runtime Managed SSH Target '{}' has an invalid auth_mode",
                 target.id
             )
         })?),
@@ -1343,7 +1363,7 @@ fn managed_ssh_target_secret_aliases(
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| {
                 format!(
-                    "Runtime Managed SSH Target '{}' 的 password Secret 绑定缺失",
+                    "Runtime Managed SSH Target '{}' is missing its password Secret binding",
                     target.id
                 )
             })?;
@@ -1420,7 +1440,7 @@ impl ExecutionTargetBackend for InProcessLocalBackend {
     ) -> Result<Box<ToolExecutionResult>, TargetExecutionError> {
         if context.target.id != DEFAULT_EXECUTION_TARGET_ID {
             return Err(format!(
-                "InProcessLocal Backend 只能执行 '{}'，不能隐式代理 '{}'",
+                "InProcessLocal Backend can execute only '{}' and cannot implicitly proxy '{}'",
                 DEFAULT_EXECUTION_TARGET_ID, context.target.id
             )
             .into());
@@ -1476,7 +1496,7 @@ impl ExecutionTargetBackend for EdgeNodeBackend {
     ) -> Result<Box<ToolExecutionResult>, TargetExecutionError> {
         let provider_node_id = context.target.provider_node_id.as_deref().ok_or_else(|| {
             format!(
-                "Edge Target '{}' 没有权威 provider_node_id",
+                "Edge Target '{}' has no authoritative provider_node_id",
                 context.target.id
             )
         })?;
@@ -1495,7 +1515,7 @@ impl ExecutionTargetBackend for EdgeNodeBackend {
                 .store
                 .get_edge_command(&context.job.id)
                 .await?
-                .ok_or("Edge Command 在等待期间消失")?;
+                .ok_or("Edge Command disappeared while waiting")?;
             match command.status {
                 EdgeCommandStatus::Succeeded => {
                     return Ok(ToolExecutionResult::decode_transport(
@@ -1560,13 +1580,16 @@ impl ArtifactTransferExecutionBackend for EdgeNodeBackend {
         request: &crate::artifact::ArtifactTransferRequest,
     ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
         if !self.supports(&routes.source, &routes.destination) {
-            return Err("Edge local Artifact transport 只接受同一 Edge Target 内的传输".into());
+            return Err(
+                "Edge-local Artifact transport accepts only transfers within the same Edge Target"
+                    .into(),
+            );
         }
         let provider_node_id = routes
             .source
             .provider_node_id
             .as_deref()
-            .ok_or("Edge Artifact Route 缺少 provider_node_id")?;
+            .ok_or("Edge Artifact Route is missing provider_node_id")?;
         self.store
             .create_edge_command(NewEdgeCommand {
                 job_id: job.id.clone(),
@@ -1583,13 +1606,13 @@ impl ArtifactTransferExecutionBackend for EdgeNodeBackend {
                 .store
                 .get_edge_command(&job.id)
                 .await?
-                .ok_or("Edge Artifact Command 在等待期间消失")?;
+                .ok_or("Edge Artifact Command disappeared while waiting")?;
             match command.status {
                 EdgeCommandStatus::Succeeded => {
                     let output = command
                         .output
                         .as_deref()
-                        .ok_or("Edge Artifact Command 成功但没有 Receipt")?;
+                        .ok_or("Edge Artifact Command succeeded without a Receipt")?;
                     let mut receipt: crate::artifact::ArtifactTransferReceipt =
                         serde_json::from_str(output)?;
                     // The Edge worker localizes both endpoints to its own
@@ -1678,13 +1701,13 @@ impl ArtifactTransferExecutionBackend for EdgeProxyArtifactTransferBackend {
         request: &crate::artifact::ArtifactTransferRequest,
     ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
         if !self.supports(&routes.source, &routes.destination) {
-            return Err("Edge proxy Artifact transport 只接受同一 Provider Node 内的 Edge/Managed SSH Route".into());
+            return Err("Edge-proxy Artifact transport accepts only Edge/Managed SSH Routes within the same Provider Node".into());
         }
         let provider_node_id = routes
             .source
             .provider_node_id
             .clone()
-            .ok_or("Edge proxy Artifact Route 缺少 provider_node_id")?;
+            .ok_or("Edge-proxy Artifact Route is missing provider_node_id")?;
         self.store
             .create_edge_command(NewEdgeCommand {
                 job_id: job.id.clone(),
@@ -1701,7 +1724,7 @@ impl ArtifactTransferExecutionBackend for EdgeProxyArtifactTransferBackend {
                 .store
                 .get_edge_command(&job.id)
                 .await?
-                .ok_or("Edge proxy Artifact Command 在等待期间消失")?;
+                .ok_or("Edge-proxy Artifact Command disappeared while waiting")?;
             match command.status {
                 EdgeCommandStatus::Succeeded => {
                     let mut receipt: crate::artifact::ArtifactTransferReceipt =
@@ -1709,7 +1732,7 @@ impl ArtifactTransferExecutionBackend for EdgeProxyArtifactTransferBackend {
                             command
                                 .output
                                 .as_deref()
-                                .ok_or("Edge proxy Artifact Command 成功但没有 Receipt")?,
+                                .ok_or("Edge-proxy Artifact Command succeeded without a Receipt")?,
                         )?;
                     receipt.source.location = request.source.clone();
                     receipt.destination.location = request.destination.clone();
@@ -1791,11 +1814,11 @@ impl RuntimeEdgeArtifactTransferBackend {
                 .store
                 .get_edge_command(job_id)
                 .await?
-                .ok_or("Edge Artifact Command 在等待期间消失")?;
+                .ok_or("Edge Artifact Command disappeared while waiting")?;
             match command.status {
                 EdgeCommandStatus::Succeeded => {
                     return Ok(serde_json::from_str(command.output.as_deref().ok_or(
-                        "Edge Artifact Command 成功但没有 ArtifactTransferReceipt",
+                        "Edge Artifact Command succeeded without an ArtifactTransferReceipt",
                     )?)?)
                 }
                 EdgeCommandStatus::Failed => {
@@ -1865,7 +1888,10 @@ impl RuntimeEdgeArtifactTransferBackend {
                     target: Some(path.clone()),
                 },
                 requested,
-                format!("Artifact Transfer 访问 Runtime 路径 '{}'", location.path),
+                format!(
+                    "Artifact Transfer accesses Runtime path '{}'",
+                    location.path
+                ),
                 crate::tool::current_approval_context(),
             )
             .await?;
@@ -1925,7 +1951,7 @@ impl ArtifactTransferExecutionBackend for RuntimeEdgeArtifactTransferBackend {
                     .is_some_and(|expected| expected != staged.logical_digest())
                 {
                     return Err(format!(
-                        "Artifact source digest 冲突：期望 '{}'，实际 '{}'",
+                        "Artifact source digest conflict: expected '{}', actual '{}'",
                         request
                             .expected_source_digest
                             .as_deref()
@@ -1946,7 +1972,7 @@ impl ArtifactTransferExecutionBackend for RuntimeEdgeArtifactTransferBackend {
                     edge.target_id.clone(),
                     edge.provider_node_id
                         .clone()
-                        .ok_or("Edge destination Route 缺少 provider_node_id")?,
+                        .ok_or("Edge destination Route is missing provider_node_id")?,
                 )
             } else {
                 let edge = &routes.source;
@@ -1965,7 +1991,7 @@ impl ArtifactTransferExecutionBackend for RuntimeEdgeArtifactTransferBackend {
                     edge.target_id.clone(),
                     edge.provider_node_id
                         .clone()
-                        .ok_or("Edge source Route 缺少 provider_node_id")?,
+                        .ok_or("Edge source Route is missing provider_node_id")?,
                 )
             };
         let mut route = edge_artifact_transfer_route_from_job(job, routes)?;
@@ -1987,11 +2013,11 @@ impl ArtifactTransferExecutionBackend for RuntimeEdgeArtifactTransferBackend {
                 .source
                 .content_digest
                 .clone()
-                .ok_or("Edge Artifact Receipt 缺少 source digest")?;
+                .ok_or("Edge Artifact Receipt is missing the source digest")?;
             let logical_size = receipt
                 .source
                 .size_bytes
-                .ok_or("Edge Artifact Receipt 缺少大小")?;
+                .ok_or("Edge Artifact Receipt is missing the size")?;
             let stage = self.stages.stage_path(
                 &job.id,
                 crate::artifact::ArtifactTransferStageKind::EdgeUpload,
@@ -2093,10 +2119,10 @@ impl EdgeRelayArtifactTransferBackend {
                 Ok((job, String::new()))
             } else {
                 Err(format!(
-                    "Artifact relay leg '{}' 已以 {} 终止：{}",
+                    "Artifact relay leg '{}' terminated with {}: {}",
                     job.id,
                     job.status.as_str(),
-                    job.error.as_deref().unwrap_or("没有错误详情")
+                    job.error.as_deref().unwrap_or("no error details")
                 )
                 .into())
             };
@@ -2117,7 +2143,7 @@ impl EdgeRelayArtifactTransferBackend {
                 ExecutionJobMutation::Conflict { current } => current,
                 ExecutionJobMutation::Rejected { reason, .. } => return Err(reason.into()),
                 ExecutionJobMutation::NotFound => {
-                    return Err("Artifact relay leg 在恢复前消失".into())
+                    return Err("Artifact relay leg disappeared before recovery".into())
                 }
             };
         }
@@ -2142,14 +2168,16 @@ impl EdgeRelayArtifactTransferBackend {
                 Ok((job, claim_token))
             }
             ExecutionJobMutation::Conflict { current } => Err(format!(
-                "Artifact relay leg '{}' claim 冲突：当前 {} r{}",
+                "Artifact relay leg '{}' claim conflict: current {} r{}",
                 current.id,
                 current.status.as_str(),
                 current.revision
             )
             .into()),
             ExecutionJobMutation::Rejected { reason, .. } => Err(reason.into()),
-            ExecutionJobMutation::NotFound => Err("Artifact relay leg 在 claim 前消失".into()),
+            ExecutionJobMutation::NotFound => {
+                Err("Artifact relay leg disappeared before claim".into())
+            }
         }
     }
 
@@ -2164,7 +2192,7 @@ impl EdgeRelayArtifactTransferBackend {
             .jobs
             .get_execution_job(&job.id)
             .await?
-            .ok_or("Artifact relay leg 在 finish 前消失")?;
+            .ok_or("Artifact relay leg disappeared before finish")?;
         if current.status == status && current.status.is_terminal() {
             return Ok(());
         }
@@ -2187,14 +2215,16 @@ impl EdgeRelayArtifactTransferBackend {
         {
             ExecutionJobMutation::Updated(_) | ExecutionJobMutation::Existing(_) => Ok(()),
             ExecutionJobMutation::Conflict { current } => Err(format!(
-                "Artifact relay leg '{}' finish 冲突：当前 {} r{}",
+                "Artifact relay leg '{}' finish conflict: current {} r{}",
                 current.id,
                 current.status.as_str(),
                 current.revision
             )
             .into()),
             ExecutionJobMutation::Rejected { reason, .. } => Err(reason.into()),
-            ExecutionJobMutation::NotFound => Err("Artifact relay leg 在 finish 前消失".into()),
+            ExecutionJobMutation::NotFound => {
+                Err("Artifact relay leg disappeared before finish".into())
+            }
         }
     }
 
@@ -2216,7 +2246,7 @@ impl EdgeRelayArtifactTransferBackend {
                 provider_node_id: route
                     .provider_node_id
                     .clone()
-                    .ok_or("Artifact relay Edge Route 缺少 provider_node_id")?,
+                    .ok_or("Artifact-relay Edge Route is missing provider_node_id")?,
                 tool_name: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
                 arguments: crate::artifact::execution_arguments_from_transfer_request(request)?,
                 route: command_route,
@@ -2235,14 +2265,14 @@ impl EdgeRelayArtifactTransferBackend {
                 .edges
                 .get_edge_command(&leg_job.id)
                 .await?
-                .ok_or("Artifact relay Edge Command 消失")?;
+                .ok_or("Artifact-relay Edge Command disappeared")?;
             match command.status {
                 EdgeCommandStatus::Succeeded => {
                     return Ok(serde_json::from_str(
                         command
                             .output
                             .as_deref()
-                            .ok_or("Artifact relay leg 缺少 Receipt")?,
+                            .ok_or("Artifact relay leg is missing a Receipt")?,
                     )?)
                 }
                 EdgeCommandStatus::Failed => {
@@ -2355,11 +2385,11 @@ impl ArtifactTransferExecutionBackend for EdgeRelayArtifactTransferBackend {
             .source
             .content_digest
             .as_deref()
-            .ok_or("Artifact relay source Receipt 缺少 digest")?;
+            .ok_or("Artifact-relay source Receipt is missing digest")?;
         let logical_size = source_receipt
             .source
             .size_bytes
-            .ok_or("Artifact relay source Receipt 缺少 size")?;
+            .ok_or("Artifact-relay source Receipt is missing size")?;
         let payload_kind = if source_receipt.source.media_type.as_deref()
             == Some("application/vnd.morphz.directory")
         {
@@ -2539,7 +2569,7 @@ impl ManagedSshBackend {
                     )?
                     .map(Some)
                     .ok_or_else(|| {
-                        format!("Managed SSH {label} Secret '{alias}' 在当前作用域中不存在")
+                        format!("Managed SSH {label} Secret '{alias}' does not exist in the current scope")
                     })
             };
             Ok::<_, String>((
@@ -2549,7 +2579,7 @@ impl ManagedSshBackend {
             ))
         })
         .await
-        .map_err(|error| format!("Managed SSH Secret Store worker 失败：{error}"))??;
+        .map_err(|error| format!("Managed SSH Secret Store worker failed: {error}"))??;
         Ok(ManagedSshAuthentication {
             private_key: resolved.0.map(|value| Arc::new(Zeroizing::new(value))),
             private_key_passphrase: resolved.1.map(|value| Arc::new(Zeroizing::new(value))),
@@ -2575,7 +2605,7 @@ impl ExecutionTargetBackend for ManagedSshBackend {
         }
         if context.target.status != ExecutionTargetStatus::Online {
             return Err(format!(
-                "Runtime Managed SSH Target '{}' 当前为 {}，不能执行",
+                "Runtime Managed SSH Target '{}' is currently {} and cannot execute",
                 context.target.id,
                 context.target.status.as_str()
             )
@@ -2586,7 +2616,7 @@ impl ExecutionTargetBackend for ManagedSshBackend {
             "exec" | "read" | "write" | "edit" | "list_files" | "search"
         ) {
             return Err(format!(
-                "Managed SSH Target '{}' 尚未实现工具 '{}' 的远端执行协议",
+                "Managed SSH Target '{}' does not implement the remote execution protocol for tool '{}'",
                 context.target.id,
                 tool.name()
             )
@@ -2596,14 +2626,16 @@ impl ExecutionTargetBackend for ManagedSshBackend {
         let endpoint_ref = route
             .endpoint_ref
             .as_deref()
-            .ok_or("Runtime Managed SSH Route 缺少 endpoint_ref")?;
+            .ok_or("Runtime Managed SSH Route is missing endpoint_ref")?;
         let endpoint = self
             .local_endpoints
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(endpoint_ref)
             .cloned()
-            .ok_or_else(|| format!("Runtime 未配置 Managed SSH endpoint '{endpoint_ref}'"))?;
+            .ok_or_else(|| {
+                format!("Runtime has no Managed SSH endpoint '{endpoint_ref}' configured")
+            })?;
         if self.approval_required {
             let required_secret_aliases = managed_ssh_endpoint_secret_aliases(&endpoint);
             let approved = crate::permission::CURRENT_DURABLE_APPROVAL
@@ -2632,7 +2664,7 @@ impl ExecutionTargetBackend for ManagedSshBackend {
                 .unwrap_or(false);
             if !approved {
                 return Err(
-                    "Runtime Managed SSH 缺少当前 Target 的有效审批或 Capability Lease，拒绝建立连接"
+                    "Runtime Managed SSH lacks valid approval or a Capability Lease for the current Target; connection rejected"
                         .into(),
                 );
             }
@@ -2740,7 +2772,11 @@ impl ArtifactTransferExecutionBackend for ManagedSshBackend {
                 )
                 .await?
             }
-            _ => return Err("Runtime Managed SSH transport 收到不支持的 source Route".into()),
+            _ => {
+                return Err(
+                    "Runtime Managed SSH transport received an unsupported source Route".into(),
+                )
+            }
         };
         if request
             .expected_source_digest
@@ -2748,7 +2784,7 @@ impl ArtifactTransferExecutionBackend for ManagedSshBackend {
             .is_some_and(|expected| expected != staged.logical_digest())
         {
             return Err(format!(
-                "Artifact source digest 冲突：期望 '{}'，实际 '{}'",
+                "Artifact source digest conflict: expected '{}', actual '{}'",
                 request
                     .expected_source_digest
                     .as_deref()
@@ -2785,7 +2821,12 @@ impl ArtifactTransferExecutionBackend for ManagedSshBackend {
                 )
                 .await?;
             }
-            _ => return Err("Runtime Managed SSH transport 收到不支持的 destination Route".into()),
+            _ => {
+                return Err(
+                    "Runtime Managed SSH transport received an unsupported destination Route"
+                        .into(),
+                )
+            }
         }
 
         let artifact_id = format!("artifact:{}", staged.logical_digest());
@@ -2868,11 +2909,11 @@ impl ManagedSshBackend {
                 },
                 requested,
                 format!(
-                    "Artifact Transfer 读取 Target '{}' 的 '{}' 并写入 Target '{}' 的 '{}'",
-                    request.source.target_id,
+                    "Artifact Transfer reads '{}' from Target '{}' and writes '{}' to Target '{}'",
                     request.source.path,
-                    request.destination.target_id,
-                    request.destination.path
+                    request.source.target_id,
+                    request.destination.path,
+                    request.destination.target_id
                 ),
                 crate::tool::current_approval_context(),
             )
@@ -2900,19 +2941,21 @@ impl ManagedSshBackend {
     ) -> Result<ManagedSshEndpoint, TargetExecutionError> {
         if route.backend_kind != ExecutionTargetKind::ManagedSsh || route.provider_node_id.is_some()
         {
-            return Err("Route 不是 Runtime Managed SSH endpoint".into());
+            return Err("Route is not a Runtime Managed SSH endpoint".into());
         }
         let endpoint_ref = route
             .endpoint_ref
             .as_deref()
-            .ok_or("Runtime Managed SSH Route 缺少 endpoint_ref")?;
+            .ok_or("Runtime Managed SSH Route is missing endpoint_ref")?;
         let endpoint = self
             .local_endpoints
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(endpoint_ref)
             .cloned()
-            .ok_or_else(|| format!("Runtime 未配置 Managed SSH endpoint '{endpoint_ref}'"))?;
+            .ok_or_else(|| {
+                format!("Runtime has no Managed SSH endpoint '{endpoint_ref}' configured")
+            })?;
         validate_managed_ssh_endpoint_for_transfer(endpoint_ref, &endpoint)?;
         Ok(endpoint)
     }
@@ -2946,24 +2989,27 @@ fn validate_managed_ssh_endpoint_for_transfer(
     validate_endpoint_ref(endpoint_ref)?;
     endpoint.validate()?;
     if !endpoint.approved {
-        return Err(format!("Managed SSH endpoint '{endpoint_ref}' 尚未明确批准").into());
+        return Err(format!(
+            "Managed SSH endpoint '{endpoint_ref}' has not been explicitly approved"
+        )
+        .into());
     }
     if endpoint.destination.is_none()
         && std::env::var_os("SSH_AUTH_SOCK").is_none_or(|value| value.is_empty())
         && endpoint.auth_mode.uses_keys()
         && endpoint.private_key_secret.is_none()
     {
-        return Err("静态 Managed SSH endpoint 需要 Runtime 的 SSH_AUTH_SOCK".into());
+        return Err("Static Managed SSH endpoint requires Runtime SSH_AUTH_SOCK".into());
     }
     Ok(())
 }
 
 fn validate_remote_artifact_path(path: &str) -> Result<(), TargetExecutionError> {
     if path.trim().is_empty() {
-        return Err("远端 Artifact path 不能为空".into());
+        return Err("Remote Artifact path must not be empty".into());
     }
     if path.bytes().any(|byte| matches!(byte, 0 | b'\n' | b'\r')) {
-        return Err("远端 Artifact path 不能包含 NUL 或换行".into());
+        return Err("Remote Artifact path must not contain NUL or newline characters".into());
     }
     Ok(())
 }
@@ -3131,7 +3177,11 @@ async fn spool_local_artifact(
         return create_canonical_directory_archive(source, spool).await;
     }
     if !metadata.is_file() {
-        return Err(format!("Artifact source '{}' 不是普通文件或目录", source.display()).into());
+        return Err(format!(
+            "Artifact source '{}' is neither a regular file nor a directory",
+            source.display()
+        )
+        .into());
     }
     // A completed deterministic stage is reusable after Runtime restart. The
     // digest check below also protects against partial/foreign contents.
@@ -3183,7 +3233,7 @@ async fn download_managed_ssh_artifact(
     let probe_output = run_managed_ssh_output(endpoint, authentication, &probe).await?;
     if !probe_output.status.success() {
         return Err(format!(
-            "Managed SSH Artifact source '{}' 不存在或类型不受支持",
+            "Managed SSH Artifact source '{}' does not exist or has an unsupported type",
             remote_path
         )
         .into());
@@ -3191,7 +3241,7 @@ async fn download_managed_ssh_artifact(
     let kind = match String::from_utf8(probe_output.stdout)?.as_str() {
         "file" => StagedArtifactKind::File,
         "directory" => StagedArtifactKind::DirectoryArchive,
-        _ => return Err("Managed SSH Artifact 类型探测返回未知结果".into()),
+        _ => return Err("Managed SSH Artifact type probe returned an unknown result".into()),
     };
     let remote = match kind {
         StagedArtifactKind::File => {
@@ -3214,7 +3264,10 @@ async fn download_managed_ssh_artifact(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = prepared.command.spawn()?;
-    let mut stdout = child.stdout.take().ok_or("SSH download 缺少 stdout")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or("SSH download is missing stdout")?;
     let mut writer = tokio::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -3227,7 +3280,7 @@ async fn download_managed_ssh_artifact(
     if !output.status.success() {
         let _ = tokio::fs::remove_file(&partial).await;
         return Err(format!(
-            "Managed SSH 读取 '{}' 失败：{}",
+            "Managed SSH failed to read '{}': {}",
             remote_path,
             String::from_utf8_lossy(&output.stderr).trim()
         )
@@ -3270,7 +3323,7 @@ async fn create_canonical_directory_archive(
     let build_path = partial.clone();
     tokio::task::spawn_blocking(move || build_canonical_directory_archive(&source, &build_path))
         .await
-        .map_err(|error| format!("Artifact directory archive worker 失败：{error}"))??;
+        .map_err(|error| format!("Artifact-directory archive worker failed: {error}"))??;
     tokio::fs::rename(&partial, spool).await?;
     let (size, digest) = hash_file(spool).await?;
     crate::artifact::report_artifact_bytes("archiving_directory", size, Some(size));
@@ -3313,7 +3366,7 @@ pub(crate) async fn materialize_edge_directory_archive(
         extract_directory_archive(&archive, &destination_for_extract)
     })
     .await
-    .map_err(|error| format!("Artifact directory extract worker 失败：{error}"))?;
+    .map_err(|error| format!("Artifact-directory extract worker failed: {error}"))?;
     if let Err(error) = result {
         let _ = tokio::fs::remove_dir_all(destination).await;
         return Err(error);
@@ -3333,7 +3386,7 @@ async fn normalize_directory_archive(
     let extracted =
         tokio::task::spawn_blocking(move || extract_directory_archive(&input, &tree_for_extract))
             .await
-            .map_err(|error| format!("Artifact directory normalize worker 失败：{error}"))?;
+            .map_err(|error| format!("Artifact-directory normalization worker failed: {error}"))?;
     if let Err(error) = extracted {
         let _ = tokio::fs::remove_dir_all(&tree).await;
         return Err(error);
@@ -3392,7 +3445,7 @@ fn build_canonical_directory_archive(
             archive.append(&header, std::io::empty())?;
         } else {
             return Err(format!(
-                "Artifact directory 包含不支持的文件类型：'{}'",
+                "Artifact directory contains unsupported file type: '{}'",
                 entry.path().display()
             )
             .into());
@@ -3419,7 +3472,7 @@ fn extract_directory_archive(
         let kind = entry.header().entry_type();
         if !(kind.is_file() || kind.is_dir() || kind.is_symlink()) {
             return Err(format!(
-                "Artifact directory archive 包含不支持的条目：'{}'",
+                "Artifact directory archive contains unsupported entry: '{}'",
                 path.display()
             )
             .into());
@@ -3427,13 +3480,15 @@ fn extract_directory_archive(
         if kind.is_symlink() {
             let target = entry
                 .link_name()?
-                .ok_or("Artifact directory symlink 缺少 target")?;
+                .ok_or("Artifact-directory symlink is missing its target")?;
             validate_archive_link_target(&target)?;
         }
         if !entry.unpack_in(destination)? {
-            return Err(
-                format!("Artifact directory archive 条目越界：'{}'", path.display()).into(),
-            );
+            return Err(format!(
+                "Artifact-directory archive entry escapes its boundary: '{}'",
+                path.display()
+            )
+            .into());
         }
     }
     Ok(())
@@ -3450,7 +3505,7 @@ fn validate_archive_relative_path(path: &Path) -> Result<(), TargetExecutionErro
         })
     {
         return Err(format!(
-            "Artifact directory archive 路径不安全：'{}'",
+            "Artifact directory archive path is unsafe: '{}'",
             path.display()
         )
         .into());
@@ -3468,7 +3523,7 @@ fn validate_archive_link_target(path: &Path) -> Result<(), TargetExecutionError>
         })
     {
         return Err(format!(
-            "Artifact directory symlink target 不安全：'{}'",
+            "Artifact directory symlink target is unsafe: '{}'",
             path.display()
         )
         .into());
@@ -3547,10 +3602,10 @@ async fn publish_spooled_local_file(
     let parent = destination
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
-        .ok_or("Artifact destination 缺少父目录")?;
+        .ok_or("Artifact destination has no parent directory")?;
     if !tokio::fs::metadata(parent).await?.is_dir() {
         return Err(format!(
-            "Artifact destination 父路径 '{}' 不是目录",
+            "Artifact destination parent path '{}' is not a directory",
             parent.display()
         )
         .into());
@@ -3564,7 +3619,7 @@ async fn publish_spooled_local_file(
             Ok(())
         } else {
             Err(format!(
-                "Artifact destination '{}' 已存在且内容不同",
+                "Artifact destination '{}' already exists with different content",
                 destination.display()
             )
             .into())
@@ -3602,11 +3657,11 @@ async fn publish_spooled_local_directory(
     let parent = destination
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
-        .ok_or("Artifact directory destination 缺少父目录")?;
+        .ok_or("Artifact-directory destination has no parent directory")?;
     tokio::fs::create_dir_all(parent).await?;
     if !tokio::fs::metadata(parent).await?.is_dir() {
         return Err(format!(
-            "Artifact destination 父路径 '{}' 不是目录",
+            "Artifact destination parent path '{}' is not a directory",
             parent.display()
         )
         .into());
@@ -3616,7 +3671,7 @@ async fn publish_spooled_local_directory(
     {
         if !tokio::fs::metadata(destination).await?.is_dir() {
             return Err(format!(
-                "Artifact destination '{}' 已存在且不是目录",
+                "Artifact destination '{}' already exists and is not a directory",
                 destination.display()
             )
             .into());
@@ -3627,7 +3682,7 @@ async fn publish_spooled_local_directory(
             Ok(())
         } else {
             Err(format!(
-                "Artifact directory destination '{}' 已存在且内容不同",
+                "Artifact directory destination '{}' already exists with different content",
                 destination.display()
             )
             .into())
@@ -3645,7 +3700,7 @@ async fn publish_spooled_local_directory(
     let tree = temporary.clone();
     tokio::task::spawn_blocking(move || extract_directory_archive(&archive, &tree))
         .await
-        .map_err(|error| format!("Artifact directory extract worker 失败：{error}"))??;
+        .map_err(|error| format!("Artifact-directory extract worker failed: {error}"))??;
     crate::artifact::report_artifact_bytes("publishing_directory", 1, Some(1));
 
     crate::artifact::mark_artifact_transfer_side_effect().await?;
@@ -3678,7 +3733,9 @@ async fn publish_spooled_local_directory(
 }
 
 async fn canonical_directory_digest(path: &Path) -> Result<String, TargetExecutionError> {
-    let parent = path.parent().ok_or("Artifact directory 缺少父目录")?;
+    let parent = path
+        .parent()
+        .ok_or("Artifact directory has no parent directory")?;
     let archive = parent.join(format!(
         ".morphz-directory-digest-{}.tar",
         Utc::now().timestamp_nanos_opt().unwrap_or_default()
@@ -3687,7 +3744,7 @@ async fn canonical_directory_digest(path: &Path) -> Result<String, TargetExecuti
     let output = archive.clone();
     tokio::task::spawn_blocking(move || build_canonical_directory_archive(&source, &output))
         .await
-        .map_err(|error| format!("Artifact directory digest worker 失败：{error}"))??;
+        .map_err(|error| format!("Artifact-directory digest worker failed: {error}"))??;
     let result = hash_file(&archive).await.map(|(_, digest)| digest);
     let _ = tokio::fs::remove_file(archive).await;
     result
@@ -3764,7 +3821,7 @@ async fn upload_managed_ssh_artifact(
         let output = run_managed_ssh_output(endpoint, authentication, &probe).await?;
         if !output.status.success() {
             return Err(format!(
-                "Managed SSH 检查 destination '{}' 失败：{}",
+                "Managed SSH failed to inspect destination '{}': {}",
                 remote_path,
                 String::from_utf8_lossy(&output.stderr).trim()
             )
@@ -3779,7 +3836,11 @@ async fn upload_managed_ssh_artifact(
             return if actual == logical_digest {
                 Ok(())
             } else {
-                Err(format!("Managed SSH destination '{}' 已存在且内容不同", remote_path).into())
+                Err(format!(
+                    "Managed SSH destination '{}' already exists with different content",
+                    remote_path
+                )
+                .into())
             };
         }
     }
@@ -3800,7 +3861,7 @@ async fn upload_managed_ssh_artifact(
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     let mut child = prepared.command.spawn()?;
-    let mut stdin = child.stdin.take().ok_or("SSH upload 缺少 stdin")?;
+    let mut stdin = child.stdin.take().ok_or("SSH upload is missing stdin")?;
     let mut reader = tokio::fs::File::open(spool).await?;
     let total_bytes = tokio::fs::metadata(spool).await?.len();
     crate::artifact::report_artifact_bytes("uploading", 0, Some(total_bytes));
@@ -3820,7 +3881,7 @@ async fn upload_managed_ssh_artifact(
     let output = child.wait_with_output().await?;
     if !output.status.success() {
         return Err(format!(
-            "Managed SSH 写入临时 Artifact '{}' 失败：{}",
+            "Managed SSH failed to write temporary Artifact '{}': {}",
             remote_path,
             String::from_utf8_lossy(&output.stderr).trim()
         )
@@ -3834,7 +3895,7 @@ async fn upload_managed_ssh_artifact(
     let verified = remote_file_digest(endpoint, authentication, &temporary).await?;
     if verified != expected_payload_digest {
         return Err(format!(
-            "Managed SSH destination digest 校验失败：期望 '{}'，实际 '{}'",
+            "Managed SSH destination digest validation failed: expected '{}', actual '{}'",
             expected_payload_digest, verified
         )
         .into());
@@ -3888,7 +3949,7 @@ async fn upload_managed_ssh_artifact(
     let output = run_managed_ssh_output(endpoint, authentication, &publish).await?;
     if !output.status.success() {
         return Err(format!(
-            "Managed SSH 原子发布 '{}' 失败（父目录 '{}'，文件 '{}'）：{}",
+            "Managed SSH failed to atomically publish '{}' (parent '{}', file '{}'): {}",
             remote_path,
             parent,
             name,
@@ -3903,13 +3964,13 @@ async fn upload_managed_ssh_artifact(
 fn remote_parent_and_name(path: &str) -> Result<(&str, &str), TargetExecutionError> {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
-        return Err("远端 Artifact destination 不能是根目录".into());
+        return Err("Remote Artifact destination cannot be the root directory".into());
     }
     match trimmed.rsplit_once('/') {
         Some(("", name)) if !name.is_empty() => Ok(("/", name)),
         Some((parent, name)) if !parent.is_empty() && !name.is_empty() => Ok((parent, name)),
         None => Ok((".", trimmed)),
-        _ => Err("远端 Artifact destination 缺少有效文件名".into()),
+        _ => Err("Remote Artifact destination has no valid file name".into()),
     }
 }
 
@@ -3939,7 +4000,7 @@ async fn remote_file_digest(
     let output = run_managed_ssh_output(endpoint, authentication, &command).await?;
     if !output.status.success() {
         return Err(format!(
-            "Managed SSH 远端缺少可用 SHA-256 工具或摘要失败：{}",
+            "Managed SSH remote has no usable SHA-256 tool or digest computation failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )
         .into());
@@ -3947,10 +4008,10 @@ async fn remote_file_digest(
     let hex = String::from_utf8(output.stdout)?
         .split_whitespace()
         .next()
-        .ok_or("Managed SSH SHA-256 输出为空")?
+        .ok_or("Managed SSH SHA-256 output is empty")?
         .to_ascii_lowercase();
     if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("Managed SSH SHA-256 输出格式无效".into());
+        return Err("Managed SSH SHA-256 output has an invalid format".into());
     }
     Ok(format!("sha256:{hex}"))
 }
@@ -4004,7 +4065,7 @@ def read_tool(args, workspace_root):
     original = args["path"]
     path = resolve_path(original, workspace_root)
     if not os.path.exists(path):
-        return "系统报错：读取失败。指定的文件路径 '{}' 不存在，请检查路径是否正确。".format(original)
+        return "System error: read failed because file path '{}' does not exist; verify the path.".format(original)
     with open(path, "rb") as handle:
         header = handle.read(12)
     media_type = None
@@ -4021,7 +4082,7 @@ def read_tool(args, workspace_root):
         size_bytes = os.path.getsize(path)
         if size_bytes > max_attachment_bytes:
             raise ValueError(
-                "图片 '{}' 大小为 {} bytes，超过当前模型输入单文件上限 {} bytes".format(
+                "image '{}' is {} bytes, exceeding the current per-file model input limit of {} bytes".format(
                     original, size_bytes, max_attachment_bytes
                 )
             )
@@ -4032,10 +4093,10 @@ def read_tool(args, workspace_root):
         if any(args.get(name) is not None for name in (
             "start_line", "end_line", "query", "context_lines", "max_matches"
         )):
-            raise ValueError("图片 read 不能使用行号或 query 参数；只传 path 即可")
+            raise ValueError("image read does not accept line numbers or query; provide path only")
         if max_attachment_bytes is not None and len(data) > max_attachment_bytes:
             raise ValueError(
-                "图片 '{}' 大小为 {} bytes，超过当前模型输入单文件上限 {} bytes".format(
+                "image '{}' is {} bytes, exceeding the current per-file model input limit of {} bytes".format(
                     original, len(data), max_attachment_bytes
                 )
             )
@@ -4070,7 +4131,7 @@ def read_tool(args, workspace_root):
     start = args.get("start_line") or 1
     end = min(args.get("end_line") or total, total)
     if start == 0 or (total > 0 and start > total) or end < start:
-        raise ValueError("无效行范围：start_line={}，end_line={}，文件共 {} 行".format(start, end, total))
+        raise ValueError("invalid line range: start_line={}, end_line={}, total lines={}".format(start, end, total))
     selected = set()
     query = args.get("query")
     match_count = 0
@@ -4078,7 +4139,7 @@ def read_tool(args, workspace_root):
     if query is not None:
         query = query.strip()
         if not query:
-            raise ValueError("query 不能为空字符串")
+            raise ValueError("query must not be empty")
         needle = query.lower()
         context = min(args.get("context_lines", 3), 20)
         max_matches = min(max(args.get("max_matches", 20), 1), 100)
@@ -4110,27 +4171,27 @@ def write_tool(args, workspace_root):
     current_mode = None
     if mode == "create":
         if os.path.exists(path):
-            raise ValueError("create 拒绝覆盖已存在文件 '{}'；请先 read，再使用 edit 或 overwrite".format(original))
+            raise ValueError("create refuses to overwrite existing file '{}'; read it first, then use edit or overwrite".format(original))
         operation = "create"
     elif mode == "overwrite":
         if not os.path.exists(path):
-            raise ValueError("overwrite 目标 '{}' 不存在；创建新文件请使用 mode=create".format(original))
+            raise ValueError("overwrite target '{}' does not exist; use mode=create for a new file".format(original))
         with open(path, "rb") as handle:
             before = handle.read()
         current = hashlib.sha256(before).hexdigest()
         expected = args.get("expected_sha256")
         if not expected:
-            raise ValueError("overwrite 必须提供最近一次 read 返回的 expected_sha256")
+            raise ValueError("overwrite requires expected_sha256 from the most recent read")
         if expected != current:
-            raise ValueError("文件版本冲突：'{}' 当前 sha256={}，expected_sha256={}。请重新 read 后再修改".format(original, current, expected))
+            raise ValueError("file version conflict: '{}' current sha256={}, expected_sha256={}. Read the file again before modifying it".format(original, current, expected))
         current_mode = os.stat(path).st_mode & 0o7777
         operation = "overwrite"
     else:
-        raise ValueError("write.mode 只支持 create 或 overwrite，实际为 '{}'".format(mode))
+        raise ValueError("write.mode supports only create or overwrite; received '{}'".format(mode))
 
     parent = os.path.dirname(path) or "."
     if not os.path.isdir(parent):
-        raise ValueError("父目录 '{}' 不存在".format(parent))
+        raise ValueError("parent directory '{}' does not exist".format(parent))
     descriptor, temporary = tempfile.mkstemp(prefix=".morphz-write-", dir=parent)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -4144,29 +4205,29 @@ def write_tool(args, workspace_root):
         if os.path.exists(temporary):
             os.unlink(temporary)
     digest = hashlib.sha256(data).hexdigest()
-    return "文件写入成功：operation={} path={} bytes={} sha256={}".format(operation, original, len(data), digest)
+    return "file written: operation={} path={} bytes={} sha256={}".format(operation, original, len(data), digest)
 
 def edit_tool(args, workspace_root):
     original = args["path"]
     path = resolve_path(original, workspace_root)
     if not os.path.isfile(path):
-        raise ValueError("edit 目标 '{}' 不存在或不是文件".format(original))
+        raise ValueError("edit target '{}' does not exist or is not a file".format(original))
     with open(path, "rb") as handle:
         before = handle.read()
     digest = hashlib.sha256(before).hexdigest()
     expected = args.get("expected_sha256")
     if expected != digest:
-        raise ValueError("文件版本冲突：'{}' 当前 sha256={}，expected_sha256={}。请重新 read 后再编辑".format(original, digest, expected))
+        raise ValueError("file version conflict: '{}' current sha256={}, expected_sha256={}. Read the file again before editing it".format(original, digest, expected))
     text = before.decode("utf-8")
     edits = args.get("edits") or []
     if not edits:
-        raise ValueError("edit.edits 至少需要一项")
+        raise ValueError("edit.edits requires at least one item")
     replacements = []
     for index, edit in enumerate(edits):
         old = edit.get("old_text", "")
         new = edit.get("new_text", "")
         if not old:
-            raise ValueError("edit.edits[{}].old_text 不能为空".format(index))
+            raise ValueError("edit.edits[{}].old_text must not be empty".format(index))
         starts = []
         cursor = 0
         while True:
@@ -4176,16 +4237,16 @@ def edit_tool(args, workspace_root):
             starts.append(found)
             cursor = found + len(old)
         if not starts:
-            raise ValueError("edit.edits[{}] 的 old_text 在 '{}' 中没有精确匹配；请重新 read 并扩大上下文".format(index, original))
+            raise ValueError("edit.edits[{}].old_text has no exact match in '{}'; read the file again with more context".format(index, original))
         replace_all = bool(edit.get("replace_all", False))
         if not replace_all and len(starts) != 1:
-            raise ValueError("edit.edits[{}] 的 old_text 匹配 {} 次；请扩大上下文，或设置 replace_all=true".format(index, len(starts)))
+            raise ValueError("edit.edits[{}].old_text matches {} times; provide more context or set replace_all=true".format(index, len(starts)))
         for start in starts if replace_all else starts[:1]:
             replacements.append((start, start + len(old), new))
     replacements.sort(key=lambda item: item[0])
     for left, right in zip(replacements, replacements[1:]):
         if left[1] > right[0]:
-            raise ValueError("edit 中的两个替换范围发生重叠；请合并为一个更大的精确替换")
+            raise ValueError("two edit replacement ranges overlap; merge them into one larger exact replacement")
     parts = []
     cursor = 0
     for start, end, new in replacements:
@@ -4195,7 +4256,7 @@ def edit_tool(args, workspace_root):
     parts.append(text[cursor:])
     updated = "".join(parts)
     if updated == text:
-        raise ValueError("edit 没有产生任何内容变化")
+        raise ValueError("edit produced no content change")
     data = updated.encode("utf-8")
     parent = os.path.dirname(path) or "."
     descriptor, temporary = tempfile.mkstemp(prefix=".morphz-edit-", dir=parent)
@@ -4210,13 +4271,13 @@ def edit_tool(args, workspace_root):
         if os.path.exists(temporary):
             os.unlink(temporary)
     after_digest = hashlib.sha256(data).hexdigest()
-    return "文件编辑成功：path={} replacements={} bytes={} sha256={}".format(original, len(replacements), len(data), after_digest)
+    return "file edited: path={} replacements={} bytes={} sha256={}".format(original, len(replacements), len(data), after_digest)
 
 def list_files_tool(args, workspace_root):
     original = args.get("path", ".")
     root = resolve_path(original, workspace_root)
     if not os.path.isdir(root):
-        raise ValueError("list_files.path '{}' 不是目录".format(original))
+        raise ValueError("list_files.path '{}' is not a directory".format(original))
     pattern = args.get("glob", "**/*")
     limit = min(max(args.get("max_results", 500), 1), 2000)
     include_hidden = bool(args.get("include_hidden", False))
@@ -4249,10 +4310,10 @@ def list_files_tool(args, workspace_root):
 def search_tool(args, workspace_root):
     query = args["query"].strip()
     if not query:
-        raise ValueError("search.query 不能为空")
+        raise ValueError("search.query must not be empty")
     inputs = args.get("paths") or []
     if not inputs:
-        raise ValueError("search.paths 至少需要一个路径")
+        raise ValueError("search.paths requires at least one path")
     pattern = args.get("glob", "**/*")
     limit = min(max(args.get("max_matches", 100), 1), 1000)
     context_lines = min(max(args.get("context_lines", 2), 0), 20)
@@ -4278,7 +4339,7 @@ def search_tool(args, workspace_root):
                     path = os.path.join(directory, name)
                     candidates.append((path, os.path.relpath(path, root)))
         else:
-            raise ValueError("search 路径 '{}' 不存在".format(original))
+            raise ValueError("search path '{}' does not exist".format(original))
 
         for path, relative in candidates:
             if not path_matches(relative, pattern):
@@ -4328,7 +4389,7 @@ try:
     elif operation == "search":
         result = search_tool(arguments, workspace_root)
     else:
-        raise ValueError("不支持的 Managed SSH 核心工具 '{}'".format(operation))
+        raise ValueError("unsupported Managed SSH core tool '{}'".format(operation))
     emit(True, output=result)
 except Exception as error:
     emit(False, error="{}: {}".format(type(error).__name__, error))
@@ -4354,7 +4415,7 @@ async fn execute_managed_ssh_file_tool(
         run_managed_ssh_output_with_input(endpoint, authentication, &command, &request).await?;
     if !output.status.success() {
         return Err(format!(
-            "Managed SSH 工具 '{}' 执行失败：{}",
+            "Managed SSH tool '{}' failed: {}",
             operation,
             String::from_utf8_lossy(&output.stderr).trim()
         )
@@ -4362,7 +4423,7 @@ async fn execute_managed_ssh_file_tool(
     }
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
         format!(
-            "Managed SSH 工具 '{}' 返回无效协议：{error}；stdout={}；stderr={}",
+            "Managed SSH tool '{}' returned an invalid protocol envelope: {error}; stdout={}; stderr={}",
             operation,
             String::from_utf8_lossy(&output.stdout).trim(),
             String::from_utf8_lossy(&output.stderr).trim()
@@ -4378,12 +4439,12 @@ async fn execute_managed_ssh_file_tool(
         ));
     }
     Err(format!(
-        "Managed SSH 工具 '{}' 被远端拒绝：{}",
+        "Managed SSH tool '{}' was rejected by the remote: {}",
         operation,
         envelope
             .get("error")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("未知错误")
+            .unwrap_or("unknown error")
     )
     .into())
 }
@@ -4391,7 +4452,7 @@ async fn execute_managed_ssh_file_tool(
 fn managed_ssh_file_tool_command() -> String {
     let script = shell_quote(MANAGED_SSH_FILE_TOOL_SCRIPT);
     let bootstrap = format!(
-        "if command -v python3 >/dev/null 2>&1; then exec python3 -c {script}; elif command -v python >/dev/null 2>&1; then exec python -c {script}; else echo 'Managed SSH Target 缺少 Python 3，不能执行核心文件工具' >&2; exit 127; fi"
+        "if command -v python3 >/dev/null 2>&1; then exec python3 -c {script}; elif command -v python >/dev/null 2>&1; then exec python -c {script}; else echo 'Managed SSH Target requires Python 3 to execute core file tools' >&2; exit 127; fi"
     );
     // OpenSSH gives the remote command to the account's login shell.  The
     // account may use fish, csh, or another non-POSIX shell, while the
@@ -4413,7 +4474,10 @@ async fn run_managed_ssh_output_with_input(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = prepared.command.spawn()?;
-    let mut stdin = child.stdin.take().ok_or("无法打开 Managed SSH stdin")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or("Failed to open Managed SSH stdin")?;
     stdin.write_all(input).await?;
     stdin.shutdown().await?;
     drop(stdin);
@@ -4518,7 +4582,7 @@ impl ExecutionTargetDispatcher {
             if transfer.source.target_id != routes.source.target_id
                 || transfer.destination.target_id != routes.destination.target_id
             {
-                return Err("Artifact Transfer 参数与 Execution Job 冻结的双 Route 不一致".into());
+                return Err("Artifact Transfer arguments do not match the pair of Routes frozen in the Execution Job".into());
             }
             let source = self
                 .authorized_target_for_route(
@@ -4545,7 +4609,7 @@ impl ExecutionTargetDispatcher {
             }
             if routes.source.target_id != routes.destination.target_id {
                 return Err(format!(
-                    "没有 Runtime Artifact Transport 能处理 '{}' 到 '{}' 的冻结 Route（{} -> {}）",
+                    "no Runtime Artifact Transport can handle the frozen Route from '{}' to '{}' ({} -> {})",
                     source.id,
                     destination.id,
                     routes.source.backend_kind.as_str(),
@@ -4558,9 +4622,9 @@ impl ExecutionTargetDispatcher {
             .targets
             .get_execution_target(&job.target_id)
             .await?
-            .ok_or_else(|| format!("Execution Target '{}' 不存在", job.target_id))?;
+            .ok_or_else(|| format!("Execution Target '{}' does not exist", job.target_id))?;
         if target.status == ExecutionTargetStatus::Disabled {
-            return Err(format!("Execution Target '{}' 已被禁用", target.id).into());
+            return Err(format!("Execution Target '{}' is disabled", target.id).into());
         }
         self.ensure_target_authorized(
             &target,
@@ -4601,11 +4665,13 @@ impl ExecutionTargetDispatcher {
         if request.source.target_id != routes.source.target_id
             || request.destination.target_id != routes.destination.target_id
         {
-            return Err("Edge-localized Artifact 请求与冻结双 Route 不一致".into());
+            return Err(
+                "Edge-localized Artifact request does not match the frozen pair of Routes".into(),
+            );
         }
-        let backend = self
-            .artifact_transfer_backend_for(routes)
-            .ok_or("Edge Runtime 没有可处理本地化双 Route 的 Artifact Backend")?;
+        let backend = self.artifact_transfer_backend_for(routes).ok_or(
+            "Edge Runtime has no Artifact Backend capable of handling the localized pair of Routes",
+        )?;
         let receipt = backend.execute_transfer(job, routes, request).await?;
         receipt.validate_against(request)?;
         Ok(receipt)
@@ -4628,7 +4694,7 @@ impl ExecutionTargetDispatcher {
             .targets
             .get_execution_target(target_id)
             .await?
-            .ok_or_else(|| format!("Execution Target '{target_id}' 不存在"))?;
+            .ok_or_else(|| format!("Execution Target '{target_id}' does not exist"))?;
         self.ensure_target_authorized(&target, principal_id, agent_id, context_id, thread_id)
             .await?;
         let durable_offline_queue = target.status == ExecutionTargetStatus::Offline
@@ -4637,7 +4703,7 @@ impl ExecutionTargetDispatcher {
                     && target.provider_node_id.is_some()));
         if !target.status.accepts_jobs() && !durable_offline_queue {
             return Err(format!(
-                "Execution Target '{}' 当前为 {}，不能执行新动作",
+                "Execution Target '{}' is currently {} and cannot execute a new action",
                 target.id,
                 target.status.as_str()
             )
@@ -4645,7 +4711,7 @@ impl ExecutionTargetDispatcher {
         }
         if !target.capabilities.iter().any(|name| name == tool_name) {
             return Err(format!(
-                "Execution Target '{}' 未发布工具能力 '{}'",
+                "Execution Target '{}' has not published tool capability '{}'",
                 target.id, tool_name
             )
             .into());
@@ -4722,7 +4788,7 @@ impl ExecutionTargetDispatcher {
             .await?;
         if !matches {
             return Err(format!(
-                "Execution Target '{}' 已进入 scoped authorization 模式，但当前 Agent/Context/Thread 没有有效授权",
+                "Execution Target '{}' is in scoped authorization mode, but the current Agent/Context/Thread has no valid authorization",
                 target.id
             )
             .into());
@@ -4742,9 +4808,9 @@ impl ExecutionTargetDispatcher {
             .targets
             .get_execution_target(&route.target_id)
             .await?
-            .ok_or_else(|| format!("Execution Target '{}' 不存在", route.target_id))?;
+            .ok_or_else(|| format!("Execution Target '{}' does not exist", route.target_id))?;
         if target.status == ExecutionTargetStatus::Disabled {
-            return Err(format!("Execution Target '{}' 已被禁用", target.id).into());
+            return Err(format!("Execution Target '{}' is disabled", target.id).into());
         }
         self.ensure_target_authorized(&target, principal_id, agent_id, context_id, thread_id)
             .await?;
@@ -4784,9 +4850,9 @@ impl ExecutionTargetDispatcher {
             .cloned()
             .ok_or_else(|| {
                 format!(
-                    "Execution Target '{}' 的 Backend '{}' 未注册",
+                    "Backend '{}' for Execution Target '{}' is not registered",
+                    target.kind.as_str(),
                     target.id,
-                    target.kind.as_str()
                 )
             })?;
         Ok(backend)
@@ -4799,7 +4865,7 @@ fn exec_arguments_invoke_ssh(arguments: &str) -> Result<bool, TargetExecutionErr
         .as_object()
         .and_then(|object| object.get("command"))
         .and_then(serde_json::Value::as_str)
-        .ok_or("exec 参数缺少 command")?;
+        .ok_or("exec arguments are missing command")?;
     Ok(shell_command_programs(command).iter().any(|program| {
         PathBuf::from(program)
             .file_name()
@@ -4818,7 +4884,7 @@ pub fn reject_unmanaged_ssh_invocation(
         && exec_arguments_invoke_ssh(arguments)?
     {
         return Err(
-            "Agent 禁止通过本地 exec 直接调用 ssh/scp/sftp；请先选择 managed_ssh Execution Target"
+            "Agent may not invoke ssh/scp/sftp directly through local exec; select a managed_ssh Execution Target first"
                 .into(),
         );
     }
@@ -4935,7 +5001,11 @@ fn ensure_target_authorized_for_principal(
 ) -> Result<(), TargetExecutionError> {
     if let Some(owner) = target.owner_principal_id.as_deref() {
         if Some(owner) != principal_id {
-            return Err(format!("当前 Principal 无权使用 Execution Target '{}'", target.id).into());
+            return Err(format!(
+                "Current Principal is not authorized to use Execution Target '{}'",
+                target.id
+            )
+            .into());
         }
     }
     Ok(())
@@ -4980,17 +5050,19 @@ pub fn runtime_managed_ssh_registration(
 ) -> Result<ExecutionTargetRegistration, TargetExecutionError> {
     let id = config.id.trim();
     if id.is_empty() || id == DEFAULT_EXECUTION_TARGET_ID {
-        return Err("Runtime Managed SSH Target id 不能为空且不能使用 'target-default'".into());
+        return Err(
+            "Runtime Managed SSH Target id must not be empty or use 'target-default'".into(),
+        );
     }
     let name = config.name.trim();
     if name.is_empty() {
-        return Err(format!("Runtime Managed SSH Target '{id}' 的 name 不能为空").into());
+        return Err(format!("Runtime Managed SSH Target '{id}' name must not be empty").into());
     }
     validate_endpoint_ref(config.endpoint_ref.trim())?;
     endpoint.validate()?;
     if !endpoint.approved {
         return Err(format!(
-            "Runtime Managed SSH Target '{}' 的 endpoint '{}' 尚未明确批准",
+            "Runtime Managed SSH Target '{}' endpoint '{}' has not been explicitly approved",
             id, config.endpoint_ref
         )
         .into());
@@ -5001,23 +5073,26 @@ pub fn runtime_managed_ssh_registration(
         .unwrap_or(default_owner_principal_id)
         .trim();
     if owner_principal_id.is_empty() {
-        return Err(
-            format!("Runtime Managed SSH Target '{id}' 的 owner_principal_id 不能为空").into(),
-        );
+        return Err(format!(
+            "Runtime Managed SSH Target '{id}' owner_principal_id must not be empty"
+        )
+        .into());
     }
     if config
         .platform
         .as_deref()
         .is_some_and(|value| value.trim().is_empty())
     {
-        return Err(format!("Runtime Managed SSH Target '{id}' 的 platform 不能为空").into());
+        return Err(format!("Runtime Managed SSH Target '{id}' platform must not be empty").into());
     }
     if config
         .workspace_root
         .as_deref()
         .is_some_and(|value| value.trim().is_empty())
     {
-        return Err(format!("Runtime Managed SSH Target '{id}' 的 workspace_root 不能为空").into());
+        return Err(
+            format!("Runtime Managed SSH Target '{id}' workspace_root must not be empty").into(),
+        );
     }
 
     let mut digest = Sha256::new();
@@ -5217,14 +5292,14 @@ fn configure_managed_ssh_auth(
     let requested_private_key_passphrase_secret = requested.private_key_passphrase_secret;
     let requested_password_secret = requested.password_secret;
     if requested_mode == Some(ManagedSshAuthMode::KeyOnly) && requested_password_secret.is_some() {
-        return Err("Managed SSH key_only 不能同时指定 password_secret".into());
+        return Err("Managed SSH key_only cannot also specify password_secret".into());
     }
     if requested_mode == Some(ManagedSshAuthMode::PasswordOnly)
         && (requested_private_key_secret.is_some()
             || requested_private_key_passphrase_secret.is_some())
     {
         return Err(
-            "Managed SSH password_only 不能同时指定 private_key_secret 或 private_key_passphrase_secret"
+            "Managed SSH password_only cannot also specify private_key_secret or private_key_passphrase_secret"
                 .into(),
         );
     }
@@ -5335,7 +5410,9 @@ impl RuntimeManagedSshProvisioner {
             .flatten()
             .unwrap_or_else(|| self.default_principal_id.clone());
         if principal_id.trim().is_empty() {
-            return Err("按需创建 Managed SSH Target 时缺少当前 Principal".into());
+            return Err(
+                "On-demand Managed SSH Target creation is missing the current Principal".into(),
+            );
         }
         let identity_material = format!(
             "{principal_id}\0{host}\0{}\0{}",
@@ -5367,7 +5444,7 @@ impl RuntimeManagedSshProvisioner {
         let target = self.targets.register_execution_target(registration).await?;
         if target.status != ExecutionTargetStatus::Online {
             return Err(format!(
-                "Managed SSH Target '{}' 已被管理员禁用；需要显式 enable 后才能使用",
+                "Managed SSH Target '{}' was disabled by an administrator and must be explicitly enabled before use",
                 target.id
             )
             .into());
@@ -5396,7 +5473,7 @@ impl RuntimeManagedSshProvisioner {
             };
             if !self.secret_store.contains_alias(alias)? {
                 return Err(format!(
-                    "Managed SSH {label} Secret '{}' 在 Secret Store 中不存在",
+                    "Managed SSH {label} Secret '{}' does not exist in the Secret Store",
                     alias
                 )
                 .into());
@@ -5434,14 +5511,14 @@ impl RuntimeManagedSshProvisioner {
                 != Some("runtime")
         {
             return Err(format!(
-                "Execution Target '{}' 不是 Runtime 托管的 SSH 路由",
+                "Execution Target '{}' is not a Runtime-managed SSH route",
                 target.id
             )
             .into());
         }
         if target.status == ExecutionTargetStatus::Disabled {
             return Err(format!(
-                "Managed SSH Target '{}' 已被管理员禁用；需要显式 enable 后才能使用",
+                "Managed SSH Target '{}' was disabled by an administrator and must be explicitly enabled before use",
                 target.id
             )
             .into());
@@ -5452,7 +5529,7 @@ impl RuntimeManagedSshProvisioner {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| {
                 format!(
-                    "Runtime Managed SSH Target '{}' 缺少可恢复的 host 元数据",
+                    "Runtime Managed SSH Target '{}' is missing recoverable host metadata",
                     target.id
                 )
             })?;
@@ -5466,21 +5543,21 @@ impl RuntimeManagedSshProvisioner {
             .and_then(serde_json::Value::as_u64)
             .map(u16::try_from)
             .transpose()
-            .map_err(|_| format!("Managed SSH Target '{}' 的 port 无效", target.id))?;
+            .map_err(|_| format!("Managed SSH Target '{}' has an invalid port", target.id))?;
         let endpoint_ref = target
             .metadata
             .get("endpoint_ref")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| {
                 format!(
-                    "Runtime Managed SSH Target '{}' 缺少 endpoint_ref 元数据",
+                    "Runtime Managed SSH Target '{}' is missing endpoint_ref metadata",
                     target.id
                 )
             })?;
         validate_endpoint_ref(endpoint_ref)?;
         let owner_principal_id = target.owner_principal_id.as_deref().ok_or_else(|| {
             format!(
-                "Runtime Managed SSH Target '{}' 缺少 owner_principal_id",
+                "Runtime Managed SSH Target '{}' is missing owner_principal_id",
                 target.id
             )
         })?;
@@ -5531,7 +5608,7 @@ impl RuntimeManagedSshProvisioner {
         let target = self.targets.register_execution_target(registration).await?;
         if target.status != ExecutionTargetStatus::Online {
             return Err(format!(
-                "Managed SSH Target '{}' 路由恢复后仍为 {}",
+                "Managed SSH Target '{}' remains {} after route recovery",
                 target.id,
                 target.status.as_str()
             )
@@ -5558,8 +5635,8 @@ fn target_runtime_availability(target: &ExecutionTargetRecord) -> serde_json::Va
             } else {
                 "local"
             },
-            "status_explanation": "Target 被显式禁用；这不是临时离线状态",
-            "recommended_action": "仅管理员可以显式启用该 Target"
+            "status_explanation": "Target was explicitly disabled; this is not a transient offline state",
+            "recommended_action": "only an administrator can explicitly enable this Target"
         });
     }
     if target.kind == ExecutionTargetKind::ManagedSsh && target.provider_node_id.is_none() {
@@ -5569,8 +5646,8 @@ fn target_runtime_availability(target: &ExecutionTargetRecord) -> serde_json::Va
                 "usable_now": true,
                 "recoverable": true,
                 "connection_model": "dial_on_demand",
-                "status_explanation": "Runtime 已配置 SSH 路由；SSH 连接只在执行命令时建立，不存在需要续租的常驻连接",
-                "recommended_action": "可直接把 target_id 用于 exec；不要把没有常驻 SSH 连接解释为节点离线"
+                "status_explanation": "Runtime has configured the SSH route; SSH connections are established only while executing commands and there is no persistent connection to renew",
+                "recommended_action": "use target_id directly for exec; do not interpret the absence of a persistent SSH connection as the node being offline"
             });
         }
         return serde_json::json!({
@@ -5578,8 +5655,8 @@ fn target_runtime_availability(target: &ExecutionTargetRecord) -> serde_json::Va
             "usable_now": false,
             "recoverable": true,
             "connection_model": "dial_on_demand",
-            "status_explanation": "当前 Runtime 尚未重建此按需 SSH 路由；这不表示远端主机已被探测为离线",
-            "recommended_action": "调用 resolve_target 并传入此 target_id 重新解析路由，然后继续执行"
+            "status_explanation": "the current Runtime has not rebuilt this on-demand SSH route; this does not mean the remote host was detected as offline",
+            "recommended_action": "call resolve_target with this target_id to resolve the route again, then continue"
         });
     }
     if target.provider_node_id.is_some() {
@@ -5589,8 +5666,8 @@ fn target_runtime_availability(target: &ExecutionTargetRecord) -> serde_json::Va
                 "usable_now": true,
                 "recoverable": true,
                 "connection_model": "provider_heartbeat",
-                "status_explanation": "提供此 Target 的 Edge Node 心跳正常",
-                "recommended_action": "可直接执行"
+                "status_explanation": "the Edge Node providing this Target has a healthy heartbeat",
+                "recommended_action": "execute directly"
             });
         }
         return serde_json::json!({
@@ -5598,8 +5675,8 @@ fn target_runtime_availability(target: &ExecutionTargetRecord) -> serde_json::Va
             "usable_now": false,
             "recoverable": true,
             "connection_model": "provider_heartbeat",
-            "status_explanation": "提供此 Target 的 Edge Node 心跳暂时过期；Target 并未删除",
-            "recommended_action": "可等待 Provider Node 恢复，或在允许时选择持久离线排队"
+            "status_explanation": "the heartbeat of the Edge Node providing this Target is temporarily stale; the Target has not been deleted",
+            "recommended_action": "wait for the Provider Node to recover, or choose durable offline queuing when allowed"
         });
     }
     serde_json::json!({
@@ -5612,14 +5689,14 @@ fn target_runtime_availability(target: &ExecutionTargetRecord) -> serde_json::Va
         "recoverable": target.status != ExecutionTargetStatus::Disabled,
         "connection_model": "local",
         "status_explanation": if target.status == ExecutionTargetStatus::Online {
-            "Target 当前可用"
+            "Target is currently available"
         } else {
-            "Target 当前不可用"
+            "Target is currently unavailable"
         },
         "recommended_action": if target.status == ExecutionTargetStatus::Online {
-            "可直接执行"
+            "execute directly"
         } else {
-            "等待 Runtime 恢复 Target"
+            "wait for Runtime to recover the Target"
         }
     })
 }
@@ -5739,20 +5816,22 @@ impl Tool for ResolveTargetTool {
         if args.target_id.is_some()
             && (args.host.is_some() || args.user.is_some() || args.port.is_some())
         {
-            return Err("resolve_target.target_id 不能与 host/user/port 同时使用".into());
+            return Err("resolve_target.target_id cannot be used with host/user/port".into());
         }
         if (args.host.is_some() || args.user.is_some() || args.port.is_some())
             && args
                 .kind
                 .is_some_and(|kind| kind != ExecutionTargetKind::ManagedSsh)
         {
-            return Err("resolve_target.host/user/port 只能与 kind=managed_ssh 一起使用".into());
+            return Err(
+                "resolve_target.host/user/port can be used only with kind=managed_ssh".into(),
+            );
         }
         if let Some(host) = args.host.as_deref() {
             validate_ssh_host(host)?;
         }
         if args.host.is_none() && (args.user.is_some() || args.port.is_some()) {
-            return Err("resolve_target.user/port 必须与 host 一起使用".into());
+            return Err("resolve_target.user/port must be used with host".into());
         }
         if let Some(user) = args.user.as_deref() {
             validate_ssh_user(user)?;
@@ -5777,18 +5856,18 @@ impl Tool for ResolveTargetTool {
                 || args.password_secret.is_some())
         {
             return Err(
-                "resolve_target 的 SSH 认证参数必须与 target_id 或 Managed SSH host 一起使用"
+                "resolve_target SSH authentication arguments must be used with target_id or a Managed SSH host"
                     .into(),
             );
         }
         if args.auth_mode == Some(ManagedSshAuthMode::KeyOnly) && args.password_secret.is_some() {
-            return Err("resolve_target.key_only 不能同时指定 password_secret".into());
+            return Err("resolve_target.key_only cannot also specify password_secret".into());
         }
         if args.auth_mode == Some(ManagedSshAuthMode::PasswordOnly)
             && (args.private_key_secret.is_some() || args.private_key_passphrase_secret.is_some())
         {
             return Err(
-                "resolve_target.password_only 不能同时指定 private_key_secret 或 private_key_passphrase_secret"
+                "resolve_target.password_only cannot also specify private_key_secret or private_key_passphrase_secret"
                     .into(),
             );
         }
@@ -5797,28 +5876,32 @@ impl Tool for ResolveTargetTool {
             && args.target_id.is_none()
         {
             return Err(
-                "resolve_target.private_key_passphrase_secret 必须与 private_key_secret 一起使用"
+                "resolve_target.private_key_passphrase_secret must be used with private_key_secret"
                     .into(),
             );
         }
         if args.port == Some(0) {
-            return Err("resolve_target.port 必须大于 0".into());
+            return Err("resolve_target.port must be greater than 0".into());
         }
         if args
             .workspace_root
             .as_deref()
             .is_some_and(|root| root.trim().is_empty())
         {
-            return Err("resolve_target.workspace_root 不能为空".into());
+            return Err("resolve_target.workspace_root must not be empty".into());
         }
         let selected = if let Some(target_id) = args.target_id.as_deref() {
             let target = self
                 .targets
                 .get_execution_target(target_id)
                 .await?
-                .ok_or_else(|| format!("Execution Target '{target_id}' 不存在"))?;
+                .ok_or_else(|| format!("Execution Target '{target_id}' does not exist"))?;
             if !target_visible_to_active_principal(&target) {
-                return Err(format!("当前身份不能使用 Execution Target '{}'", target.id).into());
+                return Err(format!(
+                    "Current identity cannot use Execution Target '{}'",
+                    target.id
+                )
+                .into());
             }
             if args.auth_mode.is_some()
                 || args.private_key_secret.is_some()
@@ -5827,7 +5910,7 @@ impl Tool for ResolveTargetTool {
             {
                 self.runtime_managed_ssh
                     .as_ref()
-                    .ok_or("当前 Runtime 未启用按需 Managed SSH Target")?
+                    .ok_or("Current Runtime has not enabled on-demand Managed SSH Targets")?
                     .rehydrate_with_auth(
                         &target,
                         args.auth_mode,
@@ -5842,7 +5925,7 @@ impl Tool for ResolveTargetTool {
             {
                 self.runtime_managed_ssh
                     .as_ref()
-                    .ok_or("当前 Runtime 未启用按需 Managed SSH Target")?
+                    .ok_or("Current Runtime has not enabled on-demand Managed SSH Targets")?
                     .rehydrate(&target)
                     .await?
             } else if target.status == ExecutionTargetStatus::Online
@@ -5855,7 +5938,7 @@ impl Tool for ResolveTargetTool {
                 target
             } else {
                 return Err(format!(
-                    "Execution Target '{}' 当前为 {}，不能按当前策略选择",
+                    "Execution Target '{}' currently has status {} and cannot be selected under the current policy",
                     target.id,
                     target.status.as_str()
                 )
@@ -5865,7 +5948,7 @@ impl Tool for ResolveTargetTool {
             let provisioner = self
                 .runtime_managed_ssh
                 .as_ref()
-                .ok_or("当前 Runtime 未启用按需 Managed SSH Target")?;
+                .ok_or("Current Runtime has not enabled on-demand Managed SSH Targets")?;
             provisioner
                 .provision(RuntimeManagedSshProvisionRequest {
                     host,
@@ -5929,7 +6012,7 @@ impl Tool for ResolveTargetTool {
             targets
                 .into_iter()
                 .next()
-                .ok_or("没有满足当前 Principal、在线状态、平台和能力约束的 Execution Target")?
+                .ok_or("No Execution Target satisfies the current Principal, availability, platform, and capability constraints")?
         };
         if !args.capabilities.iter().all(|required| {
             selected
@@ -5937,7 +6020,11 @@ impl Tool for ResolveTargetTool {
                 .iter()
                 .any(|actual| actual == required)
         }) {
-            return Err(format!("Execution Target '{}' 不具备请求的全部能力", selected.id).into());
+            return Err(format!(
+                "Execution Target '{}' does not provide all requested capabilities",
+                selected.id
+            )
+            .into());
         }
         Ok(serde_json::json!({
             "target_id": selected.id,
@@ -6004,15 +6091,19 @@ impl Tool for InspectTargetTool {
             .targets
             .get_execution_target(&args.target_id)
             .await?
-            .ok_or_else(|| format!("Execution Target '{}' 不存在", args.target_id))?;
+            .ok_or_else(|| format!("Execution Target '{}' does not exist", args.target_id))?;
         if !target_visible_to_active_principal(&target) {
-            return Err(format!("当前身份不能查看 Execution Target '{}'", target.id).into());
+            return Err(format!(
+                "Current identity cannot inspect Execution Target '{}'",
+                target.id
+            )
+            .into());
         }
         let runtime_availability = target_runtime_availability(&target);
         let mut output = serde_json::to_value(target)?;
         let output_object = output
             .as_object_mut()
-            .ok_or("Execution Target 序列化结果不是 object")?;
+            .ok_or("Serialized Execution Target is not an object")?;
         if let Some(metadata) = output_object
             .get_mut("metadata")
             .and_then(serde_json::Value::as_object_mut)
@@ -7017,7 +7108,7 @@ mod tests {
         assert!(availability["status_explanation"]
             .as_str()
             .unwrap()
-            .contains("不表示远端主机"));
+            .contains("does not mean the remote host"));
     }
 
     #[test]
@@ -7237,7 +7328,7 @@ mod tests {
         assert!(rejected_image["error"]
             .as_str()
             .unwrap()
-            .contains("单文件上限 8 bytes"));
+            .contains("per-file model input limit of 8 bytes"));
 
         let digest = read["output"]
             .as_str()

@@ -63,7 +63,11 @@ impl TimerEngine {
             .write()
             .map_err(|_| "Runtime Timer handler registry poisoned")?;
         if handlers.contains_key(&kind) {
-            return Err(format!("Runtime Timer kind '{}' 已注册 handler", kind.as_str()).into());
+            return Err(format!(
+                "Runtime Timer kind '{}' already has a registered handler",
+                kind.as_str()
+            )
+            .into());
         }
         handlers.insert(kind, Arc::new(move |timer| Box::pin(handler(timer))));
         Ok(())
@@ -161,7 +165,7 @@ impl TimerEngine {
             let disposition = match handler {
                 Some(handler) => handler(timer.clone()).await,
                 None => Err(format!(
-                    "Runtime Timer kind '{}' 尚未注册 handler",
+                    "Runtime Timer kind '{}' has no registered handler",
                     timer.kind.as_str()
                 )
                 .into()),

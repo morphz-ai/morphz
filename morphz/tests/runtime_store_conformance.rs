@@ -593,12 +593,30 @@ where
             SessionUpdate {
                 title: Some("Archived Session".to_string()),
                 status: Some(SessionStatus::Archived),
+                model_alias: Some(Some("session-route-a".to_string())),
             },
         )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(archived.status, SessionStatus::Archived);
+    assert_eq!(archived.model_alias.as_deref(), Some("session-route-a"));
+    let inherited = store
+        .update_session(
+            &race_session.id,
+            SessionUpdate {
+                title: None,
+                status: None,
+                model_alias: Some(None),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        inherited.model_alias, None,
+        "clearing a Session model must restore Runtime inheritance"
+    );
     assert!(!store
         .list_context_sessions("conformance-context", false)
         .await
@@ -1036,6 +1054,25 @@ where
     let first = first.await.unwrap().unwrap().unwrap();
     let second = second.await.unwrap().unwrap().unwrap();
     assert_eq!(first.id, second.id);
+    let first_binding = store
+        .bind_thread_activation_model(&first.id, "evaluation-route-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        first_binding.model_alias.as_deref(),
+        Some("evaluation-route-a")
+    );
+    let replayed_binding = store
+        .bind_thread_activation_model(&first.id, "evaluation-route-b")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        replayed_binding.model_alias.as_deref(),
+        Some("evaluation-route-a"),
+        "an Evaluation model is immutable after the first durable binding"
+    );
     let clock = store
         .get_context_cognitive_clock("conformance-context")
         .await
@@ -2345,6 +2382,7 @@ where
             thread_id: "conformance-schedule-thread".to_string(),
             source_turn_id: "root-conformance-schedule-thread".to_string(),
             intent: "control-plane conformance".to_string(),
+            model_alias: None,
             not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
             interval_seconds: None,
             dependency_thread_ids: vec!["conformance-dependency-thread".to_string()],
@@ -2428,6 +2466,7 @@ where
             thread_id: "conformance-schedule-thread".to_string(),
             source_turn_id: "root-conformance-schedule-thread".to_string(),
             intent: "wake after dependency".to_string(),
+            model_alias: None,
             not_before: None,
             interval_seconds: None,
             dependency_thread_ids: vec!["conformance-dependency-thread".to_string()],
@@ -2448,6 +2487,7 @@ where
             thread_id: "conformance-dispatch-thread".to_string(),
             source_turn_id: "root-conformance-dispatch-thread".to_string(),
             intent: "dispatch once".to_string(),
+            model_alias: None,
             not_before: None,
             interval_seconds: None,
             dependency_thread_ids: Vec::new(),
@@ -2521,6 +2561,7 @@ where
             thread_id: "conformance-dispatch-thread".to_string(),
             source_turn_id: "root-conformance-dispatch-thread".to_string(),
             intent: "dispatch recurring occurrence".to_string(),
+            model_alias: None,
             not_before: None,
             interval_seconds: Some(60),
             dependency_thread_ids: Vec::new(),
@@ -2604,6 +2645,7 @@ where
                 thread_id: "missing-conformance-thread".to_string(),
                 source_turn_id: "missing-root".to_string(),
                 intent: "must roll back".to_string(),
+                model_alias: None,
                 not_before: None,
                 interval_seconds: None,
                 dependency_thread_ids: Vec::new(),
@@ -2982,6 +3024,7 @@ where
             SessionUpdate {
                 title: None,
                 status: Some(SessionStatus::Archived),
+                model_alias: None,
             },
         )
         .await
@@ -3072,6 +3115,7 @@ where
             SessionUpdate {
                 title: None,
                 status: Some(SessionStatus::Archived),
+                model_alias: None,
             },
         )
         .await
@@ -3417,6 +3461,7 @@ where
             SessionUpdate {
                 title: None,
                 status: Some(SessionStatus::Archived),
+                model_alias: None,
             },
         )
         .await
@@ -7066,6 +7111,7 @@ where
             SessionUpdate {
                 title: None,
                 status: Some(SessionStatus::Archived),
+                model_alias: None,
             },
         )
         .await

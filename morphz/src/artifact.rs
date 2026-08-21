@@ -96,7 +96,7 @@ pub async fn mark_artifact_transfer_side_effect() -> Result<(), ArtifactTransfer
         sender
             .send(acknowledge)
             .map(|_| acknowledged)
-            .map_err(|_| "Artifact Transfer side-effect coordinator 已关闭")
+            .map_err(|_| "Artifact Transfer side-effect coordinator is closed")
     }) {
         Ok(Ok(acknowledged)) => Some(acknowledged),
         Ok(Err(error)) => return Err(error.into()),
@@ -107,7 +107,7 @@ pub async fn mark_artifact_transfer_side_effect() -> Result<(), ArtifactTransfer
     if let Some(acknowledged) = acknowledgement {
         acknowledged
             .await
-            .map_err(|_| "Artifact Transfer side-effect boundary 未被持久化")?;
+            .map_err(|_| "Artifact Transfer side-effect boundary was not persisted")?;
     }
     Ok(())
 }
@@ -175,7 +175,9 @@ impl ArtifactTransferStageStore {
         kind: ArtifactTransferStageKind,
     ) -> Result<PathBuf, ArtifactTransferError> {
         let path = self.stage_path(job_id, kind);
-        let parent = path.parent().ok_or("Artifact stage 缺少父目录")?;
+        let parent = path
+            .parent()
+            .ok_or("Artifact stage has no parent directory")?;
         tokio::fs::create_dir_all(parent).await?;
         Ok(path)
     }
@@ -184,7 +186,7 @@ impl ArtifactTransferStageStore {
         let path = self
             .stage_path(job_id, ArtifactTransferStageKind::RuntimeSource)
             .parent()
-            .ok_or("Artifact stage 缺少 Job 目录")?
+            .ok_or("Artifact stage is missing a Job directory")?
             .to_path_buf();
         match tokio::fs::remove_dir_all(path).await {
             Ok(()) => Ok(()),
@@ -268,17 +270,17 @@ pub struct ArtifactLocation {
 impl ArtifactLocation {
     pub fn validate(&self) -> Result<(), ArtifactTransferError> {
         if self.target_id.trim().is_empty() {
-            return Err("Artifact target_id 不能为空".into());
+            return Err("Artifact target_id must not be empty".into());
         }
         if self.path.trim().is_empty() {
-            return Err("Artifact path 不能为空".into());
+            return Err("Artifact path must not be empty".into());
         }
         if self
             .workspace_identity
             .as_deref()
             .is_some_and(|value| value.trim().is_empty())
         {
-            return Err("Artifact workspace_identity 不能是空字符串".into());
+            return Err("Artifact workspace_identity must not be an empty string".into());
         }
         Ok(())
     }
@@ -305,7 +307,7 @@ pub struct ArtifactDescriptor {
 impl ArtifactDescriptor {
     pub fn validate(&self) -> Result<(), ArtifactTransferError> {
         if self.artifact_id.trim().is_empty() {
-            return Err("Artifact artifact_id 不能为空".into());
+            return Err("Artifact artifact_id must not be empty".into());
         }
         self.location.validate()?;
         if let Some(digest) = &self.content_digest {
@@ -350,7 +352,7 @@ pub struct ArtifactTransferRequest {
 impl ArtifactTransferRequest {
     pub fn validate(&self) -> Result<(), ArtifactTransferError> {
         if self.transfer_id.trim().is_empty() {
-            return Err("Artifact transfer_id 不能为空".into());
+            return Err("Artifact transfer_id must not be empty".into());
         }
         self.source.validate()?;
         self.destination.validate()?;
@@ -358,7 +360,7 @@ impl ArtifactTransferRequest {
             validate_sha256_digest(digest)?;
         }
         if self.source == self.destination {
-            return Err("Artifact source 与 destination 不能是同一位置".into());
+            return Err("Artifact source and destination must not be the same location".into());
         }
         Ok(())
     }
@@ -389,12 +391,16 @@ impl ArtifactTransferReceipt {
             || self.source.size_bytes != self.destination.size_bytes
             || self.bytes_transferred != self.source.size_bytes.unwrap_or_default()
         {
-            return Err("Artifact Transfer receipt 与请求或内容摘要不一致".into());
+            return Err(
+                "Artifact Transfer receipt does not match the request or content digest".into(),
+            );
         }
         if request.expected_source_digest.is_some()
             && request.expected_source_digest != self.source.content_digest
         {
-            return Err("Artifact source 已变化，不满足 expected_source_digest".into());
+            return Err(
+                "Artifact source changed and no longer satisfies expected_source_digest".into(),
+            );
         }
         Ok(())
     }
@@ -456,7 +462,7 @@ impl ArtifactTransferBackend for LocalArtifactTransferBackend {
                 artifact_transfer_approval_action(&destination),
                 requested,
                 format!(
-                    "传输 Artifact：读取 '{}' 并写入 '{}'",
+                    "transfer Artifact: read '{}' and write '{}'",
                     source.display(),
                     destination.display()
                 ),
@@ -646,7 +652,7 @@ impl Tool for TransferTool {
             artifact_transfer_approval_action(&destination),
             requested,
             format!(
-                "Artifact Transfer 需要读取 '{}' 并写入 '{}'",
+                "Artifact Transfer requires reading '{}' and writing '{}'",
                 request.source.path, request.destination.path
             ),
         )
@@ -754,7 +760,7 @@ async fn transfer_local_file(
     }
     if !metadata.is_file() {
         return Err(format!(
-            "Artifact source '{}' 既不是普通文件也不是目录",
+            "Artifact source '{}' is neither a regular file nor a directory",
             source.display()
         )
         .into());
@@ -764,14 +770,14 @@ async fn transfer_local_file(
     let destination_parent = destination
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
-        .ok_or("Artifact destination 缺少父目录")?;
+        .ok_or("Artifact destination has no parent directory")?;
     // The destination denotes the final Artifact, not a requirement that all
     // ancestors were provisioned ahead of time. PermissionBroker has already
     // authorized this resolved write boundary.
     tokio::fs::create_dir_all(destination_parent).await?;
     if !tokio::fs::metadata(destination_parent).await?.is_dir() {
         return Err(format!(
-            "Artifact destination 父路径 '{}' 不是目录",
+            "Artifact destination parent path '{}' is not a directory",
             destination_parent.display()
         )
         .into());
@@ -787,7 +793,7 @@ async fn transfer_local_file(
                 .as_deref()
                 .is_some_and(|expected| expected != source_digest)
             {
-                return Err("Artifact source digest 与前置条件冲突".into());
+                return Err("Artifact source digest conflicts with the precondition".into());
             }
             return Ok(file_transfer_receipt(
                 request,
@@ -797,7 +803,7 @@ async fn transfer_local_file(
             ));
         }
         return Err(format!(
-            "Artifact destination '{}' 已存在且内容不同",
+            "Artifact destination '{}' already exists with different content",
             destination.display()
         )
         .into());
@@ -835,7 +841,7 @@ async fn transfer_local_file(
             .is_some_and(|expected| expected != digest)
         {
             return Err(format!(
-                "Artifact source digest 冲突：期望 '{}'，实际 '{}'",
+                "Artifact source digest conflict: expected '{}', actual '{}'",
                 request
                     .expected_source_digest
                     .as_deref()
@@ -937,11 +943,11 @@ async fn transfer_local_directory(
     let destination_parent = destination
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
-        .ok_or("Artifact directory destination 缺少父目录")?;
+        .ok_or("Artifact directory destination has no parent directory")?;
     tokio::fs::create_dir_all(destination_parent).await?;
     if !tokio::fs::metadata(destination_parent).await?.is_dir() {
         return Err(format!(
-            "Artifact destination 父路径 '{}' 不是目录",
+            "Artifact destination parent path '{}' is not a directory",
             destination_parent.display()
         )
         .into());
@@ -951,7 +957,7 @@ async fn transfer_local_directory(
     {
         if !tokio::fs::metadata(&destination).await?.is_dir() {
             return Err(format!(
-                "Artifact destination '{}' 已存在且不是目录",
+                "Artifact destination '{}' already exists and is not a directory",
                 destination.display()
             )
             .into());
@@ -965,7 +971,9 @@ async fn transfer_local_directory(
                 .as_deref()
                 .is_some_and(|expected| expected != source_digest)
             {
-                return Err("Artifact directory source digest 与前置条件冲突".into());
+                return Err(
+                    "Artifact directory source digest conflicts with the precondition".into(),
+                );
             }
             let artifact_id = format!("artifact:{source_digest}");
             let descriptor = |location: ArtifactLocation| ArtifactDescriptor {
@@ -988,7 +996,7 @@ async fn transfer_local_directory(
             });
         }
         return Err(format!(
-            "Artifact destination '{}' 已存在且内容不同",
+            "Artifact destination '{}' already exists with different content",
             destination.display()
         )
         .into());
@@ -1044,7 +1052,7 @@ async fn transfer_local_directory(
             recreate_symlink(&link_target, &target)?;
         } else {
             return Err(format!(
-                "Artifact directory 包含不支持的文件类型：'{}'",
+                "Artifact directory contains unsupported file type: '{}'",
                 entry.path().display()
             )
             .into());
@@ -1057,7 +1065,7 @@ async fn transfer_local_directory(
         .is_some_and(|expected| expected != digest)
     {
         return Err(format!(
-            "Artifact directory source digest 冲突：期望 '{}'，实际 '{}'",
+            "Artifact directory source digest conflict: expected '{}', actual '{}'",
             request
                 .expected_source_digest
                 .as_deref()
@@ -1132,7 +1140,7 @@ pub(crate) async fn inspect_local_directory_artifact(
             hash_os_string(&mut tree_hasher, target.as_os_str());
         } else {
             return Err(format!(
-                "Artifact directory 包含不支持的文件类型：'{}'",
+                "Artifact directory contains unsupported file type: '{}'",
                 entry.path().display()
             )
             .into());
@@ -1195,7 +1203,7 @@ async fn publish_staged_path(
             }
             let parent = destination
                 .parent()
-                .ok_or("Artifact destination 缺少父目录")?;
+                .ok_or("Artifact destination has no parent directory")?;
             let backup = unique_staging_path(parent, transfer_id, "backup");
             tokio::fs::rename(destination, &backup).await?;
             let mut backup_guard = StagingPathGuard::unknown(backup.clone());
@@ -1377,7 +1385,9 @@ impl ArtifactTransferRegistry {
                     .cloned()
             })
         }
-        .ok_or("没有 Runtime Artifact Transport 能处理当前源与目的 Route")?;
+        .ok_or(
+            "no Runtime Artifact Transport can handle the current source and destination Routes",
+        )?;
         let receipt = implementation.transfer(request).await?;
         receipt.validate_against(request)?;
         Ok(receipt)
@@ -1386,13 +1396,13 @@ impl ArtifactTransferRegistry {
 
 fn validate_sha256_digest(value: &str) -> Result<(), ArtifactTransferError> {
     let Some(hex) = value.strip_prefix("sha256:") else {
-        return Err("Artifact content_digest 必须使用 sha256:<hex>".into());
+        return Err("Artifact content_digest must use sha256:<hex>".into());
     };
     if hex.len() != 64
         || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
         || hex.bytes().any(|byte| byte.is_ascii_uppercase())
     {
-        return Err("Artifact SHA-256 摘要必须包含 64 个小写十六进制字符".into());
+        return Err("Artifact SHA-256 digest must contain 64 lowercase hex characters".into());
     }
     Ok(())
 }
@@ -1663,7 +1673,7 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("权限审批拒绝"));
+        assert!(error.to_string().contains("permission review rejected"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(!tokio::fs::try_exists(&denied_destination).await.unwrap());
 

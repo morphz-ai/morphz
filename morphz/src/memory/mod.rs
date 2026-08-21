@@ -716,6 +716,10 @@ pub struct SessionRecord {
     pub parent_session_id: Option<String>,
     pub title: String,
     pub status: SessionStatus,
+    /// Optional model route selected for future Evaluations in this Session.
+    /// `None` inherits the Runtime primary model at Evaluation binding time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_alias: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
@@ -830,6 +834,9 @@ pub struct NewSession {
 pub struct SessionUpdate {
     pub title: Option<String>,
     pub status: Option<SessionStatus>,
+    /// `None` leaves the binding unchanged. `Some(None)` restores Runtime
+    /// inheritance; `Some(Some(alias))` selects a concrete enabled route.
+    pub model_alias: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -887,6 +894,10 @@ pub struct ThreadActivationRecord {
     pub parent_activation_id: Option<String>,
     pub root_turn_id: String,
     pub context_snapshot_version: Option<u64>,
+    /// Immutable logical model route for this Evaluation. It is bound once
+    /// before the first physical Provider attempt and survives restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_alias: Option<String>,
     pub status: ThreadActivationStatus,
     pub claimed_by: Option<String>,
     pub lease_expires_at: Option<DateTime<Utc>>,
@@ -930,7 +941,7 @@ pub(crate) fn validate_plan_evaluation_activation_route(
     let payload_string = |key: &str| event.payload.get(key).and_then(JsonValue::as_str);
     let event_sequence = event
         .sequence
-        .ok_or_else(|| format!("infer Event '{}' 缺少 durable sequence", event.id))?;
+        .ok_or_else(|| format!("infer Event '{}' is missing a durable sequence", event.id))?;
     let expected_activation_id = stable_thread_activation_id(&event.id);
     let expected_signal_id = stable_thread_signal_id(&event.id);
     let expected_thread_id = stable_thread_id(&event.id);
@@ -950,7 +961,9 @@ pub(crate) fn validate_plan_evaluation_activation_route(
         || payload_string("parent_activation_id") != expected_parent
         || payload_string("principal_id") != plan.initiating_principal_id.as_deref()
     {
-        return Err("PlanExecution 与 deterministic infer Event 的 route 不一致".to_string());
+        return Err(
+            "PlanExecution route is inconsistent with deterministic infer Event".to_string(),
+        );
     }
 
     if child_thread.id != expected_thread_id
@@ -963,7 +976,9 @@ pub(crate) fn validate_plan_evaluation_activation_route(
         || child_thread.executor_kind != "plan_infer"
         || child_thread.executor_id.as_deref() != Some(plan.id.as_str())
     {
-        return Err("PlanExecution 与 deterministic infer Thread 的 route 不一致".to_string());
+        return Err(
+            "PlanExecution route is inconsistent with deterministic infer Thread".to_string(),
+        );
     }
 
     if signal.id != expected_signal_id
@@ -978,7 +993,9 @@ pub(crate) fn validate_plan_evaluation_activation_route(
             .as_deref()
             .is_some_and(|parent| Some(parent) != expected_parent)
     {
-        return Err("PlanExecution 与 deterministic infer Signal 的 route 不一致".to_string());
+        return Err(
+            "PlanExecution route is inconsistent with deterministic infer Signal".to_string(),
+        );
     }
 
     if activation.agent_id != plan.agent_id
@@ -995,7 +1012,9 @@ pub(crate) fn validate_plan_evaluation_activation_route(
             .as_deref()
             .is_some_and(|parent| Some(parent) != expected_parent)
     {
-        return Err("PlanExecution 与 deterministic infer Activation 的 route 不一致".to_string());
+        return Err(
+            "PlanExecution route is inconsistent with deterministic infer Activation".to_string(),
+        );
     }
 
     if parent_thread.id != plan.thread_id
@@ -1011,7 +1030,9 @@ pub(crate) fn validate_plan_evaluation_activation_route(
         || parent_activation.root_turn_id != parent_thread.root_turn_id
         || parent_activation.generation != parent_thread.generation
     {
-        return Err("PlanExecution 与 existing parent Activation 的 route 不一致".to_string());
+        return Err(
+            "PlanExecution route is inconsistent with the existing parent Activation".to_string(),
+        );
     }
     Ok(())
 }
@@ -3053,7 +3074,7 @@ pub fn thread_group_barrier_event(
     parent: Option<&ThreadRecord>,
 ) -> Result<crate::event::Event, String> {
     if !group.status.is_terminal() {
-        return Err(format!("Thread Group '{}' 尚未终止", group.id));
+        return Err(format!("Thread Group '{}' is not terminal", group.id));
     }
     let event_id = format!("thread_group_barrier_{}_g{}", group.id, group.generation);
     let mut payload = serde_json::Map::new();
@@ -3080,7 +3101,10 @@ pub fn thread_group_barrier_event(
     let (topic, event_type) = match group.supervisor_kind {
         ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
             let parent = parent.ok_or_else(|| {
-                format!("attached Thread Group '{}' 缺少父 Thread 投影", group.id)
+                format!(
+                    "attached Thread Group '{}' is missing its parent Thread projection",
+                    group.id
+                )
             })?;
             payload.insert(
                 "session_id".to_string(),
@@ -3112,7 +3136,7 @@ pub fn thread_group_barrier_event(
             payload.insert(
                 "text".to_string(),
                 JsonValue::String(format!(
-                    "Thread Group '{}' 已终止：{}（{}/{} 成功）",
+                    "Thread Group '{}' is terminal: {} ({}/{} succeeded)",
                     group.id,
                     group.status.as_str(),
                     group.successful_count,
@@ -3158,7 +3182,7 @@ pub fn thread_group_barrier_event(
         }
         ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => {
             return Err(format!(
-                "Thread Group '{}' 不能由 {:?} supervisor 收口",
+                "Thread Group '{}' cannot be finalized by a {:?} supervisor",
                 group.id, group.supervisor_kind
             ));
         }
@@ -3259,7 +3283,7 @@ pub fn validate_thread_supersede_event(
             .payload
             .get(key)
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| format!("Thread supersede Event 缺少 '{key}'"))
+            .ok_or_else(|| format!("Thread supersede Event is missing '{key}'"))
     };
     if event.topic != "runtime/thread_superseded"
         || event.event_type != "runtime_control"
@@ -3284,7 +3308,7 @@ pub fn validate_thread_supersede_event(
             .is_none_or(|intent| intent.trim().is_empty())
     {
         return Err(format!(
-            "Thread supersede Event '{}' 与 Thread '{}' 的 fenced route 不一致",
+            "Thread supersede Event '{}' is inconsistent with the fenced route of Thread '{}'",
             event.id, thread.id
         ));
     }
@@ -3336,80 +3360,81 @@ pub fn thread_terminal_barrier_event(
             "unresolved_failures": outcome.unresolved_failures,
         }),
     );
-    let (topic, event_type) =
-        match thread.supervision.supervisor_kind {
-            ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
-                let parent = parent
-                    .ok_or_else(|| format!("attached Thread '{}' 缺少父 Thread 投影", thread.id))?;
-                payload.insert(
-                    "session_id".to_string(),
-                    JsonValue::String(parent.session_id.clone()),
-                );
-                payload.insert(
-                    "thread_id".to_string(),
-                    JsonValue::String(parent.id.clone()),
-                );
-                payload.insert(
-                    "root_turn_id".to_string(),
-                    JsonValue::String(parent.root_turn_id.clone()),
-                );
-                payload.insert(
-                    "tool_name".to_string(),
-                    JsonValue::String("thread".to_string()),
-                );
-                payload.insert(
-                    "tool_status".to_string(),
-                    JsonValue::String("error".to_string()),
-                );
-                payload.insert(
-                    "text".to_string(),
-                    JsonValue::String(format!(
-                        "Thread '{}' 已终止：{}",
-                        thread.id,
-                        outcome.terminal_kind.as_str()
-                    )),
-                );
-                (
-                    "chat/thread_terminal".to_string(),
-                    crate::event::TYPE_TOOL_OUTPUT.to_string(),
+    let (topic, event_type) = match thread.supervision.supervisor_kind {
+        ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
+            let parent = parent.ok_or_else(|| {
+                format!(
+                    "attached Thread '{}' is missing its parent Thread projection",
+                    thread.id
                 )
-            }
-            ThreadSupervisorKind::Objective => {
-                payload.insert(
-                    "session_id".to_string(),
-                    JsonValue::String(thread.session_id.clone()),
-                );
-                payload.insert(
-                    "objective_id".to_string(),
-                    JsonValue::String(
-                        thread.supervision.supervisor_id.clone().ok_or_else(|| {
-                            format!("durable Thread '{}' 缺少 Objective", thread.id)
-                        })?,
-                    ),
-                );
-                (
-                    "runtime/thread_terminal".to_string(),
-                    "runtime_control".to_string(),
-                )
-            }
-            ThreadSupervisorKind::Runtime => {
-                payload.insert(
-                    "session_id".to_string(),
-                    JsonValue::String(thread.session_id.clone()),
-                );
-                payload.insert(
-                    "runtime_supervisor_id".to_string(),
-                    JsonValue::String(thread.supervision.supervisor_id.clone().ok_or_else(
-                        || format!("Runtime Thread '{}' 缺少 supervisor", thread.id),
-                    )?),
-                );
-                (
-                    "runtime/thread_terminal".to_string(),
-                    "runtime_control".to_string(),
-                )
-            }
-            ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => return Ok(None),
-        };
+            })?;
+            payload.insert(
+                "session_id".to_string(),
+                JsonValue::String(parent.session_id.clone()),
+            );
+            payload.insert(
+                "thread_id".to_string(),
+                JsonValue::String(parent.id.clone()),
+            );
+            payload.insert(
+                "root_turn_id".to_string(),
+                JsonValue::String(parent.root_turn_id.clone()),
+            );
+            payload.insert(
+                "tool_name".to_string(),
+                JsonValue::String("thread".to_string()),
+            );
+            payload.insert(
+                "tool_status".to_string(),
+                JsonValue::String("error".to_string()),
+            );
+            payload.insert(
+                "text".to_string(),
+                JsonValue::String(format!(
+                    "Thread '{}' is terminal: {}",
+                    thread.id,
+                    outcome.terminal_kind.as_str()
+                )),
+            );
+            (
+                "chat/thread_terminal".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            )
+        }
+        ThreadSupervisorKind::Objective => {
+            payload.insert(
+                "session_id".to_string(),
+                JsonValue::String(thread.session_id.clone()),
+            );
+            payload.insert(
+                "objective_id".to_string(),
+                JsonValue::String(thread.supervision.supervisor_id.clone().ok_or_else(|| {
+                    format!("durable Thread '{}' is missing its Objective", thread.id)
+                })?),
+            );
+            (
+                "runtime/thread_terminal".to_string(),
+                "runtime_control".to_string(),
+            )
+        }
+        ThreadSupervisorKind::Runtime => {
+            payload.insert(
+                "session_id".to_string(),
+                JsonValue::String(thread.session_id.clone()),
+            );
+            payload.insert(
+                "runtime_supervisor_id".to_string(),
+                JsonValue::String(thread.supervision.supervisor_id.clone().ok_or_else(|| {
+                    format!("Runtime Thread '{}' is missing its supervisor", thread.id)
+                })?),
+            );
+            (
+                "runtime/thread_terminal".to_string(),
+                "runtime_control".to_string(),
+            )
+        }
+        ThreadSupervisorKind::None | ThreadSupervisorKind::Legacy => return Ok(None),
+    };
     Ok(Some(crate::event::Event::new(
         format!(
             "thread_terminal_{}_g{}",
@@ -3873,7 +3898,7 @@ impl ThreadSupervision {
 
     pub fn validate(&self, kind: ThreadKind) -> Result<(), String> {
         if self.generation == 0 {
-            return Err("Thread supervision generation 必须大于 0".to_string());
+            return Err("Thread supervision generation must be greater than zero".to_string());
         }
         match (self.lifetime, self.supervisor_kind) {
             (ThreadLifetime::Attached, ThreadSupervisorKind::Thread)
@@ -3896,14 +3921,14 @@ impl ThreadSupervision {
             (_, ThreadSupervisorKind::Legacy) => {}
             _ => {
                 return Err(format!(
-                    "非法 Thread 监督组合: lifetime={}, supervisor={}",
+                    "invalid Thread supervision combination: lifetime={}, supervisor={}",
                     self.lifetime.as_str(),
                     self.supervisor_kind.as_str()
                 ));
             }
         }
         if self.lifetime == ThreadLifetime::Disposable && self.thread_group_id.is_some() {
-            return Err("disposable Thread 不能加入 required Thread Group".to_string());
+            return Err("a disposable Thread cannot join a required Thread Group".to_string());
         }
         Ok(())
     }
@@ -4084,6 +4109,10 @@ pub struct ScheduleRecord {
     pub thread_id: String,
     pub source_turn_id: String,
     pub intent: String,
+    /// Optional exact model route requested for every Evaluation dispatched
+    /// by this Schedule. No cross-model fallback is implied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_alias: Option<String>,
     pub status: ScheduleStatus,
     pub not_before: Option<DateTime<Utc>>,
     pub interval_seconds: Option<u64>,
@@ -4098,6 +4127,7 @@ pub struct NewSchedule {
     pub thread_id: String,
     pub source_turn_id: String,
     pub intent: String,
+    pub model_alias: Option<String>,
     pub not_before: Option<DateTime<Utc>>,
     pub interval_seconds: Option<u64>,
     pub dependency_thread_ids: Vec<String>,
@@ -4596,7 +4626,7 @@ pub(crate) fn message_request_fingerprint(
         payload
             .get(name)
             .and_then(JsonValue::as_str)
-            .ok_or_else(|| format!("用户消息缺少 {name}").into())
+            .ok_or_else(|| format!("user message is missing {name}").into())
     }
 
     fn digest_field(digest: &mut sha2::Sha256, value: &str) {
@@ -4622,13 +4652,13 @@ pub(crate) fn message_request_fingerprint(
                 attachment
                     .get(name)
                     .and_then(JsonValue::as_str)
-                    .ok_or_else(|| format!("用户消息附件缺少 {name}"))?,
+                    .ok_or_else(|| format!("user message attachment is missing {name}"))?,
             );
         }
         let size = attachment
             .get("size_bytes")
             .and_then(JsonValue::as_u64)
-            .ok_or("用户消息附件缺少 size_bytes")?;
+            .ok_or("user message attachment is missing size_bytes")?;
         digest.update(size.to_be_bytes());
     }
     for name in [
@@ -4659,7 +4689,7 @@ pub(crate) fn message_request_fingerprint(
                         reference
                             .get(name)
                             .and_then(JsonValue::as_str)
-                            .ok_or_else(|| format!("用户消息引用缺少 {name}"))?,
+                            .ok_or_else(|| format!("user message reference is missing {name}"))?,
                     );
                 }
             }
@@ -4693,7 +4723,7 @@ pub struct QueryFilter {
     pub end_time: Option<DateTime<Utc>>,
     pub actors: Vec<String>,
     pub types: Vec<String>,
-    pub topic: Option<String>, // 支持精准或前缀通配符过滤
+    pub topic: Option<String>, // Supports exact or prefix-wildcard filtering.
     /// Exact topic allow-list. This is intentionally separate from `topic`,
     /// whose single value also supports prefix matching. Read models such as
     /// the Dialogue transcript use it to page the newest presentation Events
@@ -4709,7 +4739,7 @@ pub struct QueryFilter {
     pub activation_id: Option<String>,
     pub root_turn_id: Option<String>,
     pub objective_id: Option<String>,
-    pub top_k: Option<usize>, // 返回的最相关事件数量限制
+    pub top_k: Option<usize>, // Limits the number of most relevant Events returned.
     /// Return the newest N events, while preserving chronological order in the
     /// returned vector. This keeps tail reads bounded inside SQLite.
     pub latest_k: Option<usize>,
@@ -5759,6 +5789,14 @@ pub trait ActivationStore: Send + Sync {
     async fn get_thread_activation(
         &self,
         id: &str,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically freezes the logical model route for one Evaluation boundary.
+    /// The first non-empty binding wins; later callers observe the persisted
+    /// value and must never rewrite an in-flight or recovered Activation.
+    async fn bind_thread_activation_model(
+        &self,
+        id: &str,
+        model_alias: &str,
     ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Exact Activation parents for an already-selected scheduler aggregate.
     async fn list_thread_activations_by_ids(
@@ -6968,7 +7006,7 @@ impl ProviderAccountStatus {
             "invalid" => Ok(Self::Invalid),
             "revoked" => Ok(Self::Revoked),
             "disabled" => Ok(Self::Disabled),
-            other => Err(format!("未知 Provider Account 状态 '{other}'")),
+            other => Err(format!("unknown Provider Account status '{other}'")),
         }
     }
 

@@ -1,0 +1,32 @@
+{
+  "protocol": "terminal-bench-2.1-morphz-pilot-v1",
+  "purpose": "Infrastructure and behavioral coverage gate before the full 89-task, five-attempt batch; not a leaderboard result.",
+  "attempts_per_task": 1,
+  "concurrency": 5,
+  "max_retries": 0,
+  "selection_policy": "Precommitted breadth sample selected from task metadata and instructions only, without consulting solutions or verifier implementations.",
+  "tasks": [
+    {
+      "name": "git-multibranch",
+      "coverage": "multi-service system administration, Git, SSH, Nginx, HTTPS"
+    },
+    {
+      "name": "db-wal-recovery",
+      "coverage": "binary inspection, encrypted SQLite WAL recovery, data integrity"
+    },
+    {
+      "name": "polyglot-rust-c",
+      "coverage": "hard cross-language program construction and compilation"
+    },
+    {
+      "name": "financial-document-processor",
+      "coverage": "mixed PDF/JPG document processing, OCR, extraction, file operations"
+    },
+    {
+      "name": "cancel-async-tasks",
+      "coverage": "asynchronous concurrency, cancellation, cleanup semantics"
+    }
+  ],
+  "amendment": "The task selection was frozen before execution. Before the successful launch, the user explicitly changed execution concurrency from 1 to 5; a first selector attempt failed before model execution because task names lacked the registry namespace.",
+  "post_pilot_gate": "If artifacts, ATIF, isolation and provider behavior remain valid under n_concurrent=5, freeze the formal evaluation commit and retain concurrency 5 for the full batch."
+}

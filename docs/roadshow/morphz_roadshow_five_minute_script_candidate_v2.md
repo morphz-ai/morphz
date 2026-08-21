@@ -6,9 +6,9 @@
 >
 > 硬时长：5 分钟
 >
-> Runtime 源码基线：`paper-eval-runtime-v2` / `03a32f864a3c38026672b4076855137e0bbb5627`
+> Runtime 源码基线：`paper-eval-runtime-v3` / `f875b93869282a14b738edec2f3a4069fd003600`
 >
-> 证据协议：[DEMO-001 路演证据协议候选版 v2](demo_001_protocol_candidate_v2.md)
+> 证据协议：`needs-redesign`；旧 [DEMO-001 候选版 v2](demo_001_protocol_candidate_v2.md) 仅作历史审计，不得复用其结果
 >
 > 核心问题：为什么要发明 Morphz，而不是直接使用 Codex、OpenClaw 等现有 Agent 产品？
 

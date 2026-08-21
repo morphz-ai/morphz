@@ -85,11 +85,11 @@ impl ModelInputUsage {
         self.attachment_count = self
             .attachment_count
             .checked_add(1)
-            .ok_or("模型输入附件数量溢出")?;
+            .ok_or("model input attachment count overflow")?;
         self.total_bytes = self
             .total_bytes
             .checked_add(bytes)
-            .ok_or("模型输入附件总大小溢出")?;
+            .ok_or("model input total attachment size overflow")?;
         self.largest_attachment_bytes = self.largest_attachment_bytes.max(bytes);
         Ok(())
     }
@@ -103,7 +103,7 @@ pub fn validate_model_input_usage(
     if let Some(limit) = limits.max_attachments {
         if usage.attachment_count > limit {
             return Err(format!(
-                "{boundary}包含 {} 个模型输入附件，超过 {} 个上限",
+                "{boundary} contains {} model input attachments, exceeding the limit of {}",
                 usage.attachment_count, limit
             )
             .into());
@@ -112,7 +112,7 @@ pub fn validate_model_input_usage(
     if let Some(limit) = limits.max_attachment_bytes {
         if usage.largest_attachment_bytes > limit {
             return Err(format!(
-                "{boundary}中最大的模型输入附件为 {}，超过单个附件上限 {}",
+                "the largest model input attachment in {boundary} is {}, exceeding the per-attachment limit of {}",
                 human_bytes(usage.largest_attachment_bytes),
                 human_bytes(limit)
             )
@@ -122,7 +122,7 @@ pub fn validate_model_input_usage(
     if let Some(limit) = limits.max_total_bytes {
         if usage.total_bytes > limit {
             return Err(format!(
-                "{boundary}的模型输入附件合计 {}，超过总量上限 {}",
+                "model input attachments in {boundary} total {}, exceeding the total limit of {}",
                 human_bytes(usage.total_bytes),
                 human_bytes(limit)
             )
@@ -143,7 +143,7 @@ pub fn inspect_model_input_messages(
             continue;
         }
         let attachments: Vec<ModelAttachment> = serde_json::from_str(&message.content)
-            .map_err(|error| format!("模型输入附件信封无效：{error}"))?;
+            .map_err(|error| format!("invalid model input attachment envelope: {error}"))?;
         for attachment in attachments {
             usage.add(decoded_base64_len(&attachment.data_base64)?)?;
         }
@@ -164,7 +164,7 @@ pub async fn persist_model_input_attachments(
     for attachment in &attachments {
         usage.add(attachment.data.len())?;
     }
-    validate_model_input_usage(usage, limits, "本次导入")?;
+    validate_model_input_usage(usage, limits, "this import")?;
     if attachments.is_empty() {
         return Ok(Vec::new());
     }
@@ -237,7 +237,7 @@ pub async fn prepare_message_input_attachments(
     for attachment in &attachments {
         usage.add(attachment.data.len())?;
     }
-    validate_model_input_usage(usage, limits, "本次导入")?;
+    validate_model_input_usage(usage, limits, "this import")?;
 
     let root = absolute_root(configured_root.as_ref())?.join("message-inputs-v2");
     let scope_key = format!("{:x}", Sha256::digest(scope_id.as_bytes()));
@@ -346,7 +346,7 @@ async fn ensure_content_blob(
     let digest = blob_path
         .file_name()
         .and_then(|value| value.to_str())
-        .ok_or("模型输入 blob 路径缺少摘要")?;
+        .ok_or("model input blob path is missing a digest")?;
     let temporary_path = blob_path.with_file_name(format!(".{digest}.{event_id}.{index}.partial"));
     let mut file = match tokio::fs::OpenOptions::new()
         .create_new(true)
@@ -580,10 +580,10 @@ pub async fn attachment_message_from_metadata(
             .get("size_bytes")
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok())
-            .ok_or("模型输入附件缺少有效 size_bytes")?;
+            .ok_or("model input attachment is missing a valid size_bytes")?;
         usage.add(size)?;
     }
-    validate_model_input_usage(usage, limits, "本次附件装载")?;
+    validate_model_input_usage(usage, limits, "this attachment load")?;
 
     let root = tokio::fs::canonicalize(absolute_root(configured_root.as_ref())?).await?;
     let mut attachments = Vec::with_capacity(items.len());
@@ -624,7 +624,7 @@ async fn read_stored_attachment_from_root(
     let name = metadata
         .get("name")
         .and_then(Value::as_str)
-        .ok_or("模型输入附件缺少 name")?;
+        .ok_or("model input attachment is missing name")?;
     let media_type = metadata
         .get("media_type")
         .and_then(Value::as_str)
@@ -632,15 +632,15 @@ async fn read_stored_attachment_from_root(
     let expected_digest = metadata
         .get("sha256")
         .and_then(Value::as_str)
-        .ok_or("模型输入附件缺少 sha256")?;
+        .ok_or("model input attachment is missing sha256")?;
     let storage_path = metadata
         .get("storage_path")
         .and_then(Value::as_str)
-        .ok_or("模型输入附件缺少 storage_path")?;
+        .ok_or("model input attachment is missing storage_path")?;
     let path = tokio::fs::canonicalize(storage_path).await?;
     if !path.starts_with(root) {
         return Err(format!(
-            "模型输入附件 '{}' 位于 Artifact Store 之外，拒绝读取",
+            "model input attachment '{}' is outside the Artifact Store; read rejected",
             path.display()
         )
         .into());
@@ -650,13 +650,13 @@ async fn read_stored_attachment_from_root(
         .get("size_bytes")
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
-        .ok_or("模型输入附件缺少有效 size_bytes")?;
+        .ok_or("model input attachment is missing a valid size_bytes")?;
     if data.len() != expected_size {
-        return Err(format!("模型输入附件 '{}' 大小校验失败", name).into());
+        return Err(format!("model input attachment '{}' failed size validation", name).into());
     }
     let actual_digest = format!("{:x}", Sha256::digest(&data));
     if actual_digest != expected_digest {
-        return Err(format!("模型输入附件 '{}' 摘要校验失败", name).into());
+        return Err(format!("model input attachment '{}' failed digest validation", name).into());
     }
     Ok(StoredAttachment {
         name: name.to_string(),
@@ -668,7 +668,7 @@ async fn read_stored_attachment_from_root(
 pub(crate) fn decoded_base64_len(value: &str) -> Result<usize, ModelInputError> {
     let bytes = value.as_bytes();
     if !bytes.len().is_multiple_of(4) {
-        return Err("模型输入附件 Base64 长度无效".into());
+        return Err("model input attachment has an invalid Base64 length".into());
     }
     let padding = if bytes.ends_with(b"==") {
         2
@@ -682,7 +682,7 @@ pub(crate) fn decoded_base64_len(value: &str) -> Result<usize, ModelInputError> 
         .checked_div(4)
         .and_then(|groups| groups.checked_mul(3))
         .and_then(|bytes| bytes.checked_sub(padding))
-        .ok_or_else(|| "模型输入附件 Base64 大小溢出".into())
+        .ok_or_else(|| "model input attachment Base64 size overflow".into())
 }
 
 fn human_bytes(bytes: usize) -> String {
@@ -728,7 +728,10 @@ fn validate_category(value: &str) -> Result<(), ModelInputError> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
-        return Err("模型输入附件分类只能包含字母、数字、横线和下划线".into());
+        return Err(
+            "model input attachment category may contain only letters, digits, hyphens, and underscores"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -740,7 +743,7 @@ fn safe_storage_segment(value: &str, label: &str) -> Result<(), ModelInputError>
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
-        return Err(format!("{label} 不能作为安全的存储路径片段").into());
+        return Err(format!("{label} is not a safe storage path segment").into());
     }
     Ok(())
 }
@@ -753,7 +756,7 @@ fn safe_attachment_name(value: &str) -> Result<String, ModelInputError> {
         .trim()
         .to_string();
     if name.is_empty() || name.chars().count() > 255 {
-        return Err("附件名称不能为空且不能超过 255 个字符".into());
+        return Err("attachment name must contain 1 to 255 characters".into());
     }
     Ok(name)
 }
@@ -770,7 +773,7 @@ fn safe_media_type(value: &str, name: &str) -> Result<String, ModelInputError> {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "/.+-".contains(character))
     {
-        return Err(format!("附件 '{}' 的 media type 非法", name).into());
+        return Err(format!("attachment '{}' has an invalid media type", name).into());
     }
     Ok(media_type.to_string())
 }
@@ -839,7 +842,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("摘要校验失败"));
+        assert!(error.to_string().contains("failed digest validation"));
     }
 
     #[tokio::test]
@@ -861,7 +864,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("Artifact Store 之外"));
+        assert!(error.to_string().contains("outside the Artifact Store"));
 
         let oversized = vec![0_u8; 33];
         let error = persist_model_input_attachments(
@@ -882,7 +885,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("单个附件上限"));
+        assert!(error.to_string().contains("per-attachment limit"));
     }
 
     #[test]
@@ -913,7 +916,7 @@ mod tests {
             "最终模型请求",
         )
         .unwrap_err();
-        assert!(error.to_string().contains("合计 36 B"));
+        assert!(error.to_string().contains("total 36 B"));
     }
 
     #[test]
@@ -934,8 +937,8 @@ mod tests {
         };
         let effective = config.request_limits().stricter(provider_limits);
         let error = validate_model_input_usage(usage, effective, "物理模型请求").unwrap_err();
-        assert!(error.to_string().contains("43 个"));
-        assert!(error.to_string().contains("32 个上限"));
+        assert!(error.to_string().contains("43 model input attachments"));
+        assert!(error.to_string().contains("limit of 32"));
     }
 
     #[tokio::test]

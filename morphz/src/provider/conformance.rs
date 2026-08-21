@@ -455,7 +455,7 @@ fn truncated_stream_is_never_promoted_to_a_successful_response() {
         .unwrap();
 
     let error = accumulator.finish(&tx).unwrap_err().to_string();
-    assert!(error.contains("终止事件"));
+    assert!(error.contains("protocol terminal event"));
 }
 
 #[test]

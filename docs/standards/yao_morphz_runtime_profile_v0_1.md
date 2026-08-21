@@ -56,7 +56,7 @@ runtime.principal          Option<Ref<Principal>>
 runtime.execution_target   Option<Ref<ExecutionTarget>>
 ```
 
-Programs reference these values as `$runtime.context`, for example. The snapshot identity is bound
+Programs reference these values as `runtime.context`, for example. The snapshot identity is bound
 to the Evaluation. Reading it is pure. Fetching a newer or expanded host view is an explicit host
 effect.
 
@@ -246,7 +246,7 @@ Morphz MUST test and enforce:
 
 As of 2026-08-21, the reference implementation includes the spanned parser, typed/effect-checked
 HIR, pure evaluator, exact typed inference decoding, named records/unions and exhaustive `match`,
-structured `par`, admitted Program Values with durable child Plans, and the injected `$runtime`
+structured `par`, admitted Program Values with durable child Plans, and the injected `runtime`
 snapshot. Caller-local bindings do not enter generated Program children, and remaining Program
 budgets are transferred without refill.
 

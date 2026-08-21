@@ -47,7 +47,7 @@ runtime.principal          Option<Ref<Principal>>
 runtime.execution_target   Option<Ref<ExecutionTarget>>
 ```
 
-例如 `$runtime.context`。快照身份绑定 Evaluation，读取为纯操作；获取更新或扩张的 Host View
+例如 `runtime.context`。快照身份绑定 Evaluation，读取为纯操作；获取更新或扩张的 Host View
 是显式 Host Effect。
 
 ## 5. 不可变 View
@@ -171,7 +171,7 @@ Fence 与精确父级恢复、Objective/Context Revision、取消传播、旧 Pr
 
 截至 2026-08-21，参考实现已经包含带 Span Parser、Type/Effect Checked HIR、Pure Evaluator、
 精确 Typed Inference Decode、Named Record/Union 与穷尽 `match`、结构化 `par`、带持久 Child
-Plan 的 Program Value，以及注入的 `$runtime` Snapshot。生成的 Program Child 不继承调用方
+Plan 的 Program Value，以及注入的 `runtime` Snapshot。生成的 Program Child 不继承调用方
 局部绑定，剩余 Program Budget 只转移、不补充。
 
 Morphz 还实现了可安全重放的 Host Receipt、受权 Immutable View、Evidence/Outcome Commit、

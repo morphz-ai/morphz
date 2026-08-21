@@ -607,7 +607,7 @@ where
                         current, reason, ..
                     } => {
                         return Err(format!(
-                            "Execution Job '{}' 已有持久化结果 Event '{}'，但启动恢复被拒绝（{}）：{}",
+                            "Execution Job '{}' has persisted result Event '{}', but startup recovery was rejected ({}): {}",
                             current.id,
                             event.id,
                             current.status.as_str(),
@@ -617,7 +617,7 @@ where
                     }
                     JobReceipt::Conflict { current, .. } => {
                         return Err(format!(
-                            "Execution Job '{}' 从持久化结果 Event '{}' 恢复时发生 revision 冲突（当前 r{} / {}）",
+                            "Execution Job '{}' hit a revision conflict while recovering from persisted result Event '{}' (current r{} / {})",
                             current.id,
                             event.id,
                             current.revision,
@@ -666,7 +666,7 @@ where
                         current, reason, ..
                     } => {
                         return Err(format!(
-                            "Execution Job '{}' 的本地进程组已经消失，但 cancelled 恢复被拒绝（{}）：{}",
+                            "Execution Job '{}' has no remaining local process group, but cancelled recovery was rejected ({}): {}",
                             current.id,
                             current.status.as_str(),
                             reason
@@ -675,7 +675,7 @@ where
                     }
                     JobReceipt::Conflict { current, .. } => {
                         return Err(format!(
-                            "Execution Job '{}' 的本地进程组已经消失，但 cancelled 恢复发生 revision 冲突（当前 r{} / {}）",
+                            "Execution Job '{}' has no remaining local process group, but cancelled recovery hit a revision conflict (current r{} / {})",
                             current.id,
                             current.revision,
                             current.status.as_str()
@@ -737,7 +737,7 @@ fn direct_thread_wake_for_job(
     match job.request.get("_morphz_wake_thread") {
         Some(serde_json::Value::Bool(value)) => Ok(*value),
         Some(_) => Err(format!(
-            "Execution Job '{}' 的 _morphz_wake_thread 不是 boolean",
+            "Execution Job '{}' has a non-boolean _morphz_wake_thread",
             job.id
         )
         .into()),
@@ -796,7 +796,9 @@ async fn action_group_id_for_job(
         .and_then(serde_json::Value::as_str)
     {
         if group_id.trim().is_empty() {
-            return Err(format!("Execution Job '{}' 的 Action Group route 为空", job.id).into());
+            return Err(
+                format!("Execution Job '{}' has an empty Action Group route", job.id).into(),
+            );
         }
         return Ok(Some(group_id.to_string()));
     }
@@ -830,7 +832,7 @@ async fn action_group_id_for_job(
         [] => Ok(None),
         [group_id] => Ok(Some(group_id.clone())),
         _ => Err(format!(
-            "Execution Job '{}' 匹配到多个 Action Group：{}",
+            "Execution Job '{}' matched multiple Action Groups: {}",
             job.id,
             matches.join(", ")
         )
@@ -860,7 +862,9 @@ async fn commit_execution_job_outcome(
         .await?;
     match result {
         KernelResult::ExecutionJobOutcomeCommitted(mutation) => Ok(mutation),
-        other => Err(format!("Execution Job Kernel 返回意外结果：{other:?}").into()),
+        other => {
+            Err(format!("Execution Job Kernel returned an unexpected result: {other:?}").into())
+        }
     }
 }
 
@@ -883,7 +887,7 @@ async fn durable_result_event_for_job<E: EventStore + ?Sized>(
     }
     if matches.len() != 1 {
         return Err(format!(
-            "Execution Job '{}' 的确定性结果 Event '{}' 数量异常：{}",
+            "Execution Job '{}' has an invalid number of deterministic result Events for '{}': {}",
             job.id,
             event_id,
             matches.len()
@@ -902,8 +906,8 @@ async fn durable_result_event_for_job<E: EventStore + ?Sized>(
         && payload_str("tool_name") == Some(job.tool_name.as_str());
     if !identity_matches {
         return Err(format!(
-            "Execution Job '{}' 的确定性结果 Event '{}' 因果身份不匹配；拒绝猜测恢复",
-            job.id, event.id
+            "deterministic result Event '{}' of Execution Job '{}' has a mismatched causal identity; speculative recovery is refused",
+            event.id, job.id
         )
         .into());
     }
@@ -920,7 +924,7 @@ fn observed_job_outcome(event: &Event) -> JobOutcome {
         .payload
         .get("text")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("工具结果 Event 没有提供文本")
+        .unwrap_or("Tool result Event did not provide text")
         .to_string();
     let exit_code = event
         .payload

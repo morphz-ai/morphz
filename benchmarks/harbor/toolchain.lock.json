@@ -1,0 +1,44 @@
+{
+  "harbor": {
+    "package_version": "0.21.0",
+    "git_tag": "v0.21.0",
+    "git_commit": "64afbbcb62165950301e1a6407c729aa26d844ff"
+  },
+  "terminal_bench": {
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "version": "2.1",
+    "registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "source_archive_sha256": "aa992a8848a1f3ed5191a34fa72ed5700d67dd9f968413a0e0a567b6188cb527",
+    "task_count": 89,
+    "leaderboard_submission_policy_checked_at": "2026-08-20"
+  },
+  "runtime": {
+    "git_tag": "paper-eval-runtime-v3",
+    "git_commit": "f875b93869282a14b738edec2f3a4069fd003600",
+    "rust_toolchain": "1.97.1",
+    "builder_image": "rust:1.97.1-bullseye",
+    "builder_image_digest": "sha256:02d78ca3f928195c2a907543de778adfd728ad7e2a24fdc6aef582b7c77842e0",
+    "target": "x86_64-unknown-linux-gnu",
+    "container_platform": "linux/amd64",
+    "binary_sha256": "ba9b2e648037917d41b9a4623969fc6c28d473627f5422ca0f4fd2f061b38586",
+    "watcher_sha256": "8d016553b42548363444e86796dfee98291af25895b5bf806ea6202141696dce"
+  },
+  "model": {
+    "requested_alias": "gpt-5.6-sol",
+    "physical_model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "provider_protocol": "openai-responses",
+    "provider_host": "mini-m4.local",
+    "provider_base_url": "http://mini-m4.local:8317/v1",
+    "address_policy": "resolve and pin an IPv4 address at launch",
+    "fallback": false
+  },
+  "permissions": {
+    "mode": "full_access",
+    "shell_environment_policy": "remove_sensitive",
+    "morphz_effective_network": true,
+    "terminal_bench_public_network_tasks": 89,
+    "isolation": "one Harbor container, SQLite database, Context and Session per trial"
+  }
+}

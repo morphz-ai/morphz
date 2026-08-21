@@ -125,7 +125,7 @@ pub struct NativeKeyringSecretBackend;
 impl NativeKeyringSecretBackend {
     fn entry(locator: &str) -> Result<keyring::Entry, String> {
         keyring::Entry::new(NATIVE_KEYRING_SERVICE, locator)
-            .map_err(|error| native_backend_error("打开", error))
+            .map_err(|error| native_backend_error("open", error))
     }
 }
 
@@ -166,14 +166,14 @@ impl SecretValueBackend for NativeKeyringSecretBackend {
     fn put(&self, locator: &str, value: &str) -> Result<(), String> {
         Self::entry(locator)?
             .set_password(value)
-            .map_err(|error| native_backend_error("写入", error))
+            .map_err(|error| native_backend_error("write to", error))
     }
 
     fn get(&self, locator: &str) -> Result<Option<String>, String> {
         match Self::entry(locator)?.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(native_backend_error("读取", error)),
+            Err(error) => Err(native_backend_error("read from", error)),
         }
     }
 
@@ -181,18 +181,18 @@ impl SecretValueBackend for NativeKeyringSecretBackend {
         match Self::entry(locator)?.delete_credential() {
             Ok(()) => Ok(true),
             Err(keyring::Error::NoEntry) => Ok(false),
-            Err(error) => Err(native_backend_error("删除", error)),
+            Err(error) => Err(native_backend_error("delete from", error)),
         }
     }
 
     fn status_detail(&self) -> String {
-        "操作系统用户凭证库；后台、SSH 或无图形会话中可能不可用".to_string()
+        "operating-system user credential store; it may be unavailable in background, SSH, or headless sessions".to_string()
     }
 }
 
 fn native_backend_error(operation: &str, error: keyring::Error) -> String {
     format!(
-        "无法{operation}系统凭证库：{error}。macOS 需要可访问的 Keychain，Windows 需要 Credential Manager，Linux 需要可用的 Secret Service/D-Bus；Morphz 不会退回明文文件"
+        "failed to {operation} the system credential store: {error}. macOS requires an accessible Keychain, Windows requires Credential Manager, and Linux requires an available Secret Service/D-Bus; Morphz will not fall back to a plaintext file"
     )
 }
 
@@ -219,7 +219,7 @@ impl HostEnvFileSecretBackend {
             Ok(contents) => Ok(contents.lines().map(ToString::to_string).collect()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(error) => Err(format!(
-                "无法读取 Morphz 环境文件 '{}': {error}",
+                "failed to read Morphz environment file '{}': {error}",
                 self.path.display()
             )),
         }
@@ -249,7 +249,7 @@ impl SecretValueBackend for HostEnvFileSecretBackend {
         let _guard = self
             .lock
             .lock()
-            .map_err(|_| "Morphz 环境文件锁已损坏".to_string())?;
+            .map_err(|_| "Morphz environment file lock is poisoned".to_string())?;
         let mut lines = self.read_lines()?;
         let replacement = format!("{name}={}", quote_env_value(value));
         let mut replaced = false;
@@ -270,16 +270,17 @@ impl SecretValueBackend for HostEnvFileSecretBackend {
         let _guard = self
             .lock
             .lock()
-            .map_err(|_| "Morphz 环境文件锁已损坏".to_string())?;
+            .map_err(|_| "Morphz environment file lock is poisoned".to_string())?;
         for line in self.read_lines()?.iter().rev() {
             if env_assignment_name(line) == Some(name) {
-                let (_, value) = line
-                    .trim()
-                    .split_once('=')
-                    .ok_or_else(|| format!("环境变量 '{name}' 格式无效"))?;
+                let (_, value) = line.trim().split_once('=').ok_or_else(|| {
+                    format!("environment variable '{name}' has an invalid format")
+                })?;
                 return crate::config::parse_env_value(value)
                     .map(Some)
-                    .map_err(|error| format!("环境变量 '{name}' 无法解析：{error}"));
+                    .map_err(|error| {
+                        format!("failed to parse environment variable '{name}': {error}")
+                    });
             }
         }
         Ok(None)
@@ -290,7 +291,7 @@ impl SecretValueBackend for HostEnvFileSecretBackend {
         let _guard = self
             .lock
             .lock()
-            .map_err(|_| "Morphz 环境文件锁已损坏".to_string())?;
+            .map_err(|_| "Morphz environment file lock is poisoned".to_string())?;
         let mut lines = self.read_lines()?;
         let previous_len = lines.len();
         lines.retain(|line| env_assignment_name(line) != Some(name));
@@ -305,7 +306,7 @@ impl SecretValueBackend for HostEnvFileSecretBackend {
         let _guard = self
             .lock
             .lock()
-            .map_err(|_| "Morphz 环境文件锁已损坏".to_string())?;
+            .map_err(|_| "Morphz environment file lock is poisoned".to_string())?;
         let mut aliases = self
             .read_lines()?
             .iter()
@@ -322,7 +323,7 @@ impl SecretValueBackend for HostEnvFileSecretBackend {
 
     fn status_detail(&self) -> String {
         format!(
-            "Morphz 主机环境文件 '{}'（明文，文件权限 0600）",
+            "Morphz host environment file '{}' (plaintext with file mode 0600)",
             self.path.display()
         )
     }
@@ -355,8 +356,9 @@ impl std::fmt::Debug for SecretStore {
 impl SecretStore {
     pub fn native_default() -> Result<Self, String> {
         let catalog_path = host_state_path("managed-secrets.json")
-            .ok_or_else(|| "无法确定 Morphz 用户配置目录".to_string())?;
-        let env_path = host_env_path().ok_or_else(|| "无法确定 Morphz 用户环境文件".to_string())?;
+            .ok_or_else(|| "cannot determine Morphz user configuration directory".to_string())?;
+        let env_path = host_env_path()
+            .ok_or_else(|| "cannot determine Morphz user environment file".to_string())?;
         let native: Arc<dyn SecretValueBackend> = Arc::new(NativeKeyringSecretBackend);
         let default_backend_id = native.backend_id().to_string();
         Self::with_backends(
@@ -397,9 +399,9 @@ impl SecretStore {
         let audit_path = catalog_path.with_file_name("managed-secret-usage.jsonl");
         let entries = match fs::read(&catalog_path) {
             Ok(bytes) => serde_json::from_slice::<Vec<ManagedSecret>>(&bytes)
-                .map_err(|error| format!("Secret metadata catalog 无法解析：{error}"))?,
+                .map_err(|error| format!("failed to parse Secret metadata catalog: {error}"))?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(format!("Secret metadata catalog 无法读取：{error}")),
+            Err(error) => return Err(format!("failed to read Secret metadata catalog: {error}")),
         };
         let catalog = entries
             .into_iter()
@@ -412,7 +414,7 @@ impl SecretStore {
         let default_backend_id = default_backend_id.into();
         if !backends.contains_key(&default_backend_id) {
             return Err(format!(
-                "默认 Secret Value Backend '{default_backend_id}' 未注册"
+                "default Secret Value Backend '{default_backend_id}' is not registered"
             ));
         }
         let backend_operation_states = backends
@@ -445,7 +447,7 @@ impl SecretStore {
                 let storage_kind = backend.storage_kind().to_string();
                 let supports_import = backend.supports_import();
                 let status_detail = backend.status_detail();
-                let health = self.run_backend_operation(&backend_id, "健康检查", move || {
+                let health = self.run_backend_operation(&backend_id, "health check", move || {
                     backend.get(&secret_locator("__MORPHZ_BACKEND_HEALTH_CHECK__"))
                 });
                 SecretBackendStatus {
@@ -464,7 +466,7 @@ impl SecretStore {
         let managed = self
             .catalog
             .read()
-            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?;
+            .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?;
         let mut candidates = Vec::new();
         for backend in self
             .backends
@@ -473,7 +475,7 @@ impl SecretStore {
         {
             let backend = Arc::clone(backend);
             let backend_id = backend.backend_id().to_string();
-            let names = self.run_backend_operation(&backend_id, "列出别名", move || {
+            let names = self.run_backend_operation(&backend_id, "list aliases", move || {
                 backend.list_aliases()
             })?;
             for name in names {
@@ -493,7 +495,7 @@ impl SecretStore {
         Ok(self
             .catalog
             .read()
-            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?
+            .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?
             .values()
             .cloned()
             .collect())
@@ -506,7 +508,7 @@ impl SecretStore {
         Ok(self
             .catalog
             .read()
-            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?
+            .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?
             .values()
             .filter(|entry| authorize_entry(entry, usage.clone()).is_ok())
             .cloned()
@@ -543,7 +545,7 @@ impl SecretStore {
         let backend_for_put = Arc::clone(&backend);
         let locator_for_put = locator.clone();
         let value_for_put = zeroize::Zeroizing::new(value.to_string());
-        self.run_backend_operation(&backend_id, "写入", move || {
+        self.run_backend_operation(&backend_id, "write", move || {
             backend_for_put.put(&locator_for_put, value_for_put.as_str())
         })?;
 
@@ -551,7 +553,7 @@ impl SecretStore {
         let mut guard = self
             .catalog
             .write()
-            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?;
+            .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?;
         let previous = guard.get(name).cloned();
         let created_at = previous
             .as_ref()
@@ -575,7 +577,7 @@ impl SecretStore {
             let cleanup = self.backend(&previous.value_backend).and_then(|backend| {
                 let previous_backend_id = backend.backend_id().to_string();
                 let locator = locator.clone();
-                self.run_backend_operation(&previous_backend_id, "清理旧值", move || {
+                self.run_backend_operation(&previous_backend_id, "remove old value", move || {
                     backend.delete(&locator).map(|_| ())
                 })
             });
@@ -605,7 +607,7 @@ impl SecretStore {
         let backend_id = backend.backend_id().to_string();
         if !backend.supports_import() {
             return Err(format!(
-                "Secret Value Backend '{}' 不支持导入已有别名",
+                "Secret Value Backend '{}' does not support importing an existing alias",
                 backend.backend_id()
             ));
         }
@@ -613,17 +615,17 @@ impl SecretStore {
         let backend_for_get = Arc::clone(&backend);
         let locator_for_get = locator.clone();
         let value = zeroize::Zeroizing::new(
-            self.run_backend_operation(&backend_id, "导入读取", move || {
+            self.run_backend_operation(&backend_id, "read for import", move || {
                 backend_for_get.get(&locator_for_get)
             })?
-            .ok_or_else(|| format!("后端 '{backend_id}' 中不存在别名 '{name}'"))?,
+            .ok_or_else(|| format!("alias '{name}' does not exist in backend '{backend_id}'"))?,
         );
         validate_value(value.as_str())?;
         let now = chrono::Utc::now();
         let mut guard = self
             .catalog
             .write()
-            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?;
+            .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?;
         let created_at = guard.get(name).map(|entry| entry.created_at).unwrap_or(now);
         let entry = ManagedSecret {
             name: name.to_string(),
@@ -645,14 +647,14 @@ impl SecretStore {
         let mut guard = self
             .catalog
             .write()
-            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?;
+            .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?;
         let Some(entry) = guard.get(name).cloned() else {
             return Ok(false);
         };
         let backend = self.backend(&entry.value_backend)?;
         let backend_id = backend.backend_id().to_string();
         let locator = secret_locator(name);
-        self.run_backend_operation(&backend_id, "删除", move || backend.delete(&locator))?;
+        self.run_backend_operation(&backend_id, "delete", move || backend.delete(&locator))?;
         let mut next = guard.clone();
         next.remove(name);
         self.persist_catalog(next.values())?;
@@ -672,15 +674,15 @@ impl SecretStore {
         let entry = self
             .catalog
             .read()
-            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?
+            .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?
             .get(name)
             .cloned();
         let Some(entry) = entry else {
             return std::env::var(name).map(Some).or_else(|error| match error {
                 std::env::VarError::NotPresent => Ok(None),
-                std::env::VarError::NotUnicode(_) => {
-                    Err(format!("环境变量 '{name}' 不是有效 Unicode"))
-                }
+                std::env::VarError::NotUnicode(_) => Err(format!(
+                    "environment variable '{name}' is not valid Unicode"
+                )),
             });
         };
         authorize_entry(&entry, usage.clone())?;
@@ -688,15 +690,18 @@ impl SecretStore {
         let backend_id = backend.backend_id().to_string();
         let locator = secret_locator(name);
         let value = self
-            .run_backend_operation(&backend_id, "读取", move || backend.get(&locator))?
+            .run_backend_operation(&backend_id, "read", move || backend.get(&locator))?
             .ok_or_else(|| {
                 format!(
-                    "受管凭证 '{}' 的元数据存在，但值后端 '{}' 中没有对应值",
+                    "managed credential '{}' has metadata but no corresponding value in backend '{}'",
                     entry.secret_ref, entry.value_backend
                 )
             })?;
         if value.is_empty() {
-            return Err(format!("受管凭证 '{}' 的值为空", entry.secret_ref));
+            return Err(format!(
+                "managed credential '{}' has an empty value",
+                entry.secret_ref
+            ));
         }
         let _ = self.append_usage_audit(&entry, usage);
         Ok(Some(value))
@@ -707,7 +712,7 @@ impl SecretStore {
         if self
             .catalog
             .read()
-            .map_err(|_| "Secret metadata catalog 锁已损坏".to_string())?
+            .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?
             .contains_key(name)
         {
             return Ok(true);
@@ -719,11 +724,11 @@ impl SecretStore {
         let _guard = self
             .audit_lock
             .lock()
-            .map_err(|_| "Secret 使用审计锁已损坏".to_string())?;
+            .map_err(|_| "Secret usage audit lock is poisoned".to_string())?;
         let contents = match fs::read_to_string(&self.audit_path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(format!("Secret 使用审计无法读取：{error}")),
+            Err(error) => return Err(format!("failed to read Secret usage audit: {error}")),
         };
         Ok(contents
             .lines()
@@ -742,7 +747,7 @@ impl SecretStore {
                     .flatten()
             })
             .cloned()
-            .ok_or_else(|| format!("Secret Value Backend '{value_backend}' 未注册"))
+            .ok_or_else(|| format!("Secret Value Backend '{value_backend}' is not registered"))
     }
 
     /// Runs a potentially interactive or remote backend outside Tokio's blocking pool.
@@ -767,7 +772,7 @@ impl SecretStore {
             .backend_operation_states
             .get(backend_id)
             .cloned()
-            .ok_or_else(|| format!("Secret Value Backend '{backend_id}' 没有操作状态"))?;
+            .ok_or_else(|| format!("Secret Value Backend '{backend_id}' has no operation state"))?;
         let started = Instant::now();
         loop {
             match state.compare_exchange(
@@ -779,7 +784,7 @@ impl SecretStore {
                 Ok(_) => break,
                 Err(BACKEND_OPERATION_STALLED) => {
                     return Err(format!(
-                        "Secret Value Backend '{backend_id}' 此前发生不可取消的阻塞，当前 Runtime 已将其熔断；请确认系统凭证库已解锁并授权后重启 Runtime"
+                        "Secret Value Backend '{backend_id}' previously entered an uninterruptible stall and has been isolated by the Runtime; unlock and authorize the system credential store, then restart the Runtime"
                     ));
                 }
                 Err(BACKEND_OPERATION_IN_FLIGHT) => {
@@ -788,7 +793,7 @@ impl SecretStore {
                         .checked_sub(started.elapsed())
                     else {
                         return Err(format!(
-                            "Secret Value Backend '{backend_id}' 的{operation}等待超过 {} ms；另一个后端操作仍未完成",
+                            "Secret Value Backend '{backend_id}' waited more than {} ms to {operation}; another backend operation is still in progress",
                             self.backend_operation_timeout.as_millis()
                         ));
                     };
@@ -796,7 +801,7 @@ impl SecretStore {
                 }
                 Err(other) => {
                     return Err(format!(
-                        "Secret Value Backend '{backend_id}' 的操作状态无效：{other}"
+                        "Secret Value Backend '{backend_id}' has an invalid operation state: {other}"
                     ));
                 }
             }
@@ -808,7 +813,7 @@ impl SecretStore {
             .name("morphz-secret-backend".to_string())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback))
-                    .map_err(|_| "Secret Value Backend worker 发生 panic".to_string())
+                    .map_err(|_| "Secret Value Backend worker panicked".to_string())
                     .and_then(|result| result);
                 let _ = sender.send(result);
                 let _ = worker_state.compare_exchange(
@@ -826,7 +831,7 @@ impl SecretStore {
                 Ordering::Acquire,
             );
             return Err(format!(
-                "Secret Value Backend '{backend_id}' 无法启动隔离 worker：{error}"
+                "Secret Value Backend '{backend_id}' failed to start an isolated worker: {error}"
             ));
         }
 
@@ -844,7 +849,7 @@ impl SecretStore {
                     Ordering::Acquire,
                 );
                 Err(format!(
-                    "Secret Value Backend '{backend_id}' 的{operation}操作超过 {} ms；该调用可能正在等待系统凭证库授权，当前 Runtime 已将此后端熔断以避免作业和退出流程永久阻塞",
+                    "Secret Value Backend '{backend_id}' {operation} operation exceeded {} ms; the call may be waiting for system credential-store authorization, so the Runtime isolated this backend to prevent jobs and shutdown from blocking indefinitely",
                     self.backend_operation_timeout.as_millis()
                 ))
             }
@@ -856,7 +861,7 @@ impl SecretStore {
                     Ordering::Acquire,
                 );
                 Err(format!(
-                    "Secret Value Backend '{backend_id}' 的{operation} worker 异常断开；当前 Runtime 已将此后端熔断"
+                    "Secret Value Backend '{backend_id}' {operation} worker disconnected unexpectedly; the Runtime has isolated this backend"
                 ))
             }
         }
@@ -880,11 +885,11 @@ impl SecretStore {
         let _guard = self
             .audit_lock
             .lock()
-            .map_err(|_| "Secret 使用审计锁已损坏".to_string())?;
+            .map_err(|_| "Secret usage audit lock is poisoned".to_string())?;
         let parent = self
             .audit_path
             .parent()
-            .ok_or("Secret 使用审计路径没有父目录")?;
+            .ok_or("Secret usage audit path has no parent directory")?;
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -946,7 +951,7 @@ fn authorize_entry(entry: &ManagedSecret, usage: SecretUseContext<'_>) -> Result
         Ok(())
     } else {
         Err(format!(
-            "受管凭证 '{}' 不允许在当前作用域使用",
+            "managed credential '{}' is not permitted in the current scope",
             entry.secret_ref
         ))
     }
@@ -959,7 +964,7 @@ fn secret_locator(name: &str) -> String {
 fn locator_name(locator: &str) -> Result<&str, String> {
     locator
         .strip_prefix("env:")
-        .ok_or_else(|| format!("Secret locator '{locator}' 格式无效"))
+        .ok_or_else(|| format!("Secret locator '{locator}' has an invalid format"))
 }
 
 fn env_assignment_name(line: &str) -> Option<&str> {
@@ -979,7 +984,7 @@ fn quote_env_value(value: &str) -> String {
 fn validate_env_file_value(value: &str) -> Result<(), String> {
     validate_value(value)?;
     if value.contains(['\r', '\n']) {
-        return Err("Morphz .env 后端暂不接受多行凭证".to_string());
+        return Err("Morphz .env backend does not accept multiline credentials".to_string());
     }
     Ok(())
 }
@@ -992,17 +997,17 @@ fn validate_name(name: &str) -> Result<(), String> {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '_')
     {
-        return Err("凭证名称必须是合法的环境变量名".to_string());
+        return Err("credential name must be a valid environment variable name".to_string());
     }
     Ok(())
 }
 
 fn validate_value(value: &str) -> Result<(), String> {
     if value.is_empty() {
-        return Err("凭证不能为空".to_string());
+        return Err("credential must not be empty".to_string());
     }
     if value.contains('\0') {
-        return Err("凭证不能包含 NUL 字符".to_string());
+        return Err("credential must not contain a NUL character".to_string());
     }
     Ok(())
 }
@@ -1010,16 +1015,20 @@ fn validate_value(value: &str) -> Result<(), String> {
 fn validate_scope(scope_kind: &SecretScopeKind, scope_id: Option<&str>) -> Result<(), String> {
     match scope_kind {
         SecretScopeKind::Runtime if scope_id.is_some() => {
-            Err("Runtime 作用域不能指定 scope_id".to_string())
+            Err("Runtime scope must not specify scope_id".to_string())
         }
         SecretScopeKind::Runtime => Ok(()),
-        _ if scope_id.is_none_or(str::is_empty) => Err("所选作用域必须指定 scope_id".to_string()),
+        _ if scope_id.is_none_or(str::is_empty) => {
+            Err("the selected scope requires scope_id".to_string())
+        }
         _ => Ok(()),
     }
 }
 
 fn atomic_private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path.parent().ok_or("凭证元数据路径没有父目录")?;
+    let parent = path
+        .parent()
+        .ok_or("credential metadata path has no parent directory")?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     #[cfg(unix)]
     {
@@ -1478,8 +1487,8 @@ mod tests {
             .unwrap()
             .unwrap_err()
         });
-        assert!(error.contains("超过 40 ms"), "{error}");
-        assert!(error.contains("熔断"), "{error}");
+        assert!(error.contains("exceeded 40 ms"), "{error}");
+        assert!(error.contains("isolated this backend"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(1));
 
         let shutdown_started = Instant::now();
@@ -1493,7 +1502,7 @@ mod tests {
         let retry_error = store
             .resolve("BLOCKED_TOKEN", SecretUseContext::default())
             .unwrap_err();
-        assert!(retry_error.contains("此前发生不可取消的阻塞"));
+        assert!(retry_error.contains("previously entered an uninterruptible stall"));
         assert!(retry_started.elapsed() < Duration::from_millis(20));
         assert_eq!(backend.get_calls.load(AtomicOrdering::SeqCst), 1);
 

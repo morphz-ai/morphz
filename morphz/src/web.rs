@@ -125,8 +125,10 @@ struct AppState {
     default_agent_id: String,
     default_context_id: String,
     identity: ServerIdentityConfig,
-    /// The embedded operator surface persists model-level inference choices
-    /// here. Tests inject an isolated path rather than touching user config.
+    /// Kernel/runtime settings remain separate from the Provider catalog.
+    core_config_path: Option<PathBuf>,
+    /// The embedded operator surface persists Provider, Account, Route and
+    /// model-level inference choices here. Tests inject an isolated path.
     managed_config_path: Option<PathBuf>,
 }
 
@@ -260,6 +262,7 @@ struct UpdateContextTokenBudgetRequest {
 struct UpdateSessionRequest {
     title: Option<String>,
     status: Option<SessionStatus>,
+    model_alias: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -274,6 +277,10 @@ struct SendMessageRequest {
     harness: Option<crate::harness::ExactHarnessRef>,
     #[serde(default)]
     dispatch_mode: Option<crate::memory::MessageDispatchMode>,
+    /// Optional one-shot model route for this message's Evaluation. This does
+    /// not change the Session's default model.
+    #[serde(default)]
+    model_alias: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -694,25 +701,29 @@ impl Server {
             ServerIdentityMode::Default => None,
             ServerIdentityMode::TrustedGateway => {
                 if self.identity.provider_id.trim().is_empty() {
-                    return Err("server.identity.provider_id 不能为空".into());
+                    return Err("server.identity.provider_id must not be empty".into());
                 }
                 let variable = self.identity.service_token_env.trim();
                 if variable.is_empty() {
-                    return Err("server.identity.service_token_env 不能为空".into());
+                    return Err("server.identity.service_token_env must not be empty".into());
                 }
                 let token = std::env::var(variable)
-                    .map_err(|_| format!("trusted-gateway 模式需要环境变量 {variable}"))?
+                    .map_err(|_| {
+                        format!("trusted-gateway mode requires environment variable {variable}")
+                    })?
                     .trim()
                     .to_string();
                 if token.is_empty() {
-                    return Err(format!("trusted-gateway 模式的 {variable} 不能为空").into());
+                    return Err(
+                        format!("{variable} for trusted-gateway mode must not be empty").into(),
+                    );
                 }
                 Some(token)
             }
         };
         if dashboard_token.is_some() && dashboard_token == gateway_token {
             return Err(
-                "MORPHZ_DASHBOARD_TOKEN 不能与 trusted-gateway 服务令牌相同；管理面与用户身份网关必须使用独立凭证"
+                "MORPHZ_DASHBOARD_TOKEN must differ from the trusted-gateway service token; the management plane and user identity gateway require separate credentials"
                     .into(),
             );
         }
@@ -836,12 +847,13 @@ impl Server {
             default_agent_id: self.default_agent_id.clone(),
             default_context_id: self.default_context_id.clone(),
             identity: self.identity.clone(),
-            managed_config_path: crate::config::managed_config_path().ok(),
+            core_config_path: crate::config::managed_config_path().ok(),
+            managed_config_path: crate::config::managed_model_config_path().ok(),
         });
 
         let addr: SocketAddr = addr_str.parse()?;
         if !addr.ip().is_loopback() && state.auth_token.is_none() && state.gateway_token.is_none() {
-            return Err("非本机监听必须配置服务访问令牌，避免事件流和记忆图谱无认证暴露".into());
+            return Err("non-loopback listening requires a service access token to prevent unauthenticated exposure of Event streams and the memory graph".into());
         }
 
         // Tokenless localhost remains frictionless for the embedded Dashboard
@@ -1476,7 +1488,7 @@ async fn handle_list_managed_secrets(
         Ok(Err(error)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
         Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Secret Store worker 失败：{error}"),
+            format!("Secret Store worker failed: {error}"),
         ),
     }
 }
@@ -1517,7 +1529,7 @@ async fn handle_put_managed_secret(
         Ok(Err(error)) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
         Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Secret Store worker 失败：{error}"),
+            format!("Secret Store worker failed: {error}"),
         ),
     }
 }
@@ -1544,7 +1556,7 @@ async fn handle_import_managed_secret(
         Ok(Err(error)) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
         Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Secret Store worker 失败：{error}"),
+            format!("Secret Store worker failed: {error}"),
         ),
     }
 }
@@ -1613,11 +1625,11 @@ async fn handle_delete_managed_secret(
     let sdk = state.sdk.clone();
     match tokio::task::spawn_blocking(move || sdk.delete_managed_secret(&name)).await {
         Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(false)) => error_response(StatusCode::NOT_FOUND, "受管凭证不存在"),
+        Ok(Ok(false)) => error_response(StatusCode::NOT_FOUND, "managed credential does not exist"),
         Ok(Err(error)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Secret Store worker 失败：{error}"),
+            format!("Secret Store worker failed: {error}"),
         ),
     }
 }
@@ -1786,7 +1798,7 @@ async fn handle_put_provider_instance_config(
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "无法确定 Morphz 受管配置路径",
+            "cannot determine Morphz model configuration path",
         );
     };
     match state
@@ -1811,7 +1823,7 @@ async fn handle_put_provider_catalog_setup(
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "无法确定 Morphz 受管配置路径",
+            "cannot determine Morphz managed configuration path",
         );
     };
     let credential = match (request.credential_id.as_deref(), request.credential) {
@@ -1820,14 +1832,14 @@ async fn handle_put_provider_catalog_setup(
         _ => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "credential_id 与 credential 必须同时提供或同时省略",
+                "credential_id and credential must be provided or omitted together",
             )
         }
     };
     if request.managed_secret.is_some() && credential.is_none() {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "managed_secret 只能与 credential_id 和 credential 一起提交",
+            "managed_secret may be submitted only with credential_id and credential",
         );
     }
     if let (Some(secret), Some((credential_id, credential_config))) =
@@ -1840,7 +1852,7 @@ async fn handle_put_provider_catalog_setup(
         {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "managed_secret、credential 与账号 credential_ref 必须引用同一凭证",
+                "managed_secret, credential, and account credential_ref must reference the same credential",
             );
         }
         if secret.scope_kind != crate::secret_store::SecretScopeKind::Runtime
@@ -1848,13 +1860,13 @@ async fn handle_put_provider_catalog_setup(
         {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "Provider API Key 必须使用 Runtime scope，且不能设置 scope_id",
+                "Provider API Key must use Runtime scope and must not set scope_id",
             );
         }
         if request.account.secret_backend.as_deref() != secret.value_backend.as_deref() {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "managed_secret 的 value_backend 必须与账号 secret_backend 一致",
+                "managed_secret value_backend must match the account secret_backend",
             );
         }
     }
@@ -1869,7 +1881,7 @@ async fn handle_put_provider_catalog_setup(
             {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    format!("受管凭证 '{name}' 已存在；首次设置拒绝覆盖已有凭证"),
+                    format!("managed credential '{name}' already exists; first-time setup refuses to overwrite it"),
                 ));
             }
             let value = zeroize::Zeroizing::new(secret.value);
@@ -1893,7 +1905,7 @@ async fn handle_put_provider_catalog_setup(
             Err(error) => {
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Secret Store worker 失败：{error}"),
+                    format!("Secret Store worker failed: {error}"),
                 )
             }
         }
@@ -1927,7 +1939,7 @@ async fn handle_put_provider_catalog_setup(
                         return error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             format!(
-                                "Provider 设置失败（{}），且新建凭证 '{}' 未能回滚：凭证不存在",
+                                "Provider setup failed ({}), and newly created credential '{}' could not be rolled back because it does not exist",
                                 error.message, name
                             ),
                         )
@@ -1936,7 +1948,7 @@ async fn handle_put_provider_catalog_setup(
                         return error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             format!(
-                                "Provider 设置失败（{}），且新建凭证 '{}' 回滚失败：{}",
+                                "Provider setup failed ({}), and rollback of newly created credential '{}' failed: {}",
                                 error.message, name, rollback_error
                             ),
                         )
@@ -1945,7 +1957,7 @@ async fn handle_put_provider_catalog_setup(
                         return error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             format!(
-                                "Provider 设置失败（{}），且 Secret Store 回滚 worker 失败：{}",
+                                "Provider setup failed ({}), and the Secret Store rollback worker failed: {}",
                                 error.message, rollback_error
                             ),
                         )
@@ -1970,7 +1982,7 @@ async fn handle_put_auth_account_config(
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "无法确定 Morphz 受管配置路径",
+            "cannot determine Morphz managed configuration path",
         );
     };
     match state
@@ -1996,7 +2008,7 @@ async fn handle_put_provider_account_models(
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "无法确定 Morphz 受管配置路径",
+            "cannot determine Morphz managed configuration path",
         );
     };
     let mut models = BTreeMap::new();
@@ -2004,7 +2016,10 @@ async fn handle_put_provider_account_models(
     for selection in request.models {
         let id = selection.id.trim().to_string();
         if id.is_empty() || models.contains_key(&id) {
-            return error_response(StatusCode::BAD_REQUEST, "模型 ID 不能为空且不能重复");
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "model IDs must not be empty or duplicated",
+            );
         }
         let display_alias = selection
             .alias
@@ -2045,7 +2060,7 @@ async fn handle_put_model_route_config(
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "无法确定 Morphz 受管配置路径",
+            "cannot determine Morphz managed configuration path",
         );
     };
     match state
@@ -2067,10 +2082,10 @@ async fn handle_update_auto_review_model(
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let Some(path) = state.managed_config_path.as_deref() else {
+    let Some(path) = state.core_config_path.as_deref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "无法确定 Morphz 受管配置路径",
+            "cannot determine Morphz core configuration path",
         );
     };
     match state.sdk.put_auto_review_model(path, request.model) {
@@ -2111,7 +2126,7 @@ async fn handle_delete_provider_account(
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "无法确定 Morphz 受管配置路径",
+            "cannot determine Morphz managed configuration path",
         );
     };
     match state
@@ -2202,7 +2217,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             secret_backend: Some("morphz_env_file".to_string()),
             account_label: "xAI".to_string(),
         },
-        _ => return Err("该 OAuth 服务尚未接入 Runtime"),
+        _ => return Err("this OAuth service is not integrated with Runtime"),
     };
     Ok(setup)
 }
@@ -2267,7 +2282,7 @@ async fn handle_start_oauth_provider_setup(
     let Some(path) = state.managed_config_path.as_deref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "无法确定 Morphz 受管配置路径",
+            "cannot determine Morphz managed configuration path",
         );
     };
     let setup = match oauth_provider_setup(&request.service) {
@@ -2298,18 +2313,18 @@ async fn handle_provider_oauth_callback(Query(query): Query<OAuthCallbackQuery>)
     let (status, title, detail) = match submitted {
         Ok(()) if success => (
             StatusCode::OK,
-            "Morphz 登录完成",
-            "凭证已安全交给 Runtime，可以关闭此页面。",
+            "Morphz login complete",
+            "The credential was delivered securely to Runtime. You may close this page.",
         ),
         Ok(()) => (
             StatusCode::BAD_REQUEST,
-            "Morphz 登录失败",
-            "授权服务返回了错误，请回到 Dashboard 查看详情。",
+            "Morphz login failed",
+            "The authorization service returned an error. Return to the Dashboard for details.",
         ),
         Err(_) => (
             StatusCode::BAD_REQUEST,
-            "Morphz 登录已失效",
-            "该授权请求不存在或已经过期，请回到 Dashboard 重新登录。",
+            "Morphz login expired",
+            "This authorization request does not exist or has expired. Return to the Dashboard and log in again.",
         ),
     };
     let body = format!(
@@ -2455,7 +2470,10 @@ async fn handle_search_recall(
     }
     let query_text = query.query.unwrap_or_default();
     if query_text.trim().is_empty() && query.start_time.is_none() && query.end_time.is_none() {
-        return error_response(StatusCode::BAD_REQUEST, "query 或时间范围不能为空");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "query or time range must not be empty",
+        );
     }
     match state
         .runtime
@@ -2500,7 +2518,7 @@ async fn handle_search_dialogue_history(
     };
     let query_text = query.query.trim();
     if query_text.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "query 不能为空");
+        return error_response(StatusCode::BAD_REQUEST, "query must not be empty");
     }
     let limit = query.limit.unwrap_or(30).clamp(1, 100);
     let visible_session_ids = match state.sdk.list_sessions(&principal.principal_id, true).await {
@@ -2708,7 +2726,7 @@ async fn handle_mutate_frame_lifecycle(
         _ => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "action 只支持 restore、protect 或 unprotect",
+                "action supports only restore, protect, or unprotect",
             )
         }
     };
@@ -2716,14 +2734,17 @@ async fn handle_mutate_frame_lifecycle(
         Ok(session) => session,
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }) else {
-        return error_response(StatusCode::NOT_FOUND, "Session 不存在");
+        return error_response(StatusCode::NOT_FOUND, "Session does not exist");
     };
     if session.context_id != context_id {
-        return error_response(StatusCode::BAD_REQUEST, "Session 不属于目标 Context");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Session does not belong to the target Context",
+        );
     }
     let reason = request
         .reason
-        .unwrap_or_else(|| format!("Dashboard 请求 {action} Frame"));
+        .unwrap_or_else(|| format!("Dashboard requested Frame action {action}"));
     let transaction = format!(
         "(context-tx (base-version {}) (reason {}) ({} {}))",
         request.expected_version,
@@ -2754,7 +2775,7 @@ async fn handle_get_inference(
         Err(error) => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("无法读取已发现并启用的模型目录：{error}"),
+                format!("failed to read the discovered and enabled model catalog: {error}"),
             )
         }
     };
@@ -2784,14 +2805,14 @@ async fn handle_update_inference(
         Err(error) => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("无法读取已发现并启用的模型目录：{error}"),
+                format!("failed to read the discovered and enabled model catalog: {error}"),
             )
         }
     };
     if request.model.is_some() && !model_options.iter().any(|option| option.id == model) {
         return error_response(
             StatusCode::BAD_REQUEST,
-            format!("模型 '{model}' 不在已发现并启用的模型目录中，拒绝运行期切换"),
+            format!("model '{model}' is not in the discovered and enabled model catalog; runtime switch rejected"),
         );
     }
     let effort = match request.reasoning_effort.as_deref().map(str::trim) {
@@ -2802,7 +2823,7 @@ async fn handle_update_inference(
             None => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    "reasoning_effort 只支持 default、none、low、medium、high、max",
+                    "reasoning_effort supports only default, none, low, medium, high, or max",
                 )
             }
         },
@@ -2817,17 +2838,17 @@ async fn handle_update_inference(
                 let supported = option
                     .supported_reasoning_efforts
                     .as_ref()
-                    .map(|levels| levels.join("、"))
+                    .map(|levels| levels.join(", "))
                     .unwrap_or_default();
                 let detail = if supported.is_empty() {
-                    "该模型不提供推理强度选择".to_string()
+                    "this model does not provide reasoning effort selection".to_string()
                 } else {
-                    format!("该模型只支持：{supported}")
+                    format!("this model supports only: {supported}")
                 };
                 return error_response(
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "模型 '{model}' 不支持推理强度 '{}'；{detail}",
+                        "model '{model}' does not support reasoning effort '{}'; {detail}",
                         effort.as_str()
                     ),
                 );
@@ -2835,13 +2856,18 @@ async fn handle_update_inference(
         }
     }
     let prompt_token_limit = match request.prompt_token_limit {
-        Some(0) => return error_response(StatusCode::BAD_REQUEST, "prompt_token_limit 必须大于 0"),
+        Some(0) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "prompt_token_limit must be greater than 0",
+            )
+        }
         Some(value) => match usize::try_from(value) {
             Ok(value) => Some(value),
             Err(_) => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    "prompt_token_limit 超出当前平台整数范围",
+                    "prompt_token_limit exceeds the current platform integer range",
                 )
             }
         },
@@ -2850,7 +2876,7 @@ async fn handle_update_inference(
     let Some(managed_config_path) = state.managed_config_path.as_deref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "无法确定 Morphz 受管配置路径，推理设置未修改",
+            "cannot determine Morphz managed configuration path; reasoning settings were not changed",
         );
     };
     if let Err(error) = save_managed_inference_at(
@@ -2914,7 +2940,7 @@ async fn handle_decide_approval(
     }
     let rationale = request
         .rationale
-        .unwrap_or_else(|| "用户通过 Morphz 审批通道作出决定".to_string());
+        .unwrap_or_else(|| "the user decided through the Morphz approval channel".to_string());
     let decision = match request.decision.trim().to_ascii_lowercase().as_str() {
         "allow" | "allow_once" | "approve" => ApprovalDecision::AllowOnce {
             rationale,
@@ -2931,7 +2957,7 @@ async fn handle_decide_approval(
         _ => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "decision 只支持 allow_once、allow_lease 或 deny",
+                "decision supports only allow_once, allow_lease, or deny",
             )
         }
     };
@@ -2953,14 +2979,14 @@ fn api_id(prefix: &str) -> String {
 
 fn validate_identifier(kind: &str, value: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > 128 {
-        return Err(format!("{kind} 长度必须为 1..=128"));
+        return Err(format!("{kind} length must be 1..=128"));
     }
     if !value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
     {
         return Err(format!(
-            "{kind} 只能包含 ASCII 字母、数字、点、横线、下划线或冒号"
+            "{kind} may contain only ASCII letters, digits, dots, hyphens, underscores, or colons"
         ));
     }
     Ok(())
@@ -2974,13 +3000,13 @@ fn validate_identifier(kind: &str, value: &str) -> Result<(), String> {
 /// be forced through the narrow Session/Context identifier grammar.
 fn validate_principal_id(value: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > 512 {
-        return Err("principal_id 长度必须为 1..=512 字节".to_string());
+        return Err("principal_id length must be 1..=512 bytes".to_string());
     }
     if value.trim() != value {
-        return Err("principal_id 首尾不能包含空白字符".to_string());
+        return Err("principal_id must not contain leading or trailing whitespace".to_string());
     }
     if value.chars().any(|ch| ch.is_control()) {
-        return Err("principal_id 不能包含控制字符".to_string());
+        return Err("principal_id must not contain control characters".to_string());
     }
     Ok(())
 }
@@ -3084,21 +3110,21 @@ fn request_principal(
         .map_err(|_| {
             SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Principal Header 不是有效 UTF-8",
+                "Principal Header is not valid UTF-8",
             )
         })?;
     if let (Some(header), Some(query)) = (header_principal_id, query_principal_id) {
         if header != query {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Header 与 Query 的 Principal 不一致",
+                "Principal in Header and Query does not match",
             ));
         }
     }
     let principal_id = header_principal_id.or(query_principal_id).ok_or_else(|| {
         SdkError::new(
             SdkErrorCode::Unauthorized,
-            "trusted-gateway 请求缺少当前 Principal",
+            "trusted-gateway request is missing the current Principal",
         )
     })?;
     validate_principal_id(principal_id)
@@ -3110,7 +3136,7 @@ fn request_principal(
         .map_err(|_| {
             SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Principal Name Header 不是有效 UTF-8",
+                "Principal Name Header is not valid UTF-8",
             )
         })?
         .map(str::trim)
@@ -3161,7 +3187,7 @@ async fn authorize_objective_request(
         .get_objective(objective_id)
         .await
         .map_err(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-        .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Objective 不存在"))?;
+        .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Objective does not exist"))?;
     if is_operator_authorized(state, headers, operator_token) {
         return Ok(objective);
     }
@@ -3217,14 +3243,14 @@ async fn resolve_context_mount(
                 .ok_or_else(|| {
                     (
                         StatusCode::NOT_FOUND,
-                        format!("挂载 Context '{}' 不存在", context_id),
+                        format!("mounted Context '{}' does not exist", context_id),
                     )
                 })?;
             if agent_was_explicit && requested_agent_id != context.agent_id {
                 return Err((
                     StatusCode::CONFLICT,
                     format!(
-                        "请求 Agent '{}' 与 Context 所属 Agent '{}' 不一致",
+                        "requested Agent '{}' does not match Context owner Agent '{}'",
                         requested_agent_id, context.agent_id
                     ),
                 ));
@@ -3248,7 +3274,10 @@ async fn resolve_context_mount(
                 .ok_or_else(|| {
                     (
                         StatusCode::NOT_FOUND,
-                        format!("Agent '{}' 不存在；请先 create_agent", requested_agent_id),
+                        format!(
+                            "Agent '{}' does not exist; call create_agent first",
+                            requested_agent_id
+                        ),
                     )
                 })?;
             let context_id = context_id.unwrap_or_else(|| api_id("context"));
@@ -3260,7 +3289,7 @@ async fn resolve_context_mount(
                 .create_context(NewCognitiveContext {
                     id: context_id.clone(),
                     agent_id: agent.id.clone(),
-                    title: bounded_title(context_title, "新空白 Context"),
+                    title: bounded_title(context_title, "New Blank Context"),
                 })
                 .await
                 .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
@@ -3285,14 +3314,14 @@ async fn resolve_context_mount(
                 .ok_or_else(|| {
                     (
                         StatusCode::NOT_FOUND,
-                        format!("来源 Context '{}' 不存在", source_context_id),
+                        format!("source Context '{}' does not exist", source_context_id),
                     )
                 })?;
             if agent_was_explicit && requested_agent_id != source.agent_id {
                 return Err((
                     StatusCode::CONFLICT,
                     format!(
-                        "请求 Agent '{}' 与来源 Context 所属 Agent '{}' 不一致",
+                        "requested Agent '{}' does not match source Context owner Agent '{}'",
                         requested_agent_id, source.agent_id
                     ),
                 ));
@@ -3307,7 +3336,7 @@ async fn resolve_context_mount(
                     return Err((
                         StatusCode::CONFLICT,
                         format!(
-                            "来源 Context 版本冲突：请求 {}，当前 {}",
+                            "source Context version conflict: requested {}, current {}",
                             expected_version, actual_version
                         ),
                     ));
@@ -3322,7 +3351,7 @@ async fn resolve_context_mount(
                 .create_context(NewCognitiveContext {
                     id: context_id.clone(),
                     agent_id: source.agent_id.clone(),
-                    title: bounded_title(context_title, "独立认知 Context"),
+                    title: bounded_title(context_title, "Independent Cognitive Context"),
                 })
                 .await
                 .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
@@ -3387,7 +3416,7 @@ async fn handle_create_agent(
         .create_agent_bundle(
             NewAgent {
                 id: agent_id.clone(),
-                title: bounded_title(request.title, "新 Agent"),
+                title: bounded_title(request.title, "New Agent"),
                 root_context_id: context_id.clone(),
             },
             NewCognitiveContext {
@@ -3400,7 +3429,7 @@ async fn handle_create_agent(
                 agent_id,
                 context_id,
                 parent_session_id: None,
-                title: bounded_title(request.initial_session_title, "初始会话"),
+                title: bounded_title(request.initial_session_title, "Initial Session"),
                 mount_kind: SessionMountKind::NewBlankContext,
             },
         )
@@ -3451,14 +3480,17 @@ async fn handle_search_operator_principals(
     }
     let query_text = query.query.trim();
     if query_text.chars().count() > 200 {
-        return error_response(StatusCode::BAD_REQUEST, "Principal 搜索词超过 200 字符");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Principal search term exceeds 200 characters",
+        );
     }
     if query
         .cursor
         .as_deref()
         .is_some_and(|cursor| cursor.is_empty() || cursor.len() > 512)
     {
-        return error_response(StatusCode::BAD_REQUEST, "Principal cursor 无效");
+        return error_response(StatusCode::BAD_REQUEST, "invalid Principal cursor");
     }
     match state
         .runtime
@@ -3679,7 +3711,7 @@ async fn handle_revoke_execution_target_authorization(
         .as_deref()
         .map(str::trim)
         .filter(|reason| !reason.is_empty())
-        .unwrap_or("由当前 Principal 主动撤销");
+        .unwrap_or("revoked explicitly by the current Principal");
     match state
         .sdk
         .revoke_execution_target_authorization(
@@ -3741,7 +3773,7 @@ async fn handle_revoke_capability_lease(
         .as_deref()
         .map(str::trim)
         .filter(|reason| !reason.is_empty())
-        .unwrap_or("由当前 Principal 主动撤销");
+        .unwrap_or("revoked explicitly by the current Principal");
     match state
         .sdk
         .revoke_capability_lease(
@@ -4036,9 +4068,11 @@ async fn handle_download_edge_artifact(
         .stage_path(&job_id, ArtifactTransferStageKind::RuntimeSource);
     let metadata = match tokio::fs::metadata(&path).await {
         Ok(metadata) if metadata.is_file() => metadata,
-        Ok(_) => return error_response(StatusCode::CONFLICT, "Artifact stage 不是普通文件"),
+        Ok(_) => {
+            return error_response(StatusCode::CONFLICT, "Artifact stage is not a regular file")
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return error_response(StatusCode::NOT_FOUND, "Artifact stage 不存在")
+            return error_response(StatusCode::NOT_FOUND, "Artifact stage does not exist")
         }
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
@@ -4046,12 +4080,15 @@ async fn handle_download_edge_artifact(
         .size_bytes
         .is_some_and(|expected| expected != metadata.len())
     {
-        return error_response(StatusCode::CONFLICT, "Artifact stage 大小与冻结通道不一致");
+        return error_response(
+            StatusCode::CONFLICT,
+            "Artifact stage size does not match the frozen channel",
+        );
     }
     if query.offset > metadata.len() {
         return error_response(
             StatusCode::RANGE_NOT_SATISFIABLE,
-            "Artifact download offset 超过冻结大小",
+            "Artifact download offset exceeds the frozen size",
         );
     }
     let mut file = match tokio::fs::File::open(path).await {
@@ -4195,7 +4232,7 @@ async fn handle_upload_edge_artifact(
         .map(str::to_string)
     {
         Some(value) => value,
-        None => return error_response(StatusCode::BAD_REQUEST, "缺少 Artifact digest"),
+        None => return error_response(StatusCode::BAD_REQUEST, "missing Artifact digest"),
     };
     if channel
         .size_bytes
@@ -4205,7 +4242,10 @@ async fn handle_upload_edge_artifact(
             .as_deref()
             .is_some_and(|expected| expected != claimed_digest)
     {
-        return error_response(StatusCode::CONFLICT, "上传声明与冻结通道不一致");
+        return error_response(
+            StatusCode::CONFLICT,
+            "upload declaration does not match the frozen channel",
+        );
     }
     let final_path = match state
         .runtime
@@ -4241,7 +4281,7 @@ async fn handle_upload_edge_artifact(
             Json(json!({
                 "error": {
                     "code": "conflict",
-                    "message": "Artifact upload offset 冲突",
+                    "message": "Artifact upload offset conflict",
                 },
                 "expected_offset": current_offset,
             })),
@@ -4300,7 +4340,7 @@ async fn handle_upload_edge_artifact(
         {
             return error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "Artifact upload 超过冻结大小",
+                "Artifact upload exceeds the frozen size",
             );
         }
         hasher.update(&chunk);
@@ -4311,7 +4351,10 @@ async fn handle_upload_edge_artifact(
     }
     if size_bytes != claimed_total {
         let _ = file.flush().await;
-        return error_response(StatusCode::CONFLICT, "Artifact upload 尚未达到声明大小");
+        return error_response(
+            StatusCode::CONFLICT,
+            "Artifact upload has not reached the declared size",
+        );
     }
     let digest = format!("sha256:{:x}", hasher.finalize());
     if channel
@@ -4325,12 +4368,15 @@ async fn handle_upload_edge_artifact(
         let _ = tokio::fs::remove_file(&partial_path).await;
         return error_response(
             StatusCode::CONFLICT,
-            "Artifact upload 摘要或大小与冻结通道不一致",
+            "Artifact upload digest or size does not match the frozen channel",
         );
     }
     if digest != claimed_digest {
         let _ = tokio::fs::remove_file(&partial_path).await;
-        return error_response(StatusCode::CONFLICT, "Artifact upload 摘要与声明不一致");
+        return error_response(
+            StatusCode::CONFLICT,
+            "Artifact upload digest does not match the declaration",
+        );
     }
     if let Err(error) = file.sync_all().await {
         let _ = tokio::fs::remove_file(&partial_path).await;
@@ -4359,7 +4405,7 @@ fn required_u64_header(headers: &HeaderMap, name: &'static str) -> Result<u64, R
         .ok_or_else(|| {
             error_response(
                 StatusCode::BAD_REQUEST,
-                format!("缺少或无效 Header: {name}"),
+                format!("missing or invalid Header: {name}"),
             )
         })
 }
@@ -4466,7 +4512,7 @@ async fn handle_inspect_artifact_transfer(
         }
         Ok(_) => error_response(
             StatusCode::BAD_REQUEST,
-            "Execution Job 不是 Artifact Transfer",
+            "Execution Job is not an Artifact Transfer",
         ),
         Err(error) => sdk_error_response(error),
     }
@@ -4561,7 +4607,7 @@ fn node_device_token(headers: &HeaderMap) -> Result<&str, Response> {
         .ok_or_else(|| {
             error_response(
                 StatusCode::UNAUTHORIZED,
-                "Edge Node 需要 Authorization: Bearer <device-token>",
+                "Edge Node requires Authorization: Bearer <device-token>",
             )
         })?;
     Ok(token)
@@ -4578,7 +4624,7 @@ fn edge_claim_token(headers: &HeaderMap) -> Result<&str, Response> {
         .ok_or_else(|| {
             error_response(
                 StatusCode::UNAUTHORIZED,
-                "Edge Artifact channel 需要 x-morphz-claim-token",
+                "Edge Artifact channel requires x-morphz-claim-token",
             )
         })
 }
@@ -4594,7 +4640,7 @@ async fn handle_get_context_working_set(
     }
     match state.runtime.get_context(&context_id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context 不存在"),
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context does not exist"),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
     let sessions = match state
@@ -4606,15 +4652,15 @@ async fn handle_get_context_working_set(
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     let active_session_id = match query.session_id {
-        Some(session_id) => match sessions.iter().find(|session| session.id == session_id) {
-            Some(_) => session_id,
-            None => {
-                return error_response(
+        Some(session_id) => {
+            match sessions.iter().find(|session| session.id == session_id) {
+                Some(_) => session_id,
+                None => return error_response(
                     StatusCode::BAD_REQUEST,
-                    "session_id 不属于目标 Context，或 Session 已归档",
-                )
+                    "session_id does not belong to the target Context, or the Session is archived",
+                ),
             }
-        },
+        }
         None => match sessions
             .iter()
             .max_by(|left, right| {
@@ -4625,7 +4671,7 @@ async fn handle_get_context_working_set(
             .map(|session| session.id.clone())
         {
             Some(session_id) => session_id,
-            None => return error_response(StatusCode::CONFLICT, "Context 没有活跃 Session"),
+            None => return error_response(StatusCode::CONFLICT, "Context has no active Session"),
         },
     };
     match state
@@ -4658,7 +4704,7 @@ async fn handle_get_context_activations(
     }
     match state.runtime.get_context(&context_id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context 不存在"),
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context does not exist"),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
     match state.runtime.active_thread_activations(&context_id).await {
@@ -4766,7 +4812,7 @@ async fn handle_get_scheduler_snapshot(
         .await
     {
         Ok(snapshot) => Json(snapshot).into_response(),
-        Err(error) if error.to_string().contains("不存在") => {
+        Err(error) if error.to_string().contains("does not exist") => {
             error_response(StatusCode::NOT_FOUND, error.to_string())
         }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -4861,7 +4907,7 @@ async fn handle_control_thread(
         .as_deref()
         .map(str::trim)
         .filter(|reason| !reason.is_empty())
-        .unwrap_or("用户通过 Dashboard 控制 Thread");
+        .unwrap_or("the user controlled the Thread through the Dashboard");
     match state
         .sdk
         .control_thread(
@@ -4881,12 +4927,14 @@ async fn handle_control_thread(
         Ok(ThreadMutation::Conflict { current }) => (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Thread revision 冲突，请刷新后重试",
+                "error": "Thread revision conflict; refresh and retry",
                 "current": current,
             })),
         )
             .into_response(),
-        Ok(ThreadMutation::NotFound) => error_response(StatusCode::NOT_FOUND, "Thread 不存在"),
+        Ok(ThreadMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Thread does not exist")
+        }
         Err(error) => sdk_error_response(error),
     }
 }
@@ -4906,7 +4954,7 @@ async fn handle_supersede_thread(
         .as_deref()
         .map(str::trim)
         .filter(|reason| !reason.is_empty())
-        .unwrap_or("用户通过 Dashboard 修订 Thread");
+        .unwrap_or("the user revised the Thread through the Dashboard");
     match state
         .sdk
         .supersede_thread(
@@ -4926,12 +4974,14 @@ async fn handle_supersede_thread(
         Ok(ThreadMutation::Conflict { current }) => (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Thread revision 冲突，请刷新后重试",
+                "error": "Thread revision conflict; refresh and retry",
                 "current": current,
             })),
         )
             .into_response(),
-        Ok(ThreadMutation::NotFound) => error_response(StatusCode::NOT_FOUND, "Thread 不存在"),
+        Ok(ThreadMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Thread does not exist")
+        }
         Err(error) => sdk_error_response(error),
     }
 }
@@ -5029,7 +5079,7 @@ async fn handle_mutate_schedule(
         _ => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "action 只支持 pause、resume、reschedule 或 cancel",
+                "action supports only pause, resume, reschedule, or cancel",
             )
         }
     };
@@ -5042,7 +5092,7 @@ async fn handle_mutate_schedule(
         Ok(ScheduleMutation::Conflict { current }) => (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Schedule revision 已被其他写者更新",
+                "error": "Schedule revision was updated by another writer",
                 "outcome": "conflict",
                 "schedule": current,
             })),
@@ -5057,7 +5107,9 @@ async fn handle_mutate_schedule(
             })),
         )
             .into_response(),
-        Ok(ScheduleMutation::NotFound) => error_response(StatusCode::NOT_FOUND, "Schedule 不存在"),
+        Ok(ScheduleMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Schedule does not exist")
+        }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -5086,14 +5138,17 @@ async fn handle_create_context(
         Ok(None) => {
             return error_response(
                 StatusCode::NOT_FOUND,
-                format!("Agent '{}' 不存在；请先 create_agent", agent_id),
+                format!(
+                    "Agent '{}' does not exist; call create_agent first",
+                    agent_id
+                ),
             )
         }
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
     let title = request
         .title
-        .unwrap_or_else(|| "新认知 Context".to_string())
+        .unwrap_or_else(|| "New Cognitive Context".to_string())
         .trim()
         .chars()
         .take(200)
@@ -5126,7 +5181,7 @@ async fn handle_update_context(
         .title
         .map(|title| title.trim().chars().take(200).collect::<String>());
     if title.as_deref() == Some("") {
-        return error_response(StatusCode::BAD_REQUEST, "title 不能为空");
+        return error_response(StatusCode::BAD_REQUEST, "title must not be empty");
     }
     match state
         .sdk
@@ -5172,7 +5227,7 @@ async fn handle_update_context_token_budget(
     if request.requested_hard_token_limit == Some(0) {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "requested_hard_token_limit 必须大于 0；使用 null 恢复自动模式",
+            "requested_hard_token_limit must be greater than 0; use null to restore automatic mode",
         );
     }
     match state
@@ -5191,13 +5246,13 @@ async fn handle_update_context_token_budget(
             StatusCode::CONFLICT,
             Json(json!({
                 "outcome": "conflict",
-                "error": "Context token budget 已被其他写者更新",
+                "error": "Context token budget was updated by another writer",
                 "budget": budget,
             })),
         )
             .into_response(),
         Ok(crate::runtime::ContextTokenBudgetUpdate::NotFound) => {
-            error_response(StatusCode::NOT_FOUND, "Context 不存在")
+            error_response(StatusCode::NOT_FOUND, "Context does not exist")
         }
         Err(error) => sdk_error_response(error),
     }
@@ -5226,7 +5281,7 @@ async fn handle_create_session(
         }
     }
     match state.runtime.get_session(&id).await {
-        Ok(Some(_)) => return error_response(StatusCode::CONFLICT, "Session ID 已存在"),
+        Ok(Some(_)) => return error_response(StatusCode::CONFLICT, "Session ID already exists"),
         Ok(None) => {}
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -5243,7 +5298,7 @@ async fn handle_create_session(
                 agent_id: mount.agent_id,
                 context_id: mount.context_id,
                 parent_session_id: request.parent_session_id,
-                title: bounded_title(request.title, "新会话"),
+                title: bounded_title(request.title, "New Session"),
                 mount_kind: mount.mount_kind,
             },
         )
@@ -5272,7 +5327,7 @@ async fn handle_create_independent_session(
         return error_response(StatusCode::BAD_REQUEST, error);
     }
     match state.runtime.get_session(&session_id).await {
-        Ok(Some(_)) => return error_response(StatusCode::CONFLICT, "Session ID 已存在"),
+        Ok(Some(_)) => return error_response(StatusCode::CONFLICT, "Session ID already exists"),
         Ok(None) => {}
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -5296,7 +5351,7 @@ async fn handle_create_independent_session(
         Ok(None) => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Seed Context 创建后无法读取",
+                "Seed Context could not be read after creation",
             )
         }
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -5310,7 +5365,7 @@ async fn handle_create_independent_session(
                 agent_id: mount.agent_id,
                 context_id: mount.context_id,
                 parent_session_id: None,
-                title: bounded_title(request.session_title, "独立会话"),
+                title: bounded_title(request.session_title, "Independent Session"),
                 mount_kind: SessionMountKind::NewContextFromMind,
             },
         )
@@ -5371,8 +5426,31 @@ async fn handle_update_session(
         .title
         .map(|title| title.trim().chars().take(200).collect::<String>());
     if title.as_deref() == Some("") {
-        return error_response(StatusCode::BAD_REQUEST, "title 不能为空");
+        return error_response(StatusCode::BAD_REQUEST, "title must not be empty");
     }
+    let model_alias = match request.model_alias {
+        None => None,
+        Some(model) if model.trim().is_empty() => Some(None),
+        Some(model) => {
+            let model = model.trim().to_string();
+            let options = match state.runtime.inference_model_options().await {
+                Ok(options) => options,
+                Err(error) => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("failed to read the discovered and enabled model catalog: {error}"),
+                    )
+                }
+            };
+            if !options.iter().any(|option| option.id == model) {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("model '{model}' is not in the discovered and enabled model catalog"),
+                );
+            }
+            Some(Some(model))
+        }
+    };
     match state
         .sdk
         .update_session(
@@ -5381,6 +5459,7 @@ async fn handle_update_session(
             SessionUpdate {
                 title,
                 status: request.status,
+                model_alias,
             },
         )
         .await
@@ -5413,16 +5492,25 @@ async fn handle_send_message(
         Err(error) => return sdk_error_response(error),
     };
     if session.status == SessionStatus::Archived {
-        return error_response(StatusCode::CONFLICT, "归档 Session 不能接收新消息");
+        return error_response(
+            StatusCode::CONFLICT,
+            "an archived Session cannot receive new messages",
+        );
     }
     if request.text.trim().is_empty()
         && request.attachments.is_empty()
         && request.references.is_empty()
     {
-        return error_response(StatusCode::BAD_REQUEST, "消息正文、附件和引用不能同时为空");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "message text, attachments, and references cannot all be empty",
+        );
     }
     if request.text.chars().count() > 1_000_000 {
-        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "消息正文超过 1,000,000 字符");
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "message text exceeds 1,000,000 characters",
+        );
     }
     let mut attachment_usage = crate::model_input::ModelInputUsage::default();
     for attachment in &request.attachments {
@@ -5443,7 +5531,7 @@ async fn handle_send_message(
     if let Err(error) = crate::model_input::validate_model_input_usage(
         attachment_usage,
         state.runtime.config().model_input.import_limits(),
-        "Dashboard 消息附件导入",
+        "Dashboard message attachment import",
     ) {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, error.to_string());
     }
@@ -5466,7 +5554,7 @@ async fn handle_send_message(
             Err(_) => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    format!("附件 '{}' 不是有效的 base64 数据", attachment.name),
+                    format!("attachment '{}' is not valid base64 data", attachment.name),
                 )
             }
         };
@@ -5489,6 +5577,7 @@ async fn handle_send_message(
                 references: request.references,
                 harness: request.harness,
                 dispatch_mode: request.dispatch_mode,
+                model_alias: request.model_alias,
             },
         )
         .await
@@ -5572,7 +5661,7 @@ async fn handle_bind_session_principal(
     if state.identity.mode != ServerIdentityMode::TrustedGateway {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "默认身份模式不需要显式认领 Session",
+            "default identity mode does not require explicitly claiming a Session",
         );
     }
     let principal = match request_principal(&state, &headers, None) {
@@ -5611,7 +5700,7 @@ async fn handle_get_session_events(
     if query.after_sequence.is_some() && query.before_sequence.is_some() {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "after_sequence 与 before_sequence 不能同时使用",
+            "after_sequence and before_sequence cannot be used together",
         );
     }
     match state
@@ -5683,7 +5772,9 @@ async fn handle_get_session_event_attachment(
     {
         Ok(events) => match events.into_iter().next() {
             Some(event) => event,
-            None => return error_response(StatusCode::NOT_FOUND, "附件所属 Event 不存在"),
+            None => {
+                return error_response(StatusCode::NOT_FOUND, "attachment Event does not exist")
+            }
         },
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
@@ -5698,14 +5789,20 @@ async fn handle_get_session_event_attachment(
             })
         });
     let Some(attachment) = attachment else {
-        return error_response(StatusCode::NOT_FOUND, "Event 中不存在该附件");
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "attachment does not exist in the Event",
+        );
     };
     let media_type = attachment
         .get("media_type")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("application/octet-stream");
     if !media_type.starts_with("image/") {
-        return error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "该附件不是可预览图片");
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "attachment is not a previewable image",
+        );
     }
     let loaded = match crate::model_input::read_stored_attachment(
         &state.runtime.config().background_task.artifact_dir,
@@ -5883,9 +5980,9 @@ async fn handle_cancel_session(
         (
             "text".to_string(),
             json!(if was_running {
-                "当前 Session 执行已取消。"
+                "Current Session execution was cancelled."
             } else {
-                "Session 当前没有运行中的执行；后续后台唤醒已暂停到下一条用户消息。"
+                "The Session has no running execution; subsequent background wakeups are paused until the next user message."
             }),
         ),
     ]
@@ -5947,10 +6044,16 @@ async fn handle_create_objective(
     };
     let stated_objective = request.stated_objective.trim().to_string();
     if stated_objective.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "stated_objective 不能为空");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "stated_objective must not be empty",
+        );
     }
     if request.token_budget == Some(0) {
-        return error_response(StatusCode::BAD_REQUEST, "token_budget 必须大于 0");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "token_budget must be greater than 0",
+        );
     }
     let coordinator = match state
         .sdk
@@ -5974,7 +6077,7 @@ async fn handle_create_objective(
     if delivery.context_id != coordinator.context_id || delivery.agent_id != coordinator.agent_id {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "coordinator 与 delivery Session 必须属于同一 Agent/Context",
+            "coordinator and delivery Session must belong to the same Agent/Context",
         );
     }
     let objective_id = request.id.unwrap_or_else(|| api_id("objective"));
@@ -6022,7 +6125,10 @@ async fn handle_edit_objective(
     }
     let stated_objective = request.stated_objective.trim();
     if stated_objective.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "stated_objective 不能为空");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "stated_objective must not be empty",
+        );
     }
     match state
         .runtime
@@ -6037,13 +6143,13 @@ async fn handle_edit_objective(
         Ok(ObjectiveMutation::Conflict { current }) => (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Objective revision 冲突，请刷新后重试",
+                "error": "Objective revision conflict; refresh and retry",
                 "current": current,
             })),
         )
             .into_response(),
         Ok(ObjectiveMutation::NotFound) => {
-            error_response(StatusCode::NOT_FOUND, "Objective 不存在")
+            error_response(StatusCode::NOT_FOUND, "Objective does not exist")
         }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -6073,7 +6179,7 @@ async fn handle_resume_objective(
         return error_response(
             StatusCode::CONFLICT,
             format!(
-                "Objective 当前状态为 '{}'，只有 blocked/paused 可以显式恢复",
+                "Objective is currently '{}'; only blocked or paused Objectives can be resumed explicitly",
                 objective.status.as_str()
             ),
         );
@@ -6083,7 +6189,7 @@ async fn handle_resume_objective(
         .as_deref()
         .map(str::trim)
         .filter(|reason| !reason.is_empty())
-        .unwrap_or("用户通过 Dashboard 显式恢复 Objective");
+        .unwrap_or("the user explicitly resumed the Objective through the Dashboard");
     match state
         .runtime
         .resume_objective(&objective_id, request.expected_revision, reason)
@@ -6097,13 +6203,13 @@ async fn handle_resume_objective(
         Ok(ObjectiveMutation::Conflict { current }) => (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Objective revision 冲突，请刷新后重试",
+                "error": "Objective revision conflict; refresh and retry",
                 "current": current,
             })),
         )
             .into_response(),
         Ok(ObjectiveMutation::NotFound) => {
-            error_response(StatusCode::NOT_FOUND, "Objective 不存在")
+            error_response(StatusCode::NOT_FOUND, "Objective does not exist")
         }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -6130,7 +6236,7 @@ async fn handle_pause_objective(
         return error_response(
             StatusCode::CONFLICT,
             format!(
-                "Objective 当前状态为 '{}'，只有 active 可以显式暂停",
+                "Objective is currently '{}'; only active Objectives can be paused explicitly",
                 objective.status.as_str()
             ),
         );
@@ -6140,7 +6246,7 @@ async fn handle_pause_objective(
         .as_deref()
         .map(str::trim)
         .filter(|reason| !reason.is_empty())
-        .unwrap_or("用户通过 Dashboard 显式暂停 Objective");
+        .unwrap_or("the user explicitly paused the Objective through the Dashboard");
     match state
         .runtime
         .pause_objective(&objective_id, request.expected_revision, reason)
@@ -6154,13 +6260,13 @@ async fn handle_pause_objective(
         Ok(ObjectiveMutation::Conflict { current }) => (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Objective revision 冲突，请刷新后重试",
+                "error": "Objective revision conflict; refresh and retry",
                 "current": current,
             })),
         )
             .into_response(),
         Ok(ObjectiveMutation::NotFound) => {
-            error_response(StatusCode::NOT_FOUND, "Objective 不存在")
+            error_response(StatusCode::NOT_FOUND, "Objective does not exist")
         }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -6189,7 +6295,7 @@ async fn handle_delete_objective(
         .as_deref()
         .map(str::trim)
         .filter(|reason| !reason.is_empty())
-        .unwrap_or("用户通过 Dashboard 删除 Objective");
+        .unwrap_or("the user deleted the Objective through the Dashboard");
     match state
         .runtime
         .cancel_objective(&objective_id, request.expected_revision, reason)
@@ -6204,13 +6310,13 @@ async fn handle_delete_objective(
         Ok(ObjectiveMutation::Conflict { current }) => (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Objective revision 冲突，请刷新后重试",
+                "error": "Objective revision conflict; refresh and retry",
                 "current": current,
             })),
         )
             .into_response(),
         Ok(ObjectiveMutation::NotFound) => {
-            error_response(StatusCode::NOT_FOUND, "Objective 不存在")
+            error_response(StatusCode::NOT_FOUND, "Objective does not exist")
         }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -6227,7 +6333,7 @@ async fn handle_get_delegation(
     }
     match state.runtime.get_delegation(&delegation_id).await {
         Ok(Some(delegation)) => Json(delegation).into_response(),
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "Delegation 不存在"),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Delegation does not exist"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -6243,7 +6349,7 @@ async fn handle_cancel_delegation(
     }
     let delegation = match state.runtime.get_delegation(&delegation_id).await {
         Ok(Some(delegation)) => delegation,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Delegation 不存在"),
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Delegation does not exist"),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     if matches!(
@@ -6253,7 +6359,7 @@ async fn handle_cancel_delegation(
         return error_response(
             StatusCode::CONFLICT,
             format!(
-                "Delegation 已处于终态 '{}'，不能取消",
+                "Delegation is already terminal with status '{}' and cannot be cancelled",
                 delegation.status.as_str()
             ),
         );
@@ -6297,7 +6403,7 @@ async fn handle_ws_upgrade(
     } else if !websocket_may_subscribe_globally(&state, &headers, query.token.as_deref()) {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "非 Operator 的 WebSocket 订阅必须指定 session_id",
+            "a non-Operator WebSocket subscription must specify session_id",
         );
     }
     ws.on_upgrade(move |socket| {
@@ -6386,7 +6492,7 @@ async fn ensure_dashboard_event_session_route(
         if let Some(declared_context_id) = declared_context_id {
             if existing.context_id != declared_context_id {
                 return Err(format!(
-                    "事件路由拒绝：Session '{}' 属于 Context '{}'，事件声明 '{}'",
+                    "Event route rejected: Session '{}' belongs to Context '{}', while the Event declares '{}'",
                     session_id, existing.context_id, declared_context_id
                 )
                 .into());
@@ -6397,7 +6503,7 @@ async fn ensure_dashboard_event_session_route(
 
     if identity_mode == ServerIdentityMode::TrustedGateway {
         return Err(
-            format!("可信 Gateway 模式拒绝从事件隐式创建未知 Session '{session_id}'").into(),
+            format!("trusted Gateway mode refuses to create unknown Session '{session_id}' implicitly from an Event").into(),
         );
     }
 
@@ -6416,7 +6522,7 @@ async fn ensure_dashboard_event_session_route(
                     id: context_id.to_string(),
                     agent_id: default_agent_id.to_string(),
                     title: if context_id == default_context_id {
-                        "默认认知 Context".to_string()
+                        "Default Cognitive Context".to_string()
                     } else {
                         context_id.to_string()
                     },
@@ -6659,7 +6765,7 @@ async fn handle_ws_connection(
                 match incoming {
                     Some(Ok(WsMessage::Close(_))) | None => break,
                     Some(Err(_)) => break,
-                    _ => {} // 忽略正常的心跳或消息
+                    _ => {} // Ignore normal heartbeats and messages.
                 }
             }
         }
@@ -6673,7 +6779,7 @@ async fn model_attempt_snapshot_event(
     let session = runtime
         .get_session(session_id)
         .await?
-        .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+        .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
     let active_activation_ids = runtime
         .active_thread_activations(&session.context_id)
         .await?
@@ -7098,6 +7204,7 @@ mod tests {
         }
         let (broadcast_tx, _) = broadcast::channel(32);
         let sdk = MorphzSdk::new(runtime.clone());
+        let managed_config_path = path.with_extension("managed").join("managed.toml");
         (
             Arc::new(AppState {
                 runtime: runtime.clone(),
@@ -7108,7 +7215,8 @@ mod tests {
                 default_agent_id: "agent-test".to_string(),
                 default_context_id: "context-test".to_string(),
                 identity: ServerIdentityConfig::default(),
-                managed_config_path: Some(path.with_extension("managed").join("managed.toml")),
+                core_config_path: Some(managed_config_path.clone()),
+                managed_config_path: Some(managed_config_path),
             }),
             runtime,
         )
@@ -7794,6 +7902,7 @@ mod tests {
                 provider_id: "morphz-site".to_string(),
                 service_token_env: "MORPHZ_API_TOKEN".to_string(),
             },
+            core_config_path: default_state.core_config_path.clone(),
             managed_config_path: default_state.managed_config_path.clone(),
         });
         assert!(!websocket_may_subscribe_globally(
@@ -7996,6 +8105,7 @@ mod tests {
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
+                model_alias: None,
             }),
         )
         .await
@@ -8127,6 +8237,7 @@ mod tests {
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
+                model_alias: None,
             }),
         )
         .await
@@ -8177,6 +8288,7 @@ mod tests {
                 provider_id: "morphz-site".to_string(),
                 service_token_env: "MORPHZ_API_TOKEN".to_string(),
             },
+            core_config_path: default_state.core_config_path.clone(),
             managed_config_path: default_state.managed_config_path.clone(),
         });
 
@@ -8298,7 +8410,7 @@ mod tests {
             .await
             .unwrap();
         let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("只支持：low、medium、high"));
+        assert!(body.contains("supports only: low, medium, high"));
         assert_eq!(runtime.reasoning_effort(), None);
     }
 
@@ -8943,7 +9055,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rejected_status, StatusCode::BAD_REQUEST);
-        assert!(String::from_utf8_lossy(&rejected_body).contains("至少需要选择一个模型"));
+        assert!(String::from_utf8_lossy(&rejected_body).contains("at least one model"));
         assert_eq!(
             std::fs::read_to_string(state.managed_config_path.as_deref().unwrap()).unwrap(),
             managed_before_rejection
@@ -10203,6 +10315,98 @@ account = "xai-account"
     }
 
     #[tokio::test]
+    async fn dashboard_session_model_control_is_scoped_reversible_and_catalog_validated() {
+        let (state, runtime) = test_state().await;
+        let session_id = "session-model-scope";
+        runtime
+            .ensure_session(crate::memory::NewSession {
+                id: session_id.to_string(),
+                agent_id: "agent-test".to_string(),
+                context_id: "context-test".to_string(),
+                parent_session_id: None,
+                title: "Session model scope".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let selected = handle_update_session(
+            State(Arc::clone(&state)),
+            Path(session_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: None,
+                status: None,
+                model_alias: Some("fixture-model".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(selected.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .model_alias
+                .as_deref(),
+            Some("fixture-model")
+        );
+        assert_eq!(runtime.model(), "fixture-model");
+
+        let rejected = handle_update_session(
+            State(Arc::clone(&state)),
+            Path(session_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: None,
+                status: None,
+                model_alias: Some("missing-model".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            runtime
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .model_alias
+                .as_deref(),
+            Some("fixture-model")
+        );
+
+        let inherited = handle_update_session(
+            State(state),
+            Path(session_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: None,
+                status: None,
+                model_alias: Some(String::new()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(inherited.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .model_alias,
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn context_token_budget_http_control_is_revision_fenced_and_reversible() {
         let (state, _) = test_state().await;
 
@@ -10355,6 +10559,7 @@ account = "xai-account"
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
+                model_alias: None,
             }),
         )
         .await
@@ -10363,7 +10568,7 @@ account = "xai-account"
         let rejected_body = axum::body::to_bytes(rejected.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert!(String::from_utf8_lossy(&rejected_body).contains("超过 128 个上限"));
+        assert!(String::from_utf8_lossy(&rejected_body).contains("exceeding the limit of 128"));
 
         for expected_status in [StatusCode::ACCEPTED, StatusCode::OK] {
             let response = handle_send_message(
@@ -10385,6 +10590,7 @@ account = "xai-account"
                     }],
                     harness: None,
                     dispatch_mode: Some(crate::memory::MessageDispatchMode::Parallel),
+                    model_alias: None,
                 }),
             )
             .await
@@ -10410,6 +10616,7 @@ account = "xai-account"
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
+                model_alias: None,
             }),
         )
         .await
@@ -10559,6 +10766,7 @@ account = "xai-account"
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
+                model_alias: None,
             }),
         )
         .await
@@ -10744,6 +10952,7 @@ account = "xai-account"
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
+                model_alias: None,
             }),
         )
         .await
@@ -11228,6 +11437,7 @@ account = "xai-account"
                 thread_id: thread.id,
                 source_turn_id: "api-schedule-turn".to_string(),
                 intent: "continue later".to_string(),
+                model_alias: None,
                 not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
                 interval_seconds: None,
                 dependency_thread_ids: Vec::new(),

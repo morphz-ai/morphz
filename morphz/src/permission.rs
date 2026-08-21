@@ -220,12 +220,12 @@ impl PermissionProfile {
             .filter(|model| !model.is_empty())
             .map(ToOwned::to_owned);
         if config.auto_review_model.is_some() && auto_review_model.is_none() {
-            return Err("permissions.auto_review_model 不能为空".into());
+            return Err("permissions.auto_review_model must not be empty".into());
         }
         let workspace_root = canonicalize_existing(Path::new(&config.workspace_root), "workspace")?;
         if !workspace_root.is_dir() {
             return Err(format!(
-                "权限配置 workspace_root '{}' 不是目录",
+                "permission configuration workspace_root '{}' is not a directory",
                 workspace_root.display()
             )
             .into());
@@ -246,7 +246,7 @@ impl PermissionProfile {
         }
         for pattern in &config.protected_paths {
             Pattern::new(pattern)
-                .map_err(|error| format!("无效 protected_paths glob '{pattern}': {error}"))?;
+                .map_err(|error| format!("invalid protected_paths glob '{pattern}': {error}"))?;
         }
         Ok(Self {
             mode: config.mode,
@@ -275,7 +275,7 @@ impl PermissionProfile {
     pub fn resolve_candidate(&self, input: &str) -> Result<ResolvedPath, PermissionError> {
         let trimmed = input.trim();
         if trimmed.is_empty() {
-            return Err("路径不能为空".into());
+            return Err("path must not be empty".into());
         }
         let raw = Path::new(trimmed);
         let candidate = if raw.is_absolute() {
@@ -307,7 +307,7 @@ impl PermissionProfile {
         }
         if resolved.protected {
             return Ok(PathDecision::Denied(format!(
-                "路径 '{}' 命中不可覆盖的 protected_paths 规则",
+                "path '{}' matches a non-overridable protected_paths rule",
                 resolved.candidate.display()
             )));
         }
@@ -332,14 +332,14 @@ impl PermissionProfile {
         let resolved = self.resolve_candidate(input)?;
         if resolved.protected {
             return Err(format!(
-                "额外权限不能覆盖 protected_paths：{}",
+                "additional permissions cannot override protected_paths: {}",
                 resolved.candidate.display()
             )
             .into());
         }
         let canonical = std::fs::canonicalize(&resolved.candidate).map_err(|error| {
             format!(
-                "额外权限路径必须已存在且可解析 '{}': {error}",
+                "additional permission path must already exist and be resolvable '{}': {error}",
                 resolved.candidate.display()
             )
         })?;
@@ -508,7 +508,10 @@ impl PermissionBroker {
                 resolved_anchor,
             } => {
                 if self.profile.approval_policy == ApprovalPolicy::Never {
-                    return Err("当前权限 Profile 不允许请求边界外能力".into());
+                    return Err(
+                        "the current permission Profile does not allow out-of-bound capabilities"
+                            .into(),
+                    );
                 }
                 let requested = match access {
                     FilesystemAccess::Read => CapabilityDelta {
@@ -530,9 +533,9 @@ impl PermissionBroker {
                         },
                         requested,
                         justification: format!(
-                            "工具 {tool} 需要对 '{}' 执行 {} 操作",
+                            "tool {tool} requires {} access to '{}'",
+                            access.as_str(),
                             candidate.display(),
-                            access.as_str()
                         ),
                     }),
                 ))
@@ -550,7 +553,9 @@ impl PermissionBroker {
             return Ok(None);
         }
         if self.profile.approval_policy == ApprovalPolicy::Never {
-            return Err("当前权限 Profile 不允许请求边界外能力".into());
+            return Err(
+                "the current permission Profile does not allow out-of-bound capabilities".into(),
+            );
         }
         Ok(Some(ApprovalRequirement {
             action,
@@ -595,7 +600,9 @@ impl PermissionBroker {
             return Ok(());
         }
         if self.profile.approval_policy == ApprovalPolicy::Never {
-            return Err("当前权限 Profile 不允许请求边界外能力".into());
+            return Err(
+                "the current permission Profile does not allow out-of-bound capabilities".into(),
+            );
         }
         let policy_digest = self.policy_digest();
         if CURRENT_DURABLE_APPROVAL
@@ -636,13 +643,13 @@ impl PermissionBroker {
                 Ok(())
             }
             ApprovalDecision::AllowLease { .. } => {
-                Err("当前直接权限请求没有 Capability Lease offer，审批者不能批准租约".into())
+                Err("the current direct permission request has no Capability Lease offer; the reviewer cannot approve a lease".into())
             }
             ApprovalDecision::Deny { rationale, .. } => {
-                Err(format!("权限审批拒绝本次操作: {rationale}").into())
+                Err(format!("permission review rejected this operation: {rationale}").into())
             }
             ApprovalDecision::AskHuman { rationale, .. } => {
-                Err(format!("审批者要求人工确认，但当前审批链没有可用人工通道: {rationale}").into())
+                Err(format!("the reviewer requested human confirmation, but the current approval chain has no available human channel: {rationale}").into())
             }
         }
     }
@@ -657,25 +664,38 @@ fn nonempty(value: String, fallback: &str) -> String {
 }
 
 fn canonicalize_existing(path: &Path, kind: &str) -> Result<PathBuf, PermissionError> {
-    std::fs::canonicalize(path)
-        .map_err(|error| format!("无法解析权限配置 {kind} '{}': {error}", path.display()).into())
+    std::fs::canonicalize(path).map_err(|error| {
+        format!(
+            "failed to resolve permission configuration {kind} '{}': {error}",
+            path.display()
+        )
+        .into()
+    })
 }
 
 fn resolve_existing_or_parent(path: &Path) -> Result<PathBuf, PermissionError> {
     if path.exists() {
-        return std::fs::canonicalize(path)
-            .map_err(|error| format!("无法解析路径 '{}': {error}", path.display()).into());
+        return std::fs::canonicalize(path).map_err(|error| {
+            format!("failed to resolve path '{}': {error}", path.display()).into()
+        });
     }
     let mut current = path.parent().unwrap_or_else(|| Path::new("."));
     loop {
         if current.exists() {
             return std::fs::canonicalize(current).map_err(|error| {
-                format!("无法解析路径祖先 '{}': {error}", current.display()).into()
+                format!(
+                    "failed to resolve path ancestor '{}': {error}",
+                    current.display()
+                )
+                .into()
             });
         }
-        current = current
-            .parent()
-            .ok_or_else(|| format!("路径 '{}' 没有可解析的祖先目录", path.display()))?;
+        current = current.parent().ok_or_else(|| {
+            format!(
+                "path '{}' has no resolvable ancestor directory",
+                path.display()
+            )
+        })?;
     }
 }
 

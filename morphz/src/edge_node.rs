@@ -181,9 +181,9 @@ pub struct EdgeDeviceIdentity {
 
 pub fn generate_device_identity() -> Result<EdgeDeviceIdentity, EdgeNodeError> {
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
-        .map_err(|_| "无法生成 Edge Ed25519 设备密钥")?;
+        .map_err(|_| "failed to generate Edge Ed25519 device key")?;
     let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
-        .map_err(|_| "无法解析新生成的 Edge Ed25519 设备密钥")?;
+        .map_err(|_| "failed to parse newly generated Edge Ed25519 device key")?;
     let public_key = key_pair.public_key().as_ref();
     Ok(EdgeDeviceIdentity {
         private_key_pkcs8: encode_hex(pkcs8.as_ref()),
@@ -205,7 +205,7 @@ pub struct EdgeNodeCredentials {
 impl EdgeNodeCredentials {
     pub fn default_path() -> Result<PathBuf, EdgeNodeError> {
         let home = crate::config::morphz_home_dir()
-            .ok_or("无法确定 Morphz 用户配置目录，不能保存 Edge Node 凭证")?;
+            .ok_or("cannot determine Morphz user configuration directory; Edge Node credentials cannot be saved")?;
         Ok(home.join("edge").join("credentials.json"))
     }
 
@@ -280,7 +280,7 @@ impl EdgeGatewayClient {
     pub fn new(server_url: impl Into<String>) -> Result<Self, EdgeNodeError> {
         let base_url = server_url.into().trim_end_matches('/').to_string();
         if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
-            return Err("Edge server URL 必须以 http:// 或 https:// 开头".into());
+            return Err("Edge server URL must start with http:// or https://".into());
         }
         Ok(Self {
             base_url,
@@ -397,7 +397,7 @@ impl EdgeGatewayClient {
         let claim_token = command
             .claim_token
             .as_deref()
-            .ok_or("已领取的 Edge Command 缺少 claim_token")?;
+            .ok_or("claimed Edge Command is missing claim_token")?;
         self.send_json(
             self.authorized(
                 self.http.post(self.url(&format!(
@@ -429,7 +429,7 @@ impl EdgeGatewayClient {
         let claim_token = command
             .claim_token
             .as_deref()
-            .ok_or("已领取的 Edge Command 缺少 claim_token")?;
+            .ok_or("claimed Edge Command is missing claim_token")?;
         self.send_json(
             self.authorized(
                 self.http.post(self.url(&format!(
@@ -459,7 +459,7 @@ impl EdgeGatewayClient {
         let claim_token = command
             .claim_token
             .as_deref()
-            .ok_or("已领取的 Edge Command 缺少 claim_token")?;
+            .ok_or("claimed Edge Command is missing claim_token")?;
         self.send_json(
             self.authorized(
                 self.http.post(self.url(&format!(
@@ -488,7 +488,7 @@ impl EdgeGatewayClient {
         let claim_token = command
             .claim_token
             .as_deref()
-            .ok_or("已领取的 Edge Artifact Command 缺少 claim_token")?;
+            .ok_or("claimed Edge Artifact Command is missing claim_token")?;
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -537,7 +537,7 @@ impl EdgeGatewayClient {
                 .and_then(|value| value.parse::<u64>().ok());
             if server_offset != Some(offset) {
                 let _ = tokio::fs::remove_file(&partial).await;
-                last_error = Some("Edge Artifact download offset 协商失败".into());
+                last_error = Some("Edge Artifact download offset negotiation failed".into());
                 edge_transfer_backoff(attempt).await;
                 continue;
             }
@@ -578,7 +578,7 @@ impl EdgeGatewayClient {
             tokio::fs::rename(&partial, destination).await?;
             return Ok((size_bytes, digest));
         }
-        Err(last_error.unwrap_or_else(|| "Edge Artifact download 重试耗尽".into()))
+        Err(last_error.unwrap_or_else(|| "Edge Artifact download retries exhausted".into()))
     }
 
     pub async fn upload_artifact(
@@ -591,7 +591,7 @@ impl EdgeGatewayClient {
         let claim_token = command
             .claim_token
             .as_deref()
-            .ok_or("已领取的 Edge Artifact Command 缺少 claim_token")?;
+            .ok_or("claimed Edge Artifact Command is missing claim_token")?;
         let (size_bytes, content_digest) = hash_edge_file(source).await?;
         validate_edge_channel_payload(channel, size_bytes, &content_digest)?;
         let mut last_error: Option<EdgeNodeError> = None;
@@ -625,7 +625,7 @@ impl EdgeGatewayClient {
                 });
             }
             if status.offset > size_bytes {
-                return Err("Runtime Artifact upload offset 超过 Edge source 大小".into());
+                return Err("Runtime Artifact upload offset exceeds Edge source size".into());
             }
             let mut file = tokio::fs::File::open(source).await?;
             use tokio::io::AsyncSeekExt as _;
@@ -673,7 +673,7 @@ impl EdgeGatewayClient {
                 }
             }
         }
-        Err(last_error.unwrap_or_else(|| "Edge Artifact upload 重试耗尽".into()))
+        Err(last_error.unwrap_or_else(|| "Edge Artifact upload retries exhausted".into()))
     }
 
     async fn authorized(
@@ -707,10 +707,10 @@ impl EdgeGatewayClient {
             ))))
             .await?;
         let private_key = decode_hex(&credentials.device_private_key_pkcs8)?;
-        let key_pair =
-            Ed25519KeyPair::from_pkcs8(&private_key).map_err(|_| "Edge 设备私钥损坏或格式无效")?;
+        let key_pair = Ed25519KeyPair::from_pkcs8(&private_key)
+            .map_err(|_| "Edge device private key is corrupted or invalid")?;
         if encode_hex(key_pair.public_key().as_ref()) != credentials.device_public_key {
-            return Err("Edge 设备私钥与已配对公钥不一致".into());
+            return Err("Edge device private key does not match the paired public key".into());
         }
         let proof = execution_node_connection_proof_message(
             &credentials.node_id,
@@ -783,7 +783,7 @@ async fn decode_edge_error(response: reqwest::Response) -> EdgeNodeError {
         .text()
         .await
         .unwrap_or_else(|error| error.to_string());
-    format!("Edge Gateway 返回 HTTP {status}: {detail}").into()
+    format!("Edge Gateway returned HTTP {status}: {detail}").into()
 }
 
 async fn edge_transfer_backoff(attempt: u32) {
@@ -804,7 +804,9 @@ fn validate_edge_channel_payload(
             .as_deref()
             .is_some_and(|expected| expected != digest)
     {
-        return Err("Edge Artifact 字节摘要或大小与冻结数据通道不一致".into());
+        return Err(
+            "Edge Artifact byte digest or size does not match the frozen data channel".into(),
+        );
     }
     Ok(())
 }
@@ -820,14 +822,14 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, EdgeNodeError> {
     if !value.len().is_multiple_of(2) {
-        return Err("Edge 密钥 hex 长度必须为偶数".into());
+        return Err("Edge key hex length must be even".into());
     }
     value
         .as_bytes()
         .chunks_exact(2)
         .map(|pair| {
-            let high = edge_hex_nibble(pair[0]).ok_or("Edge 密钥包含非十六进制字符")?;
-            let low = edge_hex_nibble(pair[1]).ok_or("Edge 密钥包含非十六进制字符")?;
+            let high = edge_hex_nibble(pair[0]).ok_or("Edge key contains a non-hex character")?;
+            let low = edge_hex_nibble(pair[1]).ok_or("Edge key contains a non-hex character")?;
             Ok((high << 4) | low)
         })
         .collect()
@@ -858,7 +860,7 @@ async fn decode_response<T: DeserializeOwned>(
                     .map(str::to_string)
             })
             .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-        return Err(format!("Edge Gateway 返回 HTTP {status}: {detail}").into());
+        return Err(format!("Edge Gateway returned HTTP {status}: {detail}").into());
     }
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -1142,7 +1144,9 @@ impl EdgeNodeWorker {
                 || routes.destination.backend_kind == ExecutionTargetKind::ManagedSsh
             {
                 if channel.is_some() {
-                    return Err("Edge proxy Managed SSH v1 不接受 Runtime byte channel".into());
+                    return Err(
+                        "Edge proxy Managed SSH v1 does not accept a Runtime byte channel".into(),
+                    );
                 }
                 let prepared = prepare_edge_proxy_artifact_transfer_command(
                     command,
@@ -1205,7 +1209,7 @@ impl EdgeNodeWorker {
             || route.provider_node_id.as_deref() != Some(self.credentials.node_id.as_str())
         {
             return Err(format!(
-                "Edge Command '{}' 的冻结 Route 与 Target/Provider 不一致",
+                "frozen Route for Edge Command '{}' is inconsistent with Target/Provider",
                 command.job_id
             )
             .into());
@@ -1216,11 +1220,11 @@ impl EdgeNodeWorker {
                 let endpoint_ref = route
                     .endpoint_ref
                     .as_deref()
-                    .ok_or("Managed SSH Route 缺少 endpoint_ref")?;
+                    .ok_or("Managed SSH Route is missing endpoint_ref")?;
                 let endpoint = ManagedSshEndpoint::load(endpoint_ref)?;
                 if command.tool_name != "exec" {
                     return Err(format!(
-                        "Managed SSH v1 只支持 exec，Target '{}' 收到不受支持的工具 '{}'",
+                        "Managed SSH v1 supports only exec; Target '{}' received unsupported tool '{}'",
                         command.target_id, command.tool_name
                     )
                     .into());
@@ -1235,7 +1239,7 @@ impl EdgeNodeWorker {
                 Ok((prepared, true, None))
             }
             other => Err(format!(
-                "Edge Node 不能承接 backend_kind='{}' 的 Route",
+                "Edge Node cannot serve a Route with backend_kind='{}'",
                 other.as_str()
             )
             .into()),
@@ -1297,10 +1301,10 @@ impl EdgeNodeWorker {
                 action: requirement.action,
                 requested: requirement.requested.clone(),
                 justification: format!(
-                    "Edge Node '{}' 在本地策略下执行 Target '{}' 的工具 '{}'：{}",
+                    "Edge Node '{}' executes tool '{}' on Target '{}' under local policy: {}",
                     self.credentials.node_id,
-                    command.target_id,
                     command.tool_name,
+                    command.target_id,
                     requirement.justification
                 ),
                 lease_offer: Some(CapabilityLeaseOffer {
@@ -1350,10 +1354,10 @@ impl EdgeNodeWorker {
                 Ok(true)
             }
             ApprovalDecision::Deny { rationale, .. } => {
-                Err(format!("Edge 本地审批拒绝执行: {rationale}").into())
+                Err(format!("Edge local approval rejected execution: {rationale}").into())
             }
             ApprovalDecision::AskHuman { rationale, .. } => Err(format!(
-                "Edge 本地审批需要人工确认，但当前本地审批通道尚未完成决定: {rationale}"
+                "Edge local approval requires human confirmation, but the current local approval channel has not completed a decision: {rationale}"
             )
             .into()),
         }
@@ -1421,7 +1425,7 @@ fn prepare_edge_proxy_artifact_transfer_command(
             && routes.destination.backend_kind != ExecutionTargetKind::ManagedSsh)
     {
         return Err(format!(
-            "Edge Artifact proxy Command '{}' 不是当前 Node 的权威 Route",
+            "Edge Artifact proxy Command '{}' is not an authoritative Route for the current Node",
             command.job_id
         )
         .into());
@@ -1447,7 +1451,7 @@ fn prepare_edge_proxy_artifact_transfer_command(
     if request.source.target_id != routes.source.target_id
         || request.destination.target_id != routes.destination.target_id
     {
-        return Err("Edge Artifact proxy 请求与冻结 Route 不一致".into());
+        return Err("Edge Artifact proxy request does not match the frozen Route".into());
     }
     request.source.target_id = localized.source.target_id.clone();
     request.destination.target_id = localized.destination.target_id.clone();
@@ -1455,7 +1459,7 @@ fn prepare_edge_proxy_artifact_transfer_command(
     let mut route = serde_json::to_value(&localized)?;
     route
         .as_object_mut()
-        .ok_or("Edge Artifact proxy Route 必须是 object")?
+        .ok_or("Edge Artifact proxy Route must be an object")?
         .insert(
             EDGE_EXECUTION_SCOPE_KEY.to_string(),
             serde_json::to_value(scope)?,
@@ -1501,7 +1505,7 @@ fn prepare_edge_local_artifact_transfer_command(
         }
         _ => {
             return Err(format!(
-                "Edge Artifact Command '{}' 的双 Route 与数据通道不一致",
+                "dual Routes for Edge Artifact Command '{}' are inconsistent with the data channel",
                 command.job_id
             )
             .into())
@@ -1512,7 +1516,7 @@ fn prepare_edge_local_artifact_transfer_command(
         || command.provider_node_id != node_id
     {
         return Err(format!(
-            "Edge Artifact Command '{}' 不是当前 Node 的权威 Route",
+            "Edge Artifact Command '{}' is not an authoritative Route for the current Node",
             command.job_id
         )
         .into());
@@ -1527,7 +1531,7 @@ fn prepare_edge_local_artifact_transfer_command(
         || request.destination.target_id != routes.destination.target_id
     {
         return Err(format!(
-            "Edge Artifact Command '{}' 的请求位置与冻结 Route 不一致",
+            "request location for Edge Artifact Command '{}' is inconsistent with the frozen Route",
             command.job_id
         )
         .into());
@@ -1538,7 +1542,7 @@ fn prepare_edge_local_artifact_transfer_command(
             request.destination.target_id = DEFAULT_EXECUTION_TARGET_ID.to_string();
         }
         Some(EdgeArtifactDataDirection::RuntimeToEdge) => {
-            let stage = stage.ok_or("Runtime→Edge Artifact Command 缺少本地 stage")?;
+            let stage = stage.ok_or("Runtime-to-Edge Artifact Command is missing a local stage")?;
             request.source = ArtifactLocation {
                 target_id: DEFAULT_EXECUTION_TARGET_ID.to_string(),
                 workspace_identity: None,
@@ -1554,7 +1558,7 @@ fn prepare_edge_local_artifact_transfer_command(
             }
         }
         Some(EdgeArtifactDataDirection::EdgeToRuntime) => {
-            let stage = stage.ok_or("Edge→Runtime Artifact Command 缺少本地 stage")?;
+            let stage = stage.ok_or("Edge-to-Runtime Artifact Command is missing a local stage")?;
             request.source.target_id = DEFAULT_EXECUTION_TARGET_ID.to_string();
             request.destination = ArtifactLocation {
                 target_id: DEFAULT_EXECUTION_TARGET_ID.to_string(),
@@ -1568,7 +1572,7 @@ fn prepare_edge_local_artifact_transfer_command(
     let mut local_route = serde_json::to_value(edge_route)?;
     let object = local_route
         .as_object_mut()
-        .ok_or("Edge local Route 必须编码为 JSON object")?;
+        .ok_or("Edge local Route must be encoded as a JSON object")?;
     object.insert(
         "target_id".to_string(),
         serde_json::Value::String(DEFAULT_EXECUTION_TARGET_ID.to_string()),

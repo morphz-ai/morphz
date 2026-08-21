@@ -39,7 +39,8 @@ Yao Core 定义与实现无关的语法、值、类型、词法作用域、纯�
 
 Yao 源码使用 UTF-8 和 S 表达式具体语法。实现必须为每个 token 与语法节点保留源码
 Span，包含字节偏移以及可读的行列位置。拒绝程序时必须指出主 Span，并应包含稳定诊断
-代码和相关 Span。
+代码和相关 Span。跨越协议边界的诊断详情必须使用规范英文。本地化产品界面可以根据稳定诊断代码
+翻译文案，但必须保留该代码和规范详情；程序控制流不得依赖诊断措辞。
 
 空白分隔 token；`;` 开始行注释；字符串以双引号包裹，并支持 `\\`、`\"`、`\n`、
 `\r`、`\t`。`true`、`false`、`nil` 是保留字面量。整数为十进制；浮点数必须包含小数点
@@ -134,7 +135,8 @@ Ref<K> Program<T, E>
 
 ## 6. 值与纯表达式
 
-词法绑定使用 `$name`，字段选择使用 `$name.field`。绑定不可变，同一词法作用域不能覆盖。
+词法绑定直接使用裸名称，字段选择使用 `name.field`。绑定不可变，同一词法作用域不能覆盖。
+`$name` 不是合法的 Yao 源码；实现应在诊断中给出对应的裸名称替换建议。
 
 值构造器：
 
@@ -148,6 +150,11 @@ Ref<K> Program<T, E>
 (ok EXPR ERROR-TYPE)
 (err EXPR OK-TYPE)
 ```
+
+`list` 构造同构 `List<T>`，`dict` 构造同构 `Map<T>`，因此每个元素或值都必须存在公共类型。
+具有固定名称、且字段有意采用不同类型的对象属于命名 `record`，而不是 `dict`。实现不得把异构
+`dict` 静默扩宽为 `Map<Json>`。诊断应指出发生冲突的字段，并建议使用命名 Record 或显式
+`Json` 边界。
 
 `none` 显式标注缺席值的元素类型。v0.1 不采用上下文式或双向类型推断，因此 `ok` 还要标注
 未取用的错误类型，`err` 则标注未取用的成功类型。这样每个构造器都能独立完成类型判定，
@@ -191,7 +198,7 @@ Effectful Result 需要先通过 `bind` 命名，再以引用使用。这样每�
 Union match：
 
 ```lisp
-(match $decision
+(match decision
   ((case Decision.accept (reason why) (confidence score)) EXPR)
   ((case Decision.reject (reason why)) EXPR))
 ```
@@ -268,7 +275,7 @@ v0.1 不包含 detached execution、race、quorum 或隐式共享状态。
 (infer
   (task "construct a bounded evaluation plan")
   (returns (Program Decision (effects infer (tool read))))
-  (input $request))
+  (input request))
 ```
 
 Program Value 的模型传输形态必须恰好是只含一个字段的 JSON 对象：
@@ -282,7 +289,7 @@ eval。Runtime 构造 `Program<T,E>` 前必须进行带 Span 解析、名字与�
 检查、资源检查、规范化、Hash/Provenance 生成及先持久化后执行。
 
 Program Value 对普通词法绑定必须闭合，不能引用调用方局部值。Runtime Profile 可以向父子
-程序注入一个显式类型、不可变的 Host Environment（例如 Morphz `$runtime`）；它属于继承
+程序注入一个显式类型、不可变的 Host Environment（例如 Morphz `runtime`）；它属于继承
 权威而不是词法捕获。执行只能通过 `(run PROGRAM-EXPR)`：`run` 重新校验当前权威、创建
 因果相连的持久 SubPlan、等待终态并返回声明类型。不得在进程内递归执行源码字符串。
 Profile 必须限制嵌套深度与聚合 Budget。

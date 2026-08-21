@@ -217,40 +217,40 @@ impl Tool for ObjectiveCreateTool {
         let args: ObjectiveCreateArgs = serde_json::from_str(arguments)?;
         let session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
-            .map_err(|_| "objective_create 缺少 Runtime 注入的当前 Session")?;
+            .map_err(|_| "objective_create is missing the current Session injected by Runtime")?;
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "objective_create 缺少 Runtime 注入的当前 Context")?;
-        let attempt_id = CURRENT_ATTEMPT_ID
-            .try_with(Clone::clone)
-            .map_err(|_| "objective_create 缺少 Runtime 注入的当前 Evaluation")?;
+            .map_err(|_| "objective_create is missing the current Context injected by Runtime")?;
+        let attempt_id = CURRENT_ATTEMPT_ID.try_with(Clone::clone).map_err(|_| {
+            "objective_create is missing the current Evaluation injected by Runtime"
+        })?;
         let initiating_principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
         let stated_objective = args.stated_objective.trim();
         if stated_objective.is_empty() {
-            return Err("objective_create.stated_objective 不能为空".into());
+            return Err("objective_create.stated_objective must not be empty".into());
         }
         let reason = args.reason.trim();
         if reason.is_empty() {
-            return Err("objective_create.reason 不能为空".into());
+            return Err("objective_create.reason must not be empty".into());
         }
         if reason.chars().count() > 10_000 {
-            return Err("objective_create.reason 超过 10,000 字符上限".into());
+            return Err("objective_create.reason exceeds the 10,000-character limit".into());
         }
         if args.source_refs.len() > 64 {
-            return Err("objective_create.source_refs 最多允许 64 个引用".into());
+            return Err("objective_create.source_refs allows at most 64 references".into());
         }
         if args.token_budget == Some(0) {
-            return Err("objective_create.token_budget 必须大于 0".into());
+            return Err("objective_create.token_budget must be greater than 0".into());
         }
         let requested_harness = match args.harness.as_ref() {
             Some(reference) => {
                 let id = reference.id.trim();
                 let version = reference.version.trim();
                 if id.is_empty() || version.is_empty() {
-                    return Err("objective_create.harness.id/version 不能为空".into());
+                    return Err("objective_create.harness.id and version must not be empty".into());
                 }
                 Some(self.harness_registry.get(id, version).ok_or_else(|| {
-                    format!("Harness '{id}@{version}' 未安装；先调用 harness_list")
+                    format!("Harness '{id}@{version}' is not installed; call harness_list first")
                 })?)
             }
             None => None,
@@ -259,13 +259,13 @@ impl Tool for ObjectiveCreateTool {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("objective_create 缺少 Runtime SessionStore")?;
+            .ok_or("objective_create is missing Runtime SessionStore")?;
         let session = session_store
             .get_session(&session_id)
             .await?
-            .ok_or_else(|| format!("当前 Session '{session_id}' 不存在"))?;
+            .ok_or_else(|| format!("current Session '{session_id}' does not exist"))?;
         if session.context_id != context_id {
-            return Err("objective_create 的当前 Session/Context 路由不一致".into());
+            return Err("objective_create current Session/Context route is inconsistent".into());
         }
 
         let mut source_event_ids = Vec::with_capacity(args.source_refs.len());
@@ -274,7 +274,9 @@ impl Tool for ObjectiveCreateTool {
                 .context_engine
                 .find_event(&context_id, source_ref)
                 .await?
-                .ok_or_else(|| format!("source_ref '{source_ref}' 不存在或不属于当前 Context"))?;
+                .ok_or_else(|| {
+                    format!("source_ref '{source_ref}' does not exist or does not belong to the current Context")
+                })?;
             source_event_ids.push(event.id);
         }
 
@@ -289,10 +291,10 @@ impl Tool for ObjectiveCreateTool {
                 .supervisor
                 .evaluations
                 .get_for_activation(&attempt_id)
-                .ok_or("只有当前正在求值的 Objective 才能作为自主创建的 parent")?;
+                .ok_or("only the currently evaluated Objective can be the parent of an autonomous creation")?;
             if active.objective_id != parent_id {
                 return Err(format!(
-                    "parent_objective_id 必须是当前 Objective '{}'",
+                    "parent_objective_id must be the current Objective '{}'",
                     active.objective_id
                 )
                 .into());
@@ -301,13 +303,14 @@ impl Tool for ObjectiveCreateTool {
                 .supervisor
                 .get(parent_id)
                 .await?
-                .ok_or_else(|| format!("父 Objective '{parent_id}' 不存在"))?;
+                .ok_or_else(|| format!("parent Objective '{parent_id}' does not exist"))?;
             if parent.context_id != context_id
                 || parent.coordinator_session_id != session_id
                 || parent.status.is_terminal()
             {
                 return Err(
-                    "父 Objective 必须属于当前 Context/coordinator Session 且尚未终止".into(),
+                    "parent Objective must belong to the current Context/coordinator Session and remain non-terminal"
+                        .into(),
                 );
             }
         }
@@ -347,7 +350,7 @@ impl Tool for ObjectiveCreateTool {
                             && binding.harness_version == descriptor.version => {}
                     Some(binding) => {
                         return Err(format!(
-                            "相同 Objective 已默认绑定 '{}@{}'，不能改绑为 '{}@{}'",
+                            "the same Objective is already bound by default to '{}@{}' and cannot be rebound to '{}@{}'",
                             binding.harness_id,
                             binding.harness_version,
                             descriptor.id,
@@ -357,7 +360,7 @@ impl Tool for ObjectiveCreateTool {
                     }
                     None => {
                         return Err(format!(
-                            "相同 Objective 已存在但没有 Harness 默认值，不能通过重复创建补绑 '{}@{}'；请创建不同目标或显式选择当前 Evaluation Harness",
+                            "the same Objective already exists without a default Harness and cannot be retroactively bound to '{}@{}' through duplicate creation; create a different Objective or explicitly select the current Evaluation Harness",
                             descriptor.id, descriptor.version
                         )
                         .into());
@@ -561,12 +564,12 @@ fn parse_objective_wait_condition_argument(
         JsonValue::String(encoded) => {
             let decoded = serde_json::from_str::<JsonValue>(&encoded).map_err(|error| {
                 format!(
-                    "objective_update.wait_condition 必须是 JSON 对象；兼容字符串不是有效 JSON: {error}"
+                    "objective_update.wait_condition must be a JSON object; compatibility string is not valid JSON: {error}"
                 )
             })?;
             if !decoded.is_object() {
                 return Err(
-                    "objective_update.wait_condition 仅兼容单层 JSON 对象字符串，不能递归解码"
+                    "objective_update.wait_condition accepts only a single-level JSON object string for compatibility and cannot decode recursively"
                         .to_string(),
                 );
             }
@@ -577,11 +580,11 @@ fn parse_objective_wait_condition_argument(
 
     let object = value
         .as_object()
-        .ok_or("objective_update.wait_condition 必须是 JSON 对象")?;
+        .ok_or("objective_update.wait_condition must be a JSON object")?;
     let kind = object
         .get("kind")
         .and_then(JsonValue::as_str)
-        .ok_or("objective_update.wait_condition.kind 必须是字符串")?;
+        .ok_or("objective_update.wait_condition.kind must be a string")?;
     let required_fields: &[&str] = match kind {
         "tool_task" => &["kind", "task_id"],
         "delegation" => &["kind", "delegation_id"],
@@ -593,7 +596,7 @@ fn parse_objective_wait_condition_argument(
         "resource_available" => &["kind", "resource"],
         other => {
             return Err(format!(
-                "objective_update.wait_condition.kind '{other}' 不受支持"
+                "objective_update.wait_condition.kind '{other}' is not supported"
             ));
         }
     };
@@ -604,7 +607,7 @@ fn parse_objective_wait_condition_argument(
             .is_some_and(|value| !value.trim().is_empty())
         {
             return Err(format!(
-                "objective_update.wait_condition.{field} 必须是非空字符串"
+                "objective_update.wait_condition.{field} must be a non-empty string"
             ));
         }
     }
@@ -613,12 +616,12 @@ fn parse_objective_wait_condition_argument(
         .find(|field| !required_fields.contains(&field.as_str()))
     {
         return Err(format!(
-            "objective_update.wait_condition.kind='{kind}' 不接受字段 '{unexpected}'"
+            "objective_update.wait_condition.kind='{kind}' does not accept field '{unexpected}'"
         ));
     }
 
     let condition = serde_json::from_value(value)
-        .map_err(|error| format!("objective_update.wait_condition 无效: {error}"))?;
+        .map_err(|error| format!("invalid objective_update.wait_condition: {error}"))?;
     Ok(ObjectiveWaitConditionArgument {
         condition,
         decoded_from_string,
@@ -739,13 +742,13 @@ impl Tool for ObjectiveUpdateTool {
         let mut args: ObjectiveUpdateArgs = serde_json::from_str(arguments)?;
         let session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
-            .map_err(|_| "objective_update 缺少 Runtime 注入的当前 Session")?;
+            .map_err(|_| "objective_update is missing the current Session injected by Runtime")?;
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "objective_update 缺少 Runtime 注入的当前 Context")?;
-        let attempt_id = CURRENT_ATTEMPT_ID
-            .try_with(Clone::clone)
-            .map_err(|_| "objective_update 缺少 Runtime 注入的当前 Evaluation")?;
+            .map_err(|_| "objective_update is missing the current Context injected by Runtime")?;
+        let attempt_id = CURRENT_ATTEMPT_ID.try_with(Clone::clone).map_err(|_| {
+            "objective_update is missing the current Evaluation injected by Runtime"
+        })?;
         let wait_condition = args.wait_condition.take().map(|argument| {
             if argument.decoded_from_string {
                 tracing::warn!(
@@ -761,19 +764,19 @@ impl Tool for ObjectiveUpdateTool {
         });
         let reason = args.reason.trim();
         if reason.is_empty() {
-            return Err("objective_update.reason 不能为空".into());
+            return Err("objective_update.reason must not be empty".into());
         }
         if reason.chars().count() > 10_000 {
-            return Err("objective_update.reason 超过 10,000 字符上限".into());
+            return Err("objective_update.reason exceeds the 10,000-character limit".into());
         }
         let objective = self
             .supervisor
             .get(&args.objective_id)
             .await?
-            .ok_or_else(|| format!("Objective '{}' 不存在", args.objective_id))?;
+            .ok_or_else(|| format!("Objective '{}' does not exist", args.objective_id))?;
         if objective.context_id != context_id || objective.coordinator_session_id != session_id {
             return Err(format!(
-                "当前 Session/Context 无权修改 Objective '{}'",
+                "the current Session/Context may not modify Objective '{}'",
                 args.objective_id
             )
             .into());
@@ -783,11 +786,11 @@ impl Tool for ObjectiveUpdateTool {
             .evaluations
             .get_for_activation(&attempt_id)
             .ok_or(
-                "当前 Evaluation 不属于任何 Objective；不能接管共享 Context 中的其他 Objective",
+                "the current Evaluation does not belong to an Objective and cannot take over another Objective in the shared Context",
             )?;
         if active.objective_id != objective.id {
             return Err(format!(
-                "当前 Evaluation 只拥有 Objective '{}'，不能修改 '{}'",
+                "the current Evaluation owns only Objective '{}' and cannot modify '{}'",
                 active.objective_id, objective.id
             )
             .into());
@@ -799,15 +802,17 @@ impl Tool for ObjectiveUpdateTool {
                 .await?
                 .is_none()
             {
-                return Err(
-                    format!("evidence_ref '{}' 不存在或不属于当前 Context", evidence_ref).into(),
-                );
+                return Err(format!(
+                    "evidence_ref '{}' does not exist or does not belong to the current Context",
+                    evidence_ref
+                )
+                .into());
             }
         }
         let (status, wait_condition) = match args.status {
             AgentObjectiveStatus::Completed => {
                 if wait_condition.is_some() {
-                    return Err("completed Objective 不能携带 wait_condition".into());
+                    return Err("a completed Objective cannot carry a wait_condition".into());
                 }
                 let mutation = self
                     .supervisor
@@ -853,14 +858,15 @@ impl Tool for ObjectiveUpdateTool {
             AgentObjectiveStatus::Blocked => {
                 if wait_condition.is_some() {
                     return Err(
-                        "存在确定性 wait_condition 时应保持 active，不能标记 blocked".into(),
+                        "an Objective with a deterministic wait_condition must remain active and cannot be marked blocked"
+                            .into(),
                     );
                 }
                 (ObjectiveStatus::Blocked, None)
             }
             AgentObjectiveStatus::Active => {
                 let wait_condition = wait_condition.ok_or(
-                    "status=active 的 objective_update 必须携带确定性 wait_condition；无需等待时继续执行，不要提交空状态更新",
+                    "objective_update with status=active must carry a deterministic wait_condition; continue execution when no wait is needed instead of submitting an empty status update",
                 )?;
                 self.supervisor
                     .validate_wait_condition(&objective, &wait_condition)
@@ -991,34 +997,36 @@ impl Tool for ObjectiveAmendTool {
         let args: ObjectiveAmendArgs = serde_json::from_str(arguments)?;
         let session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
-            .map_err(|_| "objective_amend 缺少 Runtime 注入的当前 Session")?;
+            .map_err(|_| "objective_amend is missing the current Session injected by Runtime")?;
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "objective_amend 缺少 Runtime 注入的当前 Context")?;
+            .map_err(|_| "objective_amend is missing the current Context injected by Runtime")?;
         let attempt_id = CURRENT_ATTEMPT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "objective_amend 缺少 Runtime 注入的当前 Evaluation")?;
+            .map_err(|_| "objective_amend is missing the current Evaluation injected by Runtime")?;
         let route = CURRENT_CAUSAL_ROUTE
             .try_with(Clone::clone)
             .ok()
             .flatten()
-            .ok_or("objective_amend 缺少 Runtime 注入的 DialogueTurn 因果路由")?;
+            .ok_or(
+                "objective_amend is missing the DialogueTurn causal route injected by Runtime",
+            )?;
         let reason = args.reason.trim();
         if reason.is_empty() || reason.chars().count() > 10_000 {
-            return Err("objective_amend.reason 必须为 1 到 10,000 个字符".into());
+            return Err("objective_amend.reason must contain 1 to 10,000 characters".into());
         }
         let stated_objective = args.stated_objective.trim();
         if stated_objective.is_empty() {
-            return Err("objective_amend.stated_objective 不能为空".into());
+            return Err("objective_amend.stated_objective must not be empty".into());
         }
         let objective = self
             .supervisor
             .get(&args.objective_id)
             .await?
-            .ok_or_else(|| format!("Objective '{}' 不存在", args.objective_id))?;
+            .ok_or_else(|| format!("Objective '{}' does not exist", args.objective_id))?;
         if objective.context_id != context_id || objective.coordinator_session_id != session_id {
             return Err(format!(
-                "当前 Session/Context 无权修改 Objective '{}'",
+                "the current Session/Context may not modify Objective '{}'",
                 args.objective_id
             )
             .into());
@@ -1030,24 +1038,24 @@ impl Tool for ObjectiveAmendTool {
             .is_some()
         {
             return Err(
-                "Objective-bound Evaluation 无权修改自身完成契约；只能更新生命周期状态".into(),
+                "an Objective-bound Evaluation may not modify its own completion contract; it may only update lifecycle state"
+                    .into(),
             );
         }
-        let session_store = self
-            .context_engine
-            .session_store()
-            .ok_or("objective_amend 需要 Runtime SessionStore 验证 DialogueTurn 权限")?;
+        let session_store = self.context_engine.session_store().ok_or(
+            "objective_amend requires Runtime SessionStore to verify DialogueTurn authority",
+        )?;
         let thread = session_store
             .get_thread(&route.thread_id)
             .await?
-            .ok_or_else(|| format!("DialogueTurn Thread '{}' 不存在", route.thread_id))?;
+            .ok_or_else(|| format!("DialogueTurn Thread '{}' does not exist", route.thread_id))?;
         let trigger = self
             .context_engine
             .find_event(&context_id, &route.trigger_event_id)
             .await?
             .ok_or_else(|| {
                 format!(
-                    "DialogueTurn 触发 Event '{}' 不存在",
+                    "DialogueTurn trigger Event '{}' does not exist",
                     route.trigger_event_id
                 )
             })?;
@@ -1056,23 +1064,29 @@ impl Tool for ObjectiveAmendTool {
             || thread.session_id != session_id
             || trigger.event_type != TYPE_USER_MESSAGE
         {
-            return Err("objective_amend 只允许由当前用户消息触发的 DialogueTurn 调用".into());
+            return Err(
+                "objective_amend may only be called by a DialogueTurn triggered by the current user message"
+                    .into(),
+            );
         }
-        let owner_principal_id = objective
-            .initiating_principal_id
-            .as_deref()
-            .ok_or("旧版无归属 Objective 不能由模型代为修改；请使用 Dashboard Operator")?;
+        let owner_principal_id = objective.initiating_principal_id.as_deref().ok_or(
+            "a legacy unowned Objective cannot be amended by the model; use the Dashboard Operator",
+        )?;
         let active_principal_id = CURRENT_PRINCIPAL_ID
             .try_with(Clone::clone)
             .ok()
             .flatten()
-            .ok_or("objective_amend 缺少已认证 Principal")?;
+            .ok_or("objective_amend is missing an authenticated Principal")?;
         if active_principal_id != owner_principal_id
             || !session_store
                 .verify_session_principal(&session_id, &active_principal_id)
                 .await?
         {
-            return Err(format!("当前 Principal 无权修改 Objective '{}'", objective.id).into());
+            return Err(format!(
+                "the current Principal may not modify Objective '{}'",
+                objective.id
+            )
+            .into());
         }
         for evidence_ref in &args.evidence_refs {
             if self
@@ -1081,9 +1095,11 @@ impl Tool for ObjectiveAmendTool {
                 .await?
                 .is_none()
             {
-                return Err(
-                    format!("evidence_ref '{}' 不存在或不属于当前 Context", evidence_ref).into(),
-                );
+                return Err(format!(
+                    "evidence_ref '{}' does not exist or does not belong to the current Context",
+                    evidence_ref
+                )
+                .into());
             }
         }
         let mutation = self
@@ -1403,7 +1419,11 @@ impl ObjectiveSupervisor {
                 .await?
             {
                 KernelResult::DependencySatisfied(mutation) => mutation,
-                _ => return Err("Scheduler Kernel 返回了错误的 dependency satisfy 结果".into()),
+                _ => {
+                    return Err(
+                        "Scheduler Kernel returned an invalid dependency satisfy result".into(),
+                    )
+                }
             }
         } else {
             store
@@ -1420,13 +1440,13 @@ impl ObjectiveSupervisor {
                 Ok(true)
             }
             SchedulerDependencyMutation::Conflict { current, reason } => Err(format!(
-                "Objective '{}' dependency '{}' 满足失败（current={:?}）：{}",
-                objective.id, dependency.id, current.status, reason
+                "failed to satisfy dependency '{}' for Objective '{}' (current={:?}): {}",
+                dependency.id, objective.id, current.status, reason
             )
             .into()),
             SchedulerDependencyMutation::NotFound => Err(format!(
-                "Objective '{}' dependency '{}' 在满足时消失",
-                objective.id, dependency.id
+                "dependency '{}' for Objective '{}' disappeared while being satisfied",
+                dependency.id, objective.id
             )
             .into()),
         }
@@ -1552,7 +1572,7 @@ impl ObjectiveSupervisor {
                 .await?
             {
                 KernelResult::ObjectiveControlled(mutation) => Ok(mutation),
-                _ => Err("Scheduler Kernel 返回了错误的 Objective control 结果".into()),
+                _ => Err("Scheduler Kernel returned an invalid Objective control result".into()),
             };
         }
         self.store
@@ -1587,7 +1607,9 @@ impl ObjectiveSupervisor {
                 .await?
             {
                 KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
-                _ => Err("Scheduler Kernel 返回了错误的 Objective evaluation claim 结果".into()),
+                _ => Err(
+                    "Scheduler Kernel returned an invalid Objective evaluation claim result".into(),
+                ),
             };
         }
         match continuation {
@@ -1640,7 +1662,7 @@ impl ObjectiveSupervisor {
             {
                 KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
                 _ => Err(
-                    "Scheduler Kernel 返回了错误的 Objective interrupt evaluation claim 结果"
+                    "Scheduler Kernel returned an invalid Objective interrupt evaluation claim result"
                         .into(),
                 ),
             };
@@ -1680,7 +1702,9 @@ impl ObjectiveSupervisor {
                 .await?
             {
                 KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
-                _ => Err("Scheduler Kernel 返回了错误的 Objective evaluation renew 结果".into()),
+                _ => Err(
+                    "Scheduler Kernel returned an invalid Objective evaluation renew result".into(),
+                ),
             };
         }
         if let Some(pending_dependency_id) = pending_dependency_id {
@@ -1721,7 +1745,7 @@ impl ObjectiveSupervisor {
                 .await?
             {
                 KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
-                _ => Err("Scheduler Kernel 返回了错误的 Objective completion 结果".into()),
+                _ => Err("Scheduler Kernel returned an invalid Objective completion result".into()),
             };
         }
         self.store
@@ -1760,7 +1784,10 @@ impl ObjectiveSupervisor {
                 .await?
             {
                 KernelResult::ObjectiveEvaluationMutated(mutation) => Ok(mutation),
-                _ => Err("Scheduler Kernel 返回了错误的 Objective evaluation finish 结果".into()),
+                _ => Err(
+                    "Scheduler Kernel returned an invalid Objective evaluation finish result"
+                        .into(),
+                ),
             };
         }
         self.store
@@ -1780,18 +1807,18 @@ impl ObjectiveSupervisor {
     ) -> Result<ExecutionJobRecord, DynError> {
         let task_id = task_id.trim();
         if task_id.is_empty() {
-            return Err("tool_task.task_id 不能为空".into());
+            return Err("tool_task.task_id must not be empty".into());
         }
         let store = self
             .execution_jobs
             .as_ref()
-            .ok_or("当前 Runtime 未配置 ExecutionJob Store，不能建立可验证的 tool_task 等待")?;
+            .ok_or("the current Runtime has no ExecutionJob Store and cannot establish a verifiable tool_task wait")?;
         let job = store
             .get_execution_job(task_id)
             .await?
             .ok_or_else(|| {
                 format!(
-                    "tool_task '{}' 不存在。只能使用 execution=background 工具结果中 Runtime 明确返回的 task_id；不能使用 artifact_path、同步命令 ID 或自行推测的 ID",
+                    "tool_task '{}' does not exist. Use only a task_id explicitly returned by Runtime from an execution=background tool result; do not use artifact_path, a synchronous command ID, or a guessed ID",
                     task_id
                 )
             })?;
@@ -1800,7 +1827,7 @@ impl ObjectiveSupervisor {
             || job.agent_id != objective.agent_id
         {
             return Err(format!(
-                "tool_task '{}' 不属于当前 Objective 的 Agent/Context/Session，拒绝建立跨路由等待",
+                "tool_task '{}' does not belong to the current Objective's Agent/Context/Session; cross-route wait rejected",
                 task_id
             )
             .into());
@@ -1809,14 +1836,14 @@ impl ObjectiveSupervisor {
             && job.initiating_principal_id != objective.initiating_principal_id
         {
             return Err(format!(
-                "tool_task '{}' 不属于当前 Objective 的身份主体，拒绝建立跨身份等待",
+                "tool_task '{}' does not belong to the current Objective's identity; cross-identity wait rejected",
                 task_id
             )
             .into());
         }
         if job.tool_name != "exec/background" {
             return Err(format!(
-                "ExecutionJob '{}' 是 '{}'，不是可等待的 Runtime 后台任务；只有 execution=background 返回的 task_id 可用于 tool_task",
+                "ExecutionJob '{}' is '{}' rather than a waitable Runtime background task; only a task_id returned by execution=background may be used for tool_task",
                 task_id, job.tool_name
             )
             .into());
@@ -1834,7 +1861,7 @@ impl ObjectiveSupervisor {
                 let job = self.resolve_tool_task_wait(objective, task_id).await?;
                 if job.status.is_terminal() {
                     return Err(format!(
-                        "tool_task '{}' 已经结束（status={}{}），不能再登记等待；请根据现有结果继续推进 Objective",
+                        "tool_task '{}' is already terminal (status={}{}); a wait cannot be registered. Continue the Objective using the existing result",
                         task_id,
                         job.status.as_str(),
                         job.result_event_id
@@ -1852,13 +1879,13 @@ impl ObjectiveSupervisor {
                 let delegation = store
                     .get_delegation(delegation_id)
                     .await?
-                    .ok_or_else(|| format!("delegation '{}' 不存在", delegation_id))?;
+                    .ok_or_else(|| format!("delegation '{}' does not exist", delegation_id))?;
                 if delegation.parent_context_id != objective.context_id
                     || delegation.parent_session_id != objective.coordinator_session_id
                     || delegation.agent_id != objective.agent_id
                 {
                     return Err(format!(
-                        "delegation '{}' 不属于当前 Objective 的 Agent/Context/Session，拒绝建立跨路由等待",
+                        "delegation '{}' does not belong to the current Objective's Agent/Context/Session; cross-route wait rejected",
                         delegation_id
                     )
                     .into());
@@ -1867,7 +1894,7 @@ impl ObjectiveSupervisor {
                     && delegation.initiating_principal_id != objective.initiating_principal_id
                 {
                     return Err(format!(
-                        "delegation '{}' 不属于当前 Objective 的身份主体，拒绝建立跨身份等待",
+                        "delegation '{}' does not belong to the current Objective's identity; cross-identity wait rejected",
                         delegation_id
                     )
                     .into());
@@ -1879,7 +1906,7 @@ impl ObjectiveSupervisor {
                         | DelegationStatus::Cancelled
                 ) {
                     return Err(format!(
-                        "delegation '{}' 已经结束（status={}{}），不能再登记等待；请根据现有结果继续推进 Objective",
+                        "delegation '{}' is already terminal (status={}{}); a wait cannot be registered. Continue the Objective using the existing result",
                         delegation_id,
                         delegation.status.as_str(),
                         delegation
@@ -1894,29 +1921,29 @@ impl ObjectiveSupervisor {
             ObjectiveWaitCondition::ThreadGroup { group_id } => {
                 let group_id = group_id.trim();
                 if group_id.is_empty() {
-                    return Err("thread_group.group_id 不能为空".into());
+                    return Err("thread_group.group_id must not be empty".into());
                 }
                 let store = self.thread_groups.as_ref().ok_or(
-                    "当前 Runtime 未配置 ThreadGroup Store，不能建立可验证的 thread_group 等待",
+                    "the current Runtime has no ThreadGroup Store and cannot establish a verifiable thread_group wait",
                 )?;
                 let group = store
                     .get_thread_group(group_id)
                     .await?
-                    .ok_or_else(|| format!("thread_group '{}' 不存在", group_id))?;
+                    .ok_or_else(|| format!("thread_group '{}' does not exist", group_id))?;
                 if group.context_id != objective.context_id
                     || group.session_id != objective.coordinator_session_id
                     || group.supervisor_kind != ThreadSupervisorKind::Objective
                     || group.supervisor_id != objective.id
                 {
                     return Err(format!(
-                        "thread_group '{}' 未由当前 Objective/Context/Session 监督，拒绝建立跨路由等待",
+                        "thread_group '{}' is not supervised by the current Objective/Context/Session; cross-route wait rejected",
                         group_id
                     )
                     .into());
                 }
                 if group.status.is_terminal() {
                     return Err(format!(
-                        "thread_group '{}' 已经结束（status={}），不能再登记等待；请消费现有 Outcome 后继续推进",
+                        "thread_group '{}' is already terminal (status={}); a wait cannot be registered. Consume the existing Outcome and continue",
                         group_id,
                         group.status.as_str()
                     )
@@ -1976,7 +2003,7 @@ impl ObjectiveSupervisor {
             return Ok(Some((
                 thread_id,
                 format!(
-                    "Objective 的固定主 Thread 已处于终态 '{}'，不能再接收恢复 Signal；这是单条历史任务的不一致，不影响 Runtime 其他任务启动",
+                    "the Objective's fixed primary Thread is already terminal ('{}') and cannot receive a recovery Signal; this inconsistency is limited to one historical task and does not prevent other Runtime tasks from starting",
                     thread.lifecycle.as_str()
                 ),
             )));
@@ -1994,7 +2021,7 @@ impl ObjectiveSupervisor {
         {
             return Ok(Some((
                 thread_id,
-                "Objective 的固定主 Thread 已存在，但 Agent/Context/Session/Principal 或监督路由与当前 Objective 不一致；Runtime 不会猜测或改写历史路由"
+                "the Objective's fixed primary Thread exists, but its Agent/Context/Session/Principal or supervision route is inconsistent with the current Objective; Runtime will not guess or rewrite historical routing"
                     .to_string(),
             )));
         }
@@ -2249,7 +2276,7 @@ impl ObjectiveSupervisor {
                         &objective,
                         ObjectiveStatus::Active,
                         None,
-                        Some("Runtime 重启后释放失效的内部恢复等待并重新求值"),
+                        Some("release invalid internal recovery wait after Runtime restart and reevaluate"),
                         "runtime-recovery",
                         "ObjectiveSupervisor-Recovery",
                     )
@@ -2661,7 +2688,7 @@ impl ObjectiveSupervisor {
             .evaluations
             .get_for_activation(activation_id)
             .ok_or_else(|| {
-                format!("Activation '{activation_id}' 缺少 Objective Evaluation 路由")
+                format!("Activation '{activation_id}' is missing an Objective Evaluation route")
             })?;
         let lease_duration = self
             .lease_duration
@@ -2876,7 +2903,7 @@ impl ObjectiveSupervisor {
             .store
             .get_objective(id)
             .await?
-            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+            .ok_or_else(|| format!("Objective '{id}' does not exist"))?;
         if current.revision != expected_revision {
             return Ok(ObjectiveMutation::Conflict { current });
         }
@@ -2925,7 +2952,7 @@ impl ObjectiveSupervisor {
             .store
             .get_objective(id)
             .await?
-            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+            .ok_or_else(|| format!("Objective '{id}' does not exist"))?;
         if current.revision != expected_revision {
             return Ok(ObjectiveMutation::Conflict { current });
         }
@@ -2991,12 +3018,12 @@ impl ObjectiveSupervisor {
                 .payload
                 .get("objective_id")
                 .and_then(serde_json::Value::as_str)
-                .ok_or("Objective interrupt Event 缺少 objective_id")?;
+                .ok_or("Objective interrupt Event is missing objective_id")?;
             let objective_generation = event
                 .payload
                 .get("objective_generation")
                 .and_then(serde_json::Value::as_u64)
-                .ok_or("Objective interrupt Event 缺少 objective_generation")?;
+                .ok_or("Objective interrupt Event is missing objective_generation")?;
             let Some(objective) = self.store.get_objective(objective_id).await? else {
                 return Ok(RoutedObjectiveEventDisposition::Suppressed);
             };
@@ -3092,7 +3119,7 @@ impl ObjectiveSupervisor {
             }
             self.satisfy_wait_dependency(&objective, wait, &event.id)
                 .await?;
-            let reason = format!("等待条件已由事件 {} 满足", event.id);
+            let reason = format!("wait condition was satisfied by Event {}", event.id);
             let mutation = self
                 .transition_objective(
                     &objective,
@@ -3161,7 +3188,7 @@ impl ObjectiveSupervisor {
             }
             self.satisfy_wait_dependency(&objective, wait, &event.id)
                 .await?;
-            let reason = format!("等待条件已由事件 {} 满足", event.id);
+            let reason = format!("wait condition was satisfied by Event {}", event.id);
             let mutation = self
                 .transition_objective(
                     &objective,
@@ -3379,7 +3406,8 @@ impl ObjectiveSupervisor {
             (
                 ObjectiveStatus::Active,
                 None,
-                "本轮模型请求使用的配置已经被替换；立即以当前配置重新求值".to_string(),
+                "the configuration used by this model request has been replaced; reevaluate immediately with the current configuration"
+                    .to_string(),
             )
         } else if recoverable {
             let resource = wait_resource.map(ToOwned::to_owned).unwrap_or_else(|| {
@@ -3394,13 +3422,13 @@ impl ObjectiveSupervisor {
                 Some(ObjectiveWaitCondition::ResourceAvailable {
                     resource: resource.clone(),
                 }),
-                format!("本轮因 {failure_kind} 结束；等待 Runtime 恢复资源 {resource} 后继续"),
+                format!("this attempt ended due to {failure_kind}; wait for Runtime to recover resource {resource} before continuing"),
             )
         } else {
             (
                 ObjectiveStatus::Blocked,
                 None,
-                format!("本轮因不可自动恢复的 Provider 错误 {failure_kind} 受阻"),
+                format!("this attempt is blocked by non-recoverable Provider error {failure_kind}"),
             )
         };
 
@@ -3436,7 +3464,7 @@ impl ObjectiveSupervisor {
                         .model_configuration_changed_since_attempt(event)
                         .await?
                 {
-                    let reason = "模型配置在失败状态提交期间发生变化；取消过期等待并以当前配置继续";
+                    let reason = "model configuration changed while the failure state was being committed; cancel the stale wait and continue with the current configuration";
                     match self
                         .transition_objective(
                             &updated,
@@ -3590,7 +3618,7 @@ impl ObjectiveSupervisor {
                                     ObjectiveStatus::Active,
                                     None,
                                     Some(
-                                        "结构化 Scheduler dependency 已终结；清理旧 wait 展示投影",
+                                        "structured Scheduler dependency is terminal; remove stale wait display projection",
                                     ),
                                     "dependency-terminal",
                                     "ObjectiveSupervisor",
@@ -3729,7 +3757,7 @@ impl ObjectiveSupervisor {
                     "wait_satisfied",
                     group.barrier_event_id.clone(),
                     format!(
-                        "线程组 '{}' 已处于终态 {}（{}/{} 成功）；Runtime 已解除等待并继续求值",
+                        "thread group '{}' is terminal with status {} ({}/{} succeeded); Runtime released the wait and resumed evaluation",
                         group_id,
                         group.status.as_str(),
                         group.successful_count,
@@ -3741,7 +3769,7 @@ impl ObjectiveSupervisor {
                 "wait_invalidated",
                 group.barrier_event_id.clone(),
                 format!(
-                    "thread_group '{}' 未由当前 Objective/Context/Session 监督；Runtime 已取消无效等待",
+                    "thread_group '{}' is not supervised by the current Objective/Context/Session; Runtime cancelled the invalid wait",
                     group.id
                 ),
             ),
@@ -3749,7 +3777,7 @@ impl ObjectiveSupervisor {
                 "wait_invalidated",
                 None,
                 format!(
-                    "thread_group '{}' 不存在；Runtime 已取消旧版或无效等待",
+                    "thread_group '{}' does not exist; Runtime cancelled the legacy or invalid wait",
                     group_id
                 ),
             ),
@@ -3832,13 +3860,13 @@ impl ObjectiveSupervisor {
                     "wait_satisfied",
                     delegation.result_event_id.clone(),
                     format!(
-                        "子代理委派 '{}' 已处于终态 {}{}；Runtime 已解除等待并继续求值",
+                        "sub-agent delegation '{}' is terminal with status {}{}; Runtime released the wait and resumed evaluation",
                         delegation_id,
                         delegation.status.as_str(),
                         delegation
                             .result_event_id
                             .as_deref()
-                            .map(|event_id| format!("，结果事件 {event_id}"))
+                            .map(|event_id| format!(", result Event {event_id}"))
                             .unwrap_or_default()
                     ),
                 )
@@ -3847,7 +3875,7 @@ impl ObjectiveSupervisor {
                 "wait_invalidated",
                 None,
                 format!(
-                    "delegation '{}' 不属于当前 Objective 的 Agent/Context/Session/Principal；Runtime 已取消无效等待",
+                    "delegation '{}' does not belong to the current Objective's Agent/Context/Session/Principal; Runtime cancelled the invalid wait",
                     delegation.id
                 ),
             ),
@@ -3855,7 +3883,7 @@ impl ObjectiveSupervisor {
                 "wait_invalidated",
                 None,
                 format!(
-                    "delegation '{}' 不存在；Runtime 已取消旧版或无效等待",
+                    "delegation '{}' does not exist; Runtime cancelled the legacy or invalid wait",
                     delegation_id
                 ),
             ),
@@ -3944,12 +3972,12 @@ impl ObjectiveSupervisor {
                     "wait_satisfied",
                     job.result_event_id.clone(),
                     format!(
-                        "后台工具任务 '{}' 已处于终态 {}{}；Runtime 已解除等待并继续求值",
+                        "background tool task '{}' is terminal with status {}{}; Runtime released the wait and resumed evaluation",
                         task_id,
                         job.status.as_str(),
                         job.result_event_id
                             .as_deref()
-                            .map(|event_id| format!("，结果事件 {event_id}"))
+                            .map(|event_id| format!(", result Event {event_id}"))
                             .unwrap_or_default()
                     ),
                 )
@@ -3958,7 +3986,7 @@ impl ObjectiveSupervisor {
                 "wait_invalidated",
                 None,
                 format!(
-                    "tool_task '{}' 指向不属于当前 Objective 的可等待后台任务（tool={}, status={}）；Runtime 已取消无效等待",
+                    "tool_task '{}' points to a waitable background task that does not belong to the current Objective (tool={}, status={}); Runtime cancelled the invalid wait",
                     task_id,
                     job.tool_name,
                     job.status.as_str()
@@ -3968,7 +3996,7 @@ impl ObjectiveSupervisor {
                 "wait_invalidated",
                 None,
                 format!(
-                    "tool_task '{}' 不存在；Runtime 已取消旧版或无效等待。只能使用 execution=background 明确返回的 task_id",
+                    "tool_task '{}' does not exist; Runtime cancelled the legacy or invalid wait. Use only a task_id explicitly returned by execution=background",
                     task_id
                 ),
             ),
@@ -4141,7 +4169,7 @@ impl ObjectiveSupervisor {
                 .next();
             if let Some(group) = open_group {
                 let reason = format!(
-                    "检测到未终结的受监督 Thread Group '{}'；Runtime 已恢复 Objective 等待，避免重复求值",
+                    "detected non-terminal supervised Thread Group '{}'; Runtime restored the Objective wait to avoid duplicate evaluation",
                     group.id
                 );
                 let mutation = self
@@ -4379,7 +4407,7 @@ impl ObjectiveSupervisor {
         if *deadline > Utc::now() {
             return Ok(TimerDisposition::Reschedule {
                 due_at: *deadline,
-                reason: Some("Objective timer deadline 尚未到达".to_string()),
+                reason: Some("Objective timer deadline has not been reached".to_string()),
             });
         }
         let satisfaction_event = Event {
@@ -4417,7 +4445,7 @@ impl ObjectiveSupervisor {
                 &current,
                 ObjectiveStatus::Active,
                 None,
-                Some("计时等待已到期"),
+                Some("timer wait has expired"),
                 &satisfaction_event.id,
                 "ObjectiveSupervisor-Timer",
             )
@@ -4460,13 +4488,15 @@ impl ObjectiveSupervisor {
         if expires_at != timer.due_at {
             return Ok(TimerDisposition::Reschedule {
                 due_at: expires_at,
-                reason: Some("Objective Evaluation 已由运行中的 Activation 续租".to_string()),
+                reason: Some(
+                    "Objective Evaluation lease was renewed by a running Activation".to_string(),
+                ),
             });
         }
         if expires_at > Utc::now() {
             return Ok(TimerDisposition::Reschedule {
                 due_at: expires_at,
-                reason: Some("Objective evaluation lease 尚未到期".to_string()),
+                reason: Some("Objective evaluation lease has not expired".to_string()),
             });
         }
         // Revoke the exact expired Evaluation before making the Objective
@@ -4630,8 +4660,8 @@ impl ObjectiveSupervisor {
                     }
                     if !fenced {
                         return Err(format!(
-                            "Objective '{}' Evaluation '{}' 的旧 Activation '{}' 在 5 次 CAS 后仍未终结；拒绝创建替代 Evaluation",
-                            objective.id, evaluation_id, activation_id
+                            "stale Activation '{}' for Evaluation '{}' of Objective '{}' remained non-terminal after 5 CAS attempts; replacement Evaluation rejected",
+                            activation_id, evaluation_id, objective.id
                         )
                         .into());
                     }
@@ -4926,7 +4956,7 @@ mod tests {
             serde_json::from_value::<ObjectiveUpdateArgs>(objective_update_arguments(json!(twice)))
                 .unwrap_err()
                 .to_string();
-        assert!(recursive.contains("不能递归解码"));
+        assert!(recursive.contains("cannot decode recursively"));
 
         let unexpected =
             serde_json::from_value::<ObjectiveUpdateArgs>(objective_update_arguments(json!({
@@ -4936,7 +4966,7 @@ mod tests {
             })))
             .unwrap_err()
             .to_string();
-        assert!(unexpected.contains("不接受字段 'task_id'"));
+        assert!(unexpected.contains("does not accept field 'task_id'"));
     }
 
     #[test]
@@ -5175,7 +5205,7 @@ mod tests {
         assert!(isolated
             .status_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("固定主 Thread 已处于终态")));
+            .is_some_and(|reason| reason.contains("fixed primary Thread is already terminal")));
         let attention = store
             .query(QueryFilter {
                 context_id: Some(isolated.context_id.clone()),
@@ -5340,7 +5370,7 @@ mod tests {
             .unwrap_err();
         assert!(amend_error
             .to_string()
-            .contains("Objective-bound Evaluation 无权修改自身完成契约"));
+            .contains("Objective-bound Evaluation may not modify its own completion contract"));
         let unchanged = store.get_objective(&waiting.id).await.unwrap().unwrap();
         assert_eq!(unchanged.stated_objective, waiting.stated_objective);
         assert_eq!(unchanged.wait_condition, waiting.wait_condition);
@@ -6452,7 +6482,7 @@ mod tests {
         assert!(waiting
             .status_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("等待 Runtime 恢复资源")));
+            .is_some_and(|reason| reason.contains("wait for Runtime to recover resource")));
     }
 
     #[tokio::test]
@@ -6801,7 +6831,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(missing.contains("不存在"));
+        assert!(missing.contains("does not exist"));
         assert!(missing.contains("execution=background"));
 
         let terminal = store
@@ -6831,7 +6861,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(ended.contains("已经结束"));
+        assert!(ended.contains("already terminal"));
         assert!(ended.contains("result-tool-wait-live"));
     }
 
@@ -6896,7 +6926,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(ended.contains("已经结束"));
+        assert!(ended.contains("already terminal"));
         assert!(ended.contains("delegation-wait-result"));
     }
 
@@ -7024,7 +7054,7 @@ mod tests {
         assert!(recovered
             .status_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("不存在")));
+            .is_some_and(|reason| reason.contains("does not exist")));
         // Objective EventBus business handlers are intentionally asynchronous.
         // Under a busy test process the recovery handler can make the durable
         // state visible just before its audit Event is appended, so assert the

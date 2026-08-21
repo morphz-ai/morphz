@@ -288,13 +288,13 @@ impl HumanApprovalWaiter {
     async fn wait(mut self) -> Result<ApprovalDecision, PermissionApprovalError> {
         let receiver = self.receiver.take().ok_or_else(|| {
             PermissionApprovalError(format!(
-                "人工审批请求 '{}' 缺少进程内 waiter",
+                "human approval request '{}' has no in-process waiter",
                 self.approval_id
             ))
         })?;
         receiver.await.map_err(|_| {
             PermissionApprovalError(format!(
-                "人工审批请求 '{}' 在收到决定前被取消",
+                "human approval request '{}' was cancelled before a decision arrived",
                 self.approval_id
             ))
         })
@@ -330,7 +330,9 @@ impl HumanApprovalHub {
         decision: ApprovalDecision,
     ) -> Result<bool, String> {
         if matches!(decision, ApprovalDecision::AskHuman { .. }) {
-            return Err("人工审批结果只能是 allow_once、allow_lease 或 deny".to_string());
+            return Err(
+                "human approval decision must be allow_once, allow_lease, or deny".to_string(),
+            );
         }
         let mut pending_entries = self
             .pending
@@ -341,7 +343,10 @@ impl HumanApprovalHub {
                 .get(approval_id)
                 .is_some_and(|entry| entry.view.request.lease_offer.is_none())
         {
-            return Err("该审批请求没有 Capability Lease offer，不能批准租约".to_string());
+            return Err(
+                "this approval request has no Capability Lease offer and cannot approve a lease"
+                    .to_string(),
+            );
         }
         let pending = pending_entries.remove(approval_id);
         drop(pending_entries);
@@ -382,7 +387,7 @@ impl HumanApprovalHub {
             }
             Entry::Occupied(_) => {
                 return Err(PermissionApprovalError(format!(
-                    "人工审批 ID '{approval_id}' 已有活跃 waiter"
+                    "human approval ID '{approval_id}' already has an active waiter"
                 )));
             }
         }
@@ -442,7 +447,7 @@ impl HumanApprovalProvider {
             .rationale
             .clone()
             .or(record.cancel_reason.clone())
-            .unwrap_or_else(|| "持久化 Approval 已终止".to_string());
+            .unwrap_or_else(|| "persisted Approval is terminal".to_string());
         Ok(match record.status {
             ApprovalStatus::Allowed => {
                 if request.lease_offer.is_some() && capability_lease_was_approved(&record.risk_tags)
@@ -575,7 +580,7 @@ impl AiAutoReviewProvider {
             Some(sequence) if sequence <= request.trigger_sequence => sequence,
             Some(sequence) => {
                 return Err(format!(
-                    "审批因果锚点无效：Root Turn sequence {} 晚于 Trigger sequence {}",
+                    "invalid approval causal anchor: Root Turn sequence {} is later than Trigger sequence {}",
                     sequence, request.trigger_sequence
                 )
                 .into());
@@ -667,7 +672,7 @@ impl ApprovalProvider for AiAutoReviewProvider {
             )
             .await?;
         if !response.tool_calls.is_empty() {
-            return Err("自动审批 Reviewer 不允许产生工具调用".into());
+            return Err("automatic approval Reviewer must not produce tool calls".into());
         }
         let output = parse_reviewer_output(&response.content)?;
         let decision = match output.decision.as_str() {
@@ -677,7 +682,10 @@ impl ApprovalProvider for AiAutoReviewProvider {
             },
             "allow_lease" => {
                 if request.lease_offer.is_none() {
-                    return Err("自动审批 Reviewer 在没有 lease_offer 时返回 allow_lease".into());
+                    return Err(
+                        "automatic approval Reviewer returned allow_lease without a lease_offer"
+                            .into(),
+                    );
                 }
                 ApprovalDecision::AllowLease {
                     rationale: output.rationale,
@@ -692,7 +700,12 @@ impl ApprovalProvider for AiAutoReviewProvider {
                 rationale: output.rationale,
                 risk_tags: output.risk_tags,
             },
-            other => return Err(format!("自动审批 Reviewer 返回未知决定: {other}").into()),
+            other => {
+                return Err(format!(
+                    "automatic approval Reviewer returned unknown decision: {other}"
+                )
+                .into())
+            }
         };
         Ok(decision)
     }
@@ -732,15 +745,15 @@ fn parse_reviewer_output(
     } else {
         let start = trimmed
             .find('{')
-            .ok_or("自动审批 Reviewer 响应不包含 JSON 对象")?;
+            .ok_or("automatic approval Reviewer response contains no JSON object")?;
         let end = trimmed
             .rfind('}')
-            .ok_or("自动审批 Reviewer 响应 JSON 不完整")?;
+            .ok_or("automatic approval Reviewer response contains incomplete JSON")?;
         &trimmed[start..=end]
     };
     let output = serde_json::from_str::<ReviewerOutput>(json_text)?;
     if output.rationale.trim().is_empty() {
-        return Err("自动审批 Reviewer 必须返回非空 rationale".into());
+        return Err("automatic approval Reviewer must return a non-empty rationale".into());
     }
     Ok(output)
 }
@@ -952,7 +965,7 @@ mod tests {
             .unwrap_err();
         assert!(error
             .to_string()
-            .contains("没有 lease_offer 时返回 allow_lease"));
+            .contains("returned allow_lease without a lease_offer"));
     }
 
     #[tokio::test]
@@ -1195,7 +1208,7 @@ mod tests {
         let duplicate = hub.attach(human_request("human-duplicate"));
         assert!(matches!(
             duplicate,
-            Err(PermissionApprovalError(message)) if message.contains("已有活跃 waiter")
+            Err(PermissionApprovalError(message)) if message.contains("already has an active waiter")
         ));
         assert_eq!(hub.pending().len(), 1);
 

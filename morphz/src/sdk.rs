@@ -329,6 +329,10 @@ pub struct SendMessageCommand {
     /// configured default without changing that configuration.
     #[serde(default)]
     pub dispatch_mode: Option<MessageDispatchMode>,
+    /// Optional one-shot logical model route for the Evaluation created by
+    /// this message. It does not mutate the Session default.
+    #[serde(default)]
+    pub model_alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -767,7 +771,7 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Thread '{thread_id}' 在 Context '{context_id}' 中不存在"),
+                    format!("Thread '{thread_id}' does not exist in Context '{context_id}'"),
                 )
             })
     }
@@ -1112,7 +1116,7 @@ impl MorphzSdk {
             if value.trim().is_empty() {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    format!("{label} 不能为空"),
+                    format!("{label} must not be empty"),
                 ));
             }
         }
@@ -1342,7 +1346,7 @@ impl MorphzSdk {
         if account_id.is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Auth Account ID 不能为空",
+                "Auth Account ID cannot be empty",
             ));
         }
         let managed_contents =
@@ -1352,7 +1356,7 @@ impl MorphzSdk {
         if !managed.auth_accounts.contains_key(account_id) {
             return Err(SdkError::new(
                 SdkErrorCode::Conflict,
-                format!("Auth Account '{account_id}' 不由 Dashboard 管理；请在其来源配置中删除"),
+                format!("Auth Account '{account_id}' is not managed by the Dashboard; delete it from its source configuration"),
             ));
         }
 
@@ -1363,7 +1367,7 @@ impl MorphzSdk {
         let account = live.auth_accounts.get(account_id).cloned().ok_or_else(|| {
             SdkError::new(
                 SdkErrorCode::NotFound,
-                format!("Auth Account '{account_id}' 不存在"),
+                format!("Auth Account '{account_id}' does not exist"),
             )
         })?;
         let credential_id = (!account.credential_ref.trim().is_empty())
@@ -1381,7 +1385,7 @@ impl MorphzSdk {
             SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "删除 Auth Account '{account_id}' 后没有可用模型路由；请先添加另一个模型服务：{error}"
+                    "deleting Auth Account '{account_id}' would leave no usable model route; add another model service first: {error}"
                 ),
             )
         })?;
@@ -1488,14 +1492,14 @@ impl MorphzSdk {
         if models.is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "每个已启用账号至少需要选择一个模型",
+                "each enabled account must select at least one model",
             ));
         }
         for (model, profile) in &models {
             if model.trim().is_empty() || model.trim() != model {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    "模型 ID 不能为空或包含首尾空白",
+                    "model ID cannot be empty or contain leading or trailing whitespace",
                 ));
             }
             if [
@@ -1512,7 +1516,7 @@ impl MorphzSdk {
             {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    format!("模型 '{model}' 的容量必须大于 0"),
+                    format!("capacity for model '{model}' must be greater than 0"),
                 ));
             }
             if profile
@@ -1522,7 +1526,7 @@ impl MorphzSdk {
             {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    format!("模型 '{model}' 的最大输出必须小于上下文窗口"),
+                    format!("maximum output for model '{model}' must be smaller than its context window"),
                 ));
             }
             if profile
@@ -1532,7 +1536,7 @@ impl MorphzSdk {
             {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    format!("模型 '{model}' 的单附件上限不能大于附件总量上限"),
+                    format!("per-attachment limit for model '{model}' cannot exceed its total attachment limit"),
                 ));
             }
             if profile
@@ -1546,7 +1550,9 @@ impl MorphzSdk {
             {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    format!("模型 '{model}' 的输入与输出容量超过上下文窗口"),
+                    format!(
+                        "input and output capacity for model '{model}' exceeds its context window"
+                    ),
                 ));
             }
             if let Some(alias) = display_aliases
@@ -1556,7 +1562,7 @@ impl MorphzSdk {
                 if alias.trim().is_empty() || alias.trim() != alias {
                     return Err(SdkError::new(
                         SdkErrorCode::InvalidArgument,
-                        format!("模型 '{model}' 的别名不能为空或包含首尾空白"),
+                        format!("alias for model '{model}' must not be empty or contain leading or trailing whitespace"),
                     ));
                 }
             }
@@ -1567,7 +1573,7 @@ impl MorphzSdk {
         let account = snapshot.auth_accounts.get(account_id).ok_or_else(|| {
             SdkError::new(
                 SdkErrorCode::NotFound,
-                format!("Auth Account '{account_id}' 不存在"),
+                format!("Auth Account '{account_id}' does not exist"),
             )
         })?;
         let provider_id = account
@@ -1584,7 +1590,9 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    format!("Auth Account '{account_id}' 尚未关联 Provider Instance"),
+                    format!(
+                        "Auth Account '{account_id}' is not associated with a Provider Instance"
+                    ),
                 )
             })?;
         let mut provider = snapshot
@@ -1594,7 +1602,7 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Provider Instance '{provider_id}' 不存在"),
+                    format!("Provider Instance '{provider_id}' does not exist"),
                 )
             })?;
 
@@ -1622,7 +1630,7 @@ impl MorphzSdk {
         if let Some(unknown) = models.keys().find(|model| !selectable.contains(*model)) {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                format!("模型 '{unknown}' 不在该账号最近发现的目录中"),
+                format!("model '{unknown}' is not in the catalog most recently discovered for this account"),
             ));
         }
 
@@ -1970,7 +1978,7 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Harness '{id}@{version}' 未安装"),
+                    format!("Harness '{id}@{version}' is not installed"),
                 )
             })
     }
@@ -2008,13 +2016,13 @@ impl MorphzSdk {
         if coordinator.context_id != delivery.context_id {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Objective 的 coordinator/delivery Session 必须属于同一 Context",
+                "an Objective's coordinator and delivery Sessions must belong to the same Context",
             ));
         }
         if coordinator.agent_id != delivery.agent_id {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Objective 的 coordinator/delivery Session 必须属于同一 Agent",
+                "an Objective's coordinator and delivery Sessions must belong to the same Agent",
             ));
         }
         let objective = NewObjective {
@@ -2103,7 +2111,7 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Context '{context_id}' 不存在"),
+                    format!("Context '{context_id}' does not exist"),
                 )
             })
     }
@@ -2118,7 +2126,7 @@ impl MorphzSdk {
         {
             return Err(SdkError::new(
                 SdkErrorCode::NotFound,
-                format!("Context '{context_id}' 不存在"),
+                format!("Context '{context_id}' does not exist"),
             ));
         }
         self.runtime
@@ -2174,7 +2182,7 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Execution Target '{target_id}' 不存在"),
+                    format!("Execution Target '{target_id}' does not exist"),
                 )
             })?;
         if target.owner_principal_id.is_some()
@@ -2182,7 +2190,7 @@ impl MorphzSdk {
         {
             return Err(SdkError::new(
                 SdkErrorCode::Forbidden,
-                format!("当前 Principal 不能访问 Execution Target '{target_id}'"),
+                format!("the current Principal cannot access Execution Target '{target_id}'"),
             ));
         }
         Ok(target)
@@ -2215,7 +2223,7 @@ impl MorphzSdk {
         if current.owner_principal_id.is_none() {
             return Err(SdkError::new(
                 SdkErrorCode::Forbidden,
-                "Runtime 全局 Target 不能通过 Principal-scoped SDK 修改",
+                "a Runtime-global Target cannot be modified through the Principal-scoped SDK",
             ));
         }
         match self
@@ -2228,13 +2236,13 @@ impl MorphzSdk {
             ExecutionTargetMutation::Conflict { current } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "Execution Target '{}' revision 冲突：当前为 {}",
+                    "Execution Target '{}' revision conflict; current revision is {}",
                     current.id, current.revision
                 ),
             )),
             ExecutionTargetMutation::NotFound => Err(SdkError::new(
                 SdkErrorCode::NotFound,
-                format!("Execution Target '{target_id}' 不存在"),
+                format!("Execution Target '{target_id}' does not exist"),
             )),
         }
     }
@@ -2250,13 +2258,13 @@ impl MorphzSdk {
         if target.owner_principal_id.as_deref() != Some(principal_id) {
             return Err(SdkError::new(
                 SdkErrorCode::Forbidden,
-                "Runtime 全局 Target 不能进入 Principal scoped authorization 模式",
+                "a Runtime-global Target cannot enter Principal-scoped authorization mode",
             ));
         }
         if command.scope_id.trim().is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Execution Target authorization scope_id 不能为空",
+                "Execution Target authorization scope_id cannot be empty",
             ));
         }
         let identity = format!(
@@ -2286,13 +2294,13 @@ impl MorphzSdk {
             ExecutionTargetAuthorizationMutation::Conflict { current } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "Execution Target authorization '{}' revision 冲突：当前为 {}",
+                    "Execution Target authorization '{}' revision conflict; current revision is {}",
                     current.id, current.revision
                 ),
             )),
             ExecutionTargetAuthorizationMutation::NotFound => Err(SdkError::new(
                 SdkErrorCode::NotFound,
-                "Execution Target authorization 不存在",
+                "Execution Target authorization does not exist",
             )),
         }
     }
@@ -2330,13 +2338,13 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Execution Target authorization '{authorization_id}' 不存在"),
+                    format!("Execution Target authorization '{authorization_id}' does not exist"),
                 )
             })?;
         if current.owner_principal_id != principal_id {
             return Err(SdkError::new(
                 SdkErrorCode::Forbidden,
-                "当前 Principal 不能撤销这个 Execution Target authorization",
+                "the current Principal cannot revoke this Execution Target authorization",
             ));
         }
         match self
@@ -2350,17 +2358,17 @@ impl MorphzSdk {
             ExecutionTargetAuthorizationMutation::Conflict { current } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "Execution Target authorization '{}' revision 冲突：当前为 {}",
+                    "Execution Target authorization '{}' revision conflict; current revision is {}",
                     current.id, current.revision
                 ),
             )),
             ExecutionTargetAuthorizationMutation::NotFound => Err(SdkError::new(
                 SdkErrorCode::NotFound,
-                format!("Execution Target authorization '{authorization_id}' 不存在"),
+                format!("Execution Target authorization '{authorization_id}' does not exist"),
             )),
             ExecutionTargetAuthorizationMutation::Created(_) => Err(SdkError::new(
                 SdkErrorCode::Internal,
-                "撤销 Execution Target authorization 时返回了无效的 created 状态",
+                "revoking an Execution Target authorization returned an invalid created state",
             )),
         }
     }
@@ -2375,7 +2383,7 @@ impl MorphzSdk {
         if principal_id.trim().is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Principal ID 不能为空",
+                "Principal ID cannot be empty",
             ));
         }
         self.runtime
@@ -2412,14 +2420,14 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Capability Lease '{lease_id}' 不存在"),
+                    format!("Capability Lease '{lease_id}' does not exist"),
                 )
             })?;
         if current.revision != expected_revision {
             return Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "Capability Lease '{lease_id}' revision 冲突：当前为 {}",
+                    "Capability Lease '{lease_id}' revision conflict; current revision is {}",
                     current.revision
                 ),
             ));
@@ -2436,17 +2444,17 @@ impl MorphzSdk {
             CapabilityLeaseMutation::Conflict { current } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "Capability Lease '{}' revision 冲突：当前为 {}",
+                    "Capability Lease '{}' revision conflict; current revision is {}",
                     current.id, current.revision
                 ),
             )),
             CapabilityLeaseMutation::NotFound => Err(SdkError::new(
                 SdkErrorCode::NotFound,
-                format!("Capability Lease '{lease_id}' 不存在"),
+                format!("Capability Lease '{lease_id}' does not exist"),
             )),
             CapabilityLeaseMutation::Created(_) => Err(SdkError::new(
                 SdkErrorCode::Internal,
-                "撤销 Capability Lease 时返回了无效的 created 状态",
+                "revoking a Capability Lease returned an invalid created state",
             )),
         }
     }
@@ -2459,7 +2467,7 @@ impl MorphzSdk {
         if principal_id.trim().is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Principal ID 不能为空",
+                "Principal ID cannot be empty",
             ));
         }
         let ttl = command.expires_in_seconds.clamp(1, 900);
@@ -2488,13 +2496,13 @@ impl MorphzSdk {
         {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "配对码、Node 名称、设备密钥指纹和公钥不能为空",
+                "pairing code, Node name, device key fingerprint, and public key cannot be empty",
             ));
         }
         if command.protocol_version == 0 {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Edge protocol_version 必须大于 0",
+                "Edge protocol_version must be greater than 0",
             ));
         }
         let node_id = match command.node_id {
@@ -2504,14 +2512,14 @@ impl MorphzSdk {
         let public_key = decode_hex(&command.device_public_key).map_err(|error| {
             SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                format!("Edge device_public_key 无效: {error}"),
+                format!("invalid Edge device_public_key: {error}"),
             )
         })?;
         let expected_fingerprint = format!("sha256:{:x}", Sha256::digest(&public_key));
         if command.device_key_fingerprint != expected_fingerprint {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Edge 设备公钥与指纹不一致",
+                "Edge device public key does not match its fingerprint",
             ));
         }
         let node = self
@@ -2539,7 +2547,7 @@ impl MorphzSdk {
         if node_id.trim().is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Execution Node ID 不能为空",
+                "Execution Node ID cannot be empty",
             ));
         }
         let challenge_id = random_secret("challenge", 16)?;
@@ -2573,7 +2581,7 @@ impl MorphzSdk {
         {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Execution Node connection proof 不完整",
+                "Execution Node connection proof is incomplete",
             ));
         }
         let node = self
@@ -2588,19 +2596,19 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::Unauthorized,
-                    "Execution Node challenge 无效、过期或已使用",
+                    "Execution Node challenge is invalid, expired, or already used",
                 )
             })?;
         let public_key = decode_hex(&node.device_public_key).map_err(|error| {
             SdkError::new(
                 SdkErrorCode::Internal,
-                format!("Execution Node 公钥存储损坏: {error}"),
+                format!("Execution Node public key storage is corrupted: {error}"),
             )
         })?;
         let signature = decode_hex(&command.signature).map_err(|error| {
             SdkError::new(
                 SdkErrorCode::Unauthorized,
-                format!("Execution Node signature 无效: {error}"),
+                format!("invalid Execution Node signature: {error}"),
             )
         })?;
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public_key)
@@ -2615,7 +2623,7 @@ impl MorphzSdk {
             .map_err(|_| {
                 SdkError::new(
                     SdkErrorCode::Unauthorized,
-                    "Execution Node 设备签名验证失败",
+                    "Execution Node device signature verification failed",
                 )
             })?;
         let token = random_secret("edge_connection", 32)?;
@@ -2625,7 +2633,10 @@ impl MorphzSdk {
             .await
             .map_err(SdkError::internal)?
             .ok_or_else(|| {
-                SdkError::new(SdkErrorCode::Unauthorized, "Execution Node 已撤销或不存在")
+                SdkError::new(
+                    SdkErrorCode::Unauthorized,
+                    "Execution Node is revoked or does not exist",
+                )
             })?;
         Ok(ExecutionNodeConnection { token, expires_at })
     }
@@ -2641,7 +2652,7 @@ impl MorphzSdk {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
                 format!(
-                    "单个 Node 一次最多发布 {} 个 Target",
+                    "a single Node can publish at most {} Targets at once",
                     self.runtime.config().edge_execution.max_targets_per_node
                 ),
             ));
@@ -2656,7 +2667,9 @@ impl MorphzSdk {
             )
             .await
             .map_err(SdkError::internal)?
-            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Execution Node 不存在"))?;
+            .ok_or_else(|| {
+                SdkError::new(SdkErrorCode::NotFound, "Execution Node does not exist")
+            })?;
         for mut target in command.targets {
             if !matches!(
                 target.kind,
@@ -2664,7 +2677,7 @@ impl MorphzSdk {
             ) {
                 return Err(SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    "Edge Node 只能发布 edge_node 或 managed_ssh Target",
+                    "an Edge Node can publish only edge_node or managed_ssh Targets",
                 ));
             }
             target.owner_principal_id = Some(node.owner_principal_id.clone());
@@ -2701,11 +2714,16 @@ impl MorphzSdk {
             .map_err(SdkError::internal)?
             .into_iter()
             .find(|node| node.id == node_id)
-            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Execution Node 不存在"))?;
+            .ok_or_else(|| {
+                SdkError::new(SdkErrorCode::NotFound, "Execution Node does not exist")
+            })?;
         if current.revision != expected_revision {
             return Err(SdkError::new(
                 SdkErrorCode::Conflict,
-                format!("Execution Node revision 冲突：当前为 {}", current.revision),
+                format!(
+                    "Execution Node revision conflict: current revision is {}",
+                    current.revision
+                ),
             ));
         }
         let updated = self
@@ -2713,12 +2731,14 @@ impl MorphzSdk {
             .revoke_execution_node(node_id, principal_id, expected_revision)
             .await
             .map_err(SdkError::internal)?
-            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Execution Node 不存在"))?;
+            .ok_or_else(|| {
+                SdkError::new(SdkErrorCode::NotFound, "Execution Node does not exist")
+            })?;
         if updated.status != ExecutionNodeStatus::Revoked {
             return Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "Execution Node revoke 未提交；当前 revision {}",
+                    "Execution Node revocation was not committed; current revision is {}",
                     updated.revision
                 ),
             ));
@@ -2736,20 +2756,23 @@ impl MorphzSdk {
         if current.revision != command.expected_revision {
             return Err(SdkError::new(
                 SdkErrorCode::Conflict,
-                format!("Execution Node revision 冲突：当前为 {}", current.revision),
+                format!(
+                    "Execution Node revision conflict: current revision is {}",
+                    current.revision
+                ),
             ));
         }
         let public_key = decode_hex(&command.device_public_key).map_err(|error| {
             SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                format!("Edge device_public_key 无效: {error}"),
+                format!("invalid Edge device_public_key: {error}"),
             )
         })?;
         let expected_fingerprint = format!("sha256:{:x}", Sha256::digest(&public_key));
         if command.device_key_fingerprint != expected_fingerprint {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Edge 新设备公钥与指纹不一致",
+                "new Edge device public key does not match its fingerprint",
             ));
         }
         match self
@@ -2766,11 +2789,14 @@ impl MorphzSdk {
             ExecutionNodeMutation::Updated(node) => Ok(node),
             ExecutionNodeMutation::Conflict { current } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
-                format!("Execution Node revision 冲突：当前为 {}", current.revision),
+                format!(
+                    "Execution Node revision conflict: current revision is {}",
+                    current.revision
+                ),
             )),
             ExecutionNodeMutation::NotFound => Err(SdkError::new(
                 SdkErrorCode::NotFound,
-                "Execution Node 不存在",
+                "Execution Node does not exist",
             )),
         }
     }
@@ -2785,7 +2811,7 @@ impl MorphzSdk {
         if command.worker_id.trim().is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "worker_id 不能为空",
+                "worker_id cannot be empty",
             ));
         }
         let lease_seconds = command.lease_seconds.clamp(5, 300);
@@ -2831,13 +2857,14 @@ impl MorphzSdk {
             EdgeCommandMutation::Conflict { current } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "Edge Command revision/claim 冲突；当前为 {}",
+                    "Edge Command revision or claim conflict; current revision is {}",
                     current.revision
                 ),
             )),
-            EdgeCommandMutation::NotFound => {
-                Err(SdkError::new(SdkErrorCode::NotFound, "Edge Command 不存在"))
-            }
+            EdgeCommandMutation::NotFound => Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                "Edge Command does not exist",
+            )),
         }
     }
 
@@ -2853,13 +2880,13 @@ impl MorphzSdk {
         if command.text.is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Edge output chunk 不能为空",
+                "Edge output chunk cannot be empty",
             ));
         }
         if command.text.len() > 64 * 1024 {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Edge output chunk 不能超过 64 KiB",
+                "Edge output chunk cannot exceed 64 KiB",
             ));
         }
         self.runtime
@@ -2895,7 +2922,7 @@ impl MorphzSdk {
         ) {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Edge Node 只能提交 succeeded、failed 或 cancelled 终态",
+                "an Edge Node can submit only succeeded, failed, or cancelled terminal states",
             ));
         }
         match self
@@ -2915,13 +2942,14 @@ impl MorphzSdk {
             EdgeCommandMutation::Conflict { current } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "Edge Command revision/claim 冲突；当前为 {}",
+                    "Edge Command revision or claim conflict; current revision is {}",
                     current.revision
                 ),
             )),
-            EdgeCommandMutation::NotFound => {
-                Err(SdkError::new(SdkErrorCode::NotFound, "Edge Command 不存在"))
-            }
+            EdgeCommandMutation::NotFound => Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                "Edge Command does not exist",
+            )),
         }
     }
 
@@ -2975,7 +3003,7 @@ impl MorphzSdk {
         if job.tool_name != crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Execution Job 不是 Artifact Transfer",
+                "Execution Job is not an Artifact Transfer",
             ));
         }
         let event = match job.result_event_id.as_deref() {
@@ -3005,11 +3033,11 @@ impl MorphzSdk {
             .get_execution_job(job_id)
             .await
             .map_err(SdkError::internal)?
-            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Execution Job 不存在"))?;
+            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Execution Job does not exist"))?;
         if !self.execution_job_visible_to_principal(&job, principal_id) {
             return Err(SdkError::new(
                 SdkErrorCode::Forbidden,
-                "当前 Principal 不能访问这个 Execution Job",
+                "the current Principal cannot access this Execution Job",
             ));
         }
         Ok(job)
@@ -3032,20 +3060,23 @@ impl MorphzSdk {
             JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => Ok(job),
             JobReceipt::Conflict { current, .. } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
-                format!("Execution Job revision 冲突：当前为 {}", current.revision),
+                format!(
+                    "Execution Job revision conflict: current revision is {}",
+                    current.revision
+                ),
             )),
             JobReceipt::Rejected {
                 current, reason, ..
             } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
-                    "Execution Job 当前为 {}，不能取消：{reason}",
+                    "Execution Job is currently {}; it cannot be cancelled: {reason}",
                     current.status.as_str()
                 ),
             )),
             JobReceipt::NotFound { .. } => Err(SdkError::new(
                 SdkErrorCode::NotFound,
-                "Execution Job 不存在",
+                "Execution Job does not exist",
             )),
         }
     }
@@ -3068,7 +3099,7 @@ impl MorphzSdk {
         if node_id.trim().is_empty() || device_token.trim().is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::Unauthorized,
-                "Execution Node 凭证缺失",
+                "Execution Node credential is missing",
             ));
         }
         let node = self
@@ -3076,11 +3107,16 @@ impl MorphzSdk {
             .authenticate_execution_node(node_id, &hash_secret(device_token))
             .await
             .map_err(SdkError::internal)?
-            .ok_or_else(|| SdkError::new(SdkErrorCode::Unauthorized, "Execution Node 凭证无效"))?;
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::Unauthorized,
+                    "invalid Execution Node credential",
+                )
+            })?;
         if node.status == ExecutionNodeStatus::Revoked {
             return Err(SdkError::new(
                 SdkErrorCode::Forbidden,
-                "Execution Node 已被撤销",
+                "Execution Node has been revoked",
             ));
         }
         Ok(node)
@@ -3098,11 +3134,11 @@ impl MorphzSdk {
             .get_edge_command(job_id)
             .await
             .map_err(SdkError::internal)?
-            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Edge Command 不存在"))?;
+            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Edge Command does not exist"))?;
         if command.provider_node_id != node_id {
             return Err(SdkError::new(
                 SdkErrorCode::Forbidden,
-                "Execution Node 不能访问其他 Node 的命令",
+                "an Execution Node cannot access another Node's commands",
             ));
         }
         Ok(command)
@@ -3123,7 +3159,7 @@ impl MorphzSdk {
         if claim_token.trim().is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::Unauthorized,
-                "Edge Artifact channel 缺少 claim token",
+                "Edge Artifact channel is missing a claim token",
             ));
         }
         let command = self
@@ -3132,7 +3168,7 @@ impl MorphzSdk {
         if command.tool_name != ARTIFACT_TRANSFER_TOOL_NAME {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "Edge Command 不是 Artifact Transfer",
+                "Edge Command is not an Artifact Transfer",
             ));
         }
         if command.status != EdgeCommandStatus::Claimed
@@ -3143,7 +3179,7 @@ impl MorphzSdk {
         {
             return Err(SdkError::new(
                 SdkErrorCode::Conflict,
-                "Edge Artifact channel 的 Command claim 已失效",
+                "the Edge Artifact channel's Command claim is no longer valid",
             ));
         }
         let channel = edge_artifact_data_channel_from_route(&command.route)
@@ -3151,13 +3187,13 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::InvalidArgument,
-                    "Edge Artifact Command 缺少私有数据通道",
+                    "Edge Artifact Command is missing a private data channel",
                 )
             })?;
         if channel.direction != expected_direction {
             return Err(SdkError::new(
                 SdkErrorCode::Forbidden,
-                "Edge Artifact channel 方向与冻结 Route 不一致",
+                "Edge Artifact channel direction does not match the frozen Route",
             ));
         }
         Ok((command, channel))
@@ -3193,7 +3229,7 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Session '{session_id}' 不存在"),
+                    format!("Session '{session_id}' does not exist"),
                 )
             })?;
         self.runtime
@@ -3241,7 +3277,7 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Session '{session_id}' 不存在"),
+                    format!("Session '{session_id}' does not exist"),
                 )
             })
     }
@@ -3276,6 +3312,7 @@ impl MorphzSdk {
                     attachments: command.attachments,
                     references: command.references,
                     dispatch_mode: command.dispatch_mode,
+                    model_alias: command.model_alias,
                 },
             )
             .await
@@ -3323,7 +3360,7 @@ impl MorphzSdk {
         if query.after_sequence.is_some() && query.before_sequence.is_some() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
-                "after_sequence 与 before_sequence 不能同时使用",
+                "after_sequence and before_sequence cannot be used together",
             ));
         }
         let filter = if let Some(after_sequence) = query.after_sequence {
@@ -3372,7 +3409,7 @@ impl MorphzSdk {
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
-                    format!("Session '{session_id}' 不存在"),
+                    format!("Session '{session_id}' does not exist"),
                 )
             })?;
         let bound = self
@@ -3383,7 +3420,9 @@ impl MorphzSdk {
         if !bound {
             return Err(SdkError::new(
                 SdkErrorCode::Forbidden,
-                format!("Principal '{principal_id}' 未参与 Session '{session_id}'"),
+                format!(
+                    "Principal '{principal_id}' is not a participant in Session '{session_id}'"
+                ),
             ));
         }
         Ok(session)
@@ -3430,14 +3469,14 @@ pub fn execution_node_connection_proof_message(
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, &'static str> {
     if !value.len().is_multiple_of(2) {
-        return Err("hex 长度必须为偶数");
+        return Err("hex length must be even");
     }
     value
         .as_bytes()
         .chunks_exact(2)
         .map(|pair| {
-            let high = hex_nibble(pair[0]).ok_or("包含非十六进制字符")?;
-            let low = hex_nibble(pair[1]).ok_or("包含非十六进制字符")?;
+            let high = hex_nibble(pair[0]).ok_or("contains a non-hex character")?;
+            let low = hex_nibble(pair[1]).ok_or("contains a non-hex character")?;
             Ok((high << 4) | low)
         })
         .collect()
@@ -3457,7 +3496,7 @@ fn random_secret(prefix: &str, byte_count: usize) -> SdkResult<String> {
     getrandom::fill(&mut bytes).map_err(|error| {
         SdkError::new(
             SdkErrorCode::Internal,
-            format!("操作系统随机数生成失败: {error}"),
+            format!("operating system random number generation failed: {error}"),
         )
     })?;
     let mut encoded = String::with_capacity(prefix.len() + 1 + byte_count * 2);
@@ -3651,6 +3690,7 @@ mod tests {
                     }],
                     harness: None,
                     dispatch_mode: Some(MessageDispatchMode::Parallel),
+                    model_alias: None,
                 },
             )
             .await
@@ -3711,6 +3751,7 @@ mod tests {
                     }],
                     harness: None,
                     dispatch_mode: None,
+                    model_alias: None,
                 },
             )
             .await
@@ -3723,6 +3764,7 @@ mod tests {
             SessionUpdate {
                 title: None,
                 status: Some(SessionStatus::Archived),
+                model_alias: None,
             },
         )
         .await
@@ -3741,6 +3783,7 @@ mod tests {
                     }],
                     harness: None,
                     dispatch_mode: None,
+                    model_alias: None,
                 },
             )
             .await

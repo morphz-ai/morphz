@@ -91,7 +91,7 @@ name = "LOCAL_M4_API_KEY"
 2. `--config-file` 显式可信配置
 3. 可信项目配置
 4. `--profile` 选择的用户 Profile
-5. 用户配置（`setup`、Dashboard 与 `model use` 原子更新同一文件）
+5. 用户配置（Runtime 核心与模型基础设施分文件管理，按同一层级合并）
 6. 旧版用户配置兼容层（只读迁移来源）
 7. 系统配置
 8. 内置默认值
@@ -100,13 +100,17 @@ name = "LOCAL_M4_API_KEY"
 
 推荐位置：
 
-- 系统：Unix `/etc/morphz/morphz.toml`；旧文件名 `config.toml` 仅兼容读取
-- 用户：`$MORPHZ_HOME/morphz.toml`，默认目录为 `~/.morphz`
+- 系统：Unix `/etc/morphz/morphz.toml` 与 `/etc/morphz/models.toml`；旧文件名
+  `config.toml` 仅兼容读取
+- 用户核心：`$MORPHZ_HOME/morphz.toml`，默认目录为 `~/.morphz`
+- 用户模型：`$MORPHZ_HOME/models.toml`，由 `setup`、Dashboard 与 `model use` 原子更新
 - Profile：`$MORPHZ_HOME/profiles/<name>.toml`
 - 项目：从项目根到当前目录逐层读取 `.morphz/morphz.toml`
 
-旧版 `~/.config/morphz/config.toml` 与 `managed.toml` 会在首次启动时合并迁移到
-`~/.morphz/morphz.toml`；旧文件保留，不再作为写入目标。
+旧版 `~/.config/morphz/config.toml` 与 `managed.toml` 会在首次启动时迁移到
+`~/.morphz`。旧版 `~/.morphz/morphz.toml` 中的 `llm / usage_pricing / providers /
+credentials / services / accounts / models` 会再拆入 `models.toml`；已有模型文件的值优先，
+旧文件保留且不再作为模型写入目标。
 
 `morphz config explain` 必须展示最终值、来源层和被覆盖链。`morphz config check` 必须验证所有已发现层，而不是在解析失败时静默退回默认值。
 
@@ -120,7 +124,8 @@ name = "LOCAL_M4_API_KEY"
    密码输入只显示圆点与字符数，Keychain 失败会留在向导内提供可恢复选择。
 4. 在支持时读取模型目录；不支持时允许手工输入模型。
 5. 执行连接、流式响应和工具调用握手。
-6. 保存默认 Provider 和 Model；命名 Profile 仍由独立的 Profile 配置承载。
+6. 把默认 Provider、Model Route 与 Agent 可委托模型保存到 `models.toml`；命名 Profile
+   仍由独立的 Profile 配置承载。
 
 高级管理命令保持小而正交：
 

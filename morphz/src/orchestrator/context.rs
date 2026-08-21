@@ -69,8 +69,8 @@ fn validate_snapshot_head_event(
         .and_then(serde_json::Value::as_str);
     if event_context_id != Some(snapshot.context_id.as_str()) {
         return Err(format!(
-            "Mind Snapshot '{}' 的 head Event '{}' 属于错误的 Context {:?}",
-            snapshot.id, head.id, event_context_id
+            "head Event '{}' of Mind Snapshot '{}' belongs to the wrong Context {:?}",
+            head.id, snapshot.id, event_context_id
         )
         .into());
     }
@@ -92,7 +92,7 @@ fn validate_snapshot_head_event(
                 || after_hash != Some(snapshot.state_hash.as_str())
             {
                 return Err(format!(
-                    "Mind Snapshot '{}' 与 head transaction '{}' 的 after_version/after_hash 不一致",
+                    "Mind Snapshot '{}' is inconsistent with after_version/after_hash of head transaction '{}'",
                     snapshot.id, head.id
                 )
                 .into());
@@ -105,7 +105,7 @@ fn validate_snapshot_head_event(
                 .and_then(serde_json::Value::as_str);
             if snapshot.revision != 0 || projected_hash != Some(snapshot.state_hash.as_str()) {
                 return Err(format!(
-                    "Mind Snapshot '{}' 与 seed head Event '{}' 的 revision/projected_hash 不一致",
+                    "Mind Snapshot '{}' is inconsistent with revision/projected_hash of seed head Event '{}'",
                     snapshot.id, head.id
                 )
                 .into());
@@ -113,8 +113,8 @@ fn validate_snapshot_head_event(
         }
         _ => {
             return Err(format!(
-                "Mind Snapshot '{}' 的 head Event '{}' 不是合法的 Context transaction/seed 锚点",
-                snapshot.id, head.id
+                "head Event '{}' of Mind Snapshot '{}' is not a valid Context transaction/seed anchor",
+                head.id, snapshot.id
             )
             .into());
         }
@@ -265,7 +265,7 @@ impl ContextReferences {
         }
         self.alias_to_id.get(reference).cloned().ok_or_else(|| {
             format!(
-                "Context 短引用 '{}' 不存在；请使用当前 Context 展示的 ref，不要猜测或改写",
+                "Context short reference '{}' does not exist; use a ref displayed by the current Context and do not guess or rewrite it",
                 reference
             )
         })
@@ -767,6 +767,20 @@ pub struct ActivationFocus {
     /// explicit `objective_id`/`objective_evaluation_id` binding above does.
     pub supervisor_kind: String,
     pub supervisor_id: Option<String>,
+    /// Logical model route frozen on this physical Evaluation. It is a
+    /// Runtime routing fact, not a model-authored preference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvaluationModelPolicy {
+    /// Runtime primary route used whenever an Evaluation has no override.
+    pub primary: String,
+    /// Complete set of routes the Agent may explicitly request. This always
+    /// includes `primary`; operator-owned Session binding is a separate
+    /// control-plane authority and is not constrained by this list.
+    pub agent_allowed: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -967,6 +981,9 @@ pub struct ContextView {
     /// `execution_targets` for model-facing Activations.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub execution_target_access: Vec<ExecutionTargetAccessView>,
+    /// Runtime-authoritative model delegation surface for this request.
+    #[serde(default)]
+    pub evaluation_model_policy: EvaluationModelPolicy,
     pub cognitive_clock: ContextCognitiveClock,
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
@@ -1255,6 +1272,7 @@ pub struct ContextEngine {
     principal_first_seen_cues: bool,
     config: OrchestratorConfig,
     model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
+    evaluation_model_policy: Arc<RwLock<EvaluationModelPolicy>>,
     context_locks: DashMap<String, Weak<Mutex<()>>>,
     capacity_metrics: ContextCapacityMetrics,
 }
@@ -1316,6 +1334,7 @@ impl ContextEngine {
             principal_first_seen_cues: false,
             config,
             model_context_capacity: Arc::new(RwLock::new(fallback_capacity)),
+            evaluation_model_policy: Arc::new(RwLock::new(EvaluationModelPolicy::default())),
             context_locks: DashMap::new(),
             capacity_metrics: ContextCapacityMetrics::default(),
         }
@@ -1342,6 +1361,40 @@ impl ContextEngine {
         self
     }
 
+    pub fn with_evaluation_model_policy(
+        self,
+        primary: impl Into<String>,
+        agent_allowed: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.set_evaluation_model_policy(primary, agent_allowed);
+        self
+    }
+
+    pub fn set_evaluation_model_policy(
+        &self,
+        primary: impl Into<String>,
+        agent_allowed: impl IntoIterator<Item = String>,
+    ) {
+        let primary = primary.into().trim().to_string();
+        let mut allowed = Vec::new();
+        if !primary.is_empty() {
+            allowed.push(primary.clone());
+        }
+        for configured in agent_allowed {
+            let configured = configured.trim().to_string();
+            if !configured.is_empty() && !allowed.contains(&configured) {
+                allowed.push(configured);
+            }
+        }
+        *self
+            .evaluation_model_policy
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = EvaluationModelPolicy {
+            primary,
+            agent_allowed: allowed,
+        };
+    }
+
     pub async fn context_token_budget(
         &self,
         context_id: &str,
@@ -1351,7 +1404,7 @@ impl ContextEngine {
             None => None,
         };
         if self.session_store.is_some() && context.is_none() {
-            return Err(format!("Context '{context_id}' 不存在").into());
+            return Err(format!("Context '{context_id}' does not exist").into());
         }
         Ok(self.resolve_context_token_budget(
             context_id,
@@ -1527,12 +1580,12 @@ impl ContextEngine {
         let store = self
             .session_store
             .as_ref()
-            .ok_or("ContextEngine 没有配置 SessionStore，不能从 Session 解析 Context")?;
+            .ok_or("ContextEngine has no SessionStore and cannot resolve Context from Session")?;
         store
             .get_session(session_id)
             .await?
             .map(|session| session.context_id)
-            .ok_or_else(|| format!("Session '{session_id}' 不存在").into())
+            .ok_or_else(|| format!("Session '{session_id}' does not exist").into())
     }
 
     /// Maximum event-text slice that a recall result can deliver without its
@@ -1550,11 +1603,11 @@ impl ContextEngine {
     ) -> Result<MindState, DynError> {
         let state: MindState =
             serde_json::from_value(projection.state.clone()).map_err(|error| {
-                format!("Context '{context_id}' 的 Mind Projection state 无法解析: {error}")
+                format!("failed to parse Mind Projection state for Context '{context_id}': {error}")
             })?;
         if state.version != projection.revision {
             return Err(format!(
-                "Context '{context_id}' 的 Mind Projection revision 不一致：state={}，head={}",
+                "Mind Projection revision for Context '{context_id}' is inconsistent: state={}, head={}",
                 state.version, projection.revision
             )
             .into());
@@ -1562,7 +1615,7 @@ impl ContextEngine {
         let actual_hash = mind_state_hash(&state)?;
         if !mind_state_hash_matches(&state, &projection.state_hash)? {
             return Err(format!(
-                "Context '{context_id}' 的 Mind Projection hash 不一致：stored={}，actual={actual_hash}",
+                "Mind Projection hash for Context '{context_id}' is inconsistent: stored={}, actual={actual_hash}",
                 projection.state_hash
             )
             .into());
@@ -1582,18 +1635,21 @@ impl ContextEngine {
         };
         if snapshot.context_id != context_id {
             return Err(format!(
-                "Mind Snapshot '{}' 的 context_id '{}' 与请求 Context '{}' 不一致",
-                snapshot.id, snapshot.context_id, context_id
+                "context_id '{}' of Mind Snapshot '{}' does not match requested Context '{}'",
+                snapshot.context_id, snapshot.id, context_id
             )
             .into());
         }
         let mut state: MindState =
             serde_json::from_value(snapshot.state.clone()).map_err(|error| {
-                format!("Mind Snapshot '{}' 的 state 无法解析: {error}", snapshot.id)
+                format!(
+                    "failed to parse state for Mind Snapshot '{}': {error}",
+                    snapshot.id
+                )
             })?;
         if state.version != snapshot.revision {
             return Err(format!(
-                "Mind Snapshot '{}' revision 不一致：state={}，snapshot={}",
+                "Mind Snapshot '{}' revision is inconsistent: state={}, snapshot={}",
                 snapshot.id, state.version, snapshot.revision
             )
             .into());
@@ -1601,7 +1657,7 @@ impl ContextEngine {
         let actual_snapshot_hash = mind_state_hash(&state)?;
         if !mind_state_hash_matches(&state, &snapshot.state_hash)? {
             return Err(format!(
-                "Mind Snapshot '{}' hash 不一致：stored={}，actual={actual_snapshot_hash}",
+                "Mind Snapshot '{}' hash is inconsistent: stored={}, actual={actual_snapshot_hash}",
                 snapshot.id, snapshot.state_hash
             )
             .into());
@@ -1620,14 +1676,14 @@ impl ContextEngine {
             .next()
             .ok_or_else(|| {
                 format!(
-                    "Mind Snapshot '{}' 指向的 head Event '{}' 不存在",
-                    snapshot.id, snapshot.head_event_id
+                    "head Event '{}' referenced by Mind Snapshot '{}' does not exist",
+                    snapshot.head_event_id, snapshot.id
                 )
             })?;
         let snapshot_head_sequence = snapshot_head.sequence.ok_or_else(|| {
             format!(
-                "Mind Snapshot '{}' 指向的 head Event '{}' 没有持久化 Event sequence",
-                snapshot.id, snapshot.head_event_id
+                "head Event '{}' referenced by Mind Snapshot '{}' has no persisted Event sequence",
+                snapshot.head_event_id, snapshot.id
             )
         })?;
         validate_snapshot_head_event(&snapshot, &snapshot_head)?;
@@ -1644,7 +1700,7 @@ impl ContextEngine {
         for event in &transactions {
             if event.event_type != TYPE_CONTEXT_TRANSACTION || event.actor != "Agent-Context" {
                 return Err(format!(
-                    "Snapshot 增量恢复遇到非法 Mind transaction Event '{}'",
+                    "incremental Snapshot recovery encountered invalid Mind transaction Event '{}'",
                     event.id
                 )
                 .into());
@@ -1653,14 +1709,22 @@ impl ContextEngine {
                 .payload
                 .get("transaction")
                 .and_then(|value| value.as_str())
-                .ok_or_else(|| format!("Context transaction '{}' 缺少 transaction", event.id))?;
+                .ok_or_else(|| {
+                    format!(
+                        "Context transaction '{}' is missing transaction data",
+                        event.id
+                    )
+                })?;
             let parsed = parse_transaction(transaction).map_err(|error| {
-                format!("Context transaction '{}' 无法增量重放: {error}", event.id)
+                format!(
+                    "failed to replay Context transaction '{}' incrementally: {error}",
+                    event.id
+                )
             })?;
             let observations = self.transaction_observations(context_id, &parsed).await?;
             let transaction_sequence = event.sequence.ok_or_else(|| {
                 format!(
-                    "Context transaction '{}' 没有持久化 Event sequence",
+                    "Context transaction '{}' has no persisted Event sequence",
                     event.id
                 )
             })?;
@@ -1670,7 +1734,7 @@ impl ContextEngine {
                     .is_none_or(|sequence| sequence >= transaction_sequence)
             }) {
                 return Err(format!(
-                    "Context transaction '{}' 引用了不早于自身的 observation '{}'，拒绝违反因果顺序的 Snapshot 增量恢复",
+                    "Context transaction '{}' references observation '{}' that is not earlier than itself; Snapshot incremental recovery rejected to preserve causal order",
                     event.id, future.id
                 )
                 .into());
@@ -1843,7 +1907,7 @@ impl ContextEngine {
         transaction_id: &str,
     ) -> Result<ContextCommit, DynError> {
         if transaction_id.trim().is_empty() {
-            return Err("Context transaction identity 不能为空".into());
+            return Err("Context transaction identity must not be empty".into());
         }
         self.apply_context_transaction_authorized(
             context_id,
@@ -1884,7 +1948,7 @@ impl ContextEngine {
                 Err(error)
                     if error
                         .to_string()
-                        .starts_with("Context transaction CAS 冲突")
+                        .starts_with("Context transaction CAS conflict")
                         && attempt < MAX_PROJECTION_CAS_RETRIES =>
                 {
                     let backoff_millis = 1_u64 << attempt.min(3);
@@ -1914,7 +1978,7 @@ impl ContextEngine {
                     == Some("finalize-retirement")
             })
         {
-            return Err("finalize-retirement 是 Runtime 私有生命周期操作".into());
+            return Err("finalize-retirement is a Runtime-private lifecycle operation".into());
         }
         let _guard = self.lock_context(context_id).await;
 
@@ -1926,7 +1990,10 @@ impl ContextEngine {
             .find(|reference| reference.starts_with(EVENT_REFERENCE_PREFIX))
         {
             return Err(
-                format!("Context transaction 仍包含未解析短引用 '{unresolved}'，拒绝提交").into(),
+                format!(
+                    "Context transaction still contains unresolved short reference '{unresolved}'; commit rejected"
+                )
+                .into(),
             );
         }
         reject_causally_protected_retirements(&parsed, authority.causally_protected_ids)?;
@@ -2079,7 +2146,7 @@ impl ContextEngine {
                 MindProjectionCommit::Committed { .. } => {}
                 MindProjectionCommit::Conflict { current_revision } => {
                     return Err(format!(
-                        "Context transaction CAS 冲突：请求 base-version {}，当前 Projection revision {:?}；请基于最新 Context Encoding 重试",
+                        "Context transaction CAS conflict: requested base-version {}, current Projection revision {:?}; retry from the latest Context Encoding",
                         current.version, current_revision
                     )
                     .into());
@@ -2093,7 +2160,8 @@ impl ContextEngine {
             self.store.append(event).await?;
         } else {
             return Err(
-                "ContextEngine 未配置 SessionStore，不能提交 Session attention 修改".into(),
+                "ContextEngine has no SessionStore and cannot commit Session attention changes"
+                    .into(),
             );
         }
 
@@ -2207,7 +2275,7 @@ impl ContextEngine {
         let store = self
             .session_store
             .as_ref()
-            .ok_or("ContextEngine 未配置 SessionStore，不能修改 Session attention")?;
+            .ok_or("ContextEngine has no SessionStore and cannot modify Session attention")?;
         let sessions = store.list_context_sessions(context_id, true).await?;
         let mut state = sessions
             .into_iter()
@@ -2228,14 +2296,14 @@ impl ContextEngine {
                 let session_id = validated_id(as_atom(item, "session id")?)?;
                 let session = state.get_mut(session_id).ok_or_else(|| {
                     format!(
-                        "Session '{}' 不属于当前 Context '{}'",
+                        "Session '{}' does not belong to the current Context '{}'",
                         session_id, context_id
                     )
                 })?;
                 let target = if name == "retire-session" {
                     if session_id == acting_session_id {
                         return Err(format!(
-                            "当前 Session '{}' 尚未完成本轮 Reply，v1 拒绝 retire；请在后续 Session 中处理",
+                            "the current Session '{}' has not completed this Reply; v1 rejects retirement. Handle it from a subsequent Session",
                             session_id
                         )
                         .into());
@@ -2245,7 +2313,7 @@ impl ContextEngine {
                         .any(|item| item.session_id == session_id && !item.status.is_terminal())
                     {
                         return Err(format!(
-                            "Session '{}' 存在 queued/running/waiting Evaluation，不能 retire",
+                            "Session '{}' has a queued/running/waiting Evaluation and cannot be retired",
                             session_id
                         )
                         .into());
@@ -2255,7 +2323,7 @@ impl ContextEngine {
                         .await?
                     {
                         return Err(format!(
-                            "Session '{}' 存在 running Background Task，不能 retire",
+                            "Session '{}' has a running Background Task and cannot be retired",
                             session_id
                         )
                         .into());
@@ -2265,18 +2333,18 @@ impl ContextEngine {
                             && !objective.status.is_terminal()
                     }) {
                         return Err(format!(
-                            "Session '{}' 存在 active Objective，不能 retire",
+                            "Session '{}' has an active Objective and cannot be retired",
                             session_id
                         )
                         .into());
                     }
                     if session.attention_state == SessionAttentionState::Retired {
-                        return Err(format!("Session '{}' 已经 retired", session_id).into());
+                        return Err(format!("Session '{}' is already retired", session_id).into());
                     }
                     SessionAttentionState::Retired
                 } else {
                     if session.attention_state == SessionAttentionState::Active {
-                        return Err(format!("Session '{}' 已经 active", session_id).into());
+                        return Err(format!("Session '{}' is already active", session_id).into());
                     }
                     SessionAttentionState::Active
                 };
@@ -2314,7 +2382,7 @@ impl ContextEngine {
                 }
             } else if reference.starts_with(EVENT_REFERENCE_PREFIX) {
                 return Err(format!(
-                    "Context 短引用 '{}' 不存在；请使用当前 Context Encoding 展示的 ref",
+                    "Context short reference '{}' does not exist; use a ref displayed by the current Context Encoding",
                     reference
                 )
                 .into());
@@ -2350,7 +2418,7 @@ impl ContextEngine {
             || projection.target_context_id != target_context_id
         {
             return Err(format!(
-                "Session Projection Seed 路由不一致：plan {} -> {}，请求 {} -> {}",
+                "Session Projection Seed route mismatch: plan {} -> {}, request {} -> {}",
                 projection.source_context_id,
                 projection.target_context_id,
                 source_context_id,
@@ -2361,7 +2429,7 @@ impl ContextEngine {
         if expected_source_version.is_some_and(|version| version != projection.source_mind_version)
         {
             return Err(format!(
-                "Session Projection Seed 版本不一致：plan source r{}，请求 r{:?}",
+                "Session Projection Seed version mismatch: plan source r{}, request r{:?}",
                 projection.source_mind_version, expected_source_version
             )
             .into());
@@ -2383,13 +2451,13 @@ impl ContextEngine {
         projection: Option<&SessionProjectionSeedPlan>,
     ) -> Result<MindSeedReceipt, DynError> {
         if source_context_id == target_context_id {
-            return Err("Mind Seed 的来源与目标 Context 不能相同".into());
+            return Err("Mind Seed source and target Context must differ".into());
         }
         let _target_guard = self.lock_context(target_context_id).await;
         let target_events = self.context_events(target_context_id).await?;
         if !target_events.is_empty() {
             return Err(format!(
-                "目标 Context '{}' 已有持久化 Event，不能再次 Seed",
+                "target Context '{}' already has persisted Events and cannot be seeded again",
                 target_context_id
             )
             .into());
@@ -2402,7 +2470,7 @@ impl ContextEngine {
         if let Some(expected) = expected_source_version {
             if source_state.version != expected {
                 return Err(format!(
-                    "Mind Seed 版本冲突：请求来源版本 {}，当前来源版本 {}",
+                    "Mind Seed version conflict: requested source version {}, current source version {}",
                     expected, source_state.version
                 )
                 .into());
@@ -2479,7 +2547,7 @@ impl ContextEngine {
                 MindProjectionCommit::Committed { .. } => {}
                 MindProjectionCommit::Conflict { current_revision } => {
                     return Err(format!(
-                        "目标 Context '{}' 的 Mind Seed CAS 冲突，当前 revision {:?}",
+                        "Mind Seed CAS conflict for target Context '{}', current revision {:?}",
                         target_context_id, current_revision
                     )
                     .into());
@@ -2524,7 +2592,7 @@ impl ContextEngine {
     ) -> Result<SessionProjectionSeedPlan, DynError> {
         let (budget_config, _) = self.effective_budget_config(source_context_id).await?;
         let projection_store = self.session_projection_store.as_ref().ok_or(
-            "current_session delegation 需要 SessionProjectionStore；禁止回退到 Event 全量重放",
+            "current_session delegation requires SessionProjectionStore; full Event replay fallback is forbidden",
         )?;
         let source_state = self.load_current_mind(source_context_id, None).await?;
         let mut source_events = projection_store
@@ -2552,7 +2620,7 @@ impl ContextEngine {
             .saturating_add(1_000);
         if inherited_estimated_tokens > source_estimated_tokens {
             return Err(format!(
-                "DELEGATION_PROJECTION_AMPLIFIED：父 Session 当前 Projection 估算 {} tokens，子 Context 继承内容估算 {} tokens",
+                "DELEGATION_PROJECTION_AMPLIFIED: parent Session current Projection estimates {} tokens, while inherited child Context content estimates {} tokens",
                 source_estimated_tokens, inherited_estimated_tokens
             )
             .into());
@@ -2601,7 +2669,7 @@ impl ContextEngine {
             .max(1);
         if target_estimated_tokens > work_limit {
             return Err(format!(
-                "DELEGATION_CONTEXT_LIMIT_EXCEEDED：子 Context 创建前估算 {} tokens，工作上限 {}（hard={}，maintenance-reserve={}）；父 Session active observations={}。请先维护父 Context 或使用 mind_only",
+                "DELEGATION_CONTEXT_LIMIT_EXCEEDED: child Context estimates {} tokens before creation, work limit {} (hard={}, maintenance-reserve={}); parent Session active observations={}. Maintain the parent Context first or use mind_only",
                 target_estimated_tokens,
                 work_limit,
                 budget_config.context_hard_token_limit,
@@ -2848,7 +2916,9 @@ impl ContextEngine {
                     let state = Self::validate_mind_projection(
                         context_id,
                         snapshot.mind.ok_or_else(|| {
-                            format!("Context '{context_id}' 的一致性编码快照缺少 Mind Projection")
+                            format!(
+                                "consistent encoding snapshot for Context '{context_id}' is missing a Mind Projection"
+                            )
                         })?,
                     )?;
                     (state, snapshot.events)
@@ -3360,6 +3430,11 @@ impl ContextEngine {
             execution_targets.retain(|target| allowed.contains(target.id.as_str()));
             execution_target_access.retain(|access| access.authorization_mode != "scoped_denied");
         }
+        let evaluation_model_policy = self
+            .evaluation_model_policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let sexpr = if include_encoding {
             {
                 render_context(ContextRenderInput {
@@ -3382,6 +3457,7 @@ impl ContextEngine {
                     objectives: &objectives,
                     execution_targets: &execution_targets,
                     execution_target_access: &execution_target_access,
+                    evaluation_model_policy: &evaluation_model_policy,
                     cognitive_clock: &cognitive_clock,
                     frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
                     state: &state,
@@ -3417,6 +3493,7 @@ impl ContextEngine {
             objectives,
             execution_targets,
             execution_target_access,
+            evaluation_model_policy,
             cognitive_clock,
             state,
             observations,
@@ -3504,7 +3581,7 @@ impl ContextEngine {
                         .is_some()
                         || error
                             .to_string()
-                            .starts_with("Context transaction CAS 冲突") =>
+                            .starts_with("Context transaction CAS conflict") =>
                 {
                     let delay_millis = 1_u64 << attempt.min(4);
                     tokio::time::sleep(std::time::Duration::from_millis(delay_millis)).await;
@@ -3576,6 +3653,7 @@ impl ContextEngine {
             objectives: &view.objectives,
             execution_targets: &view.execution_targets,
             execution_target_access: &view.execution_target_access,
+            evaluation_model_policy: &view.evaluation_model_policy,
             cognitive_clock: &view.cognitive_clock,
             frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
             state: &view.state,
@@ -3680,6 +3758,7 @@ impl ContextEngine {
             objectives: &view.objectives,
             execution_targets: &view.execution_targets,
             execution_target_access: &view.execution_target_access,
+            evaluation_model_policy: &view.evaluation_model_policy,
             cognitive_clock: &view.cognitive_clock,
             frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
             state: &view.state,
@@ -3702,7 +3781,7 @@ impl ContextEngine {
             Some(sequence) => QueryFilter {
                 context_id: Some(context_id.to_string()),
                 sequence: Some(sequence.parse::<u64>().map_err(|_| {
-                    format!("Context 短引用 '{event_id}' 不是有效的 Event sequence")
+                    format!("Context short reference '{event_id}' is not a valid Event sequence")
                 })?),
                 top_k: Some(1),
                 ..Default::default()
@@ -3717,7 +3796,7 @@ impl ContextEngine {
         let event = self.store.query(filter).await?.into_iter().next();
         if by_reference.is_some() && event.as_ref().is_some_and(|event| !is_observation(event)) {
             return Err(format!(
-                "Context 短引用 '{event_id}' 不指向可见 observation；不能猜测控制面事件"
+                "Context short reference '{event_id}' does not identify a visible observation; control-plane Events must not be guessed"
             )
             .into());
         }
@@ -3765,10 +3844,13 @@ impl ContextEngine {
                 || cursor.include_events != request.include_events
                 || cursor.max_nodes != request.max_nodes
             {
-                return Err("Recall cursor 与当前查询参数不匹配".into());
+                return Err("Recall cursor does not match the current query parameters".into());
             }
             if cursor.mind_version != state.version {
-                return Err("Recall cursor 对应的 Mind revision 已变化；请从第一页重新召回".into());
+                return Err(
+                    "the Mind revision associated with the Recall cursor has changed; restart from the first page"
+                        .into(),
+                );
             }
             cursor.offset
         } else {
@@ -3787,7 +3869,7 @@ impl ContextEngine {
             .map(|frame| (frame.id.as_str(), frame))
             .collect::<HashMap<_, _>>();
         if !frames.contains_key(request.frame_id.as_str()) {
-            return Err(format!("frame '{}' 不存在", request.frame_id).into());
+            return Err(format!("frame '{}' does not exist", request.frame_id).into());
         }
         let mut queue = VecDeque::from([(NodeKey::Frame(request.frame_id.clone()), 0_usize)]);
         let mut visited = HashSet::new();
@@ -3878,7 +3960,7 @@ impl ContextEngine {
         }
 
         if offset > ordered.len() {
-            return Err("Recall cursor offset 超出稳定遍历结果".into());
+            return Err("Recall cursor offset exceeds the stable traversal result".into());
         }
         let hard_end = offset.saturating_add(request.max_nodes).min(ordered.len());
         let mut nodes = Vec::with_capacity(hard_end.saturating_sub(offset));
@@ -3889,7 +3971,7 @@ impl ContextEngine {
                 NodeKey::Frame(id) => {
                     let frame = frames
                         .get(id.as_str())
-                        .ok_or_else(|| format!("遍历中的 frame '{id}' 已不存在"))?;
+                        .ok_or_else(|| format!("frame '{id}' disappeared during traversal"))?;
                     FrameRecallNode::Frame {
                         id: id.clone(),
                         revision: frame.revision,
@@ -3907,10 +3989,14 @@ impl ContextEngine {
                     }
                 }
                 NodeKey::Event(id) => {
-                    let event = self
-                        .find_event(&request.context_id, id)
-                        .await?
-                        .ok_or_else(|| format!("frame source event '{id}' 不存在或越权"))?;
+                    let event =
+                        self.find_event(&request.context_id, id)
+                            .await?
+                            .ok_or_else(|| {
+                                format!(
+                                    "frame source event '{id}' does not exist or is unauthorized"
+                                )
+                            })?;
                     let body = event_text(&event);
                     FrameRecallNode::Event {
                         id: id.clone(),
@@ -3994,13 +4080,15 @@ impl ContextEngine {
     }
 
     fn decode_frame_recall_cursor(&self, cursor: &str) -> Result<FrameRecallCursor, DynError> {
-        let (payload, signature) = cursor.split_once('.').ok_or("Recall cursor 格式无效")?;
+        let (payload, signature) = cursor
+            .split_once('.')
+            .ok_or("invalid Recall cursor format")?;
         let payload = hex_decode(payload)?;
         let signature = hex_decode(signature)?;
         if signature.as_slice()
             != recall_cursor_integrity(FRAME_RECALL_CURSOR_DOMAIN, &payload).as_slice()
         {
-            return Err("Recall cursor 签名无效".into());
+            return Err("invalid Recall cursor signature".into());
         }
         Ok(serde_json::from_slice(&payload)?)
     }
@@ -4018,13 +4106,13 @@ impl ContextEngine {
     fn decode_recall_search_cursor(&self, cursor: &str) -> Result<RecallSearchCursor, DynError> {
         let (payload, signature) = cursor
             .split_once('.')
-            .ok_or("Recall search cursor 格式无效")?;
+            .ok_or("invalid Recall search cursor format")?;
         let payload = hex_decode(payload)?;
         let signature = hex_decode(signature)?;
         if signature.as_slice()
             != recall_cursor_integrity(SEARCH_RECALL_CURSOR_DOMAIN, &payload).as_slice()
         {
-            return Err("Recall search cursor 签名无效".into());
+            return Err("invalid Recall search cursor signature".into());
         }
         Ok(serde_json::from_slice(&payload)?)
     }
@@ -4044,7 +4132,7 @@ impl ContextEngine {
         let projection_store = self
             .mind_projection_store
             .as_ref()
-            .ok_or("ContextEngine 未配置 MindProjectionStore，不能执行 Projection 审计")?;
+            .ok_or("ContextEngine has no MindProjectionStore and cannot audit the Projection")?;
         for attempt in 0..=MAX_STABLE_VIEW_RETRIES {
             let events = self.context_events(context_id).await?;
             // An old database may not have a materialized row yet. Audit is
@@ -4078,7 +4166,7 @@ impl ContextEngine {
             if projection_revision.is_some_and(|revision| revision > replayed_state.version) {
                 if attempt == MAX_STABLE_VIEW_RETRIES {
                     return Err(format!(
-                        "Mind Projection 审计无法在持续写入期间取得稳定视图：Event replay revision {}，Projection revision {:?}",
+                        "Mind Projection audit could not obtain a stable view during continuous writes: Event replay revision {}, Projection revision {:?}",
                         replayed_state.version, projection_revision
                     )
                     .into());
@@ -4098,7 +4186,7 @@ impl ContextEngine {
             {
                 if attempt == MAX_STABLE_VIEW_RETRIES {
                     return Err(format!(
-                        "Mind Projection 审计无法在持续写入期间取得稳定 Snapshot 视图：Event replay revision {}，Snapshot recovery revision {:?}",
+                        "Mind Projection audit could not obtain a stable Snapshot view during continuous writes: Event replay revision {}, Snapshot recovery revision {:?}",
                         replayed_state.version,
                         incremental.as_ref().map(|recovery| recovery.state.version)
                     )
@@ -4264,7 +4352,7 @@ impl ContextEngine {
     ) -> Result<RecallIndexAudit, DynError> {
         self.recall_projection_store
             .as_ref()
-            .ok_or("ContextEngine 未配置 RecallProjectionStore")?
+            .ok_or("ContextEngine has no RecallProjectionStore")?
             .inspect_recall_index(context_id)
             .await
     }
@@ -4276,7 +4364,7 @@ impl ContextEngine {
         let store = self
             .recall_projection_store
             .as_ref()
-            .ok_or("ContextEngine 未配置 RecallProjectionStore")?;
+            .ok_or("ContextEngine has no RecallProjectionStore")?;
         let state = self.load_current_mind(context_id, None).await?;
         let events = self.context_events(context_id).await?;
         let mut documents = all_frame_recall_documents(context_id, &state)
@@ -4434,6 +4522,7 @@ impl ContextEngine {
                 parent_session_id: None,
                 title: id.clone(),
                 status: crate::memory::SessionStatus::Active,
+                model_alias: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 last_activity_at: Utc::now(),
@@ -4541,14 +4630,14 @@ impl ContextRecallService for ContextEngine {
     ) -> Result<RecallSearchPage, DynError> {
         let query = request.query.trim().to_string();
         if query.is_empty() && request.start_time.is_none() && request.end_time.is_none() {
-            return Err("Recall search 必须提供 query 或时间范围".into());
+            return Err("Recall search requires a query or time range".into());
         }
         if request
             .start_time
             .zip(request.end_time)
             .is_some_and(|(start, end)| start >= end)
         {
-            return Err("Recall start_time 必须早于 end_time".into());
+            return Err("Recall start_time must be earlier than end_time".into());
         }
         let normalized_query = crate::memory::normalize_recall_text(&query);
         let mut before_sequence = None;
@@ -4559,7 +4648,9 @@ impl ContextRecallService for ContextEngine {
                 || cursor.start_time != request.start_time
                 || cursor.end_time != request.end_time
             {
-                return Err("Recall search cursor 与当前查询参数不匹配".into());
+                return Err(
+                    "Recall search cursor does not match the current query parameters".into(),
+                );
             }
             before_sequence = Some(cursor.before_sequence);
         }
@@ -4962,16 +5053,16 @@ fn parse_transaction(input: &str) -> Result<ParsedTransaction, String> {
         let head = atom_at(child, 0, "operation")?;
         if head == "base-version" {
             if child.len() != 2 || base_version.is_some() {
-                return Err("context-tx 必须且只能包含一个 (base-version N)".to_string());
+                return Err("context-tx must contain exactly one (base-version N)".to_string());
             }
             base_version = Some(
                 atom_at(child, 1, "base-version")?
                     .parse::<u64>()
-                    .map_err(|_| "base-version 必须是非负整数".to_string())?,
+                    .map_err(|_| "base-version must be a non-negative integer".to_string())?,
             );
         } else if head == "reason" {
             if child.len() != 2 || reason.is_some() {
-                return Err("context-tx 最多包含一个 (reason \"...\")".to_string());
+                return Err("context-tx may contain at most one (reason \"...\")".to_string());
             }
             reason = Some(atom_at(child, 1, "reason")?.to_string());
         } else {
@@ -4980,10 +5071,10 @@ fn parse_transaction(input: &str) -> Result<ParsedTransaction, String> {
     }
 
     if operations.is_empty() {
-        return Err("context-tx 至少需要一个修改操作".to_string());
+        return Err("context-tx requires at least one mutation operation".to_string());
     }
     let mut transaction = ParsedTransaction {
-        base_version: base_version.ok_or("缺少 (base-version N)")?,
+        base_version: base_version.ok_or("missing (base-version N)")?,
         reason,
         operations,
     };
@@ -4995,17 +5086,19 @@ fn normalize_transaction_bodies(transaction: &mut ParsedTransaction) -> Result<(
     for operation in &mut transaction.operations {
         let items = match operation {
             SExpr::List(items) => items,
-            _ => return Err("context operation 必须是 SExpr List".to_string()),
+            _ => return Err("context operation must be an S-expression List".to_string()),
         };
         let name = atom_at(items, 0, "operation name")?.to_string();
         match name.as_str() {
             "create" => {
                 if items.len() < 3 {
-                    return Err("create 至少需要一个 BODY：(create ID BODY...)".to_string());
+                    return Err(
+                        "create requires at least one BODY: (create ID BODY...)".to_string()
+                    );
                 }
                 if items.iter().skip(2).any(is_from_expression) {
                     return Err(
-                        "create 不接受 (from SOURCE...)；有证据来源时请使用 (derive ID (from SOURCE...) BODY...)"
+                        "create does not accept (from SOURCE...); use (derive ID (from SOURCE...) BODY...) when evidence sources are present"
                             .to_string(),
                     );
                 }
@@ -5015,7 +5108,7 @@ fn normalize_transaction_bodies(transaction: &mut ParsedTransaction) -> Result<(
             "derive" => {
                 if items.len() < 4 || !items.get(2).is_some_and(is_from_expression) {
                     return Err(
-                        "derive 必须把来源放在 ID 后，并至少提供一个 BODY：(derive ID (from SOURCE...) BODY...)"
+                        "derive must place its sources after ID and provide at least one BODY: (derive ID (from SOURCE...) BODY...)"
                             .to_string(),
                     );
                 }
@@ -5025,13 +5118,15 @@ fn normalize_transaction_bodies(transaction: &mut ParsedTransaction) -> Result<(
             "revise" => {
                 if items.len() < 3 {
                     return Err(
-                        "revise 至少需要一个 BODY：(revise ID BODY...) 或 (revise ID (from SOURCE...) BODY...)"
+                        "revise requires at least one BODY: (revise ID BODY...) or (revise ID (from SOURCE...) BODY...)"
                             .to_string(),
                     );
                 }
                 let body_start = if items.get(2).is_some_and(is_from_expression) {
                     if items.len() < 4 {
-                        return Err("revise 的 (from SOURCE...) 后至少需要一个 BODY".to_string());
+                        return Err(
+                            "revise requires at least one BODY after (from SOURCE...)".to_string()
+                        );
                     }
                     3
                 } else {
@@ -5063,7 +5158,7 @@ fn reject_nested_context_operations(bodies: &[SExpr]) -> Result<(), String> {
 
     if let Some(operation) = bodies.iter().find_map(nested_operation) {
         return Err(format!(
-            "Context operation '({operation} ...)' 被嵌套进 create/derive/revise BODY，因此不会执行；请关闭 BODY 括号，并把该 operation 放到 context-tx 顶层"
+            "Context operation '({operation} ...)' is nested inside a create/derive/revise BODY and will not execute; close the BODY and move the operation to the context-tx top level"
         ));
     }
     Ok(())
@@ -5092,16 +5187,20 @@ fn resolve_transaction_references(
     for operation in &mut transaction.operations {
         let items = match operation {
             SExpr::List(items) => items,
-            _ => return Err("context operation 必须是 SExpr List".to_string()),
+            _ => return Err("context operation must be an S-expression List".to_string()),
         };
         let name = atom_at(items, 0, "operation name")?.to_string();
         match name.as_str() {
             "derive" => resolve_from_references(
-                items.get_mut(2).ok_or("derive 缺少 (from SOURCE...)")?,
+                items
+                    .get_mut(2)
+                    .ok_or("derive is missing (from SOURCE...)")?,
                 references,
             )?,
             "revise" if items.len() == 4 => resolve_from_references(
-                items.get_mut(2).ok_or("revise 缺少 (from SOURCE...)")?,
+                items
+                    .get_mut(2)
+                    .ok_or("revise is missing (from SOURCE...)")?,
                 references,
             )?,
             "retire" | "restore" | "protect" | "unprotect" => {
@@ -5112,7 +5211,10 @@ fn resolve_transaction_references(
             "relate" | "unrelate" => {
                 for index in [1, 3] {
                     let item = items.get_mut(index).ok_or_else(|| {
-                        format!("{} 缺少引用参数，需提供 SUBJECT RELATION OBJECT", name)
+                        format!(
+                            "{} is missing reference arguments; expected SUBJECT RELATION OBJECT",
+                            name
+                        )
                     })?;
                     resolve_reference_atom(item, references)?;
                 }
@@ -5139,7 +5241,7 @@ fn transaction_reference_candidates(
             }
             "derive" => {
                 candidates.insert(atom_at(items, 1, "frame ID")?.to_string());
-                let sources = as_list(items.get(2).ok_or("derive 缺少 from")?, "from")?;
+                let sources = as_list(items.get(2).ok_or("derive is missing from")?, "from")?;
                 expect_head(sources, "from")?;
                 for source in sources.iter().skip(1) {
                     candidates.insert(as_atom(source, "source")?.to_string());
@@ -5148,7 +5250,7 @@ fn transaction_reference_candidates(
             "revise" => {
                 candidates.insert(atom_at(items, 1, "frame ID")?.to_string());
                 if items.len() == 4 {
-                    let sources = as_list(items.get(2).ok_or("revise 缺少 from")?, "from")?;
+                    let sources = as_list(items.get(2).ok_or("revise is missing from")?, "from")?;
                     expect_head(sources, "from")?;
                     for source in sources.iter().skip(1) {
                         candidates.insert(as_atom(source, "source")?.to_string());
@@ -5195,7 +5297,7 @@ fn reject_causally_protected_retirements(
             let id = as_atom(item, "retire target")?;
             if causally_protected_ids.contains(id) {
                 return Err(format!(
-                    "'{}' 是当前 Activation 尚未交付的根请求，受 Runtime 因果保护；完成当前回复或工作交付前不能 retire",
+                    "'{}' is the undelivered root request of the current Activation and is causally protected by the Runtime; it cannot be retired before the current reply or work delivery completes",
                     id
                 ));
             }
@@ -5210,7 +5312,7 @@ fn resolve_from_references(
 ) -> Result<(), String> {
     let items = match expression {
         SExpr::List(items) => items,
-        _ => return Err("from 必须是 SExpr List".to_string()),
+        _ => return Err("from must be an S-expression List".to_string()),
     };
     expect_head(items, "from")?;
     for item in items.iter_mut().skip(1) {
@@ -5224,7 +5326,7 @@ fn resolve_reference_atom(
     references: &ContextReferences,
 ) -> Result<(), String> {
     let SExpr::Atom(reference) = expression else {
-        return Err("Context 引用必须是 Atom".to_string());
+        return Err("Context reference must be an Atom".to_string());
     };
     *reference = references.resolve(reference)?;
     Ok(())
@@ -5260,7 +5362,7 @@ fn rebase_stale_frame_transaction(
     let requested_base = transaction.base_version;
     if requested_base > current.version {
         return Err(format!(
-            "Context transaction 基于未来版本 {}，当前 Mind version 为 {}",
+            "Context transaction is based on future version {}; current Mind version is {}",
             requested_base, current.version
         ));
     }
@@ -5277,7 +5379,7 @@ fn rebase_stale_frame_transaction(
                 let id = atom_at(items, 1, "frame id")?;
                 if current.frames.iter().any(|frame| frame.id == id) {
                     return Err(format!(
-                        "Frame MVCC 冲突：事务准备 create '{}'，但该 ID 已在 Mind version {} 中存在",
+                        "Frame MVCC conflict: transaction intends to create '{}', but the ID already exists at Mind version {}",
                         id, current.version
                     ));
                 }
@@ -5287,11 +5389,11 @@ fn rebase_stale_frame_transaction(
                 let id = atom_at(items, 1, "frame id")?;
                 if current.frames.iter().any(|frame| frame.id == id) {
                     return Err(format!(
-                        "Frame MVCC 冲突：事务准备 derive '{}'，但该 ID 已在 Mind version {} 中存在",
+                        "Frame MVCC conflict: transaction intends to derive '{}', but the ID already exists at Mind version {}",
                         id, current.version
                     ));
                 }
-                let sources = parse_sources(items.get(2).ok_or("derive 缺少 from")?)?;
+                let sources = parse_sources(items.get(2).ok_or("derive is missing from")?)?;
                 for source in &sources {
                     ensure_frame_read_is_current(
                         current,
@@ -5311,7 +5413,7 @@ fn rebase_stale_frame_transaction(
                     &frames_created_in_transaction,
                 )?;
                 if items.len() == 4 {
-                    let sources = parse_sources(items.get(2).ok_or("revise 缺少 from")?)?;
+                    let sources = parse_sources(items.get(2).ok_or("revise is missing from")?)?;
                     for source in &sources {
                         ensure_frame_read_is_current(
                             current,
@@ -5324,7 +5426,7 @@ fn rebase_stale_frame_transaction(
             }
             other => {
                 return Err(format!(
-                    "Context version 已从 {} 前进到 {}；事务包含全局或生命周期操作 '{}'，Runtime 不能按 Frame MVCC 自动合并，请基于最新 Context Encoding 重试",
+                    "Context version advanced from {} to {}; the transaction contains global or lifecycle operation '{}', which Runtime cannot merge automatically with Frame MVCC. Retry from the latest Context Encoding",
                     requested_base, current.version, other
                 ));
             }
@@ -5351,8 +5453,8 @@ fn ensure_frame_read_is_current(
     };
     if frame.created_version > requested_base || frame.updated_version > requested_base {
         return Err(format!(
-            "Frame MVCC 冲突：来源 Frame '{}' 在事务读取的 Mind version {} 之后已变为 r{}（updated at version {}），请重新读取后做语义合并",
-            id, requested_base, frame.revision, frame.updated_version
+            "Frame MVCC conflict: source Frame '{}' changed to r{} at version {} after the transaction read Mind version {}; reread it and perform a semantic merge",
+            id, frame.revision, frame.updated_version, requested_base
         ));
     }
     Ok(())
@@ -5371,11 +5473,16 @@ fn ensure_frame_write_is_current(
         .frames
         .iter()
         .find(|frame| frame.id == id)
-        .ok_or_else(|| format!("Frame MVCC 冲突：revise 目标 '{}' 已不存在", id))?;
+        .ok_or_else(|| {
+            format!(
+                "Frame MVCC conflict: revise target '{}' no longer exists",
+                id
+            )
+        })?;
     if frame.created_version > requested_base || frame.updated_version > requested_base {
         return Err(format!(
-            "Frame MVCC 冲突：目标 Frame '{}' 在事务读取的 Mind version {} 之后已变为 r{}（updated at version {}），请重新读取后做语义合并",
-            id, requested_base, frame.revision, frame.updated_version
+            "Frame MVCC conflict: target Frame '{}' changed to r{} at version {} after the transaction read Mind version {}; reread it and perform a semantic merge",
+            id, frame.revision, frame.updated_version, requested_base
         ));
     }
     if current
@@ -5384,7 +5491,7 @@ fn ensure_frame_write_is_current(
         .is_some_and(|retirement| retirement.generation > requested_base)
     {
         return Err(format!(
-            "Frame MVCC 冲突：目标 Frame '{}' 在 Mind version {} 之后进入 retiring 状态，请基于最新生命周期状态决策",
+            "Frame MVCC conflict: target Frame '{}' entered retiring state after Mind version {}; decide from the latest lifecycle state",
             id, requested_base
         ));
     }
@@ -5537,7 +5644,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
 ) -> Result<(MindState, Vec<ContextChange>), String> {
     if current.version != tx.base_version {
         return Err(format!(
-            "Context 版本冲突：transaction 基于版本 {}，当前版本为 {}。请读取最新 kernel.version 后重新提交。",
+            "Context version conflict: the transaction is based on version {}, but the current version is {}. Read the latest kernel.version and submit again.",
             tx.base_version, current.version
         ));
     }
@@ -5552,7 +5659,9 @@ fn apply_parsed_transaction_with_policy_and_provenance(
         match name {
             "create" => {
                 if op.len() != 3 {
-                    return Err("create BODY 规范化失败；期望 (create ID BODY)".to_string());
+                    return Err(
+                        "failed to normalize create BODY; expected (create ID BODY)".to_string()
+                    );
                 }
                 let id = validated_id(atom_at(op, 1, "frame id")?)?;
                 ensure_unknown(&next, observation_ids, id)?;
@@ -5571,7 +5680,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
             "derive" => {
                 if op.len() != 4 {
                     return Err(
-                        "derive BODY 规范化失败；期望 (derive ID (from SOURCE...) BODY)"
+                        "failed to normalize derive BODY; expected (derive ID (from SOURCE...) BODY)"
                             .to_string(),
                     );
                 }
@@ -5595,13 +5704,16 @@ fn apply_parsed_transaction_with_policy_and_provenance(
             "revise" => {
                 if op.len() != 3 && op.len() != 4 {
                     return Err(
-                        "revise BODY 规范化失败；期望 (revise ID BODY) 或 (revise ID (from SOURCE...) BODY)"
+                        "failed to normalize revise BODY; expected (revise ID BODY) or (revise ID (from SOURCE...) BODY)"
                             .to_string(),
                     );
                 }
                 let id = validated_id(atom_at(op, 1, "frame id")?)?;
                 if next.retired.contains(id) {
-                    return Err(format!("frame '{}' 已退役；请先 restore 再 revise", id));
+                    return Err(format!(
+                        "frame '{}' is retired; restore it before revising",
+                        id
+                    ));
                 }
                 let cancelled_retirement = next.retiring.remove(id).is_some();
                 let (sources, body_expr) = if op.len() == 4 {
@@ -5619,7 +5731,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     .frames
                     .iter_mut()
                     .find(|frame| frame.id == id)
-                    .ok_or_else(|| format!("revise 目标 '{}' 不是已存在的 frame", id))?;
+                    .ok_or_else(|| format!("revise target '{}' is not an existing frame", id))?;
                 frame.body = body;
                 if let Some(sources) = sources {
                     frame.sources = sources;
@@ -5649,30 +5761,30 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 let reason = tx
                     .reason
                     .as_ref()
-                    .ok_or("retire 会改变当前注意力，transaction 必须提供 (reason \"...\")")?;
+                    .ok_or("retire changes current attention; the transaction must provide (reason \"...\")")?;
                 require_min_len(op, 2, "(retire ID...)")?;
                 for item in op.iter().skip(1) {
                     let raw_id = as_atom(item, "retire target")?;
                     let id = validated_id(raw_id).map_err(|error| {
                         format!(
-                            "retire 参数只能是 Context ID；reason 必须写在事务级 (reason \"...\")，不能放进 retire。{error}"
+                            "retire arguments must be Context IDs; reason must be written at transaction level as (reason \"...\"), not inside retire. {error}"
                         )
                     })?;
                     ensure_known(&next, observation_ids, id).map_err(|error| {
                         format!(
-                            "{error}。如果该参数是在说明退休原因，请移到事务级 (reason \"...\")"
+                            "{error}. If this argument describes the retirement reason, move it to transaction-level (reason \"...\")"
                         )
                     })?;
                     if next.protected.contains(id) {
                         return Err(format!(
-                            "'{}' 已被 protect；必须先显式 unprotect 才能 retire",
+                            "'{}' is protected; explicitly unprotect it before retiring it",
                             id
                         ));
                     }
                     let is_frame = next.frames.iter().any(|frame| frame.id == id);
                     if retirement_policy.staged && is_frame {
                         if next.retired.contains(id) {
-                            return Err(format!("frame '{}' 已经处于 retired 状态", id));
+                            return Err(format!("frame '{}' is already retired", id));
                         }
                         if let Some(existing) = next.retiring.get(id) {
                             changes.push(change(
@@ -5689,7 +5801,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                             .frames
                             .iter()
                             .find(|frame| frame.id == id)
-                            .ok_or_else(|| format!("frame '{}' 不存在", id))?;
+                            .ok_or_else(|| format!("frame '{}' does not exist", id))?;
                         let eligible_at_tick = retirement_policy
                             .cognitive_tick
                             .saturating_add(retirement_policy.cooling_ticks);
@@ -5732,7 +5844,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         continue;
                     }
                     if !next.retired.remove(id) {
-                        return Err(format!("'{}' 当前没有处于 retired 状态", id));
+                        return Err(format!("'{}' is not currently retired", id));
                     }
                     changes.push(change("restore", id, None));
                 }
@@ -5744,18 +5856,22 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     "(finalize-retirement ID GENERATION FRAME-REVISION ELIGIBLE-TICK)",
                 )?;
                 if !retirement_policy.staged {
-                    return Err("finalize-retirement 需要 cognitive retirement policy".to_string());
+                    return Err(
+                        "finalize-retirement requires a cognitive retirement policy".to_string()
+                    );
                 }
                 let id = validated_id(atom_at(op, 1, "frame id")?)?;
                 let generation = atom_at(op, 2, "retirement generation")?
                     .parse::<u64>()
-                    .map_err(|_| "retirement generation 必须是非负整数".to_string())?;
+                    .map_err(|_| {
+                        "retirement generation must be a non-negative integer".to_string()
+                    })?;
                 let frame_revision = atom_at(op, 3, "frame revision")?
                     .parse::<u64>()
-                    .map_err(|_| "frame revision 必须是非负整数".to_string())?;
+                    .map_err(|_| "frame revision must be a non-negative integer".to_string())?;
                 let eligible_at_tick = atom_at(op, 4, "eligible tick")?
                     .parse::<u64>()
-                    .map_err(|_| "eligible tick 必须是非负整数".to_string())?;
+                    .map_err(|_| "eligible tick must be a non-negative integer".to_string())?;
                 let Some(retirement) = next.retiring.get(id) else {
                     changes.push(change(
                         "finalize-retirement-stale",
@@ -5795,7 +5911,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
             "retire-session" | "restore-session" => {
                 if name == "retire-session" && tx.reason.is_none() {
                     return Err(
-                        "retire-session 会改变 Session 注意力，transaction 必须提供 (reason \"...\")"
+                        "retire-session changes Session attention; the transaction must provide (reason \"...\")"
                             .to_string(),
                     );
                 }
@@ -5812,7 +5928,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
             "protect" | "unprotect" => {
                 if name == "unprotect" && tx.reason.is_none() {
                     return Err(
-                        "unprotect 会解除遗忘保护，transaction 必须提供 (reason \"...\")"
+                        "unprotect removes forgetting protection; the transaction must provide (reason \"...\")"
                             .to_string(),
                     );
                 }
@@ -5822,7 +5938,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     let id = validated_id(raw_id).map_err(|error| {
                         if name == "unprotect" {
                             format!(
-                                "unprotect 参数只能是 Context ID；reason 必须写在事务级 (reason \"...\")。{error}"
+                                "unprotect arguments must be Context IDs; reason must be written at transaction level as (reason \"...\"). {error}"
                             )
                         } else {
                             error
@@ -5831,7 +5947,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     ensure_known(&next, observation_ids, id).map_err(|error| {
                         if name == "unprotect" {
                             format!(
-                                "{error}。如果该参数是在说明解除保护原因，请移到事务级 (reason \"...\")"
+                                "{error}. If this argument describes why protection is being removed, move it to transaction-level (reason \"...\")"
                             )
                         } else {
                             error
@@ -5841,7 +5957,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         next.retiring.remove(id);
                         next.protected.insert(id.to_string());
                     } else if !next.protected.remove(id) {
-                        return Err(format!("'{}' 当前没有被 protect", id));
+                        return Err(format!("'{}' is not currently protected", id));
                     }
                     changes.push(change(name, id, tx.reason.clone()));
                 }
@@ -5864,7 +5980,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 )?;
                 if name == "unrelate" && tx.reason.is_none() {
                     return Err(
-                        "unrelate 会撤销既有语义关系，transaction 必须提供 (reason \"...\")"
+                        "unrelate removes an existing semantic relation; the transaction must provide (reason \"...\")"
                             .to_string(),
                     );
                 }
@@ -5881,7 +5997,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 if name == "relate" {
                     if existing.is_some() {
                         return Err(format!(
-                            "关系 '{} {} {}' 已存在，无需重复建立",
+                            "relation '{} {} {}' already exists",
                             subject, relation, object
                         ));
                     }
@@ -5895,7 +6011,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     next.relations.remove(index);
                 } else {
                     return Err(format!(
-                        "关系 '{} {} {}' 不存在，无法撤销",
+                        "relation '{} {} {}' does not exist and cannot be removed",
                         subject, relation, object
                     ));
                 }
@@ -5915,7 +6031,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     || next.frames.iter().any(|frame| frame.id == id)
                     || observation_ids.contains(id)
                 {
-                    return Err(format!("Checkpoint ID '{}' 已存在", id));
+                    return Err(format!("Checkpoint ID '{}' already exists", id));
                 }
                 next.checkpoints.push(MindCheckpoint {
                     id: id.to_string(),
@@ -5937,14 +6053,14 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 let reason = tx
                     .reason
                     .as_ref()
-                    .ok_or("rollback 会恢复旧 Mind，transaction 必须提供 (reason \"...\")")?;
+                    .ok_or("rollback restores an earlier Mind; the transaction must provide (reason \"...\")")?;
                 let id = validated_id(atom_at(op, 1, "checkpoint id")?)?;
                 let checkpoint = next
                     .checkpoints
                     .iter()
                     .find(|checkpoint| checkpoint.id == id)
                     .cloned()
-                    .ok_or_else(|| format!("checkpoint '{}' 不存在", id))?;
+                    .ok_or_else(|| format!("checkpoint '{}' does not exist", id))?;
                 next.frames = checkpoint.frames;
                 next.relations = checkpoint.relations;
                 next.retired = checkpoint.retired;
@@ -5957,21 +6073,21 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 let reason = tx
                     .reason
                     .as_ref()
-                    .ok_or("drop-checkpoint 会删除恢复点，transaction 必须提供 (reason \"...\")")?;
+                    .ok_or("drop-checkpoint deletes a recovery point; the transaction must provide (reason \"...\")")?;
                 for item in op.iter().skip(1) {
                     let id = validated_id(as_atom(item, "checkpoint id")?)?;
                     let index = next
                         .checkpoints
                         .iter()
                         .position(|checkpoint| checkpoint.id == id)
-                        .ok_or_else(|| format!("checkpoint '{}' 不存在", id))?;
+                        .ok_or_else(|| format!("checkpoint '{}' does not exist", id))?;
                     next.checkpoints.remove(index);
                     changes.push(change("drop-checkpoint", id, Some(reason.clone())));
                 }
             }
             other => {
                 return Err(format!(
-                    "未知 Context 原语 '{}'。当前支持 create/derive/revise/retire/restore/retire-session/restore-session/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint",
+                    "unknown Context primitive '{}'. Supported primitives are create/derive/revise/retire/restore/retire-session/restore-session/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint",
                     other
                 ));
             }
@@ -6014,7 +6130,7 @@ fn place_frame(state: &mut MindState, id: &str, position: &SExpr) -> Result<(), 
         .frames
         .iter()
         .position(|frame| frame.id == id)
-        .ok_or_else(|| format!("place 目标 '{}' 不是已存在的 frame", id))?;
+        .ok_or_else(|| format!("place target '{}' is not an existing frame", id))?;
     let frame = state.frames.remove(index);
 
     match position {
@@ -6027,14 +6143,18 @@ fn place_frame(state: &mut MindState, id: &str, position: &SExpr) -> Result<(), 
                 .frames
                 .iter()
                 .position(|candidate| candidate.id == anchor)
-                .ok_or_else(|| format!("place 锚点 frame '{}' 不存在", anchor))?;
+                .ok_or_else(|| format!("place anchor frame '{}' does not exist", anchor))?;
             match relation {
                 "before" => state.frames.insert(anchor_index, frame),
                 "after" => state.frames.insert(anchor_index + 1, frame),
-                _ => return Err("place 关系只支持 before 或 after".to_string()),
+                _ => return Err("place relation supports only before or after".to_string()),
             }
         }
-        _ => return Err("place 位置只支持 first、last、(before ID)、(after ID)".to_string()),
+        _ => {
+            return Err(
+                "place position supports only first, last, (before ID), or (after ID)".to_string(),
+            )
+        }
     }
     Ok(())
 }
@@ -6059,6 +6179,7 @@ struct ContextRenderInput<'a> {
     objectives: &'a [ObjectiveRecord],
     execution_targets: &'a [ExecutionTargetRecord],
     execution_target_access: &'a [ExecutionTargetAccessView],
+    evaluation_model_policy: &'a EvaluationModelPolicy,
     cognitive_clock: &'a ContextCognitiveClock,
     frame_retirement_cooling_ticks: u64,
     state: &'a MindState,
@@ -6161,6 +6282,9 @@ fn render_current_activation(
         fields.push(list("objective-binding", binding));
     } else {
         fields.push(pair("objective-binding", atom("none")));
+    }
+    if let Some(model_alias) = &evaluation.model_alias {
+        fields.push(pair("model", atom(model_alias)));
     }
     fields.extend([
         pair(
@@ -6958,6 +7082,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         objectives,
         execution_targets,
         execution_target_access,
+        evaluation_model_policy,
         cognitive_clock,
         frame_retirement_cooling_ticks,
         state,
@@ -7494,7 +7619,33 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         SExpr::List(kernel),
         list(
             "evaluation-environment",
-            vec![list(
+            vec![
+                list(
+                    "model-selection",
+                    vec![
+                        pair(
+                            "default",
+                            atom(if evaluation_model_policy.primary.is_empty() {
+                                "unknown"
+                            } else {
+                                &evaluation_model_policy.primary
+                            }),
+                        ),
+                        list(
+                            "agent-allowed",
+                            evaluation_model_policy
+                                .agent_allowed
+                                .iter()
+                                .map(atom)
+                                .collect(),
+                        ),
+                        pair(
+                            "contract",
+                            atom("ordinary and scheduled Evaluations inherit the Session route then the Runtime primary route; infer without model uses the Runtime primary route; infer and schedule_tx may explicitly select only agent-allowed routes; Runtime rejects unauthorized routes without cross-model fallback"),
+                        ),
+                    ],
+                ),
+                list(
                 "local-time",
                 vec![
                     pair("current", atom(local_clock.current_rfc3339())),
@@ -7506,7 +7657,8 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                         atom("use this local time and timezone for user-facing dates, today, tomorrow, deadlines, and scheduling; RFC3339 absolute times require an explicit offset. UTC is only for internal Runtime storage, ordering, and protocol transport"),
                     ),
                 ],
-            )],
+            ),
+            ],
         ),
     ];
     if let Some(evaluation) = activation {
@@ -8460,8 +8612,8 @@ fn project_mind_seed(source: &MindState) -> MindState {
 }
 
 fn mind_state_hash(state: &MindState) -> Result<String, String> {
-    let bytes =
-        serde_json::to_vec(state).map_err(|error| format!("Mind Snapshot 无法序列化: {error}"))?;
+    let bytes = serde_json::to_vec(state)
+        .map_err(|error| format!("failed to serialize Mind Snapshot: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
@@ -8555,7 +8707,7 @@ fn mind_state_hash_v21(state: &MindState) -> Result<Option<String>, String> {
             .collect(),
     };
     let bytes = serde_json::to_vec(&legacy)
-        .map_err(|error| format!("Mind v21 Snapshot 无法序列化: {error}"))?;
+        .map_err(|error| format!("failed to serialize Mind v21 Snapshot: {error}"))?;
     Ok(Some(format!("{:x}", Sha256::digest(bytes))))
 }
 
@@ -8617,7 +8769,7 @@ fn mind_state_hash_v20(state: &MindState) -> Result<Option<String>, String> {
             .collect(),
     };
     let bytes = serde_json::to_vec(&legacy)
-        .map_err(|error| format!("Mind v20 Snapshot 无法序列化: {error}"))?;
+        .map_err(|error| format!("failed to serialize Mind v20 Snapshot: {error}"))?;
     Ok(Some(format!("{:x}", Sha256::digest(bytes))))
 }
 
@@ -8655,7 +8807,7 @@ fn recall_cursor_integrity(domain: &[u8], payload: &[u8]) -> sha2::digest::Outpu
 
 fn hex_decode(value: &str) -> Result<Vec<u8>, DynError> {
     if !value.len().is_multiple_of(2) {
-        return Err("十六进制 cursor 长度无效".into());
+        return Err("hex cursor has an invalid length".into());
     }
     value
         .as_bytes()
@@ -8804,9 +8956,13 @@ fn replay_context_transaction_event(
         .payload
         .get("transaction")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| format!("Context transaction '{}' 缺少 transaction", event.id))?;
-    let parsed = parse_transaction(transaction)
-        .map_err(|error| format!("Context transaction '{}' 无法重放: {}", event.id, error))?;
+        .ok_or_else(|| format!("Context transaction '{}' is missing transaction", event.id))?;
+    let parsed = parse_transaction(transaction).map_err(|error| {
+        format!(
+            "failed to replay Context transaction '{}': {}",
+            event.id, error
+        )
+    })?;
     if let Some(recorded_before_hash) = event
         .payload
         .get("before_hash")
@@ -8814,7 +8970,7 @@ fn replay_context_transaction_event(
     {
         if !mind_state_hash_matches(state, recorded_before_hash)? {
             return Err(format!(
-                "Context transaction '{}' 的 before_hash 不一致",
+                "Context transaction '{}' has a mismatched before_hash",
                 event.id
             ));
         }
@@ -8830,14 +8986,19 @@ fn replay_context_transaction_event(
                 .payload
                 .get("cognitive_tick")
                 .and_then(|value| value.as_u64())
-                .ok_or_else(|| format!("Context transaction '{}' 缺少 cognitive_tick", event.id))?,
+                .ok_or_else(|| {
+                    format!(
+                        "Context transaction '{}' is missing cognitive_tick",
+                        event.id
+                    )
+                })?,
             event
                 .payload
                 .get("frame_retirement_cooling_ticks")
                 .and_then(|value| value.as_u64())
                 .ok_or_else(|| {
                     format!(
-                        "Context transaction '{}' 缺少 frame_retirement_cooling_ticks",
+                        "Context transaction '{}' is missing frame_retirement_cooling_ticks",
                         event.id
                     )
                 })?,
@@ -8866,7 +9027,7 @@ fn replay_context_transaction_event(
     )
     .map_err(|error| {
         format!(
-            "Context transaction '{}' 确定性重放失败: {}",
+            "deterministic replay of Context transaction '{}' failed: {}",
             event.id, error
         )
     })?;
@@ -8878,24 +9039,29 @@ fn replay_context_transaction_event(
     {
         Some(recorded_after_hash) if !mind_state_hash_matches(&candidate, recorded_after_hash)? => {
             return Err(format!(
-                "Context transaction '{}' 的 after_hash 不一致",
+                "Context transaction '{}' has a mismatched after_hash",
                 event.id
             ));
         }
         None if !event.payload.contains_key("state_after") => {
             return Err(format!(
-                "Context transaction '{}' 同时缺少 after_hash 与 legacy state_after",
+                "Context transaction '{}' is missing both after_hash and legacy state_after",
                 event.id
             ));
         }
         _ => {}
     }
     if let Some(recorded_state) = event.payload.get("state_after") {
-        let recorded_state: MindState = serde_json::from_value(recorded_state.clone())
-            .map_err(|error| format!("Context transaction '{}' 状态损坏: {}", event.id, error))?;
+        let recorded_state: MindState =
+            serde_json::from_value(recorded_state.clone()).map_err(|error| {
+                format!(
+                    "Context transaction '{}' has corrupt state: {}",
+                    event.id, error
+                )
+            })?;
         if recorded_state != candidate {
             return Err(format!(
-                "Context transaction '{}' 的 state_after 与 SExpr 重放结果不一致: {}",
+                "Context transaction '{}' state_after does not match SExpr replay: {}",
                 event.id,
                 mind_state_mismatch(&recorded_state, &candidate)
             ));
@@ -8903,7 +9069,12 @@ fn replay_context_transaction_event(
     }
     if let Some(recorded_changes) = event.payload.get("changes") {
         let recorded_changes: Vec<ContextChange> = serde_json::from_value(recorded_changes.clone())
-            .map_err(|error| format!("Context transaction '{}' Diff 损坏: {}", event.id, error))?;
+            .map_err(|error| {
+                format!(
+                    "Context transaction '{}' has a corrupt Diff: {}",
+                    event.id, error
+                )
+            })?;
         // Per-item Token effects are receipt annotations calculated from the
         // actually rendered observation/Frame blocks. They do not participate
         // in Mind state transition replay, whose input deliberately contains
@@ -8920,7 +9091,7 @@ fn replay_context_transaction_event(
                 })
         {
             return Err(format!(
-                "Context transaction '{}' 的 Diff 与 SExpr 重放结果不一致",
+                "Context transaction '{}' Diff does not match SExpr replay",
                 event.id
             ));
         }
@@ -8949,7 +9120,7 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
         {
             if seed_seen || state != MindState::default() || !observation_origins.is_empty() {
                 return Err(format!(
-                    "Context Seed '{}' 不是目标 Context 的唯一 Genesis Event",
+                    "Context Seed '{}' is not the target Context's unique Genesis Event",
                     event.id
                 ));
             }
@@ -8957,22 +9128,32 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
                 event
                     .payload
                     .get("source_state")
-                    .ok_or_else(|| format!("Context Seed '{}' 缺少 source_state", event.id))?
+                    .ok_or_else(|| format!("Context Seed '{}' is missing source_state", event.id))?
                     .clone(),
             )
-            .map_err(|error| format!("Context Seed '{}' 来源状态损坏: {error}", event.id))?;
+            .map_err(|error| {
+                format!(
+                    "Context Seed '{}' has corrupt source state: {error}",
+                    event.id
+                )
+            })?;
             let recorded_state: MindState = serde_json::from_value(
                 event
                     .payload
                     .get("state_after")
-                    .ok_or_else(|| format!("Context Seed '{}' 缺少 state_after", event.id))?
+                    .ok_or_else(|| format!("Context Seed '{}' is missing state_after", event.id))?
                     .clone(),
             )
-            .map_err(|error| format!("Context Seed '{}' 投影状态损坏: {error}", event.id))?;
+            .map_err(|error| {
+                format!(
+                    "Context Seed '{}' has corrupt projected state: {error}",
+                    event.id
+                )
+            })?;
             let projected = project_mind_seed(&source_state);
             if recorded_state != projected {
                 return Err(format!(
-                    "Context Seed '{}' 的 state_after 与 mind_snapshot 投影不一致: {}",
+                    "Context Seed '{}' state_after does not match the mind_snapshot projection: {}",
                     event.id,
                     mind_state_mismatch(&recorded_state, &projected)
                 ));
@@ -8995,7 +9176,7 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
             };
             if !snapshot_hash_valid || !projected_hash_valid {
                 return Err(format!(
-                    "Context Seed '{}' 的 Snapshot Hash 不一致",
+                    "Context Seed '{}' has a mismatched Snapshot Hash",
                     event.id
                 ));
             }
@@ -9288,6 +9469,7 @@ fn activation_focus(
             .map(|thread| thread.supervision.supervisor_kind.as_str().to_string())
             .unwrap_or_else(|| "unknown".to_string()),
         supervisor_id: thread.and_then(|thread| thread.supervision.supervisor_id.clone()),
+        model_alias: activation.model_alias.clone(),
     }
 }
 
@@ -9887,7 +10069,12 @@ fn attach_context_change_token_effects(
 
 fn canonical_body(expr: &SExpr) -> Result<String, String> {
     let body = expr.to_string();
-    parse(&body).map_err(|error| format!("frame body 无法稳定往返解析: {}", error))?;
+    parse(&body).map_err(|error| {
+        format!(
+            "frame body cannot be parsed in a stable round trip: {}",
+            error
+        )
+    })?;
     Ok(body)
 }
 
@@ -9895,7 +10082,7 @@ fn parse_sources(expr: &SExpr) -> Result<Vec<String>, String> {
     let list = as_list(expr, "from")?;
     expect_head(list, "from")?;
     if list.len() < 2 {
-        return Err("(from ...) 至少需要一个来源 ID".to_string());
+        return Err("(from ...) requires at least one source ID".to_string());
     }
     list.iter()
         .skip(1)
@@ -9922,7 +10109,7 @@ fn ensure_known(
     if state.frames.iter().any(|frame| frame.id == id) || observation_ids.contains(id) {
         Ok(())
     } else {
-        Err(format!("Context 引用 '{}' 不存在", id))
+        Err(format!("Context reference '{}' does not exist", id))
     }
 }
 
@@ -9939,7 +10126,7 @@ fn ensure_unknown(
         || observation_ids.contains(id)
     {
         Err(format!(
-            "Context ID '{}' 已存在，不能重复 create/derive/checkpoint",
+            "Context ID '{}' already exists and cannot be created, derived, or checkpointed again",
             id
         ))
     } else {
@@ -9949,14 +10136,14 @@ fn ensure_unknown(
 
 fn validated_id(id: &str) -> Result<&str, String> {
     if id.is_empty() || id.len() > 512 {
-        return Err("Context ID 长度必须在 1..=512 之间".to_string());
+        return Err("Context ID length must be between 1 and 512 bytes".to_string());
     }
     if !id
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':' | '.'))
     {
         return Err(format!(
-            "Context ID '{}' 含非法字符；只允许字母、数字、-、_、:、.",
+            "Context ID '{}' contains invalid characters; only letters, digits, -, _, :, and . are allowed",
             id
         ));
     }
@@ -9975,21 +10162,21 @@ fn change(operation: &str, target: &str, detail: Option<String>) -> ContextChang
 fn as_list<'a>(expr: &'a SExpr, label: &str) -> Result<&'a [SExpr], String> {
     match expr {
         SExpr::List(items) => Ok(items),
-        _ => Err(format!("{} 必须是 SExpr List", label)),
+        _ => Err(format!("{} must be an SExpr List", label)),
     }
 }
 
 fn as_atom<'a>(expr: &'a SExpr, label: &str) -> Result<&'a str, String> {
     match expr {
         SExpr::Atom(value) => Ok(value),
-        _ => Err(format!("{} 必须是 Atom", label)),
+        _ => Err(format!("{} must be an Atom", label)),
     }
 }
 
 fn atom_at<'a>(items: &'a [SExpr], index: usize, label: &str) -> Result<&'a str, String> {
     items
         .get(index)
-        .ok_or_else(|| format!("缺少 {}", label))
+        .ok_or_else(|| format!("missing {}", label))
         .and_then(|item| as_atom(item, label))
 }
 
@@ -9998,7 +10185,7 @@ fn expect_head(items: &[SExpr], expected: &str) -> Result<(), String> {
     if actual == expected {
         Ok(())
     } else {
-        Err(format!("期望 '{}'，实际为 '{}'", expected, actual))
+        Err(format!("expected '{}', got '{}'", expected, actual))
     }
 }
 
@@ -10006,7 +10193,7 @@ fn require_len(items: &[SExpr], expected: usize, usage: &str) -> Result<(), Stri
     if items.len() == expected {
         Ok(())
     } else {
-        Err(format!("格式错误，应为 {}", usage))
+        Err(format!("invalid form; expected {}", usage))
     }
 }
 
@@ -10014,7 +10201,7 @@ fn require_min_len(items: &[SExpr], expected: usize, usage: &str) -> Result<(), 
     if items.len() >= expected {
         Ok(())
     } else {
-        Err(format!("格式错误，应为 {}", usage))
+        Err(format!("invalid form; expected {}", usage))
     }
 }
 
@@ -11077,6 +11264,7 @@ mod tests {
             parent_session_id: None,
             title: id,
             status: SessionStatus::Active,
+            model_alias: None,
             created_at: last_activity_at,
             updated_at: last_activity_at,
             last_activity_at,
@@ -11466,7 +11654,7 @@ mod tests {
         };
         let tx = parse_transaction("(context-tx (base-version 3) (create x (note y)))").unwrap();
         let error = apply_parsed_transaction(&state, &tx, &HashSet::new()).unwrap_err();
-        assert!(error.contains("版本冲突"));
+        assert!(error.contains("version conflict"));
     }
 
     #[test]
@@ -11551,7 +11739,7 @@ mod tests {
                 .unwrap();
 
         let error = rebase_stale_frame_transaction(&state, &mut tx).unwrap_err();
-        assert!(error.contains("Frame MVCC 冲突"));
+        assert!(error.contains("Frame MVCC conflict"));
         assert!(error.contains("shared"));
         assert_eq!(tx.base_version, 6);
     }
@@ -11576,7 +11764,7 @@ mod tests {
                 .unwrap();
 
         let error = rebase_stale_frame_transaction(&state, &mut tx).unwrap_err();
-        assert!(error.contains("不能按 Frame MVCC 自动合并"));
+        assert!(error.contains("cannot merge automatically with Frame MVCC"));
         assert!(error.contains("retire"));
     }
 
@@ -11609,8 +11797,8 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("被嵌套"), "{error}");
-        assert!(error.contains("context-tx 顶层"), "{error}");
+        assert!(error.contains("is nested inside"), "{error}");
+        assert!(error.contains("context-tx top level"), "{error}");
     }
 
     #[test]
@@ -11711,6 +11899,7 @@ mod tests {
             objective_evaluation_id: None,
             supervisor_kind: "runtime".to_string(),
             supervisor_id: Some("dialogue-router".to_string()),
+            model_alias: Some("primary-route".to_string()),
         };
         let concurrent_activations = vec![ConcurrentActivationView {
             activation_id: "work-existing".to_string(),
@@ -11737,6 +11926,10 @@ mod tests {
             last_signal_batch_id: Some("work-current".to_string()),
             revision: 142,
         };
+        let evaluation_model_policy = EvaluationModelPolicy {
+            primary: "primary-route".to_string(),
+            agent_allowed: vec!["primary-route".to_string(), "fast-route".to_string()],
+        };
         let rendered = render_context(ContextRenderInput {
             context_id: "context-1",
             active_session_id: "s1",
@@ -11757,6 +11950,7 @@ mod tests {
             objectives: &[],
             execution_targets: &[],
             execution_target_access: &[],
+            evaluation_model_policy: &evaluation_model_policy,
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -11837,6 +12031,10 @@ mod tests {
             assert!(rendered.contains(clause.meaning));
         }
         assert!(rendered.contains("(context-tx-contract"));
+        assert!(rendered.contains(
+            "(model-selection (default primary-route) (agent-allowed primary-route fast-route)"
+        ));
+        assert!(rendered.contains("(model primary-route)"));
         assert!(rendered.contains("(objective-contract"));
         assert!(rendered.contains("objective_create"));
         assert!(rendered.contains("Runtime creates its ID and binds current Agent/Context/Session"));
@@ -11877,6 +12075,7 @@ mod tests {
             objectives: &[],
             execution_targets: &[],
             execution_target_access: &[],
+            evaluation_model_policy: &evaluation_model_policy,
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -11941,6 +12140,7 @@ mod tests {
             objectives: &[],
             execution_targets: &[],
             execution_target_access: &[],
+            evaluation_model_policy: &evaluation_model_policy,
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -11981,6 +12181,7 @@ mod tests {
             background_tasks: &[],
             objectives: &[],
             execution_targets: &[],
+            evaluation_model_policy: &evaluation_model_policy,
             execution_target_access: &[],
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
@@ -12022,6 +12223,7 @@ mod tests {
             objective_evaluation_id: None,
             supervisor_kind: "runtime".to_string(),
             supervisor_id: Some("dialogue-router".to_string()),
+            model_alias: None,
         };
         let now = Utc::now();
         let objectives = vec![ObjectiveRecord {
@@ -12082,6 +12284,7 @@ mod tests {
             objective_evaluation_id: None,
             supervisor_kind: "runtime".to_string(),
             supervisor_id: Some("dialogue-router".to_string()),
+            model_alias: None,
         };
 
         let current =
@@ -12388,6 +12591,7 @@ mod tests {
             objective_evaluation_id: None,
             supervisor_kind: "runtime".to_string(),
             supervisor_id: Some("event-router".to_string()),
+            model_alias: None,
         };
 
         let rendered = render_current_activation(&focus, &ContextReferences::default()).to_string();
@@ -12407,8 +12611,8 @@ mod tests {
         let error =
             apply_parsed_transaction(&MindState::default(), &tx, &observations(&["event:1"]))
                 .unwrap_err();
-        assert!(error.contains("reason 必须写在事务级"));
-        assert!(error.contains("不能放进 retire"));
+        assert!(error.contains("reason must be written at transaction level"));
+        assert!(error.contains("not inside retire"));
     }
 
     #[test]
@@ -12473,7 +12677,7 @@ mod tests {
             "(context-tx (base-version 0) (create task (from user:1) (status active)))",
         )
         .unwrap_err();
-        assert!(error.contains("create 不接受"));
+        assert!(error.contains("create does not accept"));
         assert!(error.contains("derive"));
     }
 
@@ -13093,7 +13297,7 @@ mod tests {
             .collect(),
         );
         let error = load_mind_from_events(&[event]).unwrap_err();
-        assert!(error.contains("重放结果不一致"));
+        assert!(error.contains("does not match SExpr replay"));
     }
 
     #[tokio::test]
@@ -13266,7 +13470,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string()
-            .contains("签名"));
+            .contains("signature"));
 
         engine
             .apply_context_transaction(

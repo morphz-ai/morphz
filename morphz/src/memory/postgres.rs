@@ -549,6 +549,7 @@ impl PostgresStore {
                 status TEXT NOT NULL DEFAULT 'active'
                     CONSTRAINT sessions_status_domain
                     CHECK(status IN ('active', 'archived')),
+                model_alias TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_activity_at TEXT NOT NULL,
@@ -569,6 +570,7 @@ impl PostgresStore {
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_sessions_context_activity
                ON sessions(context_id, last_activity_at DESC, id)"#,
+            r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
             r#"CREATE TABLE IF NOT EXISTS principals (
                 id TEXT PRIMARY KEY,
                 provider_id TEXT NOT NULL,
@@ -1295,6 +1297,8 @@ impl PostgresStore {
                  AND NOT (
                      type = 'tool_output'
                      AND payload->>'tool_name' = 'context_tx'
+                     AND left(COALESCE(payload->>'text', ''), 22) <> 'Tool execution failed:'
+                     AND left(COALESCE(payload->>'text', ''), 24) <> 'Tool execution rejected:'
                      AND left(COALESCE(payload->>'text', ''), 5) <> '执行失败:'
                      AND left(COALESCE(payload->>'text', ''), 5) <> '执行拒绝:'
                  )

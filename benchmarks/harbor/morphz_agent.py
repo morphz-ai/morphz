@@ -16,9 +16,11 @@ from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
+from benchmarks.harbor.morphz_atif import write_trajectory
+
 
 class MorphzAgent(BaseAgent):
-    SUPPORTS_ATIF = False
+    SUPPORTS_ATIF = True
     SUPPORTS_RESUME = False
 
     @staticmethod
@@ -38,6 +40,14 @@ class MorphzAgent(BaseAgent):
         binary = Path(self._setting("MORPHZ_HARBOR_BINARY")).expanduser().resolve()
         if not binary.is_file():
             raise FileNotFoundError(f"MORPHZ_HARBOR_BINARY does not exist: {binary}")
+        watcher = Path(
+            self._setting(
+                "MORPHZ_HARBOR_WATCHER",
+                str(binary.with_name("morphz-harbor-wait")),
+            )
+        ).expanduser().resolve()
+        if not watcher.is_file():
+            raise FileNotFoundError(f"MORPHZ_HARBOR_WATCHER does not exist: {watcher}")
 
         protocol = self._setting("MORPHZ_PROVIDER_PROTOCOL", "openai-responses")
         base_url = self._setting("MORPHZ_PROVIDER_BASE_URL")
@@ -50,6 +60,11 @@ class MorphzAgent(BaseAgent):
         credential_env = self._setting(
             "MORPHZ_PROVIDER_API_KEY_ENV", "MORPHZ_PROVIDER_API_KEY"
         )
+        reasoning_effort = self._setting("MORPHZ_REASONING_EFFORT", "max")
+        if reasoning_effort != "max":
+            raise ValueError(
+                "The frozen benchmark profile requires MORPHZ_REASONING_EFFORT=max"
+            )
 
         config = self.logs_dir / "morphz-harbor.toml"
         config.write_text(
@@ -58,6 +73,7 @@ class MorphzAgent(BaseAgent):
                     '[llm]',
                     'provider = "harbor"',
                     f'model = {model!r}',
+                    f'reasoning_effort = {reasoning_effort!r}',
                     '',
                     '[providers.harbor]',
                     f'protocol = {protocol!r}',
@@ -77,15 +93,20 @@ class MorphzAgent(BaseAgent):
                     '[orchestrator.activation_admission]',
                     'max_in_flight = 16',
                     '',
+                    '[permissions]',
+                    'mode = "full_access"',
+                    'shell_environment_policy = "remove_sensitive"',
+                    '',
                 ]
             )
         )
         runner = Path(__file__).with_name("run_morphz_harbor.sh")
         await environment.upload_file(binary, "/tmp/morphz")
+        await environment.upload_file(watcher, "/tmp/morphz-harbor-wait")
         await environment.upload_file(config, "/tmp/morphz-harbor.toml")
         await environment.upload_file(runner, "/tmp/run-morphz-harbor.sh")
         result = await environment.exec(
-            command="chmod 0755 /tmp/morphz /tmp/run-morphz-harbor.sh"
+            command="chmod 0755 /tmp/morphz /tmp/morphz-harbor-wait /tmp/run-morphz-harbor.sh"
         )
         if result.return_code != 0:
             raise RuntimeError(result.stderr or "failed to install Morphz")
@@ -114,8 +135,7 @@ class MorphzAgent(BaseAgent):
             "MORPHZ_ARTIFACT_DIR": "/logs/artifacts",
             "MORPHZ_STORAGE_SQLITE_PATH": "/logs/agent/morphz.db",
             "MORPHZ_CODING_EVAL_MODE": "true",
-            "MORPHZ_PERMISSION_MODE": "auto_review",
-            "MORPHZ_EXEC_NETWORK": "false",
+            "MORPHZ_PERMISSION_MODE": "full_access",
             "MORPHZ_HARBOR_TIMEOUT_SECS": self._setting(
                 "MORPHZ_HARBOR_TIMEOUT_SECS", "21600"
             ),
@@ -129,3 +149,34 @@ class MorphzAgent(BaseAgent):
                 "Morphz Harbor run failed: "
                 + (result.stderr or result.stdout or f"exit {result.return_code}")[-4000:]
             )
+
+    def populate_context_post_run(self, context: AgentContext) -> None:
+        db_path = self.logs_dir / "morphz.db"
+        instruction_path = self.logs_dir / "instruction.md"
+        instruction = (
+            instruction_path.read_text(encoding="utf-8")
+            if instruction_path.is_file()
+            else ""
+        )
+        configured_model = self.extra_env.get("MORPHZ_PROVIDER_MODEL") or os.environ.get(
+            "MORPHZ_PROVIDER_MODEL"
+        )
+        configured_model = configured_model or (self.model_name or "").split("/", 1)[-1]
+        trajectory = write_trajectory(
+            db_path,
+            self.logs_dir / "trajectory.json",
+            instruction=instruction,
+            session_id=str(self.session_id or "harbor-session"),
+            context_id=str(self.context_id or "harbor-context"),
+            agent_version=self.version() or "unknown",
+            configured_model=configured_model or "unknown",
+            reasoning_effort="max",
+            permission_mode="full_access",
+        )
+        if trajectory.final_metrics is None:
+            return
+        metrics = trajectory.final_metrics
+        context.n_input_tokens = metrics.total_prompt_tokens
+        context.n_output_tokens = metrics.total_completion_tokens
+        context.n_cache_tokens = metrics.total_cached_tokens
+        context.cost_usd = metrics.total_cost_usd

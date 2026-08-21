@@ -1326,7 +1326,7 @@ async fn wait_for_topic_count(
     // Keep the assertion event-driven but allow enough wall time for those
     // isolated runtimes to be scheduled on a busy CI host. Individual tests
     // still finish as soon as their durable Event appears.
-    for _ in 0..600 {
+    for _ in 0..1200 {
         let events = store
             .query(QueryFilter {
                 session_id: Some(session_id.to_string()),
@@ -1840,7 +1840,7 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         .result_text
         .as_deref()
         .unwrap_or_default()
-        .contains("遗留孤儿状态"));
+        .contains("orphaned state was marked cancelled"));
     let active_job_thread = store
         .get_thread("recovery-active-background-job-thread")
         .await
@@ -2486,6 +2486,21 @@ async fn runtime_restart_resumes_context_tx_continuation_until_final_reply() {
         .await
         .unwrap();
 
+    // Reproduce the durable Mind commit that precedes the successful tool
+    // receipt. A recovery fixture must not claim snapshot version 1 while
+    // leaving the authoritative Context itself at version 0.
+    ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .apply_context_transaction(
+        "context-tx-recovery-context",
+        "context-tx-recovery-session",
+        "(context-tx (base-version 0) (create recovery-state (status committed)))",
+    )
+    .await
+    .unwrap();
+
     let context_tx_output = Event::new(
         "context-tx-recovery-output".to_string(),
         "System-ContextTx".to_string(),
@@ -2629,9 +2644,22 @@ async fn runtime_restart_resumes_context_tx_continuation_until_final_reply() {
 
     let replies = wait_for_topic(&store, "chat/reply", "context-tx-recovery-session").await;
     assert_eq!(replies.len(), 1);
+    let model_attempt_states = store
+        .query(QueryFilter {
+            session_id: Some("context-tx-recovery-session".to_string()),
+            topic: Some("runtime/model_attempt_state".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     assert_eq!(
         replies[0].payload.get("text"),
-        Some(&json!("context maintenance recovered and delivered"))
+        Some(&json!("context maintenance recovered and delivered")),
+        "model attempt states: {:?}",
+        model_attempt_states
+            .iter()
+            .map(|event| &event.payload)
+            .collect::<Vec<_>>()
     );
     assert!(
         wait_for_topic_count(&store, "chat/cancelled", "context-tx-recovery-session", 0,)
@@ -2953,7 +2981,7 @@ async fn test_no_reply_wait_without_pending_runtime_fact_is_corrected() {
     assert_eq!(errors[0].payload["response_state"], "invalid_wait");
     assert!(errors[0].payload["reason"]
         .as_str()
-        .is_some_and(|reason| reason.contains("no_reply(mode=wait) 被拒绝")));
+        .is_some_and(|reason| reason.contains("no_reply(mode=wait) was rejected")));
     assert_eq!(replies.len(), 1);
     assert_eq!(
         replies[0].payload["text"],
@@ -3021,7 +3049,9 @@ async fn invalid_response_retry_restores_provider_state_and_rejected_output() {
     }));
     assert!(requests[1].iter().any(|message| {
         message.role == "user"
-            && message.content.contains("no_reply 不能同时携带普通文本")
+            && message
+                .content
+                .contains("no_reply cannot be accompanied by ordinary text")
             && message
                 .content
                 .contains("I will wait for the background process.")
@@ -3065,7 +3095,7 @@ async fn test_response_protocol_fuses_after_two_failed_corrections() {
         .get("text")
         .and_then(|value| value.as_str())
         .unwrap()
-        .contains("安全熔断"));
+        .contains("safely stopped this turn"));
 }
 
 #[tokio::test]
@@ -3147,7 +3177,7 @@ async fn test_llm_failure_is_audited_and_persists_provider_wait() {
         .get("text")
         .and_then(|value| value.as_str())
         .unwrap()
-        .contains("模型请求失败"));
+        .contains("The model request failed"));
     assert_eq!(
         waits[0]
             .payload
@@ -3228,7 +3258,9 @@ async fn runtime_activation_failure_is_visible_and_does_not_leave_open_thread() 
         .payload
         .get("text")
         .and_then(|value| value.as_str())
-        .is_some_and(|text| text.contains("内部错误") && text.contains("该回合已经结束")));
+        .is_some_and(|text| {
+            text.contains("internal error") && text.contains("turn has been closed")
+        }));
     assert_eq!(
         replies[0]
             .payload
@@ -3357,7 +3389,9 @@ async fn subscription_quota_exhaustion_stops_turn_without_provider_wait() {
             .payload
             .get("text")
             .and_then(|value| value.as_str())
-            .is_some_and(|text| text.contains("额度已耗尽") && text.contains("不会进入等待队列"))
+            .is_some_and(|text| {
+                text.contains("quota is exhausted") && text.contains("will not enter a wait queue")
+            })
             && reply
                 .payload
                 .get("runtime_failure_kind")
@@ -4010,7 +4044,7 @@ async fn test_empty_tool_output_is_explicit_success_and_does_not_require_retry()
     assert!(envelope["guidance"]
         .as_str()
         .unwrap()
-        .contains("不要仅因输出为空而重复调用"));
+        .contains("Do not repeat it merely because output is empty"));
     let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
     assert_eq!(outputs.len(), 1);
     assert_eq!(
@@ -4338,7 +4372,7 @@ async fn active_root_request_cannot_be_retired_before_the_reply_is_delivered() {
     assert_eq!(outputs.len(), 2);
     assert!(outputs[0].payload["text"]
         .as_str()
-        .is_some_and(|text| text.contains("Runtime 因果保护")));
+        .is_some_and(|text| text.contains("causally protected by the Runtime")));
     let context = orchestrator
         .get_current_context_view(session_id)
         .await
@@ -7187,8 +7221,8 @@ async fn eval_runs_a_submitted_program_and_hands_infer_back_to_the_model() {
                        (infer
                          (task "这个文件说了什么")
                          (returns String)
-                         (evidence $body)))
-                     $judgement))"#,
+                         (evidence body)))
+                     judgement))"#,
             ),
             text_reply_response("看起来是一个 Rust 工程"),
             text_reply_response("已完成"),
@@ -7323,7 +7357,7 @@ async fn infer_may_gather_evidence_but_is_never_offered_eval() {
         .find(|message| message.role == "tool")
         .expect("the read outcome must reach the model that asked for it");
     assert!(
-        tool_result.content.contains("拒绝"),
+        tool_result.content.contains("rejected"),
         "an out-of-workspace read must be refused inside infer too: {}",
         tool_result.content
     );

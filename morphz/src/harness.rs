@@ -106,7 +106,7 @@ impl HarnessRegistry {
     pub fn register(&self, harness: Arc<dyn DomainHarness>) -> Result<(), HarnessError> {
         let descriptor = harness.descriptor();
         if descriptor.id.trim().is_empty() || descriptor.version.trim().is_empty() {
-            return Err("Harness id 和 version 不能为空".into());
+            return Err("Harness id and version must not be empty".into());
         }
         let key = (descriptor.id.clone(), descriptor.version.clone());
         let mut harnesses = self
@@ -120,7 +120,7 @@ impl HarnessRegistry {
                 return Ok(());
             }
             return Err(format!(
-                "Harness '{}@{}' 已注册，不能用不同 artifact 覆盖",
+                "Harness '{}@{}' is already registered and cannot be replaced by a different artifact",
                 descriptor.id, descriptor.version
             )
             .into());
@@ -222,6 +222,6 @@ mod tests {
         let registry = HarnessRegistry::default();
         registry.register(Arc::new(CodingHarness)).unwrap();
         let error = registry.register(Arc::new(CodingHarness)).unwrap_err();
-        assert!(error.to_string().contains("不能用不同 artifact 覆盖"));
+        assert!(error.to_string().contains("different artifact"));
     }
 }

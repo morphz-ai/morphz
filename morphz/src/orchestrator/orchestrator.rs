@@ -116,10 +116,9 @@ impl ActivationAdmissionSlot {
     async fn suspend_for_plan(&self) -> Result<(), DynError> {
         let mut state = self.state.lock().await;
         if state.waiting_plans == 0 {
-            let permit = state
-                .permit
-                .take()
-                .ok_or("Plan 等待子任务时缺少 Activation admission permit")?;
+            let permit = state.permit.take().ok_or(
+                "Plan is missing its Activation admission permit while waiting for a child task",
+            )?;
             state.suspended = Some(permit.suspend());
         }
         state.waiting_plans = state.waiting_plans.saturating_add(1);
@@ -133,10 +132,9 @@ impl ActivationAdmissionSlot {
         }
         state.waiting_plans -= 1;
         if state.waiting_plans == 0 {
-            let suspended = state
-                .suspended
-                .take()
-                .ok_or("Plan 恢复父 Activation 时缺少 suspended admission")?;
+            let suspended = state.suspended.take().ok_or(
+                "Plan is missing suspended admission while resuming the parent Activation",
+            )?;
             state.permit = Some(suspended.resume().await?);
         }
         Ok(())
@@ -154,7 +152,9 @@ impl PlanAdmissionSuspension {
         let slot = Arc::clone(&self.slot);
         tokio::spawn(async move { slot.release_plan_wait().await })
             .await
-            .map_err(|error| format!("Plan admission 恢复任务异常结束: {error}"))??;
+            .map_err(|error| {
+                format!("Plan admission resume task terminated unexpectedly: {error}")
+            })??;
         Ok(())
     }
 }
@@ -424,12 +424,14 @@ impl DurableEventWriter {
             .is_err()
         {
             self.metrics.queue_depth.fetch_sub(1, Ordering::Relaxed);
-            return Err(std::io::Error::other("Durable Event Writer 已停止").into());
+            return Err(std::io::Error::other("Durable Event Writer has stopped").into());
         }
         match receiver.await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(std::io::Error::other(error).into()),
-            Err(_) => Err(std::io::Error::other("Durable Event Writer 未返回提交结果").into()),
+            Err(_) => {
+                Err(std::io::Error::other("Durable Event Writer returned no commit result").into())
+            }
         }
     }
 }
@@ -589,10 +591,10 @@ impl SystemPromptMode {
                 Ok(Self::SemanticSexprVm)
             }
             Ok(value) => Err(format!(
-                "未知 {SYSTEM_PROMPT_MODE_ENV}='{value}'；支持 {BASELINE_SYSTEM_PROMPT_MODE}、{COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE} 或 {SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE}"
+                "unknown {SYSTEM_PROMPT_MODE_ENV}='{value}'; supported values are {BASELINE_SYSTEM_PROMPT_MODE}, {COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE}, and {SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE}"
             )),
             Err(std::env::VarError::NotPresent) => Ok(Self::SemanticSexprVm),
-            Err(error) => Err(format!("无法读取 {SYSTEM_PROMPT_MODE_ENV}: {error}")),
+            Err(error) => Err(format!("Failed to read {SYSTEM_PROMPT_MODE_ENV}: {error}")),
         }
     }
 }
@@ -607,7 +609,7 @@ fn render_stable_system_prompt(mode: SystemPromptMode) -> &'static str {
         SystemPromptMode::CognitiveSexprVm => COGNITIVE_VM_PROMPT.get_or_init(|| {
             let common_offset = AGENT_OWNED_CONTEXT_PROMPT_BASE
                 .find(COMMON_PROMPT_MARKER)
-                .expect("Agent-Owned Context prompt 必须保留公共规则标记");
+                .expect("Agent-Owned Context prompt must preserve the common-rule marker");
             let common_rules = &AGENT_OWNED_CONTEXT_PROMPT_BASE[common_offset..];
             build_stable_system_prompt(&format!("{SEXPR_COGNITIVE_MACHINE_PREAMBLE}{common_rules}"))
         }),
@@ -625,7 +627,7 @@ fn build_stable_system_prompt(base: &str) -> String {
 fn build_semantic_sexpr_system_prompt() -> String {
     let common_offset = AGENT_OWNED_CONTEXT_PROMPT_BASE
         .find(COMMON_PROMPT_MARKER)
-        .expect("Agent-Owned Context prompt 必须保留公共规则标记");
+        .expect("Agent-Owned Context prompt must preserve the common-rule marker");
     let common_rules = &AGENT_OWNED_CONTEXT_PROMPT_BASE[common_offset..];
     let architecture = render_semantic_sections("architecture", SEXPR_COGNITIVE_MACHINE_PREAMBLE);
     let guidance = render_semantic_sections("runtime-guidance", common_rules);
@@ -644,7 +646,8 @@ fn build_semantic_sexpr_system_prompt() -> String {
         ]),
         contracts = render_system_contract_sexpr(),
     );
-    crate::sexpr::parse(&prompt).expect("Semantic SExpr VM system prompt 必须是完整合法的 SExpr");
+    crate::sexpr::parse(&prompt)
+        .expect("Semantic SExpr VM system prompt must be a complete valid S-expression");
     prompt
 }
 
@@ -729,7 +732,7 @@ fn validate_harness_entry_program(
     if header.owner == crate::sexpr_eval::EvaluationOwner::Model && header.declared_tools.is_none()
     {
         return Err(crate::sexpr_eval::EvalError::from(
-            "Model-owned Harness entry 必须显式声明 (requires (tools ...))；空列表表示纯推理"
+            "Model-owned Harness entry must explicitly declare (requires (tools ...)); an empty list means pure inference"
                 .to_string(),
         ));
     }
@@ -766,7 +769,7 @@ fn render_harness_context(
 ) -> Result<RenderedHarnessContext, DynError> {
     let descriptor = harness.descriptor();
     let contract = crate::sexpr::parse(&harness.compact_contract())
-        .map_err(|error| format!("Harness Contract 不是合法 S 表达式：{error}"))?;
+        .map_err(|error| format!("Harness Contract is not a valid S-expression: {error}"))?;
     let mut scope = vec![SExpr::Atom("scope".to_string())];
     if let Some(objective_id) = &binding.objective_id {
         scope.push(SExpr::List(vec![
@@ -802,8 +805,9 @@ fn render_harness_context(
         }),
     ];
     if let Some(source) = harness.entry_program() {
-        let header = crate::sexpr_eval::inspect_program_source(&source)
-            .map_err(|error| format!("Harness entry 不是合法的显式 eval/infer 程序：{error}"))?;
+        let header = crate::sexpr_eval::inspect_program_source(&source).map_err(|error| {
+            format!("Harness entry is not a valid explicit eval/infer program: {error}")
+        })?;
         let (owner, instruction) = match header.owner {
             crate::sexpr_eval::EvaluationOwner::Runtime => (
                 "runtime",
@@ -831,7 +835,7 @@ fn render_harness_context(
         // is the active loop the model must execute.
         if header.owner == crate::sexpr_eval::EvaluationOwner::Model {
             let program = crate::sexpr::parse(&source)
-                .map_err(|error| format!("Harness entry 不是单一合法 S 表达式：{error}"))?;
+                .map_err(|error| format!("Harness entry is not one valid S-expression: {error}"))?;
             entry.push(SExpr::List(vec![
                 SExpr::Atom("program".to_string()),
                 program,
@@ -840,8 +844,9 @@ fn render_harness_context(
         profile.push(SExpr::List(entry));
     }
     if let Some(mind) = harness.default_mind() {
-        let mind = crate::sexpr::parse(&mind)
-            .map_err(|error| format!("Harness default Mind 不是合法 S 表达式：{error}"))?;
+        let mind = crate::sexpr::parse(&mind).map_err(|error| {
+            format!("Harness default Mind is not a valid S-expression: {error}")
+        })?;
         profile.push(SExpr::List(vec![
             SExpr::Atom("read-only-default-mind".to_string()),
             mind,
@@ -885,45 +890,45 @@ fn compose_context_encoding(
     overlay: EvaluationContextOverlay<'_>,
 ) -> Result<String, DynError> {
     let mut composed = crate::sexpr::parse(base)
-        .map_err(|error| format!("基础 Context Encoding 不是合法 S 表达式：{error}"))?;
+        .map_err(|error| format!("Base Context Encoding is not a valid S-expression: {error}"))?;
     let SExpr::List(context) = &composed else {
-        return Err("基础 Context Encoding 不是 context List".into());
+        return Err("Base Context Encoding is not a context List".into());
     };
     if !matches!(context.first(), Some(SExpr::Atom(name)) if name == "context") {
-        return Err("基础 Context Encoding 的根节点不是 context".into());
+        return Err("Root node of the base Context Encoding is not context".into());
     }
 
     let profile_slot = composed
         .get_path_mut(&["evaluation-profile"])
-        .ok_or("基础 Context Encoding 缺少固定的 evaluation-profile 插槽")?;
+        .ok_or("Base Context Encoding is missing the fixed evaluation-profile slot")?;
     if !matches!(
         profile_slot,
         SExpr::List(values)
             if matches!(values.as_slice(), [SExpr::Atom(name), SExpr::Atom(value)] if name == "evaluation-profile" && value == "none")
     ) {
-        return Err("基础 Context Encoding 的 evaluation-profile 插槽已被占用".into());
+        return Err("Base Context Encoding evaluation-profile slot is already occupied".into());
     }
     if let Some(profile) = overlay.evaluation_profile {
         let parsed = crate::sexpr::parse(profile)
-            .map_err(|error| format!("Evaluation Profile 不是合法 S 表达式：{error}"))?;
+            .map_err(|error| format!("Evaluation Profile is not a valid S-expression: {error}"))?;
         if !matches!(
             &parsed,
             SExpr::List(values)
                 if matches!(values.first(), Some(SExpr::Atom(name)) if name == "evaluation-profile")
         ) {
-            return Err("Evaluation Profile 的根节点必须是 evaluation-profile".into());
+            return Err("Evaluation Profile root node must be evaluation-profile".into());
         }
         *profile_slot = parsed;
     }
 
     let environment_slot = composed
         .get_path_mut(&["evaluation-environment"])
-        .ok_or("基础 Context Encoding 缺少固定的 evaluation-environment 插槽")?;
+        .ok_or("Base Context Encoding is missing the fixed evaluation-environment slot")?;
     let SExpr::List(environment) = environment_slot else {
-        return Err("基础 Context Encoding 的 evaluation-environment 不是 List".into());
+        return Err("Base Context Encoding evaluation-environment is not a List".into());
     };
     if !matches!(environment.first(), Some(SExpr::Atom(name)) if name == "evaluation-environment") {
-        return Err("基础 Context Encoding 的 evaluation-environment 插槽无效".into());
+        return Err("Base Context Encoding evaluation-environment slot is invalid".into());
     }
     if environment.iter().skip(1).any(|value| {
         matches!(
@@ -932,7 +937,7 @@ fn compose_context_encoding(
                 if matches!(values.first(), Some(SExpr::Atom(name)) if name == "runtime-directive" || name == "harness-binding")
         )
     }) {
-        return Err("基础 Context Encoding 不得预置本轮 Runtime 或 Harness 绑定".into());
+        return Err("Base Context Encoding must not pre-populate Runtime or Harness bindings for the current evaluation".into());
     }
     if let Some((kind, description)) = overlay.runtime_directive {
         environment.push(SExpr::List(vec![
@@ -949,13 +954,13 @@ fn compose_context_encoding(
     }
     if let Some(binding) = overlay.harness_binding {
         let parsed = crate::sexpr::parse(binding)
-            .map_err(|error| format!("Harness binding 不是合法 S 表达式：{error}"))?;
+            .map_err(|error| format!("Harness binding is not a valid S-expression: {error}"))?;
         if !matches!(
             &parsed,
             SExpr::List(values)
                 if matches!(values.first(), Some(SExpr::Atom(name)) if name == "harness-binding")
         ) {
-            return Err("Harness binding 的根节点必须是 harness-binding".into());
+            return Err("Harness binding root node must be harness-binding".into());
         }
         environment.push(parsed);
     }
@@ -1001,14 +1006,14 @@ fn plan_infer_tool_scope(event: &Event) -> Result<Option<HashSet<String>>, Strin
     if value.is_null() {
         return Ok(Some(HashSet::new()));
     }
-    let values = value
-        .as_array()
-        .ok_or_else(|| "Plan infer request 的 tools 必须是字符串数组或 null".to_string())?;
+    let values = value.as_array().ok_or_else(|| {
+        "Plan infer request tools must be an array of strings or null".to_string()
+    })?;
     let mut tools = HashSet::new();
     for value in values {
-        let name = value
-            .as_str()
-            .ok_or_else(|| "Plan infer request 的 tools 只能包含字符串工具名".to_string())?;
+        let name = value.as_str().ok_or_else(|| {
+            "Plan infer request tools may contain only string tool names".to_string()
+        })?;
         tools.insert(name.to_string());
     }
     Ok(Some(tools))
@@ -1141,7 +1146,8 @@ const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const RESPONSE_PROTOCOL_CONTENT_PREVIEW_CHARS: usize = 2_048;
 const RESPONSE_PROTOCOL_TOOL_CALL_LIMIT: usize = 8;
-const EMPTY_RESPONSE_DETAIL: &str = "模型响应既没有非空正文，也没有工具调用";
+const EMPTY_RESPONSE_DETAIL: &str =
+    "Model response contained neither non-empty text nor a tool call";
 const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error: the Runtime reports only that all direct child objectives are terminal; it does not decide whether the parent is complete. This evaluation cannot end with ordinary text or no_reply while leaving closure unresolved. Persist one decision: objective_update to completed, blocked, or an exact wait; perform real work; or create a necessary child objective.";
 const OBJECTIVE_FINALIZATION_PROMPT: &str = r#"The Runtime persisted your Objective completion decision but has not ended the Objective. You are still in the same Activation. Produce the user-facing final delivery from the complete evidence you just audited:
 - Return a complete ordinary assistant response with no tool calls. Do not shorten or omit the final report because you explained parts earlier.
@@ -1327,6 +1333,9 @@ struct ActivationRoute {
     trigger_sequence: u64,
     initiating_principal_id: Option<String>,
     context_snapshot_version: Option<u64>,
+    /// Logical model alias frozen durably on the Activation before its first
+    /// physical request. Every retry and post-restart continuation reuses it.
+    model_alias: String,
     thread_kind: &'static str,
     /// Events that continue an internal Plan infer Thread must not queue
     /// behind the parent handler that is synchronously waiting for that Plan.
@@ -1439,7 +1448,7 @@ fn durable_reasoning_continuation_state_from_events(
             .map(|value| {
                 serde_json::from_value::<ProviderContinuation>(value.clone()).map_err(|error| {
                     format!(
-                        "Activation '{activation_id}' 的 reasoning continuation '{}' 包含无效 Provider 状态：{error}",
+                        "Activation '{activation_id}' reasoning continuation '{}' contains invalid Provider state: {error}",
                         event.id
                     )
                 })
@@ -1447,7 +1456,7 @@ fn durable_reasoning_continuation_state_from_events(
             .transpose()?;
         if summary.is_none() && provider_continuation.is_none() {
             return Err(format!(
-                "Activation '{activation_id}' 的 reasoning continuation '{}' 缺少可恢复的摘要或 Provider 状态",
+                "Activation '{activation_id}' reasoning continuation '{}' lacks a recoverable summary or Provider state",
                 event.id
             )
             .into());
@@ -1991,30 +2000,35 @@ fn classify_terminal_response(
         if response.tool_calls.is_empty() {
             let content = response.content.trim();
             if content.is_empty() {
-                return Err("响应既没有非空正文，也没有调用 no_reply".to_string());
+                return Err(
+                    "Response contained neither non-empty text nor a no_reply call".to_string(),
+                );
             }
             return Ok(Some(TerminalDecision::Deliver(response.content.clone())));
         }
         return Ok(None);
     }
     if no_reply_calls.len() != 1 || response.tool_calls.len() != 1 {
-        return Err("no_reply 必须独占响应且只调用一次".to_string());
+        return Err("no_reply must be the only call in the response and appear once".to_string());
     }
     if !response.content.trim().is_empty() {
-        return Err("no_reply 不能同时携带普通文本".to_string());
+        return Err("no_reply cannot be accompanied by ordinary text".to_string());
     }
     let arguments: serde_json::Value = serde_json::from_str(&no_reply_calls[0].arguments)
-        .map_err(|error| format!("no_reply 参数 JSON 非法: {error}"))?;
+        .map_err(|error| format!("Invalid no_reply argument JSON: {error}"))?;
     let object = arguments
         .as_object()
-        .ok_or_else(|| "no_reply 参数必须是 JSON object".to_string())?;
+        .ok_or_else(|| "no_reply arguments must be a JSON object".to_string())?;
     if object.len() != 1 {
-        return Err("no_reply 只接受必填参数 mode=\"silent\" 或 mode=\"wait\"".to_string());
+        return Err(
+            "no_reply requires mode=\"silent\" or mode=\"wait\" and accepts no other arguments"
+                .to_string(),
+        );
     }
     let mode = match object.get("mode").and_then(|value| value.as_str()) {
         Some("silent") => NoReplyMode::Silent,
         Some("wait") => NoReplyMode::Wait,
-        _ => return Err("no_reply.mode 只支持 silent 或 wait".to_string()),
+        _ => return Err("no_reply.mode supports only silent or wait".to_string()),
     };
     Ok(Some(TerminalDecision::NoReply(mode)))
 }
@@ -2041,11 +2055,11 @@ fn validate_final_reply_response(
             Some(TerminalDecision::Deliver(_))
             | Some(TerminalDecision::NoReply(NoReplyMode::Silent)) => Ok(decision),
             Some(TerminalDecision::NoReply(NoReplyMode::Wait)) => Err(
-                "Objective finalization 不能进入等待；请提交完整最终报告，或在确实无需发送时调用 no_reply(mode=silent)"
+                "Objective finalization cannot enter a waiting state; submit the complete final report, or call no_reply(mode=silent) only when no message is needed"
                     .to_string(),
             ),
             None => Err(
-                "Objective finalization 必须返回无工具普通文本，或独占调用 no_reply(mode=silent)"
+                "Objective finalization must return ordinary text without tools, or exclusively call no_reply(mode=silent)"
                     .to_string(),
             ),
         };
@@ -2060,7 +2074,7 @@ fn validate_final_reply_response(
         Ok(None)
     } else {
         Err(
-            "final-reply 阶段必须返回普通文本、独占调用 no_reply，或为当前绑定的 active Objective 独占调用 objective_update"
+            "The final-reply phase must return ordinary text, exclusively call no_reply, or exclusively call objective_update for the currently bound active Objective"
                 .to_string(),
         )
     }
@@ -2108,7 +2122,7 @@ fn validate_objective_completion_call(response: &crate::llm::Response) -> Result
     if completed_objective_update_call(response) {
         Ok(())
     } else {
-        Err("objective_update(status=completed) 必须是响应中唯一的工具调用，且不能同时携带普通文本；Runtime 会在同一 Activation 中提供专门的最终交付 Attempt".to_string())
+        Err("objective_update(status=completed) must be the only tool call in the response and cannot be accompanied by ordinary text; Runtime will provide a dedicated final-delivery Attempt in the same Activation".to_string())
     }
 }
 
@@ -2123,7 +2137,7 @@ fn validate_schedule_tx_response(response: &crate::llm::Response) -> Result<(), 
     }
     if schedule_calls != 1 || response.tool_calls.len() != 1 {
         return Err(
-            "schedule_tx 必须是响应中唯一且只调用一次的工具；不能与物理工具、context_tx 或其他 schedule_tx 混用"
+            "schedule_tx must be the only tool in the response and appear once; it cannot be mixed with physical tools, context_tx, or another schedule_tx"
                 .to_string(),
         );
     }
@@ -2529,12 +2543,12 @@ fn reasoning_continuation_prompt(summaries: &[String], has_provider_continuation
         .collect::<Vec<_>>()
         .join("\n");
     let prior_progress = if reasoning.is_empty() && has_provider_continuation {
-        "<provider_continuation>Runtime 已在请求协议中附带 Provider 原生推理续接状态；该状态不是用户消息，也不是可见 assistant 正文。</provider_continuation>".to_string()
+        "<provider_continuation>The Runtime attached the Provider-native reasoning continuation state in the request protocol; this state is neither a user message nor visible assistant content.</provider_continuation>".to_string()
     } else {
         format!("<previous_reasoning>\n{reasoning}\n</previous_reasoning>")
     };
     format!(
-        "之前的物理模型请求只生成了推理进度，没有生成可提交的正文或工具调用。Runtime 已按顺序恢复可用的推理摘要和 Provider 原生续接状态；它们不是用户消息，也不是已发送给用户的 assistant 正文。请沿用这些进度继续完成你的推理，不要从头重复分析；推理完成后再产生一种合法终态：返回非空普通 assistant 文本且不调用工具，或执行所需工具调用，或在确实无需消息时独占调用 no_reply。\n\n{prior_progress}"
+        "The previous physical model request produced reasoning progress but no committable content or tool calls. The Runtime restored the available reasoning summaries and Provider-native continuation states in order; they are neither user messages nor assistant content already sent to the user. Continue from this progress without repeating the analysis from the beginning. After reasoning is complete, produce one valid terminal state: return non-empty ordinary assistant text without tool calls, execute the required tool calls, or call no_reply exclusively when no message is genuinely needed.\n\n{prior_progress}"
     )
 }
 
@@ -2644,7 +2658,7 @@ fn append_response_protocol_correction_input(
 }
 
 fn interrupted_text_continuation_prompt() -> &'static str {
-    "上一条 assistant 正文在 Provider 流中断时只传输了一部分。该部分已由 Runtime 保留并作为紧邻的 assistant 消息提供。请从断点继续完成同一份正文，不要重新开头、不要复述已给出的内容；完成后返回剩余正文。"
+    "The previous assistant content was only partially transmitted when the Provider stream was interrupted. The Runtime preserved that fragment and supplied it as the immediately preceding assistant message. Continue the same response from the interruption point without restarting or repeating content already provided, and return only the remaining content."
 }
 
 impl Orchestrator {
@@ -3015,7 +3029,7 @@ impl Orchestrator {
                 })
                 .as_object()
                 .cloned()
-                .ok_or("Provider recovery wake payload 不是 object")?,
+                .ok_or("Provider recovery wake payload is not an object")?,
             );
             let commit_result: Result<crate::scheduler::ThreadResourceWakeCommit, DynError> =
                 if let Some(kernel) = self.scheduler_kernel.as_ref() {
@@ -3395,7 +3409,7 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Activation lease heartbeat 需要持久化 SessionStore")?;
+            .ok_or("Activation lease heartbeat requires a persistent SessionStore")?;
         let snapshot = self.activation_admission.snapshot();
         let activation_ids = snapshot
             .in_flight_activation_ids
@@ -3522,13 +3536,15 @@ impl Orchestrator {
                 .await?
             {
                 crate::scheduler::KernelResult::ActivationTransitioned(mutation) => Ok(mutation),
-                _ => Err("Scheduler Kernel 返回了错误的 Activation transition 结果".into()),
+                _ => {
+                    Err("Scheduler Kernel returned an invalid Activation-transition result".into())
+                }
             };
         }
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Thread Activation 需要持久化 SessionStore")?;
+            .ok_or("Thread Activation requires a persistent SessionStore")?;
         session_store
             .update_thread_activation(
                 &activation.id,
@@ -3548,7 +3564,7 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Activation lease 需要持久化 SessionStore")?;
+            .ok_or("Activation lease requires a persistent SessionStore")?;
         let Some(current) = session_store.get_thread_activation(&timer.owner_id).await? else {
             return Ok(TimerDisposition::Complete);
         };
@@ -3607,7 +3623,7 @@ impl Orchestrator {
             if expires_at > Utc::now() {
                 return Ok(TimerDisposition::Reschedule {
                     due_at: expires_at,
-                    reason: Some("Thread Activation lease 尚未到期".to_string()),
+                    reason: Some("Thread Activation lease has not expired".to_string()),
                 });
             }
         }
@@ -3616,7 +3632,7 @@ impl Orchestrator {
             .await?
         else {
             return Err(format!(
-                "Activation '{}' 所属 root Thread '{}' 不存在",
+                "Activation '{}' belongs to root Thread '{}', which does not exist",
                 current.id, current.root_turn_id
             )
             .into());
@@ -3664,7 +3680,7 @@ impl Orchestrator {
             .find(|event| event.id == current.trigger_event_id)
         else {
             return Err(format!(
-                "Activation '{}' 的 Trigger Event '{}' 不存在",
+                "Activation '{}' references Trigger Event '{}', which does not exist",
                 current.id, current.trigger_event_id
             )
             .into());
@@ -4892,7 +4908,7 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Signal Outbox dispatcher 需要持久化 SessionStore")?;
+            .ok_or("Signal Outbox dispatcher requires a persistent SessionStore")?;
         let mut dispatched = 0usize;
         let mut cursor: Option<(chrono::DateTime<Utc>, String)> = None;
         loop {
@@ -4921,7 +4937,11 @@ impl Orchestrator {
                     .into_iter()
                     .find(|event| event.id == entry.event_id)
                 else {
-                    return Err(format!("Signal Outbox Event '{}' 未持久化", entry.event_id).into());
+                    return Err(format!(
+                        "Signal Outbox Event '{}' was not persisted",
+                        entry.event_id
+                    )
+                    .into());
                 };
                 let routable = event
                     .payload
@@ -5638,7 +5658,7 @@ impl Orchestrator {
                         continue;
                     }
                 }
-                let reason = "Runtime 重启时检测到 active Thread 没有非终态 Thread Activation、待执行调度或已提交终态；已将遗留孤儿状态标记为 cancelled。";
+                let reason = "Runtime restart detected an active Thread with no non-terminal Thread Activation, pending schedule, or committed terminal state; the orphaned state was marked cancelled.";
                 let mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
                     match kernel
                         .execute(crate::controllers::DialogueController::control_thread(
@@ -5745,25 +5765,25 @@ impl Orchestrator {
                     .unwrap_or(false);
             let reason = match (&activation, &thread) {
                 (None, _) if !detached_background => Some(format!(
-                    "Runtime 启动恢复时发现 Execution Job '{}' 的 Activation '{}' 不存在",
+                    "Runtime startup recovery found that Execution Job '{}' references nonexistent Activation '{}'",
                     job.id, job.activation_id
                 )),
                 (_, None) => Some(format!(
-                    "Runtime 启动恢复时发现 Execution Job '{}' 的 Thread '{}' 不存在",
+                    "Runtime startup recovery found that Execution Job '{}' references nonexistent Thread '{}'",
                     job.id, job.thread_id
                 )),
                 (Some(activation), _)
                     if activation.status.is_terminal() && !detached_background =>
                 {
                     Some(format!(
-                    "Runtime 启动恢复时发现 Execution Job '{}' 的 Activation '{}' 已处于终态 {}",
+                    "Runtime startup recovery found that Execution Job '{}' references Activation '{}', which is already in terminal state {}",
                     job.id,
                     activation.id,
                     activation.status.as_str()
                 ))
                 }
                 (_, Some(thread)) if thread.lifecycle.is_terminal() => Some(format!(
-                    "Runtime 启动恢复时发现 Execution Job '{}' 的 Thread '{}' 已处于终态 {}",
+                    "Runtime startup recovery found that Execution Job '{}' references Thread '{}', which is already in terminal state {}",
                     job.id,
                     thread.id,
                     thread.lifecycle.as_str()
@@ -5890,7 +5910,7 @@ impl Orchestrator {
                             json!(json!({
                                 "delegation_id": delegation.id,
                                 "status": "failed",
-                                "error": "Runtime 重启后未发现活跃 Evaluation 或已提交的终态结果；旧 running 状态已回收，未重复执行外部动作。"
+                                "error": "No active Evaluation or committed terminal result was found after Runtime restart; the stale running state was reclaimed without repeating external actions."
                             })
                             .to_string()),
                         ),
@@ -5949,6 +5969,7 @@ impl Orchestrator {
                             SessionUpdate {
                                 title: None,
                                 status: Some(SessionStatus::Archived),
+                                model_alias: None,
                             },
                         )
                         .await?;
@@ -6013,7 +6034,7 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("delegate 需要持久化 SessionStore")?;
+            .ok_or("delegate requires a persistent SessionStore")?;
         if initiating_principal_id.is_none() {
             initiating_principal_id = match event
                 .payload
@@ -6030,10 +6051,15 @@ impl Orchestrator {
         let parent = session_store
             .get_session(&parent_session_id)
             .await?
-            .ok_or_else(|| format!("delegate 父 Session '{}' 不存在", parent_session_id))?;
+            .ok_or_else(|| {
+                format!(
+                    "delegate parent Session '{}' does not exist",
+                    parent_session_id
+                )
+            })?;
         if parent.context_id != parent_context_id {
             return Err(format!(
-                "delegate 父路由不一致：Session '{}' 属于 '{}'，请求为 '{}'",
+                "delegate parent-route mismatch: Session '{}' belongs to '{}', but the request specified '{}'",
                 parent_session_id, parent.context_id, parent_context_id
             )
             .into());
@@ -6053,7 +6079,7 @@ impl Orchestrator {
             .len();
         if active_delegations >= active_limit {
             return Err(format!(
-                "DELEGATION_CAPACITY_EXCEEDED：Agent '{}' 已有 {} 个活跃 Sub Agent，配置上限为 {}。请等待现有任务完成或显式取消后再委派。",
+                "DELEGATION_CAPACITY_EXCEEDED: Agent '{}' already has {} active Sub Agents; the configured limit is {}. Wait for existing tasks to complete or cancel them explicitly before delegating again.",
                 parent.agent_id, active_delegations, active_limit
             )
             .into());
@@ -6065,13 +6091,13 @@ impl Orchestrator {
         let depth_limit = self.orchestrator_config.max_delegation_depth.max(1);
         if new_depth > depth_limit {
             return Err(format!(
-                "DELEGATION_DEPTH_EXCEEDED：新 Sub Agent 深度为 {}，配置上限为 {}。请由当前 Agent 完成任务或把结果返回上层，不要继续递归委派。",
+                "DELEGATION_DEPTH_EXCEEDED: the new Sub Agent depth would be {}; the configured limit is {}. Complete the task in the current Agent or return the result upward instead of delegating recursively.",
                 new_depth, depth_limit
             )
             .into());
         }
         if !matches!(context_scope.as_str(), "current_session" | "mind_only") {
-            return Err(format!("不支持的 delegate context_scope: {context_scope}").into());
+            return Err(format!("Unsupported delegate context_scope: {context_scope}").into());
         }
         let instruction = match success_when.as_deref() {
             Some(success_when) => format!(
@@ -6226,7 +6252,9 @@ impl Orchestrator {
             .await?
         {
             if !seen.insert(delegation.id.clone()) {
-                return Err("Delegation 父链出现循环，拒绝继续派生".into());
+                return Err(
+                    "Delegation parent chain contains a cycle; refusing further derivation".into(),
+                );
             }
             depth = depth.saturating_add(1);
             cursor = delegation.parent_session_id;
@@ -6247,7 +6275,7 @@ impl Orchestrator {
             .payload
             .get("context_id")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| format!("事件 '{}' 缺少 context_id 路由", event.id))?
+            .ok_or_else(|| format!("Event '{}' is missing its context_id route", event.id))?
             .to_string();
         self.session_contexts
             .insert(session_id.clone(), context_id.clone());
@@ -6579,7 +6607,7 @@ impl Orchestrator {
             if let Some(thread) = self
                 .context_engine
                 .session_store()
-                .ok_or("Thread 需要持久化 SessionStore")?
+                .ok_or("Thread requires a persistent SessionStore")?
                 .get_thread_by_root(&activation.root_turn_id)
                 .await?
             {
@@ -6608,7 +6636,7 @@ impl Orchestrator {
             }
             (None, Some(cancelled), _) => {
                 let reason = format!(
-                    "Objective '{}' Evaluation '{}' 已被暂停或取消",
+                    "Objective '{}' Evaluation '{}' has been paused or cancelled",
                     cancelled.objective_id, cancelled.evaluation_id
                 );
                 tracing::info!(
@@ -6644,7 +6672,7 @@ impl Orchestrator {
                 (result, ThreadActivationStatus::Cancelled)
             }
             (None, None, None) => {
-                let reason = format!("Session '{session_id}' 已由用户取消");
+                let reason = format!("Session '{session_id}' was cancelled by the user");
                 tracing::info!(
                     event_code = "orchestrator.session.user_cancelled",
                     session_id,
@@ -6703,7 +6731,7 @@ impl Orchestrator {
         }
         if final_status == ThreadActivationStatus::Failed {
             let reason = format!(
-                "Activation '{}' 求值失败；未完成的物理 Action 已失去可接收结果的因果 Owner",
+                "Activation '{}' evaluation failed; unfinished physical Actions no longer have a causal Owner that can receive their results",
                 activation.id
             );
             if let Err(cancellation_error) = self
@@ -6762,9 +6790,9 @@ impl Orchestrator {
             "runtime_internal"
         };
         let message = if storage_contention {
-            "Runtime 内部存储持续繁忙，本次请求未能开始执行。该回合已经结束，不会遗留为运行中；请重新发送这条消息。"
+            "Runtime storage remained busy, so this request could not begin. The turn has been closed and was not left running; please send the message again."
         } else {
-            "Runtime 在执行本次请求时发生内部错误。该回合已经结束，不会遗留为运行中；请重试或查看服务日志。"
+            "Runtime encountered an internal error while processing this request. The turn has been closed and was not left running; please retry or inspect the service logs."
         };
         self.publish_reply_with_attributes(
             session_id,
@@ -6792,7 +6820,7 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Thread Signal dispatch 需要持久化 SessionStore")?;
+            .ok_or("Thread Signal dispatch requires a persistent SessionStore")?;
         let Some(thread) = session_store.get_thread_by_root(root_turn_id).await? else {
             return Ok(());
         };
@@ -6812,7 +6840,7 @@ impl Orchestrator {
             .find(|event| event.id == signal.event_id)
         else {
             return Err(format!(
-                "Pending Thread Signal '{}' 的 Event '{}' 不存在",
+                "Pending Thread Signal '{}' references Event '{}', which does not exist",
                 signal.id, signal.event_id
             )
             .into());
@@ -6829,11 +6857,11 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Thread Activation 需要持久化 SessionStore")?;
+            .ok_or("Thread Activation requires a persistent SessionStore")?;
         let mut session = session_store
             .get_session(session_id)
             .await?
-            .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+            .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
 
         // A user-message Principal is an ingress authentication fact, not a
         // model-supplied routing hint.  SessionHandle already performs this
@@ -6853,7 +6881,7 @@ impl Orchestrator {
                     .await?
                 {
                     return Err(format!(
-                        "User Message Event '{}' 声称的 Principal '{}' 未绑定到 Session '{}'，拒绝创建 Activation",
+                        "User Message Event '{}' claims Principal '{}', which is not bound to Session '{}'; Activation creation was rejected",
                         event.id, principal_id, session_id
                     )
                     .into());
@@ -6909,7 +6937,9 @@ impl Orchestrator {
                     session = session_store
                         .get_session(session_id)
                         .await?
-                        .ok_or_else(|| format!("Session '{session_id}' 在恢复时消失"))?;
+                        .ok_or_else(|| {
+                            format!("Session '{session_id}' disappeared during recovery")
+                        })?;
                     if session.attention_state != SessionAttentionState::Active {
                         return Err(error);
                     }
@@ -6943,7 +6973,7 @@ impl Orchestrator {
                 .and_then(|stored| stored.sequence)
                 .ok_or_else(|| {
                     format!(
-                        "Trigger Event '{}' 尚未持久化，不能创建 Thread Activation",
+                        "Trigger Event '{}' has not been persisted, so a Thread Activation cannot be created",
                         event.id
                     )
                 })?,
@@ -6973,7 +7003,7 @@ impl Orchestrator {
         };
         if explicit_parent_activation_id.is_some() && parent.is_none() {
             return Err(format!(
-                "Trigger Event '{}' 引用的显式 parent Activation '{}' 不存在",
+                "Trigger Event '{}' references explicit parent Activation '{}', which does not exist",
                 event.id,
                 explicit_parent_activation_id.as_deref().unwrap_or_default()
             )
@@ -7185,9 +7215,11 @@ impl Orchestrator {
                 }))
             }
             ThreadActivationMutation::Conflict { .. } => Ok(None),
-            ThreadActivationMutation::NotFound => {
-                Err(format!("Thread Activation '{}' 在 claim 时消失", activation.id).into())
-            }
+            ThreadActivationMutation::NotFound => Err(format!(
+                "Thread Activation '{}' disappeared during claim",
+                activation.id
+            )
+            .into()),
         }
     }
 
@@ -7199,15 +7231,17 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Thread Activation 需要持久化 SessionStore")?;
+            .ok_or("Thread Activation requires a persistent SessionStore")?;
         let mut last_error = None;
         for retry in 0..5u64 {
             let current = match session_store.get_thread_activation(&activation.id).await {
                 Ok(Some(current)) => current,
                 Ok(None) => {
-                    return Err(
-                        format!("Thread Activation '{}' 在结束时消失", activation.id).into(),
-                    );
+                    return Err(format!(
+                        "Thread Activation '{}' disappeared during completion",
+                        activation.id
+                    )
+                    .into());
                 }
                 Err(error) => {
                     last_error = Some(error.to_string());
@@ -7261,9 +7295,11 @@ impl Orchestrator {
                     ));
                 }
                 Ok(ThreadActivationMutation::NotFound) => {
-                    return Err(
-                        format!("Thread Activation '{}' 在结束时消失", activation.id).into(),
-                    );
+                    return Err(format!(
+                        "Thread Activation '{}' disappeared during completion",
+                        activation.id
+                    )
+                    .into());
                 }
                 Err(error) => {
                     last_error = Some(error.to_string());
@@ -7275,7 +7311,7 @@ impl Orchestrator {
             .await;
         }
         Err(format!(
-            "Thread Activation '{}' 终态持久化重试耗尽：{}",
+            "Thread Activation '{}' exhausted retries while persisting its terminal state: {}",
             activation.id,
             last_error.unwrap_or_else(|| "unknown persistence error".to_string())
         )
@@ -7290,46 +7326,165 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Thread Activation 需要持久化 SessionStore")?;
-        let Some(current) = session_store.get_thread_activation(&activation.id).await? else {
-            return Err(format!("Thread Activation '{}' 在记录快照时消失", activation.id).into());
-        };
-        if current.status.is_terminal() || current.context_snapshot_version == Some(context_version)
-        {
-            return Ok(());
-        }
-        match self
-            .transition_thread_activation(
-                &current,
-                current.status,
-                current.claimed_by.clone(),
-                current.lease_expires_at,
-                Some(context_version),
-                &current.trigger_event_id,
-                "ContextSnapshot",
-            )
-            .await?
-        {
-            ThreadActivationMutation::Updated(updated) => {
-                self.arm_activation_lease(&updated).await?;
-                Ok(())
-            }
-            ThreadActivationMutation::Conflict { current }
-                if current.context_snapshot_version == Some(context_version) =>
+            .ok_or("Thread Activation requires a persistent SessionStore")?;
+        let mut last_conflict = None;
+        for retry in 0..5u64 {
+            let Some(current) = session_store.get_thread_activation(&activation.id).await? else {
+                return Err(format!(
+                    "Thread Activation '{}' disappeared while recording its snapshot",
+                    activation.id
+                )
+                .into());
+            };
+            if current.status.is_terminal()
+                || current.context_snapshot_version == Some(context_version)
             {
-                Ok(())
+                return Ok(());
             }
-            ThreadActivationMutation::Conflict { current } => Err(format!(
-                "Thread Activation '{}' Context snapshot 提交冲突：revision={}",
-                current.id, current.revision
-            )
-            .into()),
-            ThreadActivationMutation::NotFound => Err(format!(
-                "Thread Activation '{}' 在记录 Context snapshot 时消失",
-                activation.id
-            )
-            .into()),
+            if let Some(recorded_version) = current.context_snapshot_version {
+                return Err(format!(
+                    "Thread Activation '{}' Context snapshot version conflict: recorded version={} but attempted version={}",
+                    current.id, recorded_version, context_version
+                )
+                .into());
+            }
+            match self
+                .transition_thread_activation(
+                    &current,
+                    current.status,
+                    current.claimed_by.clone(),
+                    current.lease_expires_at,
+                    Some(context_version),
+                    &current.trigger_event_id,
+                    "ContextSnapshot",
+                )
+                .await?
+            {
+                ThreadActivationMutation::Updated(updated) => {
+                    self.arm_activation_lease(&updated).await?;
+                    return Ok(());
+                }
+                ThreadActivationMutation::Conflict { current }
+                    if current.status.is_terminal()
+                        || current.context_snapshot_version == Some(context_version) =>
+                {
+                    return Ok(());
+                }
+                ThreadActivationMutation::Conflict { current }
+                    if current.context_snapshot_version.is_some() =>
+                {
+                    return Err(format!(
+                        "Thread Activation '{}' Context snapshot version conflict: recorded version={:?} but attempted version={}",
+                        current.id, current.context_snapshot_version, context_version
+                    )
+                    .into());
+                }
+                ThreadActivationMutation::Conflict { current } => {
+                    // Lease heartbeats and concurrent tool-result wakes advance
+                    // the Activation revision without changing the Context
+                    // snapshot. Reload the latest record and retry the CAS
+                    // instead of turning a healthy execution into an internal
+                    // terminal failure.
+                    last_conflict = Some(current.revision);
+                }
+                ThreadActivationMutation::NotFound => {
+                    return Err(format!(
+                        "Thread Activation '{}' disappeared while recording its Context snapshot",
+                        activation.id
+                    )
+                    .into());
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(
+                25u64.saturating_mul(1 << retry),
+            ))
+            .await;
         }
+        Err(format!(
+            "Thread Activation '{}' exhausted retries while committing its Context snapshot: last_revision={:?}",
+            activation.id, last_conflict
+        )
+        .into())
+    }
+
+    async fn rebind_activation_context_snapshot_after_maintenance(
+        &self,
+        activation: &ThreadActivationRecord,
+        context_version: u64,
+    ) -> Result<(), DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Thread Activation requires a persistent SessionStore")?;
+        let mut last_conflict = None;
+        for retry in 0..5u64 {
+            let Some(current) = session_store.get_thread_activation(&activation.id).await? else {
+                return Err(format!(
+                    "Thread Activation '{}' disappeared while rebinding its snapshot after maintenance",
+                    activation.id
+                )
+                .into());
+            };
+            if current.status.is_terminal()
+                || current.context_snapshot_version == Some(context_version)
+            {
+                return Ok(());
+            }
+            let Some(recorded_version) = current.context_snapshot_version else {
+                return self
+                    .record_activation_context_snapshot(&current, context_version)
+                    .await;
+            };
+            if context_version <= recorded_version {
+                return Err(format!(
+                    "Thread Activation '{}' has a non-monotonic post-maintenance Context snapshot: recorded version={} but attempted to rebind version={}",
+                    current.id, recorded_version, context_version
+                )
+                .into());
+            }
+            match self
+                .transition_thread_activation(
+                    &current,
+                    current.status,
+                    current.claimed_by.clone(),
+                    current.lease_expires_at,
+                    Some(context_version),
+                    &current.trigger_event_id,
+                    "ContextSnapshotAfterMaintenance",
+                )
+                .await?
+            {
+                ThreadActivationMutation::Updated(updated) => {
+                    self.arm_activation_lease(&updated).await?;
+                    return Ok(());
+                }
+                ThreadActivationMutation::Conflict { current }
+                    if current.status.is_terminal()
+                        || current.context_snapshot_version == Some(context_version) =>
+                {
+                    return Ok(());
+                }
+                ThreadActivationMutation::Conflict { current } => {
+                    last_conflict = Some(current.revision);
+                }
+                ThreadActivationMutation::NotFound => {
+                    return Err(format!(
+                        "Thread Activation '{}' disappeared while rebinding its Context snapshot after maintenance",
+                        activation.id
+                    )
+                    .into());
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(
+                25u64.saturating_mul(1 << retry),
+            ))
+            .await;
+        }
+        Err(format!(
+            "Thread Activation '{}' exhausted retries while rebinding its post-maintenance Context snapshot: last_revision={:?}",
+            activation.id, last_conflict
+        )
+        .into())
     }
 
     async fn pending_routed_inputs(
@@ -7339,7 +7494,7 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Thread pending-input check 需要持久化 SessionStore")?;
+            .ok_or("Thread pending-input check requires a persistent SessionStore")?;
         Ok(usize::from(
             session_store
                 .next_pending_thread_signal(
@@ -7348,7 +7503,7 @@ impl Orchestrator {
                         .await?
                         .ok_or_else(|| {
                             format!(
-                                "Activation '{}' 所属 Thread '{}' 不存在",
+                                "Activation '{}' belongs to Thread '{}', which does not exist",
                                 activation.id, activation.root_turn_id
                             )
                         })?
@@ -7534,11 +7689,14 @@ impl Orchestrator {
             "content"
         };
         let recallable = call.function.name != "context_tx"
+            || text.starts_with("Tool execution failed:")
+            || text.starts_with("Tool execution rejected:")
+            // Legacy persisted output compatibility. New producers emit English.
             || text.starts_with("执行失败:")
             || text.starts_with("执行拒绝:");
         let observation_ref = recallable.then(|| self.context_engine.event_reference(output));
         let guidance = (status == "success" && output_state == "empty").then_some(
-            "工具已成功完成但没有返回文本；不要仅因输出为空而重复调用。若工具具有副作用，请依据后续 file_change 或状态证据判断。",
+            "The tool completed successfully without text output. Do not repeat it merely because output is empty; for side-effecting tools, use subsequent file_change or state evidence.",
         );
         let content = serde_json::to_string(&json!({
             "session_id": output.payload.get("session_id").and_then(|value| value.as_str()),
@@ -7579,6 +7737,29 @@ impl Orchestrator {
         tools: Vec<crate::llm::ToolDefinition>,
         prompt_measurement: Option<PromptTokenCount>,
     ) -> Result<ModelCompletion, ModelCompletionError> {
+        let requested_model = self
+            .activation_route(attempt_id)
+            .map(|route| route.model_alias);
+        self.request_model_completion_with_model(
+            session_id,
+            attempt_id,
+            messages,
+            tools,
+            prompt_measurement,
+            requested_model.as_deref(),
+        )
+        .await
+    }
+
+    async fn request_model_completion_with_model(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        messages: Vec<Message>,
+        tools: Vec<crate::llm::ToolDefinition>,
+        prompt_measurement: Option<PromptTokenCount>,
+        requested_model: Option<&str>,
+    ) -> Result<ModelCompletion, ModelCompletionError> {
         let stream_context_id = self
             .context_id_for_session(session_id)
             .map_err(ModelCompletionError::internal)?;
@@ -7588,7 +7769,7 @@ impl Orchestrator {
         crate::model_input::validate_model_input_usage(
             model_input_usage,
             host_model_input_limits,
-            "最终模型请求（宿主策略）",
+            "final model request (host policy)",
         )
         .map_err(ModelCompletionError::input)?;
         let explicit_dialogue_attempt = self.activation_route(attempt_id).is_some_and(|route| {
@@ -7598,7 +7779,9 @@ impl Orchestrator {
                     .get_for_activation(&route.activation_id)
                     .is_none()
         });
-        let admission_resource = self.client.provider_resource_key();
+        let admission_resource = self
+            .client
+            .provider_resource_key_for_requested_model(requested_model);
         self.admit_provider_circuit(
             &admission_resource,
             &stream_context_id,
@@ -7646,13 +7829,16 @@ impl Orchestrator {
         // explain exactly which route, endpoint and account were used instead
         // of re-running mutable routing policy after the fact.
         let model_binding = client
-            .bind_model_attempt(&ModelRequestContext {
-                context_id: stream_context_id.clone(),
-                session_id: stream_session_id.clone(),
-                attempt_id: stream_attempt_id.clone(),
-                objective_id,
-                required_capabilities: Vec::new(),
-            })
+            .bind_requested_model_attempt(
+                &ModelRequestContext {
+                    context_id: stream_context_id.clone(),
+                    session_id: stream_session_id.clone(),
+                    attempt_id: stream_attempt_id.clone(),
+                    objective_id,
+                    required_capabilities: Vec::new(),
+                },
+                requested_model,
+            )
             .await
             .map_err(model_binding_completion_error)?;
         let bound_provider_resource = client.provider_resource_key_for_binding(&model_binding);
@@ -7699,9 +7885,9 @@ impl Orchestrator {
             model_input_usage,
             effective_model_input_limits,
             if model_binding.model_input_limits.is_unspecified() {
-                "最终模型请求（宿主策略；服务未声明附件上限）"
+                "final model request (host policy; service declares no attachment limit)"
             } else {
-                "最终模型请求（宿主与物理模型的有效上限）"
+                "final model request (effective host and physical-model limits)"
             },
         ) {
             let detail = error.to_string();
@@ -8471,7 +8657,7 @@ impl Orchestrator {
                                 "objective_status": objective.status,
                                 "objective_phase": "finalizing",
                                 "evidence_refs": intent.evidence_refs,
-                                "next_action": "在当前 Activation 中返回完整、无工具的最终报告；最终回复将与 Objective、Activation、Thread 和 ThreadOutcome 原子提交。"
+                                "next_action": "Return a complete, tool-free final report in the current Activation; the final response will be committed atomically with the Objective, Activation, Thread, and ThreadOutcome."
                             })
                             .to_string()),
                         ),
@@ -8538,7 +8724,7 @@ impl Orchestrator {
         };
         if assistant_call.topic != "chat/assistant_call" {
             return Err(format!(
-                "Thread Activation '{}' 的恢复边界 '{}' 不是 assistant_call",
+                "Thread Activation '{}' recovery boundary '{}' is not assistant_call",
                 activation.id, assistant_event_id
             )
             .into());
@@ -8578,7 +8764,7 @@ impl Orchestrator {
                 .map_err(|error| -> DynError { error.into() })?
                 .ok_or_else(|| {
                     format!(
-                        "Thread Activation '{}' 的持久化终态响应不合法",
+                        "persisted terminal response for Thread Activation '{}' is invalid",
                         activation.id
                     )
                 })?;
@@ -8616,7 +8802,7 @@ impl Orchestrator {
 
         if response.tool_calls.is_empty() {
             return Err(format!(
-                "Thread Activation '{}' 的持久化 assistant_call 既非终态回复也没有工具调用",
+                "persisted assistant_call for Thread Activation '{}' is neither a terminal response nor a tool call",
                 activation.id
             )
             .into());
@@ -8778,11 +8964,14 @@ impl Orchestrator {
                 .find_event(context_id, &reference.source_event_id)
                 .await?
                 .ok_or_else(|| {
-                    format!("模型附件来源 Event '{}' 不存在", reference.source_event_id)
+                    format!(
+                        "Model-attachment source Event '{}' does not exist",
+                        reference.source_event_id
+                    )
                 })?;
             if event.event_type != TYPE_TOOL_OUTPUT {
                 return Err(format!(
-                    "模型附件来源 Event '{}' 不是工具输出",
+                    "source Event '{}' for a model attachment is not tool output",
                     reference.source_event_id
                 )
                 .into());
@@ -8800,7 +8989,12 @@ impl Orchestrator {
                     })
                 })
                 .cloned()
-                .ok_or_else(|| format!("模型附件引用 '{}' 与来源 Event 不一致", reference.id))?;
+                .ok_or_else(|| {
+                    format!(
+                        "Model-attachment reference '{}' is inconsistent with its source Event",
+                        reference.id
+                    )
+                })?;
             stored.push(item);
         }
         Ok(stored)
@@ -8813,13 +9007,18 @@ impl Orchestrator {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DynError>> + Send + 'a>>
     {
         Box::pin(async move {
+            let mut refresh_context_snapshot = false;
             loop {
-                match self.run_attempt_inner(session_id, activation).await {
+                match self
+                    .run_attempt_inner(session_id, activation, refresh_context_snapshot)
+                    .await
+                {
                     Err(error)
                         if error
                             .downcast_ref::<RefreshContextAfterConcurrentMaintenance>()
                             .is_some() =>
                     {
+                        refresh_context_snapshot = true;
                         continue;
                     }
                     result => return result,
@@ -8832,6 +9031,7 @@ impl Orchestrator {
         &self,
         session_id: &str,
         activation: &ThreadActivationRecord,
+        refresh_context_snapshot: bool,
     ) -> Result<(), DynError> {
         let attempt_id = activation.id.clone();
         let mut persisted_assistant_call = self
@@ -8944,11 +9144,16 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Thread 需要持久化 SessionStore")?;
+            .ok_or("Thread requires a persistent SessionStore")?;
         let mut thread = session_store
             .get_thread_by_root(&activation.root_turn_id)
             .await?
-            .ok_or_else(|| format!("Root Turn '{}' 缺少 Thread", activation.root_turn_id))?;
+            .ok_or_else(|| {
+                format!(
+                    "Root Turn '{}' is missing its Thread",
+                    activation.root_turn_id
+                )
+            })?;
         let initial_objective_closure_review = activation.trigger_event_id
             == activation.root_turn_id
             && self
@@ -8986,18 +9191,65 @@ impl Orchestrator {
                 }
                 ThreadMutation::Conflict { current } => {
                     return Err(format!(
-                        "Thread '{}' 的物理执行升级发生并发冲突：当前类型为 '{}'",
+                        "physical-execution upgrade for Thread '{}' encountered a concurrency conflict; current kind is '{}'",
                         current.id,
                         current.kind.as_str()
                     )
                     .into());
                 }
                 ThreadMutation::NotFound => {
-                    return Err(format!("Thread '{}' 在物理执行升级时消失", thread.id).into());
+                    return Err(format!(
+                        "Thread '{}' disappeared during physical-execution promotion",
+                        thread.id
+                    )
+                    .into());
                 }
             }
         }
         let thread_kind = thread.kind.as_str();
+        let trigger_model_alias = self
+            .context_engine
+            .find_event(&activation.context_id, &activation.trigger_event_id)
+            .await?
+            .and_then(|event| {
+                event
+                    .payload
+                    .get("model_alias")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                    .map(ToOwned::to_owned)
+            });
+        let session_model_alias = session_store
+            .get_session(session_id)
+            .await?
+            .and_then(|session| session.model_alias);
+        let desired_model_alias = activation
+            .model_alias
+            .clone()
+            .or(trigger_model_alias)
+            .or(session_model_alias)
+            .or_else(|| self.client.model())
+            // A third-party direct Client may intentionally expose no
+            // operator-facing model alias. Its Client instance is already a
+            // fixed physical route, so freeze the stable internal route name
+            // instead of preventing the Evaluation from ever reaching it.
+            .unwrap_or_else(|| "direct".to_string());
+        let bound_activation = session_store
+            .bind_thread_activation_model(&activation.id, &desired_model_alias)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Thread Activation '{}' disappeared while binding its model",
+                    activation.id
+                )
+            })?;
+        let activation_model_alias = bound_activation.model_alias.ok_or_else(|| {
+            format!(
+                "Thread Activation '{}' failed to persist its model binding",
+                activation.id
+            )
+        })?;
         let delivery_thread_ids = if thread_kind == "delivery" {
             self.context_engine
                 .find_event(&activation.context_id, &activation.trigger_event_id)
@@ -9028,6 +9280,7 @@ impl Orchestrator {
                 trigger_sequence: activation.trigger_sequence,
                 initiating_principal_id: activation.initiating_principal_id.clone(),
                 context_snapshot_version: activation.context_snapshot_version,
+                model_alias: activation_model_alias,
                 thread_kind,
                 internal_child_handoff: thread.executor_kind == "plan_infer",
                 delivery_thread_ids,
@@ -9103,8 +9356,16 @@ impl Orchestrator {
                 )
                 .await?;
         }
-        self.record_activation_context_snapshot(activation, context.state.version)
+        if refresh_context_snapshot {
+            self.rebind_activation_context_snapshot_after_maintenance(
+                activation,
+                context.state.version,
+            )
             .await?;
+        } else {
+            self.record_activation_context_snapshot(activation, context.state.version)
+                .await?;
+        }
         if let Some(mut route) = self.activation_routes.get_mut(&attempt_id) {
             route.context_snapshot_version = Some(context.state.version);
         }
@@ -9140,7 +9401,8 @@ impl Orchestrator {
                 )
                 .map(|program| (source, program))
                 .map_err(|error| -> DynError {
-                    format!("绑定 Harness 的入口程序未通过完整校验：{error}").into()
+                    format!("Bound Harness entry program failed complete validation: {error}")
+                        .into()
                 })
             })
             .transpose()?;
@@ -9156,7 +9418,7 @@ impl Orchestrator {
                 .await?
                 .ok_or_else(|| {
                     format!(
-                        "Plan infer Thread '{}' 缺少根请求 Event '{}'",
+                        "Plan infer Thread '{}' is missing root request Event '{}'",
                         thread.id, activation.root_turn_id
                     )
                 })?;
@@ -9365,7 +9627,7 @@ impl Orchestrator {
                     session_id,
                     &attempt_id,
                     format!(
-                        "已完成 {} 次模型求值软检查点；正在复盘进展，任务不会因此停止。",
+                        "Completed {} model-evaluation soft checkpoints; reviewing progress without stopping the task.",
                         context.turn_budget.attempt
                     ),
                 )
@@ -9415,7 +9677,7 @@ impl Orchestrator {
                     &activation.id,
                 )
                 .await?
-                .ok_or("恢复 Objective finalization 时缺少持久 completion 调用或工具回执")?;
+                .ok_or("Objective-finalization recovery is missing the persisted completion call or tool receipt")?;
             messages.push(Message {
                 role: "assistant".to_string(),
                 content: assistant_call
@@ -10042,7 +10304,7 @@ impl Orchestrator {
                         &model_attempt_id,
                         protocol_errors,
                         "empty",
-                        "模型返回空响应",
+                        "Model returned an empty response",
                         None,
                     )
                     .await?;
@@ -10060,7 +10322,7 @@ impl Orchestrator {
                         &mut protocol_messages,
                         None,
                         None,
-                        "模型返回空响应",
+                        "Model returned an empty response",
                     )?;
                     continue;
                 }
@@ -10136,7 +10398,7 @@ impl Orchestrator {
                         .outputs
                         .into_iter()
                         .next()
-                        .ok_or("Objective completion 工具没有产生持久结果")?;
+                        .ok_or("Objective completion tool produced no persistent result")?;
                     if let Some(provider_continuation) = provider_continuation {
                         protocol_messages
                             .push(provider_continuation_message(provider_continuation)?);
@@ -10178,7 +10440,7 @@ impl Orchestrator {
                     } else {
                         protocol_messages.push(Message {
                             role: "user".to_string(),
-                            content: "Objective 完成请求没有进入 finalizing；请依据工具回执和最新 revision 重新判断。".to_string(),
+                            content: "The Objective completion request did not enter finalizing; reassess using the tool receipt and latest revision.".to_string(),
                             name: None,
                             tool_call_id: None,
                             tool_calls: None,
@@ -10206,9 +10468,9 @@ impl Orchestrator {
                             && pending_routed_inputs == 0)
                     {
                         let reason = if thread_kind != "execution" {
-                            "no_reply(mode=wait) 被拒绝：当前不是可挂起等待物理事件的 Execution Thread；请直接回复当前 Session，或仅在确实有意静默时改用 mode=silent"
+                            "no_reply(mode=wait) was rejected: the current Thread is not an Execution Thread that can suspend while waiting for a physical event. Reply to the current Session directly, or use mode=silent only when silence is genuinely intended"
                         } else {
-                            "no_reply(mode=wait) 被拒绝：Runtime 当前没有仍在运行的后台任务、排队调度或待处理事件；最新完成/失败结果已经是权威事实，请处理该结果并回复、继续行动，或仅在确实有意静默时改用 mode=silent"
+                            "no_reply(mode=wait) was rejected: the Runtime currently has no running background task, queued schedule, or pending event. The latest completed or failed result is authoritative; handle it and reply or continue acting, or use mode=silent only when silence is genuinely intended"
                         };
                         protocol_errors += 1;
                         self.record_response_protocol_error(
@@ -10501,7 +10763,7 @@ impl Orchestrator {
             return Ok(());
         }
 
-        unreachable!("无工具响应应由终态协议分类、纠错或熔断处理")
+        unreachable!("A tool-free response must be handled by terminal-protocol classification, correction, or the circuit breaker")
     }
 
     async fn execution_result_is_interactive(
@@ -10519,7 +10781,7 @@ impl Orchestrator {
         let store = self
             .context_engine
             .session_store()
-            .ok_or("Interactive Execution 路由需要持久化 SessionStore")?;
+            .ok_or("Interactive Execution route requires a persistent SessionStore")?;
         if !store
             .list_schedules(Some(&thread.id), None)
             .await?
@@ -10771,7 +11033,7 @@ impl Orchestrator {
                     session_id,
                     attempt_id,
                     None,
-                    "模型连续三次没有生成合法的 Objective 最终报告。本次完成意图已撤销，Objective 未被标记为完成；请检查模型状态后继续。".to_string(),
+                    "The model failed to produce a valid Objective final report three consecutive times. This completion intent was revoked and the Objective was not marked complete; inspect model state before continuing.".to_string(),
                     parent_session_id,
                     vec![
                         ("terminal_kind".to_string(), json!("failed")),
@@ -10790,7 +11052,7 @@ impl Orchestrator {
         self.publish_reply(
             session_id,
             attempt_id,
-            "模型连续三次没有返回合法的普通文本或 no_reply，Runtime 已安全熔断本回合；已提交的 Mind、文件修改和 Events 均已保留。".to_string(),
+            "The model failed to return valid ordinary text or no_reply three consecutive times. The Runtime safely stopped this turn; committed Mind state, file changes, and Events were preserved.".to_string(),
             parent_session_id,
         )
         .await
@@ -11151,9 +11413,12 @@ impl Orchestrator {
         content: String,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
-        let route = self
-            .activation_route(attempt_id)
-            .ok_or_else(|| format!("Work result '{}' 缺少 Evaluation route", attempt_id))?;
+        let route = self.activation_route(attempt_id).ok_or_else(|| {
+            format!(
+                "Work result '{}' is missing its Evaluation route",
+                attempt_id
+            )
+        })?;
         let result_event_id = format!(
             "thread_result_{}_{}",
             route.thread_id,
@@ -11208,7 +11473,7 @@ impl Orchestrator {
         let store = self
             .context_engine
             .session_store()
-            .ok_or("Completion delivery 需要持久化 SessionStore")?;
+            .ok_or("Completion delivery requires a persistent SessionStore")?;
         let timer_id = delivery_flush_timer_id(session_id);
         let Some(timer) = store
             .arm_delivery_flush_timer(
@@ -11285,7 +11550,7 @@ impl Orchestrator {
         let store = self
             .context_engine
             .session_store()
-            .ok_or("Delivery Flush 需要持久化 SessionStore")?;
+            .ok_or("Delivery Flush requires a persistent SessionStore")?;
         let session_id = timer.owner_id.clone();
         let direct_event_id = delivery_flush_reply_event_id(&timer.id, timer.generation);
         if let Some(reply) = self
@@ -11322,7 +11587,7 @@ impl Orchestrator {
         let session = store
             .get_session(&session_id)
             .await?
-            .ok_or_else(|| format!("Delivery Flush Session '{}' 不存在", session_id))?;
+            .ok_or_else(|| format!("Delivery Flush Session '{}' does not exist", session_id))?;
         let completed_thread_ids = timer
             .payload
             .get("completed_thread_ids")
@@ -11402,7 +11667,12 @@ impl Orchestrator {
                     .await?;
                 match result {
                     crate::scheduler::KernelResult::DeliveryOutcomeCommitted(commit) => commit,
-                    other => return Err(format!("Delivery Kernel 返回意外结果：{other:?}").into()),
+                    other => {
+                        return Err(format!(
+                            "Delivery Kernel returned an unexpected result: {other:?}"
+                        )
+                        .into())
+                    }
                 }
             } else {
                 store
@@ -11449,7 +11719,7 @@ impl Orchestrator {
                 ("result_event_ids".to_string(), json!(result_event_ids)),
                 (
                     "text".to_string(),
-                    json!("一个或多个 Thread 已完成。请只交付本次 completion snapshot 在 kernel.thread-scheduler 中呈现的 delivery=pending/deferred 结果，并结合最新并发状态形成一条清晰且不重复的消息；本次求值开始后新完成的结果属于下一次 Delivery，不要提前声称已覆盖。确实无需通知时才独占调用 no_reply。不得重复已经 delivered 的结果。"),
+                    json!("One or more Threads completed. Deliver only results shown as delivery=pending/deferred in this completion snapshot under kernel.thread-scheduler, combining them with the latest concurrent state into one clear, non-duplicative message. Results completed after this evaluation began belong to the next Delivery and must not be claimed early. Call no_reply exclusively only when no notification is genuinely needed. Never repeat results already marked delivered."),
                 ),
             ]
             .into_iter()
@@ -11487,7 +11757,11 @@ impl Orchestrator {
                 .await?;
             match result {
                 crate::scheduler::KernelResult::DeliveryOutcomeCommitted(commit) => commit,
-                other => return Err(format!("Delivery Kernel 返回意外结果：{other:?}").into()),
+                other => {
+                    return Err(
+                        format!("Delivery Kernel returned an unexpected result: {other:?}").into(),
+                    )
+                }
             }
         } else {
             store
@@ -11553,7 +11827,7 @@ impl Orchestrator {
                 return Ok(None);
             }
         }
-        let mut content = format!("以下 {} 项工作已完成：", texts.len());
+        let mut content = format!("The following {} work items are complete:", texts.len());
         for (index, text) in texts.iter().enumerate() {
             content.push_str(&format!("\n\n{}. {}", index + 1, text.trim()));
         }
@@ -11572,7 +11846,7 @@ impl Orchestrator {
         let store = self
             .context_engine
             .session_store()
-            .ok_or("Completion delivery 需要持久化 SessionStore")?;
+            .ok_or("Completion delivery requires a persistent SessionStore")?;
         Ok(store
             .list_session_delivery_threads(
                 session_id,
@@ -11622,7 +11896,7 @@ impl Orchestrator {
                 let session_store = self
                     .context_engine
                     .session_store()
-                    .ok_or("Evaluation outcome 需要持久化 SessionStore")?;
+                    .ok_or("Evaluation outcome requires a persistent SessionStore")?;
                 session_store
                     .commit_activation_outcome(&route.activation_id, event)
                     .await
@@ -11649,7 +11923,7 @@ impl Orchestrator {
                 Err(error) => return Err(error),
             }
         }
-        let commit = committed.ok_or("Evaluation outcome 持久化没有产生结果")?;
+        let commit = committed.ok_or("Evaluation outcome persistence produced no result")?;
         let requested_provider_wait = event
             .payload
             .get("disposition")
@@ -11767,7 +12041,7 @@ impl Orchestrator {
             }
             if !dispatched {
                 return Err(format!(
-                    "Evaluation outcome '{}' 已持久化但派发重试耗尽：{}",
+                    "Evaluation outcome '{}' was persisted but exhausted dispatch retries: {}",
                     event.id,
                     dispatch_error.unwrap_or_else(|| "unknown dispatch error".to_string())
                 )
@@ -11789,7 +12063,7 @@ impl Orchestrator {
                     .find(|candidate| candidate.id == signal_event_id)
                     .ok_or_else(|| {
                         format!(
-                            "Outcome transaction 返回的 Signal Event '{}' 不存在",
+                            "Signal Event '{}' returned by the Outcome transaction does not exist",
                             signal_event_id
                         )
                     })?;
@@ -11811,7 +12085,7 @@ impl Orchestrator {
                     .find(|candidate| candidate.id == supervisor_event_id)
                     .ok_or_else(|| {
                         format!(
-                            "Outcome transaction 返回的 Supervisor Event '{}' 不存在",
+                            "Supervisor Event '{}' returned by the Outcome transaction does not exist",
                             supervisor_event_id
                         )
                     })?;
@@ -11821,12 +12095,12 @@ impl Orchestrator {
                 let terminal_thread = self
                     .context_engine
                     .session_store()
-                    .ok_or("恢复终态交接需要持久化 SessionStore")?
+                    .ok_or("Terminal-handoff recovery requires a persistent SessionStore")?
                     .get_thread(&route.thread_id)
                     .await?
                     .ok_or_else(|| {
                         format!(
-                            "恢复 Activation '{}' 的终态交接时 Thread '{}' 不存在",
+                            "terminal handoff recovery for Activation '{}' references nonexistent Thread '{}'",
                             route.activation_id, route.thread_id
                         )
                     })?;
@@ -11919,13 +12193,13 @@ impl Orchestrator {
     ) -> Result<(), DynError> {
         let route = self
             .activation_route(attempt_id)
-            .ok_or_else(|| format!("Evaluation '{}' 缺少 Thread route", attempt_id))?;
+            .ok_or_else(|| format!("Evaluation '{}' is missing its Thread route", attempt_id))?;
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Thread phase 投影需要持久化 SessionStore")?;
+            .ok_or("Thread-phase projection requires a persistent SessionStore")?;
         let Some(current) = session_store.get_thread(&route.thread_id).await? else {
-            return Err(format!("Thread '{}' 不存在", route.thread_id).into());
+            return Err(format!("Thread '{}' does not exist", route.thread_id).into());
         };
         if current.lifecycle.is_terminal() {
             return Ok(());
@@ -12054,7 +12328,7 @@ impl Orchestrator {
     ) -> Result<(), DynError> {
         let route = self
             .activation_route(attempt_id)
-            .ok_or("Provider wait 缺少 Activation route")?;
+            .ok_or("Provider wait is missing its Activation route")?;
         let mut wait_payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
@@ -12243,44 +12517,44 @@ impl Orchestrator {
             ModelFailureKind::ContextLimit
                 if stage == "critical_maintenance_minimum_projection" =>
             {
-                "即使只保留最小维护投影，模型接口仍拒绝当前 Context 大小。Runtime 已停止自动维护循环；请扩大模型 Context，或人工检查不可裁剪的系统契约与受保护 Mind。".to_string()
+                "The model interface still rejects the current Context size even with only the minimum maintenance projection. The Runtime stopped the automatic maintenance loop; increase the model Context or manually inspect non-prunable system contracts and protected Mind state.".to_string()
             }
             ModelFailureKind::ContextLimit => {
-                "模型接口拒绝了当前 Context 大小。Runtime 已停止本次物理请求并进入 Context 维护协调；任务状态与已提交修改均已保留。".to_string()
+                "The model interface rejected the current Context size. The Runtime stopped this physical request and entered Context maintenance coordination; task state and committed changes were preserved.".to_string()
             }
             kind if kind.is_provider_transient() => {
-                "模型服务暂时不可用。Runtime 已保留当前任务并转入 Provider 退避等待；服务恢复后将继续。".to_string()
+                "The model service is temporarily unavailable. The Runtime preserved the current task and entered Provider backoff; it will continue after service recovery.".to_string()
             }
             ModelFailureKind::Authentication => {
-                "模型 Provider 认证无效。Runtime 已保留当前任务并进入低频 Provider 重试；修复凭证后将自动继续。".to_string()
+                "Model Provider authentication is invalid. The Runtime preserved the current task and entered low-frequency Provider retry; it will continue automatically after credentials are fixed.".to_string()
             }
             ModelFailureKind::InvalidModelOrRequest => {
                 format!(
-                    "模型或请求参数无效。Runtime 已停止本回合并保留 Session；修正模型或推理设置后重试。\n\n原始错误：{error_text}"
+                    "The model or request parameters are invalid. The Runtime stopped this turn and preserved the Session; correct the model or reasoning settings before retrying.\n\nOriginal error: {error_text}"
                 )
             }
             ModelFailureKind::QuotaExhausted => {
                 format!(
-                    "模型服务额度已耗尽。本次请求已经结束，不会进入等待队列；请等待额度恢复、升级订阅或切换模型。\n\n服务返回：{error_text}"
+                    "The model-service quota is exhausted. This request has ended and will not enter a wait queue; wait for quota recovery, upgrade the subscription, or switch models.\n\nService response: {error_text}"
                 )
             }
             ModelFailureKind::HardDeadlineExceeded => {
-                "模型请求超过了 Runtime 配置的单次硬期限。本回合已取消，不会把请求延长成无限 Provider 恢复循环；Session、Mind 与已提交修改均已保留。".to_string()
+                "The model request exceeded the Runtime's configured per-request hard deadline. This turn was cancelled instead of extending into an unbounded Provider recovery loop; the Session, Mind state, and committed changes were preserved.".to_string()
             }
             ModelFailureKind::ProviderQueueTimeout => {
-                "Runtime 未能在配置的等待时间内获得本地模型请求槽。请求尚未发送给 Provider，本回合已结束；Session、Mind 与已提交修改均已保留。".to_string()
+                "The Runtime could not acquire a local model-request slot within the configured wait time. The request was not sent to the Provider and this turn ended; the Session, Mind state, and committed changes were preserved.".to_string()
             }
             ModelFailureKind::ReasoningContinuationExhausted => {
-                "模型连续只返回推理进度，未在 Runtime 配置的安全边界内产生最终正文或工具调用。本回合已安全熔断，不会误判为 Provider 故障并无限重试。".to_string()
+                "The model repeatedly returned only reasoning progress without producing final content or tool calls within the Runtime's configured safety boundary. This turn was stopped safely rather than misclassified as a Provider failure and retried indefinitely.".to_string()
             }
             kind if kind.uses_provider_recovery() => {
-                "模型请求失败。Runtime 已保留当前任务并进入 Provider 退避重试；Provider 可用后将自动继续。".to_string()
+                "The model request failed. The Runtime preserved the current task and entered Provider backoff; it will continue automatically when the Provider becomes available.".to_string()
             }
             _ if stage == "llm_completion" => {
-                "模型请求失败，Runtime 已停止本回合，未继续执行任何工具。当前 Session、Mind 与已提交文件修改均已保留。".to_string()
+                "The model request failed. The Runtime stopped this turn without executing additional tools; the current Session, Mind state, and committed file changes were preserved.".to_string()
             }
             _ => {
-                "Runtime 的完整 Attempt 超过执行期限，已取消本回合以避免用户一直等待。当前 Session、Mind 与已提交文件修改均已保留。".to_string()
+                "The Runtime's complete Attempt exceeded its execution deadline. This turn was cancelled to avoid indefinite user waiting; the current Session, Mind state, and committed file changes were preserved.".to_string()
             }
         };
         if ordinary_provider_wait {
@@ -12477,15 +12751,15 @@ impl Orchestrator {
             ..
         } = effect
         else {
-            return Err("只有 call effect 可以规划 Execution Job".into());
+            return Err("Only a call effect can plan an Execution Job".into());
         };
         let tool = self
             .registry
             .get(tool_name)
-            .ok_or_else(|| format!("Yao Plan 调用了未注册工具 '{tool_name}'"))?;
+            .ok_or_else(|| format!("Yao Plan called unregistered tool '{tool_name}'"))?;
         if tool.execution_class() != crate::tool::ToolExecutionClass::PhysicalJob {
             return Err(format!(
-                "Yao Plan 的 (call {tool_name} ...) 必须进入 Physical Execution Job；LogicalInline 工具不能绕过其控制平面"
+                "Yao Plan (call {tool_name} ...) must enter a Physical Execution Job; a LogicalInline tool cannot bypass its control plane"
             )
             .into());
         }
@@ -12495,17 +12769,19 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Yao Plan 物理调用需要持久化 ThreadStore")?;
+            .ok_or("Yao Plan physical call requires a persistent ThreadStore")?;
         let thread = session_store
             .get_thread(&plan.thread_id)
             .await?
-            .ok_or_else(|| format!("Yao Plan Thread '{}' 不存在", plan.thread_id))?;
+            .ok_or_else(|| format!("Yao Plan Thread '{}' does not exist", plan.thread_id))?;
         if thread.context_id != plan.context_id
             || thread.session_id != plan.session_id
             || thread.agent_id != plan.agent_id
             || thread.initiating_principal_id != plan.initiating_principal_id
         {
-            return Err("Yao Plan 与执行 Thread 的权威 route 不一致".into());
+            return Err(
+                "Yao Plan and execution Thread have inconsistent authoritative routes".into(),
+            );
         }
         if tool.execution_routing() == crate::tool::ToolExecutionRouting::ArtifactTransfer {
             let transfer = crate::artifact::transfer_request_from_tool_arguments(
@@ -12515,7 +12791,7 @@ impl Orchestrator {
             let dispatcher = self
                 .execution_targets
                 .as_ref()
-                .ok_or("Yao Plan Artifact Transfer 缺少 ExecutionTargetDispatcher")?;
+                .ok_or("Yao Plan Artifact Transfer is missing ExecutionTargetDispatcher")?;
             let (source, destination) = dispatcher
                 .validate_artifact_transfer(
                     &transfer,
@@ -12586,7 +12862,7 @@ impl Orchestrator {
         if let Some(bound_target_id) = thread.target_id.as_deref() {
             if bound_target_id != effective_target_id {
                 return Err(format!(
-                    "Thread '{}' 已绑定 Execution Target '{}'，Yao Plan 不能切换为 '{}'",
+                    "Thread '{}' is already bound to Execution Target '{}'; the Yao Plan cannot switch it to '{}'",
                     thread.id, bound_target_id, effective_target_id
                 )
                 .into());
@@ -12601,7 +12877,7 @@ impl Orchestrator {
                     if current.target_id.as_deref() == Some(effective_target_id.as_str()) => {}
                 ThreadMutation::Conflict { current } => {
                     return Err(format!(
-                        "Thread '{}' 的 Execution Target 并发绑定冲突：当前为 '{}'，请求为 '{}'",
+                        "Thread '{}' has a concurrent Execution Target binding conflict: current='{}', requested='{}'",
                         current.id,
                         current.target_id.as_deref().unwrap_or("unbound"),
                         effective_target_id
@@ -12609,16 +12885,18 @@ impl Orchestrator {
                     .into())
                 }
                 ThreadMutation::NotFound => {
-                    return Err(
-                        format!("Yao Plan Thread '{}' 在绑定 Target 时消失", thread.id).into(),
+                    return Err(format!(
+                        "Yao Plan Thread '{}' disappeared while binding its Target",
+                        thread.id
                     )
+                    .into())
                 }
             }
         }
         let target = self
             .execution_targets
             .as_ref()
-            .ok_or("Yao Plan Physical Execution 缺少 ExecutionTargetDispatcher")?
+            .ok_or("Yao Plan Physical Execution is missing ExecutionTargetDispatcher")?
             .validate_for_tool(
                 &effective_target_id,
                 tool.name(),
@@ -12679,7 +12957,7 @@ impl Orchestrator {
             .activation_admission_slots
             .get(activation_id)
             .map(|entry| Arc::clone(entry.value()))
-            .ok_or("PlanExecution 等待子任务时缺少 admission permit holder")?;
+            .ok_or("PlanExecution is missing its admission-permit holder while waiting for a child task")?;
         slot.suspend_for_plan().await?;
         Ok(PlanAdmissionSuspension {
             slot,
@@ -12692,7 +12970,7 @@ impl Orchestrator {
             .self_ref
             .get()
             .cloned()
-            .ok_or("Orchestrator 尚未启动，不能调度 Yao child Plan")?;
+            .ok_or("Orchestrator has not started and cannot schedule a Yao child Plan")?;
         for child in children {
             if child.status.is_terminal() {
                 continue;
@@ -12738,7 +13016,7 @@ impl Orchestrator {
         let store = self
             .plan_store
             .as_ref()
-            .ok_or("Runtime 没有配置 PlanExecution Store")?;
+            .ok_or("Runtime has no PlanExecution Store configured")?;
         let mut coordinator =
             PlanExecutionCoordinator::new(Arc::clone(store), Arc::clone(&self.registry))
                 .with_context_engine(Arc::clone(&self.context_engine));
@@ -12750,12 +13028,12 @@ impl Orchestrator {
                 .self_ref
                 .get()
                 .cloned()
-                .ok_or("Orchestrator 尚未启动，不能执行持久化 Plan")?,
+                .ok_or("Orchestrator has not started and cannot execute a persistent Plan")?,
         };
         let ordinary_evaluation_id = if route.objective_evaluation_id.is_none() {
             self.context_engine
                 .session_store()
-                .ok_or("Yao Plan 需要持久化 ThreadStore")?
+                .ok_or("Yao Plan requires a persistent ThreadStore")?
                 .get_thread_activation(&route.activation_id)
                 .await?
                 .map(|activation| activation.root_turn_id)
@@ -12786,12 +13064,12 @@ impl Orchestrator {
                 .get(&binding.harness_id, &binding.harness_version)
                 .ok_or_else(|| {
                     format!(
-                        "Plan 绑定的 Harness '{}@{}' 未加载",
+                        "Harness '{}@{}' bound to the Plan is not loaded",
                         binding.harness_id, binding.harness_version
                     )
                 })?;
             if harness.artifact_hash().as_deref() != Some(binding.artifact_hash.as_str()) {
-                return Err("Plan Harness binding hash 与 Registry 不一致".into());
+                return Err("Plan Harness binding hash is inconsistent with the Registry".into());
             }
             PlanArtifactBinding {
                 harness_id: Some(binding.harness_id),
@@ -12827,7 +13105,11 @@ impl Orchestrator {
                     return Err(plan
                         .error
                         .unwrap_or_else(|| {
-                            format!("PlanExecution '{}' 已 {}", plan.id, plan.status.as_str())
+                            format!(
+                                "PlanExecution '{}' is already {}",
+                                plan.id,
+                                plan.status.as_str()
+                            )
                         })
                         .into());
                 }
@@ -12969,7 +13251,7 @@ impl Orchestrator {
                         plan = store
                             .get_plan_execution(&plan.id)
                             .await?
-                            .ok_or("PlanExecution 在运行中消失")?;
+                            .ok_or("PlanExecution disappeared while running")?;
                     }
                 }
                 PlanExecutionStatus::Waiting => match plan.pending_kind {
@@ -12977,11 +13259,11 @@ impl Orchestrator {
                         let job_id = plan
                             .pending_id
                             .clone()
-                            .ok_or("waiting(execution_job) 缺少 pending_id")?;
+                            .ok_or("waiting(execution_job) is missing pending_id")?;
                         let job = store
                             .get_execution_job(&job_id)
                             .await?
-                            .ok_or_else(|| format!("Execution Job '{job_id}' 不存在"))?;
+                            .ok_or_else(|| format!("Execution Job '{job_id}' does not exist"))?;
                         if job.status.is_terminal() {
                             plan = plan_from_resume(
                                 coordinator
@@ -13001,13 +13283,13 @@ impl Orchestrator {
                         plan = store
                             .get_plan_execution(&plan.id)
                             .await?
-                            .ok_or("PlanExecution 在等待 Job 时消失")?;
+                            .ok_or("PlanExecution disappeared while waiting for a Job")?;
                     }
                     Some(PlanExecutionWaitKind::Evaluation) => {
                         let activation_id = plan
                             .pending_id
                             .clone()
-                            .ok_or("waiting(evaluation) 缺少 pending_id")?;
+                            .ok_or("waiting(evaluation) is missing pending_id")?;
                         match store.get_thread_activation(&activation_id).await? {
                             Some(activation)
                                 if activation.status == ThreadActivationStatus::Succeeded =>
@@ -13027,7 +13309,7 @@ impl Orchestrator {
                                     plan = store
                                         .get_plan_execution(&plan.id)
                                         .await?
-                                        .ok_or("PlanExecution 在等待 Evaluation Thread 时消失")?;
+                                        .ok_or("PlanExecution disappeared while waiting for the Evaluation Thread")?;
                                     continue;
                                 }
                                 plan = plan_from_resume(
@@ -13050,10 +13332,9 @@ impl Orchestrator {
                                 // the asynchronous Scheduler router afterwards,
                                 // so a short-lived non-terminal row is expected.
                                 tokio::time::sleep(Duration::from_millis(100)).await;
-                                plan = store
-                                    .get_plan_execution(&plan.id)
-                                    .await?
-                                    .ok_or("PlanExecution 在等待 Evaluation 时消失")?;
+                                plan = store.get_plan_execution(&plan.id).await?.ok_or(
+                                    "PlanExecution disappeared while waiting for an Evaluation",
+                                )?;
                             }
                             None => {
                                 // The Event, child Thread and pending Signal
@@ -13066,7 +13347,7 @@ impl Orchestrator {
                                     >= chrono::Duration::seconds(60)
                                 {
                                     let reason = format!(
-                                        "PlanExecution '{}' 的 infer Signal 在 60 秒内未物化 child Activation",
+                                        "PlanExecution '{}' infer Signal did not materialize a child Activation within 60 seconds",
                                         plan.id
                                     );
                                     plan = match store
@@ -13090,7 +13371,7 @@ impl Orchestrator {
                                         } => return Err(reason.into()),
                                         PlanExecutionMutation::NotFound => {
                                             return Err(format!(
-                                                "PlanExecution '{}' 在 handoff 超时收口时消失",
+                                                "PlanExecution '{}' disappeared while closing a handoff timeout",
                                                 plan.id
                                             )
                                             .into())
@@ -13110,7 +13391,7 @@ impl Orchestrator {
                                     .find(|candidate| candidate.id == expected.id)
                                     .ok_or_else(|| {
                                         format!(
-                                            "PlanExecution '{}' 的 infer Event '{}' 不存在",
+                                            "PlanExecution '{}' references infer Event '{}', which does not exist",
                                             plan.id, expected.id
                                         )
                                     })?;
@@ -13121,7 +13402,7 @@ impl Orchestrator {
                                 plan = store
                                     .get_plan_execution(&plan.id)
                                     .await?
-                                    .ok_or("PlanExecution 在恢复 Evaluation handoff 时消失")?;
+                                    .ok_or("PlanExecution disappeared while resuming the Evaluation handoff")?;
                             }
                         }
                     }
@@ -13129,7 +13410,7 @@ impl Orchestrator {
                         let group_id = plan
                             .pending_id
                             .clone()
-                            .ok_or("waiting(action_group) 缺少 pending_id")?;
+                            .ok_or("waiting(action_group) is missing pending_id")?;
                         let children = coordinator
                             .ensure_parallel_children_for_waiting(&plan)
                             .await?;
@@ -13152,17 +13433,16 @@ impl Orchestrator {
                             )?;
                         } else {
                             tokio::time::sleep(Duration::from_millis(100)).await;
-                            plan = store
-                                .get_plan_execution(&plan.id)
-                                .await?
-                                .ok_or("PlanExecution 在等待 Action Group 时消失")?;
+                            plan = store.get_plan_execution(&plan.id).await?.ok_or(
+                                "PlanExecution disappeared while waiting for an Action Group",
+                            )?;
                         }
                     }
                     Some(PlanExecutionWaitKind::PlanExecution) => {
                         let child_id = plan
                             .pending_id
                             .clone()
-                            .ok_or("waiting(plan_execution) 缺少 pending_id")?;
+                            .ok_or("waiting(plan_execution) is missing pending_id")?;
                         let child = coordinator.ensure_program_child_for_waiting(&plan).await?;
                         if !child.status.is_terminal()
                             && spawned_child_plans.insert(child.id.clone())
@@ -13177,13 +13457,14 @@ impl Orchestrator {
                             )?;
                         } else {
                             tokio::time::sleep(Duration::from_millis(100)).await;
-                            plan = store
-                                .get_plan_execution(&plan.id)
-                                .await?
-                                .ok_or("PlanExecution 在等待 Program child 时消失")?;
+                            plan = store.get_plan_execution(&plan.id).await?.ok_or(
+                                "PlanExecution disappeared while waiting for a Program child",
+                            )?;
                         }
                     }
-                    None => return Err("PlanExecution waiting 状态缺少 pending_kind".into()),
+                    None => {
+                        return Err("PlanExecution waiting state is missing pending_kind".into())
+                    }
                 },
             }
         }
@@ -13199,14 +13480,16 @@ impl Orchestrator {
         let effect = machine
             .pending_effect()
             .cloned()
-            .ok_or("PlanExecution 等待 Job 但 machine 没有 pending effect")?;
+            .ok_or("PlanExecution is waiting for a Job but the machine has no pending effect")?;
         let crate::sexpr_eval::PlanEffect::Call {
             sequence,
             tool,
             arguments,
         } = effect
         else {
-            return Err("PlanExecution 等待 Job，但 pending effect 不是 call".into());
+            return Err(
+                "PlanExecution is waiting for a Job but the pending effect is not call".into(),
+            );
         };
         let call_id = crate::plan_execution::deterministic_plan_effect_id(&plan.id, sequence)?;
         let response = crate::llm::Response {
@@ -13257,7 +13540,7 @@ impl Orchestrator {
         let manager = self
             .execution_jobs
             .as_ref()
-            .ok_or("Physical Execution 缺少 ExecutionJobManager")?;
+            .ok_or("Physical Execution is missing ExecutionJobManager")?;
         let invocation = match crate::execution_target::split_target_argument(&call.arguments) {
             Ok(invocation) => invocation,
             Err(error) => {
@@ -13278,11 +13561,11 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Physical Execution 需要持久化 ThreadStore")?;
+            .ok_or("Physical Execution requires a persistent ThreadStore")?;
         let thread = session_store
             .get_thread(thread_id)
             .await?
-            .ok_or_else(|| format!("Physical Execution Thread '{thread_id}' 不存在"))?;
+            .ok_or_else(|| format!("Physical Execution Thread '{thread_id}' does not exist"))?;
         let deterministic_job_id =
             crate::execution::deterministic_job_id(&route.activation_id, &call.id)?;
         let artifact_transfer =
@@ -13345,7 +13628,7 @@ impl Orchestrator {
             if let Some(bound_target_id) = thread.target_id.as_deref() {
                 if bound_target_id != effective_target_id {
                     let reason = format!(
-                        "Thread '{}' 已绑定 Execution Target '{}'，不能隐式切换为 '{}'；请用 schedule_tx.spawn 创建绑定新 Target 的 Execution Thread",
+                        "Thread '{}' is already bound to Execution Target '{}' and cannot switch implicitly to '{}'; use schedule_tx.spawn to create an Execution Thread bound to the new Target",
                         thread.id, bound_target_id, effective_target_id
                     );
                     let rejection = std::io::Error::other(reason);
@@ -13378,7 +13661,7 @@ impl Orchestrator {
                         if current.target_id.as_deref() == Some(effective_target_id.as_str()) => {}
                     ThreadMutation::Conflict { current } => {
                         let reason = format!(
-                            "Thread '{}' 的 Execution Target 并发绑定冲突：当前为 '{}'，请求为 '{}'；请依据最新 Thread 状态重新调度",
+                            "Thread '{}' has a concurrent Execution Target binding conflict: current='{}', requested='{}'. Reschedule using the latest Thread state",
                             current.id,
                             current.target_id.as_deref().unwrap_or("unbound"),
                             effective_target_id
@@ -13405,7 +13688,7 @@ impl Orchestrator {
                     }
                     ThreadMutation::NotFound => {
                         return Err(format!(
-                            "Physical Execution Thread '{}' 在绑定 Target 时消失",
+                            "Physical Execution Thread '{}' disappeared while binding its Target",
                             thread.id
                         )
                         .into());
@@ -13425,7 +13708,7 @@ impl Orchestrator {
         let dispatcher = self
             .execution_targets
             .as_ref()
-            .ok_or("Physical Execution 缺少 ExecutionTargetDispatcher")?;
+            .ok_or("Physical Execution is missing ExecutionTargetDispatcher")?;
         let validated_targets = if let Some(transfer) = artifact_transfer.as_ref() {
             dispatcher
                 .validate_artifact_transfer(
@@ -13595,7 +13878,7 @@ impl Orchestrator {
                 }
                 if job.status != ExecutionJobStatus::Queued {
                     return Err(format!(
-                        "Execution Job '{}' 当前为 {}，不能重复开始物理执行",
+                        "Execution Job '{}' is currently {}; physical execution cannot be started again",
                         job.id,
                         job.status.as_str()
                     )
@@ -13620,7 +13903,7 @@ impl Orchestrator {
             }
             Some(requirement) => {
                 let services = self.durable_approvals.as_ref().ok_or(
-                    "Physical Execution 需要审批，但 Runtime 未配置持久化 Approval authority",
+                    "Physical Execution requires approval, but the Runtime has no persistent Approval authority configured",
                 )?;
                 let new_job = spec.into_new_job()?;
                 let action = serde_json::to_value(&requirement.action)?;
@@ -13726,7 +14009,7 @@ impl Orchestrator {
                         } => {
                             if lease_offer.is_none() {
                                 return Err(
-                                    "Approval provider 在没有 lease_offer 时批准 Capability Lease"
+                                    "Approval provider approved a Capability Lease without a lease_offer"
                                         .into(),
                                 );
                             }
@@ -13747,7 +14030,7 @@ impl Orchestrator {
                         },
                         ApprovalDecision::AskHuman { rationale, .. } => {
                             return Err(format!(
-                                "Approval provider 返回 ask_human 但未完成人工审批: {rationale}"
+                                "Approval provider returned ask_human without completing human approval: {rationale}"
                             )
                             .into());
                         }
@@ -13764,7 +14047,7 @@ impl Orchestrator {
                     if commit.event_created {
                         let decision_event = commit
                             .event
-                            .ok_or("Approval 审计 Event 已原子创建，但 Store 未返回持久化投影")?;
+                            .ok_or("Approval audit Event was created atomically, but the Store returned no persisted projection")?;
                         self.bus.dispatch_persisted(decision_event).await?;
                     }
                 }
@@ -13773,7 +14056,7 @@ impl Orchestrator {
                     && capability_lease_was_approved(&approval.risk_tags)
                 {
                     let offer = lease_offer.as_ref().ok_or(
-                        "Allowed Approval 标记为 Capability Lease，但当前请求缺少 lease_offer",
+                        "Allowed Approval is marked as a Capability Lease, but the current request lacks a lease_offer",
                     )?;
                     let lease = NewCapabilityLease {
                         id: stable_capability_lease_id(&approval.id),
@@ -13796,16 +14079,20 @@ impl Orchestrator {
                         | CapabilityLeaseMutation::Existing(_) => {}
                         CapabilityLeaseMutation::Conflict { current } => {
                             return Err(format!(
-                                "Capability Lease '{}' 幂等内容冲突（revision {}）",
+                                "Capability Lease '{}' has an idempotency-content conflict at revision {}",
                                 current.id, current.revision
                             )
                             .into());
                         }
                         CapabilityLeaseMutation::Updated(_) => {
-                            return Err("ensure_capability_lease 不应返回 Updated".into());
+                            return Err(
+                                "ensure_capability_lease unexpectedly returned Updated".into()
+                            );
                         }
                         CapabilityLeaseMutation::NotFound => {
-                            return Err("ensure_capability_lease 不应返回 NotFound".into());
+                            return Err(
+                                "ensure_capability_lease unexpectedly returned NotFound".into()
+                            );
                         }
                     }
                 }
@@ -13824,7 +14111,9 @@ impl Orchestrator {
                             .rationale
                             .clone()
                             .or(approval.cancel_reason.clone())
-                            .unwrap_or_else(|| "审批未授权该物理操作".to_string());
+                            .unwrap_or_else(|| {
+                                "Approval did not authorize this physical operation".to_string()
+                            });
                         applied_execution_job(
                             manager
                                 .finish_with_event(
@@ -13848,7 +14137,7 @@ impl Orchestrator {
                     ApprovalStatus::Allowed => {}
                     ApprovalStatus::PendingAuto | ApprovalStatus::PendingHuman => {
                         return Err(format!(
-                            "Approval '{}' 审批源返回后仍处于 {}",
+                            "Approval '{}' remained in state {} after its approval source returned",
                             approval.id,
                             approval.status.as_str()
                         )
@@ -13859,7 +14148,7 @@ impl Orchestrator {
                 let grant_id = approval
                     .grant_id
                     .clone()
-                    .ok_or("Allowed Approval 缺少持久化 grant_id")?;
+                    .ok_or("Allowed Approval is missing persisted grant_id")?;
                 let (job, consumed_approval, _) = execution_approval_records(
                     services
                         .execution_approvals
@@ -13892,7 +14181,7 @@ impl Orchestrator {
                 .await?
             {
                 let reason = format!(
-                    "OBJECTIVE_EVALUATION_FENCED：Activation '{}' 的 Objective Evaluation 已被撤销或取代；Runtime 未开始该物理 Action",
+                    "OBJECTIVE_EVALUATION_FENCED: the Objective Evaluation for Activation '{}' was revoked or superseded; Runtime did not start the physical Action",
                     route.activation_id
                 );
                 let _ = manager
@@ -14031,17 +14320,19 @@ impl Orchestrator {
         if !job.status.is_terminal() {
             return Ok(None);
         }
-        let event_id = job
-            .result_event_id
-            .as_deref()
-            .ok_or_else(|| format!("终态 Execution Job '{}' 缺少 result_event_id", job.id))?;
+        let event_id = job.result_event_id.as_deref().ok_or_else(|| {
+            format!(
+                "Terminal Execution Job '{}' is missing result_event_id",
+                job.id
+            )
+        })?;
         let event = self
             .context_engine
             .find_event(&job.context_id, event_id)
             .await?
             .ok_or_else(|| {
                 format!(
-                    "终态 Execution Job '{}' 引用的结果 Event '{}' 不存在",
+                    "terminal Execution Job '{}' references result Event '{}', which does not exist",
                     job.id, event_id
                 )
             })?;
@@ -14101,7 +14392,7 @@ impl Orchestrator {
                                                                 tool.execute(&arguments).await
                                                             }
                                                             None => Err(format!(
-                                                                "未注册的工具: {}",
+                                                                "unregistered tool: {}",
                                                                 call.func_name
                                                             )
                                                             .into()),
@@ -14124,10 +14415,10 @@ impl Orchestrator {
                 let status = infer_tool_status(&text);
                 (text, status)
             }
-            Ok(Err(error)) => (format!("执行失败: {error}"), "error"),
+            Ok(Err(error)) => (format!("Tool execution failed: {error}"), "error"),
             Err(_) => (
                 format!(
-                    "执行超时: 超过 {} 秒限额",
+                    "Tool execution timed out after {} seconds",
                     self.orchestrator_config.tool_timeout_secs
                 ),
                 "timeout",
@@ -14210,7 +14501,7 @@ impl Orchestrator {
             rejected_context_tx_ids.extend(context_tx_calls.into_iter().map(|call| call.id));
             context_tx_batch_status = Some("budget-exhausted".to_string());
             context_tx_batch_error = Some(format!(
-                "执行拒绝: CONTEXT_TX_BUDGET_EXHAUSTED：当前用户回合的 Context transaction 已达到 {} 次上限。物理工具、普通文本和 no_reply 仍然可用；请使用现有 Mind 继续必要工作，避免连续 housekeeping transaction。",
+                "Tool execution rejected: CONTEXT_TX_BUDGET_EXHAUSTED: the current user turn has reached its limit of {} Context transactions. Physical tools, ordinary text, and no_reply remain available; continue necessary work with the existing Mind and avoid consecutive housekeeping transactions.",
                 self.orchestrator_config.max_context_transactions_per_turn.max(1)
             ));
         } else {
@@ -14243,7 +14534,7 @@ impl Orchestrator {
                             .extend(context_tx_calls.into_iter().map(|call| call.id));
                         context_tx_batch_status = Some("multiple-distinct".to_string());
                         context_tx_batch_error = Some(format!(
-                        "执行拒绝: MULTIPLE_DISTINCT_CONTEXT_TX：同一响应请求了 {} 个内容不同的 context_tx。Runtime 未执行其中任何一个；请把所有 create/derive/revise/retire/restore/protect/unprotect/place 操作合并到一个原子 (context-tx ...) 后重新提交。",
+                        "Tool execution rejected: MULTIPLE_DISTINCT_CONTEXT_TX: one response requested {} context_tx calls with different contents. Runtime executed none of them; merge all create/derive/revise/retire/restore/protect/unprotect/place operations into one atomic (context-tx ...) and submit it again.",
                         rejected_context_tx_ids.len()
                     ));
                     }
@@ -14495,7 +14786,7 @@ impl Orchestrator {
                 let thread_id = activation_route
                     .as_ref()
                     .map(|route| route.thread_id.as_str())
-                    .ok_or("objective_create 结果缺少所属 Thread")?;
+                    .ok_or("objective_create result is missing its owning Thread")?;
                 self.store
                     .append_to_thread(output.clone(), thread_id)
                     .await?;
@@ -14517,13 +14808,15 @@ impl Orchestrator {
                 let session_store = self
                     .context_engine
                     .session_store()
-                    .ok_or("Action 执行需要持久化 SessionStore")?;
+                    .ok_or("Action execution requires a persistent SessionStore")?;
                 let thread = session_store
                     .get_thread(&route.thread_id)
                     .await?
-                    .ok_or_else(|| format!("Action 的 Thread '{}' 不存在", route.thread_id))?;
+                    .ok_or_else(|| format!("Action Thread '{}' does not exist", route.thread_id))?;
                 if thread.context_id != context_id || thread.session_id != session_id {
-                    return Err("Action 的 Thread 路由与当前 Evaluation 不一致".into());
+                    return Err(
+                        "Action Thread route is inconsistent with the current Evaluation".into(),
+                    );
                 }
                 Some((thread.agent_id, thread.id))
             }
@@ -14532,10 +14825,10 @@ impl Orchestrator {
         let action_group_id = if ordinary_action_count >= 2 {
             let route = activation_route
                 .as_ref()
-                .ok_or("Action Group 需要持久化 Activation route")?;
+                .ok_or("Action Group requires a persistent Activation route")?;
             let (agent_id, thread_id) = durable_execution_identity
                 .as_ref()
-                .ok_or("Action Group 需要持久化 Thread identity")?;
+                .ok_or("Action Group requires a persistent Thread identity")?;
             let group_id = format!("action_group_{attempt_id}");
             let mut members = selected_tool_calls
                 .iter()
@@ -14564,7 +14857,7 @@ impl Orchestrator {
             let objective = self.objective_evaluations.get_for_activation(attempt_id);
             self.action_groups
                 .as_ref()
-                .ok_or("Action Group Store 未配置")?
+                .ok_or("Action Group Store is not configured")?
                 .create_action_group(
                     NewActionGroup {
                         id: group_id.clone(),
@@ -14592,7 +14885,7 @@ impl Orchestrator {
             .map(|group_id| {
                 let route = activation_route
                     .as_ref()
-                    .ok_or("Action Group settled Event 缺少 Activation route")?;
+                    .ok_or("Action Group settled Event is missing its Activation route")?;
                 let objective = self.objective_evaluations.get_for_activation(attempt_id);
                 Ok::<_, DynError>(action_group_settled_event(
                     group_id,
@@ -14626,9 +14919,9 @@ impl Orchestrator {
                 continue;
             }
             let guidance = if phase == "critical-maintenance" {
-                "当前 Context 处于 critical-maintenance。请不要重复该物理工具调用；先使用 context_tx 压缩并保留继续任务所需的最新状态，等待 Runtime 重新提供物理工具。"
+                "The current Context is in critical-maintenance. Do not repeat this physical tool call; first use context_tx to compact and preserve the latest state required to continue, then wait for the Runtime to provide physical tools again."
             } else {
-                "该工具未在本轮 Function Calling 定义中提供，因此没有执行。请根据当前阶段和 allowed_tools 重新决策。"
+                "This tool was not included in the current Function Calling definitions and therefore was not executed. Reassess using the current phase and allowed_tools."
             };
             let output = json!({
                 "status": "rejected",
@@ -14860,7 +15153,7 @@ impl Orchestrator {
                                                                     Some(tool) => match claimed_execution_job.as_ref() {
                                                                         Some(job) => execution_targets
                                                                             .as_ref()
-                                                                            .ok_or("Physical Execution 缺少 ExecutionTargetDispatcher")?
+                                                                            .ok_or("Physical Execution is missing ExecutionTargetDispatcher")?
                                                                             .execute(
                                                                                 &job.record,
                                                                                 Arc::clone(&tool),
@@ -14872,7 +15165,7 @@ impl Orchestrator {
                                                                             .await,
                                                                     },
                                                                     None => Err(format!(
-                                                                        "未注册的工具: {}",
+                                                                        "unregistered tool: {}",
                                                                         call.func_name
                                                                     )
                                                                     .into()),
@@ -14902,14 +15195,14 @@ impl Orchestrator {
                                                                 }
                                                                 Ok(Err(error)) => (
                                                                     crate::tool::ToolExecutionResult::text(
-                                                                        format!("执行失败: {}", error),
+                                                                        format!("Tool execution failed: {}", error),
                                                                     ),
                                                                     "error",
                                                                 ),
                                                                 Err(_) => (
                                                                     crate::tool::ToolExecutionResult::text(
                                                                         format!(
-                                                                            "执行超时: 超过 {} 秒限额",
+                                                                            "Tool execution timed out after {} seconds",
                                                                             timeout_secs
                                                                         ),
                                                                     ),
@@ -14918,7 +15211,7 @@ impl Orchestrator {
                                                             }
                                                         } else {
                                                             let reason = format!(
-                                                                "OBJECTIVE_EVALUATION_FENCED：Activation '{}' 的 Objective Evaluation 已被撤销或取代；Runtime 未执行工具 '{}'",
+                                                                "OBJECTIVE_EVALUATION_FENCED: the Objective Evaluation for Activation '{}' was revoked or superseded; Runtime did not execute tool '{}'",
                                                                 activation_route
                                                                     .as_ref()
                                                                     .map(|route| route.activation_id.as_str())
@@ -14963,7 +15256,7 @@ impl Orchestrator {
                                                                     .decode(&attachment.data_base64)
                                                                     .map_err(|error| {
                                                                         format!(
-                                                                            "工具 '{}' 返回的模型附件 '{}' 不是合法 Base64：{error}",
+                                                                            "tool '{}' returned model attachment '{}', which is not valid Base64: {error}",
                                                                             call.func_name,
                                                                             attachment.name
                                                                         )
@@ -15165,7 +15458,7 @@ impl Orchestrator {
                                                             (None, None) | (Some(_), None) => false,
                                                             (None, Some(_)) => {
                                                                 return Err(
-                                                                    "工具任务与 Execution Job Manager 边界不一致"
+                                                                    "tool task does not match the Execution Job Manager boundary"
                                                                         .into(),
                                                                 );
                                                             }
@@ -15206,7 +15499,7 @@ impl Orchestrator {
                                                             (None, None, None)
                                                             | (Some(_), None, None) => false,
                                                             _ => {
-                                                                return Err("Action Group 执行边界不一致".into());
+                                                                return Err("Action Group execution boundaries are inconsistent".into());
                                                             }
                                                         };
                                                         Ok(SpawnedToolTaskResult {
@@ -15286,7 +15579,7 @@ impl Orchestrator {
                 Ok(Ok(result)) => (result.output, result.already_persisted, None),
                 Ok(Err(error)) => {
                     let reason = format!(
-                        "工具 '{}' 的执行任务在收敛终态时失败：{error}",
+                        "execution task for tool '{}' failed while converging on a terminal state: {error}",
                         metadata.tool_name
                     );
                     tracing::error!(
@@ -15300,7 +15593,7 @@ impl Orchestrator {
                 }
                 Err(error) => {
                     let reason = format!(
-                        "工具 '{}' 的执行任务异常终止，外部结果未知：{error}",
+                        "execution task for tool '{}' terminated unexpectedly; the external result is unknown: {error}",
                         metadata.tool_name
                     );
                     tracing::error!(
@@ -15323,7 +15616,7 @@ impl Orchestrator {
                     let manager = self
                         .execution_jobs
                         .as_ref()
-                        .ok_or("Execution Job 完成时 Manager 不存在")?;
+                        .ok_or("Execution Job Manager is unavailable during completion")?;
                     finish_claimed_physical_job_with_outcome(
                         manager.as_ref(),
                         &job,
@@ -15335,12 +15628,16 @@ impl Orchestrator {
                     true
                 }
                 (_, None) => already_persisted,
-                _ => return Err("工具任务与 Execution Job 结果边界不一致".into()),
+                _ => {
+                    return Err(
+                        "Tool task and Execution Job result boundaries are inconsistent".into(),
+                    )
+                }
             };
             outputs.push((output, already_persisted));
         }
         if outputs.is_empty() {
-            return Err("所有工具任务都在产生结果前异常终止".into());
+            return Err("All tool tasks terminated unexpectedly before producing results".into());
         }
         if let Some(plan_execution_id) = options.plan_execution_id.as_deref() {
             for (output, _) in &mut outputs {
@@ -15369,17 +15666,17 @@ impl Orchestrator {
         if let Some(group_id) = action_group_id {
             let settled_event = action_group_settled
                 .as_ref()
-                .ok_or("Action Group settled Event 未构造")?;
+                .ok_or("Action Group settled Event was not constructed")?;
             let groups = self
                 .action_groups
                 .as_ref()
-                .ok_or("Action Group Store 未配置")?;
+                .ok_or("Action Group Store is not configured")?;
             for (output, _) in outputs {
                 let tool_call_id = output
                     .payload
                     .get("tool_call_id")
                     .and_then(|value| value.as_str())
-                    .ok_or("Action Group result 缺少 tool_call_id")?;
+                    .ok_or("Action Group result is missing tool_call_id")?;
                 let commit = groups
                     .commit_action_group_member_result(
                         &group_id,
@@ -15423,7 +15720,7 @@ impl Orchestrator {
                     let thread_id = activation_route
                         .as_ref()
                         .map(|route| route.thread_id.as_str())
-                        .ok_or("工具结果缺少所属 Thread")?;
+                        .ok_or("Tool result is missing its owning Thread")?;
                     self.store
                         .append_to_thread(output.clone(), thread_id)
                         .await?;
@@ -15446,15 +15743,23 @@ impl Orchestrator {
             let manager = self
                 .execution_jobs
                 .as_ref()
-                .ok_or("Execution Job 恢复时 Manager 不存在")?;
+                .ok_or("Execution Job Manager is unavailable during recovery")?;
             let current = manager
                 .store()
                 .get_execution_job(&claimed.id)
                 .await?
-                .ok_or_else(|| format!("Execution Job '{}' 在任务恢复时不存在", claimed.id))?;
+                .ok_or_else(|| {
+                    format!(
+                        "Execution Job '{}' does not exist during task recovery",
+                        claimed.id
+                    )
+                })?;
             if current.status.is_terminal() {
                 let result_event_id = current.result_event_id.as_deref().ok_or_else(|| {
-                    format!("终态 Execution Job '{}' 缺少 result_event_id", current.id)
+                    format!(
+                        "Terminal Execution Job '{}' is missing result_event_id",
+                        current.id
+                    )
                 })?;
                 let output = self
                     .context_engine
@@ -15462,13 +15767,13 @@ impl Orchestrator {
                     .await?
                     .ok_or_else(|| {
                         format!(
-                            "终态 Execution Job '{}' 的结果 Event '{}' 不存在",
+                            "terminal Execution Job '{}' references result Event '{}', which does not exist",
                             current.id, result_event_id
                         )
                     })?;
                 if output.id != metadata.output_id {
                     return Err(format!(
-                        "Execution Job '{}' 的结果 Event '{}' 与调用确定性输出 '{}' 不一致",
+                        "Execution Job '{}' result Event '{}' does not match deterministic call output '{}'",
                         current.id, output.id, metadata.output_id
                     )
                     .into());
@@ -15735,13 +16040,12 @@ impl Orchestrator {
                         .get("requested_harness_artifact_hash")
                         .and_then(|value| value.as_str()),
                 ) {
-                    let harness = self
-                        .harness_registry
-                        .get(id, version)
-                        .ok_or_else(|| format!("请求的 Harness '{id}@{version}' 未加载"))?;
+                    let harness = self.harness_registry.get(id, version).ok_or_else(|| {
+                        format!("Requested Harness '{id}@{version}' is not loaded")
+                    })?;
                     if harness.artifact_hash().as_deref() != Some(hash) {
                         return Err(format!(
-                            "请求的 Harness '{id}@{version}' artifact hash 与 Registry 不一致"
+                            "requested Harness '{id}@{version}' artifact hash does not match the Registry"
                         )
                         .into());
                     }
@@ -15776,7 +16080,7 @@ impl Orchestrator {
                         .get(&default.harness_id, &default.harness_version)
                         .ok_or_else(|| {
                             format!(
-                                "Objective '{}' 默认 Harness '{}@{}' 未加载",
+                                "Objective '{}' default Harness '{}@{}' is not loaded",
                                 active.objective_id, default.harness_id, default.harness_version
                             )
                         })?;
@@ -15803,13 +16107,13 @@ impl Orchestrator {
             .get(&binding.harness_id, &binding.harness_version)
             .ok_or_else(|| {
                 format!(
-                    "Evaluation '{}' 绑定的 Harness '{}@{}' 未加载",
+                    "Evaluation '{}' bound Harness '{}@{}' is not loaded",
                     evaluation_id, binding.harness_id, binding.harness_version
                 )
             })?;
         if harness.artifact_hash().as_deref() != Some(binding.artifact_hash.as_str()) {
             return Err(format!(
-                "Evaluation '{}' 的 Harness binding hash 与 Registry 不一致",
+                "Evaluation '{}' Harness binding hash does not match the Registry",
                 evaluation_id
             )
             .into());
@@ -15842,13 +16146,13 @@ impl Orchestrator {
         let evaluation_id = binding
             .evaluation_id
             .as_deref()
-            .ok_or("Runtime-owned Harness entry 缺少 Evaluation binding identity")?;
+            .ok_or("Runtime-owned Harness entry is missing its Evaluation-binding identity")?;
         if let (Some(active), Some(bound_objective_id)) =
             (active.as_ref(), binding.objective_id.as_deref())
         {
             if active.objective_id != bound_objective_id {
                 return Err(format!(
-                    "Harness binding Objective '{}' 与当前 Evaluation Objective '{}' 不一致",
+                    "Harness binding Objective '{}' does not match current Evaluation Objective '{}'",
                     bound_objective_id, active.objective_id
                 )
                 .into());
@@ -15858,7 +16162,7 @@ impl Orchestrator {
         let store = self
             .plan_store
             .as_ref()
-            .ok_or("Runtime-owned Harness entry 需要 PlanExecution Store")?;
+            .ok_or("Runtime-owned Harness entry requires a PlanExecution Store")?;
         let existing = store
             .list_plan_executions(PlanExecutionFilter {
                 context_id: Some(activation.context_id.clone()),
@@ -15931,7 +16235,9 @@ impl Orchestrator {
         self.session_contexts
             .get(session_id)
             .map(|value| value.clone())
-            .ok_or_else(|| format!("Session '{session_id}' 没有挂载 Cognitive Context").into())
+            .ok_or_else(|| {
+                format!("Session '{session_id}' has no mounted Cognitive Context").into()
+            })
     }
 
     fn cancellation_sender(&self, session_id: &str) -> watch::Sender<u64> {
@@ -15984,8 +16290,9 @@ impl Orchestrator {
         objective_id: &str,
         evaluation_id: &str,
     ) -> Result<bool, DynError> {
-        let reason =
-            format!("Objective '{objective_id}' Evaluation '{evaluation_id}' 已被暂停或取消");
+        let reason = format!(
+            "Objective '{objective_id}' Evaluation '{evaluation_id}' was paused or cancelled"
+        );
         // The physical cancellation intent is durable before the in-memory
         // signal drops the model/Activation future. This ordering prevents a
         // fast cancellation from orphaning already-materialized Actions.
@@ -16033,7 +16340,7 @@ impl Orchestrator {
         let store = self
             .context_engine
             .session_store()
-            .ok_or("Thread control 需要持久化 SessionStore")?;
+            .ok_or("Thread control requires a persistent SessionStore")?;
         let activations = store
             .list_thread_activations_by_root(&thread.context_id, &thread.root_turn_id)
             .await?
@@ -16117,20 +16424,26 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("终态 Thread 交接需要持久化 SessionStore")?;
+            .ok_or("Terminal Thread handoff requires a persistent SessionStore")?;
         let (supervisor_kind, supervisor_id, parent_thread_id, barrier_event_id) =
             if let Some(group_id) = thread.supervision.thread_group_id.as_deref() {
                 let group = session_store
                     .get_thread_group(group_id)
                     .await?
                     .ok_or_else(|| {
-                        format!("Thread '{}' 的终态 Group '{}' 不存在", thread.id, group_id)
+                        format!(
+                            "Terminal Group '{}' for Thread '{}' does not exist",
+                            group_id, thread.id
+                        )
                     })?;
                 if !group.status.is_terminal() {
                     return Ok(());
                 }
                 let barrier_event_id = group.barrier_event_id.clone().ok_or_else(|| {
-                    format!("终态 Thread Group '{}' 缺少 barrier Event", group.id)
+                    format!(
+                        "Terminal Thread Group '{}' is missing its barrier Event",
+                        group.id
+                    )
                 })?;
                 (
                     group.supervisor_kind,
@@ -16149,13 +16462,15 @@ impl Orchestrator {
 
         match supervisor_kind {
             ThreadSupervisorKind::Thread | ThreadSupervisorKind::Evaluation => {
-                let parent_thread_id = parent_thread_id
-                    .or(supervisor_id)
-                    .ok_or_else(|| format!("Thread '{}' 缺少 parent Thread", thread.id))?;
+                let parent_thread_id = parent_thread_id.or(supervisor_id).ok_or_else(|| {
+                    format!("Thread '{}' is missing its parent Thread", thread.id)
+                })?;
                 let parent = session_store
                     .get_thread(&parent_thread_id)
                     .await?
-                    .ok_or_else(|| format!("Parent Thread '{}' 不存在", parent_thread_id))?;
+                    .ok_or_else(|| {
+                        format!("Parent Thread '{}' does not exist", parent_thread_id)
+                    })?;
                 if parent.lifecycle == ThreadLifecycle::Open {
                     self.dispatch_next_pending_thread_signal(&parent.root_turn_id)
                         .await?;
@@ -16174,7 +16489,7 @@ impl Orchestrator {
                     .find(|candidate| candidate.id == barrier_event_id)
                     .ok_or_else(|| {
                         format!(
-                            "Thread '{}' 的 Supervisor barrier Event '{}' 不存在",
+                            "Thread '{}' references Supervisor barrier Event '{}', which does not exist",
                             thread.id, barrier_event_id
                         )
                     })?;
@@ -16282,7 +16597,7 @@ impl Orchestrator {
             }
             if !settled {
                 return Err(format!(
-                    "Execution Job '{job_id}' 在连续 revision 竞争下未能持久化取消请求"
+                    "Execution Job '{job_id}' failed to persist a cancellation request under repeated revision contention"
                 )
                 .into());
             }
@@ -16348,7 +16663,7 @@ impl Orchestrator {
                         }
                         if commit.event_created {
                             let event = commit.event.ok_or(
-                                "Approval 审计 Event 已原子创建，但 Store 未返回持久化投影",
+                                "Approval audit Event was created atomically, but the Store returned no persisted projection",
                             )?;
                             self.bus.dispatch_persisted(event).await?;
                         }
@@ -16363,13 +16678,13 @@ impl Orchestrator {
                         break;
                     }
                     ApprovalMutation::Created(_) => {
-                        return Err("Approval cancel 返回了不可能的 Created 状态".into());
+                        return Err("Approval cancel returned impossible Created state".into());
                     }
                 }
             }
             if !settled {
                 return Err(
-                    format!("Approval '{approval_id}' 在连续 revision 竞争下未能取消").into(),
+                    format!("Approval '{approval_id}' could not be cancelled under continuous revision contention").into(),
                 );
             }
         }
@@ -16787,7 +17102,7 @@ impl crate::sexpr_eval::RuntimePlanExecutor for OrchestratorPlanExecutor {
     ) -> PlanExecutionResult<serde_json::Value> {
         self.orchestrator
             .upgrade()
-            .ok_or("Runtime 已关闭，无法继续 PlanExecution")?
+            .ok_or("Runtime is shut down and cannot continue PlanExecution")?
             .execute_durable_plan(self.route.clone(), program)
             .await
     }
@@ -16807,7 +17122,7 @@ impl PlanCallPlanner for OrchestratorPlanCallPlanner {
     ) -> PlanExecutionResult<NewExecutionJob> {
         self.orchestrator
             .upgrade()
-            .ok_or("Runtime 已关闭，无法规划 Yao call")?
+            .ok_or("Runtime is shut down and cannot plan a Yao call")?
             .plan_execution_job(plan, effect, effect_tool_call_id)
             .await
     }
@@ -16842,9 +17157,22 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             .get("task")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
+        let requested_model = request
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(model) = requested_model {
+            if !orchestrator.client.model_is_agent_allowed(model) {
+                return Err(format!(
+                    "infer requested model '{model}', but it is neither listed in llm.allowed_evaluation_models nor the current primary model"
+                )
+                .into());
+            }
+        }
         let mut evidence = serde_json::Map::new();
         for (key, value) in request {
-            if key != "task" {
+            if key != "task" && key != "model" {
                 evidence.insert(key.clone(), value.clone());
             }
         }
@@ -16906,12 +17234,13 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                 response,
                 provider_continuation,
             } = orchestrator
-                .request_model_completion(
+                .request_model_completion_with_model(
                     &self.session_id,
                     &self.attempt_id,
                     messages.clone(),
                     tools.clone(),
                     None,
+                    requested_model,
                 )
                 .await
                 .map_err(|error| -> DynError { Box::new(error) })?;
@@ -16923,7 +17252,7 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             }
             if round + 1 == crate::sexpr_eval::MAX_INFER_ROUNDS {
                 return Err(format!(
-                    "infer 连续 {} 轮只调用工具而没有给出值；请缩小 :task，或先用 call 取好证据再 infer",
+                    "infer called tools without producing a value for {} consecutive rounds; narrow :task or gather evidence with call before invoking infer",
                     crate::sexpr_eval::MAX_INFER_ROUNDS
                 )
                 .into());
@@ -16960,10 +17289,12 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                         .execute_result(&call.arguments)
                         .await
                         .unwrap_or_else(|error| {
-                            crate::tool::ToolExecutionResult::text(format!("执行失败: {error}"))
+                            crate::tool::ToolExecutionResult::text(format!(
+                                "Tool execution failed: {error}"
+                            ))
                         }),
                     _ => crate::tool::ToolExecutionResult::text(format!(
-                        "执行拒绝: 工具 '{}' 不能在 infer 中调用",
+                        "Tool execution rejected: tool '{}' is not callable from infer",
                         call.func_name
                     )),
                 };
@@ -16979,7 +17310,7 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                 }
             }
         }
-        Err("infer 未能在预算内产出值".into())
+        Err("infer did not produce a value within its budget".into())
     }
 }
 
@@ -17055,14 +17386,20 @@ fn context_tx_output_succeeded(event: &Event) -> bool {
 }
 
 fn infer_tool_status(text: &str) -> &'static str {
-    if text.starts_with("执行失败:")
+    if text.starts_with("Tool execution failed:")
+        || text.starts_with("Execution failed:")
+        // Legacy persisted output compatibility. New producers emit English.
+        || text.starts_with("执行失败:")
         || text.starts_with("系统报错:")
+        // Legacy persisted output compatibility. New producers emit English.
         || text.starts_with("系统报错：")
     {
         "error"
-    } else if text.starts_with("执行超时:") {
+    // Legacy persisted output compatibility. New producers emit English.
+    } else if text.starts_with("Tool execution timed out") || text.starts_with("执行超时:") {
         "timeout"
-    } else if text.starts_with("执行拒绝:") {
+    // Legacy persisted output compatibility. New producers emit English.
+    } else if text.starts_with("Tool execution rejected:") || text.starts_with("执行拒绝:") {
         "rejected"
     } else {
         "success"
@@ -17103,7 +17440,7 @@ fn approval_request_event(
         (
             "text".to_string(),
             json!(format!(
-                "审批请求 {} 正在等待决定：{}",
+                "Approval request {} is awaiting a decision: {}",
                 approval.id, approval.justification
             )),
         ),
@@ -17134,7 +17471,7 @@ fn approval_denied_tool_output(
         .rationale
         .as_deref()
         .or(approval.cancel_reason.as_deref())
-        .unwrap_or("未提供理由");
+        .unwrap_or("No reason was provided");
     let mut payload = serde_json::Map::from_iter([
         ("context_id".to_string(), json!(context_id)),
         ("session_id".to_string(), json!(session_id)),
@@ -17155,7 +17492,9 @@ fn approval_denied_tool_output(
         ("root_turn_id".to_string(), json!(route.root_turn_id)),
         (
             "text".to_string(),
-            json!(format!("执行拒绝: 权限审批未授权本次操作: {reason}")),
+            json!(format!(
+                "Tool execution rejected: approval did not authorize this operation: {reason}"
+            )),
         ),
     ]);
     if let Some(principal_id) = &route.initiating_principal_id {
@@ -17189,9 +17528,9 @@ fn physical_execution_preflight_rejected_tool_output(
         "EXECUTION_PREFLIGHT_REJECTED"
     };
     let guidance = if protected_path {
-        "该路径受 Runtime protected_paths 保护，不能通过重复 require_escalated 覆盖。请改用不读取受保护路径的方案，或明确告知用户需要修改 Runtime 权限配置。"
+        "This path is protected by Runtime protected_paths and repeated require_escalated requests cannot override it. Use an approach that does not read the protected path, or tell the user that the Runtime permission configuration must change."
     } else {
-        "请根据预检错误修正工具参数或权限申请；不要原样重复同一次调用。"
+        "Correct the tool arguments or permission request based on the preflight error; do not repeat the unchanged call."
     };
     let mut payload = serde_json::Map::from_iter([
         ("context_id".to_string(), json!(context_id)),
@@ -17223,7 +17562,7 @@ fn physical_execution_preflight_rejected_tool_output(
         (
             "text".to_string(),
             json!(format!(
-                "执行拒绝: 工具 '{}' 未开始执行；Runtime 权限预检失败（{}）：{}\n处理建议：{}",
+                "Tool execution rejected: tool '{}' did not start because Runtime permission preflight failed ({}): {}\nGuidance: {}",
                 call.func_name, rejection_code, error, guidance
             )),
         ),
@@ -17264,7 +17603,7 @@ fn execution_approval_records(
             approval,
             reason,
         } => Err(format!(
-            "Execution/Approval 在 {operation} 时被拒绝: {reason} (job={:?}, approval={:?})",
+            "Execution/Approval was rejected during {operation}: {reason} (job={:?}, approval={:?})",
             job.as_ref()
                 .map(|record| (&record.id, record.revision, record.status)),
             approval
@@ -17273,7 +17612,7 @@ fn execution_approval_records(
         )
         .into()),
         ExecutionApprovalMutation::NotFound => {
-            Err(format!("Execution/Approval 在 {operation} 时不存在").into())
+            Err(format!("Execution/Approval does not exist during {operation}").into())
         }
     }
 }
@@ -17287,13 +17626,15 @@ fn approval_record_from_mutation(
         ApprovalMutation::Existing(record) => Ok((record, false)),
         ApprovalMutation::Conflict { current, reason }
         | ApprovalMutation::Rejected { current, reason } => Err(format!(
-            "Approval '{}' 在 {operation} 时被拒绝（r{} / {}）: {reason}",
+            "Approval '{}' was rejected during {operation} (r{} / {}): {reason}",
             current.id,
             current.revision,
             current.status.as_str()
         )
         .into()),
-        ApprovalMutation::NotFound => Err(format!("Approval 在 {operation} 时不存在").into()),
+        ApprovalMutation::NotFound => {
+            Err(format!("Approval does not exist during {operation}").into())
+        }
     }
 }
 
@@ -17304,7 +17645,7 @@ fn applied_execution_job(
     match receipt {
         JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => Ok(job),
         JobReceipt::Conflict { current, .. } => Err(format!(
-            "Execution Job '{}' 在 {operation} 时发生 revision 冲突（当前 r{} / {}）",
+            "Execution Job '{}' encountered a revision conflict during {operation} (current r{} / {})",
             current.id,
             current.revision,
             current.status.as_str()
@@ -17313,12 +17654,14 @@ fn applied_execution_job(
         JobReceipt::Rejected {
             current, reason, ..
         } => Err(format!(
-            "Execution Job '{}' 在 {operation} 时被拒绝（{}）：{reason}",
+            "Execution Job '{}' was rejected during {operation} ({}): {reason}",
             current.id,
             current.status.as_str()
         )
         .into()),
-        JobReceipt::NotFound { .. } => Err(format!("Execution Job 在 {operation} 时不存在").into()),
+        JobReceipt::NotFound { .. } => {
+            Err(format!("Execution Job does not exist during {operation}").into())
+        }
     }
 }
 
@@ -17347,7 +17690,7 @@ fn execution_job_outcome(event: &Event) -> JobOutcome {
                 .payload
                 .get("text")
                 .and_then(|value| value.as_str())
-                .unwrap_or("工具执行失败但没有提供错误文本")
+                .unwrap_or("Tool execution failed without an error message")
                 .to_string(),
             exit_code,
         }
@@ -17365,13 +17708,18 @@ async fn finish_claimed_physical_job(
             .store()
             .get_execution_job(&claimed.id)
             .await?
-            .ok_or_else(|| format!("Execution Job '{}' 在终态提交前消失", claimed.id))?;
+            .ok_or_else(|| {
+                format!(
+                    "Execution Job '{}' disappeared before terminal commit",
+                    claimed.id
+                )
+            })?;
         if current.status.is_terminal() {
             if current.result_event_id.as_deref() == Some(output.id.as_str()) {
                 return Ok(());
             }
             return Err(format!(
-                "Execution Job '{}' 已由不同结果 '{}' 终结",
+                "Execution Job '{}' already ended with a different result '{}'",
                 current.id,
                 current.result_event_id.as_deref().unwrap_or("<none>")
             )
@@ -17379,10 +17727,9 @@ async fn finish_claimed_physical_job(
         }
 
         let outcome = if current.cancel_requested_at.is_some() {
-            let reason = current
-                .cancel_reason
-                .clone()
-                .unwrap_or_else(|| "Runtime 已请求取消该物理 Action".to_string());
+            let reason = current.cancel_reason.clone().unwrap_or_else(|| {
+                "Runtime requested cancellation of this physical Action".to_string()
+            });
             let prior = output
                 .payload
                 .get("text")
@@ -17400,7 +17747,7 @@ async fn finish_claimed_physical_job(
             output.payload.insert(
                 "text".to_string(),
                 json!(format!(
-                    "物理 Action 已取消：{reason}\n--- 已观测输出 ---\n{prior}"
+                    "Physical Action cancelled: {reason}\n--- Observed output ---\n{prior}"
                 )),
             );
             let exit_code = output
@@ -17439,19 +17786,23 @@ async fn finish_claimed_physical_job(
                 current, reason, ..
             } => {
                 return Err(format!(
-                    "Execution Job '{}' 终态提交被拒绝（{}）：{reason}",
+                    "Execution Job '{}' terminal commit was rejected ({}): {reason}",
                     current.id,
                     current.status.as_str()
                 )
                 .into());
             }
             JobReceipt::NotFound { .. } => {
-                return Err(format!("Execution Job '{}' 在终态提交时不存在", claimed.id).into());
+                return Err(format!(
+                    "Execution Job '{}' does not exist during terminal commit",
+                    claimed.id
+                )
+                .into());
             }
         }
     }
     Err(format!(
-        "Execution Job '{}' 在终态提交时持续发生 revision 竞争",
+        "Execution Job '{}' remained in revision contention during terminal commit",
         claimed.id
     )
     .into())
@@ -17469,13 +17820,18 @@ async fn finish_claimed_physical_job_with_outcome(
             .store()
             .get_execution_job(&claimed.id)
             .await?
-            .ok_or_else(|| format!("Execution Job '{}' 在恢复终态前消失", claimed.id))?;
+            .ok_or_else(|| {
+                format!(
+                    "Execution Job '{}' disappeared before terminal-state recovery",
+                    claimed.id
+                )
+            })?;
         if current.status.is_terminal() {
             if current.result_event_id.as_deref() == Some(output.id.as_str()) {
                 return Ok(());
             }
             return Err(format!(
-                "Execution Job '{}' 已由不同结果 '{}' 终结",
+                "Execution Job '{}' already ended with a different result '{}'",
                 current.id,
                 current.result_event_id.as_deref().unwrap_or("<none>")
             )
@@ -17498,19 +17854,23 @@ async fn finish_claimed_physical_job_with_outcome(
                 current, reason, ..
             } => {
                 return Err(format!(
-                    "Execution Job '{}' 恢复终态被拒绝（{}）：{reason}",
+                    "Execution Job '{}' terminal-state recovery was rejected ({}): {reason}",
                     current.id,
                     current.status.as_str()
                 )
                 .into());
             }
             JobReceipt::NotFound { .. } => {
-                return Err(format!("Execution Job '{}' 在恢复终态时不存在", claimed.id).into());
+                return Err(format!(
+                    "Execution Job '{}' does not exist during terminal-state recovery",
+                    claimed.id
+                )
+                .into());
             }
         }
     }
     Err(format!(
-        "Execution Job '{}' 在恢复终态时持续发生 revision 竞争",
+        "Execution Job '{}' remained in revision contention during terminal-state recovery",
         claimed.id
     )
     .into())
@@ -17606,7 +17966,7 @@ async fn recover_action_group_from_durable_events(
         .strip_prefix("call_")
         .ok_or_else(|| {
             format!(
-                "Action Group '{}' 的 assistant_call_event_id '{}' 不符合确定性格式",
+                "Action Group '{}' has assistant_call_event_id '{}' that does not match the deterministic format",
                 group.id, group.assistant_call_event_id
             )
         })?;
@@ -17616,7 +17976,7 @@ async fn recover_action_group_from_durable_events(
         .await?
     else {
         return Err(format!(
-            "Action Group '{}' 缺少工具选择 Event '{}'",
+            "Action Group '{}' is missing tool-selection Event '{}'",
             group.id, selected_event_id
         )
         .into());
@@ -17649,14 +18009,14 @@ async fn recover_action_group_from_prefetched_events(
         .strip_prefix("call_")
         .ok_or_else(|| {
             format!(
-                "Action Group '{}' 的 assistant_call_event_id '{}' 不符合确定性格式",
+                "Action Group '{}' has assistant_call_event_id '{}' that does not match the deterministic format",
                 group.id, group.assistant_call_event_id
             )
         })?;
     let selected_event_id = format!("tool_calls_selected_{durable_attempt_id}");
     let selected = evidence.get(&selected_event_id).ok_or_else(|| {
         format!(
-            "Action Group '{}' 缺少工具选择 Event '{}'",
+            "Action Group '{}' is missing tool-selection Event '{}'",
             group.id, selected_event_id
         )
     })?;
@@ -17764,7 +18124,7 @@ fn recovered_action_group_settled_event(
 ) -> Result<Event, DynError> {
     if !matches!(wake_policy, "direct_signal" | "none") {
         return Err(format!(
-            "Action Group '{}' 的持久化 wake policy '{}' 非法",
+            "Action Group '{}' has invalid persisted wake policy '{}'",
             group.id, wake_policy
         )
         .into());
@@ -17777,7 +18137,7 @@ fn recovered_action_group_settled_event(
             .map(ToOwned::to_owned)
             .ok_or_else(|| {
                 format!(
-                    "Action Group '{}' 的工具选择 Event '{}' 缺少 '{}'",
+                    "Action Group '{}' tool-selection Event '{}' is missing '{}'",
                     group.id, selected.id, key
                 )
                 .into()
@@ -17793,7 +18153,7 @@ fn recovered_action_group_settled_event(
         || thread_id != group.thread_id
     {
         return Err(format!(
-            "Action Group '{}' 与工具选择 Event '{}' 的因果 route 不一致",
+            "Action Group '{}' and tool-selection Event '{}' have inconsistent causal routes",
             group.id, selected.id
         )
         .into());
@@ -17806,7 +18166,7 @@ fn recovered_action_group_settled_event(
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| {
             format!(
-                "Action Group '{}' 的工具选择 Event '{}' 缺少 trigger_sequence",
+                "Action Group '{}' tool-selection Event '{}' is missing trigger_sequence",
                 group.id, selected.id
             )
         })?;
@@ -17866,7 +18226,7 @@ fn unstarted_cancelled_tool_output(job: &ExecutionJobRecord, reason: &str) -> Ev
         (
             "text".to_string(),
             json!(format!(
-                "物理 Action 在副作用开始前已取消，因此没有执行：{reason}"
+                "Physical Action was cancelled before side effects began and was not executed: {reason}"
             )),
         ),
     ]);
@@ -17934,7 +18294,7 @@ fn attach_execution_join_route(
 ) -> Result<(), DynError> {
     let object = request
         .as_object_mut()
-        .ok_or("Physical Execution request 在附加 join route 后不是 JSON object")?;
+        .ok_or("Physical Execution request is not a JSON object after attaching the join route")?;
     if let Some(group_id) = action_group_id {
         object.insert("_morphz_action_group_id".to_string(), json!(group_id));
     }
@@ -18024,7 +18384,7 @@ fn required_payload_str<'a>(event: &'a Event, key: &str) -> Result<&'a str, DynE
         .payload
         .get(key)
         .and_then(|value| value.as_str())
-        .ok_or_else(|| format!("事件 '{}' 缺少字符串字段 '{}'", event.id, key).into())
+        .ok_or_else(|| format!("Event '{}' is missing string field '{}'", event.id, key).into())
 }
 
 fn merge_artifact_transfer_requirements(
@@ -18105,7 +18465,9 @@ fn tool_call_activity_preview(call: &crate::llm::ToolCallRepr) -> serde_json::Va
             .chars()
             .take(TOOL_ARGUMENT_PREVIEW_CHARS)
             .collect::<String>();
-        arguments.push_str(&format!("\n… <参数预览已截断，共 {rendered_chars} 字符>"));
+        arguments.push_str(&format!(
+            "\n… <argument preview truncated; {rendered_chars} characters total>"
+        ));
     }
     json!({
         "id": call.id,
@@ -18171,14 +18533,14 @@ fn is_sensitive_argument_key(key: &str) -> bool {
 }
 
 fn normalize_context_tx_key(context_id: &str, arguments: &str) -> Result<String, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(arguments).map_err(|error| format!("参数 JSON 非法: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(arguments)
+        .map_err(|error| format!("Invalid argument JSON: {error}"))?;
     let transaction = value
         .get("transaction")
         .and_then(|value| value.as_str())
-        .ok_or("缺少 transaction 字符串")?;
+        .ok_or("Missing transaction string")?;
     let canonical = crate::sexpr::parse(transaction)
-        .map_err(|error| format!("transaction SExpr 非法: {error}"))?
+        .map_err(|error| format!("Invalid transaction S-expression: {error}"))?
         .to_string();
     Ok(format!("{context_id}\u{0}{canonical}"))
 }
@@ -18194,8 +18556,9 @@ mod tests {
         critical_maintenance_transaction_available, decide_provider_circuit_admission,
         derived_thread_kind, durable_activation_revocation_reason,
         durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
-        harness_entry_callable_tools, legacy_plan_effect_sequence, model_binding_completion_error,
-        model_harness_tool_scope, model_visible_attachment_references, new_runtime_claimant_id,
+        harness_entry_callable_tools, infer_tool_status, legacy_plan_effect_sequence,
+        model_binding_completion_error, model_harness_tool_scope,
+        model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
         persistent_provider_wait_contexts, plan_infer_tool_scope,
         production_system_prompt_inspection, provider_delivery_retry_delay,
@@ -18268,6 +18631,27 @@ mod tests {
                 '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
             )
         })
+    }
+
+    #[test]
+    fn tool_status_classification_writes_english_and_reads_legacy_prefixes() {
+        for text in [
+            "Tool execution failed: invalid input",
+            "Execution failed: invalid input",
+            "执行失败: historical value",
+            "系统报错：historical value",
+        ] {
+            assert_eq!(infer_tool_status(text), "error");
+        }
+        assert_eq!(
+            infer_tool_status("Tool execution timed out after 30 seconds"),
+            "timeout"
+        );
+        assert_eq!(
+            infer_tool_status("Tool execution rejected: unavailable"),
+            "rejected"
+        );
+        assert_eq!(infer_tool_status("result"), "success");
     }
 
     #[test]
@@ -18723,6 +19107,7 @@ mod tests {
             trigger_kind: "chat/user_message".to_string(),
             parent_activation_id: None,
             root_turn_id: "root".to_string(),
+            model_alias: None,
             context_snapshot_version: None,
             status,
             claimed_by: Some("runtime:999".to_string()),
@@ -19929,7 +20314,7 @@ mod tests {
         assert!(long_preview["arguments"]
             .as_str()
             .unwrap()
-            .contains("参数预览已截断"));
+            .contains("argument preview truncated"));
     }
 
     #[test]

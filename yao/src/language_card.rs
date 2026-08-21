@@ -25,7 +25,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (versioning "source has no version declaration; (version ...) is invalid")
     (declarations "optional (requires ...) then optional (types ...), before the body")
     (strings "double-quoted; escape backslash, quote, newline, return, and tab")
-    (references "$name or $name.field; bindings are immutable"))
+    (references "use bare lexical names: name or name.field; '$name' is invalid; bindings are immutable"))
   (ownership
     (eval "Runtime owns the loop and executes a typed plan")
     (infer "model owns the loop while Runtime authority and declared result type remain binding; a model-owned Harness entry explicitly declares requires.tools"))
@@ -39,6 +39,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (meaning "a closed upper bound that narrows, never grants, Runtime authority"))
   (values
     (constructors "(list E...) (dict (KEY E)...) (record TYPE (FIELD E)...) (variant TYPE.VARIANT (FIELD E)...) (some E) (none TYPE) (ok E ERROR-TYPE) (err E OK-TYPE)")
+    (collections "list is List<T> and dict is homogeneous Map<T>; fixed heterogeneous fields require a declared record")
     (semantic "(evidence (kind E) (value E) (refs REF...)) (outcome (status succeeded|failed|blocked) (value E) (evidence REF...)) (context-transaction (context REF) (transaction (context-tx ...)))")
     (pure "(get E FIELD) (decode TYPE E) (is TYPE E) (eq|ne|lt|le|gt|ge LEFT RIGHT) (and E...) (or E...) (not E) (add E...) (sub LEFT RIGHT) (mul E...) (div LEFT RIGHT)"))
   (control
@@ -47,7 +48,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (rule "effectful results must first be bound; conditions, operands, arguments, and collections are pure"))
   (effects
     (call "(call TOOL (ARG EXPR...)...); arguments are checked against the Tool schema")
-    (infer "(infer (task EXPR) (tools TOOL...) (returns TYPE) (ARG EXPR...)...); task and returns are required")
+    (infer "(infer (task EXPR) (model ROUTE) (tools TOOL...) (returns TYPE) (ARG EXPR...)...); model is optional and defaults to the Runtime primary route; an explicit model must name an evaluation-environment.model-selection.agent-allowed route; task and returns are required")
     (par "(par (branch NAME EXPR)...); at least two isolated branches, deterministic all-join result")
     (run "(run PROGRAM); executes only an admitted Program Value through a durable child plan")
     (host "(host.view REF (returns TYPE)) (evidence.commit CANDIDATE) (outcome.commit CANDIDATE) plus profile-published objective.*, context.*, and namespaced operations"))
@@ -60,7 +61,8 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (json "Json")
     (typed "the Runtime decodes and validates before deterministic flow"))
   (examples
-    (pure "(eval (add 20 22))")
+    (pure "(eval (seq (bind total (add 20 22)) (mul total 2)))")
+    (record "(eval (types (record Answer (value Int) (note String))) (record Answer (value 42) (note \"done\")))")
     (tool "(eval (requires (tools read)) (call read (path \"README.md\")))")
     (model "(infer (requires (tools read)) (task \"summarize the evidence\") (returns String) (tools read))")))"#;
 
@@ -73,7 +75,12 @@ mod tests {
         crate::parse_one(LANGUAGE_CARD, crate::ParseLimits::default()).unwrap();
         assert!(LANGUAGE_CARD.len() <= LANGUAGE_CARD_MAX_CHARS);
         assert!(!LANGUAGE_CARD.contains("(version \""));
+        assert!(LANGUAGE_CARD.contains("use bare lexical names"));
+        assert!(LANGUAGE_CARD.contains("(bind total (add 20 22)) (mul total 2)"));
         assert!(LANGUAGE_CARD.contains("{\\\"source\\\":\\\"(eval ...)\\\"}"));
+        assert!(
+            LANGUAGE_CARD.contains("model is optional and defaults to the Runtime primary route")
+        );
         for form in ["(seq E...)", "(bind NAME E)", "(call TOOL", "(par (branch"] {
             assert!(LANGUAGE_CARD.contains(form), "missing {form}");
         }

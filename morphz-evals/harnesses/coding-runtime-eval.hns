@@ -54,14 +54,14 @@
           "修复多租户策略缓存一致性缺陷。根据 baseline 和 service_source 生成最小编辑。最终正文只能是一个合法 JSON 对象，字段必须恰好可作为 edit 工具参数：path 固定为 src/service.rs；expected_sha256 必须复制 service_source 头部的完整 SHA-256；edits 是一个或多个精确 old_text/new_text 替换。不得返回 Markdown、解释或额外字段。")
         (tools)
         (returns EditDecision)
-        (baseline $baseline)
-        (service_source $service)))
+        (baseline baseline)
+        (service_source service)))
 
     (bind change
       (call edit
-        (path $patch.path)
-        (expected_sha256 $patch.expected_sha256)
-        (edits $patch.edits)))
+        (path patch.path)
+        (expected_sha256 patch.expected_sha256)
+        (edits patch.edits)))
 
     (call exec
       (command "cargo test --all-targets"))))

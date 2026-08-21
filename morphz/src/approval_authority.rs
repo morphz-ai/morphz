@@ -131,7 +131,7 @@ pub fn approval_decision_event(approval: &ApprovalRecord, job: &ExecutionJobReco
             (
                 "text".to_string(),
                 serde_json::json!(format!(
-                    "审批 {} 已决定为 {}",
+                    "Approval {} has already been decided as {}",
                     approval.id,
                     approval.status.as_str()
                 )),

@@ -167,7 +167,13 @@ pub fn is_context_observation(event: &Event) -> bool {
             .payload
             .get("text")
             .and_then(JsonValue::as_str)
-            .is_some_and(|text| text.starts_with("执行失败:") || text.starts_with("执行拒绝:"));
+            .is_some_and(|text| {
+                text.starts_with("Tool execution failed:")
+                    || text.starts_with("Tool execution rejected:")
+                    // Legacy persisted output compatibility. New producers emit English.
+                    || text.starts_with("执行失败:")
+                    || text.starts_with("执行拒绝:")
+            });
     }
     matches!(
         event.event_type.as_str(),
@@ -514,7 +520,7 @@ impl InMemoryEventBus {
                     std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         format!(
-                            "全局事件审计 handler 超过 {:?} 未完成",
+                            "global Event audit handler did not complete within {:?}",
                             self.sync_handler_timeout
                         ),
                     )

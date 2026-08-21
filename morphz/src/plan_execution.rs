@@ -302,7 +302,7 @@ impl PlanExecutionCoordinator {
             PlanExecutionMutation::Conflict { current } => {
                 return Ok(PlanDriveReceipt::Conflict {
                     current: Some(current),
-                    reason: "PlanExecution claim revision 冲突".to_string(),
+                    reason: "PlanExecution claim revision conflict".to_string(),
                 })
             }
             PlanExecutionMutation::Rejected { current, reason } => {
@@ -311,7 +311,7 @@ impl PlanExecutionCoordinator {
             PlanExecutionMutation::NotFound => {
                 return Ok(PlanDriveReceipt::Conflict {
                     current: None,
-                    reason: format!("PlanExecution '{plan_id}' 不存在"),
+                    reason: format!("PlanExecution '{plan_id}' does not exist"),
                 })
             }
         };
@@ -319,7 +319,10 @@ impl PlanExecutionCoordinator {
         let advance: PlanExecutionResult<PlanDriveReceipt> = async {
             let mut machine: PlanMachine = serde_json::from_value(running.state_json.clone())
                 .map_err(|error| {
-                    format!("PlanExecution '{}' state 无法恢复: {error}", running.id)
+                    format!(
+                        "failed to restore PlanExecution '{}' state: {error}",
+                        running.id
+                    )
                 })?;
             loop {
                 match machine.advance(&self.registry) {
@@ -334,7 +337,7 @@ impl PlanExecutionCoordinator {
                         {
                             Ok(job) => job,
                             Err(error) => {
-                                let message = format!("Yao call 规划失败: {error}");
+                                let message = format!("failed to plan Yao call: {error}");
                                 let mutation = self
                                     .store
                                     .finish_plan_execution(
@@ -358,7 +361,7 @@ impl PlanExecutionCoordinator {
                         if let Err(error) =
                             validate_planned_job(&running, &effect, &effect_tool_call_id, &job)
                         {
-                            let message = format!("Yao call 规划结果非法: {error}");
+                            let message = format!("Yao call planning result is invalid: {error}");
                             let mutation = self
                                 .store
                                 .finish_plan_execution(
@@ -620,7 +623,7 @@ impl PlanExecutionCoordinator {
             result,
         } = effect
         else {
-            return Err("只有 Host effect 可以进入 Runtime Host executor".to_string());
+            return Err("only a Host effect may enter the Runtime Host executor".to_string());
         };
         let event_id =
             deterministic_plan_effect_id(&plan.id, *sequence).map_err(|error| error.to_string())?;
@@ -655,15 +658,13 @@ impl PlanExecutionCoordinator {
                 || existing.payload.get("arguments") != Some(&JsonValue::Object(arguments.clone()))
             {
                 return Err(format!(
-                    "Host effect Event '{}' 已被不同的因果内容占用",
+                    "Host effect Event '{}' is already bound to different causal content",
                     existing.id
                 ));
             }
-            return existing
-                .payload
-                .get("result")
-                .cloned()
-                .ok_or_else(|| format!("Host effect Event '{}' 缺少 result", existing.id));
+            return existing.payload.get("result").cloned().ok_or_else(|| {
+                format!("Host effect Event '{}' is missing its result", existing.id)
+            });
         }
 
         let raw = self
@@ -743,18 +744,20 @@ impl PlanExecutionCoordinator {
     ) -> Result<JsonValue, String> {
         match operation {
             "host.view" => {
-                let reference = arguments.get("ref").ok_or("host.view 缺少 ref 参数")?;
+                let reference = arguments
+                    .get("ref")
+                    .ok_or("host.view is missing the ref argument")?;
                 let (kind, id) = crate::yao::reference_view(reference)
-                    .ok_or("host.view ref 参数不是有效的 opaque Ref")?;
+                    .ok_or("host.view ref argument is not a valid opaque Ref")?;
                 self.authorized_host_view(plan, kind, id).await
             }
             "evidence.commit" | "outcome.commit" => {
                 let candidate = arguments
                     .get("candidate")
-                    .ok_or_else(|| format!("{operation} 缺少 candidate 参数"))?;
+                    .ok_or_else(|| format!("{operation} is missing the candidate argument"))?;
                 let kind = if operation == "evidence.commit" {
                     let candidate = crate::yao::evidence_candidate_view(candidate)
-                        .ok_or("evidence.commit candidate 不是合法 EvidenceCandidate")?;
+                        .ok_or("evidence.commit candidate is not a valid EvidenceCandidate")?;
                     for reference in candidate.refs {
                         self.require_committed_reference_in_context(plan, reference, "Evidence")
                             .await?;
@@ -762,7 +765,7 @@ impl PlanExecutionCoordinator {
                     "Evidence"
                 } else {
                     let candidate = crate::yao::outcome_candidate_view(candidate)
-                        .ok_or("outcome.commit candidate 不是合法 OutcomeCandidate")?;
+                        .ok_or("outcome.commit candidate is not a valid OutcomeCandidate")?;
                     for reference in candidate.evidence {
                         self.require_committed_reference_in_context(plan, reference, "Evidence")
                             .await?;
@@ -776,7 +779,7 @@ impl PlanExecutionCoordinator {
                 if let Some(evidence) = arguments.get("evidence") {
                     let evidence = evidence
                         .as_array()
-                        .ok_or("objective.report evidence 必须是 Ref<Evidence> 列表")?;
+                        .ok_or("objective.report evidence must be a list of Ref<Evidence>")?;
                     for reference in evidence {
                         self.require_committed_reference_in_context(plan, reference, "Evidence")
                             .await?;
@@ -809,20 +812,21 @@ impl PlanExecutionCoordinator {
             "context.propose" => {
                 let transaction = arguments
                     .get("transaction")
-                    .ok_or("context.propose 缺少 transaction 参数")?;
+                    .ok_or("context.propose is missing the transaction argument")?;
                 let transaction = crate::yao::context_transaction_view(transaction)
-                    .ok_or("context.propose transaction 不是合法 ContextTransaction")?;
+                    .ok_or("context.propose transaction is not a valid ContextTransaction")?;
                 let (kind, context_id) = crate::yao::reference_view(transaction.context)
-                    .ok_or("ContextTransaction context 不是有效 Ref<Context>")?;
+                    .ok_or("ContextTransaction context is not a valid Ref<Context>")?;
                 if kind != "Context" || context_id != plan.context_id {
                     return Err(
-                        "ContextTransaction Ref 不属于当前 Plan 的 Context authority".to_string(),
+                        "ContextTransaction Ref is outside the current Plan Context authority"
+                            .to_string(),
                     );
                 }
                 self.apply_context_proposal(plan, event_id, transaction.canonical_source)
                     .await
             }
-            other => Err(format!("未知 Morphz Host operation '{other}'")),
+            other => Err(format!("unknown Morphz Host operation '{other}'")),
         }
     }
 
@@ -835,7 +839,7 @@ impl PlanExecutionCoordinator {
         let context_engine = self
             .context_engine
             .as_ref()
-            .ok_or("Runtime 没有配置 Context Authority，不能结算 context.propose")?;
+            .ok_or("Runtime has no Context Authority configured to settle context.propose")?;
         let transaction_id = format!("{proposal_id}:context");
 
         if let Some(existing) = self
@@ -865,7 +869,7 @@ impl PlanExecutionCoordinator {
                     != Some(plan.session_id.as_str())
             {
                 return Err(format!(
-                    "Yao Context transaction identity '{}' 已被不同因果内容占用",
+                    "Yao Context transaction identity '{}' is already bound to different causal content",
                     transaction_id
                 ));
             }
@@ -898,7 +902,7 @@ impl PlanExecutionCoordinator {
             Ok(commit) => Ok(context_commit_result(proposal_id, &commit)),
             Err(error) => {
                 let detail = error.to_string();
-                let status = if detail.contains("冲突") || detail.contains("base-version") {
+                let status = if detail.contains("conflict") || detail.contains("base-version") {
                     "conflict"
                 } else {
                     "rejected"
@@ -915,26 +919,26 @@ impl PlanExecutionCoordinator {
         let objective_id = plan
             .objective_id
             .as_deref()
-            .ok_or("当前 Plan 没有 Objective authority")?;
+            .ok_or("current Plan has no Objective authority")?;
         let objective = self
             .store
             .get_objective(objective_id)
             .await
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("Objective '{objective_id}' 不存在"))?;
+            .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
         if objective.context_id != plan.context_id
             || objective.coordinator_session_id != plan.session_id
             || objective.agent_id != plan.agent_id
             || objective.initiating_principal_id != plan.initiating_principal_id
         {
             return Err(format!(
-                "Objective '{}' 越过当前 Plan 的 Agent/Context/Session/Principal authority",
+                "Objective '{}' is outside the current Plan Agent/Context/Session/Principal authority",
                 objective.id
             ));
         }
         if objective.active_evaluation_id.as_deref() != plan.objective_evaluation_id.as_deref() {
             return Err(format!(
-                "Objective '{}' 的当前 Evaluation 不属于此 Plan",
+                "current Evaluation for Objective '{}' does not belong to this Plan",
                 objective.id
             ));
         }
@@ -947,26 +951,27 @@ impl PlanExecutionCoordinator {
         proposal_id: &str,
         arguments: &serde_json::Map<String, JsonValue>,
     ) -> Result<JsonValue, String> {
-        let supervisor = self
-            .objective_supervisor
-            .as_ref()
-            .ok_or("Runtime 没有配置 Objective Authority，不能结算 objective.propose-wait")?;
+        let supervisor = self.objective_supervisor.as_ref().ok_or(
+            "Runtime has no Objective Authority configured to settle objective.propose-wait",
+        )?;
         let objective = self.authorized_objective(plan).await?;
         let condition: ObjectiveWaitCondition = serde_json::from_value(
             arguments
                 .get("condition")
                 .cloned()
-                .ok_or("objective.propose-wait 缺少 condition")?,
+                .ok_or("objective.propose-wait is missing condition")?,
         )
-        .map_err(|error| format!("objective.propose-wait condition 无效: {error}"))?;
+        .map_err(|error| format!("objective.propose-wait condition is invalid: {error}"))?;
         let reason = arguments
             .get("reason")
             .and_then(JsonValue::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or("objective.propose-wait reason 必须是非空字符串")?;
+            .ok_or("objective.propose-wait reason must be a non-empty string")?;
         if reason.chars().count() > 10_000 {
-            return Err("objective.propose-wait reason 超过 10,000 字符上限".to_string());
+            return Err(
+                "objective.propose-wait reason exceeds the 10,000-character limit".to_string(),
+            );
         }
 
         if objective.status == ObjectiveStatus::Active
@@ -1011,16 +1016,15 @@ impl PlanExecutionCoordinator {
         proposal_id: &str,
         arguments: &serde_json::Map<String, JsonValue>,
     ) -> Result<JsonValue, String> {
-        let supervisor = self
-            .objective_supervisor
-            .as_ref()
-            .ok_or("Runtime 没有配置 Objective Authority，不能结算 objective.propose-completion")?;
+        let supervisor = self.objective_supervisor.as_ref().ok_or(
+            "Runtime has no Objective Authority configured to settle objective.propose-completion",
+        )?;
         let objective = self.authorized_objective(plan).await?;
         let outcome_ref = arguments
             .get("outcome")
-            .ok_or("objective.propose-completion 缺少 outcome")?;
+            .ok_or("objective.propose-completion is missing outcome")?;
         let (_, outcome_id) = crate::yao::reference_view(outcome_ref)
-            .ok_or("objective.propose-completion outcome 不是有效 Ref<Outcome>")?;
+            .ok_or("objective.propose-completion outcome is not a valid Ref<Outcome>")?;
         let outcome_event = self
             .store
             .query(QueryFilter {
@@ -1033,15 +1037,15 @@ impl PlanExecutionCoordinator {
             .map_err(|error| error.to_string())?
             .into_iter()
             .find(|event| event.id == outcome_id)
-            .ok_or_else(|| format!("Outcome Event '{outcome_id}' 不存在"))?;
+            .ok_or_else(|| format!("Outcome Event '{outcome_id}' does not exist"))?;
         let candidate_value = outcome_event
             .payload
             .get("arguments")
             .and_then(JsonValue::as_object)
             .and_then(|arguments| arguments.get("candidate"))
-            .ok_or_else(|| format!("Outcome Event '{outcome_id}' 缺少 candidate"))?;
+            .ok_or_else(|| format!("Outcome Event '{outcome_id}' is missing candidate"))?;
         let candidate = crate::yao::outcome_candidate_view(candidate_value)
-            .ok_or_else(|| format!("Outcome Event '{outcome_id}' candidate 已损坏"))?;
+            .ok_or_else(|| format!("Outcome Event '{outcome_id}' candidate is corrupt"))?;
         if candidate.status != "succeeded" {
             return Ok(objective_transition_result(
                 proposal_id,
@@ -1049,7 +1053,7 @@ impl PlanExecutionCoordinator {
                 &objective,
                 objective.revision,
                 serde_json::json!({
-                    "message": "只有 succeeded Outcome 可以提出 Objective completion",
+                    "message": "only a succeeded Outcome may propose Objective completion",
                     "outcome_id": outcome_id,
                     "outcome_status": candidate.status,
                 }),
@@ -1061,18 +1065,18 @@ impl PlanExecutionCoordinator {
             .map(|reference| {
                 crate::yao::reference_view(reference)
                     .map(|(_, id)| id.to_string())
-                    .ok_or("Outcome candidate 包含无效 Evidence Ref".to_string())
+                    .ok_or("Outcome candidate contains an invalid Evidence Ref".to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
         let reason = match candidate.value {
             JsonValue::String(value) if !value.trim().is_empty() => value.trim().to_string(),
             value => serde_json::to_string(value)
-                .map_err(|error| format!("Outcome value 无法序列化: {error}"))?,
+                .map_err(|error| format!("failed to serialize Outcome value: {error}"))?,
         };
         let evaluation_id = plan
             .objective_evaluation_id
             .as_deref()
-            .ok_or("Objective completion Plan 缺少 objective_evaluation_id")?;
+            .ok_or("Objective completion Plan is missing objective_evaluation_id")?;
         let activation_id = canonical_plan_activation_id(&plan.activation_id);
 
         if objective.completion_intent.as_ref().is_some_and(|intent| {
@@ -1120,15 +1124,15 @@ impl PlanExecutionCoordinator {
         let expected = plan
             .objective_id
             .as_deref()
-            .ok_or("当前 Plan 没有 Objective authority")?;
+            .ok_or("current Plan has no Objective authority")?;
         let value = arguments
             .get(argument)
-            .ok_or_else(|| format!("缺少 {argument} 参数"))?;
+            .ok_or_else(|| format!("missing {argument} argument"))?;
         let (kind, id) = crate::yao::reference_view(value)
-            .ok_or_else(|| format!("{argument} 不是有效的 opaque Ref"))?;
+            .ok_or_else(|| format!("{argument} is not a valid opaque Ref"))?;
         if kind != "Objective" || id != expected {
             return Err(format!(
-                "{argument} Ref 不属于当前 Plan 的 Objective authority"
+                "{argument} Ref is outside the current Plan Objective authority"
             ));
         }
         Ok(())
@@ -1143,7 +1147,7 @@ impl PlanExecutionCoordinator {
     ) -> Result<(), String> {
         let value = arguments
             .get(argument)
-            .ok_or_else(|| format!("缺少 {argument} 参数"))?;
+            .ok_or_else(|| format!("missing {argument} argument"))?;
         self.require_committed_reference_in_context(plan, value, expected_kind)
             .await
     }
@@ -1155,9 +1159,9 @@ impl PlanExecutionCoordinator {
         expected_kind: &str,
     ) -> Result<(), String> {
         let (kind, id) = crate::yao::reference_view(value)
-            .ok_or_else(|| format!("值不是有效的 opaque Ref<{expected_kind}>"))?;
+            .ok_or_else(|| format!("value is not a valid opaque Ref<{expected_kind}>"))?;
         if kind != expected_kind {
-            return Err(format!("需要 Ref<{expected_kind}>，实际是 Ref<{kind}>"));
+            return Err(format!("expected Ref<{expected_kind}>, found Ref<{kind}>"));
         }
         let event = self
             .store
@@ -1171,15 +1175,23 @@ impl PlanExecutionCoordinator {
             .map_err(|error| error.to_string())?
             .into_iter()
             .find(|event| event.id == id)
-            .ok_or_else(|| format!("Ref<{expected_kind}> 不属于当前 Context 或尚未提交"))?;
+            .ok_or_else(|| {
+                format!(
+                    "Ref<{expected_kind}> is outside the current Context or has not been committed"
+                )
+            })?;
         let expected_operation = match expected_kind {
             "Evidence" => "evidence.commit",
             "Outcome" => "outcome.commit",
-            other => return Err(format!("Host 不支持验证 Ref<{other}> 的提交来源")),
+            other => {
+                return Err(format!(
+                    "Host cannot verify the commit origin of Ref<{other}>"
+                ))
+            }
         };
         if event.payload.get("operation").and_then(JsonValue::as_str) != Some(expected_operation) {
             return Err(format!(
-                "Event '{id}' 不是 Runtime 提交的 Ref<{expected_kind}>"
+                "Event '{id}' is not a Runtime-committed Ref<{expected_kind}>"
             ));
         }
         Ok(())
@@ -1198,7 +1210,7 @@ impl PlanExecutionCoordinator {
                     || (plan.objective_evaluation_id.is_none() && id == plan.activation_id) =>
             {
                 let program: Program = serde_json::from_value(plan.program_json.clone())
-                    .map_err(|error| format!("Plan Program 无法读取: {error}"))?;
+                    .map_err(|error| format!("failed to read Plan Program: {error}"))?;
                 Ok(serde_json::json!({
                     "id": id,
                     "owner": "runtime",
@@ -1228,9 +1240,11 @@ impl PlanExecutionCoordinator {
                     .get_objective(id)
                     .await
                     .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+                    .ok_or_else(|| format!("Objective '{id}' does not exist"))?;
                 if objective.context_id != plan.context_id || objective.agent_id != plan.agent_id {
-                    return Err("Objective Ref 越过当前 Plan 的 Context/Agent authority".into());
+                    return Err(
+                        "Objective Ref is outside the current Plan Context/Agent authority".into(),
+                    );
                 }
                 Ok(serde_json::json!({
                     "id": objective.id,
@@ -1253,7 +1267,9 @@ impl PlanExecutionCoordinator {
                     )
                 });
                 if expected.as_deref() != Some(id) {
-                    return Err("HarnessBinding Ref 不属于当前 Plan".to_string());
+                    return Err(
+                        "HarnessBinding Ref does not belong to the current Plan".to_string()
+                    );
                 }
                 Ok(serde_json::json!({
                     "id": id,
@@ -1266,10 +1282,12 @@ impl PlanExecutionCoordinator {
             "CapabilitySet" => {
                 let runtime_capability = extract_runtime_capability_ref(&plan.state_json);
                 if runtime_capability.as_deref() != Some(id) {
-                    return Err("CapabilitySet Ref 不属于当前 Plan 的 inherited authority".into());
+                    return Err(
+                        "CapabilitySet Ref is outside the current Plan inherited authority".into(),
+                    );
                 }
                 let program: Program = serde_json::from_value(plan.program_json.clone())
-                    .map_err(|error| format!("Plan Program 无法读取: {error}"))?;
+                    .map_err(|error| format!("failed to read Plan Program: {error}"))?;
                 Ok(serde_json::json!({
                     "id": id,
                     "descriptions": program.typed_program().map(|typed| &typed.effects),
@@ -1291,7 +1309,9 @@ impl PlanExecutionCoordinator {
                     .map_err(|error| error.to_string())?
                     .into_iter()
                     .next()
-                    .ok_or_else(|| format!("Ref<{kind}> '{id}' 不存在于当前 Context"))?;
+                    .ok_or_else(|| {
+                        format!("Ref<{kind}> '{id}' does not exist in the current Context")
+                    })?;
                 let expected_operation = if kind == "Evidence" {
                     "evidence.commit"
                 } else {
@@ -1300,7 +1320,7 @@ impl PlanExecutionCoordinator {
                 if event.payload.get("operation").and_then(JsonValue::as_str)
                     != Some(expected_operation)
                 {
-                    return Err(format!("Event '{id}' 不是已提交的 Ref<{kind}>"));
+                    return Err(format!("Event '{id}' is not a committed Ref<{kind}>"));
                 }
                 Ok(serde_json::json!({
                     "id": event.id,
@@ -1312,11 +1332,11 @@ impl PlanExecutionCoordinator {
                     "references": event.payload.get("arguments"),
                 }))
             }
-            "ExecutionTarget" => {
-                Err("当前 Plan 没有绑定可公开观察的 ExecutionTarget Ref".to_string())
-            }
+            "ExecutionTarget" => Err(
+                "current Plan has no publicly observable ExecutionTarget Ref binding".to_string(),
+            ),
             _ => Err(format!(
-                "Ref<{kind}> '{id}' 不属于当前 Plan 的 Host View authority"
+                "Ref<{kind}> '{id}' is outside the current Plan Host View authority"
             )),
         }
     }
@@ -1328,11 +1348,11 @@ impl PlanExecutionCoordinator {
         group_id: &str,
     ) -> PlanExecutionResult<Vec<PlanExecutionRecord>> {
         let PlanEffect::Parallel { sequence, branches } = effect else {
-            return Err("只有 par effect 可以物化 branch Plans".into());
+            return Err("only a par effect can materialize branch Plans".into());
         };
         let expected_group_id = deterministic_plan_parallel_group_id(&parent.id, *sequence)?;
         if expected_group_id != group_id {
-            return Err("par effect 与 Action Group 稳定身份不一致".into());
+            return Err("par effect and Action Group stable identities do not match".into());
         }
         let mut output = Vec::with_capacity(branches.len());
         for branch in branches {
@@ -1387,7 +1407,7 @@ impl PlanExecutionCoordinator {
             || parent.pending_kind != Some(PlanExecutionWaitKind::ActionGroup)
         {
             return Err(format!(
-                "PlanExecution '{}' 当前不是 waiting(action_group)",
+                "PlanExecution '{}' is not currently waiting(action_group)",
                 parent.id
             )
             .into());
@@ -1395,11 +1415,11 @@ impl PlanExecutionCoordinator {
         let group_id = parent
             .pending_id
             .as_deref()
-            .ok_or("waiting(action_group) 缺少 pending_id")?;
+            .ok_or("waiting(action_group) is missing pending_id")?;
         let machine: PlanMachine = serde_json::from_value(parent.state_json.clone())?;
         let effect = machine
             .pending_effect()
-            .ok_or("waiting(action_group) 缺少 pending par effect")?;
+            .ok_or("waiting(action_group) is missing its pending par effect")?;
         self.materialize_parallel_children(parent, effect, group_id)
             .await
     }
@@ -1416,12 +1436,12 @@ impl PlanExecutionCoordinator {
             machine,
         } = effect
         else {
-            return Err("只有 Program effect 可以物化 child Plan".into());
+            return Err("only a Program effect can materialize a child Plan".into());
         };
         let expected_id =
             deterministic_plan_program_child_id(&parent.activation_id, &parent.id, *sequence)?;
         if expected_id != child_id {
-            return Err("Program effect 与 child Plan 稳定身份不一致".into());
+            return Err("Program effect and child Plan stable identities do not match".into());
         }
         let child_call_id = deterministic_plan_program_call_id(&parent.id, *sequence)?;
         let program_json = serde_json::to_value(&value.program)?;
@@ -1462,7 +1482,7 @@ impl PlanExecutionCoordinator {
             || parent.pending_kind != Some(PlanExecutionWaitKind::PlanExecution)
         {
             return Err(format!(
-                "PlanExecution '{}' 当前不是 waiting(plan_execution)",
+                "PlanExecution '{}' is not currently waiting(plan_execution)",
                 parent.id
             )
             .into());
@@ -1470,11 +1490,11 @@ impl PlanExecutionCoordinator {
         let child_id = parent
             .pending_id
             .as_deref()
-            .ok_or("waiting(plan_execution) 缺少 pending_id")?;
+            .ok_or("waiting(plan_execution) is missing pending_id")?;
         let machine: PlanMachine = serde_json::from_value(parent.state_json.clone())?;
         let effect = machine
             .pending_effect()
-            .ok_or("waiting(plan_execution) 缺少 pending Program effect")?;
+            .ok_or("waiting(plan_execution) is missing its pending Program effect")?;
         self.materialize_program_child(parent, effect, child_id)
             .await
     }
@@ -1487,7 +1507,7 @@ impl PlanExecutionCoordinator {
         let Some(plan) = self.store.get_plan_execution(plan_id).await? else {
             return Ok(PlanResumeReceipt::Conflict {
                 current: None,
-                reason: format!("PlanExecution '{plan_id}' 不存在"),
+                reason: format!("PlanExecution '{plan_id}' does not exist"),
             });
         };
         if plan.status != PlanExecutionStatus::Waiting
@@ -1503,7 +1523,7 @@ impl PlanExecutionCoordinator {
             } else {
                 Ok(PlanResumeReceipt::Conflict {
                     current: Some(plan),
-                    reason: "PlanExecution 没有等待该 child Plan".to_string(),
+                    reason: "PlanExecution is not waiting for this child Plan".to_string(),
                 })
             };
         }
@@ -1511,17 +1531,17 @@ impl PlanExecutionCoordinator {
         let effect = machine
             .pending_effect()
             .cloned()
-            .ok_or("waiting(plan_execution) 的 PlanMachine 缺少 pending effect")?;
+            .ok_or("waiting(plan_execution) PlanMachine is missing its pending effect")?;
         let PlanEffect::Program {
             sequence, value, ..
         } = &effect
         else {
-            return Err("waiting(plan_execution) 的 pending effect 不是 Program".into());
+            return Err("waiting(plan_execution) pending effect is not Program".into());
         };
         if deterministic_plan_program_child_id(&plan.activation_id, &plan.id, *sequence)?
             != child_id
         {
-            return Err("Plan 与 Program child 的稳定身份不一致".into());
+            return Err("Plan and Program child stable identities do not match".into());
         }
         let child = self
             .materialize_program_child(&plan, &effect, child_id)
@@ -1538,12 +1558,14 @@ impl PlanExecutionCoordinator {
                     value.hash.clone()
                 }
         {
-            return Err("Program child Plan 与 parent route 或 Program hash 不一致".into());
+            return Err(
+                "Program child Plan does not match its parent route or Program hash".into(),
+            );
         }
         if !child.status.is_terminal() {
             return Ok(PlanResumeReceipt::Conflict {
                 current: Some(plan),
-                reason: format!("Program child Plan '{child_id}' 尚未终结"),
+                reason: format!("Program child Plan '{child_id}' is not terminal"),
             });
         }
         let outcome = match child.status {
@@ -1576,14 +1598,17 @@ impl PlanExecutionCoordinator {
             }
             PlanExecutionMutation::Conflict { current } => Ok(PlanResumeReceipt::Conflict {
                 current: Some(current),
-                reason: "Program child join revision 冲突".to_string(),
+                reason: "Program child join revision conflict".to_string(),
             }),
             PlanExecutionMutation::Rejected { current, reason } => {
                 Ok(PlanResumeReceipt::Conflict { current, reason })
             }
             PlanExecutionMutation::NotFound => Ok(PlanResumeReceipt::Conflict {
                 current: None,
-                reason: format!("PlanExecution '{}' 在 Program child join 时消失", plan.id),
+                reason: format!(
+                    "PlanExecution '{}' disappeared during Program child join",
+                    plan.id
+                ),
             }),
         }
     }
@@ -1600,7 +1625,7 @@ impl PlanExecutionCoordinator {
         let Some(plan) = self.store.get_plan_execution(plan_id).await? else {
             return Ok(PlanResumeReceipt::Conflict {
                 current: None,
-                reason: format!("PlanExecution '{plan_id}' 不存在"),
+                reason: format!("PlanExecution '{plan_id}' does not exist"),
             });
         };
         if plan.status != PlanExecutionStatus::Waiting
@@ -1616,7 +1641,7 @@ impl PlanExecutionCoordinator {
             } else {
                 Ok(PlanResumeReceipt::Conflict {
                     current: Some(plan),
-                    reason: "PlanExecution 没有等待该 Action Group".to_string(),
+                    reason: "PlanExecution is not waiting for this Action Group".to_string(),
                 })
             };
         }
@@ -1624,12 +1649,12 @@ impl PlanExecutionCoordinator {
         let effect = machine
             .pending_effect()
             .cloned()
-            .ok_or("waiting(action_group) 的 PlanMachine 缺少 pending effect")?;
+            .ok_or("waiting(action_group) PlanMachine is missing its pending effect")?;
         let PlanEffect::Parallel { sequence, branches } = &effect else {
-            return Err("waiting(action_group) 的 pending effect 不是 par".into());
+            return Err("waiting(action_group) pending effect is not par".into());
         };
         if deterministic_plan_parallel_group_id(&plan.id, *sequence)? != group_id {
-            return Err("Plan 与 Action Group 的稳定身份不一致".into());
+            return Err("Plan and Action Group stable identities do not match".into());
         }
         let children = self
             .materialize_parallel_children(&plan, &effect, group_id)
@@ -1638,13 +1663,13 @@ impl PlanExecutionCoordinator {
             .store
             .get_action_group(group_id)
             .await?
-            .ok_or_else(|| format!("Action Group '{group_id}' 不存在"))?;
+            .ok_or_else(|| format!("Action Group '{group_id}' does not exist"))?;
         let settled_event = parallel_group_settled_event(&plan, &group);
         for (branch, child) in branches.iter().zip(children.iter()) {
             if !child.status.is_terminal() {
                 return Ok(PlanResumeReceipt::Conflict {
                     current: Some(plan),
-                    reason: format!("par branch '{}' 尚未终结", branch.name),
+                    reason: format!("par branch '{}' is not terminal", branch.name),
                 });
             }
             let branch_call_id =
@@ -1671,11 +1696,11 @@ impl PlanExecutionCoordinator {
             .store
             .get_action_group(group_id)
             .await?
-            .ok_or_else(|| format!("Action Group '{group_id}' 在 join 前消失"))?;
+            .ok_or_else(|| format!("Action Group '{group_id}' disappeared before join"))?;
         if group.status != ActionGroupStatus::Settled {
             return Ok(PlanResumeReceipt::Conflict {
                 current: Some(plan),
-                reason: format!("Action Group '{group_id}' 尚未 settled"),
+                reason: format!("Action Group '{group_id}' is not settled"),
             });
         }
         let mut values = Vec::with_capacity(branches.len());
@@ -1719,14 +1744,14 @@ impl PlanExecutionCoordinator {
             }
             PlanExecutionMutation::Conflict { current } => Ok(PlanResumeReceipt::Conflict {
                 current: Some(current),
-                reason: "PlanExecution par join revision 冲突".to_string(),
+                reason: "PlanExecution par join revision conflict".to_string(),
             }),
             PlanExecutionMutation::Rejected { current, reason } => {
                 Ok(PlanResumeReceipt::Conflict { current, reason })
             }
             PlanExecutionMutation::NotFound => Ok(PlanResumeReceipt::Conflict {
                 current: None,
-                reason: format!("PlanExecution '{}' 在 par join 时消失", plan.id),
+                reason: format!("PlanExecution '{}' disappeared during par join", plan.id),
             }),
         }
     }
@@ -1785,7 +1810,7 @@ impl PlanExecutionCoordinator {
         let Some(plan) = self.store.get_plan_execution(plan_id).await? else {
             return Ok(PlanResumeReceipt::Conflict {
                 current: None,
-                reason: format!("PlanExecution '{plan_id}' 不存在"),
+                reason: format!("PlanExecution '{plan_id}' does not exist"),
             });
         };
         if plan.status != PlanExecutionStatus::Waiting
@@ -1804,7 +1829,7 @@ impl PlanExecutionCoordinator {
             } else {
                 Ok(PlanResumeReceipt::Conflict {
                     current: Some(plan),
-                    reason: "PlanExecution 没有等待该 Execution Job".to_string(),
+                    reason: "PlanExecution is not waiting for this Execution Job".to_string(),
                 })
             };
         }
@@ -1814,28 +1839,36 @@ impl PlanExecutionCoordinator {
             .await?
             .ok_or_else(|| {
                 format!(
-                    "PlanExecution '{}' 引用的 Execution Job '{}' 不存在",
-                    plan.id, execution_job_id
+                    "Execution Job '{}' referenced by PlanExecution '{}' does not exist",
+                    execution_job_id, plan.id
                 )
             })?;
         validate_terminal_job_route(&plan, &job)?;
 
-        let mut machine: PlanMachine = serde_json::from_value(plan.state_json.clone())
-            .map_err(|error| format!("PlanExecution '{}' state 无法恢复: {error}", plan.id))?;
+        let mut machine: PlanMachine =
+            serde_json::from_value(plan.state_json.clone()).map_err(|error| {
+                format!(
+                    "failed to restore PlanExecution '{}' state: {error}",
+                    plan.id
+                )
+            })?;
         let effect = machine.pending_effect().cloned().ok_or_else(|| {
             format!(
-                "PlanExecution '{}' 等待 Job 但 machine 没有 effect",
+                "PlanExecution '{}' is waiting for a Job but its machine has no effect",
                 plan.id
             )
         })?;
         let PlanEffect::Call { sequence, .. } = effect else {
-            return Err("PlanExecution 等待 Execution Job，但 pending effect 不是 call".into());
+            return Err(
+                "PlanExecution is waiting for an Execution Job but its pending effect is not call"
+                    .into(),
+            );
         };
         let expected_tool_call_id = deterministic_plan_effect_id(&plan.id, sequence)?;
         if job.tool_call_id != expected_tool_call_id
             || job.id != deterministic_job_id(&plan.activation_id, &expected_tool_call_id)?
         {
-            return Err("Execution Job 与 Plan effect 的稳定身份不一致".into());
+            return Err("Execution Job and Plan effect stable identities do not match".into());
         }
         machine.resume_effect(sequence, normalize_job_outcome(&job, outcome))?;
         let state_json = serde_json::to_value(&machine)?;
@@ -1857,14 +1890,17 @@ impl PlanExecutionCoordinator {
             }
             PlanExecutionMutation::Conflict { current } => Ok(PlanResumeReceipt::Conflict {
                 current: Some(current),
-                reason: "PlanExecution result refill revision 冲突".to_string(),
+                reason: "PlanExecution result refill revision conflict".to_string(),
             }),
             PlanExecutionMutation::Rejected { current, reason } => {
                 Ok(PlanResumeReceipt::Conflict { current, reason })
             }
             PlanExecutionMutation::NotFound => Ok(PlanResumeReceipt::Conflict {
                 current: None,
-                reason: format!("PlanExecution '{}' 在 result refill 时消失", plan.id),
+                reason: format!(
+                    "PlanExecution '{}' disappeared during result refill",
+                    plan.id
+                ),
             }),
         }
     }
@@ -1880,7 +1916,7 @@ impl PlanExecutionCoordinator {
         let Some(plan) = self.store.get_plan_execution(plan_id).await? else {
             return Ok(PlanResumeReceipt::Conflict {
                 current: None,
-                reason: format!("PlanExecution '{plan_id}' 不存在"),
+                reason: format!("PlanExecution '{plan_id}' does not exist"),
             });
         };
         if plan.status != PlanExecutionStatus::Waiting
@@ -1899,7 +1935,7 @@ impl PlanExecutionCoordinator {
             } else {
                 Ok(PlanResumeReceipt::Conflict {
                     current: Some(plan),
-                    reason: "PlanExecution 没有等待该 Evaluation".to_string(),
+                    reason: "PlanExecution is not waiting for this Evaluation".to_string(),
                 })
             };
         }
@@ -1909,17 +1945,22 @@ impl PlanExecutionCoordinator {
             .await?
             .ok_or_else(|| {
                 format!(
-                    "PlanExecution '{}' 引用的 child Activation '{}' 不存在",
-                    plan.id, activation_id
+                    "child Activation '{}' referenced by PlanExecution '{}' does not exist",
+                    activation_id, plan.id
                 )
             })?;
         validate_terminal_evaluation_route(&plan, &activation)?;
 
-        let mut machine: PlanMachine = serde_json::from_value(plan.state_json.clone())
-            .map_err(|error| format!("PlanExecution '{}' state 无法恢复: {error}", plan.id))?;
+        let mut machine: PlanMachine =
+            serde_json::from_value(plan.state_json.clone()).map_err(|error| {
+                format!(
+                    "failed to restore PlanExecution '{}' state: {error}",
+                    plan.id
+                )
+            })?;
         let effect = machine.pending_effect().cloned().ok_or_else(|| {
             format!(
-                "PlanExecution '{}' 等待 Evaluation 但 machine 没有 effect",
+                "PlanExecution '{}' is waiting for an Evaluation but its machine has no effect",
                 plan.id
             )
         })?;
@@ -1928,10 +1969,15 @@ impl PlanExecutionCoordinator {
             sequence, result, ..
         } = effect
         else {
-            return Err("PlanExecution 等待 Evaluation，但 pending effect 不是 infer".into());
+            return Err(
+                "PlanExecution is waiting for an Evaluation but its pending effect is not infer"
+                    .into(),
+            );
         };
         if deterministic_infer_activation_id(&request_event.id)? != activation.id {
-            return Err("child Activation 与 Plan infer effect 的稳定身份不一致".into());
+            return Err(
+                "child Activation and Plan infer effect stable identities do not match".into(),
+            );
         }
         let outcome = match outcome {
             Ok(value) => decode_infer_result_with_admission(
@@ -1967,14 +2013,17 @@ impl PlanExecutionCoordinator {
             }
             PlanExecutionMutation::Conflict { current } => Ok(PlanResumeReceipt::Conflict {
                 current: Some(current),
-                reason: "PlanExecution infer result refill revision 冲突".to_string(),
+                reason: "PlanExecution infer result refill revision conflict".to_string(),
             }),
             PlanExecutionMutation::Rejected { current, reason } => {
                 Ok(PlanResumeReceipt::Conflict { current, reason })
             }
             PlanExecutionMutation::NotFound => Ok(PlanResumeReceipt::Conflict {
                 current: None,
-                reason: format!("PlanExecution '{}' 在 infer result refill 时消失", plan.id),
+                reason: format!(
+                    "PlanExecution '{}' disappeared during infer result refill",
+                    plan.id
+                ),
             }),
         }
     }
@@ -1990,12 +2039,12 @@ impl PlanExecutionCoordinator {
             .store
             .get_thread_activation(activation_id)
             .await?
-            .ok_or_else(|| format!("child Activation '{activation_id}' 不存在"))?;
+            .ok_or_else(|| format!("child Activation '{activation_id}' does not exist"))?;
         if !activation.status.is_terminal() {
             return Ok(PlanResumeReceipt::Conflict {
                 current: self.store.get_plan_execution(plan_id).await?,
                 reason: format!(
-                    "child Activation '{}' 当前为 {}，尚不能回填 PlanExecution",
+                    "child Activation '{}' is currently {} and cannot yet refill PlanExecution",
                     activation.id,
                     activation.status.as_str()
                 ),
@@ -2020,12 +2069,12 @@ impl PlanExecutionCoordinator {
             .store
             .get_execution_job(execution_job_id)
             .await?
-            .ok_or_else(|| format!("Execution Job '{execution_job_id}' 不存在"))?;
+            .ok_or_else(|| format!("Execution Job '{execution_job_id}' does not exist"))?;
         if !job.status.is_terminal() {
             return Ok(PlanResumeReceipt::Conflict {
                 current: self.store.get_plan_execution(plan_id).await?,
                 reason: format!(
-                    "Execution Job '{}' 当前为 {}，尚不能回填 PlanExecution",
+                    "Execution Job '{}' is currently {} and cannot yet refill PlanExecution",
                     job.id,
                     job.status.as_str()
                 ),
@@ -2078,14 +2127,15 @@ impl PlanExecutionCoordinator {
             let Some(job_id) = plan.pending_id.as_deref() else {
                 report.conflicts.push((
                     plan.id,
-                    "waiting(execution_job) 缺少 pending_id".to_string(),
+                    "waiting(execution_job) is missing pending_id".to_string(),
                 ));
                 continue;
             };
             let Some(job) = self.store.get_execution_job(job_id).await? else {
-                report
-                    .conflicts
-                    .push((plan.id, format!("引用的 Execution Job '{job_id}' 不存在")));
+                report.conflicts.push((
+                    plan.id,
+                    format!("referenced Execution Job '{job_id}' does not exist"),
+                ));
                 continue;
             };
             if !job.status.is_terminal() {
@@ -2142,9 +2192,10 @@ impl PlanExecutionCoordinator {
         };
         for plan in plans {
             let Some(activation_id) = plan.pending_id.as_deref() else {
-                report
-                    .conflicts
-                    .push((plan.id, "waiting(evaluation) 缺少 pending_id".to_string()));
+                report.conflicts.push((
+                    plan.id,
+                    "waiting(evaluation) is missing pending_id".to_string(),
+                ));
                 continue;
             };
             let Some(activation) = self.store.get_thread_activation(activation_id).await? else {
@@ -2201,21 +2252,24 @@ impl PlanExecutionCoordinator {
                     .await?
                     .ok_or_else(|| {
                         format!(
-                            "child Activation '{}' 的 Thread '{}' 不存在",
-                            activation.id, activation.root_turn_id
+                            "Thread '{}' for child Activation '{}' does not exist",
+                            activation.root_turn_id, activation.id
                         )
                     })?;
                 if thread.executor_kind != "plan_infer"
                     || thread.executor_id.as_deref() != Some(plan_id)
                 {
                     return Err(format!(
-                        "child Thread '{}' 不属于 PlanExecution '{}'",
+                        "child Thread '{}' does not belong to PlanExecution '{}'",
                         thread.id, plan_id
                     )
                     .into());
                 }
                 let event_id = thread.result_event_id.as_deref().ok_or_else(|| {
-                    format!("child Thread '{}' 已完成但没有 result Event", thread.id)
+                    format!(
+                        "child Thread '{}' completed without a result Event",
+                        thread.id
+                    )
                 })?;
                 let event = self
                     .store
@@ -2230,8 +2284,8 @@ impl PlanExecutionCoordinator {
                     .find(|event| event.id == event_id)
                     .ok_or_else(|| {
                         format!(
-                            "child Thread '{}' 引用的结果 Event '{}' 不存在",
-                            thread.id, event_id
+                            "result Event '{}' referenced by child Thread '{}' does not exist",
+                            event_id, thread.id
                         )
                     })?;
                 let value = event
@@ -2241,10 +2295,12 @@ impl PlanExecutionCoordinator {
                     .unwrap_or(JsonValue::Null);
                 Ok(Ok(value))
             }
-            ThreadActivationStatus::Failed => Ok(Err("child Evaluation 执行失败".to_string())),
-            ThreadActivationStatus::Cancelled => Ok(Err("child Evaluation 已取消".to_string())),
+            ThreadActivationStatus::Failed => Ok(Err("child Evaluation failed".to_string())),
+            ThreadActivationStatus::Cancelled => {
+                Ok(Err("child Evaluation was cancelled".to_string()))
+            }
             status => Err(format!(
-                "child Activation '{}' 当前为 {}，不是可回填终态",
+                "child Activation '{}' is currently {} and is not a refillable terminal state",
                 activation.id,
                 status.as_str()
             )
@@ -2274,8 +2330,8 @@ impl PlanExecutionCoordinator {
                     .await?;
                 let event = events.pop().ok_or_else(|| {
                     format!(
-                        "Execution Job '{}' 引用的结果 Event '{}' 不存在",
-                        job.id, event_id
+                        "result Event '{}' referenced by Execution Job '{}' does not exist",
+                        event_id, job.id
                     )
                 })?;
                 let value = match event.payload.get("text") {
@@ -2290,17 +2346,17 @@ impl PlanExecutionCoordinator {
             ExecutionJobStatus::Failed => Ok(Err(job
                 .error
                 .clone()
-                .unwrap_or_else(|| "Execution Job 执行失败".to_string()))),
+                .unwrap_or_else(|| "Execution Job failed".to_string()))),
             ExecutionJobStatus::Cancelled => Ok(Err(job
                 .error
                 .clone()
-                .unwrap_or_else(|| "Execution Job 已取消".to_string()))),
+                .unwrap_or_else(|| "Execution Job was cancelled".to_string()))),
             ExecutionJobStatus::Lost => Ok(Err(job
                 .error
                 .clone()
-                .unwrap_or_else(|| "Execution Job 执行事实不确定".to_string()))),
+                .unwrap_or_else(|| "Execution Job execution fact is indeterminate".to_string()))),
             status => Err(format!(
-                "Execution Job '{}' 当前为 {}，不是可回填终态",
+                "Execution Job '{}' is currently {} and is not a refillable terminal state",
                 job.id,
                 status.as_str()
             )
@@ -2330,7 +2386,7 @@ fn context_commit_event_result(proposal_id: &str, event: &Event) -> Result<JsonV
             .payload
             .get(name)
             .cloned()
-            .ok_or_else(|| format!("Context commit Event '{}' 缺少 '{name}'", event.id))
+            .ok_or_else(|| format!("Context commit Event '{}' is missing '{name}'", event.id))
     };
     Ok(serde_json::json!({
         "status": "committed",
@@ -2457,12 +2513,12 @@ fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonVa
             let Some(crate::yao::TypeDefinition::Record { fields, .. }) = definitions.get(name)
             else {
                 return Err(format!(
-                    "host.view returns {name}，但它不是已声明的 record projection"
+                    "host.view returns {name}, but it is not a declared record projection"
                 ));
             };
             let object = raw
                 .as_object()
-                .ok_or_else(|| format!("host.view 无法把非 object 值投影为 {name}"))?;
+                .ok_or_else(|| format!("host.view cannot project a non-object value as {name}"))?;
             let selected = fields
                 .iter()
                 .map(|field| {
@@ -2474,7 +2530,10 @@ fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonVa
                                 .map(|value| (field.name.clone(), value))
                         })
                         .ok_or_else(|| {
-                            format!("Host projection '{name}' 不提供字段 '{}'", field.name)
+                            format!(
+                                "Host projection '{name}' does not provide field '{}'",
+                                field.name
+                            )
                         })?
                 })
                 .collect::<Result<serde_json::Map<_, _>, _>>()?;
@@ -2493,7 +2552,7 @@ fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonVa
         } => {
             let object = raw
                 .as_object()
-                .ok_or("host.view structural return 需要 object projection")?;
+                .ok_or("host.view structural return requires an object projection")?;
             let selected = fields
                 .iter()
                 .map(|(name, ty)| {
@@ -2504,7 +2563,7 @@ fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonVa
                             normalize_host_projection_field(ty, value, definitions)
                                 .map(|value| (name.clone(), value))
                         })
-                        .ok_or_else(|| format!("Host projection 不提供字段 '{name}'"))?
+                        .ok_or_else(|| format!("Host projection does not provide field '{name}'"))?
                 })
                 .collect::<Result<serde_json::Map<_, _>, _>>()?;
             JsonValue::Object(selected)
@@ -2520,7 +2579,7 @@ fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonVa
         } => raw,
         InferResultKind::Yao { ty, .. } => {
             return Err(format!(
-                "Morphz Host operation 不允许把 authority projection 解码为 {ty:?}"
+                "Morphz Host operation cannot decode an authority projection as {ty:?}"
             ))
         }
         InferResultKind::Text => raw,
@@ -2551,7 +2610,7 @@ fn normalize_host_projection_field(
         }
         Type::List(element) => raw
             .as_array()
-            .ok_or_else(|| format!("Host projection 不能把 {raw} 转为 List"))?
+            .ok_or_else(|| format!("Host projection cannot convert {raw} to List"))?
             .iter()
             .cloned()
             .map(|value| normalize_host_projection_field(element, value, definitions))
@@ -2559,7 +2618,7 @@ fn normalize_host_projection_field(
             .map(JsonValue::Array),
         Type::Map(element) => raw
             .as_object()
-            .ok_or_else(|| format!("Host projection 不能把 {raw} 转为 Map"))?
+            .ok_or_else(|| format!("Host projection cannot convert {raw} to Map"))?
             .iter()
             .map(|(name, value)| {
                 normalize_host_projection_field(element, value.clone(), definitions)
@@ -2568,16 +2627,15 @@ fn normalize_host_projection_field(
             .collect::<Result<serde_json::Map<_, _>, _>>()
             .map(JsonValue::Object),
         Type::StructuralRecord(fields) => {
-            let object = raw
-                .as_object()
-                .ok_or_else(|| format!("Host projection 不能把 {raw} 转为 structural record"))?;
+            let object = raw.as_object().ok_or_else(|| {
+                format!("Host projection cannot convert {raw} to structural record")
+            })?;
             fields
                 .iter()
                 .map(|(name, ty)| {
-                    let value = object
-                        .get(name)
-                        .cloned()
-                        .ok_or_else(|| format!("Host projection 不提供字段 '{name}'"))?;
+                    let value = object.get(name).cloned().ok_or_else(|| {
+                        format!("Host projection does not provide field '{name}'")
+                    })?;
                     normalize_host_projection_field(ty, value, definitions)
                         .map(|value| (name.clone(), value))
                 })
@@ -2588,17 +2646,20 @@ fn normalize_host_projection_field(
             let Some(crate::yao::TypeDefinition::Record { fields, .. }) = definitions.get(name)
             else {
                 return Err(format!(
-                    "Host projection 不支持嵌套的非 record Named type '{name}'"
+                    "Host projection does not support nested non-record Named type '{name}'"
                 ));
             };
             let object = raw
                 .as_object()
-                .ok_or_else(|| format!("Host projection 不能把 {raw} 转为 {name}"))?;
+                .ok_or_else(|| format!("Host projection cannot convert {raw} to {name}"))?;
             let fields = fields
                 .iter()
                 .map(|field| {
                     let value = object.get(&field.name).cloned().ok_or_else(|| {
-                        format!("Host projection '{name}' 不提供字段 '{}'", field.name)
+                        format!(
+                            "Host projection '{name}' does not provide field '{}'",
+                            field.name
+                        )
                     })?;
                     normalize_host_projection_field(&field.ty, value, definitions)
                         .map(|value| (field.name.clone(), value))
@@ -2692,10 +2753,10 @@ fn parallel_group_request(
     group_id: &str,
 ) -> PlanExecutionResult<(NewActionGroup, Vec<NewActionGroupMember>)> {
     let PlanEffect::Parallel { sequence, branches } = effect else {
-        return Err("只有 par effect 可以创建 Action Group".into());
+        return Err("only a par effect can create an Action Group".into());
     };
     if branches.len() < 2 {
-        return Err("par Action Group 至少需要两个 branch".into());
+        return Err("par Action Group requires at least two branches".into());
     }
     let members = branches
         .iter()
@@ -2845,7 +2906,7 @@ fn infer_request_event(
         result,
     } = effect
     else {
-        return Err("只有 infer effect 能生成内部求值请求".into());
+        return Err("only an infer effect can generate an internal evaluation request".into());
     };
     let effect_id = deterministic_plan_effect_id(&plan.id, *sequence)?;
     let event_id = stable_id(
@@ -2857,13 +2918,13 @@ fn infer_request_event(
     let root_turn_id = event_id.clone();
     let result_instruction = match result {
         crate::sexpr_eval::InferResultKind::Text => String::new(),
-        crate::sexpr_eval::InferResultKind::Json => "本节点声明 returns=json；最终正文必须只包含一个完整、合法的 JSON 值，不要使用 Markdown 代码围栏或附加说明。".to_string(),
+        crate::sexpr_eval::InferResultKind::Json => "This node declares returns=json. The final body must contain exactly one complete valid JSON value, without Markdown fences or additional explanation.".to_string(),
         crate::sexpr_eval::InferResultKind::Yao {
             ty: crate::yao::Type::Program { .. },
             ..
-        } => "本节点要求返回一个 Yao Program Value 候选。最终正文必须只包含一个合法 JSON 对象，格式为 {\"source\":\"(eval ...)\"}；source 必须遵循 Context Encoding 中唯一的 Yao Language Card，不得包含 (version ...)；不要使用 Markdown 代码围栏、解释或额外字段。Runtime 将执行解析、类型检查、effect 上限校验、规范化、哈希与持久化，禁止直接执行源码字符串。".to_string(),
+        } => "This node requires a Yao Program Value candidate. The final body must contain exactly one valid JSON object in the form {\"source\":\"(eval ...)\"}. The source must follow the single Yao Language Card in Context Encoding and must not contain (version ...). Do not use Markdown fences, explanations, or extra fields. Runtime will parse, type-check, bound effects, canonicalize, hash, and persist the candidate; direct source-string execution is forbidden.".to_string(),
         crate::sexpr_eval::InferResultKind::Yao { ty, .. } => format!(
-            "本节点声明 typed Yao 返回类型 {ty:?}；最终正文必须只包含该值的合法 JSON transport，不要使用 Markdown 代码围栏或附加说明。"
+            "This node declares typed Yao result type {ty:?}. The final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation."
         ),
     };
     let mut payload = serde_json::Map::from_iter([
@@ -2917,7 +2978,7 @@ fn infer_request_event(
         (
             "text".to_string(),
             JsonValue::String(format!(
-                "这是 Runtime 正在执行的 Yao 程序提出的内部 infer 请求。请根据 request 中的任务与证据完成判断；可使用 tools 声明允许的工具补充证据。最终正文只返回供父 Plan 继续求值的结果，不要把它当作用户消息。{}\n\n{}",
+                "This is an internal infer request from a Yao program executing in Runtime. Decide from the task and evidence in the request; tools declared by the request may gather additional evidence. Return only the result consumed by the parent Plan, and do not treat this as a user message.{}\n\n{}",
                 result_instruction,
                 serde_json::to_string(&JsonValue::Object(request.clone()))?
             )),
@@ -2967,17 +3028,24 @@ pub fn pending_infer_request_event(plan: &PlanExecutionRecord) -> PlanExecutionR
     if plan.status != PlanExecutionStatus::Waiting
         || plan.pending_kind != Some(PlanExecutionWaitKind::Evaluation)
     {
-        return Err(format!("PlanExecution '{}' 当前没有等待 infer Evaluation", plan.id).into());
+        return Err(format!(
+            "PlanExecution '{}' is not waiting for an infer Evaluation",
+            plan.id
+        )
+        .into());
     }
     let machine: PlanMachine = serde_json::from_value(plan.state_json.clone())?;
-    let effect = machine
-        .pending_effect()
-        .ok_or_else(|| format!("PlanExecution '{}' 缺少 pending infer effect", plan.id))?;
+    let effect = machine.pending_effect().ok_or_else(|| {
+        format!(
+            "PlanExecution '{}' is missing its pending infer effect",
+            plan.id
+        )
+    })?;
     let event = infer_request_event(plan, effect)?;
     let activation_id = deterministic_infer_activation_id(&event.id)?;
     if plan.pending_id.as_deref() != Some(activation_id.as_str()) {
         return Err(format!(
-            "PlanExecution '{}' 的 pending Evaluation 与 infer Event 不一致",
+            "PlanExecution '{}' pending Evaluation does not match its infer Event",
             plan.id
         )
         .into());
@@ -2987,7 +3055,7 @@ pub fn pending_infer_request_event(plan: &PlanExecutionRecord) -> PlanExecutionR
 
 pub fn deterministic_infer_activation_id(event_id: &str) -> PlanExecutionResult<String> {
     if event_id.trim().is_empty() {
-        return Err("infer request Event id 不能为空".into());
+        return Err("infer request Event id must not be empty".into());
     }
     Ok(stable_thread_activation_id(event_id))
 }
@@ -2997,7 +3065,7 @@ fn validate_terminal_evaluation_route(
     activation: &crate::memory::ThreadActivationRecord,
 ) -> PlanExecutionResult<()> {
     if !activation.status.is_terminal() {
-        return Err(format!("child Activation '{}' 尚未终结", activation.id).into());
+        return Err(format!("child Activation '{}' is not terminal", activation.id).into());
     }
     if activation.agent_id != plan.agent_id
         || activation.context_id != plan.context_id
@@ -3005,14 +3073,16 @@ fn validate_terminal_evaluation_route(
         || activation.initiating_principal_id != plan.initiating_principal_id
         || activation.parent_activation_id.as_deref() != Some(plan.activation_id.as_str())
     {
-        return Err("PlanExecution 与 child Evaluation Activation 的因果 route 不一致".into());
+        return Err(
+            "PlanExecution causal route does not match the child Evaluation Activation".into(),
+        );
     }
     Ok(())
 }
 
 fn stable_id(domain: &[u8], prefix: &str, left: &str, right: &str) -> PlanExecutionResult<String> {
     if left.trim().is_empty() || right.trim().is_empty() {
-        return Err(format!("{prefix} identity 组成部分不能为空").into());
+        return Err(format!("{prefix} identity components must not be empty").into());
     }
     let mut digest = Sha256::new();
     digest.update(domain);
@@ -3033,7 +3103,7 @@ fn validate_planned_job(
         tool, arguments, ..
     } = effect
     else {
-        return Err("只有 call effect 可以规划 Execution Job".into());
+        return Err("only a call effect can plan an Execution Job".into());
     };
     let expected_id = deterministic_job_id(&plan.activation_id, effect_tool_call_id)?;
     if job.id != expected_id
@@ -3046,7 +3116,9 @@ fn validate_planned_job(
         || job.session_id != plan.session_id
         || job.initiating_principal_id != plan.initiating_principal_id
     {
-        return Err("PlanCallPlanner 返回的 Job 身份或因果 route 不一致".into());
+        return Err(
+            "PlanCallPlanner returned a Job with mismatched identity or causal route".into(),
+        );
     }
     // A planner may attach an immutable Target route snapshot to the request,
     // so request equality is not required. It must however retain the original
@@ -3062,7 +3134,9 @@ fn validate_planned_job(
             .all(|(name, value)| request.get(name) == Some(value))
     });
     if !request_contains_arguments {
-        return Err("PlanCallPlanner 返回的 Job request 没有保留原始 call arguments".into());
+        return Err(
+            "PlanCallPlanner Job request did not preserve the original call arguments".into(),
+        );
     }
     Ok(())
 }
@@ -3073,7 +3147,7 @@ fn validate_terminal_job_route(
 ) -> PlanExecutionResult<()> {
     if !job.status.is_terminal() {
         return Err(format!(
-            "Execution Job '{}' 尚未终结，不能恢复 PlanExecution",
+            "Execution Job '{}' is not terminal and cannot resume PlanExecution",
             job.id
         )
         .into());
@@ -3085,7 +3159,7 @@ fn validate_terminal_job_route(
         || job.session_id != plan.session_id
         || job.initiating_principal_id != plan.initiating_principal_id
     {
-        return Err("Execution Job terminal route 与 PlanExecution 不一致".into());
+        return Err("Execution Job terminal route does not match PlanExecution".into());
     }
     Ok(())
 }
@@ -3100,16 +3174,19 @@ fn normalize_job_outcome(
             .error
             .clone()
             .or_else(|| outcome.err())
-            .unwrap_or_else(|| "Execution Job 执行失败".to_string())),
+            .unwrap_or_else(|| "Execution Job failed".to_string())),
         ExecutionJobStatus::Cancelled => Err(job
             .error
             .clone()
-            .unwrap_or_else(|| "Execution Job 已取消".to_string())),
+            .unwrap_or_else(|| "Execution Job was cancelled".to_string())),
         ExecutionJobStatus::Lost => Err(job
             .error
             .clone()
-            .unwrap_or_else(|| "Execution Job 执行事实不确定".to_string())),
-        status => Err(format!("Execution Job 状态 {} 不是终态", status.as_str())),
+            .unwrap_or_else(|| "Execution Job execution fact is indeterminate".to_string())),
+        status => Err(format!(
+            "Execution Job status {} is not terminal",
+            status.as_str()
+        )),
     }
 }
 
@@ -3122,15 +3199,15 @@ fn updated_or_conflict(
             Ok(record)
         }
         PlanExecutionMutation::Conflict { current } => Err(format!(
-            "PlanExecution {operation} revision 冲突：当前 {} r{}",
+            "PlanExecution {operation} revision conflict: current {} r{}",
             current.id, current.revision
         )
         .into()),
         PlanExecutionMutation::Rejected { reason, .. } => {
-            Err(format!("PlanExecution {operation} 被拒绝：{reason}").into())
+            Err(format!("PlanExecution {operation} was rejected: {reason}").into())
         }
         PlanExecutionMutation::NotFound => {
-            Err(format!("PlanExecution {operation} 时不存在").into())
+            Err(format!("PlanExecution was not found during {operation}").into())
         }
     }
 }
@@ -3326,7 +3403,7 @@ mod tests {
         let registry = Arc::new(Registry::new());
         let program = validate(
             r#"(eval
-                 (host.view $runtime.context (returns Json)))"#,
+                 (host.view runtime.context (returns Json)))"#,
             &registry,
             &AllowList::new(std::iter::empty::<&str>()),
         )
@@ -3404,7 +3481,7 @@ mod tests {
             r#"(eval
                  (context.propose
                    (context-transaction
-                     (context $runtime.context)
+                     (context runtime.context)
                      (transaction
                        (context-tx
                          (base-version 0)
@@ -3726,7 +3803,7 @@ mod tests {
                    (record ContextProjection
                      (id String)
                      (revision (Option Int))))
-                 (host.view $runtime.context (returns ContextProjection)))"#,
+                 (host.view runtime.context (returns ContextProjection)))"#,
             &registry,
             &AllowList::new(std::iter::empty::<&str>()),
         )
@@ -3782,7 +3859,7 @@ mod tests {
                      (outcome
                        (status succeeded)
                        (value (dict (summary "verified")))
-                       (evidence $checked)))))"#,
+                       (evidence checked)))))"#,
             &registry,
             &AllowList::new(std::iter::empty::<&str>()),
         )
@@ -3901,7 +3978,7 @@ mod tests {
             .execute_new_host_operation(&queued, "wrong-origin", "outcome.commit", &wrong_origin)
             .await
             .unwrap_err();
-        assert!(error.contains("不是 Runtime 提交"), "got: {error}");
+        assert!(error.contains("Runtime-committed"), "got: {error}");
 
         let unauthorized_objective = serde_json::Map::from_iter([
             (
@@ -3919,7 +3996,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(error.contains("没有 Objective authority"), "got: {error}");
+        assert!(error.contains("has no Objective authority"), "got: {error}");
     }
 
     #[tokio::test]
@@ -3937,7 +4014,7 @@ mod tests {
                  (requires (tools read))
                  (seq
                    (bind body (call read (path "README.md")))
-                   $body))"#,
+                   body))"#,
             &registry,
             &AllowList::new(["read"]),
         )
@@ -4319,7 +4396,7 @@ mod tests {
                        (task "判断证据是否充分")
                        (returns Json)
                        (evidence "A")))
-                   $judgement))"#,
+                   judgement))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
         )
@@ -4612,7 +4689,7 @@ mod tests {
                      (infer
                        (task "返回后续 read 的结构化决策")
                        (returns ReadDecision)))
-                   (call read (path $decision.path))))"#,
+                   (call read (path decision.path))))"#,
             &registry,
             &AllowList::new(["read"]),
         )
@@ -4779,7 +4856,7 @@ mod tests {
         {
             PlanDriveReceipt::Failed { plan, error } => {
                 assert_eq!(plan.status, PlanExecutionStatus::Failed);
-                assert!(error.contains("合法 JSON"), "got: {error}");
+                assert!(error.contains("valid JSON"), "got: {error}");
             }
             other => panic!("expected fail-closed plan, got {other:?}"),
         }
@@ -4989,7 +5066,7 @@ mod tests {
                             PlanExecutionStatus::Waiting,
                             "a terminal prefix must not release the parent barrier"
                         );
-                        assert!(reason.contains("尚未终结"), "got: {reason}");
+                        assert!(reason.contains("not terminal"), "got: {reason}");
                     }
                     other => panic!("par joined before every branch settled: {other:?}"),
                 }
@@ -5043,9 +5120,9 @@ mod tests {
             r#"(eval
                  (par
                    (branch broken
-                     (seq (host.view $runtime.context (returns Json)) (div 1 0)))
+                     (seq (host.view runtime.context (returns Json)) (div 1 0)))
                    (branch healthy
-                     (host.view $runtime.context (returns Json)))))"#,
+                     (host.view runtime.context (returns Json)))))"#,
             &registry,
             &AllowList::new(std::iter::empty::<&str>()),
         )
@@ -5161,7 +5238,7 @@ mod tests {
                      (infer
                        (task "produce a pure integer program")
                        (returns (Program Int (effects)))))
-                   (run $generated)))"#,
+                   (run generated)))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
         )
@@ -5227,9 +5304,9 @@ mod tests {
         assert_eq!(request_event.payload["tools"], serde_json::json!([]));
         let instruction = request_event.payload["text"].as_str().unwrap();
         assert!(instruction.contains("{\"source\":\"(eval ...)\"}"));
-        assert!(instruction.contains("唯一的 Yao Language Card"));
-        assert!(instruction.contains("不得包含 (version ...)"));
-        assert!(instruction.contains("禁止直接执行源码字符串"));
+        assert!(instruction.contains("single Yao Language Card"));
+        assert!(instruction.contains("must not contain (version ...)"));
+        assert!(instruction.contains("direct source-string execution is forbidden"));
         let runtime_store: Arc<dyn RuntimeStore> = store.clone();
         let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));
         let (waiting_parent, child) = match coordinator

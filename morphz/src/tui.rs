@@ -5411,6 +5411,7 @@ async fn submit_prompt(
                 references: Vec::new(),
                 harness,
                 dispatch_mode,
+                model_alias: None,
             },
         )
         .await
@@ -7333,6 +7334,7 @@ mod tests {
             parent_session_id: None,
             title: title.to_string(),
             status: SessionStatus::Active,
+            model_alias: None,
             created_at: now,
             updated_at: now,
             last_activity_at: now + chrono::Duration::seconds(activity_offset_seconds),

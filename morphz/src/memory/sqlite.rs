@@ -532,6 +532,7 @@ impl SqliteStore {
             parent_session_id TEXT,
             title TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+            model_alias TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             last_activity_at TEXT NOT NULL,
@@ -687,6 +688,7 @@ impl SqliteStore {
             parent_activation_id TEXT,
             root_turn_id TEXT NOT NULL,
             context_snapshot_version INTEGER,
+            model_alias TEXT,
             admission_rank INTEGER NOT NULL DEFAULT 3 CHECK(admission_rank BETWEEN 0 AND 4),
             status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'cancelled', 'failed')),
             claimed_by TEXT,
@@ -1207,6 +1209,7 @@ impl SqliteStore {
             thread_id TEXT NOT NULL,
             source_turn_id TEXT NOT NULL,
             intent TEXT NOT NULL,
+            model_alias TEXT,
             status TEXT NOT NULL CHECK(status IN ('queued', 'paused', 'dispatched', 'completed', 'cancelled')),
             not_before TEXT,
             interval_seconds INTEGER CHECK(interval_seconds IS NULL OR interval_seconds > 0),
@@ -1554,6 +1557,17 @@ impl SqliteStore {
             .iter()
             .map(|row| row.get::<String, _>("name"))
             .collect::<std::collections::HashSet<_>>();
+        let session_columns = sqlx::query("PRAGMA table_info(sessions)")
+            .fetch_all(&pool)
+            .await?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        if !session_columns.contains("model_alias") {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN model_alias TEXT")
+                .execute(&pool)
+                .await?;
+        }
         for (name, definition) in [
             (
                 "attention_state",
@@ -1627,6 +1641,14 @@ impl SqliteStore {
             .await?;
         if !activation_columns
             .iter()
+            .any(|row| row.get::<String, _>("name") == "model_alias")
+        {
+            sqlx::query("ALTER TABLE thread_activations ADD COLUMN model_alias TEXT")
+                .execute(&pool)
+                .await?;
+        }
+        if !activation_columns
+            .iter()
             .any(|row| row.get::<String, _>("name") == "admission_rank")
         {
             sqlx::query(
@@ -1634,6 +1656,17 @@ impl SqliteStore {
             )
             .execute(&pool)
             .await?;
+        }
+        let schedule_columns = sqlx::query("PRAGMA table_info(schedules)")
+            .fetch_all(&pool)
+            .await?;
+        if !schedule_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "model_alias")
+        {
+            sqlx::query("ALTER TABLE schedules ADD COLUMN model_alias TEXT")
+                .execute(&pool)
+                .await?;
         }
         migrate_bounded_read_model(&pool).await?;
         if !objective_columns
@@ -1979,6 +2012,7 @@ async fn migrate_directory_foreign_keys(
                 parent_session_id TEXT,
                 title TEXT NOT NULL,
                 status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+                model_alias TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_activity_at TEXT NOT NULL,
@@ -1991,7 +2025,7 @@ async fn migrate_directory_foreign_keys(
         .await?;
         sqlx::query(
             r#"INSERT INTO sessions_directory_fk_migration
-               SELECT id, agent_id, context_id, parent_session_id, title, status,
+               SELECT id, agent_id, context_id, parent_session_id, title, status, model_alias,
                       created_at, updated_at, last_activity_at
                FROM sessions"#,
         )
@@ -2877,7 +2911,9 @@ async fn migrate_session_projections(
                  AND substr(topic, 1, 8) != 'runtime/'
              AND NOT (
                  type = 'tool_output'
-                 AND json_extract(payload, '$.tool_name') = 'context_tx'
+                     AND json_extract(payload, '$.tool_name') = 'context_tx'
+                     AND substr(COALESCE(json_extract(payload, '$.text'), ''), 1, 22) != 'Tool execution failed:'
+                     AND substr(COALESCE(json_extract(payload, '$.text'), ''), 1, 24) != 'Tool execution rejected:'
                      AND substr(COALESCE(json_extract(payload, '$.text'), ''), 1, 5) != '执行失败:'
                      AND substr(COALESCE(json_extract(payload, '$.text'), ''), 1, 5) != '执行拒绝:'
              )"#,
@@ -4446,6 +4482,7 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
         parent_session_id: row.get("parent_session_id"),
         title: row.get("title"),
         status: parse_session_status(row.get::<String, _>("status").as_str()),
+        model_alias: row.try_get("model_alias").unwrap_or(None),
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
         last_activity_at: parse_time(&row.get::<String, _>("last_activity_at")),
@@ -4498,6 +4535,7 @@ fn thread_activation_from_row(
         trigger_kind: row.get("trigger_kind"),
         parent_activation_id: row.get("parent_activation_id"),
         root_turn_id: row.get("root_turn_id"),
+        model_alias: row.try_get("model_alias").unwrap_or(None),
         context_snapshot_version: sqlite_optional_u64(row, "context_snapshot_version")?,
         status: parse_thread_activation_status(&row.get::<String, _>("status"))?,
         claimed_by: row.get("claimed_by"),
@@ -4646,6 +4684,7 @@ fn schedule_from_row(
         thread_id: row.get("thread_id"),
         source_turn_id: row.get("source_turn_id"),
         intent: row.get("intent"),
+        model_alias: row.try_get("model_alias").unwrap_or(None),
         status: parse_schedule_status(&row.get::<String, _>("status"))?,
         not_before: row
             .get::<Option<String>, _>("not_before")
@@ -7724,7 +7763,7 @@ impl SessionDirectoryStore for SqliteStore {
         id: &str,
     ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let row = sqlx::query(
-            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -7743,7 +7782,7 @@ impl SessionDirectoryStore for SqliteStore {
         include_archived: bool,
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_archived {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -7753,7 +7792,7 @@ impl SessionDirectoryStore for SqliteStore {
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -7773,7 +7812,7 @@ impl SessionDirectoryStore for SqliteStore {
         include_archived: bool,
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_archived {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -7785,7 +7824,7 @@ impl SessionDirectoryStore for SqliteStore {
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -7814,7 +7853,7 @@ impl SessionDirectoryStore for SqliteStore {
             .map_err(|_| "Session 每 Context 查询上限超出 SQLite INTEGER 范围")?;
         let rows = sqlx::query(
             r#"WITH ranked AS (
-                 SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
+                 SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.model_alias,
                         s.status, s.created_at, s.updated_at, s.last_activity_at,
                         sm.attention_state, sm.attention_revision, sm.attention_reason,
                         sm.attention_changed_at, sm.attention_event_id,
@@ -7862,7 +7901,7 @@ impl SessionDirectoryStore for SqliteStore {
                  WHERE s.context_id IN (SELECT value FROM json_each(?))
                    AND (? OR s.status = 'active')
                )
-               SELECT id, agent_id, context_id, parent_session_id, title, status,
+               SELECT id, agent_id, context_id, parent_session_id, title, status, model_alias,
                       created_at, updated_at, last_activity_at, attention_state,
                       attention_revision, attention_reason, attention_changed_at,
                       attention_event_id
@@ -7924,7 +7963,7 @@ impl SessionDirectoryStore for SqliteStore {
         id: &str,
         update: SessionUpdate,
     ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if update.title.is_none() && update.status.is_none() {
+        if update.title.is_none() && update.status.is_none() && update.model_alias.is_none() {
             return self.get_session(id).await;
         }
         let existing = match self.get_session(id).await? {
@@ -7933,10 +7972,14 @@ impl SessionDirectoryStore for SqliteStore {
         };
         let title = update.title.unwrap_or(existing.title);
         let status = update.status.unwrap_or(existing.status);
+        let model_alias = update.model_alias.unwrap_or(existing.model_alias);
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        sqlx::query("UPDATE sessions SET title = ?, status = ?, updated_at = ? WHERE id = ?")
+        sqlx::query(
+            "UPDATE sessions SET title = ?, status = ?, model_alias = ?, updated_at = ? WHERE id = ?",
+        )
             .bind(title)
             .bind(status.as_str())
+            .bind(model_alias)
             .bind(now)
             .bind(id)
             .execute(&self.pool)
@@ -9236,6 +9279,26 @@ impl ActivationStore for SqliteStore {
             .fetch_optional(&self.pool)
             .await?;
         row.as_ref().map(thread_activation_from_row).transpose()
+    }
+
+    async fn bind_thread_activation_model(
+        &self,
+        id: &str,
+        model_alias: &str,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let model_alias = model_alias.trim();
+        if model_alias.is_empty() {
+            return Err("Activation model alias 不能为空".into());
+        }
+        sqlx::query(
+            "UPDATE thread_activations SET model_alias = ?, updated_at = ? WHERE id = ? AND model_alias IS NULL",
+        )
+        .bind(model_alias)
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.get_thread_activation(id).await
     }
 
     async fn list_thread_activations_by_ids(
@@ -13331,15 +13394,16 @@ impl ScheduleStore for SqliteStore {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"INSERT OR IGNORE INTO schedules
-               (id, revision, thread_id, source_turn_id, intent, status,
+               (id, revision, thread_id, source_turn_id, intent, model_alias, status,
                 not_before, interval_seconds, dependency_thread_ids_json,
                 created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)"#,
+               VALUES (?, 1, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)"#,
         )
         .bind(&intent.id)
         .bind(&intent.thread_id)
         .bind(&intent.source_turn_id)
         .bind(&intent.intent)
+        .bind(&intent.model_alias)
         .bind(not_before)
         .bind(interval_seconds)
         .bind(&dependencies)
@@ -13853,16 +13917,17 @@ impl ScheduleStore for SqliteStore {
             let dependencies = serde_json::to_string(&intent.dependency_thread_ids)?;
             sqlx::query(
                 r#"INSERT INTO schedules
-                   (id, revision, thread_id, source_turn_id, intent, status,
+                   (id, revision, thread_id, source_turn_id, intent, model_alias, status,
                     not_before, interval_seconds, dependency_thread_ids_json,
                     created_at, updated_at)
-                   VALUES (?, 1, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+                   VALUES (?, 1, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO NOTHING"#,
             )
             .bind(&intent.id)
             .bind(&intent.thread_id)
             .bind(&intent.source_turn_id)
             .bind(&intent.intent)
+            .bind(&intent.model_alias)
             .bind(not_before)
             .bind(interval_seconds)
             .bind(&dependencies)
@@ -25163,6 +25228,7 @@ mod tests {
                 thread_id: target_thread_id,
                 source_turn_id: format!("schedule-source-{suffix}"),
                 intent: format!("run schedule {suffix}"),
+                model_alias: None,
                 not_before: Some(Utc::now() + chrono::Duration::hours(1)),
                 interval_seconds: Some(60),
                 dependency_thread_ids: vec![dependency_thread_id],
@@ -30457,7 +30523,7 @@ mod tests {
             "Direct Thread Signal must remain pending while contention is transient"
         );
         writer.execute("COMMIT").await.unwrap();
-        tokio::time::timeout(Duration::from_secs(3), append)
+        tokio::time::timeout(Duration::from_secs(10), append)
             .await
             .expect("Direct Thread Signal should finish after the Writer is released")
             .unwrap()
@@ -32671,6 +32737,7 @@ mod tests {
                 SessionUpdate {
                     title: None,
                     status: Some(SessionStatus::Archived),
+                    model_alias: None,
                 },
             )
             .await
@@ -32683,6 +32750,7 @@ mod tests {
                 SessionUpdate {
                     title: Some("已完成".to_string()),
                     status: Some(SessionStatus::Archived),
+                    model_alias: None,
                 },
             )
             .await

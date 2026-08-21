@@ -27,6 +27,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Source language check
         run: bash scripts/check-source-language.sh
+      - name: Core protocol language check
+        run: perl scripts/check-core-protocol-language.pl
       - name: Diagnostic log contract check
         run: perl scripts/check-diagnostic-logs.pl
       - name: Clippy

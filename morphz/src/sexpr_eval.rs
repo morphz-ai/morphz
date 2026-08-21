@@ -166,7 +166,7 @@ fn parse_source_forms(source: &str) -> Result<Vec<SExpr>, EvalError> {
     crate::yao::parse_all(source, crate::yao::ParseLimits::default())
         .map(|forms| forms.iter().map(lower_spanned_sexpr).collect())
         .map_err(|diagnostic| EvalError {
-            message: format!("program 不是合法的 Yao 源码: {diagnostic}"),
+            message: format!("program is not valid Yao source: {diagnostic}"),
             diagnostic: Some(Box::new(diagnostic)),
         })
 }
@@ -202,7 +202,7 @@ pub struct ProgramHeader {
 /// A value embedded in a plan node.
 ///
 /// Separating literals from references during lowering means the executor
-/// never has to reinterpret `$name.field` syntax after a restart.
+/// never has to reinterpret lexical `name.field` syntax after a restart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum PlanValue {
@@ -387,7 +387,7 @@ fn encode_program_value(value: &PlanProgramValue) -> Result<JsonValue, String> {
             "kind": "program",
             "hash": value.hash,
             "value": serde_json::to_value(value)
-                .map_err(|error| format!("Program Value 序列化失败: {error}"))?,
+                .map_err(|error| format!("failed to serialize Program Value: {error}"))?,
         }
     }))
 }
@@ -396,24 +396,24 @@ fn decode_program_value(value: &JsonValue) -> Result<PlanProgramValue, String> {
     let tag = value
         .get(YAO_TRANSPORT_TAG)
         .and_then(JsonValue::as_object)
-        .ok_or("run operand 不是 Runtime-admitted Program Value")?;
+        .ok_or("run operand is not a Runtime-admitted Program Value")?;
     if tag.get("kind").and_then(JsonValue::as_str) != Some("program") {
-        return Err("run operand 不是 Program Value".to_string());
+        return Err("run operand is not a Program Value".to_string());
     }
     let declared_hash = tag
         .get("hash")
         .and_then(JsonValue::as_str)
-        .ok_or("Program Value 缺少 content hash")?;
+        .ok_or("Program Value is missing its content hash")?;
     let admitted: PlanProgramValue = serde_json::from_value(
         tag.get("value")
             .cloned()
-            .ok_or("Program Value 缺少 admitted representation")?,
+            .ok_or("Program Value is missing its admitted representation")?,
     )
-    .map_err(|error| format!("Program Value representation 非法: {error}"))?;
+    .map_err(|error| format!("Program Value representation is invalid: {error}"))?;
     let typed = admitted
         .program
         .typed_program()
-        .ok_or("Program Value 未携带 typed Yao Program")?;
+        .ok_or("Program Value does not carry a typed Yao Program")?;
     let computed_hash = crate::yao::program_hash(typed);
     if declared_hash != admitted.hash
         || admitted.hash != typed.source_hash
@@ -422,7 +422,7 @@ fn decode_program_value(value: &JsonValue) -> Result<PlanProgramValue, String> {
         || admitted.output != typed.output
         || admitted.effects != typed.effects
     {
-        return Err("Program Value content hash 或 typed contract 校验失败".to_string());
+        return Err("Program Value content hash or typed contract validation failed".to_string());
     }
     Ok(admitted)
 }
@@ -438,16 +438,16 @@ pub fn admit_program_value_candidate(
     provenance: ProgramValueProvenance,
 ) -> Result<JsonValue, String> {
     let JsonValue::Object(object) = value else {
-        return Err("Program Value transport 必须是且仅是 {\"source\": \"(eval ...)\"}".into());
+        return Err("Program Value transport must be exactly {\"source\": \"(eval ...)\"}".into());
     };
     if object.len() != 1 {
-        return Err("Program Value transport 必须是且仅是 {\"source\": \"(eval ...)\"}".into());
+        return Err("Program Value transport must be exactly {\"source\": \"(eval ...)\"}".into());
     }
     let source = object
         .get("source")
         .and_then(JsonValue::as_str)
         .map(str::to_string)
-        .ok_or("Program Value transport 必须是且仅是 {\"source\": \"(eval ...)\"}")?;
+        .ok_or("Program Value transport must be exactly {\"source\": \"(eval ...)\"}")?;
     let allowed_tools = expected_effects.iter().filter_map(|effect| match effect {
         crate::yao::Effect::Tool(name) => Some(name.clone()),
         _ => None,
@@ -455,20 +455,20 @@ pub fn admit_program_value_candidate(
     let gate = AllowList::new(allowed_tools);
     let program = validate_typed(&source, registry, &gate).map_err(|error| error.message)?;
     if program.owner() != EvaluationOwner::Runtime {
-        return Err("Program Value candidate 必须以 (eval ...) 为根".to_string());
+        return Err("Program Value candidate must have an (eval ...) root".to_string());
     }
     let typed = program
         .typed_program()
-        .ok_or("Program Value candidate 没有生成 typed Yao Program")?;
+        .ok_or("Program Value candidate did not produce a typed Yao Program")?;
     if !typed.output.is_assignable_to(expected_output) {
         return Err(format!(
-            "Program Value 输出 {:?} 不能赋给声明的 {:?}",
+            "Program Value output {:?} is not assignable to declared type {:?}",
             typed.output, expected_output
         ));
     }
     if !typed.effects.is_subset(expected_effects) {
         return Err(format!(
-            "Program Value effects {:?} 超过声明上限 {:?}",
+            "Program Value effects {:?} exceed declared upper bound {:?}",
             typed.effects, expected_effects
         ));
     }
@@ -516,8 +516,8 @@ impl ToolGate for AllowList {
         let mut names = self.allowed.iter().cloned().collect::<Vec<_>>();
         names.sort();
         format!(
-            "工具 '{tool}' 不能在 eval 程序中调用；此处只接受 {}。其他工具请使用普通 Function Calling。",
-            names.join("、")
+            "tool '{tool}' is not callable from an eval program; this boundary accepts only {}. Use ordinary Function Calling for other tools.",
+            names.join(", ")
         )
     }
 }
@@ -554,7 +554,7 @@ fn validate_legacy_source(
                 return Err(EvalError::from(gate.describe_refusal(tool)));
             }
             if registry.get(tool).is_none() {
-                return err(format!("声明的工具 '{tool}' 不存在"));
+                return err(format!("declared tool '{tool}' does not exist"));
             }
         }
     }
@@ -585,7 +585,7 @@ fn validate_typed(
     let profile = MorphzAnalysisProfile { registry, gate };
     let typed = crate::yao::analyze(source, &profile, crate::yao::AnalysisLimits::default())
         .map_err(|diagnostic| EvalError {
-            message: format!("Yao typed admission 失败: {diagnostic}"),
+            message: format!("Yao typed admission failed: {diagnostic}"),
             diagnostic: Some(Box::new(diagnostic)),
         })?;
     let owner = match typed.owner {
@@ -797,22 +797,26 @@ fn runtime_environment_type() -> crate::yao::Type {
 pub fn inspect_program_source(source: &str) -> Result<ProgramHeader, EvalError> {
     let root = crate::yao::parse_one(source, crate::yao::ParseLimits::default()).map_err(
         |diagnostic| EvalError {
-            message: format!("program 不是合法的 Yao 源码: {diagnostic}"),
+            message: format!("program is not valid Yao source: {diagnostic}"),
             diagnostic: Some(Box::new(diagnostic)),
         },
     )?;
-    let items = root
-        .as_list()
-        .ok_or_else(|| EvalError::from("program root 必须是显式 eval 或 infer".to_string()))?;
+    let items = root.as_list().ok_or_else(|| {
+        EvalError::from("program root must explicitly be eval or infer".to_string())
+    })?;
     let owner = match items.first().and_then(crate::yao::Expr::as_symbol) {
         Some("eval") => EvaluationOwner::Runtime,
         Some("infer") => EvaluationOwner::Model,
         Some(other) => {
             return Err(EvalError::from(format!(
-                "未知的 Yao 程序根 '{other}'；必须显式使用 (eval ...) 或 (infer ...)"
+                "unknown Yao program root '{other}'; use an explicit (eval ...) or (infer ...) root"
             )))
         }
-        None => return Err(EvalError::from("Yao 程序根缺少求值器名称".to_string())),
+        None => {
+            return Err(EvalError::from(
+                "Yao program root is missing its evaluator name".to_string(),
+            ))
+        }
     };
     if items.get(1).is_some_and(|item| {
         item.as_list()
@@ -821,7 +825,8 @@ pub fn inspect_program_source(source: &str) -> Result<ProgramHeader, EvalError> 
             == Some("version")
     }) {
         return Err(EvalError::from(
-            "Yao 源码不支持内嵌版本声明；请删除 (version ...)".to_string(),
+            "Yao source does not support an in-band version declaration; remove (version ...)"
+                .to_string(),
         ));
     }
     let declared_tools = items
@@ -839,22 +844,22 @@ pub fn inspect_program_source(source: &str) -> Result<ProgramHeader, EvalError> 
 fn parse_typed_requires_tools(items: &[crate::yao::Expr]) -> Result<Vec<String>, EvalError> {
     let mut tools = None;
     for clause in &items[1..] {
-        let parts = clause
-            .as_list()
-            .ok_or_else(|| EvalError::from("(requires ...) 的每个声明必须是列表".to_string()))?;
+        let parts = clause.as_list().ok_or_else(|| {
+            EvalError::from("every (requires ...) declaration must be a list".to_string())
+        })?;
         if parts.first().and_then(crate::yao::Expr::as_symbol) != Some("tools") {
             continue;
         }
         if tools.is_some() {
             return Err(EvalError::from(
-                "(requires ...) 不能重复声明 tools".to_string(),
+                "(requires ...) cannot declare tools more than once".to_string(),
             ));
         }
         let mut declared = Vec::new();
         for tool in &parts[1..] {
-            let name = tool
-                .as_symbol()
-                .ok_or_else(|| EvalError::from("(tools ...) 只能包含工具名".to_string()))?;
+            let name = tool.as_symbol().ok_or_else(|| {
+                EvalError::from("(tools ...) may contain only tool names".to_string())
+            })?;
             declared.push(name.to_string());
         }
         tools = Some(declared);
@@ -872,20 +877,23 @@ fn split_program(
     forms: Vec<SExpr>,
 ) -> Result<(EvaluationOwner, Option<Vec<String>>, SExpr), EvalError> {
     let [form] = forms.as_slice() else {
-        return err("Yao 程序必须恰好有一个显式根：(eval ...) 或 (infer ...)".to_string());
+        return err(
+            "Yao program must have exactly one explicit root: (eval ...) or (infer ...)"
+                .to_string(),
+        );
     };
     let SExpr::List(items) = form else {
-        return err("Yao 程序根必须是 (eval ...) 或 (infer ...)".to_string());
+        return err("Yao program root must be (eval ...) or (infer ...)".to_string());
     };
     let Some(SExpr::Atom(root_name)) = items.first() else {
-        return err("Yao 程序根缺少求值器名称".to_string());
+        return err("Yao program root is missing its evaluator name".to_string());
     };
     let owner = match root_name.as_str() {
         "eval" => EvaluationOwner::Runtime,
         "infer" => EvaluationOwner::Model,
         other => {
             return err(format!(
-                "未知的 Yao 程序根 '{other}'；必须显式使用 (eval ...) 或 (infer ...)"
+                "unknown Yao program root '{other}'; use an explicit (eval ...) or (infer ...) root"
             ))
         }
     };
@@ -906,7 +914,7 @@ fn split_program(
         EvaluationOwner::Runtime => {
             let [root] = body.as_slice() else {
                 return err(
-                    "(eval ...) 在可选的 (requires ...) 后必须恰好包含一个程序体；多个步骤用 (seq ...) 组合"
+                    "(eval ...) must contain exactly one body after optional (requires ...); combine multiple steps with (seq ...)"
                         .to_string(),
                 );
             };
@@ -914,7 +922,7 @@ fn split_program(
         }
         EvaluationOwner::Model => {
             if body.is_empty() {
-                return err("(infer ...) 至少需要一个 (task ...) 参数".to_string());
+                return err("(infer ...) requires at least one (task ...) argument".to_string());
             }
             let mut infer = Vec::with_capacity(body.len() + 1);
             infer.push(SExpr::Atom("infer".to_string()));
@@ -930,20 +938,20 @@ fn parse_requires(items: &[SExpr]) -> Result<Vec<String>, EvalError> {
     let mut declared = None;
     for clause in &items[1..] {
         let SExpr::List(parts) = clause else {
-            return err("(requires ...) 的每一项必须是列表".to_string());
+            return err("every item in (requires ...) must be a list".to_string());
         };
         let Some(SExpr::Atom(name)) = parts.first() else {
-            return err("(requires ...) 子项缺少名称".to_string());
+            return err("(requires ...) item is missing its name".to_string());
         };
         match name.as_str() {
             "tools" => {
                 if declared.is_some() {
-                    return err("(requires ...) 只能声明一次 (tools ...)".to_string());
+                    return err("(requires ...) may declare (tools ...) only once".to_string());
                 }
                 let mut tools = Vec::new();
                 for item in &parts[1..] {
                     let SExpr::Atom(tool) = item else {
-                        return err("(requires (tools ...)) 里只能是工具名原子".to_string());
+                        return err("(requires (tools ...)) accepts only atomic tool names".to_string());
                     };
                     if !tools.contains(tool) {
                         tools.push(tool.clone());
@@ -953,7 +961,7 @@ fn parse_requires(items: &[SExpr]) -> Result<Vec<String>, EvalError> {
             }
             other => {
                 return err(format!(
-                    "当前版本不认识 requires 子项 '({other} ...)'; 可用的是 (tools ...)"
+                    "unknown requires item '({other} ...)' in this version; available item: (tools ...)"
                 ))
             }
         }
@@ -986,11 +994,11 @@ impl Scope {
 fn operator_of(expr: &SExpr) -> Result<(&str, &[SExpr]), EvalError> {
     let SExpr::List(items) = expr else {
         return err(format!(
-            "期望一个 (算子 ...) 形式的表达式，得到原子 '{expr}'"
+            "expected an (operator ...) expression, found atom '{expr}'"
         ));
     };
     let Some(SExpr::Atom(name)) = items.first() else {
-        return err("表达式的第一项必须是算子名".to_string());
+        return err("the first expression item must be an operator name".to_string());
     };
     Ok((name.as_str(), &items[1..]))
 }
@@ -1006,7 +1014,7 @@ fn check(
 ) -> Result<(), EvalError> {
     if depth > MAX_PROGRAM_DEPTH {
         return err(format!(
-            "程序嵌套超过 {MAX_PROGRAM_DEPTH} 层；请拆成多次 eval"
+            "program nesting exceeds {MAX_PROGRAM_DEPTH} levels; split it into multiple eval programs"
         ));
     }
     // An atom in expression position is self-evaluating. Without this a
@@ -1019,14 +1027,14 @@ fn check(
     let (operator, args) = operator_of(expr)?;
     if names_with(Availability::LlmOnly).contains(&operator) {
         return err(format!(
-            "算子 '{operator}' 只用于你自身的求值，提交给 Runtime 的程序中不可用；此处可用的算子是 {}。",
-            evaluable_names().join("、")
+            "operator '{operator}' is reserved for model-owned evaluation and is unavailable in Runtime-submitted programs; available operators: {}.",
+            evaluable_names().join(", ")
         ));
     }
     match operator {
         "seq" => {
             if args.is_empty() {
-                return err("(seq ...) 至少需要一个步骤".to_string());
+                return err("(seq ...) requires at least one step".to_string());
             }
             for step in args {
                 check(step, depth + 1, scope, registry, gate, facts)?;
@@ -1035,11 +1043,11 @@ fn check(
         }
         "bind" => {
             let [SExpr::Atom(name), value] = args else {
-                return err("(bind NAME EXPR) 需要一个名字和一个表达式".to_string());
+                return err("(bind NAME EXPR) requires one name and one expression".to_string());
             };
             if name.starts_with('$') {
                 return err(format!(
-                    "(bind {name} ...) 的名字不带 $；引用它时才写 ${}",
+                    "the name in (bind {name} ...) must not include '$'; use ${} only when referencing it",
                     name.trim_start_matches('$')
                 ));
             }
@@ -1047,14 +1055,16 @@ fn check(
             if scope.contains(name) {
                 // Single assignment keeps the data dependencies of a program
                 // readable straight off the tree.
-                return err(format!("绑定 '{name}' 不可覆盖；请换一个名字"));
+                return err(format!(
+                    "binding '{name}' cannot be shadowed; choose another name"
+                ));
             }
             scope.bound.push(name.clone());
             Ok(())
         }
         "if" => {
             let [condition, when_true, when_false] = args else {
-                return err("(if COND THEN ELSE) 需要三段".to_string());
+                return err("(if COND THEN ELSE) requires three operands".to_string());
             };
             check_value(condition, scope)?;
             // Branches are checked in a copy of the scope: a binding made in a
@@ -1069,7 +1079,7 @@ fn check(
         }
         "fallback" => {
             let [primary, backup] = args else {
-                return err("(fallback PRIMARY BACKUP) 需要两段".to_string());
+                return err("(fallback PRIMARY BACKUP) requires two operands".to_string());
             };
             for branch in [primary, backup] {
                 let mut branch_scope = Scope {
@@ -1081,12 +1091,12 @@ fn check(
         }
         "map" => {
             let [collection, SExpr::Atom(element), body] = args else {
-                return err("(map $COLLECTION ELEMENT BODY) 需要三段".to_string());
+                return err("(map $COLLECTION ELEMENT BODY) requires three operands".to_string());
             };
             check_value(collection, scope)?;
             if element.starts_with('$') {
                 return err(format!(
-                    "(map ... {element} ...) 的元素名不带 $；在 BODY 中引用它时才写 ${}",
+                    "the element name in (map ... {element} ...) must not include '$'; use ${} only when referencing it in BODY",
                     element.trim_start_matches('$')
                 ));
             }
@@ -1104,7 +1114,10 @@ fn check(
             // at which point `validate` can no longer bound a program before
             // running it. That is the property this evaluator is built on.
             if args.is_empty() {
-                return err("(infer (task \"...\") ...) 至少需要一个 (task ...) 参数".to_string());
+                return err(
+                    "(infer (task \"...\") ...) requires at least one (task ...) argument"
+                        .to_string(),
+                );
             }
             let data_arguments = args
                 .iter()
@@ -1117,7 +1130,9 @@ fn check(
                     if items.first() == Some(&SExpr::Atom("task".to_string())))
             });
             if !has_task {
-                return err("(infer ...) 必须给出 (task ...) 说明要判断什么".to_string());
+                return err(
+                    "(infer ...) must provide (task ...) describing what to decide".to_string(),
+                );
             }
             if let Some(tools) = infer_tool_names(args)? {
                 for tool in tools {
@@ -1125,7 +1140,7 @@ fn check(
                         return err(gate.describe_refusal(&tool));
                     }
                     if registry.get(&tool).is_none() {
-                        return err(format!("infer 声明的工具 '{tool}' 不存在"));
+                        return err(format!("tool '{tool}' declared by infer does not exist"));
                     }
                     if !facts.tools.iter().any(|seen| seen == &tool) {
                         facts.tools.push(tool);
@@ -1137,13 +1152,13 @@ fn check(
         }
         "call" => {
             let Some(SExpr::Atom(tool)) = args.first() else {
-                return err("(call tool argument...) 缺少工具名".to_string());
+                return err("(call tool argument...) is missing the tool name".to_string());
             };
             if !gate.is_callable(tool) {
                 return err(gate.describe_refusal(tool));
             }
             if registry.get(tool).is_none() {
-                return err(format!("工具 '{tool}' 不存在"));
+                return err(format!("tool '{tool}' does not exist"));
             }
             check_call_arguments(tool, &args[1..], scope)?;
             if !facts.tools.iter().any(|seen| seen == tool) {
@@ -1152,8 +1167,8 @@ fn check(
             Ok(())
         }
         other => err(format!(
-            "未知算子 '{other}'；eval 程序中可用的算子是 {}。",
-            evaluable_names().join("、")
+            "unknown operator '{other}'; operators available in eval programs: {}.",
+            evaluable_names().join(", ")
         )),
     }
 }
@@ -1172,17 +1187,21 @@ fn check_pair_arguments(form: &str, args: &[SExpr], scope: &Scope) -> Result<(),
     for argument in args {
         let SExpr::List(items) = argument else {
             return err(format!(
-                "({form} ...) 的每个参数必须是 (参数名 值...) 列表，得到 '{argument}'"
+                "every argument to ({form} ...) must be a (name value...) list; found '{argument}'"
             ));
         };
         let Some(SExpr::Atom(name)) = items.first() else {
-            return err(format!("({form} ...) 的参数列表第一项必须是参数名"));
+            return err(format!(
+                "the first item in each ({form} ...) argument must be its name"
+            ));
         };
         if items.len() < 2 {
-            return err(format!("({form} ... ({name})) 缺少值"));
+            return err(format!("({form} ... ({name})) is missing its value"));
         }
         if !seen.insert(name.clone()) {
-            return err(format!("({form} ...) 重复指定了参数 '({name} ...)'"));
+            return err(format!(
+                "({form} ...) specifies '({name} ...)' more than once"
+            ));
         }
         for value in &items[1..] {
             check_value(value, scope)?;
@@ -1202,17 +1221,17 @@ fn check_value(expr: &SExpr, scope: &Scope) -> Result<(), EvalError> {
             };
             let name = reference.split('.').next().unwrap_or_default();
             if name.is_empty() {
-                return err("'$' 后面缺少绑定名".to_string());
+                return err("'$' must be followed by a binding name".to_string());
             }
             if !scope.contains(name) {
                 return err(format!(
-                    "引用了未绑定的 '${name}'；请先用 (bind {name} ...) 绑定它"
+                    "reference '${name}' is unbound; bind it first with (bind {name} ...)"
                 ));
             }
             Ok(())
         }
         SExpr::List(_) => err(format!(
-            "值的位置只接受字面量或 $绑定引用，不接受子表达式 '{expr}'"
+            "value position accepts only a literal or $binding reference, not subexpression '{expr}'"
         )),
     }
 }
@@ -1220,7 +1239,9 @@ fn check_value(expr: &SExpr, scope: &Scope) -> Result<(), EvalError> {
 #[cfg(test)]
 fn lower_value(expr: &SExpr) -> Result<PlanValue, EvalError> {
     let SExpr::Atom(atom) = expr else {
-        return err(format!("值的位置不接受子表达式 '{expr}'"));
+        return err(format!(
+            "value position does not accept subexpression '{expr}'"
+        ));
     };
     Ok(match atom.strip_prefix('$') {
         Some(reference) => PlanValue::Reference(reference.to_string()),
@@ -1233,10 +1254,12 @@ fn lower_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError> {
     args.iter()
         .map(|argument| {
             let SExpr::List(items) = argument else {
-                return err(format!("参数必须是 (参数名 值...) 列表，得到 '{argument}'"));
+                return err(format!(
+                    "argument must be a (name value...) list; found '{argument}'"
+                ));
             };
             let Some(SExpr::Atom(name)) = items.first() else {
-                return err("参数列表第一项必须是参数名".to_string());
+                return err("the first item in an argument list must be its name".to_string());
             };
             let values = items[1..]
                 .iter()
@@ -1268,7 +1291,7 @@ fn infer_result_kind(args: &[SExpr]) -> Result<InferResultKind, EvalError> {
         .filter(|argument| argument_name(argument) == Some("returns"))
         .collect::<Vec<_>>();
     if declarations.len() > 1 {
-        return err("(infer ...) 重复指定了参数 '(returns ...)'".to_string());
+        return err("(infer ...) specifies '(returns ...)' more than once".to_string());
     }
     let Some(returns) = declarations.first().copied() else {
         return Ok(InferResultKind::Text);
@@ -1277,13 +1300,13 @@ fn infer_result_kind(args: &[SExpr]) -> Result<InferResultKind, EvalError> {
         unreachable!("argument_name accepted only a list")
     };
     let [SExpr::Atom(_), SExpr::Atom(kind)] = items.as_slice() else {
-        return err("(returns text|json) 必须且只能给出一个静态结果类型".to_string());
+        return err("(returns text|json) must specify exactly one static result type".to_string());
     };
     match kind.as_str() {
         "text" => Ok(InferResultKind::Text),
         "json" => Ok(InferResultKind::Json),
         other => err(format!(
-            "未知 infer 结果类型 '{other}'；当前只支持 text 或 json"
+            "unknown infer result type '{other}'; supported legacy types are text and json"
         )),
     }
 }
@@ -1295,7 +1318,7 @@ fn infer_tool_names(args: &[SExpr]) -> Result<Option<Vec<String>>, EvalError> {
         .filter(|argument| argument_name(argument) == Some("tools"))
         .collect::<Vec<_>>();
     if declarations.len() > 1 {
-        return err("(infer ...) 重复指定了参数 '(tools ...)'".to_string());
+        return err("(infer ...) specifies '(tools ...)' more than once".to_string());
     }
     let Some(tools) = declarations.first().copied() else {
         return Ok(None);
@@ -1306,13 +1329,13 @@ fn infer_tool_names(args: &[SExpr]) -> Result<Option<Vec<String>>, EvalError> {
     let mut names = Vec::new();
     for item in &items[1..] {
         let SExpr::Atom(name) = item else {
-            return err("(tools ...) 只接受静态工具名原子".to_string());
+            return err("(tools ...) accepts only static atomic tool names".to_string());
         };
         if name.starts_with('$') {
-            return err("(tools ...) 不接受动态绑定引用".to_string());
+            return err("(tools ...) does not accept dynamic binding references".to_string());
         }
         if names.iter().any(|seen| seen == name) {
-            return err(format!("(tools ...) 重复声明工具 '{name}'"));
+            return err(format!("(tools ...) declares tool '{name}' more than once"));
         }
         names.push(name.clone());
     }
@@ -1343,7 +1366,7 @@ fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
         }),
         "bind" => {
             let [SExpr::Atom(name), value] = args else {
-                return err("(bind NAME EXPR) 形态错误".to_string());
+                return err("malformed (bind NAME EXPR)".to_string());
             };
             Ok(PlanNode::Bind {
                 name: name.clone(),
@@ -1352,7 +1375,7 @@ fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
         }
         "if" => {
             let [condition, when_true, when_false] = args else {
-                return err("(if COND THEN ELSE) 形态错误".to_string());
+                return err("malformed (if COND THEN ELSE)".to_string());
             };
             Ok(PlanNode::If {
                 condition: lower_value(condition)?,
@@ -1362,7 +1385,7 @@ fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
         }
         "fallback" => {
             let [primary, backup] = args else {
-                return err("(fallback PRIMARY BACKUP) 形态错误".to_string());
+                return err("malformed (fallback PRIMARY BACKUP)".to_string());
             };
             Ok(PlanNode::Fallback {
                 primary: Box::new(lower_expr(primary)?),
@@ -1371,7 +1394,7 @@ fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
         }
         "map" => {
             let [collection, SExpr::Atom(element), body] = args else {
-                return err("(map COLLECTION ELEMENT BODY) 形态错误".to_string());
+                return err("malformed (map COLLECTION ELEMENT BODY)".to_string());
             };
             Ok(PlanNode::Map {
                 collection: lower_value(collection)?,
@@ -1386,14 +1409,14 @@ fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
         }),
         "call" => {
             let Some(SExpr::Atom(tool)) = args.first() else {
-                return err("(call TOOL ...) 形态错误".to_string());
+                return err("malformed (call TOOL ...)".to_string());
             };
             Ok(PlanNode::Call {
                 tool: tool.clone(),
                 arguments: lower_arguments(&args[1..])?,
             })
         }
-        other => err(format!("未知算子 '{other}'")),
+        other => err(format!("unknown operator '{other}'")),
     }
 }
 
@@ -1482,12 +1505,12 @@ impl PlanEffect {
 
     fn failure(&self, message: impl std::fmt::Display) -> String {
         match self {
-            Self::Call { tool, .. } => format!("(call {tool} ...) 失败: {message}"),
-            Self::Infer { .. } => format!("(infer ...) 失败: {message}"),
-            Self::Parallel { .. } => format!("(par ...) 失败: {message}"),
-            Self::Program { .. } => format!("(run ...) 失败: {message}"),
+            Self::Call { tool, .. } => format!("(call {tool} ...) failed: {message}"),
+            Self::Infer { .. } => format!("(infer ...) failed: {message}"),
+            Self::Parallel { .. } => format!("(par ...) failed: {message}"),
+            Self::Program { .. } => format!("(run ...) failed: {message}"),
             Self::Host { operation, .. } => {
-                format!("host operation '{operation}' 失败: {message}")
+                format!("host operation '{operation}' failed: {message}")
             }
         }
     }
@@ -1607,7 +1630,7 @@ impl PlanMachine {
     pub fn new(program: &Program) -> Result<Self, EvalError> {
         if program.owner != EvaluationOwner::Runtime {
             return err(
-                "(infer ...) 是模型持有控制权的程序，必须创建正式 Evaluation，不能交给 Runtime Plan Executor"
+                "(infer ...) is model-owned and must create a formal Evaluation; it cannot be submitted to the Runtime Plan Executor"
                     .to_string(),
             );
         }
@@ -1643,7 +1666,7 @@ impl PlanMachine {
     /// cannot silently change authority or causal identity.
     pub fn bind_runtime_environment(&mut self, value: JsonValue) -> Result<(), EvalError> {
         if self.env.contains_key("runtime") {
-            return err("Plan Machine 的 runtime 环境已经绑定".to_string());
+            return err("Plan Machine runtime environment is already bound".to_string());
         }
         let span = crate::yao::SourceSpan::empty(crate::yao::SourceLocation::start());
         let value = crate::yao::decode_value(
@@ -1652,7 +1675,11 @@ impl PlanMachine {
             &self.typed_definitions,
             span,
         )
-        .map_err(|error| EvalError::from(format!("runtime 环境不满足 Profile 类型: {error}")))?;
+        .map_err(|error| {
+            EvalError::from(format!(
+                "runtime environment does not satisfy the Profile type: {error}"
+            ))
+        })?;
         self.env.insert("runtime".to_string(), value);
         Ok(())
     }
@@ -1746,7 +1773,7 @@ impl PlanMachine {
     /// the private continuation-frame schema.
     pub fn budget_json(&self) -> Result<JsonValue, EvalError> {
         serde_json::to_value(&self.budget)
-            .map_err(|error| EvalError::from(format!("Plan budget 序列化失败: {error}")))
+            .map_err(|error| EvalError::from(format!("failed to serialize Plan budget: {error}")))
     }
 
     /// Continues deterministic evaluation until completion, failure or the
@@ -1765,7 +1792,8 @@ impl PlanMachine {
                     Some(MachineSignal::Value { value }) => MachineTerminal::Complete { value },
                     Some(MachineSignal::Failure { message }) => MachineTerminal::Failed { message },
                     None => MachineTerminal::Failed {
-                        message: "Plan Machine 没有待执行 frame，也没有结果".to_string(),
+                        message: "Plan Machine has neither a pending frame nor a result"
+                            .to_string(),
                     },
                 };
                 self.terminal = Some(terminal.clone());
@@ -1776,7 +1804,7 @@ impl PlanMachine {
             match frame {
                 MachineFrame::Eval { node } => {
                     if self.signal.is_some() {
-                        return self.fail_internal("Plan Machine 在已有结果时仍尝试求值新节点");
+                        return self.fail_internal("Plan Machine attempted to evaluate a new node after producing a result");
                     }
                     match node {
                         PlanNode::Typed { program } => {
@@ -1792,7 +1820,7 @@ impl PlanMachine {
                         PlanNode::Seq { steps } => {
                             let Some(first) = steps.first().cloned() else {
                                 self.raise(EvalError::from(
-                                    "Plan IR 中的 seq 不应为空；validator 未守住边界".to_string(),
+                                    "seq in Plan IR must not be empty; validator failed to preserve the boundary".to_string(),
                                 ));
                                 continue;
                             };
@@ -1856,11 +1884,11 @@ impl PlanMachine {
                                 self.frames.push(MachineFrame::Eval { node: *body });
                             }
                             Ok(JsonValue::Array(items)) => self.raise(EvalError::from(format!(
-                                "(map ...) 的集合有 {} 个元素，超过单次上限 {MAX_MAP_ELEMENTS}；请先收窄它",
+                                "(map ...) collection has {} elements, exceeding the per-map limit of {MAX_MAP_ELEMENTS}; narrow it first",
                                 items.len()
                             ))),
                             Ok(other) => self.raise(EvalError::from(format!(
-                                "(map ...) 只能迭代数组，得到 {}",
+                                "(map ...) can iterate only an array; found {}",
                                 type_name(&other)
                             ))),
                             Err(error) => self.raise(error),
@@ -1872,7 +1900,7 @@ impl PlanMachine {
                         } => {
                             if self.budget.infers_left == 0 {
                                 self.raise(EvalError::from(format!(
-                                    "程序的 infer 次数超过上限 {MAX_PROGRAM_INFERS}"
+                                    "program exceeds the infer limit of {MAX_PROGRAM_INFERS}"
                                 )));
                                 continue;
                             }
@@ -1894,12 +1922,12 @@ impl PlanMachine {
                         PlanNode::Call { tool, arguments } => {
                             if self.budget.calls_left == 0 {
                                 self.raise(EvalError::from(format!(
-                                    "程序的工具调用次数超过上限 {MAX_PROGRAM_CALLS}"
+                                    "program exceeds the tool-call limit of {MAX_PROGRAM_CALLS}"
                                 )));
                                 continue;
                             }
                             let Some(runtime_tool) = registry.get(&tool) else {
-                                self.raise(EvalError::from(format!("工具 '{tool}' 不存在")));
+                                self.raise(EvalError::from(format!("tool '{tool}' does not exist")));
                                 continue;
                             };
                             let schema = runtime_tool.definition().parameters.clone();
@@ -1921,7 +1949,9 @@ impl PlanMachine {
                 }
                 MachineFrame::TypedEval { expression } => {
                     if self.signal.is_some() {
-                        return self.fail_internal("Plan Machine 在已有结果时仍尝试求值 typed HIR");
+                        return self.fail_internal(
+                            "Plan Machine attempted to evaluate typed HIR after producing a result",
+                        );
                     }
                     if let Some(advance) = self.advance_typed(expression, registry) {
                         return advance;
@@ -1929,7 +1959,8 @@ impl PlanMachine {
                 }
                 MachineFrame::Seq { steps, next } => {
                     let Some(signal) = self.signal.take() else {
-                        return self.fail_internal("seq continuation 缺少前一步结果");
+                        return self
+                            .fail_internal("seq continuation is missing the previous step result");
                     };
                     match signal {
                         failure @ MachineSignal::Failure { .. } => {
@@ -1950,7 +1981,7 @@ impl PlanMachine {
                 }
                 MachineFrame::Bind { name } => {
                     let Some(signal) = self.signal.take() else {
-                        return self.fail_internal("bind continuation 缺少被绑定值");
+                        return self.fail_internal("bind continuation is missing the bound value");
                     };
                     match signal {
                         MachineSignal::Value { value } => {
@@ -1966,13 +1997,13 @@ impl PlanMachine {
                 }
                 MachineFrame::RestoreScope { saved_env } => {
                     if self.signal.is_none() {
-                        return self.fail_internal("局部作用域结束时缺少结果");
+                        return self.fail_internal("local scope ended without a result");
                     }
                     self.env = saved_env;
                 }
                 MachineFrame::FallbackPrimary { backup, saved_env } => {
                     let Some(signal) = self.signal.take() else {
-                        return self.fail_internal("fallback primary 缺少结果");
+                        return self.fail_internal("fallback primary is missing its result");
                     };
                     self.env = saved_env.clone();
                     match signal {
@@ -1992,7 +2023,7 @@ impl PlanMachine {
                     saved_env,
                 } => {
                     let Some(signal) = self.signal.take() else {
-                        return self.fail_internal("map body 缺少结果");
+                        return self.fail_internal("map body is missing its result");
                     };
                     self.env = saved_env.clone();
                     match signal {
@@ -2022,7 +2053,9 @@ impl PlanMachine {
                 }
                 MachineFrame::TypedSeq { steps, next } => {
                     let Some(signal) = self.signal.take() else {
-                        return self.fail_internal("typed seq continuation 缺少前一步结果");
+                        return self.fail_internal(
+                            "typed seq continuation is missing the previous step result",
+                        );
                     };
                     match signal {
                         failure @ MachineSignal::Failure { .. } => self.signal = Some(failure),
@@ -2041,13 +2074,14 @@ impl PlanMachine {
                 }
                 MachineFrame::TypedBind { name } => {
                     let Some(signal) = self.signal.take() else {
-                        return self.fail_internal("typed bind continuation 缺少被绑定值");
+                        return self
+                            .fail_internal("typed bind continuation is missing the bound value");
                     };
                     match signal {
                         MachineSignal::Value { value } => {
                             if self.env.insert(name.clone(), value).is_some() {
                                 self.raise(EvalError::from(format!(
-                                    "typed binding '{name}' 试图覆盖已有绑定"
+                                    "typed binding '{name}' attempted to shadow an existing binding"
                                 )));
                             } else {
                                 self.signal = Some(MachineSignal::Value {
@@ -2060,7 +2094,7 @@ impl PlanMachine {
                 }
                 MachineFrame::TypedFallbackPrimary { backup, saved_env } => {
                     let Some(signal) = self.signal.take() else {
-                        return self.fail_internal("typed fallback primary 缺少结果");
+                        return self.fail_internal("typed fallback primary is missing its result");
                     };
                     self.env = saved_env.clone();
                     match signal {
@@ -2081,7 +2115,7 @@ impl PlanMachine {
                     saved_env,
                 } => {
                     let Some(signal) = self.signal.take() else {
-                        return self.fail_internal("typed map body 缺少结果");
+                        return self.fail_internal("typed map body is missing its result");
                     };
                     self.env = saved_env.clone();
                     match signal {
@@ -2134,7 +2168,9 @@ impl PlanMachine {
         match expression.kind {
             crate::yao::HirKind::Seq { steps } => {
                 let Some(first) = steps.first().cloned() else {
-                    self.raise(EvalError::from("typed HIR seq 不应为空".to_string()));
+                    self.raise(EvalError::from(
+                        "typed HIR seq must not be empty".to_string(),
+                    ));
                     return None;
                 };
                 self.frames.push(MachineFrame::TypedSeq { steps, next: 1 });
@@ -2163,7 +2199,7 @@ impl PlanMachine {
                         });
                     }
                     Ok(_) => self.raise(EvalError::from(
-                        "typed if condition 在运行时不是 Bool".to_string(),
+                        "typed if condition is not Bool at runtime".to_string(),
                     )),
                     Err(error) => {
                         self.raise(EvalError::from(format!("Yao value failure: {error}")))
@@ -2175,14 +2211,14 @@ impl PlanMachine {
                     Ok(value) => {
                         let Some((variant, fields)) = crate::yao::variant_view(&value) else {
                             self.raise(EvalError::from(
-                                "typed match value 不是 Yao union variant".to_string(),
+                                "typed match value is not a Yao union variant".to_string(),
                             ));
                             return None;
                         };
                         let Some(case) = cases.into_iter().find(|case| case.variant == variant)
                         else {
                             self.raise(EvalError::from(format!(
-                                "typed match 没有 variant '{variant}' 的分支"
+                                "typed match has no branch for variant '{variant}'"
                             )));
                             return None;
                         };
@@ -2190,7 +2226,7 @@ impl PlanMachine {
                         for binding in case.bindings {
                             let Some(value) = fields.get(&binding.field).cloned() else {
                                 self.raise(EvalError::from(format!(
-                                    "variant '{variant}' 缺少字段 '{}'",
+                                    "variant '{variant}' is missing field '{}'",
                                     binding.field
                                 )));
                                 return None;
@@ -2244,11 +2280,11 @@ impl PlanMachine {
                         }
                     }
                     Ok(JsonValue::Array(items)) => self.raise(EvalError::from(format!(
-                        "typed map 集合有 {} 个元素，超过上限 {MAX_MAP_ELEMENTS}",
+                        "typed map collection has {} elements, exceeding the limit of {MAX_MAP_ELEMENTS}",
                         items.len()
                     ))),
                     Ok(_) => self.raise(EvalError::from(
-                        "typed map collection 在运行时不是 List".to_string(),
+                        "typed map collection is not a List at runtime".to_string(),
                     )),
                     Err(error) => {
                         self.raise(EvalError::from(format!("Yao value failure: {error}")))
@@ -2258,12 +2294,12 @@ impl PlanMachine {
             crate::yao::HirKind::Call { tool, arguments } => {
                 if self.budget.calls_left == 0 {
                     self.raise(EvalError::from(format!(
-                        "程序的工具调用次数超过上限 {MAX_PROGRAM_CALLS}"
+                        "program exceeds the tool-call limit of {MAX_PROGRAM_CALLS}"
                     )));
                     return None;
                 }
                 if registry.get(&tool).is_none() {
-                    self.raise(EvalError::from(format!("工具 '{tool}' 不存在")));
+                    self.raise(EvalError::from(format!("tool '{tool}' does not exist")));
                     return None;
                 }
                 match build_typed_arguments(&arguments, &mut self.env, &self.typed_definitions) {
@@ -2287,7 +2323,7 @@ impl PlanMachine {
             } => {
                 if self.budget.infers_left == 0 {
                     self.raise(EvalError::from(format!(
-                        "程序的 infer 次数超过上限 {MAX_PROGRAM_INFERS}"
+                        "program exceeds the infer limit of {MAX_PROGRAM_INFERS}"
                     )));
                     return None;
                 }
@@ -2406,7 +2442,7 @@ impl PlanMachine {
             crate::yao::HirKind::Run { program } => {
                 if self.budget.programs_left == 0 {
                     self.raise(EvalError::from(format!(
-                        "Program Value 嵌套超过上限 {MAX_PROGRAM_VALUE_NESTING}"
+                        "Program Value nesting exceeds the limit of {MAX_PROGRAM_VALUE_NESTING}"
                     )));
                     return None;
                 }
@@ -2471,7 +2507,8 @@ impl PlanMachine {
                 Err(error) => self.raise(error),
             },
             _ => self.raise(EvalError::from(
-                "effectful 标记出现在不允许产生 effect 的 typed HIR 节点".to_string(),
+                "effectful marker appeared on a typed HIR node that cannot produce effects"
+                    .to_string(),
             )),
         }
         None
@@ -2485,11 +2522,11 @@ impl PlanMachine {
         outcome: Result<JsonValue, String>,
     ) -> Result<(), EvalError> {
         let Some(effect) = self.pending.as_ref() else {
-            return err("Plan Machine 当前没有等待任何 effect".to_string());
+            return err("Plan Machine is not waiting for an effect".to_string());
         };
         if effect.sequence() != sequence {
             return err(format!(
-                "Plan effect sequence 不匹配：等待 {}，收到 {sequence}",
+                "Plan effect sequence mismatch: expected {}, received {sequence}",
                 effect.sequence()
             ));
         }
@@ -2562,10 +2599,10 @@ async fn evaluate_machine(
                         tool, arguments, ..
                     } => {
                         let runtime_tool = registry.get(&tool).ok_or_else(|| {
-                            EvalError::from(format!("工具 '{tool}' 在 effect 交付前消失"))
+                            EvalError::from(format!("tool '{tool}' disappeared before effect delivery"))
                         })?;
                         let payload = serde_json::to_string(&JsonValue::Object(arguments))
-                            .map_err(|error| EvalError::from(format!("参数序列化失败: {error}")))?;
+                            .map_err(|error| EvalError::from(format!("failed to serialize arguments: {error}")))?;
                         runtime_tool
                             .execute(&payload)
                             .await
@@ -2629,7 +2666,7 @@ async fn evaluate_machine(
                     .await
                     .map_err(|error| error.message),
                     PlanEffect::Host { operation, .. } => Err(format!(
-                        "in-process convenience evaluator 没有 Morphz authority，不能执行 host operation '{operation}'"
+                        "in-process convenience evaluator has no Morphz authority and cannot execute host operation '{operation}'"
                     )),
                 };
                 machine.resume_effect(sequence, outcome)?;
@@ -2699,14 +2736,14 @@ fn build_typed_arguments(
             JsonValue::Array(values)
         };
         if output.insert(argument.name.clone(), value).is_some() {
-            return err(format!("typed argument '{}' 重复", argument.name));
+            return err(format!("typed argument '{}' is duplicated", argument.name));
         }
     }
     Ok(output)
 }
 
-/// Resolves a value position: `$name` and `$name.field` read the environment,
-/// anything else is the literal the model wrote.
+/// Resolves a lowered value position. References read the environment while
+/// literals retain the value written by historical Plan IR.
 fn resolve_value(
     value: &PlanValue,
     env: &HashMap<String, JsonValue>,
@@ -2721,14 +2758,14 @@ fn resolve_value(
     let name = parts.next().unwrap_or_default();
     let mut current = env
         .get(name)
-        .ok_or_else(|| EvalError::from(format!("'${name}' 尚未绑定")))?
+        .ok_or_else(|| EvalError::from(format!("binding '{name}' is unavailable")))?
         .clone();
     for field in parts {
         current = match current {
             JsonValue::Object(mut fields) => fields.remove(field).unwrap_or(JsonValue::Null),
             other => {
                 return err(format!(
-                    "'${reference}' 无法取字段：'{name}' 是 {}",
+                    "cannot select a field from '{reference}': '{name}' is {}",
                     type_name(&other)
                 ))
             }
@@ -2769,7 +2806,9 @@ pub fn decode_infer_result(kind: InferResultKind, value: JsonValue) -> Result<Js
         InferResultKind::Text => Ok(value),
         InferResultKind::Json => match value {
             JsonValue::String(text) => serde_json::from_str(text.trim()).map_err(|error| {
-                format!("infer 声明 returns=json，但最终正文不是合法 JSON: {error}")
+                format!(
+                    "infer declared returns=json, but the final body is not valid JSON: {error}"
+                )
             }),
             structured => Ok(structured),
         },
@@ -2780,7 +2819,7 @@ pub fn decode_infer_result(kind: InferResultKind, value: JsonValue) -> Result<Js
         } => {
             if matches!(ty, crate::yao::Type::Program { .. }) {
                 return Err(
-                    "Program candidate 不能由普通 decoder 接纳；必须经过 Runtime admission"
+                    "Program candidate cannot be accepted by an ordinary decoder; Runtime admission is required"
                         .to_string(),
                 );
             }
@@ -2789,14 +2828,14 @@ pub fn decode_infer_result(kind: InferResultKind, value: JsonValue) -> Result<Js
                 (_, JsonValue::String(text)) => {
                     serde_json::from_str(text.trim()).map_err(|error| {
                         format!(
-                        "infer 声明了 typed Yao 返回值，但最终正文不是合法 JSON transport: {error}"
+                        "infer declared a typed Yao result, but the final body is not valid JSON transport: {error}"
                     )
                     })?
                 }
                 (_, structured) => structured,
             };
             crate::yao::decode_value(&ty, transport, &definitions, span)
-                .map_err(|error| format!("infer 返回值不满足 Yao 类型 {ty:?}: {error}"))
+                .map_err(|error| format!("infer result does not satisfy Yao type {ty:?}: {error}"))
         }
     }
 }
@@ -2814,7 +2853,8 @@ pub fn decode_infer_result_with_admission(
         } => {
             let transport = match value {
                 JsonValue::String(text) => serde_json::from_str(text.trim()).map_err(|_| {
-                    "Program Value transport 必须是且仅是 {\"source\": \"(eval ...)\"}".to_string()
+                    "Program Value transport must be exactly {\"source\": \"(eval ...)\"}"
+                        .to_string()
                 })?,
                 structured => structured,
             };
@@ -2838,11 +2878,11 @@ fn truthy(value: &JsonValue) -> bool {
 fn type_name(value: &JsonValue) -> &'static str {
     match value {
         JsonValue::Null => "null",
-        JsonValue::Bool(_) => "布尔值",
-        JsonValue::Number(_) => "数字",
-        JsonValue::String(_) => "字符串",
-        JsonValue::Array(_) => "数组",
-        JsonValue::Object(_) => "对象",
+        JsonValue::Bool(_) => "boolean",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
     }
 }
 
@@ -2975,7 +3015,7 @@ impl crate::tool::Tool for EvalTool {
         let gate = AllowList::new(self.callable.clone());
         let program = validate(&args.program, &self.registry, &gate)?;
         if program.owner() != EvaluationOwner::Runtime {
-            return Err("eval Tool 只接受 Runtime-owned (eval ...) 根；(infer ...) 由 Runtime 建立正式 Evaluation".into());
+            return Err("eval Tool accepts only a Runtime-owned (eval ...) root; Runtime creates a formal Evaluation for (infer ...)".into());
         }
         if let Some(executor) = CURRENT_PLAN_EXECUTOR.try_with(Clone::clone).ok().flatten() {
             let value = executor.execute_plan(program).await?;
@@ -2985,7 +3025,7 @@ impl crate::tool::Tool for EvalTool {
             .try_with(Clone::clone)
             .ok()
             .flatten()
-            .ok_or("eval 缺少 Runtime 注入的模型调用通道")?;
+            .ok_or("eval is missing the Runtime-injected model invocation channel")?;
         let value = evaluate(&program, Arc::clone(&self.registry), inference).await?;
         Ok(serde_json::to_string(&value)?)
     }
@@ -3222,21 +3262,27 @@ mod tests {
         let cases = [
             // An operator the model was told it has, but which belongs to its
             // own evaluation rather than this one.
-            ("(reply \"done\")", "只用于你自身的求值"),
-            ("(loop (call read (path \"a\")))", "未知算子"),
+            ("(reply \"done\")", "reserved for model-owned evaluation"),
+            ("(loop (call read (path \"a\")))", "unknown operator"),
             (
                 "(call exec (command \"rm -rf /\"))",
-                "不能在 eval 程序中调用",
+                "not callable from an eval program",
             ),
-            ("(call nope (path \"a\"))", "不能在 eval 程序中调用"),
-            ("(seq (call read (path $missing)))", "未绑定"),
+            (
+                "(call nope (path \"a\"))",
+                "not callable from an eval program",
+            ),
+            ("(seq (call read (path $missing)))", "is unbound"),
             (
                 "(seq (bind a (call read (path \"x\"))) (bind a (call read (path \"y\"))))",
-                "不可覆盖",
+                "cannot be shadowed",
             ),
-            ("(call read (path))", "缺少值"),
-            ("(call read path)", "必须是 (参数名 值...) 列表"),
-            ("(seq (bind $a (call read (path \"x\"))))", "名字不带 $"),
+            ("(call read (path))", "is missing its value"),
+            ("(call read path)", "must be a (name value...) list"),
+            (
+                "(seq (bind $a (call read (path \"x\"))))",
+                "must not include '$'",
+            ),
         ];
         for (source, expected) in cases {
             let source = format!("(eval {source})");
@@ -3262,7 +3308,7 @@ mod tests {
         )
         .expect_err("a binding from an untaken branch cannot be referenced")
         .message;
-        assert!(error.contains("未绑定"), "got: {error}");
+        assert!(error.contains("is unbound"), "got: {error}");
     }
 
     #[tokio::test]
@@ -3278,14 +3324,20 @@ mod tests {
             ],
         )
         .await;
-        assert!(outcome.unwrap_err().message.contains("超过单次上限"));
+        assert!(outcome
+            .unwrap_err()
+            .message
+            .contains("exceeding the per-map limit"));
 
         let (outcome, _) = run(
             r#"(seq (bind one (call read (path "a"))) (map $one e (call read (path $e))))"#,
             &[("read", serde_json::json!("not-an-array"))],
         )
         .await;
-        assert!(outcome.unwrap_err().message.contains("只能迭代数组"));
+        assert!(outcome
+            .unwrap_err()
+            .message
+            .contains("can iterate only an array"));
     }
 
     #[tokio::test]
@@ -3299,7 +3351,7 @@ mod tests {
         let error = validate_legacy_source(&source, &registry, &gate())
             .expect_err("deep programs are refused")
             .message;
-        assert!(error.contains("嵌套超过"), "got: {error}");
+        assert!(error.contains("nesting exceeds"), "got: {error}");
     }
 
     #[tokio::test]
@@ -3414,7 +3466,9 @@ mod tests {
                     .unwrap_err()
                     .message;
             assert!(
-                error.contains("returns") || error.contains("结果类型") || error.contains("tools"),
+                error.contains("returns")
+                    || error.contains("result type")
+                    || error.contains("tools"),
                 "{error}"
             );
         }
@@ -3446,7 +3500,7 @@ mod tests {
             .await
             .expect_err("the model request budget is enforced")
             .message;
-        assert!(error.contains("infer 次数超过上限"), "got: {error}");
+        assert!(error.contains("exceeds the infer limit"), "got: {error}");
         assert_eq!(requests.lock().unwrap().len(), MAX_PROGRAM_INFERS);
     }
 
@@ -3460,7 +3514,7 @@ mod tests {
         ]);
         let tool = EvalTool::with_default_tools(Arc::clone(&registry));
         let arguments = serde_json::json!({
-            "program": r#"(eval (seq (bind raw (call list_files (path "src"))) (bind f (decode (List String) $raw)) (map $f e (call read (path $e)))))"#
+            "program": r#"(eval (seq (bind raw (call list_files (path "src"))) (bind f (decode (List String) raw)) (map f e (call read (path e)))))"#
         })
         .to_string();
         let output = CURRENT_INFERENCE
@@ -3535,7 +3589,7 @@ mod tests {
             .await
             .expect_err("without the channel the program cannot be evaluated")
             .to_string();
-        assert!(error.contains("模型调用通道"), "got: {error}");
+        assert!(error.contains("model invocation channel"), "got: {error}");
     }
 
     #[test]
@@ -3607,7 +3661,7 @@ mod tests {
         )
         .expect_err("an undeclared call must be refused")
         .message;
-        assert!(error.contains("只接受 search"), "got: {error}");
+        assert!(error.contains("accepts only search"), "got: {error}");
 
         let program = validate_legacy_source(
             r#"(eval (requires (tools search)) (seq (bind r (call search (query "x"))) (infer (task "判断") (hits $r))))"#,
@@ -3692,7 +3746,10 @@ mod tests {
         )
         .expect_err("a declaration outside the gate is refused")
         .message;
-        assert!(error.contains("不能在 eval 程序中调用"), "got: {error}");
+        assert!(
+            error.contains("not callable from an eval program"),
+            "got: {error}"
+        );
     }
 
     #[tokio::test]
@@ -3760,6 +3817,17 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.message.contains("no in-band version"), "{error}");
+
+        let error = validate(
+            "(eval (seq (bind total (add 20 22)) (mul $total 2)))",
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("replace '$total' with 'total'"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -3770,7 +3838,7 @@ mod tests {
                  (requires (tools read))
                  (seq
                    (bind body (call read (path "README.md")))
-                   (infer (task "归纳") (returns String) (input $body))))"#,
+                   (infer (task "归纳") (returns String) (input body))))"#,
             &registry,
             &gate(),
         )
@@ -3793,8 +3861,8 @@ mod tests {
             r#"(eval
                  (seq
                    (bind raw (call list_files (path "src")))
-                   (bind files (decode (List String) $raw))
-                   (map $files file (call read (path $file)))))"#,
+                   (bind files (decode (List String) raw))
+                   (map files file (call read (path file)))))"#,
             &registry,
             &gate(),
         )
@@ -3911,7 +3979,7 @@ mod tests {
             r#"(eval
                  (seq
                    (bind x (add 2 3))
-                   (if (eq $x 5) (mul $x 2) 0)))"#,
+                   (if (eq x 5) (mul x 2) 0)))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
         )
@@ -3937,8 +4005,8 @@ mod tests {
                      (infer
                        (task "return an integer")
                        (returns Int)
-                       (evidence (decode String $evidence))))
-                   (add $score 1)))"#,
+                       (evidence (decode String evidence))))
+                   (add score 1)))"#,
             &registry,
             &AllowList::new(["read"]),
         )
@@ -3994,7 +4062,7 @@ mod tests {
                      (infer
                        (task "produce a pure integer program")
                        (returns (Program Int (effects)))))
-                   (run $generated)))"#,
+                   (run generated)))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
         )
@@ -4067,7 +4135,7 @@ mod tests {
                      (infer
                        (task "produce a program that reads its Context Ref")
                        (returns (Program (Ref Context) (effects)))))
-                   (run $generated)))"#,
+                   (run generated)))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
         )
@@ -4118,7 +4186,7 @@ mod tests {
         };
         let admitted = decode_infer_result_with_admission(
             result,
-            serde_json::json!({"source": r#"(eval $runtime.context)"#}),
+            serde_json::json!({"source": r#"(eval runtime.context)"#}),
             &registry,
             ProgramValueProvenance {
                 parent_plan_execution_id: "parent-plan".into(),
@@ -4197,7 +4265,7 @@ mod tests {
             provenance(),
         )
         .unwrap_err()
-        .contains("不能赋给"));
+        .contains("not assignable"));
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Json,
             &empty,
@@ -4214,7 +4282,7 @@ mod tests {
             provenance(),
         )
         .unwrap_err()
-        .contains("且仅是"));
+        .contains("exactly"));
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Int,
             &empty,
@@ -4223,7 +4291,7 @@ mod tests {
             provenance(),
         )
         .unwrap_err()
-        .contains("且仅是"));
+        .contains("exactly"));
         assert!(decode_program_value(&serde_json::json!({
             "$yao": {"kind": "program", "hash": "sha256:forged", "value": {}}
         }))
@@ -4239,7 +4307,7 @@ mod tests {
                  (infer
                    (task "produce a pure integer program")
                    (returns (Program Int (effects)))))
-               (run $generated)))"#;
+               (run generated)))"#;
         let program = validate(
             parent_source,
             &registry,
@@ -4288,7 +4356,7 @@ mod tests {
         exhausted.budget.programs_left = 0;
         match exhausted.advance(&registry) {
             PlanAdvance::Failed(error) => assert!(
-                error.message.contains("嵌套超过上限"),
+                error.message.contains("nesting exceeds the limit"),
                 "unexpected error: {error}"
             ),
             other => panic!("depth budget was silently refilled: {other:?}"),
@@ -4309,6 +4377,39 @@ mod tests {
         assert!(error.message.contains("Yao typed admission"), "{error}");
         assert!(error.message.contains("type"), "{error}");
         assert!(error.diagnostic.is_some());
+    }
+
+    #[test]
+    fn heterogeneous_dict_admission_is_english_and_explains_the_record_repair() {
+        let registry = fixture(&[]).0;
+        let error = validate(
+            r#"(eval (dict (sum 42) (note "mixed")))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .expect_err("a Map<T> cannot mix Int and String values");
+
+        assert_eq!(
+            error.diagnostic.as_ref().map(|diagnostic| diagnostic.code),
+            Some(crate::yao::DiagnosticCode::TypeMismatch)
+        );
+        assert!(
+            error.message.contains("Yao typed admission failed"),
+            "{error}"
+        );
+        assert!(
+            error.message.contains("field 'note' has type String"),
+            "{error}"
+        );
+        assert!(error.message.contains("homogeneous Map<T>"), "{error}");
+        assert!(error.message.contains("named record"), "{error}");
+        assert!(
+            !error
+                .message
+                .chars()
+                .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character)),
+            "core admission diagnostics must remain canonical English: {error}"
+        );
     }
 
     #[test]

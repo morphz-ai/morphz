@@ -802,7 +802,7 @@ pub trait Client: Send + Sync {
     /// use this after control-plane mutations so a completed OAuth login is
     /// usable without restarting the Runtime.
     fn replace_provider_catalog(&self, _config: &crate::config::AppConfig) -> Result<(), String> {
-        Err("当前模型客户端不支持运行期更新 Provider 路由".to_string())
+        Err("current model client does not support runtime Provider route updates".to_string())
     }
 
     /// Attach the Runtime's provider authentication authority after Secret
@@ -828,6 +828,14 @@ pub trait Client: Send + Sync {
     /// first-class protocol adapters include endpoint, protocol and model.
     fn provider_resource_key(&self) -> String {
         "model-provider:default".to_string()
+    }
+
+    /// Stable circuit-breaker resource for an explicitly requested logical
+    /// model. It is resolved before the physical request binding so an
+    /// unavailable Runtime primary route cannot block an Evaluation that is
+    /// explicitly assigned to another model.
+    fn provider_resource_key_for_requested_model(&self, _requested_model: Option<&str>) -> String {
+        self.provider_resource_key()
     }
 
     /// Stable Runtime resource identity for one already-bound physical
@@ -861,7 +869,14 @@ pub trait Client: Send + Sync {
     /// Change the model for subsequent requests. Runtime callers must validate
     /// the requested value against the operator-configured model catalog.
     fn set_model(&self, _model: &str) -> Result<(), String> {
-        Err("当前模型客户端不支持运行期切换模型".to_string())
+        Err("current model client does not support runtime model switching".to_string())
+    }
+
+    /// Whether an Agent may explicitly delegate an Evaluation to this model.
+    /// The operator-selected primary model is always allowed; direct clients
+    /// expose no additional routes unless they override this method.
+    fn model_is_agent_allowed(&self, model: &str) -> bool {
+        self.model().as_deref() == Some(model.trim())
     }
 
     /// Current process-local reasoning override. `None` means provider/model
@@ -873,7 +888,7 @@ pub trait Client: Send + Sync {
     /// Change the reasoning override for subsequent requests. Implementations
     /// without a controllable native protocol should return a clear error.
     fn set_reasoning_effort(&self, _effort: Option<ReasoningEffort>) -> Result<(), String> {
-        Err("当前模型客户端不支持动态调整推理深度".to_string())
+        Err("current model client does not support dynamic reasoning-effort changes".to_string())
     }
 
     /// Resolve one immutable physical binding before request-state persistence.
@@ -900,6 +915,36 @@ pub trait Client: Send + Sync {
         })
     }
 
+    /// Resolve an explicit logical route without mutating the process-wide
+    /// primary model. Routed clients override this; a direct client accepts
+    /// only its already configured model.
+    async fn bind_requested_model_attempt(
+        &self,
+        request: &ModelRequestContext,
+        requested_model: Option<&str>,
+    ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+        if let Some(requested) = requested_model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let configured = self
+                .model()
+                .map(|model| model.trim().to_string())
+                .filter(|model| !model.is_empty());
+            let matches_direct_client = configured
+                .as_deref()
+                .is_some_and(|configured| requested == configured)
+                || (configured.is_none() && requested == "direct");
+            if !matches_direct_client {
+                return Err(ModelAttemptBindingError::configuration(format!(
+                    "Direct Model Client is bound only to model '{}' and cannot select '{requested}' for this evaluation",
+                    configured.as_deref().unwrap_or("direct")
+                )));
+            }
+        }
+        self.bind_model_attempt(request).await
+    }
+
     /// Explicit control-plane diagnosis for one logical route and optional
     /// account. Implementations must not silently change the process-wide
     /// selected model while running the probe.
@@ -908,7 +953,7 @@ pub trait Client: Send + Sync {
         _alias: &str,
         _account_id: Option<&str>,
     ) -> Result<ModelRouteDiagnostic, Box<dyn std::error::Error + Send + Sync>> {
-        Err("当前模型客户端不支持 Model Route 诊断".into())
+        Err("current model client does not support Model Route diagnostics".into())
     }
 
     /// Discover and optionally probe one Provider account without requiring a
@@ -918,7 +963,7 @@ pub trait Client: Send + Sync {
         _account_id: &str,
         _model: Option<&str>,
     ) -> Result<ProviderAccountDiagnostic, Box<dyn std::error::Error + Send + Sync>> {
-        Err("当前模型客户端不支持 Provider Account 诊断".into())
+        Err("current model client does not support Provider Account diagnostics".into())
     }
 
     /// Measures a complete Prompt locally before completion. Implementations must not add remote

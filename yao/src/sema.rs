@@ -585,7 +585,19 @@ impl<'a> Analyzer<'a> {
             ));
         }
         if let Some(reference) = atom.value.strip_prefix('$') {
-            return self.analyze_reference(reference, atom.span, scope);
+            let replacement = if reference.is_empty() {
+                "a bare binding name".to_string()
+            } else {
+                format!("'{reference}'")
+            };
+            return Err(diag(
+                DiagnosticCode::UnknownName,
+                format!(
+                    "binding references do not use '$'; replace '{}' with {replacement}",
+                    atom.value
+                ),
+                atom.span,
+            ));
         }
         let (literal, ty) = match atom.value.as_str() {
             "nil" => (Literal::Nil, Type::Nil),
@@ -605,13 +617,7 @@ impl<'a> Analyzer<'a> {
                 }
                 (Literal::Float(value.to_string()), Type::Float)
             }
-            symbol => {
-                return Err(diag(
-                    DiagnosticCode::UnknownName,
-                    format!("unbound symbol '{symbol}'; quote strings and prefix bindings with $"),
-                    atom.span,
-                ))
-            }
+            symbol => return self.analyze_reference(symbol, atom.span, scope),
         };
         Ok(hir(
             HirKind::Literal { value: literal },
@@ -632,7 +638,7 @@ impl<'a> Analyzer<'a> {
         if root.is_empty() {
             return Err(diag(
                 DiagnosticCode::UnknownName,
-                "'$' must be followed by a binding name",
+                "binding reference must contain a name",
                 span,
             ));
         }
@@ -644,7 +650,7 @@ impl<'a> Analyzer<'a> {
         else {
             return Err(diag(
                 DiagnosticCode::UnknownName,
-                format!("unknown binding '${root}'"),
+                format!("unknown binding '{root}'"),
                 span,
             ));
         };
@@ -719,8 +725,7 @@ impl<'a> Analyzer<'a> {
             }
             entries.push((key.to_string(), self.analyze_expr(value, scope, depth + 1)?));
         }
-        let value_type =
-            common_types(entries.iter().map(|(_, value)| &value.ty), span)?.unwrap_or(Type::Json);
+        let value_type = infer_dict_value_type(&entries)?.unwrap_or(Type::Json);
         require_pure_all(entries.iter().map(|(_, value)| value), "dict values")?;
         Ok(hir(
             HirKind::Dict {
@@ -3026,6 +3031,34 @@ fn common_types<'a>(
     Ok(Some(current))
 }
 
+fn infer_dict_value_type(entries: &[(String, HirExpr)]) -> Result<Option<Type>, Diagnostic> {
+    let Some((_, first)) = entries.first() else {
+        return Ok(None);
+    };
+    let mut current = first.ty.clone();
+    let mut representative_span = first.span;
+    for (key, value) in &entries[1..] {
+        let Some(common) = common_type(&current, &value.ty) else {
+            return Err(
+                diag(
+                    DiagnosticCode::TypeMismatch,
+                    format!(
+                        "dict field '{key}' has type {:?}, which has no common type with the inferred value type {current:?}; dict is a homogeneous Map<T>, so use a named record for fixed heterogeneous fields or an explicit Json boundary for dynamic data",
+                        value.ty
+                    ),
+                    value.span,
+                )
+                .with_related(representative_span),
+            );
+        };
+        if common != current {
+            current = common;
+            representative_span = value.span;
+        }
+    }
+    Ok(Some(current))
+}
+
 fn common_type(left: &Type, right: &Type) -> Option<Type> {
     if left.is_assignable_to(right) {
         Some(right.clone())
@@ -3207,13 +3240,57 @@ mod tests {
     #[test]
     fn analyzes_bindings_pure_expressions_and_exact_types() {
         let program = analyze(
-            &typed("(seq (bind x (add 1 2.5)) (if (gt $x 2) $x 0))"),
+            &typed("(seq (bind x (add 1 2.5)) (if (gt x 2) x 0))"),
             &profile(),
             AnalysisLimits::default(),
         )
         .unwrap();
         assert_eq!(program.output, Type::Float);
         assert!(program.effects.is_empty());
+    }
+
+    #[test]
+    fn dollar_prefixed_reference_is_rejected_with_bare_name_migration() {
+        let error = analyze(
+            &typed("(seq (bind total (add 20 22)) (mul $total 2))"),
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, DiagnosticCode::UnknownName);
+        assert!(error.message.contains("do not use '$'"));
+        assert!(error.message.contains("replace '$total' with 'total'"));
+    }
+
+    #[test]
+    fn heterogeneous_dict_reports_the_conflicting_field_and_recommends_record() {
+        let error = analyze(
+            "(eval\n  (dict\n    (sum 42)\n    (note \"done\")))",
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, DiagnosticCode::TypeMismatch);
+        assert_eq!(error.primary.start.line, 4);
+        assert_eq!(error.related.len(), 1);
+        assert_eq!(error.related[0].start.line, 3);
+        assert!(error.message.contains("dict field 'note'"));
+        assert!(error.message.contains("homogeneous Map<T>"));
+        assert!(error.message.contains("named record"));
+    }
+
+    #[test]
+    fn named_record_is_the_typed_heterogeneous_object_constructor() {
+        let program = analyze(
+            "(eval (types (record Answer (value Int) (note String))) (record Answer (value 42) (note \"done\")))",
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(program.output, Type::Named("Answer".into()));
     }
 
     #[test]
@@ -3255,7 +3332,7 @@ mod tests {
     #[test]
     fn host_view_is_typed_from_the_ref_kind_and_requires_a_record_projection() {
         let program = analyze(
-            &typed("(host.view $runtime.objective (returns Json))"),
+            &typed("(host.view runtime.objective (returns Json))"),
             &profile(),
             AnalysisLimits::default(),
         )
@@ -3267,7 +3344,7 @@ mod tests {
         );
 
         let error = analyze(
-            &typed("(host.view $runtime.objective (returns String))"),
+            &typed("(host.view runtime.objective (returns String))"),
             &profile(),
             AnalysisLimits::default(),
         )
@@ -3277,7 +3354,7 @@ mod tests {
         let narrowed = analyze(
             r#"(eval
                  (requires (objects Context))
-                 (host.view $runtime.objective (returns Json)))"#,
+                 (host.view runtime.objective (returns Json)))"#,
             &profile(),
             AnalysisLimits::default(),
         )
@@ -3330,7 +3407,7 @@ mod tests {
             &typed(
                 r#"(context.propose
                      (context-transaction
-                       (context $runtime.context)
+                       (context runtime.context)
                        (transaction
                          (context-tx
                            (base-version 7)
@@ -3459,14 +3536,14 @@ mod tests {
                 (variant Decision.accept
                   (reason "evidence")
                   (confidence 0.9)))
-              (match $decision
-                ((case Decision.accept (reason why) (confidence score)) $why)
-                ((case Decision.reject (reason why)) $why))))
+              (match decision
+                ((case Decision.accept (reason why) (confidence score)) why)
+                ((case Decision.reject (reason why)) why))))
         "#;
         let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();
         assert_eq!(program.output, Type::String);
 
-        let non_exhaustive = source.replace("((case Decision.reject (reason why)) $why)", "");
+        let non_exhaustive = source.replace("((case Decision.reject (reason why)) why)", "");
         let error = analyze(&non_exhaustive, &profile(), AnalysisLimits::default()).unwrap_err();
         assert!(error.message.contains("non-exhaustive"));
     }
@@ -3508,7 +3585,7 @@ mod tests {
                   (tools search)
                   (returns Json)))
               (call read (path "README.md"))
-              (objective.report (objective $runtime.objective))))
+              (objective.report (objective runtime.objective))))
         "#;
         let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();
         assert!(program.effects.contains(&Effect::Infer));
@@ -3536,7 +3613,7 @@ mod tests {
           (eval
             (requires (tools read))
             (par
-              (branch local (seq (bind private 1) (add $private 1)))
+              (branch local (seq (bind private 1) (add private 1)))
               (branch remote (call read (path "README.md")))))
         "#;
         let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();
@@ -3566,7 +3643,7 @@ mod tests {
                 (infer
                   (task "produce a program")
                   (returns (Program Json (effects (tool read))))))
-              (run $plan)))
+              (run plan)))
         "#;
         let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();
         assert_eq!(program.output, Type::Json);

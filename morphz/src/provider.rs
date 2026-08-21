@@ -121,7 +121,7 @@ pub fn build_configured_client(
     if provider_override.is_none() {
         let alias = model_override.unwrap_or(&app.llm.model).trim().to_string();
         if alias.is_empty() {
-            return Err("模型别名不能为空".into());
+            return Err("model alias must not be empty".into());
         }
         let client = routing::RoutedClient::new(app, alias)?;
         let binding = client.primary_binding()?;
@@ -130,7 +130,7 @@ pub fn build_configured_client(
             "openai-chat" => ModelProtocol::OpenaiChat,
             "anthropic-messages" => ModelProtocol::AnthropicMessages,
             "gemini-content" => ModelProtocol::GeminiContent,
-            value => return Err(format!("Model Route 返回未知协议 '{value}'").into()),
+            value => return Err(format!("Model Route returned unknown protocol '{value}'").into()),
         };
         let selected = SelectedProvider {
             id: binding.provider_instance_id.clone(),
@@ -143,17 +143,17 @@ pub fn build_configured_client(
     let provider_id = provider_override
         .map(str::to_string)
         .or_else(|| app.llm.provider.clone())
-        .ok_or("尚未选择模型 Provider；请先运行 `morphz setup`")?;
+        .ok_or("no model Provider has been selected; run `morphz setup` first")?;
     let provider = app
         .providers
         .get(&provider_id)
-        .ok_or_else(|| format!("Provider '{provider_id}' 未在用户配置中定义"))?;
+        .ok_or_else(|| format!("Provider '{provider_id}' is not defined in user configuration"))?;
     if provider.base_url.trim().is_empty() {
-        return Err(format!("Provider '{provider_id}' 的 base_url 不能为空").into());
+        return Err(format!("Provider '{provider_id}' base_url must not be empty").into());
     }
     let model = model_override.unwrap_or(&app.llm.model).trim().to_string();
     if model.is_empty() {
-        return Err("模型名称不能为空".into());
+        return Err("model name must not be empty".into());
     }
     let credential = resolve_provider_credential(app, provider)?;
     let client = ProtocolClient::new(provider, model.clone(), credential, &app.llm)?;
@@ -176,7 +176,7 @@ fn resolve_provider_credential(
     let credential = app
         .credentials
         .get(reference)
-        .ok_or_else(|| format!("Provider 引用了不存在的 Credential '{reference}'"))?;
+        .ok_or_else(|| format!("Provider references nonexistent Credential '{reference}'"))?;
     resolve_credential(reference, credential)
 }
 
@@ -187,14 +187,13 @@ pub(crate) fn resolve_credential(
     match credential.source {
         CredentialSource::None => Ok(None),
         CredentialSource::Env => {
-            let name = credential
-                .name
-                .as_deref()
-                .ok_or_else(|| format!("Credential '{id}' 缺少环境变量名称"))?;
+            let name = credential.name.as_deref().ok_or_else(|| {
+                format!("Credential '{id}' is missing an environment variable name")
+            })?;
             let value = std::env::var(name)
-                .map_err(|_| format!("Credential '{id}' 需要环境变量 {name}"))?;
+                .map_err(|_| format!("Credential '{id}' requires environment variable {name}"))?;
             if value.trim().is_empty() {
-                Err(format!("Credential '{id}' 的环境变量 {name} 为空").into())
+                Err(format!("environment variable {name} for Credential '{id}' is empty").into())
             } else {
                 Ok(Some(value))
             }
@@ -204,7 +203,7 @@ pub(crate) fn resolve_credential(
             let service = credential.service.as_deref().unwrap_or("morphz");
             let value = keyring::Entry::new(service, account)?.get_password()?;
             if value.trim().is_empty() {
-                Err(format!("Credential '{id}' 的 Keychain 值为空").into())
+                Err(format!("Keychain value for Credential '{id}' is empty").into())
             } else {
                 Ok(Some(value))
             }
@@ -219,7 +218,7 @@ fn resolve_command_credential(
 ) -> Result<Option<String>, ProviderError> {
     let executable = command
         .first()
-        .ok_or_else(|| format!("Credential '{id}' 的 command 为空"))?;
+        .ok_or_else(|| format!("command for Credential '{id}' is empty"))?;
     let mut child = Command::new(executable)
         .args(&command[1..])
         .stdin(Stdio::null())
@@ -230,7 +229,7 @@ fn resolve_command_credential(
     loop {
         if let Some(status) = child.try_wait()? {
             if !status.success() {
-                return Err(format!("Credential '{id}' Helper 退出状态为 {status}").into());
+                return Err(format!("Credential '{id}' Helper exited with status {status}").into());
             }
             let mut value = String::new();
             if let Some(mut stdout) = child.stdout.take() {
@@ -238,14 +237,14 @@ fn resolve_command_credential(
             }
             let value = value.trim().to_string();
             if value.is_empty() {
-                return Err(format!("Credential '{id}' Helper 返回了空值").into());
+                return Err(format!("Credential '{id}' Helper returned an empty value").into());
             }
             return Ok(Some(value));
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("Credential '{id}' Helper 超过 5 秒未完成").into());
+            return Err(format!("Credential '{id}' Helper did not finish within 5 seconds").into());
         }
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -257,7 +256,7 @@ pub fn store_keychain_credential(
     secret: &str,
 ) -> Result<(), ProviderError> {
     if secret.is_empty() {
-        return Err("拒绝把空凭证写入 Keychain".into());
+        return Err("refusing to write an empty credential to Keychain".into());
     }
     keyring::Entry::new(service, account)?.set_password(secret)?;
     Ok(())
@@ -293,7 +292,7 @@ fn provider_protocol_failure(protocol: ModelProtocol, detail: impl Into<String>)
     boxed_model_failure(ModelFailure::new(
         ModelFailureKind::ServerUnavailable,
         format!(
-            "{} Provider 返回了无效的协议响应：{}",
+            "{} Provider returned an invalid protocol response: {}",
             protocol.as_str(),
             detail.into()
         ),
@@ -301,7 +300,10 @@ fn provider_protocol_failure(protocol: ModelProtocol, detail: impl Into<String>)
 }
 
 fn provider_stream_error(protocol: ModelProtocol, payload: &str) -> ProviderError {
-    let message = format!("{} Provider 流返回错误事件：{payload}", protocol.as_str());
+    let message = format!(
+        "{} Provider stream returned an error event: {payload}",
+        protocol.as_str()
+    );
     let classified = ModelFailure::classify_message(message.clone());
     let kind = match classified.kind {
         ModelFailureKind::Unknown | ModelFailureKind::EmptyResponse => {
@@ -520,8 +522,9 @@ impl ProtocolClient {
             );
         }
         for (name, variable) in &provider.env_headers {
-            let value = std::env::var(variable)
-                .map_err(|_| format!("Provider Header '{name}' 需要环境变量 {variable}"))?;
+            let value = std::env::var(variable).map_err(|_| {
+                format!("Provider Header '{name}' requires environment variable {variable}")
+            })?;
             headers.insert(
                 HeaderName::from_bytes(name.as_bytes())?,
                 HeaderValue::from_str(&value)?,
@@ -587,7 +590,7 @@ impl ProtocolClient {
                     "generateContent"
                 };
                 url.path_segments_mut()
-                    .map_err(|_| "Gemini Provider base_url 不能作为分层 URL")?
+                    .map_err(|_| "Gemini Provider base_url cannot be used as a hierarchical URL")?
                     .push("models")
                     .push(&format!("{model}:{method}"));
                 if streaming {
@@ -703,7 +706,7 @@ impl ProtocolClient {
                     Err(_) => Err(ModelFailure::new(
                         ModelFailureKind::StreamIdleTimeout,
                         format!(
-                            "{} Provider 等待响应头超过 {} 秒 idle timeout",
+                            "{} Provider exceeded the {}-second idle timeout while waiting for response headers",
                             self.protocol.as_str(),
                             self.stream_idle_timeout.as_secs()
                         ),
@@ -713,25 +716,27 @@ impl ProtocolClient {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
-                        let body =
-                            match tokio::time::timeout(self.stream_idle_timeout, response.json())
-                                .await
-                            {
-                                Ok(Ok(body)) => body,
-                                Ok(Err(error)) => {
-                                    return Err(boxed_model_failure(request_model_failure(error)));
-                                }
-                                Err(_) => {
-                                    return Err(boxed_model_failure(ModelFailure::new(
+                        let body = match tokio::time::timeout(
+                            self.stream_idle_timeout,
+                            response.json(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(body)) => body,
+                            Ok(Err(error)) => {
+                                return Err(boxed_model_failure(request_model_failure(error)));
+                            }
+                            Err(_) => {
+                                return Err(boxed_model_failure(ModelFailure::new(
                                         ModelFailureKind::StreamIdleTimeout,
                                         format!(
-                                            "{} Provider 响应体超过 {} 秒没有完成",
+                                            "{} Provider response body did not complete within {} seconds",
                                             self.protocol.as_str(),
                                             self.stream_idle_timeout.as_secs()
                                         ),
                                     )));
-                                }
-                            };
+                            }
+                        };
                         return Ok(body);
                     }
                     retry_after = retry_after_seconds(response.headers());
@@ -817,7 +822,7 @@ impl ProtocolClient {
                 Err(_) => Err(ModelFailure::new(
                     ModelFailureKind::FirstByteTimeout,
                     format!(
-                        "{} Provider first byte timeout：等待 HTTP 响应头超过 {} 秒",
+                        "{} Provider first byte timeout: waited more than {} seconds for HTTP response headers",
                         self.protocol.as_str(),
                         self.first_byte_timeout.as_secs()
                     ),
@@ -889,7 +894,7 @@ impl ProtocolClient {
                         (
                             ModelFailureKind::StreamStalled,
                             format!(
-                                "{} Provider stream stalled：连续 {} 秒没有收到后续响应体字节",
+                                "{} Provider stream stalled: no additional response body bytes arrived for {} seconds",
                                 self.protocol.as_str(),
                                 timeout.as_secs()
                             ),
@@ -898,7 +903,7 @@ impl ProtocolClient {
                         (
                             ModelFailureKind::FirstByteTimeout,
                             format!(
-                                "{} Provider first byte timeout：收到 HTTP 响应头后 {} 秒仍无响应体字节",
+                                "{} Provider first byte timeout: no response body bytes arrived within {} seconds after HTTP response headers",
                                 self.protocol.as_str(),
                                 timeout.as_secs()
                             ),
@@ -960,11 +965,14 @@ impl ProtocolClient {
             }
             return Err(provider_protocol_failure(
                 self.protocol,
-                "在原生协议终止事件之前收到 [DONE]",
+                "received [DONE] before the native protocol terminal event",
             ));
         }
         let event: Value = serde_json::from_str(&data).map_err(|error| {
-            provider_protocol_failure(self.protocol, format!("SSE 事件不是合法 JSON: {error}"))
+            provider_protocol_failure(
+                self.protocol,
+                format!("SSE event is not valid JSON: {error}"),
+            )
         })?;
         accumulator.apply(self.protocol, self.normalize_response(event), stream)
     }
@@ -1026,7 +1034,7 @@ impl ProtocolClient {
         .await
         .map_err(|_| {
             format!(
-                "{} 模型目录等待响应超过 {} 秒",
+                "{} model catalog response exceeded {} seconds",
                 self.protocol.as_str(),
                 self.stream_idle_timeout.as_secs()
             )
@@ -1035,7 +1043,7 @@ impl ProtocolClient {
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
             return Err(format!(
-                "{} 模型目录返回 HTTP {}: {}",
+                "{} model catalog returned HTTP {}: {}",
                 self.protocol.as_str(),
                 status,
                 text
@@ -1047,7 +1055,12 @@ impl ProtocolClient {
             .get("data")
             .or_else(|| value.get("models"))
             .and_then(Value::as_array)
-            .ok_or_else(|| format!("{} 模型目录缺少 data/models 数组", self.protocol.as_str()))?;
+            .ok_or_else(|| {
+                format!(
+                    "{} model catalog is missing the data/models array",
+                    self.protocol.as_str()
+                )
+            })?;
         let mut models = rows
             .iter()
             .filter_map(|row| {
@@ -1089,7 +1102,7 @@ pub async fn list_provider_models(
     let provider = app
         .providers
         .get(provider_id)
-        .ok_or_else(|| format!("Provider '{provider_id}' 未定义"))?;
+        .ok_or_else(|| format!("Provider '{provider_id}' is not defined"))?;
     let credential = resolve_provider_credential(app, provider)?;
     ProtocolClient::new(provider, app.llm.model.clone(), credential, &app.llm)?
         .list_models()
@@ -1106,10 +1119,10 @@ pub(crate) async fn discover_protocol_models(
 ) -> Result<Vec<String>, ProviderError> {
     let base_url = base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
-        return Err("Provider URL 不能为空".into());
+        return Err("Provider URL must not be empty".into());
     }
     if api_key.trim().is_empty() {
-        return Err("API Key 不能为空".into());
+        return Err("API Key must not be empty".into());
     }
     let provider = ProviderConfig {
         protocol,
@@ -1134,7 +1147,7 @@ pub async fn probe_provider(
     let provider = app
         .providers
         .get(provider_id)
-        .ok_or_else(|| format!("Provider '{provider_id}' 未定义"))?;
+        .ok_or_else(|| format!("Provider '{provider_id}' is not defined"))?;
     let (models, catalog_error) = match list_provider_models(app, provider_id).await {
         Ok(models) => (models, None),
         Err(error) => (Vec::new(), Some(error.to_string())),
@@ -1142,7 +1155,7 @@ pub async fn probe_provider(
     let selected_model_available = model.map(|model| models.iter().any(|item| item == model));
     let selected_model = model.unwrap_or(&app.llm.model).trim();
     if selected_model.is_empty() {
-        return Err("Provider 测试需要模型 ID".into());
+        return Err("Provider test requires a model ID".into());
     }
     let credential = resolve_provider_credential(app, provider)?;
     let client = ProtocolClient::new(provider, selected_model.to_string(), credential, &app.llm)?;
@@ -1245,12 +1258,12 @@ impl Client for ProtocolClient {
     fn set_model(&self, model: &str) -> Result<(), String> {
         let model = model.trim();
         if model.is_empty() {
-            return Err("模型名称不能为空".to_string());
+            return Err("model name must not be empty".to_string());
         }
         *self
             .model
             .write()
-            .map_err(|_| "模型配置锁已损坏".to_string())? = model.to_string();
+            .map_err(|_| "model configuration lock is poisoned".to_string())? = model.to_string();
         Ok(())
     }
 
@@ -1265,7 +1278,7 @@ impl Client for ProtocolClient {
         *self
             .reasoning_effort
             .write()
-            .map_err(|_| "推理深度配置锁已损坏".to_string())? = effort;
+            .map_err(|_| "reasoning effort configuration lock is poisoned".to_string())? = effort;
         Ok(())
     }
 
@@ -1700,8 +1713,12 @@ impl StreamAccumulator {
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             match reason {
                 "stop" | "tool_calls" | "function_call" => self.terminal = true,
-                "length" => return Err("OpenAI Chat 流因输出长度限制被截断".into()),
-                _ => return Err(format!("OpenAI Chat 流未完成: {reason}").into()),
+                "length" => {
+                    return Err(
+                        "OpenAI Chat stream was truncated by the output length limit".into(),
+                    )
+                }
+                _ => return Err(format!("OpenAI Chat stream did not complete: {reason}").into()),
             }
         }
         let delta = choice.get("delta").unwrap_or(&Value::Null);
@@ -1847,7 +1864,7 @@ impl StreamAccumulator {
                     }
                     return Err(provider_protocol_failure(
                         ModelProtocol::OpenaiResponses,
-                        format!("response.completed 携带非 completed 状态 '{status}'"),
+                        format!("response.completed carried non-completed status '{status}'"),
                     ));
                 }
                 if let Some(error) = response.get("error").filter(|value| !value.is_null()) {
@@ -1862,7 +1879,7 @@ impl StreamAccumulator {
                 {
                     return Err(provider_protocol_failure(
                         ModelProtocol::OpenaiResponses,
-                        format!("response.completed 携带 incomplete_details: {details}"),
+                        format!("response.completed carried incomplete_details: {details}"),
                     ));
                 }
                 self.responses_completed = true;
@@ -1906,7 +1923,7 @@ impl StreamAccumulator {
                 }
             }
             "response.incomplete" | "response.failed" | "error" => {
-                return Err(format!("OpenAI Responses 流失败: {event}").into());
+                return Err(format!("OpenAI Responses stream failed: {event}").into());
             }
             _ => {}
         }
@@ -1971,7 +1988,7 @@ impl StreamAccumulator {
             "message_delta" => {
                 if event.pointer("/delta/stop_reason").and_then(Value::as_str) == Some("max_tokens")
                 {
-                    return Err("Anthropic 流因 max_tokens 被截断".into());
+                    return Err("Anthropic stream was truncated by max_tokens".into());
                 }
                 let usage = event.pointer("/usage").unwrap_or(&Value::Null);
                 self.usage(
@@ -1984,7 +2001,7 @@ impl StreamAccumulator {
                 );
             }
             "message_stop" => self.terminal = true,
-            "error" => return Err(format!("Anthropic 流失败: {event}").into()),
+            "error" => return Err(format!("Anthropic stream failed: {event}").into()),
             _ => {}
         }
         Ok(())
@@ -2024,7 +2041,7 @@ impl StreamAccumulator {
         };
         let finish = candidate.get("finishReason").and_then(Value::as_str);
         if let Some(reason) = gemini_finish_failure(finish) {
-            return Err(format!("Gemini 流未完成: {reason}").into());
+            return Err(format!("Gemini stream did not complete: {reason}").into());
         }
         if finish == Some("STOP") {
             self.terminal = true;
@@ -2070,7 +2087,7 @@ impl StreamAccumulator {
 
     fn finish(mut self, stream: &ModelStreamSender) -> Result<Response, ProviderError> {
         if !self.terminal {
-            return Err("Provider 流在协议终止事件之前断开".into());
+            return Err("Provider stream disconnected before the protocol terminal event".into());
         }
         if self.responses_completed
             && self.responses_completed_output_tokens == Some(0)
@@ -2080,7 +2097,7 @@ impl StreamAccumulator {
         {
             return Err(provider_protocol_failure(
                 ModelProtocol::OpenaiResponses,
-                "response.completed 报告 output_tokens=0，且没有正文、工具调用或可续接推理状态",
+                "response.completed reported output_tokens=0 without text, tool calls, or resumable reasoning state",
             ));
         }
         let indices = self.tools.keys().copied().collect::<Vec<_>>();
@@ -2688,7 +2705,7 @@ fn ensure_nonempty(response: Response) -> Result<Response, ProviderError> {
     if response.content.trim().is_empty() && response.tool_calls.is_empty() {
         Err(boxed_model_failure(ModelFailure::new(
             ModelFailureKind::EmptyResponse,
-            "模型响应既没有非空正文，也没有工具调用",
+            "model response contains neither non-empty content nor tool calls",
         )))
     } else {
         Ok(response)
@@ -2700,13 +2717,13 @@ fn parse_openai_chat_response(value: Value) -> Result<Response, ProviderError> {
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
-        .ok_or("OpenAI Chat 响应缺少 choices[0]")?;
+        .ok_or("OpenAI Chat response is missing choices[0]")?;
     if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
-        return Err("OpenAI Chat 响应因输出长度限制被截断".into());
+        return Err("OpenAI Chat response was truncated by the output-length limit".into());
     }
     let message = choice
         .get("message")
-        .ok_or("OpenAI Chat 响应缺少 message")?;
+        .ok_or("OpenAI Chat response is missing message")?;
     let content = message
         .get("content")
         .and_then(Value::as_str)
@@ -2750,7 +2767,7 @@ fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderErr
     let status = value.get("status").and_then(Value::as_str);
     if status == Some("incomplete") {
         return Err(format!(
-            "OpenAI Responses 响应不完整: {}",
+            "OpenAI Responses response is incomplete: {}",
             value.get("incomplete_details").unwrap_or(&Value::Null)
         )
         .into());
@@ -2764,7 +2781,7 @@ fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderErr
     if let Some(status) = status.filter(|status| *status != "completed") {
         return Err(provider_protocol_failure(
             ModelProtocol::OpenaiResponses,
-            format!("非流式响应携带非 completed 状态 '{status}'"),
+            format!("non-streaming response has non-completed status '{status}'"),
         ));
     }
     if let Some(details) = value
@@ -2773,7 +2790,7 @@ fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderErr
     {
         return Err(provider_protocol_failure(
             ModelProtocol::OpenaiResponses,
-            format!("completed 响应携带 incomplete_details: {details}"),
+            format!("completed response contains incomplete_details: {details}"),
         ));
     }
     let mut content = Vec::new();
@@ -2832,7 +2849,7 @@ fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderErr
     {
         return Err(provider_protocol_failure(
             ModelProtocol::OpenaiResponses,
-            "completed 非流式响应报告 output_tokens=0，且没有正文或工具调用",
+            "completed non-streaming response reports output_tokens=0 and contains neither content nor tool calls",
         ));
     }
     ensure_nonempty(response)
@@ -2840,7 +2857,7 @@ fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderErr
 
 fn parse_anthropic_response(value: Value) -> Result<Response, ProviderError> {
     if value.get("stop_reason").and_then(Value::as_str) == Some("max_tokens") {
-        return Err("Anthropic 响应因 max_tokens 被截断".into());
+        return Err("Anthropic response was truncated by max_tokens".into());
     }
     let mut content = Vec::new();
     let mut tool_calls = Vec::new();
@@ -2884,10 +2901,10 @@ fn parse_gemini_response(value: Value) -> Result<Response, ProviderError> {
         .get("candidates")
         .and_then(Value::as_array)
         .and_then(|candidates| candidates.first())
-        .ok_or("Gemini 响应缺少 candidates[0]")?;
+        .ok_or("Gemini response is missing candidates[0]")?;
     let finish_reason = candidate.get("finishReason").and_then(Value::as_str);
     if let Some(reason) = gemini_finish_failure(finish_reason) {
-        return Err(format!("Gemini 响应未完成: {reason}").into());
+        return Err(format!("Gemini response did not complete: {reason}").into());
     }
     let mut content = Vec::new();
     let mut tool_calls = Vec::new();

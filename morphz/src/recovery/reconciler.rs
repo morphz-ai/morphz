@@ -58,7 +58,7 @@ impl SchedulerReconciler {
                         entity_kind: "thread_group".into(),
                         entity_id: group.id.clone(),
                         detail: format!(
-                            "terminal ThreadGroup 引用不存在的 barrier Event '{event_id}'"
+                            "terminal ThreadGroup references missing barrier Event '{event_id}'"
                         ),
                     }),
                     None => violations.push(SchedulerInvariantViolation {
@@ -66,7 +66,7 @@ impl SchedulerReconciler {
                         code: SchedulerInvariantCode::TerminalGroupBarrierEventMissing,
                         entity_kind: "thread_group".into(),
                         entity_id: group.id.clone(),
-                        detail: "terminal ThreadGroup 缺少 barrier Event 引用".into(),
+                        detail: "terminal ThreadGroup is missing a barrier Event reference".into(),
                     }),
                 }
                 continue;
@@ -91,7 +91,7 @@ impl SchedulerReconciler {
                     entity_kind: "thread_group".into(),
                     entity_id: group.id.clone(),
                     detail: format!(
-                        "open ThreadGroup 的 {:?} supervisor '{}' 不存在或已终结",
+                        "the {:?} supervisor '{}' of an open ThreadGroup does not exist or is terminal",
                         group.supervisor_kind, group.supervisor_id
                     ),
                 });

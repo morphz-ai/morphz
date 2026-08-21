@@ -1,12 +1,14 @@
 # DEMO-001 路演证据协议候选版 v2
 
-> 状态：`candidate-review`
+> 状态：`superseded-needs-redesign`
 >
 > 日期：2026-08-17（Asia/Shanghai）
 >
 > Purpose：`roadshow_demo`
 >
 > Runtime 源码基线：`paper-eval-runtime-v2` / `03a32f864a3c38026672b4076855137e0bbb5627`
+>
+> 历史边界：本候选协议不迁移到 v3；后续真实 Morphz E2E 方案必须从 `paper-eval-runtime-v3` 重新设计
 >
 > Demo 冻结 commit/tag：尚未生成；必须另行包含 frozen protocol、fixture、runner、collector 与 scorer
 >

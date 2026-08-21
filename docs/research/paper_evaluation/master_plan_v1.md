@@ -9,6 +9,25 @@
 
 本文所称“消融实验（ablation study）”，是从完整系统中有控制地移除或替换一个机制，同时尽量保持其他条件不变，以判断该机制是否真正贡献了观察到的效果。后文标题同时保留这一论文常用术语和直白中文说明。
 
+## 0. 新实验统一运行约束
+
+除非某个冻结协议明确声明并解释例外，2026-08-20 之后启动的 Pilot、确认性实验
+和公开 Benchmark 接入统一使用：
+
+1. 主模型为精确物理模型 `gpt-5.6-sol`，reasoning effort 为 `max`；通过
+   CLIProxyAPI 兼容的 OpenAI Responses 路由调用；运行前必须验证逻辑模型与物理
+   模型均为 `gpt-5.6-sol`，`fallback=false`，不得静默换模型；
+2. Morphz 运行权限使用 `full-access`，不在 episode 中插入人工批准步骤，避免审批
+   等待、拒绝或人工响应速度污染成功率和延迟；`full-access` 只作用于隔离实验节点，
+   不得绕过 Benchmark 官方的容器、网络、数据、secret 或工具使用规则；
+3. 使用独立于日常开发和产品实例的 Morphz 节点、独立数据库和独立 Context；不得
+   挂载或读取共享 `context-default`、生产数据库、历史 Session 或个人开发状态；
+4. 不同 arm/run 不得复用可写数据库。允许从同一个只读初始快照克隆，但每个 run
+   必须得到新的数据库和 Context identity，并记录初始快照 hash、节点 ID、数据库
+   路径/实例 ID 与 Context ID；
+5. CLIProxyAPI 连接信息和凭据只通过实验节点的受管配置注入，不写入 fixture、trace、
+   trajectory 或公开 Benchmark artifact。
+
 ## 1. 论文要证明的中心命题
 
 Morphz 是一台 **S-Expression Cognitive Machine（S 表达式认知机）**：它将结构化、可寻址、可版本化的 Context 作为可执行认知状态和递归程序—数据表示；大语言模型作为可替换的非确定性语义处理器执行开放认知求值；确定性 Runtime 作为事务内核，对候选结果实施结构、权限、因果和版本校验，并提交权威状态或现实副作用。Agent 是认知机加载身份、Context 与能力后的实例。求值结果能够通过局部绑定、认知帧或关系直接重新进入后续求值。
@@ -43,6 +62,8 @@ Morphz 是一台 **S-Expression Cognitive Machine（S 表达式认知机）**：
 
 - 捕获 Runtime commit、dirty diff hash、协议版本和评分器版本；
 - 捕获 Provider、模型精确标识、解码参数、上下文与输出预算；
+- 捕获 CLIProxyAPI 路由、requested/physical model、reasoning effort 与 fallback 状态；
+- 捕获授权模式、实验节点 ID、数据库身份、Context ID 和初始状态 hash；
 - 固定 fixture ID，并支持各 arm 配对执行和交错顺序；
 - 区分模型失败、Runtime 失败、评分失败和 Provider 故障；
 - 原始响应、工具调用、Context/Event History 快照完整落盘；

@@ -100,7 +100,7 @@ impl HarnessPackage {
             Self::load_directory(path)
         } else {
             Err(HarnessPackageError::new(format!(
-                "Harness package 不存在或不是文件/目录：{}",
+                "Harness package does not exist or is not a file/directory: {}",
                 path.display()
             )))
         }
@@ -113,12 +113,15 @@ impl HarnessPackage {
         let source_name = source_name.into();
         require_hns_suffix(&source_name)?;
         let forms = crate::sexpr::parse_all(source).map_err(|error| {
-            HarnessPackageError::new(format!("{} 不是合法的 Yao：{error}", source_name.display()))
+            HarnessPackageError::new(format!(
+                "{} is not valid Yao: {error}",
+                source_name.display()
+            ))
         })?;
         let typed_forms = crate::yao::parse_all(source, crate::yao::ParseLimits::default())
             .map_err(|error| {
                 HarnessPackageError::new(format!(
-                    "{} 不是合法的 Typed Yao：{error}",
+                    "{} is not valid typed Yao: {error}",
                     source_name.display()
                 ))
             })?;
@@ -144,25 +147,26 @@ impl HarnessPackage {
                         .is_some()
                     {
                         return Err(HarnessPackageError::new(
-                            "单文件 .hns 只能包含一个 (eval/infer ...)".to_string(),
+                            "single-file .hns may contain only one (eval/infer ...)".to_string(),
                         ));
                     }
                 }
                 other => {
                     return Err(HarnessPackageError::new(format!(
-                        "单文件 .hns 包含未知顶层 artifact '({other} ...)'; v1 只接受 manifest、contract、mind、eval/infer"
+                        "single-file .hns contains unknown top-level artifact '({other} ...)'; v1 accepts only manifest, contract, mind, and eval/infer"
                     )))
                 }
             }
         }
 
-        let manifest = parse_manifest(
-            &manifest.ok_or_else(|| HarnessPackageError::new("单文件 .hns 缺少 (manifest ...)"))?,
-        )?;
-        let contract =
-            contract.ok_or_else(|| HarnessPackageError::new("单文件 .hns 缺少 (contract ...)"))?;
+        let manifest = parse_manifest(&manifest.ok_or_else(|| {
+            HarnessPackageError::new("single-file .hns is missing (manifest ...)")
+        })?)?;
+        let contract = contract.ok_or_else(|| {
+            HarnessPackageError::new("single-file .hns is missing (contract ...)")
+        })?;
         let program_source = program_source.ok_or_else(|| {
-            HarnessPackageError::new("单文件 .hns 缺少 (eval ...) 或 (infer ...)")
+            HarnessPackageError::new("single-file .hns is missing (eval ...) or (infer ...)")
         })?;
         let header = inspect_program_source(&program_source)
             .map_err(|error| HarnessPackageError::new(error.to_string()))?;
@@ -186,7 +190,7 @@ impl HarnessPackage {
 
     fn load_file(path: &Path) -> Result<Self, HarnessPackageError> {
         let source = fs::read_to_string(path).map_err(|error| {
-            HarnessPackageError::new(format!("读取 {} 失败：{error}", path.display()))
+            HarnessPackageError::new(format!("failed to read {}: {error}", path.display()))
         })?;
         Self::from_source(path.to_path_buf(), &source)
     }
@@ -195,7 +199,9 @@ impl HarnessPackage {
         let manifest_form = read_one_artifact(&path.join("manifest.yao"), "manifest")?;
         let manifest = parse_manifest(&manifest_form)?;
         let entry = manifest.entry.as_deref().ok_or_else(|| {
-            HarnessPackageError::new("目录 .hns 的 manifest 必须声明 (entry \"相对路径\")")
+            HarnessPackageError::new(
+                "directory .hns manifest must declare (entry \"relative-path\")",
+            )
         })?;
         let entry_path = resolve_package_path(path, entry)?;
         let program_source = read_program_artifact(&entry_path)?;
@@ -369,7 +375,7 @@ pub async fn persist_harness_package(
             return Ok(false);
         }
         return Err(format!(
-            "Harness '{}@{}' 已持久化为不同 artifact",
+            "Harness '{}@{}' is already persisted with a different artifact",
             package.manifest.id, package.manifest.version
         )
         .into());
@@ -418,7 +424,7 @@ pub async fn load_persisted_harness_packages(
         let package = HarnessPackage::from_source(format!("{id}.hns"), source)?;
         if package.manifest.version != version || package.artifact_hash != expected_hash {
             return Err(format!(
-                "持久 Harness '{}@{}' 的 canonical source 与 catalog identity 不一致",
+                "persisted Harness '{}@{}' canonical source does not match its catalog identity",
                 id, version
             )
             .into());
@@ -445,7 +451,7 @@ pub fn objective_harness_binding_event(
     let descriptor = harness.descriptor();
     let artifact_hash = harness.artifact_hash().ok_or_else(|| {
         format!(
-            "Harness '{}@{}' 没有 artifact hash，不能建立持久 Objective binding",
+            "Harness '{}@{}' has no artifact hash and cannot create a durable Objective binding",
             descriptor.id, descriptor.version
         )
     })?;
@@ -499,7 +505,7 @@ pub async fn persist_objective_harness_binding(
             return Ok(current);
         }
         return Err(format!(
-            "Objective '{}' 已绑定 '{}@{}'，不能改绑为 '{}@{}'",
+            "Objective '{}' is already bound to '{}@{}' and cannot be rebound to '{}@{}'",
             objective_id,
             current.harness_id,
             current.harness_version,
@@ -543,7 +549,7 @@ pub async fn persist_evaluation_harness_binding(
     let descriptor = harness.descriptor();
     let artifact_hash = harness.artifact_hash().ok_or_else(|| {
         format!(
-            "Harness '{}@{}' 没有 artifact hash，不能建立持久 Evaluation binding",
+            "Harness '{}@{}' has no artifact hash and cannot create a durable Evaluation binding",
             descriptor.id, descriptor.version
         )
     })?;
@@ -592,7 +598,7 @@ pub async fn persist_evaluation_harness_binding(
             return Ok(current);
         }
         return Err(format!(
-            "Evaluation '{}' 已绑定 '{}@{}'，不能改绑为 '{}@{}'",
+            "Evaluation '{}' is already bound to '{}@{}' and cannot be rebound to '{}@{}'",
             evaluation_id,
             current.harness_id,
             current.harness_version,
@@ -630,7 +636,7 @@ fn binding_from_event(event: &Event) -> Result<HarnessBinding, HarnessError> {
     {
         "objective" | "objective_default" => HarnessBindingScope::ObjectiveDefault,
         "evaluation" => HarnessBindingScope::Evaluation,
-        value => return Err(format!("未知 Harness binding scope '{value}'").into()),
+        value => return Err(format!("unknown Harness binding scope '{value}'").into()),
     };
     Ok(HarnessBinding {
         harness_id: required_event_string(event, "harness_id")?.to_string(),
@@ -660,7 +666,7 @@ fn required_event_string<'a>(event: &'a Event, key: &str) -> Result<&'a str, Har
         .payload
         .get(key)
         .and_then(|value| value.as_str())
-        .ok_or_else(|| format!("Harness catalog Event '{}' 缺少 '{key}'", event.id).into())
+        .ok_or_else(|| format!("Harness catalog Event '{}' is missing '{key}'", event.id).into())
 }
 
 fn stable_catalog_event_id(prefix: &str, key: &str) -> String {
@@ -675,7 +681,7 @@ fn require_hns_suffix(path: &Path) -> Result<(), HarnessPackageError> {
         Ok(())
     } else {
         Err(HarnessPackageError::new(format!(
-            "Harness package 必须使用 .hns 后缀：{}",
+            "Harness package must use the .hns suffix: {}",
             path.display()
         )))
     }
@@ -691,11 +697,13 @@ fn scalar_form(name: &str, value: &str) -> SExpr {
 fn root_name(form: &SExpr) -> Result<&str, HarnessPackageError> {
     let SExpr::List(items) = form else {
         return Err(HarnessPackageError::new(
-            "Harness 顶层 artifact 必须是 S 表达式列表",
+            "Harness top-level artifact must be an S-expression list",
         ));
     };
     let Some(SExpr::Atom(name)) = items.first() else {
-        return Err(HarnessPackageError::new("Harness 顶层 artifact 缺少根名称"));
+        return Err(HarnessPackageError::new(
+            "Harness top-level artifact is missing its root name",
+        ));
     };
     Ok(name)
 }
@@ -707,7 +715,7 @@ fn set_once(
 ) -> Result<(), HarnessPackageError> {
     if target.replace(value).is_some() {
         return Err(HarnessPackageError::new(format!(
-            "单文件 .hns 只能包含一个 ({name} ...)"
+            "single-file .hns may contain only one ({name} ...)"
         )));
     }
     Ok(())
@@ -715,21 +723,21 @@ fn set_once(
 
 fn read_one_artifact(path: &Path, expected: &str) -> Result<SExpr, HarnessPackageError> {
     let source = fs::read_to_string(path).map_err(|error| {
-        HarnessPackageError::new(format!("读取 {} 失败：{error}", path.display()))
+        HarnessPackageError::new(format!("failed to read {}: {error}", path.display()))
     })?;
     let forms = crate::sexpr::parse_all(&source).map_err(|error| {
-        HarnessPackageError::new(format!("{} 不是合法的 Yao：{error}", path.display()))
+        HarnessPackageError::new(format!("{} is not valid Yao: {error}", path.display()))
     })?;
     let [form] = forms.as_slice() else {
         return Err(HarnessPackageError::new(format!(
-            "{} 必须恰好包含一个 ({expected} ...) artifact",
+            "{} must contain exactly one ({expected} ...) artifact",
             path.display()
         )));
     };
     let actual = root_name(form)?;
     if actual != expected {
         return Err(HarnessPackageError::new(format!(
-            "{} 应以 ({expected} ...) 为根，实际是 ({actual} ...)",
+            "{} must have a ({expected} ...) root; found ({actual} ...)",
             path.display()
         )));
     }
@@ -738,11 +746,14 @@ fn read_one_artifact(path: &Path, expected: &str) -> Result<SExpr, HarnessPackag
 
 fn read_program_artifact(path: &Path) -> Result<String, HarnessPackageError> {
     let source = fs::read_to_string(path).map_err(|error| {
-        HarnessPackageError::new(format!("读取 {} 失败：{error}", path.display()))
+        HarnessPackageError::new(format!("failed to read {}: {error}", path.display()))
     })?;
     let form =
         crate::yao::parse_one(&source, crate::yao::ParseLimits::default()).map_err(|error| {
-            HarnessPackageError::new(format!("{} 不是合法的 Typed Yao：{error}", path.display()))
+            HarnessPackageError::new(format!(
+                "{} is not valid typed Yao: {error}",
+                path.display()
+            ))
         })?;
     match form
         .as_list()
@@ -751,11 +762,11 @@ fn read_program_artifact(path: &Path) -> Result<String, HarnessPackageError> {
     {
         Some("eval" | "infer") => Ok(crate::yao::canonical_source(&form)),
         Some(actual) => Err(HarnessPackageError::new(format!(
-            "{} 应以 (eval ...) 或 (infer ...) 为根，实际是 ({actual} ...)",
+            "{} must have an (eval ...) or (infer ...) root; found ({actual} ...)",
             path.display()
         ))),
         None => Err(HarnessPackageError::new(format!(
-            "{} 必须恰好包含一个 (eval ...) 或 (infer ...)",
+            "{} must contain exactly one (eval ...) or (infer ...)",
             path.display()
         ))),
     }
@@ -764,7 +775,7 @@ fn read_program_artifact(path: &Path) -> Result<String, HarnessPackageError> {
 fn parse_manifest(form: &SExpr) -> Result<HarnessManifest, HarnessPackageError> {
     if root_name(form)? != "manifest" {
         return Err(HarnessPackageError::new(
-            "Manifest artifact 必须以 (manifest ...) 为根",
+            "Manifest artifact must have a (manifest ...) root",
         ));
     }
     let SExpr::List(items) = form else {
@@ -786,8 +797,9 @@ fn parse_manifest(form: &SExpr) -> Result<HarnessManifest, HarnessPackageError> 
 }
 
 fn required_scalar(items: &[SExpr], name: &str) -> Result<String, HarnessPackageError> {
-    optional_scalar(items, name)?
-        .ok_or_else(|| HarnessPackageError::new(format!("(manifest ...) 缺少 ({name} VALUE)")))
+    optional_scalar(items, name)?.ok_or_else(|| {
+        HarnessPackageError::new(format!("(manifest ...) is missing ({name} VALUE)"))
+    })
 }
 
 fn optional_scalar(items: &[SExpr], name: &str) -> Result<Option<String>, HarnessPackageError> {
@@ -801,12 +813,12 @@ fn optional_scalar(items: &[SExpr], name: &str) -> Result<Option<String>, Harnes
         }
         let [_, SExpr::Atom(found)] = parts.as_slice() else {
             return Err(HarnessPackageError::new(format!(
-                "(manifest ... ({name} ...)) 必须恰好有一个标量值"
+                "(manifest ... ({name} ...)) must contain exactly one scalar value"
             )));
         };
         if value.replace(found.clone()).is_some() {
             return Err(HarnessPackageError::new(format!(
-                "(manifest ...) 重复声明 ({name} ...)"
+                "(manifest ...) declares ({name} ...) more than once"
             )));
         }
     }
@@ -826,18 +838,20 @@ fn parse_capabilities(items: &[SExpr]) -> Result<(Vec<String>, Vec<String>), Har
         }
         if seen {
             return Err(HarnessPackageError::new(
-                "(manifest ...) 只能声明一次 (capabilities ...)",
+                "(manifest ...) may declare (capabilities ...) only once",
             ));
         }
         seen = true;
         for capability in &parts[1..] {
             let SExpr::List(values) = capability else {
                 return Err(HarnessPackageError::new(
-                    "(capabilities ...) 子项必须是列表",
+                    "(capabilities ...) items must be lists",
                 ));
             };
             let Some(SExpr::Atom(kind)) = values.first() else {
-                return Err(HarnessPackageError::new("(capabilities ...) 子项缺少名称"));
+                return Err(HarnessPackageError::new(
+                    "(capabilities ...) item is missing its name",
+                ));
             };
             let destination = match kind.as_str() {
                 "tools" => &mut tools,
@@ -847,7 +861,7 @@ fn parse_capabilities(items: &[SExpr]) -> Result<(Vec<String>, Vec<String>), Har
             for value in &values[1..] {
                 let SExpr::Atom(value) = value else {
                     return Err(HarnessPackageError::new(format!(
-                        "(capabilities ({kind} ...)) 里只能是名称原子"
+                        "(capabilities ({kind} ...)) accepts only atomic names"
                     )));
                 };
                 if !destination.contains(value) {
@@ -867,20 +881,20 @@ fn resolve_package_path(root: &Path, relative: &str) -> Result<PathBuf, HarnessP
             .any(|component| matches!(component, Component::ParentDir))
     {
         return Err(HarnessPackageError::new(format!(
-            "Harness entry 必须留在包目录内：{relative:?}"
+            "Harness entry must stay within the package directory: {relative:?}"
         )));
     }
     let path = root.join(relative);
     let canonical_root = fs::canonicalize(root)?;
     let canonical_path = fs::canonicalize(&path).map_err(|error| {
         HarnessPackageError::new(format!(
-            "解析 Harness entry {} 失败：{error}",
+            "failed to resolve Harness entry {}: {error}",
             path.display()
         ))
     })?;
     if !canonical_path.starts_with(&canonical_root) {
         return Err(HarnessPackageError::new(format!(
-            "Harness entry 逃逸包目录：{}",
+            "Harness entry escapes the package directory: {}",
             path.display()
         )));
     }
@@ -897,7 +911,7 @@ fn validate_program_capabilities(
     for tool in declared_tools {
         if !manifest.tools.contains(tool) {
             return Err(HarnessPackageError::new(format!(
-                "程序 requires 声明的工具 '{tool}' 不在 Harness Manifest 的包级 capabilities 中"
+                "tool '{tool}' declared by program requires is absent from Harness Manifest package capabilities"
             )));
         }
     }
@@ -910,7 +924,7 @@ fn validate_model_entry_declaration(
 ) -> Result<(), HarnessPackageError> {
     if owner == EvaluationOwner::Model && declared_tools.is_none() {
         return Err(HarnessPackageError::new(
-            "Model-owned Harness entry 必须显式声明 (requires (tools ...))；空列表表示纯推理",
+            "Model-owned Harness entry must explicitly declare (requires (tools ...)); an empty list means inference-only",
         ));
     }
     Ok(())
@@ -997,12 +1011,12 @@ mod tests {
         assert!(HarnessPackage::from_source("coding.hns", &duplicate)
             .unwrap_err()
             .to_string()
-            .contains("只能包含一个"));
+            .contains("may contain only one"));
         let unknown = format!("{SINGLE}\n(prompt \"hidden side channel\")");
         assert!(HarnessPackage::from_source("coding.hns", &unknown)
             .unwrap_err()
             .to_string()
-            .contains("未知顶层"));
+            .contains("unknown top-level artifact"));
     }
 
     #[test]
@@ -1021,7 +1035,7 @@ mod tests {
         .unwrap();
         fs::write(root.join("contract.yao"), "(contract)").unwrap();
         let error = HarnessPackage::load(&root).unwrap_err().to_string();
-        assert!(error.contains("包目录内"), "{error}");
+        assert!(error.contains("within the package directory"), "{error}");
     }
 
     #[test]
@@ -1075,7 +1089,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("必须显式声明 (requires (tools ...))"),
+            error.contains("must explicitly declare (requires (tools ...))"),
             "{error}"
         );
 
@@ -1099,7 +1113,7 @@ mod tests {
         )
         .unwrap();
         let error = registry.register_package(changed).unwrap_err();
-        assert!(error.to_string().contains("不能用不同 artifact 覆盖"));
+        assert!(error.to_string().contains("different artifact"));
     }
 
     #[test]
@@ -1109,7 +1123,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("'exec'"), "{error}");
-        assert!(error.contains("包级 capabilities"), "{error}");
+        assert!(error.contains("package capabilities"), "{error}");
     }
 
     #[tokio::test]

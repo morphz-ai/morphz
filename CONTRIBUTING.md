@@ -18,8 +18,10 @@ patent, trademark, or certification promise.
 
 ## Source language
 
-Morphz uses English for identifiers, developer comments, doc comments, commit messages, and raw
-diagnostic logs. This keeps the open-source codebase searchable and consistent across contributors.
+Morphz uses English for identifiers, developer comments, doc comments, commit messages, raw
+diagnostic logs, and protocol-facing Runtime error messages. This keeps the open-source codebase
+searchable and gives persisted execution results, model-visible tool output, and support material
+one canonical diagnostic language.
 
 Non-English text remains appropriate when it is product content rather than developer prose:
 
@@ -48,3 +50,10 @@ Durable runtime Events continue to use their existing stable `event_type`. A dia
 Dashboard, Setup, TUI, and CLI may translate an event for users by mapping its stable code to an
 i18n resource. They must preserve the code and structured fields in diagnostic details. This keeps
 raw logs uniform while retaining localized product experiences.
+
+The same boundary applies to returned errors that cross protocol or model boundaries. Protocol
+implementations and model-visible execution paths emit canonical English. A localized product
+surface may translate a stable error or diagnostic code, but must retain the canonical code and
+English detail for debugging. Yao diagnostics use `DiagnosticCode` for this purpose; wording must
+never be parsed as control flow. Readers may continue to recognize historical localized persisted
+values for compatibility, but new writers must not produce them.

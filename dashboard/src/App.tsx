@@ -908,6 +908,7 @@ interface SessionRecord {
   parent_session_id?: string
   title: string
   status: 'active' | 'archived'
+  model_alias?: string | null
   attention_state?: string
   attention_revision?: number
   attention_reason?: string
@@ -6014,32 +6015,17 @@ export default function App() {
   }
 
   const changeModel = async (model: string) => {
-    if (changingModel || !model || model === status?.model) return
+    if (changingModel || !selectedSessionId) return
+    const modelAlias = model === '__runtime__' ? '' : model
+    if ((selectedSession?.model_alias ?? '') === modelAlias) return
     setChangingModel(true)
     try {
-      const inference = await DASHBOARD_API.command<{
-        model: string
-        models: string[]
-        reasoning_effort?: ReasoningEffortSetting | null
-      }>(
-        '/api/runtime/inference',
-        'PUT',
-        {
-          model,
-          // Reasoning vocabularies belong to physical models. Do not carry a
-          // level across a model switch when the new route may not accept it.
-          reasoning_effort: 'default',
-        },
+      const updated = await DASHBOARD_API.command<SessionRecord>(
+        `/api/sessions/${encodeURIComponent(selectedSessionId)}`,
+        'PATCH',
+        { model_alias: modelAlias },
       )
-      setStatus(current => current
-        ? {
-            ...current,
-            model: inference.model,
-            models: inference.models,
-            reasoning_effort: inference.reasoning_effort,
-          }
-        : current)
-      if (selectedContextId) await loadContextTokenBudget(selectedContextId)
+      setSessions(current => current.map(session => session.id === updated.id ? updated : session))
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -6773,7 +6759,8 @@ export default function App() {
   }
 
   const modelOptions = status?.model_options ?? []
-  const selectedModelOption = resolveSelectedModelOption(modelOptions, status?.model)
+  const effectiveSessionModel = selectedSession?.model_alias ?? status?.model
+  const selectedModelOption = resolveSelectedModelOption(modelOptions, effectiveSessionModel)
   const selectedModelLabel = selectedModelOption?.label ?? t('model.unavailable')
   const reasoningEffortOptions = selectedModelOption?.supported_reasoning_efforts
     ?? (['none', 'low', 'medium', 'high', 'max'] satisfies ReasoningEffortSetting[])
@@ -6997,11 +6984,12 @@ export default function App() {
                 <span>{t('model.selector').toUpperCase()}</span>
                 <select
                   aria-label={t('model.selector')}
-                  disabled={changingModel}
-                  value={selectedModelOption?.id ?? ''}
+                  disabled={changingModel || !selectedSessionId}
+                  value={selectedSession?.model_alias ?? '__runtime__'}
                   onChange={event => void changeModel(event.target.value)}
                 >
-                  {!selectedModelOption && <option value="" disabled>{t('model.chooseAvailable')}</option>}
+                  <option value="__runtime__">{t('model.runtimeDefault', { model: status?.model ?? '—' })}</option>
+                  {!selectedModelOption && selectedSession?.model_alias && <option value={selectedSession.model_alias} disabled>{t('model.chooseAvailable')}</option>}
                   {modelOptions.map(option => (
                     <option key={option.id} value={option.id}>{option.label}</option>
                   ))}

@@ -90,6 +90,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             parent_activation_id TEXT REFERENCES thread_activations(id),
             root_turn_id TEXT NOT NULL,
             context_snapshot_version BIGINT,
+            model_alias TEXT,
             admission_rank SMALLINT NOT NULL DEFAULT 3 CHECK(admission_rank BETWEEN 0 AND 4),
             status TEXT NOT NULL,
             claimed_by TEXT,
@@ -119,6 +120,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS dialogue_lane_released_at TEXT"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS admission_rank SMALLINT NOT NULL DEFAULT 3 CHECK(admission_rank BETWEEN 0 AND 4)"#,
+        r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_admission_queue
            ON thread_activations(admission_rank, created_at, id)
            WHERE status = 'queued'"#,

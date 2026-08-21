@@ -96,7 +96,10 @@ impl fmt::Display for ActivationAdmissionError {
         match self {
             Self::Queue(error) => error.fmt(f),
             Self::AlreadyLocal(id) => {
-                write!(f, "Thread Activation '{id}' 已在本 Runtime 等待或执行")
+                write!(
+                    f,
+                    "Thread Activation '{id}' is already queued or running in this Runtime"
+                )
             }
             Self::WindowFull {
                 id,
@@ -106,7 +109,7 @@ impl fmt::Display for ActivationAdmissionError {
                 reserved_for_dialogue_delivery,
             } => write!(
                 f,
-                "Thread Activation '{id}' 延迟准入：内存调度窗口已满，class={class:?}, queued={queued}, limit={limit}, reserved_dialogue_delivery={reserved_for_dialogue_delivery}"
+                "Thread Activation '{id}' admission deferred: the in-memory scheduling window is full, class={class:?}, queued={queued}, limit={limit}, reserved_dialogue_delivery={reserved_for_dialogue_delivery}"
             ),
         }
     }

@@ -68,7 +68,8 @@ impl<'de> Deserialize<'de> for HumanDuration {
             where
                 E: serde::de::Error,
             {
-                let value = u64::try_from(value).map_err(|_| E::custom("duration 必须大于 0"))?;
+                let value = u64::try_from(value)
+                    .map_err(|_| E::custom("duration must be greater than 0"))?;
                 self.visit_u64(value)
             }
 
@@ -86,7 +87,7 @@ impl<'de> Deserialize<'de> for HumanDuration {
 
 fn positive_duration(seconds: u64) -> Result<HumanDuration, String> {
     if seconds == 0 {
-        Err("duration 必须大于 0".to_string())
+        Err("duration must be greater than 0".to_string())
     } else {
         Ok(HumanDuration::from_secs(seconds))
     }
@@ -98,7 +99,7 @@ fn parse_human_duration(value: &str) -> Result<HumanDuration, String> {
         let millis = value
             .trim()
             .parse::<u64>()
-            .map_err(|_| "duration 数值无效".to_string())?;
+            .map_err(|_| "invalid duration value".to_string())?;
         return positive_duration(millis.saturating_add(999) / 1_000);
     } else if let Some(value) = value.strip_suffix('s') {
         (value, 1)
@@ -114,11 +115,11 @@ fn parse_human_duration(value: &str) -> Result<HumanDuration, String> {
     let number = number
         .trim()
         .parse::<u64>()
-        .map_err(|_| "duration 数值无效".to_string())?;
+        .map_err(|_| "invalid duration value".to_string())?;
     positive_duration(
         number
             .checked_mul(multiplier)
-            .ok_or_else(|| "duration 超出 u64 秒范围".to_string())?,
+            .ok_or_else(|| "duration exceeds the u64 seconds range".to_string())?,
     )
 }
 
@@ -179,7 +180,7 @@ pub(crate) fn parse_env_value(raw: &str) -> io::Result<String> {
     if escaped || !closed {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "用户级 Morphz .env 含有未闭合的引号或转义",
+            "user-level Morphz .env contains an unclosed quote or escape",
         ));
     }
     Ok(output)
@@ -550,7 +551,9 @@ where
 {
     let value = usize::deserialize(deserializer)?;
     if value == 0 {
-        Err(serde::de::Error::custom("该配置值必须大于等于 1"))
+        Err(serde::de::Error::custom(
+            "configuration value must be greater than or equal to 1",
+        ))
     } else {
         Ok(value)
     }
@@ -562,7 +565,9 @@ where
 {
     let value = u64::deserialize(deserializer)?;
     if value == 0 {
-        Err(serde::de::Error::custom("该配置值必须大于等于 1"))
+        Err(serde::de::Error::custom(
+            "configuration value must be greater than or equal to 1",
+        ))
     } else {
         Ok(value)
     }
@@ -574,7 +579,9 @@ where
 {
     let value = Option::<usize>::deserialize(deserializer)?;
     if value == Some(0) {
-        Err(serde::de::Error::custom("该配置值必须大于等于 1"))
+        Err(serde::de::Error::custom(
+            "configuration value must be greater than or equal to 1",
+        ))
     } else {
         Ok(value)
     }
@@ -598,7 +605,9 @@ where
         return Ok(None);
     }
     ReasoningEffort::parse(value).map(Some).ok_or_else(|| {
-        serde::de::Error::custom("reasoning_effort 只支持 default、none、low、medium、high、max")
+        serde::de::Error::custom(
+            "reasoning_effort supports only default, none, low, medium, high, or max",
+        )
     })
 }
 
@@ -752,6 +761,11 @@ pub struct LlmConfig {
     /// Models the current Provider permits at runtime. `model` is merged into this catalog
     /// automatically for backward compatibility; the Dashboard can select only declared models.
     pub models: Vec<String>,
+    /// Logical Model Routes an Agent may select explicitly for delegated
+    /// Evaluations such as infer or schedule_tx.spawn. The primary `model` is
+    /// always permitted and remains the default when no override is supplied.
+    /// An empty list therefore grants no additional model authority.
+    pub allowed_evaluation_models: Vec<String>,
     /// Maximum retry count.
     pub max_retries: u32,
     /// Initial retry backoff, in seconds.
@@ -855,6 +869,7 @@ impl Default for LlmConfig {
             // model and would leak into the Dashboard selector.
             model: String::new(),
             models: Vec::new(),
+            allowed_evaluation_models: Vec::new(),
             max_retries: 5,
             initial_backoff_secs: 1,
             connect_timeout_secs: 30,
@@ -1103,18 +1118,22 @@ impl<'de> Deserialize<'de> for ModelRouteConfig {
             || !input.capabilities.is_empty();
         if direct_target_present && !input.candidates.is_empty() {
             return Err(serde::de::Error::custom(
-                "模型不能同时使用直接目标字段和 [[models.<name>.targets]]",
+                "a model cannot use direct target fields and [[models.<name>.targets]] together",
             ));
         }
         let candidates = if direct_target_present {
             let provider = input
                 .service
                 .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| serde::de::Error::custom("模型直接目标缺少 service"))?;
+                .ok_or_else(|| {
+                    serde::de::Error::custom("direct model target is missing service")
+                })?;
             let model = input
                 .physical_model
                 .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| serde::de::Error::custom("模型直接目标缺少 physical_model"))?;
+                .ok_or_else(|| {
+                    serde::de::Error::custom("direct model target is missing physical_model")
+                })?;
             vec![ModelRouteCandidateConfig {
                 provider,
                 model,
@@ -1450,12 +1469,13 @@ impl ResolvedConfig {
         if overrides.is_empty() {
             return Ok(());
         }
-        let mut value = toml::Value::try_from(&self.config)
-            .map_err(|error| format!("无法构造 CLI 配置覆盖视图: {error}"))?;
+        let mut value = toml::Value::try_from(&self.config).map_err(|error| {
+            format!("failed to construct CLI configuration override view: {error}")
+        })?;
         for override_text in overrides {
             let (key, raw_value) = override_text
                 .split_once('=')
-                .ok_or_else(|| format!("--set 需要 key=value，收到 '{override_text}'"))?;
+                .ok_or_else(|| format!("--set requires key=value; received '{override_text}'"))?;
             validate_dotted_config_key(key)?;
             let parsed = parse_cli_toml_value(raw_value);
             set_toml_path(&mut value, key, parsed)?;
@@ -1463,7 +1483,7 @@ impl ResolvedConfig {
         }
         self.config = value
             .try_into::<AppConfig>()
-            .map_err(|error| format!("--set 产生了无效配置: {error}"))?;
+            .map_err(|error| format!("--set produced invalid configuration: {error}"))?;
         Ok(())
     }
 }
@@ -1479,7 +1499,7 @@ fn validate_dotted_config_key(key: &str) -> Result<(), String> {
     {
         Ok(())
     } else {
-        Err(format!("--set 配置键 '{key}' 非法"))
+        Err(format!("invalid --set configuration key '{key}'"))
     }
 }
 
@@ -1495,19 +1515,24 @@ fn set_toml_path(root: &mut toml::Value, key: &str, value: toml::Value) -> Resul
     let segments = key.split('.').collect::<Vec<_>>();
     let mut cursor = root;
     for segment in &segments[..segments.len() - 1] {
-        let table = cursor
-            .as_table_mut()
-            .ok_or_else(|| format!("--set 的父路径 '{}' 不是配置表", segment))?;
+        let table = cursor.as_table_mut().ok_or_else(|| {
+            format!(
+                "--set parent path '{}' is not a configuration table",
+                segment
+            )
+        })?;
         cursor = table
             .get_mut(*segment)
-            .ok_or_else(|| format!("--set 引用了未知配置路径 '{key}'"))?;
+            .ok_or_else(|| format!("--set references unknown configuration path '{key}'"))?;
     }
     let table = cursor
         .as_table_mut()
-        .ok_or_else(|| format!("--set 的父路径不是配置表: '{key}'"))?;
+        .ok_or_else(|| format!("--set parent path is not a configuration table: '{key}'"))?;
     let leaf = segments.last().expect("validated key has one segment");
     if !table.contains_key(*leaf) {
-        return Err(format!("--set 引用了未知配置键 '{key}'"));
+        return Err(format!(
+            "--set references unknown configuration key '{key}'"
+        ));
     }
     table.insert((*leaf).to_string(), value);
     Ok(())
@@ -1525,7 +1550,9 @@ pub fn resolve_config(
 ) -> Result<ResolvedConfig, String> {
     let primary_home = morphz_home_dir();
     if let Some(home) = primary_home.as_ref() {
-        migrate_primary_config_if_needed(&home.join("morphz.toml"))?;
+        let primary = home.join("morphz.toml");
+        migrate_primary_config_if_needed(&primary)?;
+        split_primary_model_config_if_needed(&primary, &home.join("models.toml"))?;
     }
     resolve_config_with_homes(
         cwd,
@@ -1539,9 +1566,71 @@ pub fn resolve_config(
 pub fn managed_config_path() -> Result<PathBuf, String> {
     let path = morphz_home_dir()
         .map(|home| home.join("morphz.toml"))
-        .ok_or_else(|| "无法确定 Morphz 用户配置目录".to_string())?;
+        .ok_or_else(|| "cannot determine Morphz user configuration directory".to_string())?;
     migrate_primary_config_if_needed(&path)?;
+    let model_path = path.with_file_name("models.toml");
+    split_primary_model_config_if_needed(&path, &model_path)?;
     Ok(path)
+}
+
+/// Operator-owned Provider, Account, Model Route and default inference
+/// configuration. Runtime policy stays in `morphz.toml`; model infrastructure
+/// stays in this file so changing a route never requires editing the kernel's
+/// unrelated storage, permission or scheduler settings.
+pub fn managed_model_config_path() -> Result<PathBuf, String> {
+    let core_path = managed_config_path()?;
+    Ok(core_path.with_file_name("models.toml"))
+}
+
+const MODEL_CONFIG_ROOT_KEYS: &[&str] = &[
+    "llm",
+    "usage_pricing",
+    "providers",
+    "credentials",
+    "services",
+    "accounts",
+    "models",
+];
+
+fn split_primary_model_config_if_needed(core_path: &Path, model_path: &Path) -> Result<(), String> {
+    if !core_path.is_file() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(core_path).map_err(|error| {
+        format!(
+            "failed to read Morphz core configuration '{}': {error}",
+            core_path.display()
+        )
+    })?;
+    let mut core = content.parse::<toml::Value>().map_err(|error| {
+        format!(
+            "failed to parse Morphz core configuration '{}': {error}",
+            core_path.display()
+        )
+    })?;
+    canonicalize_primary_config(&mut core)?;
+    let core_table = core
+        .as_table_mut()
+        .ok_or_else(|| "Morphz configuration root must be a TOML table".to_string())?;
+    let mut extracted = toml::map::Map::new();
+    for key in MODEL_CONFIG_ROOT_KEYS {
+        if let Some(value) = core_table.remove(*key) {
+            extracted.insert((*key).to_string(), value);
+        }
+    }
+    if extracted.is_empty() {
+        return Ok(());
+    }
+
+    // Write the model file first. If the process stops before replacing the
+    // core file, the loader gives models.toml precedence, so the duplicate
+    // old keys remain harmless and the next startup completes the cleanup.
+    let mut models = read_managed_value(model_path)?;
+    let mut extracted = toml::Value::Table(extracted);
+    merge_toml_prefer_right(&mut extracted, models);
+    models = extracted;
+    write_managed_value(model_path, &models)?;
+    write_managed_value(core_path, &core)
 }
 
 fn migrate_primary_config_if_needed(primary: &Path) -> Result<(), String> {
@@ -1574,13 +1663,16 @@ fn migrate_primary_config_if_needed(primary: &Path) -> Result<(), String> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => {
                 return Err(format!(
-                    "无法读取旧 Morphz 配置 '{}': {error}",
+                    "failed to read legacy Morphz configuration '{}': {error}",
                     candidate.display()
                 ))
             }
         };
         let mut value = content.parse::<toml::Value>().map_err(|error| {
-            format!("旧 Morphz 配置 '{}' 解析失败: {error}", candidate.display())
+            format!(
+                "failed to parse legacy Morphz configuration '{}': {error}",
+                candidate.display()
+            )
         })?;
         canonicalize_primary_config(&mut value)?;
         merge_toml_prefer_right(&mut merged, value);
@@ -1622,7 +1714,7 @@ fn migrate_legacy_host_files(primary_home: &Path, legacy_home: &Path) -> Result<
             std::fs::set_permissions(primary_home, std::fs::Permissions::from_mode(0o700))
                 .map_err(|error| {
                     format!(
-                        "无法保护 Morphz 用户目录 '{}': {error}",
+                        "failed to protect Morphz user directory '{}': {error}",
                         primary_home.display()
                     )
                 })?;
@@ -1635,21 +1727,32 @@ fn copy_legacy_host_file_if_absent(source: &Path, destination: &Path) -> Result<
     if destination.exists() || !source.is_file() {
         return Ok(false);
     }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| format!("迁移目标 '{}' 没有父目录", destination.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("无法创建 Morphz 用户目录 '{}': {error}", parent.display()))?;
+    let parent = destination.parent().ok_or_else(|| {
+        format!(
+            "migration destination '{}' has no parent directory",
+            destination.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create Morphz user directory '{}': {error}",
+            parent.display()
+        )
+    })?;
     let temporary = destination.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::copy(source, &temporary)
-        .map_err(|error| format!("无法迁移 Morphz 宿主文件 '{}'：{error}", source.display()))?;
+    std::fs::copy(source, &temporary).map_err(|error| {
+        format!(
+            "failed to migrate Morphz host file '{}': {error}",
+            source.display()
+        )
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600)).map_err(
             |error| {
                 format!(
-                    "无法保护迁移后的 Morphz 宿主文件 '{}': {error}",
+                    "failed to protect migrated Morphz host file '{}': {error}",
                     temporary.display()
                 )
             },
@@ -1657,7 +1760,7 @@ fn copy_legacy_host_file_if_absent(source: &Path, destination: &Path) -> Result<
     }
     std::fs::rename(&temporary, destination).map_err(|error| {
         format!(
-            "无法安装迁移后的 Morphz 宿主文件 '{}': {error}",
+            "failed to install migrated Morphz host file '{}': {error}",
             destination.display()
         )
     })?;
@@ -1675,7 +1778,7 @@ pub fn active_profile() -> Result<Option<String>, String> {
             Ok(Some(profile.to_string()))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("无法读取默认 Profile: {error}")),
+        Err(error) => Err(format!("failed to read default Profile: {error}")),
     }
 }
 
@@ -1689,7 +1792,7 @@ pub fn list_profiles() -> Result<Vec<String>, String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
             return Err(format!(
-                "无法读取 Profile 目录 '{}': {error}",
+                "failed to read Profile directory '{}': {error}",
                 directory.display()
             ))
         }
@@ -1710,21 +1813,27 @@ pub fn list_profiles() -> Result<Vec<String>, String> {
 
 pub fn select_active_profile(profile: &str) -> Result<PathBuf, String> {
     validate_profile_name(profile)?;
-    let home = morphz_home_dir().ok_or_else(|| "无法确定 Morphz 用户配置目录".to_string())?;
+    let home = morphz_home_dir()
+        .ok_or_else(|| "cannot determine Morphz user configuration directory".to_string())?;
     let profile_path = home.join("profiles").join(format!("{profile}.toml"));
     if !profile_path.is_file() {
         return Err(format!(
-            "Profile '{profile}' 不存在：{}",
+            "Profile '{profile}' does not exist: {}",
             profile_path.display()
         ));
     }
-    std::fs::create_dir_all(&home)
-        .map_err(|error| format!("无法创建 Morphz 配置目录 '{}': {error}", home.display()))?;
+    std::fs::create_dir_all(&home).map_err(|error| {
+        format!(
+            "failed to create Morphz configuration directory '{}': {error}",
+            home.display()
+        )
+    })?;
     let path = home.join("active-profile");
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     std::fs::write(&temporary, format!("{profile}\n"))
-        .map_err(|error| format!("无法写入默认 Profile: {error}"))?;
-    std::fs::rename(&temporary, &path).map_err(|error| format!("无法选择默认 Profile: {error}"))?;
+        .map_err(|error| format!("failed to write default Profile: {error}"))?;
+    std::fs::rename(&temporary, &path)
+        .map_err(|error| format!("failed to select default Profile: {error}"))?;
     Ok(path)
 }
 
@@ -1735,12 +1844,13 @@ pub fn save_managed_provider(
     model: &str,
 ) -> Result<PathBuf, String> {
     validate_profile_name(provider_id)?;
-    let path = managed_config_path()?;
+    let path = managed_model_config_path()?;
     let mut root = read_managed_value(&path)?;
     insert_managed_value(
         &mut root,
         &["providers", provider_id],
-        toml::Value::try_from(provider).map_err(|error| format!("无法序列化 Provider: {error}"))?,
+        toml::Value::try_from(provider)
+            .map_err(|error| format!("failed to serialize Provider: {error}"))?,
     )?;
     if let Some((credential_id, credential)) = credential {
         validate_profile_name(credential_id)?;
@@ -1748,7 +1858,7 @@ pub fn save_managed_provider(
             &mut root,
             &["credentials", credential_id],
             toml::Value::try_from(credential)
-                .map_err(|error| format!("无法序列化 Credential: {error}"))?,
+                .map_err(|error| format!("failed to serialize Credential: {error}"))?,
         )?;
     }
     insert_managed_value(
@@ -1767,9 +1877,9 @@ pub fn save_managed_provider(
 
 pub fn save_managed_model(provider_id: &str, model: &str) -> Result<PathBuf, String> {
     if provider_id.trim().is_empty() || model.trim().is_empty() {
-        return Err("Provider 和 Model 都不能为空".to_string());
+        return Err("Provider and Model must not be empty".to_string());
     }
-    let path = managed_config_path()?;
+    let path = managed_model_config_path()?;
     let mut root = read_managed_value(&path)?;
     insert_managed_value(
         &mut root,
@@ -1802,7 +1912,7 @@ pub fn save_managed_provider_instance_at(
         &mut root,
         &["services", provider_id],
         toml::Value::try_from(provider)
-            .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
+            .map_err(|error| format!("failed to serialize Provider Instance: {error}"))?,
     )?;
     write_managed_value(path, &root)
 }
@@ -1811,7 +1921,7 @@ pub fn save_managed_provider_instance(
     provider_id: &str,
     provider: &ProviderInstanceConfig,
 ) -> Result<PathBuf, String> {
-    let path = managed_config_path()?;
+    let path = managed_model_config_path()?;
     save_managed_provider_instance_at(&path, provider_id, provider)?;
     Ok(path)
 }
@@ -1829,7 +1939,7 @@ pub fn save_managed_auth_account_at(
         &mut root,
         &["accounts", account_id],
         toml::Value::try_from(account)
-            .map_err(|error| format!("无法序列化 Auth Account: {error}"))?,
+            .map_err(|error| format!("failed to serialize Auth Account: {error}"))?,
     )?;
     write_managed_value(path, &root)
 }
@@ -1838,7 +1948,7 @@ pub fn save_managed_auth_account(
     account_id: &str,
     account: &AuthAccountConfig,
 ) -> Result<PathBuf, String> {
-    let path = managed_config_path()?;
+    let path = managed_model_config_path()?;
     save_managed_auth_account_at(&path, account_id, account)?;
     Ok(path)
 }
@@ -1860,13 +1970,13 @@ pub fn save_managed_provider_account_at(
         &mut root,
         &["services", provider_id],
         toml::Value::try_from(provider)
-            .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
+            .map_err(|error| format!("failed to serialize Provider Instance: {error}"))?,
     )?;
     insert_managed_value(
         &mut root,
         &["accounts", account_id],
         toml::Value::try_from(account)
-            .map_err(|error| format!("无法序列化 Auth Account: {error}"))?,
+            .map_err(|error| format!("failed to serialize Auth Account: {error}"))?,
     )?;
     write_managed_value(path, &root)
 }
@@ -1883,7 +1993,8 @@ pub fn save_managed_model_route_at(
     insert_managed_value(
         &mut root,
         &["models", route_id],
-        toml::Value::try_from(route).map_err(|error| format!("无法序列化 Model Route: {error}"))?,
+        toml::Value::try_from(route)
+            .map_err(|error| format!("failed to serialize Model Route: {error}"))?,
     )?;
     write_managed_value(path, &root)
 }
@@ -1892,7 +2003,7 @@ pub fn save_managed_model_route(
     route_id: &str,
     route: &ModelRouteConfig,
 ) -> Result<PathBuf, String> {
-    let path = managed_config_path()?;
+    let path = managed_model_config_path()?;
     save_managed_model_route_at(&path, route_id, route)?;
     Ok(path)
 }
@@ -1917,14 +2028,14 @@ pub fn save_managed_provider_account_models_at(
         &mut root,
         &["services", provider_id],
         toml::Value::try_from(provider)
-            .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
+            .map_err(|error| format!("failed to serialize Provider Instance: {error}"))?,
     )?;
     for (route_id, route) in changed_routes {
         insert_managed_value(
             &mut root,
             &["models", route_id],
             toml::Value::try_from(route)
-                .map_err(|error| format!("无法序列化 Model Route: {error}"))?,
+                .map_err(|error| format!("failed to serialize Model Route: {error}"))?,
         )?;
     }
     if let Some(routes) = root.get_mut("models").and_then(toml::Value::as_table_mut) {
@@ -1966,13 +2077,13 @@ pub fn save_managed_provider_catalog_at(
         &mut root,
         &["services", provider_id],
         toml::Value::try_from(provider)
-            .map_err(|error| format!("无法序列化 Provider Instance: {error}"))?,
+            .map_err(|error| format!("failed to serialize Provider Instance: {error}"))?,
     )?;
     insert_managed_value(
         &mut root,
         &["accounts", account_id],
         toml::Value::try_from(account)
-            .map_err(|error| format!("无法序列化 Auth Account: {error}"))?,
+            .map_err(|error| format!("failed to serialize Auth Account: {error}"))?,
     )?;
     if let Some((credential_id, credential)) = credential {
         validate_profile_name(credential_id)?;
@@ -1980,13 +2091,14 @@ pub fn save_managed_provider_catalog_at(
             &mut root,
             &["credentials", credential_id],
             toml::Value::try_from(credential)
-                .map_err(|error| format!("无法序列化 Credential: {error}"))?,
+                .map_err(|error| format!("failed to serialize Credential: {error}"))?,
         )?;
     }
     insert_managed_value(
         &mut root,
         &["models", route_id],
-        toml::Value::try_from(route).map_err(|error| format!("无法序列化 Model Route: {error}"))?,
+        toml::Value::try_from(route)
+            .map_err(|error| format!("failed to serialize Model Route: {error}"))?,
     )?;
     // Keep this mutation compatible with older in-memory readers. The TOML
     // writer removes `llm.provider` because the route already names its
@@ -2013,7 +2125,7 @@ pub fn save_managed_provider_catalog(
     route_id: &str,
     route: &ModelRouteConfig,
 ) -> Result<PathBuf, String> {
-    let path = managed_config_path()?;
+    let path = managed_model_config_path()?;
     save_managed_provider_catalog_at(
         &path,
         provider_id,
@@ -2197,7 +2309,7 @@ pub fn save_managed_inference_at(
 ) -> Result<(), String> {
     let model = model.trim();
     if model.is_empty() {
-        return Err("Model 不能为空".to_string());
+        return Err("Model must not be empty".to_string());
     }
     let provider_id = provider_id.map(str::trim).filter(|value| !value.is_empty());
     if let Some(provider_id) = provider_id {
@@ -2264,11 +2376,11 @@ pub fn save_managed_inference_at(
     }
     if let Some(limit) = prompt_token_limit {
         if limit == 0 {
-            return Err("模型物理输入容量必须大于 0".to_string());
+            return Err("model physical input capacity must be greater than 0".to_string());
         }
         if routed_targets.len() > 1 {
             return Err(
-                "当前模型路由包含多个物理目标；请在身份与模型页面分别配置每个物理模型的容量"
+                "the current model route contains multiple physical targets; configure capacity for each physical model separately on the identity and model page"
                     .to_string(),
             );
         }
@@ -2276,7 +2388,10 @@ pub fn save_managed_inference_at(
             .as_ref()
             .map(|(provider, model)| ("services", provider.as_str(), model.as_str()))
             .or_else(|| provider_id.map(|provider| ("providers", provider, model)))
-            .ok_or_else(|| "当前模型没有可解析的服务目标，不能保存模型物理输入容量".to_string())?;
+            .ok_or_else(|| {
+                "the current model has no resolvable service target; physical input capacity cannot be saved"
+                    .to_string()
+            })?;
         insert_managed_value(
             &mut root,
             &[
@@ -2287,7 +2402,8 @@ pub fn save_managed_inference_at(
                 "max_input_tokens",
             ],
             toml::Value::Integer(
-                i64::try_from(limit).map_err(|_| "模型物理输入容量超出 TOML 整数范围")?,
+                i64::try_from(limit)
+                    .map_err(|_| "model physical input capacity exceeds the TOML integer range")?,
             ),
         )?;
     }
@@ -2343,9 +2459,12 @@ pub fn save_managed_auto_review_model_at(path: &Path, model: Option<&str>) -> Re
 fn read_managed_value(path: &Path) -> Result<toml::Value, String> {
     match std::fs::read_to_string(path) {
         Ok(content) => {
-            let mut value = content
-                .parse::<toml::Value>()
-                .map_err(|error| format!("Morphz 配置 '{}' 解析失败: {error}", path.display()))?;
+            let mut value = content.parse::<toml::Value>().map_err(|error| {
+                format!(
+                    "failed to parse Morphz configuration '{}': {error}",
+                    path.display()
+                )
+            })?;
             canonicalize_primary_config(&mut value)?;
             Ok(value)
         }
@@ -2353,7 +2472,7 @@ fn read_managed_value(path: &Path) -> Result<toml::Value, String> {
             Ok(toml::Value::Table(Default::default()))
         }
         Err(error) => Err(format!(
-            "无法读取 Morphz 配置 '{}': {error}",
+            "failed to read Morphz configuration '{}': {error}",
             path.display()
         )),
     }
@@ -2411,7 +2530,7 @@ fn canonicalize_legacy_providers(
     };
     let legacy = legacy
         .as_table()
-        .ok_or_else(|| "[providers] 必须是 TOML 表".to_string())?
+        .ok_or_else(|| "[providers] must be a TOML table".to_string())?
         .clone();
 
     let mut generated_accounts = Vec::new();
@@ -2422,7 +2541,7 @@ fn canonicalize_legacy_providers(
         }
         let mut provider = value
             .as_table()
-            .ok_or_else(|| format!("[providers.{provider_id}] 必须是 TOML 表"))?
+            .ok_or_else(|| format!("[providers.{provider_id}] must be a TOML table"))?
             .clone();
         let credential = provider
             .remove("credential")
@@ -2472,7 +2591,7 @@ fn canonicalize_legacy_providers(
         .entry("services".to_string())
         .or_insert_with(|| toml::Value::Table(Default::default()))
         .as_table_mut()
-        .ok_or_else(|| "[services] 必须是 TOML 表".to_string())?;
+        .ok_or_else(|| "[services] must be a TOML table".to_string())?;
     let generated_provider_ids = generated_services
         .iter()
         .map(|(provider_id, _)| provider_id.clone())
@@ -2485,7 +2604,7 @@ fn canonicalize_legacy_providers(
         .entry("accounts".to_string())
         .or_insert_with(|| toml::Value::Table(Default::default()))
         .as_table_mut()
-        .ok_or_else(|| "[accounts] 必须是 TOML 表".to_string())?;
+        .ok_or_else(|| "[accounts] must be a TOML table".to_string())?;
     for (account_id, account) in generated_accounts {
         accounts.entry(account_id).or_insert(account);
     }
@@ -2550,7 +2669,7 @@ fn canonicalize_legacy_providers(
 fn canonicalize_primary_config(root: &mut toml::Value) -> Result<(), String> {
     let table = root
         .as_table_mut()
-        .ok_or_else(|| "Morphz 配置根节点必须是 TOML 表".to_string())?;
+        .ok_or_else(|| "Morphz configuration root must be a TOML table".to_string())?;
     rename_config_key(table, "provider_instances", "services");
     rename_config_key(table, "auth_accounts", "accounts");
     rename_config_key(table, "model_routes", "models");
@@ -2618,7 +2737,8 @@ fn canonicalize_primary_config(root: &mut toml::Value) -> Result<(), String> {
             if direct_target_present {
                 if route.contains_key("targets") {
                     return Err(
-                        "模型不能同时使用直接目标字段和 [[models.<name>.targets]]".to_string()
+                        "a model cannot use direct target fields and [[models.<name>.targets]] together"
+                            .to_string()
                     );
                 }
                 let mut target = toml::map::Map::new();
@@ -2745,55 +2865,78 @@ fn insert_managed_value(
 ) -> Result<(), String> {
     let (leaf, parents) = path
         .split_last()
-        .ok_or_else(|| "Managed 配置路径不能为空".to_string())?;
+        .ok_or_else(|| "Managed configuration path must not be empty".to_string())?;
     let mut cursor = root;
     for segment in parents {
-        let table = cursor
-            .as_table_mut()
-            .ok_or_else(|| format!("Managed 配置父路径 '{segment}' 不是表"))?;
+        let table = cursor.as_table_mut().ok_or_else(|| {
+            format!("Managed configuration parent path '{segment}' is not a table")
+        })?;
         cursor = table
             .entry((*segment).to_string())
             .or_insert_with(|| toml::Value::Table(Default::default()));
     }
     cursor
         .as_table_mut()
-        .ok_or_else(|| "Managed 配置目标父路径不是表".to_string())?
+        .ok_or_else(|| "Managed configuration target parent path is not a table".to_string())?
         .insert((*leaf).to_string(), value);
     Ok(())
 }
 
 fn write_managed_value(path: &Path, value: &toml::Value) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("Managed 配置路径 '{}' 没有父目录", path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("无法创建 Morphz 配置目录 '{}': {error}", parent.display()))?;
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "Managed configuration path '{}' has no parent directory",
+            path.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create Morphz configuration directory '{}': {error}",
+            parent.display()
+        )
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("无法保护 Morphz 配置目录 '{}': {error}", parent.display()))?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| {
+                format!(
+                    "failed to protect Morphz configuration directory '{}': {error}",
+                    parent.display()
+                )
+            },
+        )?;
     }
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     let mut canonical = value.clone();
     canonicalize_primary_config(&mut canonical)?;
     compact_primary_config_for_write(&mut canonical);
     let content = toml::to_string_pretty(&canonical)
-        .map_err(|error| format!("无法编码 Morphz 配置: {error}"))?;
+        .map_err(|error| format!("failed to encode Morphz configuration: {error}"))?;
     std::fs::write(&temporary, content).map_err(|error| {
         format!(
-            "无法写入 Managed 临时配置 '{}': {error}",
+            "failed to write temporary Managed configuration '{}': {error}",
             temporary.display()
         )
     })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("无法保护 Managed 配置 '{}': {error}", temporary.display()))?;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600)).map_err(
+            |error| {
+                format!(
+                    "failed to protect Managed configuration '{}': {error}",
+                    temporary.display()
+                )
+            },
+        )?;
     }
-    std::fs::rename(&temporary, path)
-        .map_err(|error| format!("无法原子替换 Managed 配置 '{}': {error}", path.display()))?;
+    std::fs::rename(&temporary, path).map_err(|error| {
+        format!(
+            "failed to atomically replace Managed configuration '{}': {error}",
+            path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -2834,6 +2977,12 @@ fn resolve_config_with_homes(
         path: PathBuf::from("/etc/morphz/morphz.toml"),
     });
 
+    #[cfg(unix)]
+    candidates.push(ConfigLayer {
+        kind: ConfigLayerKind::System,
+        path: PathBuf::from("/etc/morphz/models.toml"),
+    });
+
     let primary_exists = morphz_home
         .as_ref()
         .is_some_and(|home| home.join("morphz.toml").is_file());
@@ -2855,6 +3004,10 @@ fn resolve_config_with_homes(
             kind: ConfigLayerKind::User,
             path: home.join("morphz.toml"),
         });
+        candidates.push(ConfigLayer {
+            kind: ConfigLayerKind::User,
+            path: home.join("models.toml"),
+        });
         if let Some(profile) = profile {
             validate_profile_name(profile)?;
             candidates.push(ConfigLayer {
@@ -2863,7 +3016,10 @@ fn resolve_config_with_homes(
             });
         }
     } else if profile.is_some() {
-        return Err("无法确定 Morphz 用户配置目录，不能加载 --profile".to_string());
+        return Err(
+            "cannot determine the Morphz user configuration directory; --profile cannot be loaded"
+                .to_string(),
+        );
     }
 
     let root = discover_project_root(cwd);
@@ -2904,7 +3060,7 @@ fn resolve_config_with_homes(
             Err(error) if error.kind() == io::ErrorKind::NotFound && !required => continue,
             Err(error) => {
                 return Err(format!(
-                    "无法读取 {} 配置 '{}': {error}",
+                    "failed to read {} configuration '{}': {error}",
                     layer.kind.as_str(),
                     absolute.display()
                 ))
@@ -2912,7 +3068,7 @@ fn resolve_config_with_homes(
         };
         let mut value = content.parse::<toml::Value>().map_err(|error| {
             format!(
-                "{} 配置 '{}' 解析失败: {error}",
+                "failed to parse {} configuration '{}': {error}",
                 layer.kind.as_str(),
                 absolute.display()
             )
@@ -2938,7 +3094,7 @@ fn resolve_config_with_homes(
 
     let config = merged
         .try_into::<AppConfig>()
-        .map_err(|error| format!("合并后的 Morphz 配置无效: {error}"))?;
+        .map_err(|error| format!("merged Morphz configuration is invalid: {error}"))?;
     Ok(ResolvedConfig {
         config,
         layers,
@@ -2957,7 +3113,7 @@ fn validate_profile_name(profile: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "Profile 名称 '{profile}' 非法；只允许字母、数字、连字符和下划线"
+            "Profile name '{profile}' is invalid; only letters, digits, hyphens, and underscores are allowed"
         ))
     }
 }
@@ -2969,7 +3125,7 @@ fn validate_catalog_key(kind: &str, value: &str) -> Result<(), String> {
         || value.chars().any(char::is_control)
     {
         return Err(format!(
-            "{kind} ID '{value}' 非法；不能为空、不能包含首尾空白或控制字符，且最长为 255 字节"
+            "{kind} ID '{value}' is invalid; it cannot be empty, contain leading or trailing whitespace or control characters, or exceed 255 bytes"
         ));
     }
     Ok(())
@@ -3018,7 +3174,7 @@ fn validate_project_layer(value: &toml::Value, path: &Path) -> Result<(), String
         Ok(())
     } else {
         Err(format!(
-            "项目配置 '{}' 试图设置宿主控制面字段：{}。请把这些字段移到用户配置",
+            "project configuration '{}' attempts to set host control-plane fields: {}. Move these fields to the user configuration",
             path.display(),
             forbidden.join(", ")
         ))
@@ -3160,14 +3316,14 @@ impl AppConfig {
         if let Ok(model) = std::env::var("MORPHZ_LLM_MODEL") {
             let model = model.trim();
             if model.is_empty() {
-                return Err("MORPHZ_LLM_MODEL 不能为空".to_string());
+                return Err("MORPHZ_LLM_MODEL cannot be empty".to_string());
             }
             self.llm.model = model.to_string();
         }
         if let Ok(provider) = std::env::var("MORPHZ_LLM_PROVIDER") {
             let provider = provider.trim();
             if provider.is_empty() {
-                return Err("MORPHZ_LLM_PROVIDER 不能为空".to_string());
+                return Err("MORPHZ_LLM_PROVIDER cannot be empty".to_string());
             }
             self.llm.provider = Some(provider.to_string());
         }
@@ -3194,7 +3350,7 @@ impl AppConfig {
         }
         if let Ok(value) = std::env::var("MORPHZ_EXEC_NETWORK") {
             self.permissions.network = parse_env_bool(&value)
-                .ok_or_else(|| format!("MORPHZ_EXEC_NETWORK 不是合法布尔值: {value}"))?;
+                .ok_or_else(|| format!("MORPHZ_EXEC_NETWORK is not a valid boolean: {value}"))?;
         }
         if let Ok(value) = std::env::var("MORPHZ_PERMISSION_MODE") {
             self.permissions.mode = match value.trim().to_ascii_lowercase().as_str() {
@@ -3202,20 +3358,26 @@ impl AppConfig {
                 "auto_review" | "auto-review" | "auto" => PermissionMode::AutoReview,
                 "full_access" | "full-access" | "danger_full_access" => PermissionMode::FullAccess,
                 "custom" => PermissionMode::Custom,
-                _ => return Err(format!("MORPHZ_PERMISSION_MODE 不是合法模式: {value}")),
+                _ => {
+                    return Err(format!(
+                        "MORPHZ_PERMISSION_MODE is not a valid mode: {value}"
+                    ))
+                }
             };
         }
         if let Ok(value) = std::env::var("MORPHZ_AUTO_REVIEW_MODEL") {
             let value = value.trim();
             if value.is_empty() {
-                return Err("MORPHZ_AUTO_REVIEW_MODEL 不能为空".to_string());
+                return Err("MORPHZ_AUTO_REVIEW_MODEL cannot be empty".to_string());
             }
             self.permissions.auto_review_model = Some(value.to_string());
         }
         if let Ok(value) = std::env::var("MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE") {
             self.orchestrator.interrupt_dialogue_on_new_message = parse_env_bool(&value)
                 .ok_or_else(|| {
-                    format!("MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE 不是合法布尔值: {value}")
+                    format!(
+                        "MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE is not a valid boolean: {value}"
+                    )
                 })?;
         }
         if let Ok(value) = std::env::var("MORPHZ_EVAL_CALLABLE_TOOLS") {
@@ -3298,7 +3460,7 @@ impl AppConfig {
             } else {
                 Some(ReasoningEffort::parse(value).ok_or_else(|| {
                     format!(
-                        "MORPHZ_LLM_REASONING_EFFORT 只支持 default、none、low、medium、high、max: {value}"
+                        "MORPHZ_LLM_REASONING_EFFORT supports only default, none, low, medium, high, and max: {value}"
                     )
                 })?)
             };
@@ -3306,7 +3468,7 @@ impl AppConfig {
         if let Ok(value) = std::env::var("MORPHZ_SESSION_ACTIVE_WINDOW") {
             self.orchestrator.session_working_set.active_window = parse_human_duration(&value)
                 .map_err(|error| {
-                    format!("MORPHZ_SESSION_ACTIVE_WINDOW 不是合法 duration: {error}")
+                    format!("MORPHZ_SESSION_ACTIVE_WINDOW is not a valid duration: {error}")
                 })?;
         }
         apply_usize_env(
@@ -3324,9 +3486,9 @@ fn apply_usize_env(name: &str, target: &mut usize) -> Result<(), String> {
     let parsed = value
         .trim()
         .parse::<usize>()
-        .map_err(|_| format!("{name} 不是合法正整数: {value}"))?;
+        .map_err(|_| format!("{name} is not a valid positive integer: {value}"))?;
     if parsed == 0 {
-        return Err(format!("{name} 必须大于 0"));
+        return Err(format!("{name} must be greater than 0"));
     }
     *target = parsed;
     Ok(())
@@ -3339,9 +3501,9 @@ fn apply_u64_env(name: &str, target: &mut u64) -> Result<(), String> {
     let parsed = value
         .trim()
         .parse::<u64>()
-        .map_err(|_| format!("{name} 不是合法正整数: {value}"))?;
+        .map_err(|_| format!("{name} is not a valid positive integer: {value}"))?;
     if parsed == 0 {
-        return Err(format!("{name} 必须大于 0"));
+        return Err(format!("{name} must be greater than 0"));
     }
     *target = parsed;
     Ok(())
@@ -3354,9 +3516,9 @@ fn apply_u32_env(name: &str, target: &mut u32) -> Result<(), String> {
     let parsed = value
         .trim()
         .parse::<u32>()
-        .map_err(|_| format!("{name} 不是合法正整数: {value}"))?;
+        .map_err(|_| format!("{name} is not a valid positive integer: {value}"))?;
     if parsed == 0 {
-        return Err(format!("{name} 必须大于 0"));
+        return Err(format!("{name} must be greater than 0"));
     }
     *target = parsed;
     Ok(())
@@ -3369,9 +3531,9 @@ fn apply_optional_u32_env(name: &str, target: &mut Option<u32>) -> Result<(), St
     let parsed = value
         .trim()
         .parse::<u32>()
-        .map_err(|_| format!("{name} 不是合法正整数: {value}"))?;
+        .map_err(|_| format!("{name} is not a valid positive integer: {value}"))?;
     if parsed == 0 {
-        return Err(format!("{name} 必须大于 0"));
+        return Err(format!("{name} must be greater than 0"));
     }
     *target = Some(parsed);
     Ok(())
@@ -3492,7 +3654,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("max_queued"));
-        assert!(error.contains("必须大于等于 1"));
+        assert!(error.contains("greater than or equal to 1"));
         assert!(!error.contains("max_sessions"));
     }
 
@@ -3508,7 +3670,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("max_in_flight"));
-        assert!(error.contains("必须大于等于 1"));
+        assert!(error.contains("greater than or equal to 1"));
     }
 
     #[test]
@@ -3640,6 +3802,83 @@ mod tests {
     }
 
     #[test]
+    fn model_config_is_loaded_after_core_without_mixing_runtime_policy() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("repo");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("morphz.toml"),
+            "[server]\nbind='127.0.0.1:9900'\n[llm]\nmodel='legacy-route'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("models.toml"),
+            "[llm]\nmodel='primary-route'\nallowed_evaluation_models=['fast-route']\n\n[models.primary-route]\nservice='primary'\nphysical_model='physical-primary'\n\n[models.fast-route]\nservice='primary'\nphysical_model='physical-fast'\n\n[services.primary]\nadapter='openai-compatible'\nprotocol='openai-responses'\nbase_url='http://localhost:8317/v1'\n",
+        )
+        .unwrap();
+
+        let resolved = resolve_config_with_home(&root, None, None, Some(home)).unwrap();
+
+        assert_eq!(resolved.config.server.bind, "127.0.0.1:9900");
+        assert_eq!(resolved.config.llm.model, "primary-route");
+        assert_eq!(
+            resolved.config.llm.allowed_evaluation_models,
+            vec!["fast-route"]
+        );
+        assert!(resolved.config.model_routes.contains_key("primary-route"));
+        assert!(resolved.config.model_routes.contains_key("fast-route"));
+    }
+
+    #[test]
+    fn legacy_combined_config_is_split_without_losing_existing_model_edits() {
+        let temp = TempDir::new().unwrap();
+        let core_path = temp.path().join("morphz.toml");
+        let model_path = temp.path().join("models.toml");
+        std::fs::write(
+            &core_path,
+            "[server]\nbind='127.0.0.1:8808'\n[llm]\nmodel='legacy-primary'\nallowed_evaluation_models=['legacy-fast']\n\n[models.legacy-primary]\nservice='legacy'\nphysical_model='legacy-physical'\n\n[services.legacy]\nadapter='openai-compatible'\nprotocol='openai-responses'\nbase_url='http://legacy.invalid/v1'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &model_path,
+            "[llm]\nmodel='operator-primary'\n\n[models.operator-primary]\nservice='operator'\nphysical_model='operator-physical'\n\n[services.operator]\nadapter='openai-compatible'\nprotocol='openai-responses'\nbase_url='http://operator.invalid/v1'\n",
+        )
+        .unwrap();
+
+        split_primary_model_config_if_needed(&core_path, &model_path).unwrap();
+
+        let core = std::fs::read_to_string(&core_path).unwrap();
+        let models = std::fs::read_to_string(&model_path).unwrap();
+        let core_value = core.parse::<toml::Value>().unwrap();
+        let model_value = models.parse::<toml::Value>().unwrap();
+        assert_eq!(
+            core_value["server"]["bind"].as_str(),
+            Some("127.0.0.1:8808")
+        );
+        for key in MODEL_CONFIG_ROOT_KEYS {
+            assert!(core_value.get(*key).is_none(), "core still contains {key}");
+        }
+        assert_eq!(
+            model_value["llm"]["model"].as_str(),
+            Some("operator-primary")
+        );
+        assert!(model_value["models"].get("legacy-primary").is_some());
+        assert!(model_value["models"].get("operator-primary").is_some());
+        assert!(model_value["services"].get("legacy").is_some());
+        assert!(model_value["services"].get("operator").is_some());
+
+        // A completed migration is idempotent and must not rewrite either
+        // file on every startup.
+        let core_before = core.clone();
+        let models_before = models.clone();
+        split_primary_model_config_if_needed(&core_path, &model_path).unwrap();
+        assert_eq!(std::fs::read_to_string(&core_path).unwrap(), core_before);
+        assert_eq!(std::fs::read_to_string(&model_path).unwrap(), models_before);
+    }
+
+    #[test]
     fn primary_config_overrides_legacy_defaults_but_not_profile() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("repo");
@@ -3673,7 +3912,7 @@ mod tests {
 
         let error = resolve_config_with_home(&root, None, None, None).unwrap_err();
 
-        assert!(error.contains("宿主控制面字段"));
+        assert!(error.contains("host control-plane fields"));
         assert!(error.contains("services.evil.base_url"));
         assert!(error.contains("permissions.mode"));
         assert!(error.contains("storage.backend"));
@@ -3697,7 +3936,7 @@ mod tests {
 
         let unsafe_name =
             resolve_config_with_home(&root, None, Some("../secret"), Some(home)).unwrap_err();
-        assert!(unsafe_name.contains("Profile 名称"));
+        assert!(unsafe_name.contains("Profile name"));
     }
 
     #[test]
@@ -3730,7 +3969,7 @@ mod tests {
         let error = resolved
             .apply_cli_set_overrides(&["llm.typo=true".to_string()])
             .unwrap_err();
-        assert!(error.contains("未知配置键"));
+        assert!(error.contains("unknown configuration key"));
     }
 
     #[test]
@@ -4120,7 +4359,7 @@ physical_model = "model-b"
             save_managed_inference_at(&primary_path, None, "fallback-route", None, Some(300_000))
                 .unwrap_err();
 
-        assert!(error.contains("多个物理目标"));
+        assert!(error.contains("multiple physical targets"));
         let persisted: AppConfig =
             toml::from_str(&std::fs::read_to_string(&primary_path).unwrap()).unwrap();
         assert_eq!(

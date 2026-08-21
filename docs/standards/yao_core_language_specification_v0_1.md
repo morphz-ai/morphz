@@ -47,7 +47,9 @@ A conforming Yao Core implementation MUST preserve these properties:
 Yao source is UTF-8 and uses S-expression concrete syntax. Implementations MUST retain, for every
 token and syntax node, a source span containing byte offsets and human-readable line and column
 positions. A rejected program MUST identify the primary span and SHOULD include a stable diagnostic
-code and related spans.
+code and related spans. Protocol-facing diagnostic detail MUST use canonical English. A localized
+product surface MAY translate the stable diagnostic code, but MUST preserve that code and the
+canonical detail; program control flow MUST NOT depend on diagnostic wording.
 
 Whitespace separates tokens. `;` starts a line comment. Strings use double quotes and the escapes
 `\\`, `\"`, `\n`, `\r`, and `\t`. The atoms `true`, `false`, and `nil` are reserved literals.
@@ -161,8 +163,9 @@ falling back to `Json`.
 
 ## 6. Values and pure expressions
 
-References to lexical bindings use `$name`; field selection uses `$name.field`. Bindings are
-immutable and cannot be shadowed in the same lexical scope.
+References to lexical bindings use the bare binding name; field selection uses `name.field`.
+Bindings are immutable and cannot be shadowed in the same lexical scope. The `$name` spelling is
+invalid Yao source and implementations SHOULD diagnose it with the bare-name replacement.
 
 Core value constructors are:
 
@@ -176,6 +179,12 @@ Core value constructors are:
 (ok EXPR ERROR-TYPE)
 (err EXPR OK-TYPE)
 ```
+
+`list` constructs a homogeneous `List<T>` and `dict` constructs a homogeneous `Map<T>`; every
+element or value therefore needs a common type. A fixed object whose named fields intentionally
+have different types is a named `record`, not a `dict`. Implementations MUST NOT silently widen a
+heterogeneous `dict` to `Map<Json>`. A diagnostic SHOULD identify the conflicting field and suggest
+a named record or an explicit `Json` boundary.
 
 `none` names the absent element type. Because v0.1 does not use contextual or bidirectional type
 inference, `ok` also names its uninhabited error type and `err` names its uninhabited success
@@ -225,7 +234,7 @@ adds one immutable lexical binding, and returns `nil`. Bindings created in `if`,
 Union matching uses:
 
 ```lisp
-(match $decision
+(match decision
   ((case Decision.accept (reason why) (confidence score)) EXPR)
   ((case Decision.reject (reason why)) EXPR))
 ```
@@ -329,7 +338,7 @@ An inference may return a Program Value:
 (infer
   (task "construct a bounded evaluation plan")
   (returns (Program Decision (effects infer (tool read))))
-  (input $request))
+  (input request))
 ```
 
 Its model transport representation is exactly one JSON object with one field:
@@ -354,7 +363,7 @@ this admission pipeline before constructing `Program<T, E>`:
 
 Program Values are closed over ordinary lexical bindings: references to caller-local values are
 forbidden. A Runtime profile MAY inject one explicitly typed, immutable host environment (for
-example Morphz `$runtime`) into both parent and child; this is inherited authority, not lexical
+example Morphz `runtime`) into both parent and child; this is inherited authority, not lexical
 capture. Other inputs must be embedded as validated values or supplied through a future explicitly
 typed function profile.
 

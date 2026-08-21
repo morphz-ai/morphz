@@ -274,7 +274,7 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
   (task "根据显式证据生成编辑参数")
   (tools)
   (returns json)
-  (evidence $repository))
+  (evidence repository))
 ```
 
 - 不写 `(tools ...)`：继承程序根部 `(requires (tools ...))` 的范围；
@@ -317,10 +317,10 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
   (params plan)
 
   (body
-    (map $plan.changes change
+    (map plan.changes change
       (call edit
-        (path $change.path)
-        (content $change.content)))))
+        (path change.path)
+        (content change.content)))))
 ```
 
 入口仍使用统一的 `call`：
@@ -334,10 +334,10 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
     (bind decision
       (infer
         (task "制定本轮修改方案")
-        (input $repository)))
+        (input repository)))
 
     (call apply-plan
-      (plan $decision))))
+      (plan decision))))
 ```
 
 编译期必须把同一种表面语法静态解析为不同 IR，而不是到执行时猜测：

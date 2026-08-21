@@ -1,8 +1,8 @@
 use crate::config::{
-    managed_config_path, morphz_home_dir, save_managed_provider_account_at,
-    save_managed_provider_catalog, AppConfig, AuthAccountConfig, CredentialConfig,
-    CredentialSource, ModelProtocol, ModelRouteAffinity, ModelRouteCandidateConfig,
-    ModelRouteConfig, ModelRouteSelection, ProviderConfig, ProviderInstanceConfig,
+    morphz_home_dir, save_managed_provider_account_at, save_managed_provider_catalog, AppConfig,
+    AuthAccountConfig, CredentialConfig, CredentialSource, ModelProtocol, ModelRouteAffinity,
+    ModelRouteCandidateConfig, ModelRouteConfig, ModelRouteSelection, ProviderConfig,
+    ProviderInstanceConfig,
 };
 use crate::i18n::Locale;
 use crate::provider::{
@@ -1046,7 +1046,7 @@ pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, Se
         ..ProviderInstanceConfig::default()
     };
     let config_path = if oauth_adapter.is_some() {
-        let path = managed_config_path()?;
+        let path = crate::config::managed_model_config_path()?;
         save_managed_provider_account_at(&path, &provider_id, &instance, &account_id, &account)?;
         path
     } else {

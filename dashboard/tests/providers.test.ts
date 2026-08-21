@@ -148,10 +148,20 @@ test('conversation selector renders the catalog display label, never the route c
   assert.match(appSource, /setView\('providers'\)/)
 })
 
+test('conversation model selection is persisted on the Session instead of mutating the Runtime default', () => {
+  assert.match(appSource, /selectedSession\?\.model_alias \?\? '__runtime__'/)
+  assert.match(appSource, /const modelAlias = model === '__runtime__' \? '' : model/)
+  assert.match(
+    appSource,
+    /`\/api\/sessions\/\$\{encodeURIComponent\(selectedSessionId\)\}`,[\s\S]*?'PATCH',[\s\S]*?\{ model_alias: modelAlias \}/,
+  )
+  assert.match(appSource, /model\.runtimeDefault/)
+})
+
 test('reasoning selector follows the selected model native capability list', () => {
   assert.match(appSource, /selectedModelOption\?\.supported_reasoning_efforts/)
   assert.match(appSource, /reasoningEffortOptions\.includes\('high'\)/)
-  assert.match(appSource, /reasoning_effort: 'default'/)
+  assert.match(appSource, /const selectedReasoningEffort = status\?\.reasoning_effort/)
   assert.doesNotMatch(appSource, /function inferredProviderReasoningEffort/)
   assert.doesNotMatch(appSource, /inferredProviderReasoningEffort\(/)
 })

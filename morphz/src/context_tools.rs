@@ -64,10 +64,10 @@ impl Tool for ContextTxTool {
         let args: ContextTxArgs = serde_json::from_str(arguments)?;
         let session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
-            .map_err(|_| "context_tx 缺少 Runtime 注入的当前 active session")?;
+            .map_err(|_| "context_tx is missing the Runtime-injected active session")?;
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "context_tx 缺少 Runtime 注入的当前 cognitive context")?;
+            .map_err(|_| "context_tx is missing the Runtime-injected cognitive context")?;
         let delivery_protected = CURRENT_CAUSAL_ROUTE
             .try_with(|route| {
                 route
@@ -177,7 +177,7 @@ impl Tool for RecallTool {
         args.end_time = non_empty(args.end_time);
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "recall 缺少 Runtime 注入的当前 cognitive context")?;
+            .map_err(|_| "recall is missing the Runtime-injected cognitive context")?;
         let search_selected = args.query.is_some()
             || args.start_time.is_some()
             || args.end_time.is_some()
@@ -186,7 +186,9 @@ impl Tool for RecallTool {
             + usize::from(args.frame_id.is_some())
             + usize::from(search_selected);
         if selected != 1 {
-            return Err("recall 必须选择 event_id、frame_id 或搜索（query/时间范围）之一".into());
+            return Err(
+                "recall must select event_id, frame_id, or search by query/time range".into(),
+            );
         }
 
         if let Some(frame_id) = args.frame_id {
@@ -211,7 +213,12 @@ impl Tool for RecallTool {
                 .context_engine
                 .find_event(&context_id, &event_id)
                 .await?
-                .ok_or_else(|| format!("event '{}' 不存在或不属于当前 Context", event_id))?;
+                .ok_or_else(|| {
+                    format!(
+                        "event '{}' does not exist or is outside the current Context",
+                        event_id
+                    )
+                })?;
             let event_reference = self.context_engine.event_reference(&event);
             return event_chunk(
                 event,
@@ -242,7 +249,7 @@ impl Tool for RecallTool {
         let page_end_time = page.end_time;
         let next_cursor = page.next_cursor.clone();
         let paging_instruction = next_cursor.as_ref().map(|cursor| {
-            format!("下一次保持 query/start_time/end_time 不变，并原样传入 cursor={cursor}")
+            format!("keep query/start_time/end_time unchanged and pass cursor={cursor} on the next request")
         });
         let matches = page
             .matches
@@ -298,7 +305,7 @@ fn parse_recall_time(
         .map(|value| {
             DateTime::parse_from_rfc3339(&value)
                 .map(|time| time.with_timezone(&Utc))
-                .map_err(|_| format!("recall {name} 必须是 RFC 3339 时间").into())
+                .map_err(|_| format!("recall {name} must be an RFC 3339 timestamp").into())
         })
         .transpose()
 }
@@ -336,7 +343,7 @@ fn event_chunk(
         "offset": offset,
         "total_chars": total_chars,
         "next_offset": next_offset,
-        "paging_instruction": next_offset.map(|next| format!("下一次对同一 event_id 使用 offset={next}")),
+        "paging_instruction": next_offset.map(|next| format!("use offset={next} with the same event_id on the next request")),
         "text": chunk,
     }))?)
 }
@@ -488,7 +495,7 @@ mod tests {
             .await;
 
         let error = result.unwrap_err().to_string();
-        assert!(error.contains("Runtime 因果保护"), "{error}");
+        assert!(error.contains("causally protected"), "{error}");
         let view = engine
             .build_context_encoding("context_test", "session_test", &Default::default())
             .await
@@ -760,7 +767,9 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(forged.to_string().contains("不指向可见 observation"));
+        assert!(forged
+            .to_string()
+            .contains("does not identify a visible observation"));
     }
 
     #[tokio::test]

@@ -75,7 +75,7 @@ pub fn evaluate_pure(
         HirKind::Literal { value } => literal_value(value, expression),
         HirKind::Reference { root, path } => {
             let mut value = environment.get(root).cloned().ok_or_else(|| EvalFailure {
-                message: format!("binding '${root}' is unavailable at runtime"),
+                message: format!("binding '{root}' is unavailable at runtime"),
                 span: expression.span,
             })?;
             for field in path {
@@ -1042,7 +1042,7 @@ mod tests {
     #[test]
     fn evaluates_bindings_control_and_checked_arithmetic() {
         assert_eq!(
-            evaluate("(seq (bind x (add 2 3)) (if (eq $x 5) (mul $x 2) 0))").unwrap(),
+            evaluate("(seq (bind x (add 2 3)) (if (eq x 5) (mul x 2) 0))").unwrap(),
             json!(10)
         );
         assert!(evaluate("(div 1 0)").unwrap_err().message.contains("zero"));
@@ -1166,7 +1166,7 @@ mod tests {
     fn evaluates_and_revalidates_sealed_context_transactions() {
         let source = r#"(eval
           (context-transaction
-            (context $runtime.context)
+            (context runtime.context)
             (transaction
               (context-tx
                 (base-version 3)
@@ -1215,9 +1215,9 @@ mod tests {
             (types (union Decision (accept (reason String)) (reject (reason String))))
             (seq
               (bind decision (variant Decision.accept (reason "verified")))
-              (match $decision
-                ((case Decision.accept (reason why)) $why)
-                ((case Decision.reject (reason why)) $why))))
+              (match decision
+                ((case Decision.accept (reason why)) why)
+                ((case Decision.reject (reason why)) why))))
         "#;
         let program =
             analyze(source, &StaticProfile::default(), AnalysisLimits::default()).unwrap();

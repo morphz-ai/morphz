@@ -11,8 +11,11 @@
 
 ## 文档入口
 
-- [Runtime 实验基线 v2](./runtime_baseline_v2.md)：论文新实验与路演当前默认的 Runtime 源码 commit；
+- [Runtime 实验基线 v3](./runtime_baseline_v3.md)：论文、路演与公开 Benchmark 新实验当前默认的 Runtime 源码 commit；
+- [Runtime 实验基线 v2](./runtime_baseline_v2.md)：历史的 2026-08-17 Runtime 基线；
 - [Runtime 实验基线 v1](./runtime_baseline_v1.md)：历史基线及 author/committer 重写后的 SHA 映射；
+- [Terminal-Bench 2.1 执行就绪记录](./terminal_bench_2_1_execution_readiness_2026_08_20.md)：Harbor、数据集、Linux/AMD64 产物、ATIF、模型路由和隔离门禁；
+- [Terminal-Bench 2.1 正式批次 v1 结果与审计](./terminal_bench_2_1_formal_v1_result_2026_08_21.md)：89 题 × 5 次正式运行、严格 reward-hacking 审计、Token、时延、异常与优化建议；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；

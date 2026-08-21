@@ -1,0 +1,15 @@
+# Benchmark-only overlay. It reuses the user's existing `custom` service and
+# credential binding without copying either endpoint credentials or secrets.
+
+[llm]
+model = "gpt-5.6-sol"
+reasoning_effort = "max"
+
+[models."gpt-5.6-sol"]
+service = "custom"
+account = "custom-default"
+physical_model = "gpt-5.6-sol"
+
+[permissions]
+mode = "full_access"
+shell_environment_policy = "remove_sensitive"

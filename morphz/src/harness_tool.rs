@@ -55,7 +55,7 @@ impl Tool for HarnessListTool {
     async fn execute(&self, arguments: &str) -> Result<String, DynError> {
         let value: serde_json::Value = serde_json::from_str(arguments)?;
         if value.as_object().is_none_or(|object| !object.is_empty()) {
-            return Err("harness_list 不接受参数".into());
+            return Err("harness_list does not accept arguments".into());
         }
         Ok(serde_json::to_string_pretty(&json!({
             "harnesses": self.registry.descriptors(),
@@ -137,17 +137,17 @@ impl Tool for HarnessSelectTool {
         let version = args.version.trim();
         let reason = args.reason.trim();
         if id.is_empty() || version.is_empty() || reason.is_empty() {
-            return Err("harness_select.id/version/reason 不能为空".into());
+            return Err("harness_select.id/version/reason must not be empty".into());
         }
         if reason.chars().count() > 4_000 {
-            return Err("harness_select.reason 超过 4,000 字符上限".into());
+            return Err("harness_select.reason exceeds the 4,000-character limit".into());
         }
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "harness_select 缺少当前 Context 路由")?;
+            .map_err(|_| "harness_select is missing the current Context route")?;
         let activation_id = CURRENT_ATTEMPT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "harness_select 缺少当前 Evaluation 路由")?;
+            .map_err(|_| "harness_select is missing the current Evaluation route")?;
         let active = self
             .objective_evaluations
             .get_for_activation(&activation_id);
@@ -169,7 +169,7 @@ impl Tool for HarnessSelectTool {
         {
             if existing.harness_id != id || existing.harness_version != version {
                 return Err(format!(
-                    "当前 Evaluation 已绑定 '{}@{}'，不能改绑为 '{}@{}'",
+                    "current Evaluation is already bound to '{}@{}' and cannot be rebound to '{}@{}'",
                     existing.harness_id, existing.harness_version, id, version
                 )
                 .into());
@@ -181,10 +181,9 @@ impl Tool for HarnessSelectTool {
             }))?);
         }
 
-        let harness = self
-            .registry
-            .get(id, version)
-            .ok_or_else(|| format!("Harness '{id}@{version}' 未安装；先调用 harness_list"))?;
+        let harness = self.registry.get(id, version).ok_or_else(|| {
+            format!("Harness '{id}@{version}' is not installed; call harness_list first")
+        })?;
         let binding = persist_evaluation_harness_binding(
             self.store.as_ref(),
             &context_id,

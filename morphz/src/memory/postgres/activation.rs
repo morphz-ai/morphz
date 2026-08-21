@@ -27,6 +27,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS dialogue_lane_released_at TEXT"#,
+        r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_session_status
            ON thread_activations(session_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_context_status
@@ -185,6 +186,7 @@ pub(super) fn activation_from_row(row: &PgRow) -> Result<ThreadActivationRecord,
         trigger_kind: row.get("trigger_kind"),
         parent_activation_id: row.get("parent_activation_id"),
         root_turn_id: row.get("root_turn_id"),
+        model_alias: row.get("model_alias"),
         context_snapshot_version: row
             .get::<Option<i64>, _>("context_snapshot_version")
             .map(u64::try_from)
@@ -1382,6 +1384,26 @@ impl ActivationStore for PostgresStore {
             .as_ref()
             .map(activation_from_row)
             .transpose()
+    }
+
+    async fn bind_thread_activation_model(
+        &self,
+        id: &str,
+        model_alias: &str,
+    ) -> Result<Option<ThreadActivationRecord>, StoreError> {
+        let model_alias = model_alias.trim();
+        if model_alias.is_empty() {
+            return Err("Activation model alias 不能为空".into());
+        }
+        sqlx::query(
+            "UPDATE thread_activations SET model_alias = $1, updated_at = $2 WHERE id = $3 AND model_alias IS NULL",
+        )
+        .bind(model_alias)
+        .bind(now_text())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.get_thread_activation(id).await
     }
 
     async fn list_thread_activations_by_ids(

@@ -124,9 +124,9 @@ impl EffectiveProviderCatalog {
                 .llm
                 .provider
                 .as_ref()
-                .ok_or("尚未选择模型 Provider；请先运行 `morphz setup`")?;
+                .ok_or("no model Provider is selected; run `morphz setup` first")?;
             if !provider_instances.contains_key(provider_id) {
-                return Err(format!("Provider Instance '{provider_id}' 未定义"));
+                return Err(format!("Provider Instance '{provider_id}' is not defined"));
             }
             let mut models = app.llm.models.clone();
             if !models.iter().any(|model| model == &app.llm.model) {
@@ -157,7 +157,7 @@ impl EffectiveProviderCatalog {
         for (provider_id, provider) in &provider_instances {
             if provider.base_url.trim().is_empty() {
                 return Err(format!(
-                    "Provider Instance '{provider_id}' 的 base_url 不能为空"
+                    "Provider Instance '{provider_id}' has an empty base_url"
                 ));
             }
             validate_provider_adapter_protocol(provider_id, provider)?;
@@ -168,18 +168,18 @@ impl EffectiveProviderCatalog {
         for (account_id, account) in &auth_accounts {
             if account.auth_adapter.trim().is_empty() {
                 return Err(format!(
-                    "Auth Account '{account_id}' 的 auth_adapter 不能为空"
+                    "Auth Account '{account_id}' has an empty auth_adapter"
                 ));
             }
             if account.credential_ref.trim().is_empty() && account.auth_adapter != "none" {
                 return Err(format!(
-                    "Auth Account '{account_id}' 的 credential_ref 不能为空"
+                    "Auth Account '{account_id}' has an empty credential_ref"
                 ));
             }
             if let Some(provider_id) = account.provider.as_deref() {
                 if !provider_instances.contains_key(provider_id) {
                     return Err(format!(
-                        "Auth Account '{account_id}' 引用了不存在的 Provider Instance '{provider_id}'"
+                        "Auth Account '{account_id}' references missing Provider Instance '{provider_id}'"
                     ));
                 }
             }
@@ -188,7 +188,9 @@ impl EffectiveProviderCatalog {
             validate_route_id(route_id)?;
             register_alias(&mut aliases, route_id, route_id)?;
             if route.candidates.is_empty() {
-                return Err(format!("Model Route '{route_id}' 没有候选 Provider"));
+                return Err(format!(
+                    "Model Route '{route_id}' has no Provider candidates"
+                ));
             }
             for alias in &route.aliases {
                 register_alias(&mut aliases, alias, route_id)?;
@@ -197,32 +199,34 @@ impl EffectiveProviderCatalog {
                 let display_alias = display_alias.trim();
                 if display_alias.is_empty() {
                     return Err(format!(
-                        "Model Route '{route_id}' 的 display_alias 不能为空"
+                        "Model Route '{route_id}' has an empty display_alias"
                     ));
                 }
                 if display_alias != route_id
                     && !route.aliases.iter().any(|alias| alias == display_alias)
                 {
                     return Err(format!(
-                        "Model Route '{route_id}' 的展示别名 '{display_alias}' 不是该 Route 的可用别名"
+                        "display alias '{display_alias}' is not an available alias of Model Route '{route_id}'"
                     ));
                 }
             }
             for candidate in &route.candidates {
                 let provider = provider_instances.get(&candidate.provider).ok_or_else(|| {
                     format!(
-                        "Model Route '{route_id}' 引用了不存在的 Provider Instance '{}'",
+                        "Model Route '{route_id}' references missing Provider Instance '{}'",
                         candidate.provider
                     )
                 })?;
                 if candidate.model.trim().is_empty() {
-                    return Err(format!("Model Route '{route_id}' 包含空物理模型名"));
+                    return Err(format!(
+                        "Model Route '{route_id}' contains an empty physical model name"
+                    ));
                 }
                 if let Some(account_id) = &candidate.account {
                     validate_account_for_provider(&auth_accounts, account_id, &candidate.provider)?;
                 } else if provider.accounts.is_empty() {
                     return Err(format!(
-                        "Provider Instance '{}' 没有 Auth Account",
+                        "Provider Instance '{}' has no Auth Account",
                         candidate.provider
                     ));
                 }
@@ -242,7 +246,7 @@ impl EffectiveProviderCatalog {
         let route_id = self
             .aliases
             .get(alias)
-            .ok_or_else(|| format!("模型别名 '{alias}' 未配置 Model Route"))?;
+            .ok_or_else(|| format!("model alias '{alias}' has no configured Model Route"))?;
         Ok((
             route_id,
             self.model_routes
@@ -265,7 +269,7 @@ fn validate_provider_adapter_protocol(
     if let Some(expected) = expected {
         if provider.protocol != expected {
             return Err(format!(
-                "Provider Instance '{provider_id}' 的 Adapter '{}' 需要协议 '{}'，当前为 '{}'",
+                "Adapter '{}' of Provider Instance '{provider_id}' requires protocol '{}', found '{}'",
                 provider.adapter,
                 expected.as_str(),
                 provider.protocol.as_str()
@@ -277,7 +281,7 @@ fn validate_provider_adapter_protocol(
 
 fn validate_route_id(value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
-        Err("Model Route ID 不能为空".to_string())
+        Err("Model Route ID must not be empty".to_string())
     } else {
         Ok(())
     }
@@ -290,12 +294,12 @@ fn register_alias(
 ) -> Result<(), String> {
     let alias = alias.trim();
     if alias.is_empty() {
-        return Err(format!("Model Route '{route_id}' 包含空别名"));
+        return Err(format!("Model Route '{route_id}' contains an empty alias"));
     }
     if let Some(existing) = aliases.insert(alias.to_string(), route_id.to_string()) {
         if existing != route_id {
             return Err(format!(
-                "模型别名 '{alias}' 同时属于 Route '{existing}' 与 '{route_id}'"
+                "model alias '{alias}' belongs to both Route '{existing}' and '{route_id}'"
             ));
         }
     }
@@ -307,16 +311,16 @@ fn validate_account_for_provider(
     account_id: &str,
     provider_id: &str,
 ) -> Result<(), String> {
-    let account = accounts
-        .get(account_id)
-        .ok_or_else(|| format!("Provider '{provider_id}' 引用了不存在的账号 '{account_id}'"))?;
+    let account = accounts.get(account_id).ok_or_else(|| {
+        format!("Provider '{provider_id}' references missing account '{account_id}'")
+    })?;
     if account
         .provider
         .as_deref()
         .is_some_and(|id| id != provider_id)
     {
         return Err(format!(
-            "Auth Account '{account_id}' 属于 Provider '{}' 而不是 '{provider_id}'",
+            "Auth Account '{account_id}' belongs to Provider '{}', not '{provider_id}'",
             account.provider.as_deref().unwrap_or_default()
         ));
     }
@@ -381,6 +385,25 @@ pub struct RoutedClient {
 }
 
 impl RoutedClient {
+    fn validate_agent_model_allowlist(
+        catalog: &EffectiveProviderCatalog,
+        llm: &LlmConfig,
+    ) -> Result<(), String> {
+        for configured in &llm.allowed_evaluation_models {
+            let alias = configured.trim();
+            if alias.is_empty() {
+                return Err(
+                    "llm.allowed_evaluation_models must not contain an empty model alias"
+                        .to_string(),
+                );
+            }
+            catalog.resolve_route(alias).map_err(|error| {
+                format!("model alias '{alias}' in llm.allowed_evaluation_models is unavailable: {error}")
+            })?;
+        }
+        Ok(())
+    }
+
     /// Creates an unconfigured routed client for first-run Dashboard setup.
     /// It cannot evaluate until a catalog is installed, but it retains the
     /// same hot-reload surface as a configured Runtime so the first OAuth/API
@@ -400,6 +423,7 @@ impl RoutedClient {
     pub fn new(app: &AppConfig, selected_alias: String) -> Result<Self, ProviderError> {
         let catalog = EffectiveProviderCatalog::from_config(app)?;
         catalog.resolve_route(&selected_alias)?;
+        Self::validate_agent_model_allowlist(&catalog, &app.llm)?;
         Ok(Self {
             catalog: RwLock::new(catalog),
             llm: RwLock::new(app.llm.clone()),
@@ -495,7 +519,7 @@ impl RoutedClient {
             let account = catalog
                 .auth_accounts
                 .get(account_id)
-                .ok_or_else(|| format!("Auth Account '{account_id}' 不存在"))?;
+                .ok_or_else(|| format!("Auth Account '{account_id}' does not exist"))?;
             let mut candidates = route.candidates.clone();
             candidates.sort_by_key(|candidate| candidate.priority);
             let candidate = candidates
@@ -506,7 +530,7 @@ impl RoutedClient {
                 })
                 .ok_or_else(|| {
                     format!(
-                        "Auth Account '{account_id}' 不属于 Model Route '{route_id}' 的任何候选"
+                        "Auth Account '{account_id}' does not belong to any candidate of Model Route '{route_id}'"
                     )
                 })?;
             if account
@@ -515,7 +539,7 @@ impl RoutedClient {
                 .is_some_and(|provider| provider != candidate.provider)
             {
                 return Err(format!(
-                    "Auth Account '{account_id}' 与候选 Provider '{}' 不匹配",
+                    "Auth Account '{account_id}' does not match candidate Provider '{}'",
                     candidate.provider
                 ));
             }
@@ -550,14 +574,14 @@ impl RoutedClient {
         self.selected_alias
             .read()
             .map(|value| value.clone())
-            .map_err(|_| "Model Route 选择锁已损坏".to_string())
+            .map_err(|_| "Model Route selection lock is poisoned".to_string())
     }
 
     fn catalog(&self) -> Result<EffectiveProviderCatalog, String> {
         self.catalog
             .read()
             .map(|catalog| catalog.clone())
-            .map_err(|_| "Provider 路由表锁已损坏".to_string())
+            .map_err(|_| "Provider routing table lock is poisoned".to_string())
     }
 
     fn candidate_accounts<'a>(
@@ -567,7 +591,7 @@ impl RoutedClient {
         let provider = catalog
             .provider_instances
             .get(&candidate.provider)
-            .ok_or_else(|| format!("Provider Instance '{}' 不存在", candidate.provider))?;
+            .ok_or_else(|| format!("Provider Instance '{}' does not exist", candidate.provider))?;
         let ids = candidate
             .account
             .as_deref()
@@ -578,7 +602,7 @@ impl RoutedClient {
             catalog
                 .auth_accounts
                 .get(id)
-                .ok_or_else(|| format!("Auth Account '{id}' 不存在"))?;
+                .ok_or_else(|| format!("Auth Account '{id}' does not exist"))?;
             accounts.push(id);
         }
         Ok(accounts)
@@ -616,7 +640,7 @@ impl RoutedClient {
         });
         if candidates.is_empty() {
             return Err(ModelAttemptBindingError::configuration(format!(
-                "Model Route '{route_id}' 没有满足能力 {:?} 的候选",
+                "Model Route '{route_id}' has no candidate satisfying capabilities {:?}",
                 request.required_capabilities
             )));
         }
@@ -647,10 +671,9 @@ impl RoutedClient {
         let candidates = Self::eligible_route_candidates(route_id, route, request)?;
 
         let affinity_key = Self::affinity_key(route_id, route, request);
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ModelAttemptBindingError::runtime("账号调度状态锁已损坏"))?;
+        let mut state = self.state.lock().map_err(|_| {
+            ModelAttemptBindingError::runtime("account scheduling-state lock is poisoned")
+        })?;
         if let Some(account_id) = affinity_key
             .as_ref()
             .and_then(|key| state.affinity.get(key))
@@ -696,7 +719,7 @@ impl RoutedClient {
         );
         let (_, _, _, candidate, account_id) = choices.into_iter().next().ok_or_else(|| {
             ModelAttemptBindingError::account_unavailable(format!(
-                "Model Route '{route_id}' 没有启用的 Auth Account"
+                "Model Route '{route_id}' has no enabled Auth Account"
             ))
         })?;
         if let Some(key) = affinity_key {
@@ -722,7 +745,7 @@ impl RoutedClient {
             .await
             .map_err(|error| {
                 ModelAttemptBindingError::runtime(format!(
-                    "读取 Provider Account '{account_id}' 状态失败: {error}"
+                    "failed to read Provider Account '{account_id}' state: {error}"
                 ))
             })?;
         let Some(state) = state else {
@@ -785,7 +808,9 @@ impl RoutedClient {
                 .get_provider_account_affinity(route_id, scope_key)
                 .await
                 .map_err(|error| {
-                    ModelAttemptBindingError::runtime(format!("读取 Model Route 亲和失败: {error}"))
+                    ModelAttemptBindingError::runtime(format!(
+                        "failed to read Model Route affinity: {error}"
+                    ))
                 })?
             {
                 for candidate in &candidates {
@@ -831,7 +856,9 @@ impl RoutedClient {
         let local_accounts = self
             .state
             .lock()
-            .map_err(|_| ModelAttemptBindingError::runtime("账号调度状态锁已损坏"))?
+            .map_err(|_| {
+                ModelAttemptBindingError::runtime("account scheduling-state lock is poisoned")
+            })?
             .accounts
             .clone();
         let mut healthy_choices = Vec::new();
@@ -890,7 +917,7 @@ impl RoutedClient {
                 unavailable.sort();
                 unavailable.dedup();
                 ModelAttemptBindingError::account_unavailable(format!(
-                    "Model Route '{route_id}' 没有当前可用的 Auth Account{}",
+                    "Model Route '{route_id}' has no currently available Auth Account{}",
                     if unavailable.is_empty() {
                         String::new()
                     } else {
@@ -921,7 +948,7 @@ impl RoutedClient {
                 Self::account_availability(store.as_ref(), &account_id, account).await?;
             if !refreshed.healthy {
                 return Err(ModelAttemptBindingError::runtime(format!(
-                    "更新 Provider Account '{account_id}' 使用状态失败: {error}"
+                    "failed to update Provider Account '{account_id}' usage state: {error}"
                 )));
             }
         }
@@ -930,7 +957,9 @@ impl RoutedClient {
                 .put_provider_account_affinity(route_id, &scope_key, &account_id)
                 .await
                 .map_err(|error| {
-                    ModelAttemptBindingError::runtime(format!("写入 Model Route 亲和失败: {error}"))
+                    ModelAttemptBindingError::runtime(format!(
+                        "failed to write Model Route affinity: {error}"
+                    ))
                 })?;
         }
         Ok((candidate, account_id))
@@ -1078,7 +1107,7 @@ impl RoutedClient {
             .get(&binding.auth_account_id)
             .ok_or_else(|| {
                 format!(
-                    "Attempt Binding 引用了不存在的 Auth Account '{}'",
+                    "Attempt Binding references missing Auth Account '{}'",
                     binding.auth_account_id
                 )
             })?;
@@ -1091,7 +1120,7 @@ impl RoutedClient {
             if let Some(client) = self
                 .clients
                 .lock()
-                .map_err(|_| "Provider Client 缓存锁已损坏")?
+                .map_err(|_| "Provider Client cache lock is poisoned")?
                 .get(&cache_key)
                 .cloned()
             {
@@ -1103,7 +1132,7 @@ impl RoutedClient {
             .get(&binding.provider_instance_id)
             .ok_or_else(|| {
                 format!(
-                    "Attempt Binding 引用了不存在的 Provider Instance '{}'",
+                    "Attempt Binding references missing Provider Instance '{}'",
                     binding.provider_instance_id
                 )
             })?;
@@ -1116,7 +1145,7 @@ impl RoutedClient {
                     .get(&account.credential_ref)
                     .ok_or_else(|| {
                         format!(
-                            "Auth Account '{}' 引用了不存在的 Credential '{}'",
+                            "Auth Account '{}' references missing Credential '{}'",
                             binding.auth_account_id, account.credential_ref
                         )
                     })?;
@@ -1125,7 +1154,7 @@ impl RoutedClient {
             adapter if adapter.ends_with("-oauth") => {
                 let manager = self.auth_manager().ok_or_else(|| {
                     format!(
-                        "Auth Adapter '{adapter}' 尚未连接 Runtime 认证管理器；账号 '{}' 无法物化授权",
+                        "Auth Adapter '{adapter}' is not connected to the Runtime authentication manager; authorization for account '{}' cannot be materialized",
                         binding.auth_account_id
                     )
                 })?;
@@ -1140,7 +1169,7 @@ impl RoutedClient {
                 (!supplies_authorization_header).then_some(authorization.bearer_token)
             }
             adapter => {
-                return Err(format!("Auth Adapter '{adapter}' 尚未注册").into());
+                return Err(format!("Auth Adapter '{adapter}' is not registered").into());
             }
         };
         let physical = ProviderConfig {
@@ -1151,7 +1180,11 @@ impl RoutedClient {
             headers,
             env_headers: provider.env_headers.clone(),
         };
-        let llm = self.llm.read().map_err(|_| "LLM 配置锁已损坏")?.clone();
+        let llm = self
+            .llm
+            .read()
+            .map_err(|_| "LLM configuration lock is poisoned")?
+            .clone();
         let client = Arc::new(ProtocolClient::new_with_adapter(
             &physical,
             &provider.adapter,
@@ -1162,7 +1195,7 @@ impl RoutedClient {
         if !oauth {
             self.clients
                 .lock()
-                .map_err(|_| "Provider Client 缓存锁已损坏")?
+                .map_err(|_| "Provider Client cache lock is poisoned")?
                 .insert(cache_key, Arc::clone(&client));
         }
         Ok(client)
@@ -1223,7 +1256,7 @@ impl AccountLease {
     fn acquire(account_id: &str, state: Arc<Mutex<RoutingState>>) -> Result<Self, String> {
         let mut guard = state
             .lock()
-            .map_err(|_| "账号调度状态锁已损坏".to_string())?;
+            .map_err(|_| "account scheduling-state lock is poisoned".to_string())?;
         guard.clock = guard.clock.saturating_add(1);
         let clock = guard.clock;
         let account = guard.accounts.entry(account_id.to_string()).or_default();
@@ -1251,6 +1284,7 @@ impl Drop for AccountLease {
 impl Client for RoutedClient {
     fn replace_provider_catalog(&self, config: &AppConfig) -> Result<(), String> {
         let catalog = EffectiveProviderCatalog::from_config(config)?;
+        Self::validate_agent_model_allowlist(&catalog, &config.llm)?;
         let selected = self.alias()?;
         if catalog.resolve_route(&selected).is_err() {
             let fallback = if !config.llm.model.trim().is_empty()
@@ -1263,21 +1297,26 @@ impl Client for RoutedClient {
                     .keys()
                     .next()
                     .map(String::as_str)
-                    .ok_or("更新后的 Provider 路由表不包含任何模型别名")?
+                    .ok_or("updated Provider routing table contains no model aliases")?
             };
             catalog.resolve_route(fallback)?;
             *self
                 .selected_alias
                 .write()
-                .map_err(|_| "Model Route 选择锁已损坏".to_string())? = fallback.to_string();
+                .map_err(|_| "Model Route selection lock is poisoned".to_string())? =
+                fallback.to_string();
         }
         *self
             .catalog
             .write()
-            .map_err(|_| "Provider 路由表锁已损坏".to_string())? = catalog;
+            .map_err(|_| "Provider routing table lock is poisoned".to_string())? = catalog;
+        *self
+            .llm
+            .write()
+            .map_err(|_| "LLM configuration lock is poisoned".to_string())? = config.llm.clone();
         self.clients
             .lock()
-            .map_err(|_| "Provider Client 缓存锁已损坏".to_string())?
+            .map_err(|_| "Provider Client cache lock is poisoned".to_string())?
             .clear();
         if let Ok(mut state) = self.state.lock() {
             state.affinity.clear();
@@ -1301,8 +1340,28 @@ impl Client for RoutedClient {
         format!("model-route:{}", self.alias().unwrap_or_default())
     }
 
+    fn provider_resource_key_for_requested_model(&self, requested_model: Option<&str>) -> String {
+        let requested = requested_model
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| self.alias().ok())
+            .unwrap_or_default();
+        let route_id = self
+            .catalog()
+            .ok()
+            .and_then(|catalog| {
+                catalog
+                    .resolve_route(&requested)
+                    .ok()
+                    .map(|(route_id, _)| route_id.to_string())
+            })
+            .unwrap_or(requested);
+        format!("model-route:{route_id}")
+    }
+
     fn provider_resource_key_for_binding(&self, binding: &ModelAttemptBinding) -> String {
-        format!("model-route:{}", binding.requested_alias)
+        format!("model-route:{}", binding.route_id)
     }
 
     fn supports_async_cancellation(&self) -> bool {
@@ -1319,7 +1378,11 @@ impl Client for RoutedClient {
         *self
             .selected_alias
             .write()
-            .map_err(|_| "Model Route 选择锁已损坏".to_string())? = model.to_string();
+            .map_err(|_| "Model Route selection lock is poisoned".to_string())? = model.to_string();
+        self.llm
+            .write()
+            .map_err(|_| "LLM configuration lock is poisoned".to_string())?
+            .model = model.to_string();
         Ok(())
     }
 
@@ -1330,13 +1393,25 @@ impl Client for RoutedClient {
     fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) -> Result<(), String> {
         self.llm
             .write()
-            .map_err(|_| "LLM 配置锁已损坏".to_string())?
+            .map_err(|_| "LLM configuration lock is poisoned".to_string())?
             .reasoning_effort = effort;
         self.clients
             .lock()
-            .map_err(|_| "Provider Client 缓存锁已损坏".to_string())?
+            .map_err(|_| "Provider Client cache lock is poisoned".to_string())?
             .clear();
         Ok(())
+    }
+
+    fn model_is_agent_allowed(&self, model: &str) -> bool {
+        let model = model.trim();
+        let Ok(llm) = self.llm.read() else {
+            return false;
+        };
+        model == llm.model
+            || llm
+                .allowed_evaluation_models
+                .iter()
+                .any(|allowed| allowed.trim() == model)
     }
 
     async fn bind_model_attempt(
@@ -1346,6 +1421,23 @@ impl Client for RoutedClient {
         let alias = self
             .alias()
             .map_err(ModelAttemptBindingError::configuration)?;
+        self.bind_model_attempt_for_alias(alias, request).await
+    }
+
+    async fn bind_requested_model_attempt(
+        &self,
+        request: &ModelRequestContext,
+        requested_model: Option<&str>,
+    ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+        let alias = match requested_model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(alias) => alias.to_string(),
+            None => self
+                .alias()
+                .map_err(ModelAttemptBindingError::configuration)?,
+        };
         self.bind_model_attempt_for_alias(alias, request).await
     }
 
@@ -1413,7 +1505,7 @@ impl Client for RoutedClient {
         let account = catalog
             .auth_accounts
             .get(account_id)
-            .ok_or_else(|| format!("Auth Account '{account_id}' 不存在"))?;
+            .ok_or_else(|| format!("Auth Account '{account_id}' does not exist"))?;
         let provider_id = account
             .provider
             .clone()
@@ -1424,14 +1516,16 @@ impl Client for RoutedClient {
                     .find(|(_, provider)| provider.accounts.iter().any(|id| id == account_id))
                     .map(|(provider_id, _)| provider_id.clone())
             })
-            .ok_or_else(|| format!("Auth Account '{account_id}' 尚未关联 Provider Instance"))?;
+            .ok_or_else(|| {
+                format!("Auth Account '{account_id}' is not associated with a Provider Instance")
+            })?;
         let provider = catalog
             .provider_instances
             .get(&provider_id)
-            .ok_or_else(|| format!("Provider Instance '{provider_id}' 不存在"))?;
+            .ok_or_else(|| format!("Provider Instance '{provider_id}' does not exist"))?;
         if !provider.accounts.iter().any(|id| id == account_id) {
             return Err(format!(
-                "Auth Account '{account_id}' 不属于 Provider Instance '{provider_id}'"
+                "Auth Account '{account_id}' does not belong to Provider Instance '{provider_id}'"
             )
             .into());
         }
@@ -1774,10 +1868,74 @@ mod tests {
 
         client.set_model("review").unwrap();
         assert_eq!(client.provider_resource_key(), "model-route:review");
+        assert!(client.model_is_agent_allowed("review"));
+        assert!(!client.model_is_agent_allowed("coding"));
         assert_eq!(
             client.provider_resource_key_for_binding(&binding),
-            "model-route:coding"
+            client.provider_resource_key_for_requested_model(Some("coding"))
         );
+    }
+
+    #[tokio::test]
+    async fn agent_allowlist_selects_an_explicit_route_without_mutating_the_primary_model() {
+        let mut config = routed_config();
+        config
+            .provider_instances
+            .get_mut("direct")
+            .unwrap()
+            .models
+            .insert(
+                "physical-model-fast".to_string(),
+                ProviderModelConfig::default(),
+            );
+        config.model_routes.insert(
+            "fast-route".to_string(),
+            ModelRouteConfig {
+                candidates: vec![ModelRouteCandidateConfig {
+                    provider: "direct".to_string(),
+                    model: "physical-model-fast".to_string(),
+                    priority: 10,
+                    ..ModelRouteCandidateConfig::default()
+                }],
+                ..ModelRouteConfig::default()
+            },
+        );
+        config.llm.allowed_evaluation_models = vec!["fast-route".to_string()];
+        let client = RoutedClient::new(&config, "coding".to_string()).unwrap();
+        assert!(client.model_is_agent_allowed("coding"));
+        assert!(client.model_is_agent_allowed("fast-route"));
+        assert!(!client.model_is_agent_allowed("unlisted-route"));
+
+        let binding = client
+            .bind_requested_model_attempt(
+                &ModelRequestContext {
+                    context_id: "context-explicit-route".to_string(),
+                    session_id: "session-explicit-route".to_string(),
+                    attempt_id: "attempt-explicit-route".to_string(),
+                    objective_id: None,
+                    required_capabilities: Vec::new(),
+                },
+                Some("fast-route"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(binding.requested_alias, "fast-route");
+        assert_eq!(binding.route_id, "fast-route");
+        assert_eq!(binding.physical_model, "physical-model-fast");
+        assert_eq!(client.model().as_deref(), Some("coding"));
+    }
+
+    #[test]
+    fn configured_agent_model_allowlist_rejects_unknown_routes_at_startup() {
+        let mut config = routed_config();
+        config.llm.allowed_evaluation_models = vec!["missing-route".to_string()];
+
+        let error = RoutedClient::new(&config, "coding".to_string())
+            .err()
+            .expect("unknown agent-selectable route must fail startup");
+        let message = error.to_string();
+        assert!(message.contains("allowed_evaluation_models"));
+        assert!(message.contains("missing-route"));
     }
 
     #[tokio::test]
@@ -2338,7 +2496,7 @@ mod tests {
             .push("missing-account".to_string());
         let error = EffectiveProviderCatalog::from_config(&app).unwrap_err();
         assert!(error.contains("missing-account"));
-        assert!(error.contains("不存在"));
+        assert!(error.contains("references missing account"));
     }
 
     #[test]
@@ -2376,7 +2534,7 @@ mod tests {
         );
         assert!(EffectiveProviderCatalog::from_config(&app)
             .unwrap_err()
-            .contains("同时属于"));
+            .contains("belongs to both"));
     }
 
     #[test]

@@ -903,12 +903,12 @@ impl DeliveryIngressStore for PostgresStore {
         })
     }
 
-    /// SQLite 对等的原子升级入口：路由校验、Event 持久化、新 DialogueTurn
-    /// 创建与检查点状态清除在同一事务内完成，消除 TOCTOU。Postgres 没有
-    /// session_mounts 表，路由锁与 claim_session_signal 一致采用
-    /// SELECT ... FOR UPDATE。Wake Event 自身成为新 root_turn_id，原
-    /// Thread/Activation 仅记入 payload 的 source_thread_id /
-    /// source_activation_id。
+    /// PostgreSQL counterpart of the atomic SQLite upgrade path: route validation, Event
+    /// persistence, new DialogueTurn creation, and checkpoint-state cleanup complete in one
+    /// transaction to remove the TOCTOU window. PostgreSQL has no session_mounts table, so route
+    /// locking follows claim_session_signal and uses SELECT ... FOR UPDATE. The Wake Event itself
+    /// becomes the new root_turn_id; the prior Thread and Activation are recorded only as
+    /// source_thread_id and source_activation_id in the payload.
     async fn claim_background_thread_wake(
         &self,
         event: &Event,

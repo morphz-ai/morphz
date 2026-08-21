@@ -29,6 +29,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
             source_turn_id TEXT NOT NULL,
             intent TEXT NOT NULL,
+            model_alias TEXT,
             status TEXT NOT NULL CHECK(status IN (
                 'queued', 'paused', 'dispatched', 'completed', 'cancelled'
             )),
@@ -42,6 +43,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON schedules(status, not_before, created_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_schedules_thread_status
            ON schedules(thread_id, status, updated_at DESC)"#,
+        r#"ALTER TABLE schedules ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
         r#"CREATE TABLE IF NOT EXISTS schedule_dependencies (
             schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
             dependency_thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -93,6 +95,7 @@ fn schedule_from_row(row: &PgRow) -> Result<ScheduleRecord, StoreError> {
         thread_id: row.get("thread_id"),
         source_turn_id: row.get("source_turn_id"),
         intent: row.get("intent"),
+        model_alias: row.get("model_alias"),
         status: parse_status(&row.get::<String, _>("status"))?,
         not_before: row
             .get::<Option<String>, _>("not_before")
@@ -220,16 +223,17 @@ impl ScheduleStore for PostgresStore {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"INSERT INTO schedules
-               (id, revision, thread_id, source_turn_id, intent, status,
+               (id, revision, thread_id, source_turn_id, intent, model_alias, status,
                 not_before, interval_seconds, dependency_thread_ids_json,
                 created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, 'queued', $5, $6, $7, $8, $8)
+               VALUES ($1, 1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $9)
                ON CONFLICT(id) DO NOTHING"#,
         )
         .bind(&intent.id)
         .bind(&intent.thread_id)
         .bind(&intent.source_turn_id)
         .bind(&intent.intent)
+        .bind(&intent.model_alias)
         .bind(not_before)
         .bind(interval)
         .bind(&dependencies)
@@ -682,16 +686,17 @@ impl ScheduleStore for PostgresStore {
             let dependencies = encoded_dependencies(intent)?;
             sqlx::query(
                 r#"INSERT INTO schedules
-                   (id, revision, thread_id, source_turn_id, intent, status,
+                   (id, revision, thread_id, source_turn_id, intent, model_alias, status,
                     not_before, interval_seconds, dependency_thread_ids_json,
                     created_at, updated_at)
-                   VALUES ($1, 1, $2, $3, $4, 'queued', $5, $6, $7, $8, $8)
+                   VALUES ($1, 1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $9)
                    ON CONFLICT(id) DO NOTHING"#,
             )
             .bind(&intent.id)
             .bind(&intent.thread_id)
             .bind(&intent.source_turn_id)
             .bind(&intent.intent)
+            .bind(&intent.model_alias)
             .bind(encoded_time(intent.not_before))
             .bind(encoded_interval(intent.interval_seconds)?)
             .bind(&dependencies)

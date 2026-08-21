@@ -1,11 +1,21 @@
 # Morphz 论文实验总账
 
-> 最后更新：2026-08-17
+> 最后更新：2026-08-21
 > 维护规则：任何状态、协议或结果变化都更新本表；不得删除已执行实验的历史记录。
 
 ## Runtime 基线
 
-论文和路演当前默认 Runtime 源码基线为 [`paper-eval-runtime-v2`](./runtime_baseline_v2.md)，对应完整 commit `03a32f864a3c38026672b4076855137e0bbb5627`。历史 v1 在 author/committer 重写后对应 [`cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`](./runtime_baseline_v1.md)。每个 Run 必须记录实际 Runtime 与实验包 commit；后续修复不得静默改写既有基线。
+论文、路演和公开 Benchmark 的新实验当前默认 Runtime 源码基线为 [`paper-eval-runtime-v3`](./runtime_baseline_v3.md)，对应完整 commit `f875b93869282a14b738edec2f3a4069fd003600`。历史 v2 继续对应 [`03a32f864a3c38026672b4076855137e0bbb5627`](./runtime_baseline_v2.md)，历史 v1 对应 [`cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`](./runtime_baseline_v1.md)。每个 Run 必须记录实际 Runtime 与实验包 commit；后续修复不得静默改写既有基线或追改历史结果。
+
+## 新实验统一运行约束
+
+- 主模型：`gpt-5.6-sol`；reasoning effort：`max`；
+- Provider transport：CLIProxyAPI 兼容的 OpenAI Responses 路由；精确物理模型必须
+  校验为 `gpt-5.6-sol`，且 `fallback=false`；
+- 授权模式：隔离实验节点使用 `full-access`，episode 中不得混入人工审批等待；
+- 隔离：专用 Morphz 节点、专用数据库、专用 Context；不同 arm/run 使用独立可写
+  状态，不读取共享 Context、产品数据库或历史 Session；
+- `full-access` 不改变公开 Benchmark 自身的 sandbox、网络、数据和工具规则。
 
 ## 总览
 
@@ -47,6 +57,27 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 | Harbor、π-Bench adapter | 通用能力 | F | 附录/系统案例；不替代 ME-07 |
 
 ## 状态更新记录
+
+### 2026-08-21
+
+- Terminal-Bench 2.1 正式批次 v1 已完成：89 tasks × 5 attempts，445/445 个试次完成，`max_retries=0`，未选择性补跑；
+- 官方 verifier 原始结果为 319/445（71.69%），原始 pass@5 为 85.39%；
+- 依据 Harbor `unearned_credit` 规则完成逐轨迹审计：8 个成功试次确认直接读取 exact solution/private tests/reference data，另 3 个成功试次按“故意尝试也判失败”的严格规则判 0；
+- 对外严格审计结果为 308/445（69.21%），SE 2.19 个百分点，Wilson 95% CI [64.78%, 73.32%]，pass@5 83.15%；
+- v1 原始数据与 Harbor reward 原样封存，不追改；完整报告见 [`terminal_bench_2_1_formal_v1_result_2026_08_21.md`](./terminal_bench_2_1_formal_v1_result_2026_08_21.md)；
+- 下一公开榜版本须先加入 anti-cheat Activation/Gate、修复缺失 `/app` 的 workspace 启动边界，并优化“任务已完成但 Runtime 未及时终止”的 28 个 timeout-pass 案例；正式 v2 如启动，必须重新运行全部 445 个 trial，不与 v1 混算。
+
+### 2026-08-20
+
+- 完成 Terminal-Bench 2.1 无推理执行门禁：固定 Harbor `0.21.0`、官方 89-task 数据集 commit、Linux/AMD64 Runtime 与等待器校验值；`path-tracing` 的 `install-only` 通过；
+- 修正公开榜协议：正式运行默认使用 Harbor registry 的 canonical dataset digest，不再使用本地 `--path`；固定 89 tasks × 5 trials、`max_retries=0`、默认 timeout/resource，并在 Harbor agent kwargs 中显式记录 `reasoning_effort=max`；
+- Harbor adapter 已实现 ATIF-v1.7 只读投影并通过官方 validator；下一 Gate 为单任务、单次真实模型 smoke，尚无可报告 Benchmark 成绩；
+- 冻结新实验统一运行约束：`gpt-5.6-sol` + `max` + CLIProxyAPI、`full-access`、独立 Morphz 节点/数据库/Context；
+- 将尚未启动的新论文、路演与公开 Benchmark 实验默认基线提升为 `paper-eval-runtime-v3`；
+- v3 对应 commit `f875b93869282a14b738edec2f3a4069fd003600`；
+- 纳入 v2 之后的并发投递、Shared Runtime 恢复、Principal 绑定、Provider Account CAS、响应 continuation 和 Managed SSH 存活边界修复；
+- 保留 v1/v2 及既有 DEMO-001 运行的历史身份，不追写为 v3；
+- 第一次真实模型 Pilot 前，仍需从 v3 的干净 checkout 重新执行并记录完整验证门禁。
 
 ### 2026-08-17
 

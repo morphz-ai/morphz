@@ -24,14 +24,24 @@
 | OS/架构 |  |
 | Rust/Python/Node 版本 |  |
 | 关键依赖锁文件 hash |  |
+| Morphz 节点 ID/实例 |  |
+| 授权模式 | `full-access` |
+| 数据库类型与实例/路径 |  |
+| 数据库初始快照 hash |  |
+| Context ID |  |
+| 共享 Context/历史 Session 检查 |  |
 
 ## 3. 模型与预算
 
 | 字段 | 值 |
 | --- | --- |
 | Provider |  |
-| 模型精确标识 |  |
-| API/协议 |  |
+| CLIProxyAPI 路由/账户标识（脱敏） |  |
+| Requested model | `gpt-5.6-sol` |
+| Physical model |  |
+| Reasoning effort | `max` |
+| Fallback | `false` |
+| API/协议 | OpenAI Responses compatible |
 | temperature/top_p/seed |  |
 | 输出/上下文预算 |  |
 | 并发数/限流 |  |

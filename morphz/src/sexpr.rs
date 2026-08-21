@@ -110,12 +110,12 @@ impl SExpr {
     // Sets or replaces a child by path, creating missing path segments automatically.
     pub fn set_path(&mut self, path: &[&str], value: SExpr) -> Result<(), String> {
         if path.is_empty() {
-            return Err("路径不能为空".to_string());
+            return Err("path must not be empty".to_string());
         }
         match self {
             SExpr::List(ref mut list) => {
                 if list.is_empty() {
-                    return Err("空 List 节点无法 set_path".to_string());
+                    return Err("cannot set_path on an empty List node".to_string());
                 }
                 let key = path[0];
                 if let Some(idx) = find_sub_idx_in_list(list, key) {
@@ -137,7 +137,7 @@ impl SExpr {
                 }
                 Ok(())
             }
-            _ => Err("只有 List 节点支持 set_path 演算".to_string()),
+            _ => Err("set_path is supported only on List nodes".to_string()),
         }
     }
 }
@@ -172,7 +172,7 @@ impl std::fmt::Display for ParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "语法解析错误 [行 {}, 列 {}]: {} 附近上下文: '{}'",
+            "syntax error [line {}, column {}]: {} near '{}'",
             self.line, self.column, self.message, self.context
         )
     }
@@ -378,7 +378,7 @@ pub fn parse_all(input: &str) -> Result<Vec<SExpr>, ParserError> {
         forms.push(parser.parse_value(0)?);
     }
     if forms.is_empty() {
-        return Err(parser.make_error("输入为空或只包含空白字符".to_string()));
+        return Err(parser.make_error("input is empty or contains only whitespace".to_string()));
     }
     Ok(forms)
 }
@@ -388,7 +388,7 @@ pub fn parse(input: &str) -> Result<SExpr, ParserError> {
     let mut parser = Parser::new(input);
     parser.skip_whitespace();
     if parser.peek_char().is_none() {
-        return Err(parser.make_error("输入为空或只包含空白字符".to_string()));
+        return Err(parser.make_error("input is empty or contains only whitespace".to_string()));
     }
     parser.parse_value(0)
 }
@@ -438,7 +438,7 @@ mod tests {
         let err = parse(input).unwrap_err();
         assert_eq!(err.line, 3);
         assert_eq!(err.column, 4);
-        assert!(err.message.contains("输入为空"));
+        assert!(err.message.contains("input is empty"));
     }
 
     #[test]

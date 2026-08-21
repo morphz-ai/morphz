@@ -2,11 +2,15 @@ target/
 **/target/
 .git/
 .github/
+.codex-work/
+jobs/
 *.db
 *.db-shm
 *.db-wal
 node_modules/
 dashboard/dist/
+!dashboard/dist/
+!dashboard/dist/**
 dashboard/node_modules/
 .env
 .env.bak

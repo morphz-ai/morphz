@@ -62,7 +62,8 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    ```
 
    全屏 `setup` 可选择 OpenAI、Anthropic、Gemini 或自定义 Provider，并把协议、凭证
-   引用和模型选择保存到用户级 Morphz 配置目录。API Key 可存入系统 Keychain、权限为
+   引用和模型选择保存到用户级模型配置 `~/.morphz/models.toml`；Runtime、权限、存储和
+   服务端策略保存在 `~/.morphz/morphz.toml`。API Key 可存入系统 Keychain、权限为
    `0600` 的用户级明文 Morphz secrets 文件，或引用既有环境变量；本地无认证服务不需要 Key。
    工作目录中的 `.env` 不会被隐式加载，防止不可信项目把宿主凭证重定向到项目指定端点。
 
@@ -236,9 +237,24 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 
 `morphz serve` 默认监听 `127.0.0.1:8080`。SQLite 路径通过 `[storage.sqlite].path` 或
 `MORPHZ_STORAGE_SQLITE_PATH` 覆盖；监听地址可用 `--bind` 或 `MORPHZ_BIND` 设置。新项目的
-用户配置统一保存在 `~/.morphz/morphz.toml`；项目偏好放在 `.morphz/morphz.toml`。Provider、Credential、权限和监听地址属于用户或
-系统控制面，项目配置不能修改。完整分层设计见
+Runtime 核心配置保存在 `~/.morphz/morphz.toml`，Provider、Account、Model Route 与默认
+推理配置保存在 `~/.morphz/models.toml`；项目偏好放在 `.morphz/morphz.toml`。旧版合并
+配置在首次启动时原子拆分，已有 `models.toml` 的操作者修改优先。Provider、Credential、权限
+和监听地址属于用户或系统控制面，项目配置不能修改。完整分层设计见
 [CLI 产品化 v1](docs/morphz_cli_productization_v1.md)。
+
+`[llm].model` 是默认主模型；`allowed_evaluation_models` 只授予 Agent 主动委托求值时可额外
+选择的 Model Route。普通 Evaluation 与 `schedule_tx` 未显式选模时使用当前 Session 的选择，
+并最终回退到主模型；`infer` 未显式选模时直接使用主模型。Operator 可以在 Dashboard 为
+Session 选择任意已启用 Route；该选择不会改写 Runtime 主模型。一次求值的模型在 Activation
+首次执行前持久绑定，恢复与 Provider 重试不会换模型，也不会隐式跨模型故障转移。
+
+```toml
+# ~/.morphz/models.toml
+[llm]
+model = "primary"
+allowed_evaluation_models = ["fast", "deep"]
+```
 
 监听非本机地址时必须配置访问令牌。`MORPHZ_DASHBOARD_TOKEN` 始终是 Dashboard/Operator
 管理面凭证；可信 Gateway 模式还使用 `[server.identity].service_token_env` 指向的独立服务

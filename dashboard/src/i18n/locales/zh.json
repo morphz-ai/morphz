@@ -768,6 +768,7 @@
   "model": {
     "selector": "模型",
     "selectorTitle": "切换后续请求使用的模型；当前正在运行的请求不受影响",
+    "runtimeDefault": "服务默认（{{model}}）",
     "chooseAvailable": "请选择已发现模型",
     "manageModels": "管理模型",
     "manageModelsHint": "还没有已发现并启用的模型；前往身份与模型页面，为已登录账号加载并启用模型",

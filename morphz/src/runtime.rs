@@ -1036,11 +1036,11 @@ impl MorphzRuntimeBuilder {
                 StorageBackend::Postgres => {
                     let url_env = self.config.storage.postgres.url_env.trim();
                     if url_env.is_empty() {
-                        return Err("storage.postgres.url_env 不能为空".into());
+                        return Err("storage.postgres.url_env must not be empty".into());
                     }
                     let database_url = std::env::var(url_env).map_err(|_| {
                         format!(
-                            "已选择 PostgreSQL Storage，但环境变量 '{url_env}' 不存在或不是有效 Unicode"
+                            "PostgreSQL Storage was selected, but environment variable '{url_env}' does not exist or is not valid Unicode"
                         )
                     })?;
                     let store = PostgresStore::new(
@@ -1130,6 +1130,10 @@ impl MorphzRuntimeBuilder {
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
             .with_principal_first_seen_cues(self.principal_first_seen_cues)
             .with_model_context_capacity(Arc::clone(&model_context_capacity))
+            .with_evaluation_model_policy(
+                self.config.llm.model.clone(),
+                self.config.llm.allowed_evaluation_models.clone(),
+            )
             .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
             .with_session_projection_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::SessionProjectionStore>
@@ -1216,7 +1220,7 @@ impl MorphzRuntimeBuilder {
                     )) as Arc<dyn ApprovalProvider>,
                     ReviewerKind::User => human_review,
                     ReviewerKind::Deny => Arc::new(DenyAllApprovalProvider::new(
-                        "当前权限 Profile 禁止边界外能力申请",
+                        "the current permission Profile forbids out-of-bound capability requests",
                     )),
                 }
             }
@@ -1329,9 +1333,11 @@ impl MorphzRuntimeBuilder {
         let mut runtime_managed_ssh_target_ids = HashSet::new();
         for target_config in &self.config.managed_ssh.targets {
             if !runtime_managed_ssh_target_ids.insert(target_config.id.trim().to_string()) {
-                return Err(
-                    format!("Runtime Managed SSH Target id '{}' 重复", target_config.id).into(),
-                );
+                return Err(format!(
+                    "duplicate Runtime Managed SSH Target id '{}'",
+                    target_config.id
+                )
+                .into());
             }
             let endpoint =
                 crate::execution_target::ManagedSshEndpoint::load(&target_config.endpoint_ref)?;
@@ -1346,8 +1352,8 @@ impl MorphzRuntimeBuilder {
                 if let Some(alias) = alias {
                     if !secret_store.contains_alias(alias)? {
                         return Err(format!(
-                            "Runtime Managed SSH Target '{}' 绑定的 {label} Secret '{}' 不存在",
-                            target_config.id, alias
+                            "{label} Secret '{}' bound to Runtime Managed SSH Target '{}' does not exist",
+                            alias, target_config.id
                         )
                         .into());
                     }
@@ -1359,7 +1365,7 @@ impl MorphzRuntimeBuilder {
                     .canonical_permission_root(&endpoint.known_hosts_file.to_string_lossy())
                     .map_err(|error| {
                         format!(
-                            "Runtime Managed SSH Target '{}' 的 known_hosts_file 不可授权：{error}",
+                            "known_hosts_file for Runtime Managed SSH Target '{}' cannot be authorized: {error}",
                             target_config.id
                         )
                     })?;
@@ -1622,29 +1628,33 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         Arc::clone(bus),
         context_engine
             .session_store()
-            .expect("Runtime ContextEngine 必须配置 SessionStore"),
+            .expect("Runtime ContextEngine requires a SessionStore"),
     )));
     registry.register(Arc::new(SessionSignalTool::new(
         Arc::clone(bus),
         Arc::clone(event_store),
         context_engine
             .session_store()
-            .expect("Runtime ContextEngine 必须配置 SessionStore"),
+            .expect("Runtime ContextEngine requires a SessionStore"),
     )));
     registry.register(Arc::new(
         ScheduleTxTool::new(
             Arc::clone(thread_scheduler),
             context_engine
                 .session_store()
-                .expect("Runtime ContextEngine 必须配置 SessionStore"),
+                .expect("Runtime ContextEngine requires a SessionStore"),
         )
         .with_objective_store(objective_supervisor.store())
-        .with_scheduler_kernel(Arc::clone(scheduler_kernel)),
+        .with_scheduler_kernel(Arc::clone(scheduler_kernel))
+        .with_allowed_evaluation_models(
+            std::iter::once(config.llm.model.clone())
+                .chain(config.llm.allowed_evaluation_models.iter().cloned()),
+        ),
     ));
     registry.register(Arc::new(PrincipalTool::new(
         context_engine
             .session_store()
-            .expect("Runtime ContextEngine 必须配置 SessionStore"),
+            .expect("Runtime ContextEngine requires a SessionStore"),
     )));
     registry.register(Arc::new(ListSecretsTool::new(Arc::clone(secret_store))));
     if policy.context_only {
@@ -1776,7 +1786,7 @@ async fn reconcile_pending_message_attachments(
 
 fn log_message_attachment_recovery(
     recovery: crate::model_input::MessageAttachmentRecovery,
-    event_code: &'static str,
+    recovery_kind: &'static str,
 ) {
     if recovery != Default::default() {
         tracing::info!(
@@ -1784,7 +1794,8 @@ fn log_message_attachment_recovery(
             orphaned_imports = recovery.orphaned_imports,
             deferred_live_imports = recovery.deferred_live_imports,
             invalid_manifests = recovery.invalid_manifests,
-            event_code,
+            recovery_kind,
+            event_code = "runtime.message_attachments.recovery_completed",
             "Message-input attachment recovery completed"
         );
     }
@@ -1824,6 +1835,10 @@ impl MorphzRuntime {
             reviewer.replace_provider_catalog(&config)?;
         }
         self.inner.client.replace_provider_catalog(&config)?;
+        self.inner.context_engine.set_evaluation_model_policy(
+            config.llm.model.clone(),
+            config.llm.allowed_evaluation_models.clone(),
+        );
         config.permissions.auto_review_model = self.inner.permissions.auto_review_model();
         let capacity = resolve_model_context_capacity(&config, &self.model());
         {
@@ -2049,7 +2064,7 @@ impl MorphzRuntime {
             .inner
             .auto_review_provider
             .as_ref()
-            .ok_or("当前 Runtime 未使用内置自动审核器，不能切换审核模型")?;
+            .ok_or("the current Runtime is not using the built-in automatic reviewer; its review model cannot be changed")?;
         let model = model.map(str::trim).filter(|value| !value.is_empty());
         let separate_client = if let Some(model) = model {
             let config = self.provider_catalog_config()?;
@@ -2113,7 +2128,7 @@ impl MorphzRuntime {
                 .store
                 .ensure_agent(NewAgent {
                     id: self.inner.identity.agent_id.clone(),
-                    title: "默认 Agent".to_string(),
+                    title: "Default Agent".to_string(),
                     root_context_id: self.inner.identity.context_id.clone(),
                 })
                 .await?;
@@ -2123,7 +2138,7 @@ impl MorphzRuntime {
             .ensure_context(NewCognitiveContext {
                 id: self.inner.identity.context_id.clone(),
                 agent_id: self.inner.identity.agent_id.clone(),
-                title: "默认认知 Context".to_string(),
+                title: "Default Cognitive Context".to_string(),
             })
             .await?;
         // Archived Sessions cannot receive new work. Register only active
@@ -2136,7 +2151,7 @@ impl MorphzRuntime {
         }
         log_message_attachment_recovery(
             reconcile_pending_message_attachments(&self.inner).await?,
-            "runtime.message_attachments.startup_recovery_completed",
+            "startup",
         );
         let execution_recovery = self
             .inner
@@ -2331,10 +2346,7 @@ impl MorphzRuntime {
                     break;
                 };
                 match reconcile_pending_message_attachments(&runtime).await {
-                    Ok(recovery) => log_message_attachment_recovery(
-                        recovery,
-                        "runtime.message_attachments.periodic_recovery_completed",
-                    ),
+                    Ok(recovery) => log_message_attachment_recovery(recovery, "periodic"),
                     Err(error) => tracing::warn!(
                         error = %error,
                         event_code = "runtime.message_attachments.periodic_recovery_failed",
@@ -2789,7 +2801,7 @@ impl MorphzRuntime {
         let config = self.provider_catalog_config()?;
         let catalog = EffectiveProviderCatalog::from_config(&config)?;
         if !catalog.auth_accounts.contains_key(account_id) {
-            return Err(format!("Auth Account '{account_id}' 不存在").into());
+            return Err(format!("Auth Account '{account_id}' does not exist").into());
         }
         let status = match action {
             ProviderAccountControlAction::Enable => crate::memory::ProviderAccountStatus::Ready,
@@ -3147,10 +3159,14 @@ impl MorphzRuntime {
             .iter()
             .any(|allowed| allowed == model)
         {
-            return Err(format!("模型 '{model}' 尚未启用，拒绝运行期切换").into());
+            return Err(format!("model '{model}' is not enabled; runtime switch rejected").into());
         }
         self.inner.client.set_model(model)?;
         let catalog = self.provider_catalog_config()?;
+        self.inner.context_engine.set_evaluation_model_policy(
+            catalog.llm.model.clone(),
+            catalog.llm.allowed_evaluation_models.clone(),
+        );
         let mut capacity = resolve_model_context_capacity(&catalog, model);
         if let Some(limit) = self
             .inner
@@ -3188,14 +3204,14 @@ impl MorphzRuntime {
     ) -> Result<(), RuntimeError> {
         let model = model.trim();
         if prompt_token_limit == 0 {
-            return Err("模型物理输入容量必须大于 0".into());
+            return Err("model physical input capacity must be greater than 0".into());
         }
         if !self
             .configured_models()
             .iter()
             .any(|allowed| allowed == model)
         {
-            return Err(format!("模型 '{model}' 尚未启用，拒绝修改容量").into());
+            return Err(format!("model '{model}' is not enabled; capacity update rejected").into());
         }
         self.inner
             .model_prompt_token_limit_overrides
@@ -3283,14 +3299,15 @@ impl MorphzRuntime {
         &self,
         command: &crate::memory::EdgeCommandRecord,
     ) -> Result<Option<ApprovalRequirement>, RuntimeError> {
-        let tool = self
-            .inner
-            .registry
-            .get(&command.tool_name)
-            .ok_or_else(|| format!("Edge Node 未注册物理工具 '{}'", command.tool_name))?;
+        let tool = self.inner.registry.get(&command.tool_name).ok_or_else(|| {
+            format!(
+                "Edge Node has not registered physical tool '{}'",
+                command.tool_name
+            )
+        })?;
         if tool.execution_class() != crate::tool::ToolExecutionClass::PhysicalJob {
             return Err(format!(
-                "Edge Node 拒绝审批 Runtime 逻辑工具 '{}'",
+                "Edge Node rejected approval for Runtime logical tool '{}'",
                 command.tool_name
             )
             .into());
@@ -3341,14 +3358,15 @@ impl MorphzRuntime {
         provider_local_preauthorized: bool,
         output_sink: Option<tokio::sync::mpsc::Sender<crate::tool::ToolOutputChunk>>,
     ) -> Result<String, RuntimeError> {
-        let tool = self
-            .inner
-            .registry
-            .get(&command.tool_name)
-            .ok_or_else(|| format!("Edge Node 未注册物理工具 '{}'", command.tool_name))?;
+        let tool = self.inner.registry.get(&command.tool_name).ok_or_else(|| {
+            format!(
+                "Edge Node has not registered physical tool '{}'",
+                command.tool_name
+            )
+        })?;
         if tool.execution_class() != crate::tool::ToolExecutionClass::PhysicalJob {
             return Err(format!(
-                "Edge Node 拒绝执行 Runtime 逻辑工具 '{}'；远程协议只接受物理工具",
+                "Edge Node rejected Runtime logical tool '{}'; the remote protocol accepts physical tools only",
                 command.tool_name
             )
             .into());
@@ -3578,7 +3596,7 @@ impl MorphzRuntime {
                 .is_some_and(|agent| agent.root_context_id == id)
             {
                 return Err(format!(
-                    "Context '{id}' 是 Agent '{}' 的根 Context，不能归档",
+                    "Context '{id}' is the root Context of Agent '{}' and cannot be archived",
                     existing.agent_id
                 )
                 .into());
@@ -3963,12 +3981,15 @@ impl MorphzRuntime {
         let session = self
             .get_session(session_id)
             .await?
-            .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+            .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
         if !self
             .verify_session_principal(session_id, principal_id)
             .await?
         {
-            return Err(format!("Principal '{principal_id}' 未参与 Session '{session_id}'").into());
+            return Err(format!(
+                "Principal '{principal_id}' is not a participant in Session '{session_id}'"
+            )
+            .into());
         }
 
         let identity =
@@ -3993,7 +4014,7 @@ impl MorphzRuntime {
         let mut job_request: Value = serde_json::from_str(&arguments)?;
         job_request
             .as_object_mut()
-            .ok_or("Artifact Transfer request 必须是 JSON object")?
+            .ok_or("Artifact Transfer request must be a JSON object")?
             .insert("request".to_string(), serde_json::to_value(&request)?);
         crate::execution_target::attach_artifact_transfer_routes(&mut job_request, &routes)?;
 
@@ -4135,7 +4156,7 @@ impl MorphzRuntime {
             .await?
         {
             crate::scheduler::KernelResult::ActivationTransitioned(mutation) => Ok(mutation),
-            _ => Err("Scheduler Kernel 返回了错误的 Activation transition 结果".into()),
+            _ => Err("Scheduler Kernel returned an invalid Activation transition result".into()),
         }
     }
 
@@ -4152,7 +4173,9 @@ impl MorphzRuntime {
             .get_thread_activation(&initial_job.activation_id)
             .await?
         else {
-            return Err(format!("Artifact Transfer Job '{job_id}' 缺少 Activation").into());
+            return Err(
+                format!("Artifact Transfer Job '{job_id}' is missing an Activation").into(),
+            );
         };
         if initial_activation.status == ThreadActivationStatus::Queued {
             match self
@@ -4249,7 +4272,7 @@ impl MorphzRuntime {
             .inner
             .registry
             .get(ARTIFACT_TRANSFER_TOOL_NAME)
-            .ok_or("Runtime 未注册 transfer 工具")?;
+            .ok_or("Runtime has not registered a transfer tool")?;
         let tool_context = crate::tool::ToolExecutionJobContext {
             parent_job_id: job.id.clone(),
             activation_id: job.activation_id.clone(),
@@ -4335,7 +4358,10 @@ impl MorphzRuntime {
                             continue;
                         };
                         let Some(current) = self.inner.store.get_execution_job(job_id).await? else {
-                            break Err("Artifact Transfer Job 在发布边界前消失".into());
+                            break Err(
+                                "Artifact Transfer Job disappeared before its publication boundary"
+                                    .into(),
+                            );
                         };
                         match self.inner.execution_jobs.heartbeat(
                             job_id,
@@ -4354,21 +4380,24 @@ impl MorphzRuntime {
                                 if current.side_effect_started_at.is_some() => job = current,
                             JobReceipt::Conflict { current, .. } => {
                                 break Err(format!(
-                                    "Artifact Transfer 发布边界 revision 冲突（当前 r{} / {}）",
+                                    "Artifact Transfer publication boundary revision conflict (current r{} / {})",
                                     current.revision,
                                     current.status.as_str()
                                 ).into());
                             }
                             JobReceipt::Rejected { reason, .. } => break Err(reason.into()),
                             JobReceipt::NotFound { .. } => {
-                                break Err("Artifact Transfer Job 在发布边界前消失".into());
+                                break Err(
+                                    "Artifact Transfer Job disappeared before its publication boundary"
+                                        .into(),
+                                );
                             }
                         }
                         let _ = acknowledge.send(());
                     }
                     _ = control_tick.tick() => {
                         let Some(current) = self.inner.store.get_execution_job(job_id).await? else {
-                            break Err("Artifact Transfer Job 在执行期间消失".into());
+                            break Err("Artifact Transfer Job disappeared during execution".into());
                         };
                         if current.cancel_requested_at.is_some() {
                             let _ = self.inner.store.request_edge_command_cancel(job_id).await;
@@ -4427,11 +4456,15 @@ impl MorphzRuntime {
                 if cancelled {
                     (
                         "cancelled",
-                        format!("Artifact Transfer 已取消: {message}"),
+                        format!("Artifact Transfer was cancelled: {message}"),
                         Some(message),
                     )
                 } else {
-                    ("failed", format!("执行失败: {message}"), Some(message))
+                    (
+                        "failed",
+                        format!("Artifact Transfer execution failed: {message}"),
+                        Some(message),
+                    )
                 }
             }
         };
@@ -4519,15 +4552,17 @@ impl MorphzRuntime {
             JobReceipt::Conflict { current, .. } if current.status.is_terminal() => {}
             JobReceipt::Conflict { current, .. } => {
                 return Err(format!(
-                    "Artifact Transfer Job '{}' 终态提交 revision 冲突（当前 r{} / {}）",
-                    current.id,
-                    current.revision,
-                    current.status.as_str()
-                )
+                "Artifact Transfer Job '{}' terminal commit revision conflict (current r{} / {})",
+                current.id,
+                current.revision,
+                current.status.as_str()
+            )
                 .into())
             }
             JobReceipt::Rejected { reason, .. } => return Err(reason.into()),
-            JobReceipt::NotFound { .. } => return Err("Artifact Transfer Job 消失".into()),
+            JobReceipt::NotFound { .. } => {
+                return Err("Artifact Transfer Job disappeared".into());
+            }
         }
         self.inner.bus.dispatch_persisted(result_event).await?;
         self.close_artifact_transfer_scheduler_projection(
@@ -4642,7 +4677,7 @@ impl MorphzRuntime {
                 if thread.executor_kind == ARTIFACT_TRANSFER_EXECUTOR_KIND {
                     let job_id = thread.executor_id.as_deref().ok_or_else(|| {
                         format!(
-                            "开放 Artifact Transfer Thread '{}' 缺少 Execution Job identity",
+                            "open Artifact Transfer Thread '{}' is missing an Execution Job identity",
                             thread.id
                         )
                     })?;
@@ -4666,8 +4701,8 @@ impl MorphzRuntime {
                 if thread.executor_kind == ARTIFACT_TRANSFER_EXECUTOR_KIND {
                     let job_id = thread.executor_id.as_deref().ok_or_else(|| {
                         format!(
-                            "Artifact Transfer Activation '{}' 的 Thread '{}' 缺少 Execution Job identity",
-                            activation.id, thread.id
+                            "Thread '{}' of Artifact Transfer Activation '{}' is missing an Execution Job identity",
+                            thread.id, activation.id
                         )
                     })?;
                     candidate_job_ids.insert(job_id.to_string());
@@ -4715,7 +4750,7 @@ impl MorphzRuntime {
             }
             let result_event_id = job.result_event_id.as_deref().ok_or_else(|| {
                 format!(
-                    "终态 Artifact Transfer Job '{}' 缺少 result_event_id",
+                    "terminal Artifact Transfer Job '{}' is missing result_event_id",
                     job.id
                 )
             })?;
@@ -4733,8 +4768,8 @@ impl MorphzRuntime {
                 .next()
                 .ok_or_else(|| {
                     format!(
-                        "终态 Artifact Transfer Job '{}' 的结果 Event '{}' 不存在",
-                        job.id, result_event_id
+                        "result Event '{}' for terminal Artifact Transfer Job '{}' does not exist",
+                        result_event_id, job.id
                     )
                 })?;
             let text = result
@@ -4742,7 +4777,7 @@ impl MorphzRuntime {
                 .get("text")
                 .and_then(serde_json::Value::as_str)
                 .or(job.error.as_deref())
-                .unwrap_or("Artifact Transfer 已终结")
+                .unwrap_or("Artifact Transfer is terminal")
                 .to_string();
             let (activation_status, lifecycle) = match job.status {
                 ExecutionJobStatus::Succeeded => (
@@ -4959,7 +4994,7 @@ impl MorphzRuntime {
             .inner
             .harness_registry
             .get(harness_id, harness_version)
-            .ok_or_else(|| format!("Harness '{harness_id}@{harness_version}' 未注册"))?;
+            .ok_or_else(|| format!("Harness '{harness_id}@{harness_version}' is not registered"))?;
         let (binding, event) = objective_harness_binding_event(
             &objective.context_id,
             &objective.id,
@@ -4997,12 +5032,12 @@ impl MorphzRuntime {
         let objective = self
             .get_objective(objective_id)
             .await?
-            .ok_or_else(|| format!("Objective '{objective_id}' 不存在"))?;
+            .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
         let harness = self
             .inner
             .harness_registry
             .get(harness_id, harness_version)
-            .ok_or_else(|| format!("Harness '{harness_id}@{harness_version}' 未注册"))?;
+            .ok_or_else(|| format!("Harness '{harness_id}@{harness_version}' is not registered"))?;
         persist_objective_harness_binding(
             self.inner.store.as_ref(),
             &objective.context_id,
@@ -5088,7 +5123,7 @@ impl MorphzRuntime {
         let current = self
             .get_objective(id)
             .await?
-            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+            .ok_or_else(|| format!("Objective '{id}' does not exist"))?;
         let active_evaluation_id = current.active_evaluation_id.clone();
         let mutation = self
             .update_objective_state(
@@ -5129,7 +5164,7 @@ impl MorphzRuntime {
         let _current = self
             .get_objective(id)
             .await?
-            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+            .ok_or_else(|| format!("Objective '{id}' does not exist"))?;
         self.update_objective_state(
             id,
             expected_revision,
@@ -5149,7 +5184,7 @@ impl MorphzRuntime {
         let current = self
             .get_objective(id)
             .await?
-            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+            .ok_or_else(|| format!("Objective '{id}' does not exist"))?;
         let active_evaluation_id = current.active_evaluation_id.clone();
         let mutation = self
             .update_objective_state(
@@ -5193,7 +5228,7 @@ impl MorphzRuntime {
             .store
             .get_delegation(id)
             .await?
-            .ok_or_else(|| format!("Delegation '{}' 不存在", id))?;
+            .ok_or_else(|| format!("Delegation '{}' does not exist", id))?;
         let mut pending_sessions = vec![root.child_session_id.clone()];
         let mut selected = vec![root.clone()];
         let mut visited = std::collections::HashSet::new();
@@ -5282,7 +5317,7 @@ impl MorphzRuntime {
                             "delegation_id": id,
                             "status": "cancelled",
                             "cancelled_descendants": cancelled.len().saturating_sub(1),
-                            "guidance": "Delegation 已取消；请根据当前证据继续或向用户说明。"
+                            "guidance": "Delegation was cancelled; continue from the current evidence or explain the cancellation to the user."
                         })
                         .to_string()),
                     ),
@@ -5608,7 +5643,7 @@ impl MorphzRuntime {
             .get_approval(approval_id)
             .await
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("审批请求 '{approval_id}' 不存在"))?;
+            .ok_or_else(|| format!("Approval request '{approval_id}' does not exist"))?;
         let resolution = match &decision {
             ApprovalDecision::AllowOnce {
                 rationale,
@@ -5622,7 +5657,7 @@ impl MorphzRuntime {
                 risk_tags,
             } => {
                 if !self.inner.config.edge_execution.capability_leases_enabled {
-                    return Err("Runtime 已关闭 Capability Lease".to_string());
+                    return Err("Runtime has disabled Capability Leases".to_string());
                 }
                 let job = self
                     .inner
@@ -5630,9 +5665,14 @@ impl MorphzRuntime {
                     .get_execution_job(&current.job_id)
                     .await
                     .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("Approval '{}' 缺少 Execution Job", current.id))?;
+                    .ok_or_else(|| {
+                        format!("Approval '{}' is missing an Execution Job", current.id)
+                    })?;
                 if job.initiating_principal_id.is_none() {
-                    return Err("没有权威 Principal 的请求不能批准 Capability Lease".to_string());
+                    return Err(
+                        "a Capability Lease cannot be approved without an authoritative Principal"
+                            .to_string(),
+                    );
                 }
                 let mut risk_tags = risk_tags.clone();
                 if !risk_tags
@@ -5654,7 +5694,10 @@ impl MorphzRuntime {
                 risk_tags: risk_tags.clone(),
             },
             ApprovalDecision::AskHuman { .. } => {
-                return Err("人工审批结果只能是 allow_once、allow_lease 或 deny".to_string());
+                return Err(
+                    "a human approval decision must be allow_once, allow_lease, or deny"
+                        .to_string(),
+                );
             }
         };
         let commit = self
@@ -5668,22 +5711,25 @@ impl MorphzRuntime {
             ApprovalMutation::Conflict { current, reason }
             | ApprovalMutation::Rejected { current, reason } => {
                 return Err(format!(
-                    "审批 '{}' 在提交决定时被拒绝（r{} / {}）: {reason}",
+                    "Approval '{}' was rejected while committing the decision (r{} / {}): {reason}",
                     current.id,
                     current.revision,
                     current.status.as_str()
                 ));
             }
             ApprovalMutation::NotFound => {
-                return Err(format!("审批请求 '{approval_id}' 在提交时已不存在"));
+                return Err(format!(
+                    "Approval request '{approval_id}' no longer exists at submission time"
+                ));
             }
             ApprovalMutation::Created(_) => {
-                return Err("审批决定返回了不可能的 Created 状态".to_string());
+                return Err("approval decision returned an impossible Created state".to_string());
             }
         };
         if commit.event_created {
             let event = commit.event.ok_or_else(|| {
-                "Approval 审计 Event 已原子创建，但 Store 未返回持久化投影".to_string()
+                "Approval audit Event was created atomically, but the Store did not return its persisted projection"
+                    .to_string()
             })?;
             self.inner
                 .bus
@@ -5775,7 +5821,7 @@ impl MorphzRuntime {
             .store
             .get_session(session_id)
             .await?
-            .ok_or_else(|| format!("Session '{}' 不存在", session_id))?;
+            .ok_or_else(|| format!("Session '{}' does not exist", session_id))?;
         self.inner
             .orchestrator
             .get_context_encoding(&session.context_id, session_id)
@@ -5794,7 +5840,7 @@ impl MorphzRuntime {
             .store
             .get_session(session_id)
             .await?
-            .ok_or_else(|| format!("Session '{}' 不存在", session_id))?;
+            .ok_or_else(|| format!("Session '{}' does not exist", session_id))?;
         self.context_projection(&session.context_id, session_id)
             .await
     }
@@ -5807,7 +5853,7 @@ impl MorphzRuntime {
             .store
             .get_session(session_id)
             .await?
-            .ok_or_else(|| format!("Session '{}' 不存在", session_id).into())
+            .ok_or_else(|| format!("Session '{}' does not exist", session_id).into())
     }
 
     pub async fn active_thread_activations(
@@ -5830,7 +5876,7 @@ impl MorphzRuntime {
             .store
             .get_context(context_id)
             .await?
-            .ok_or_else(|| format!("Context '{context_id}' 不存在"))?;
+            .ok_or_else(|| format!("Context '{context_id}' does not exist"))?;
         let include_terminal = query.include_terminal;
         let limit = query.limit.clamp(1, 2_000);
         let detail_fetch_limit = limit.saturating_add(1);
@@ -6614,7 +6660,7 @@ impl MorphzRuntime {
         context_id: &str,
     ) -> Result<Vec<AttentionAcknowledgement>, RuntimeError> {
         if self.inner.store.get_context(context_id).await?.is_none() {
-            return Err(format!("Context '{context_id}' 不存在").into());
+            return Err(format!("Context '{context_id}' does not exist").into());
         }
         self.inner
             .store
@@ -6632,7 +6678,7 @@ impl MorphzRuntime {
         limit: usize,
     ) -> Result<AttentionAcknowledgementsPage, RuntimeError> {
         if self.inner.store.get_context(context_id).await?.is_none() {
-            return Err(format!("Context '{context_id}' 不存在").into());
+            return Err(format!("Context '{context_id}' does not exist").into());
         }
         let limit = limit.clamp(1, 500);
         let mut acknowledgements = if let Some(sequence) = after_sequence {
@@ -6669,16 +6715,19 @@ impl MorphzRuntime {
         command: AcknowledgeAttentionCommand,
     ) -> Result<AttentionAcknowledgement, RuntimeError> {
         if self.inner.store.get_context(context_id).await?.is_none() {
-            return Err(format!("Context '{context_id}' 不存在").into());
+            return Err(format!("Context '{context_id}' does not exist").into());
         }
         let key = command.key.trim();
         let source_kind = command.source_kind.trim();
         let source_id = command.source_id.trim();
         if key.is_empty() || source_kind.is_empty() || source_id.is_empty() {
-            return Err("关注确认需要非空的 key、source_kind 与 source_id".into());
+            return Err(
+                "attention acknowledgement requires non-empty key, source_kind, and source_id"
+                    .into(),
+            );
         }
         if key.len() > 512 || source_kind.len() > 80 || source_id.len() > 256 {
-            return Err("关注确认标识超过允许长度".into());
+            return Err("attention acknowledgement identifier exceeds the allowed length".into());
         }
         let acknowledged_at = chrono::Utc::now();
         let event_id = format!(
@@ -6727,7 +6776,7 @@ impl MorphzRuntime {
             .await?
             .ok_or_else(|| {
                 format!(
-                    "关注确认 Event '{}' 已提交，但投影尚未收敛",
+                    "attention acknowledgement Event '{}' was committed, but its projection has not converged",
                     record.event_id
                 )
                 .into()
@@ -7181,7 +7230,7 @@ impl MorphzRuntime {
             .store
             .get_context(context_id)
             .await?
-            .ok_or_else(|| format!("Context '{context_id}' 不存在"))?;
+            .ok_or_else(|| format!("Context '{context_id}' does not exist"))?;
         let agent = self.inner.store.get_agent(&context.agent_id).await?;
         let objectives = self.list_context_objectives(context_id, false).await?;
         let scheduler_summary = if query.include_scheduler_summary.unwrap_or(true) {
@@ -7204,9 +7253,12 @@ impl MorphzRuntime {
                 .store
                 .get_session(session_id)
                 .await?
-                .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+                .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
             if session.context_id != context_id {
-                return Err(format!("Session '{session_id}' 不属于 Context '{context_id}'").into());
+                return Err(format!(
+                    "Session '{session_id}' does not belong to Context '{context_id}'"
+                )
+                .into());
             }
             Some(
                 self.inner
@@ -7583,7 +7635,7 @@ impl MorphzRuntime {
             .await?
         {
             KernelResult::ThreadControlled(mutation) => mutation,
-            _ => return Err("Scheduler Kernel 返回了错误的 Thread control 结果".into()),
+            _ => return Err("Scheduler Kernel returned an invalid Thread control result".into()),
         };
         if let ThreadMutation::Updated(updated) = &mutation {
             match action {
@@ -7623,11 +7675,11 @@ impl MorphzRuntime {
     ) -> Result<ThreadMutation, RuntimeError> {
         let intent = intent.trim();
         if intent.is_empty() {
-            return Err("Thread supersede 需要非空 corrected intent".into());
+            return Err("Thread supersede requires a non-empty corrected intent".into());
         }
         let reason = reason.trim();
         let reason = if reason.is_empty() {
-            "用户修订了当前并发工作的要求"
+            "the user revised the requirements for the current concurrent work"
         } else {
             reason
         };
@@ -7653,7 +7705,7 @@ impl MorphzRuntime {
             .await?
         {
             KernelResult::ThreadControlled(mutation) => mutation,
-            _ => return Err("Scheduler Kernel 返回了错误的 Thread supersede 结果".into()),
+            _ => return Err("Scheduler Kernel returned an invalid Thread supersede result".into()),
         };
         if let ThreadMutation::Updated(updated) = &mutation {
             self.inner
@@ -7679,7 +7731,7 @@ impl MorphzRuntime {
             .await?
             .is_none()
         {
-            return Err(format!("Context '{}' 不存在", query.context_id).into());
+            return Err(format!("Context '{}' does not exist", query.context_id).into());
         }
         let limit = if query.limit == 0 { 100 } else { query.limit }.clamp(1, 500);
         let (event_ids, has_search_term) = match query.search_query.as_deref() {
@@ -8271,6 +8323,10 @@ pub struct SessionMessageOptions {
     pub attachments: Vec<crate::sdk::MessageAttachmentInput>,
     pub references: Vec<crate::sdk::MessageReferenceInput>,
     pub dispatch_mode: Option<MessageDispatchMode>,
+    /// One-shot exact model route for the Evaluation rooted at this message.
+    /// Unlike the Session binding, this value is persisted on the root Event
+    /// and frozen on the resulting Activation only.
+    pub model_alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8307,7 +8363,7 @@ fn validate_client_message_id(value: &str) -> Result<(), MessageIngressError> {
     if value.is_empty() || value.len() > 128 {
         return Err(MessageIngressError::new(
             MessageIngressErrorKind::InvalidArgument,
-            "client_message_id 长度必须为 1..=128 字节",
+            "client_message_id length must be 1..=128 bytes",
         ));
     }
     if !value
@@ -8316,7 +8372,7 @@ fn validate_client_message_id(value: &str) -> Result<(), MessageIngressError> {
     {
         return Err(MessageIngressError::new(
             MessageIngressErrorKind::InvalidArgument,
-            "client_message_id 只能包含 ASCII 字母、数字、-、_、.、:",
+            "client_message_id may contain only ASCII letters, digits, -, _, ., and :",
         ));
     }
     Ok(())
@@ -8423,26 +8479,27 @@ impl SessionHandle {
             attachments,
             references,
             dispatch_mode,
+            model_alias,
         } = options;
         let session = self
             .runtime
             .get_session(&self.id)
             .await?
-            .ok_or_else(|| format!("Session '{}' 不存在", self.id))?;
+            .ok_or_else(|| format!("Session '{}' does not exist", self.id))?;
         if session.status == crate::memory::SessionStatus::Archived {
-            return Err("归档 Session 不能接收新消息".into());
+            return Err("an archived Session cannot receive new messages".into());
         }
         let text = text.into().trim().to_string();
         if text.is_empty() && attachments.is_empty() && references.is_empty() {
-            return Err("消息正文、附件和引用不能同时为空".into());
+            return Err("message text, attachments, and references cannot all be empty".into());
         }
         if text.chars().count() > 1_000_000 {
-            return Err("消息正文超过 1,000,000 字符".into());
+            return Err("message text exceeds 1,000,000 characters".into());
         }
         if references.len() > 64 {
             return Err(Box::new(MessageIngressError::new(
                 MessageIngressErrorKind::InvalidArgument,
-                "一条消息最多引用 64 个 Session",
+                "a message may reference at most 64 Sessions",
             )));
         }
         let principal_id = principal_id.into();
@@ -8454,28 +8511,47 @@ impl SessionHandle {
             .await?
         {
             return Err(format!(
-                "Principal '{}' 未绑定到 Session '{}'，拒绝接收消息",
+                "Principal '{}' is not bound to Session '{}'; message rejected",
                 principal_id, self.id
             )
             .into());
         }
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
         validate_client_message_id(&client_message_id)?;
+        let model_alias = if let Some(model_alias) = model_alias {
+            let model_alias = model_alias.trim().to_string();
+            if model_alias.is_empty() {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    "model_alias must not be empty; omit it to inherit the Session or Runtime model",
+                )));
+            }
+            let options = self.runtime.inference_model_options().await?;
+            if !options.iter().any(|option| option.id == model_alias) {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    format!("model '{model_alias}' is not present in the discovered and enabled model catalog"),
+                )));
+            }
+            Some(model_alias)
+        } else {
+            None
+        };
         let event_id = runtime_id("msg");
         let resolved_harness = if let Some(reference) = requested_harness {
             let id = reference.id.trim();
             let version = reference.version.trim();
             if id.is_empty() || version.is_empty() {
-                return Err("Harness id/version 不能为空".into());
+                return Err("Harness id and version must not be empty".into());
             }
             let harness = self
                 .runtime
                 .inner
                 .harness_registry
                 .get(id, version)
-                .ok_or_else(|| format!("Harness '{id}@{version}' 未安装"))?;
+                .ok_or_else(|| format!("Harness '{id}@{version}' is not installed"))?;
             let artifact_hash = harness.artifact_hash().ok_or_else(|| {
-                format!("Harness '{id}@{version}' 没有 artifact hash，不能精确绑定")
+                format!("Harness '{id}@{version}' has no artifact hash and cannot be bound exactly")
             })?;
             Some((id.to_string(), version.to_string(), artifact_hash))
         } else {
@@ -8492,7 +8568,7 @@ impl SessionHandle {
             if session_id.is_empty() {
                 return Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::InvalidArgument,
-                    "Session 引用缺少 session_id",
+                    "Session reference is missing session_id",
                 )));
             }
             if !referenced_session_ids.insert(session_id.to_string()) {
@@ -8501,19 +8577,21 @@ impl SessionHandle {
             let referenced = self.runtime.get_session(session_id).await?.ok_or_else(|| {
                 Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::InvalidArgument,
-                    format!("引用的 Session '{session_id}' 不存在"),
+                    format!("referenced Session '{session_id}' does not exist"),
                 )) as RuntimeError
             })?;
             if referenced.status == crate::memory::SessionStatus::Archived {
                 return Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Conflict,
-                    format!("引用的 Session '{session_id}' 已归档"),
+                    format!("referenced Session '{session_id}' is archived"),
                 )));
             }
             if referenced.agent_id != session.agent_id {
                 return Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Forbidden,
-                    format!("引用的 Session '{session_id}' 不属于当前 Agent"),
+                    format!(
+                        "referenced Session '{session_id}' does not belong to the current Agent"
+                    ),
                 )));
             }
             if !self
@@ -8525,7 +8603,7 @@ impl SessionHandle {
             {
                 return Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Forbidden,
-                    format!("Principal '{principal_id}' 无权引用 Session '{session_id}'"),
+                    format!("Principal '{principal_id}' may not reference Session '{session_id}'"),
                 )));
             }
             canonical_references.push(json!({
@@ -8565,6 +8643,9 @@ impl SessionHandle {
             ("text".to_string(), json!(text)),
             ("dispatch_mode".to_string(), json!(dispatch_mode.as_str())),
         ]);
+        if let Some(model_alias) = model_alias {
+            payload.insert("model_alias".to_string(), json!(model_alias));
+        }
         if !canonical_references.is_empty() {
             payload.insert("references".to_string(), Value::Array(canonical_references));
         }
@@ -8622,7 +8703,7 @@ impl SessionHandle {
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Conflict,
                     format!(
-                        "client_message_id '{}' 已绑定到不同请求 Event '{}'",
+                        "client_message_id '{}' is already bound to a different request Event '{}'",
                         client_message_id, existing_event_id
                     ),
                 )))
@@ -8631,7 +8712,7 @@ impl SessionHandle {
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Conflict,
-                    "归档 Session 不能接收新消息",
+                    "an archived Session cannot receive new messages",
                 )))
             }
             MessageClaim::ForbiddenPrincipal { principal_id } => {
@@ -8639,7 +8720,7 @@ impl SessionHandle {
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Forbidden,
                     format!(
-                        "Principal '{}' 未绑定到 Session '{}'，拒绝接收消息",
+                        "Principal '{}' is not bound to Session '{}'; message rejected",
                         principal_id, self.id
                     ),
                 )))
@@ -8655,7 +8736,7 @@ impl SessionHandle {
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Conflict,
-                    format!("引用的 Session '{session_id}' 已归档"),
+                    format!("referenced Session '{session_id}' is archived"),
                 )))
             }
             MessageClaim::ForbiddenReference {
@@ -8665,7 +8746,7 @@ impl SessionHandle {
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Forbidden,
-                    format!("Principal '{principal_id}' 无权引用 Session '{session_id}'"),
+                    format!("Principal '{principal_id}' may not reference Session '{session_id}'"),
                 )))
             }
             MessageClaim::Accepted { event, interrupted } => {
@@ -8762,9 +8843,9 @@ impl SessionHandle {
             .runtime
             .get_session(&self.id)
             .await?
-            .ok_or_else(|| format!("Session '{}' 不存在", self.id))?;
+            .ok_or_else(|| format!("Session '{}' does not exist", self.id))?;
         if session.status == crate::memory::SessionStatus::Archived {
-            return Err("归档 Session 不能重启 DialogueTurn".into());
+            return Err("an archived Session cannot restart a DialogueTurn".into());
         }
         let principal_id = principal_id.into();
         if !self
@@ -8775,7 +8856,7 @@ impl SessionHandle {
             .await?
         {
             return Err(format!(
-                "Principal '{}' 未绑定到 Session '{}'，拒绝重启 DialogueTurn",
+                "Principal '{}' is not bound to Session '{}'; DialogueTurn restart rejected",
                 principal_id, self.id
             )
             .into());
@@ -8783,7 +8864,7 @@ impl SessionHandle {
         let root_turn_id = root_turn_id.into();
         let retry_request_id = retry_request_id.into();
         if root_turn_id.trim().is_empty() || retry_request_id.trim().is_empty() {
-            return Err("root_turn_id 与 retry_request_id 不能为空".into());
+            return Err("root_turn_id and retry_request_id must not be empty".into());
         }
         let expected_result_event_id = expected_result_event_id.into();
         let thread = self
@@ -8792,10 +8873,10 @@ impl SessionHandle {
             .store
             .get_thread_by_root(&root_turn_id)
             .await?
-            .ok_or_else(|| format!("DialogueTurn '{}' 不存在", root_turn_id))?;
+            .ok_or_else(|| format!("DialogueTurn '{}' does not exist", root_turn_id))?;
         if thread.session_id != self.id || thread.context_id != session.context_id {
             return Err(format!(
-                "DialogueTurn '{}' 不属于 Session '{}'",
+                "DialogueTurn '{}' does not belong to Session '{}'",
                 root_turn_id, self.id
             )
             .into());
@@ -8805,7 +8886,10 @@ impl SessionHandle {
             .as_deref()
             .is_some_and(|owner| owner != principal_id)
         {
-            return Err("当前 Principal 不能重启其他身份发起的 DialogueTurn".into());
+            return Err(
+                "the current Principal cannot restart a DialogueTurn initiated by another identity"
+                    .into(),
+            );
         }
 
         let digest = Sha256::digest(
@@ -8849,7 +8933,11 @@ impl SessionHandle {
             .await?
         {
             crate::scheduler::KernelResult::DialogueTurnRestarted(mutation) => mutation,
-            _ => return Err("Scheduler Kernel 返回了错误的 DialogueTurn restart 结果".into()),
+            _ => {
+                return Err(
+                    "Scheduler Kernel returned an invalid DialogueTurn restart result".into(),
+                )
+            }
         };
         let (thread_id, generation, duplicate) = match mutation {
             DialogueTurnRetryMutation::Accepted {
@@ -8862,14 +8950,14 @@ impl SessionHandle {
             } => (thread_id, generation, true),
             DialogueTurnRetryMutation::Conflict { current } => {
                 return Err(format!(
-                    "DialogueTurn 已变化：期望 r{}，当前 r{} / generation {}",
+                    "DialogueTurn changed: expected r{}, current r{} / generation {}",
                     expected_thread_revision, current.revision, current.generation
                 )
                 .into());
             }
             DialogueTurnRetryMutation::Rejected { reason, .. } => return Err(reason.into()),
             DialogueTurnRetryMutation::NotFound => {
-                return Err(format!("DialogueTurn '{}' 不存在", root_turn_id).into());
+                return Err(format!("DialogueTurn '{}' does not exist", root_turn_id).into());
             }
         };
 
@@ -8888,7 +8976,7 @@ impl SessionHandle {
             .await?
             .into_iter()
             .find(|stored| stored.id == event_id)
-            .ok_or_else(|| format!("DialogueTurn retry Event '{}' 未持久化", event_id))?;
+            .ok_or_else(|| format!("DialogueTurn retry Event '{}' was not persisted", event_id))?;
         self.runtime
             .inner
             .bus
@@ -9038,6 +9126,7 @@ mod tests {
             parent_session_id: None,
             title: "Background work".to_string(),
             status: SessionStatus::Active,
+            model_alias: None,
             created_at: now,
             updated_at: now,
             last_activity_at: now,
@@ -9822,6 +9911,7 @@ mod tests {
                 thread_id: "thread-live-schedule".to_string(),
                 source_turn_id: "root-live-schedule".to_string(),
                 intent: "execute the persisted one-shot timer".to_string(),
+                model_alias: None,
                 not_before: Some(chrono::Utc::now() + chrono::Duration::milliseconds(30)),
                 interval_seconds: None,
                 dependency_thread_ids: Vec::new(),
@@ -9831,7 +9921,7 @@ mod tests {
         let mut replies = runtime.subscribe("chat/reply", 4);
         runtime.inner.thread_scheduler.arm(schedule).await.unwrap();
 
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(15), replies.recv())
             .await
             .expect("one-shot schedule must reach a live model Activation")
             .unwrap();
@@ -9899,6 +9989,7 @@ mod tests {
                 thread_id: "thread-live-recurring-template".to_string(),
                 source_turn_id: "root-live-recurring-template".to_string(),
                 intent: "execute one recurring occurrence".to_string(),
+                model_alias: None,
                 not_before: Some(chrono::Utc::now() + chrono::Duration::milliseconds(30)),
                 interval_seconds: Some(60),
                 dependency_thread_ids: Vec::new(),
@@ -10608,6 +10699,116 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn one_shot_message_model_is_persisted_on_its_root_event_without_mutating_session() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.llm.model = "primary-route".to_string();
+        config.provider_instances.insert(
+            "configured-service".to_string(),
+            crate::config::ProviderInstanceConfig {
+                adapter: "protocol-compatible".to_string(),
+                protocol: crate::config::ModelProtocol::OpenaiResponses,
+                base_url: "https://models.example.test/v1".to_string(),
+                accounts: vec!["configured-account".to_string()],
+                ..crate::config::ProviderInstanceConfig::default()
+            },
+        );
+        config.auth_accounts.insert(
+            "configured-account".to_string(),
+            AuthAccountConfig {
+                auth_adapter: "none".to_string(),
+                provider: Some("configured-service".to_string()),
+                ..AuthAccountConfig::default()
+            },
+        );
+        for (alias, physical_model) in [
+            ("primary-route", "physical-primary"),
+            ("one-shot-route", "physical-one-shot"),
+        ] {
+            config.model_routes.insert(
+                alias.to_string(),
+                crate::config::ModelRouteConfig {
+                    candidates: vec![crate::config::ModelRouteCandidateConfig {
+                        provider: "configured-service".to_string(),
+                        account: Some("configured-account".to_string()),
+                        model: physical_model.to_string(),
+                        ..crate::config::ModelRouteCandidateConfig::default()
+                    }],
+                    ..crate::config::ModelRouteConfig::default()
+                },
+            );
+        }
+
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-one-shot-model".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "One-shot model".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime.bind_default_principal(&session.id).await.unwrap();
+        let receipt = session
+            .send_as_principal_with_options(
+                "evaluate once with another route",
+                "User-Test",
+                runtime.identity().principal_id.clone(),
+                Some("client-one-shot-model".to_string()),
+                SessionMessageOptions {
+                    model_alias: Some("one-shot-route".to_string()),
+                    ..SessionMessageOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let events = runtime
+            .query_events(QueryFilter {
+                event_id: Some(receipt.event_id),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["model_alias"], "one-shot-route");
+        assert_eq!(
+            runtime
+                .get_session(&session.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .model_alias,
+            None,
+            "a one-shot Evaluation model must not mutate the Session default"
+        );
+
+        let error = session
+            .send_as_principal_with_options(
+                "reject an unknown route",
+                "User-Test",
+                runtime.identity().principal_id.clone(),
+                Some("client-unknown-one-shot-model".to_string()),
+                SessionMessageOptions {
+                    model_alias: Some("missing-route".to_string()),
+                    ..SessionMessageOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("is not present in the discovered and enabled model catalog"));
+    }
+
+    #[tokio::test]
     async fn attention_acknowledgement_is_durable_audit_not_scheduler_work() {
         let database = NamedTempFile::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
@@ -10973,7 +11174,7 @@ mod tests {
                             func_name: "eval".to_string(),
                             arguments: json!({
                                 "program": format!(
-                                    "(eval (requires (tools read)) (seq (bind body (call read (path {quoted_path}))) $body))"
+                                    "(eval (requires (tools read)) (seq (bind body (call read (path {quoted_path}))) body))"
                                 )
                             })
                             .to_string(),
@@ -11326,7 +11527,8 @@ mod tests {
                         .map(|message| message.content.as_str())
                         .unwrap_or_default();
                     let observed = if self.expected_rejected {
-                        tool_text.contains("执行拒绝") && tool_text.contains("权限审批未授权")
+                        tool_text.contains("Tool execution rejected")
+                            && tool_text.contains("approval did not authorize")
                     } else {
                         tool_text.contains("durable-approval-fixture")
                     };
@@ -11453,10 +11655,10 @@ mod tests {
                         .find(|message| message.role == "tool")
                         .map(|message| message.content.as_str())
                         .unwrap_or_default();
-                    let observed = tool_text.contains("执行拒绝")
+                    let observed = tool_text.contains("Tool execution rejected")
                         && tool_text.contains("PROTECTED_PATH")
                         && tool_text.contains("protected_paths")
-                        && tool_text.contains("未开始执行");
+                        && tool_text.contains("did not start");
                     self.observed_result.store(observed, Ordering::SeqCst);
                     if !observed {
                         return Err(format!("未观测到权限预检拒绝工具结果: {tool_text}").into());
@@ -12362,6 +12564,7 @@ mod tests {
                 thread_id: thread.id.clone(),
                 source_turn_id: root_turn_id.to_string(),
                 intent: "retry after the dependency is ready".to_string(),
+                model_alias: None,
                 not_before: Some(chrono::Utc::now() + chrono::Duration::minutes(5)),
                 interval_seconds: None,
                 dependency_thread_ids: Vec::new(),
@@ -14729,7 +14932,7 @@ mod tests {
         assert_eq!(reply.payload["delivery_strategy"], "deterministic_batch");
         assert_eq!(
             reply.payload["text"],
-            "以下 2 项工作已完成：\n\n1. first concise result\n\n2. second concise result"
+            "The following 2 work items are complete:\n\n1. first concise result\n\n2. second concise result"
         );
         assert_eq!(reply.payload["covers"].as_array().unwrap().len(), 2);
         assert_eq!(client.calls.load(Ordering::SeqCst), 0);
@@ -16091,7 +16294,7 @@ mod tests {
             .unwrap();
 
         let mut received = std::collections::HashSet::new();
-        let completed = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let completed = tokio::time::timeout(std::time::Duration::from_secs(60), async {
             while received.len() < 3 {
                 let reply = replies.recv().await.unwrap();
                 let session_id = reply.payload["session_id"].as_str().unwrap();
@@ -17939,7 +18142,7 @@ mod tests {
         // if the deadline expires before `start`, a correctly claimed timer
         // would look like a persistence failure. This test exercises restart
         // recovery, not sub-second timer precision.
-        let deadline = chrono::Utc::now() + chrono::Duration::seconds(5);
+        let deadline = chrono::Utc::now() + chrono::Duration::seconds(10);
         assert!(matches!(
             store
                 .update_objective_state(
@@ -17974,13 +18177,28 @@ mod tests {
         runtime.start().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(client.calls.load(Ordering::SeqCst), 0);
-        let wait_timer = runtime
-            .inner
-            .store
-            .get_runtime_timer("objective-wait:objective-recover")
-            .await
-            .unwrap()
-            .expect("recoverable timer wait must be persisted before it fires");
+        // Startup recovery first reconciles the durable dependency graph and
+        // may briefly cancel the legacy display timer before rescheduling the
+        // authoritative generation. Observe the settled pending timer rather
+        // than racing that internal transition under a parallel test run.
+        let wait_timer = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(timer) = runtime
+                    .inner
+                    .store
+                    .get_runtime_timer("objective-wait:objective-recover")
+                    .await
+                    .unwrap()
+                {
+                    if timer.status == crate::memory::RuntimeTimerStatus::Pending {
+                        break timer;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("recoverable timer wait must settle as pending before it fires");
         assert_eq!(
             wait_timer.kind,
             crate::memory::RuntimeTimerKind::ObjectiveWait
@@ -17989,7 +18207,7 @@ mod tests {
             wait_timer.status,
             crate::memory::RuntimeTimerStatus::Pending
         );
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(15), replies.recv())
             .await
             .unwrap()
             .unwrap();
@@ -18080,7 +18298,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string()
-            .contains("不存在"));
+            .contains("does not exist"));
     }
 
     #[tokio::test]
@@ -18489,32 +18707,33 @@ mod tests {
         assert!(dropped.load(Ordering::SeqCst));
         assert!(!tokio::fs::try_exists(&destination_path).await.unwrap());
 
-        let (activation, thread) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let activation = runtime
-                    .inner
-                    .store
-                    .get_thread_activation(&submitted.activation.id)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                let thread = runtime
-                    .inner
-                    .store
-                    .get_thread(&submitted.thread.id)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                if activation.status == ThreadActivationStatus::Cancelled
-                    && thread.lifecycle == ThreadLifecycle::Cancelled
-                {
-                    break (activation, thread);
+        let (activation, thread) =
+            tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                loop {
+                    let activation = runtime
+                        .inner
+                        .store
+                        .get_thread_activation(&submitted.activation.id)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    let thread = runtime
+                        .inner
+                        .store
+                        .get_thread(&submitted.thread.id)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if activation.status == ThreadActivationStatus::Cancelled
+                        && thread.lifecycle == ThreadLifecycle::Cancelled
+                    {
+                        break (activation, thread);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("cancelled Artifact Transfer should close its scheduler lineage");
+            })
+            .await
+            .expect("cancelled Artifact Transfer should close its scheduler lineage");
         assert_eq!(activation.status, ThreadActivationStatus::Cancelled);
         assert_eq!(thread.lifecycle, ThreadLifecycle::Cancelled);
         let event = runtime

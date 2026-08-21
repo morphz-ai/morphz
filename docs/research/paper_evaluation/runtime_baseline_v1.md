@@ -19,7 +19,7 @@
 
 > 2026-08-17 仓库统一重写历史 author/committer 邮箱后，本基线由原 SHA
 > `45ed92a1535f952cdac1b5b08dcce19b7d627c55` 映射为上述 SHA；代码树和提交主题未变。
-> 当前新实验默认使用 [Runtime 基线 v2](./runtime_baseline_v2.md)，本文件仅保留历史追溯。
+> 当前新实验默认使用 [Runtime 基线 v3](./runtime_baseline_v3.md)，本文件仅保留历史追溯。
 
 ## 2. 冻结依据
 

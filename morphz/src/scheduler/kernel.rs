@@ -221,7 +221,7 @@ impl SchedulerKernel {
                     if let Some(pending_dependency_id) = payload.pending_dependency_id.as_deref() {
                         if payload.continuation.is_some() {
                             return Err(KernelError::InvalidCommand(
-                                "Objective interrupt claim 不能同时创建 Supervisor continuation"
+                                "Objective interrupt claim cannot create a Supervisor continuation at the same time"
                                     .to_string(),
                             ));
                         }

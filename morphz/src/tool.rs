@@ -469,11 +469,11 @@ fn approval_context() -> ApprovalContext {
 
 fn broker_from_config(config: Arc<PermissionConfig>) -> Arc<PermissionBroker> {
     let profile = PermissionProfile::from_config(&config)
-        .unwrap_or_else(|error| panic!("无效 PermissionConfig: {error}"));
+        .unwrap_or_else(|error| panic!("invalid PermissionConfig: {error}"));
     Arc::new(PermissionBroker::new(
         Arc::new(profile),
         Arc::new(DenyAllApprovalProvider::new(
-            "当前工具未配置边界外权限审批提供者",
+            "the current tool has no out-of-bound permission approval provider",
         )),
     ))
 }
@@ -704,43 +704,45 @@ impl Tool for SendMessageTool {
         let args: SendMessageArgs = serde_json::from_str(arguments)?;
         let source_session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
-            .map_err(|_| "send_message 缺少当前 Session 路由")?;
+            .map_err(|_| "send_message is missing the current Session route")?;
         let source_context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "send_message 缺少当前 Context 路由")?;
+            .map_err(|_| "send_message is missing the current Context route")?;
         let attempt_id = CURRENT_ATTEMPT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "send_message 缺少当前 Evaluation 路由")?;
+            .map_err(|_| "send_message is missing the current Evaluation route")?;
         let target_session_id = args.session_id.trim();
         if target_session_id.is_empty() {
-            return Err("send_message.session_id 不能为空".into());
+            return Err("send_message.session_id must not be empty".into());
         }
         if target_session_id == source_session_id {
             return Err(
-                "不能用 send_message 回复当前 active Session；请返回普通 assistant 文本".into(),
+                "send_message cannot reply to the current active Session; return ordinary assistant text instead".into(),
             );
         }
         if args.content.trim().is_empty() {
-            return Err("send_message.content 不能为空".into());
+            return Err("send_message.content must not be empty".into());
         }
         if args.content.chars().count() > 1_000_000 {
-            return Err("send_message.content 超过 1,000,000 字符".into());
+            return Err("send_message.content exceeds 1,000,000 characters".into());
         }
         let source = self
             .sessions
             .get_session(&source_session_id)
             .await?
-            .ok_or("当前 Session 不存在")?;
+            .ok_or("Current Session does not exist")?;
         let target = self
             .sessions
             .get_session(target_session_id)
             .await?
-            .ok_or_else(|| format!("目标 Session '{target_session_id}' 不存在"))?;
+            .ok_or_else(|| format!("Target Session '{target_session_id}' does not exist"))?;
         if source.agent_id != target.agent_id {
-            return Err("send_message 只能投递给同一 Agent 拥有的 Session".into());
+            return Err(
+                "send_message can deliver only to a Session owned by the same Agent".into(),
+            );
         }
         if target.status == SessionStatus::Archived {
-            return Err("目标 Session 已归档，不能接收新消息".into());
+            return Err("Target Session is archived and cannot receive new messages".into());
         }
 
         let digest =
@@ -858,50 +860,53 @@ impl Tool for SessionSignalTool {
         let args: SessionSignalArgs = serde_json::from_str(arguments)?;
         let source_session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
-            .map_err(|_| "session_signal 缺少当前 Session 路由")?;
+            .map_err(|_| "session_signal is missing the current Session route")?;
         let source_context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "session_signal 缺少当前 Context 路由")?;
+            .map_err(|_| "session_signal is missing the current Context route")?;
         let source_attempt_id = CURRENT_ATTEMPT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "session_signal 缺少当前 Evaluation 路由")?;
+            .map_err(|_| "session_signal is missing the current Evaluation route")?;
         let causal_route = CURRENT_CAUSAL_ROUTE
             .try_with(Clone::clone)
-            .map_err(|_| "session_signal 缺少当前 Activation 因果路由")?
-            .ok_or("session_signal 只能在持久化 Activation 中执行")?;
+            .map_err(|_| "session_signal is missing the current Activation causal route")?
+            .ok_or("session_signal can execute only within a persisted Activation")?;
         let target_session_id = args.session_id.trim();
         let content = args.content.trim();
         if target_session_id.is_empty() {
-            return Err("session_signal.session_id 不能为空".into());
+            return Err("session_signal.session_id must not be empty".into());
         }
         if target_session_id == source_session_id {
-            return Err("session_signal 只能投递给另一个 Session".into());
+            return Err("session_signal can deliver only to another Session".into());
         }
         if content.is_empty() {
-            return Err("session_signal.content 不能为空".into());
+            return Err("session_signal.content must not be empty".into());
         }
         if content.chars().count() > 1_000_000 {
-            return Err("session_signal.content 超过 1,000,000 字符".into());
+            return Err("session_signal.content exceeds 1,000,000 characters".into());
         }
 
         let source = self
             .sessions
             .get_session(&source_session_id)
             .await?
-            .ok_or("当前 Session 不存在")?;
+            .ok_or("Current Session does not exist")?;
         if source.context_id != source_context_id {
-            return Err("当前 Session 与 Context 因果路由不一致".into());
+            return Err("Current Session and Context have inconsistent causal routes".into());
         }
         let target = self
             .sessions
             .get_session(target_session_id)
             .await?
-            .ok_or_else(|| format!("目标 Session '{target_session_id}' 不存在"))?;
+            .ok_or_else(|| format!("Target Session '{target_session_id}' does not exist"))?;
         if source.agent_id != target.agent_id {
-            return Err("session_signal 暂不允许跨 Agent 投递".into());
+            return Err("session_signal does not currently allow cross-Agent delivery".into());
         }
         if target.status == SessionStatus::Archived {
-            return Err("目标 Session 已归档，不能接收内部协调消息".into());
+            return Err(
+                "Target Session is archived and cannot receive internal coordination messages"
+                    .into(),
+            );
         }
 
         let digest = sha256_hex(
@@ -1020,10 +1025,10 @@ impl Tool for SessionSignalTool {
             })
             .to_string()),
             SessionSignalClaim::InactiveSession => {
-                Err("目标 Session 已归档，不能接收内部协调消息".into())
+                Err("Target Session is archived and cannot receive internal coordination messages".into())
             }
             SessionSignalClaim::ForbiddenPrincipal { principal_id } => Err(format!(
-                "Principal '{principal_id}' 无权向目标 Session '{target_session_id}' 投递内部协调消息"
+                "Principal '{principal_id}' may not deliver an internal coordination message to target Session '{target_session_id}'"
             )
             .into()),
         }
@@ -1114,18 +1119,23 @@ impl BackgroundTaskScheduler {
         parent: &ToolExecutionJobContext,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let Some(manager) = &self.execution_jobs else {
-            return Err("后台任务 Scheduler 未配置 ExecutionJob Store".into());
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
         };
         let parent_job = manager
             .store()
             .get_execution_job(&parent.parent_job_id)
             .await?
-            .ok_or_else(|| format!("父 ExecutionJob '{}' 不存在", parent.parent_job_id))?;
+            .ok_or_else(|| {
+                format!(
+                    "Parent ExecutionJob '{}' does not exist",
+                    parent.parent_job_id
+                )
+            })?;
         if parent_job.status != ExecutionJobStatus::Running
             || parent_job.cancel_requested_at.is_some()
         {
             return Err(format!(
-                "父 ExecutionJob '{}' 已取消或不再 running，拒绝挂载后台 child",
+                "parent ExecutionJob '{}' is cancelled or no longer running; background child attachment rejected",
                 parent.parent_job_id
             )
             .into());
@@ -1139,14 +1149,14 @@ impl BackgroundTaskScheduler {
         parent: &ToolExecutionJobContext,
     ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
         let Some(manager) = &self.execution_jobs else {
-            return Err("后台任务 Scheduler 未配置 ExecutionJob Store".into());
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
         };
         self.ensure_parent_accepts_background_child(parent).await?;
         let (_, child_tool_call_id) = self.durable_task_identity(parent)?;
         let request = {
-            let task = get_tasks_map()
-                .get(task_id)
-                .ok_or_else(|| format!("后台进程 '{task_id}' 的 live handle 不存在"))?;
+            let task = get_tasks_map().get(task_id).ok_or_else(|| {
+                format!("Live handle for background process '{task_id}' does not exist")
+            })?;
             serde_json::json!({
                 "kind": "background_exec",
                 "parent_job_id": parent.parent_job_id,
@@ -1183,14 +1193,14 @@ impl BackgroundTaskScheduler {
             .await?;
         if job.id != task_id {
             return Err(format!(
-                "后台任务 ID '{}' 与派生 ExecutionJob '{}' 不一致",
+                "background task ID '{}' does not match derived ExecutionJob '{}'",
                 task_id, job.id
             )
             .into());
         }
         if job.status != ExecutionJobStatus::Queued {
             return Err(format!(
-                "后台 ExecutionJob '{}' 当前为 {}，无法接管新进程",
+                "background ExecutionJob '{}' is currently {} and cannot adopt a new process",
                 job.id,
                 job.status.as_str()
             )
@@ -1363,7 +1373,7 @@ impl BackgroundTaskScheduler {
         };
         for _ in 0..4 {
             let Some(job) = manager.store().get_execution_job(task_id).await? else {
-                return Err(format!("后台 ExecutionJob '{task_id}' 不存在").into());
+                return Err(format!("Background ExecutionJob '{task_id}' does not exist").into());
             };
             if job.status.is_terminal() {
                 self.maybe_escalate_terminal_background_result(&job).await?;
@@ -1378,7 +1388,7 @@ impl BackgroundTaskScheduler {
                 "failed"
             };
             let text = format!(
-                "\n[后台任务 {} 执行结束，状态: {}，退出码: {}]{}\n--- 输出 ---\n{}",
+                "\n[background task {} finished, status: {}, exit code: {}]{}\n--- output ---\n{}",
                 task_id, status_text, exit_code, residual_note, output
             );
             let mut payload = serde_json::Map::from_iter([
@@ -1483,7 +1493,7 @@ impl BackgroundTaskScheduler {
                 JobOutcome::Failed {
                     result_event_id: Some(event.id.clone()),
                     result_refs,
-                    error: format!("后台进程退出码为 {exit_code}"),
+                    error: format!("Background process exited with code {exit_code}"),
                     exit_code: Some(exit_code),
                 }
             };
@@ -1567,11 +1577,16 @@ impl BackgroundTaskScheduler {
                 JobReceipt::Conflict { .. } => continue,
                 JobReceipt::Rejected { reason, .. } => return Err(reason.into()),
                 JobReceipt::NotFound { .. } => {
-                    return Err(format!("后台 ExecutionJob '{task_id}' 不存在").into());
+                    return Err(
+                        format!("Background ExecutionJob '{task_id}' does not exist").into(),
+                    );
                 }
             }
         }
-        Err(format!("后台 ExecutionJob '{task_id}' 完成时持续发生 revision 冲突").into())
+        Err(format!(
+            "Background ExecutionJob '{task_id}' remained in revision contention during completion"
+        )
+        .into())
     }
 
     async fn get_background_job(
@@ -1632,10 +1647,12 @@ impl BackgroundTaskScheduler {
                     }
                 }
             }
-            let event_id = job
-                .result_event_id
-                .as_deref()
-                .ok_or_else(|| format!("后台 ExecutionJob '{}' lost 但缺少结果 Event", job.id))?;
+            let event_id = job.result_event_id.as_deref().ok_or_else(|| {
+                format!(
+                    "Background ExecutionJob '{}' is lost but has no result Event",
+                    job.id
+                )
+            })?;
             let mut events = self
                 .events
                 .query(QueryFilter {
@@ -1645,7 +1662,7 @@ impl BackgroundTaskScheduler {
                 .await?;
             if events.len() != 1 {
                 return Err(format!(
-                    "后台 ExecutionJob '{}' 的 lost 结果 Event '{}' 数量异常：{}",
+                    "background ExecutionJob '{}' has an invalid number of lost-result Events '{}': {}",
                     job.id,
                     event_id,
                     events.len()
@@ -1669,7 +1686,10 @@ impl BackgroundTaskScheduler {
             return Ok(None);
         };
         if !context_id.is_empty() && job.context_id != context_id {
-            return Err(format!("后台任务 '{task_id}' 不属于当前 Context").into());
+            return Err(format!(
+                "Background task '{task_id}' does not belong to the current Context"
+            )
+            .into());
         }
         let live = get_tasks_map().get(task_id);
         Ok(Some(background_execution_snapshot(&job, live.as_deref())))
@@ -1715,14 +1735,17 @@ impl BackgroundTaskScheduler {
         context_id: &str,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         let Some(manager) = &self.execution_jobs else {
-            return Err("后台任务 Scheduler 未配置 ExecutionJob Store".into());
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
         };
         let mut job = self
             .get_background_job(task_id)
             .await?
-            .ok_or_else(|| format!("未找到后台任务 '{task_id}'"))?;
+            .ok_or_else(|| format!("Background task '{task_id}' was not found"))?;
         if !context_id.is_empty() && job.context_id != context_id {
-            return Err(format!("后台任务 '{task_id}' 不属于当前 Context").into());
+            return Err(format!(
+                "Background task '{task_id}' does not belong to the current Context"
+            )
+            .into());
         }
         if job.status.is_terminal() {
             let live = get_tasks_map().get(task_id);
@@ -1753,13 +1776,15 @@ impl BackgroundTaskScheduler {
                     current, reason, ..
                 } => {
                     return Err(format!(
-                        "后台 ExecutionJob '{}' 取消请求被拒绝：{}",
+                        "background ExecutionJob '{}' cancellation request was rejected: {}",
                         current.id, reason
                     )
                     .into());
                 }
                 JobReceipt::NotFound { .. } => {
-                    return Err(format!("后台 ExecutionJob '{task_id}' 不存在").into());
+                    return Err(
+                        format!("Background ExecutionJob '{task_id}' does not exist").into(),
+                    );
                 }
             }
         }
@@ -1868,8 +1893,8 @@ impl BackgroundTaskScheduler {
                 }
                 Err(error) => {
                     return Err(format!(
-                        "Activation '{}' 的进程组 {} 终止失败: {}；取消意图仍保持持久化",
-                        activation_id, pgid, error
+                        "failed to terminate process group {} for Activation '{}': {}; cancellation intent remains persisted",
+                        pgid, activation_id, error
                     )
                     .into());
                 }
@@ -1902,7 +1927,7 @@ impl BackgroundTaskScheduler {
     ) -> Result<chrono::DateTime<chrono::Utc>, String> {
         if !(1..=MAX_TASK_WAIT_SECS).contains(&check_after_secs) {
             return Err(format!(
-                "check_after_secs 必须在 1 到 {MAX_TASK_WAIT_SECS} 秒之间"
+                "check_after_secs must be between 1 and {MAX_TASK_WAIT_SECS} seconds"
             ));
         }
         if let Some(manager) = self.execution_jobs.as_ref() {
@@ -1913,12 +1938,14 @@ impl BackgroundTaskScheduler {
             // the commit and remains a same-process convenience hint.
             match get_tasks_map().get(task_id) {
                 Some(task) if task.status.is_terminal() => {
-                    return Err(format!("后台任务 '{task_id}' 已经结束，无需继续等待"));
+                    return Err(format!(
+                        "Background task '{task_id}' has already ended; no further wait is needed"
+                    ));
                 }
                 Some(_) => {}
                 None => {
                     return Err(format!(
-                        "未找到后台任务 '{task_id}'，它可能已被历史保留策略清理"
+                        "background task '{task_id}' was not found; it may have been removed by the history retention policy"
                     ));
                 }
             }
@@ -1926,7 +1953,9 @@ impl BackgroundTaskScheduler {
                 .store()
                 .register_background_checkpoint(task_id, check_after_secs, wake_source)
                 .await
-                .map_err(|error| format!("持久化后台任务检查点失败: {error}"))?;
+                .map_err(|error| {
+                    format!("Failed to persist background-task checkpoint: {error}")
+                })?;
             if let Some(mut task) = get_tasks_map().get_mut(task_id) {
                 task.wake_generation = registration.checkpoint_generation;
                 task.next_wakeup_at = Some(registration.due_at);
@@ -1940,9 +1969,11 @@ impl BackgroundTaskScheduler {
             let tasks = get_tasks_map();
             let mut task = tasks
                 .get_mut(task_id)
-                .ok_or_else(|| format!("未找到后台任务 '{task_id}'，它可能已被历史保留策略清理"))?;
+                .ok_or_else(|| format!("Background task '{task_id}' was not found; it may have been removed by the history-retention policy"))?;
             if task.status.is_terminal() {
-                return Err(format!("后台任务 '{task_id}' 已经结束，无需继续等待"));
+                return Err(format!(
+                    "Background task '{task_id}' has already ended; no further wait is needed"
+                ));
             }
             task.wake_generation = task.wake_generation.wrapping_add(1);
             let generation = task.wake_generation;
@@ -1973,7 +2004,9 @@ impl BackgroundTaskScheduler {
                     task.next_wakeup_at = None;
                 }
             }
-            return Err(format!("持久化后台任务唤醒失败: {error}"));
+            return Err(format!(
+                "Failed to persist background-task wake-up: {error}"
+            ));
         }
         Ok(wakeup_at)
     }
@@ -2099,7 +2132,12 @@ impl BackgroundTaskScheduler {
                     .map(|route| route.thread_id.clone())
             })
         }
-        .ok_or_else(|| format!("后台任务 '{}' 检查点缺少权威 Thread 路由", timer.owner_id))?;
+        .ok_or_else(|| {
+            format!(
+                "Background-task checkpoint '{}' is missing an authoritative Thread route",
+                timer.owner_id
+            )
+        })?;
         // Typed routing owns the Thread→Session decision. An early terminal/
         // missing-owner escalate would steal supervisor-owned attached children.
         let owner = if let Some(sessions) = self.sessions.as_ref() {
@@ -2488,19 +2526,19 @@ fn applied_background_job(
     match receipt {
         JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => Ok(job),
         JobReceipt::Conflict { current, .. } => Err(format!(
-            "后台 ExecutionJob {} {} 发生 revision 冲突（当前 r{}）",
+            "background ExecutionJob {} {} revision conflict (current r{})",
             current.id, operation, current.revision
         )
         .into()),
         JobReceipt::Rejected {
             current, reason, ..
         } => Err(format!(
-            "后台 ExecutionJob {} {} 被拒绝：{}",
+            "background ExecutionJob {} {} was rejected: {}",
             current.id, operation, reason
         )
         .into()),
         JobReceipt::NotFound { .. } => {
-            Err(format!("后台 ExecutionJob {operation} 时不存在").into())
+            Err(format!("Background ExecutionJob does not exist during {operation}").into())
         }
     }
 }
@@ -2854,12 +2892,17 @@ impl ThreadScheduler {
                 .get("root_turn_id")
                 .and_then(|value| value.as_str());
             let root = root_turn_id
-                .ok_or_else(|| format!("Schedule Event '{}' 缺少 root_turn_id", event.id))?;
+                .ok_or_else(|| format!("Schedule Event '{}' is missing root_turn_id", event.id))?;
             let thread = self
                 .sessions
                 .get_thread_by_root(root)
                 .await?
-                .ok_or_else(|| format!("Schedule Event '{}' 缺少权威 Thread", event.id))?;
+                .ok_or_else(|| {
+                    format!(
+                        "Schedule Event '{}' is missing its authoritative Thread",
+                        event.id
+                    )
+                })?;
             if thread.lifecycle.is_terminal() {
                 tracing::debug!(
                     event_id = %event.id,
@@ -3000,7 +3043,7 @@ impl ThreadScheduler {
             if not_before > chrono::Utc::now() {
                 return Ok(TimerDisposition::Reschedule {
                     due_at: not_before,
-                    reason: Some("Schedule 尚未到达 not_before".to_string()),
+                    reason: Some("Schedule has not reached not_before".to_string()),
                 });
             }
         }
@@ -3032,7 +3075,7 @@ impl ThreadScheduler {
             .sessions
             .get_thread(&current.thread_id)
             .await?
-            .ok_or_else(|| format!("Schedule '{}' 的目标 Thread 不存在", current.id))?;
+            .ok_or_else(|| format!("Target Thread for Schedule '{}' does not exist", current.id))?;
         let root_turn_id = if current.interval_seconds.is_some() {
             scheduled_occurrence_root(&current.id, occurrence_revision)
         } else {
@@ -3096,6 +3139,10 @@ impl ThreadScheduler {
                 serde_json::json!(current.source_turn_id),
             ),
             ("intent".to_string(), serde_json::json!(current.intent)),
+            (
+                "model_alias".to_string(),
+                serde_json::json!(current.model_alias),
+            ),
             (
                 "occurrence_revision".to_string(),
                 serde_json::json!(occurrence_revision),
@@ -3168,6 +3215,7 @@ pub struct ScheduleTxTool {
     sessions: Arc<dyn SessionStore>,
     objectives: Option<Arc<dyn ObjectiveStore>>,
     kernel: Option<Arc<SchedulerKernel>>,
+    allowed_evaluation_models: std::collections::HashSet<String>,
 }
 
 impl ScheduleTxTool {
@@ -3177,7 +3225,24 @@ impl ScheduleTxTool {
             sessions,
             objectives: None,
             kernel: None,
+            allowed_evaluation_models: std::collections::HashSet::new(),
         }
+    }
+
+    /// Grants the Agent authority to select these model routes for scheduled
+    /// Evaluations. The primary model is supplied by the Runtime together with
+    /// any explicit `llm.allowed_evaluation_models` entries. An omitted model
+    /// remains an inheritance request rather than being rewritten here.
+    pub fn with_allowed_evaluation_models(
+        mut self,
+        models: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.allowed_evaluation_models = models
+            .into_iter()
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+            .collect();
+        self
     }
 
     pub fn with_objective_store(mut self, objectives: Arc<dyn ObjectiveStore>) -> Self {
@@ -3204,11 +3269,14 @@ impl ScheduleTxTool {
             ScheduleOperation::Enqueue { .. }
             | ScheduleOperation::Spawn { .. }
             | ScheduleOperation::Promote { .. } => {
-                return Err("内部错误：创建操作不能进入 Schedule 控制面".into());
+                return Err(
+                    "Internal error: create operations cannot enter the Schedule control plane"
+                        .into(),
+                );
             }
         };
         if schedule_id.trim().is_empty() {
-            return Err("schedule_id 不能为空".into());
+            return Err("schedule_id must not be empty".into());
         }
         let inspected = self.scheduler.inspect(schedule_id).await?;
         if let Some(intent) = &inspected {
@@ -3216,9 +3284,13 @@ impl ScheduleTxTool {
                 .sessions
                 .get_thread(&intent.thread_id)
                 .await?
-                .ok_or_else(|| format!("Schedule '{}' 的目标 Thread 不存在", intent.id))?;
+                .ok_or_else(|| {
+                    format!("Target Thread for Schedule '{}' does not exist", intent.id)
+                })?;
             if target.context_id != context_id {
-                return Err("不能检查或修改其他 Context 的 Schedule".into());
+                return Err(
+                    "A Schedule from another Context cannot be inspected or modified".into(),
+                );
             }
         }
 
@@ -3258,7 +3330,7 @@ impl ScheduleTxTool {
                 every_seconds,
             } => {
                 if not_before.is_some() && delay_seconds.is_some() {
-                    return Err("not_before 与 delay_seconds 只能提供一个".into());
+                    return Err("Provide only one of not_before and delay_seconds".into());
                 }
                 let due_at = schedule_due_at(not_before.as_deref(), delay_seconds)?;
                 (
@@ -3294,22 +3366,23 @@ impl ScheduleTxTool {
         parent_thread: &ThreadRecord,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         if parent_thread.id != route.thread_id || parent_thread.lifecycle != ThreadLifecycle::Open {
-            return Err("当前父 Thread 路由已失效，不能升格 attached Thread".into());
+            return Err("The current parent Thread route is stale, so the attached Thread cannot be promoted".into());
         }
         let context_id = parent_thread.context_id.as_str();
         let session_id = parent_thread.session_id.as_str();
-        let target = self
-            .sessions
-            .get_thread(&thread_id)
-            .await?
-            .ok_or_else(|| format!("待升格 Thread '{thread_id}' 不存在"))?;
+        let target =
+            self.sessions.get_thread(&thread_id).await?.ok_or_else(|| {
+                format!("Thread '{thread_id}' selected for promotion does not exist")
+            })?;
         if target.context_id != context_id || target.session_id != session_id {
-            return Err("只能升格当前 Context/Session 中的 attached Thread".into());
+            return Err(
+                "Only an attached Thread in the current Context/Session can be promoted".into(),
+            );
         }
         if target.lifecycle != ThreadLifecycle::Open
             || target.supervision.lifetime != ThreadLifetime::Attached
         {
-            return Err("只有仍 open 的 attached Thread 可以升格".into());
+            return Err("Only an attached Thread that is still open can be promoted".into());
         }
         let owned_by_parent_thread = target.supervision.supervisor_kind
             == ThreadSupervisorKind::Thread
@@ -3322,17 +3395,19 @@ impl ScheduleTxTool {
             && target.supervision.origin_evaluation_id.as_deref()
                 == Some(route.activation_id.as_str());
         if !owned_by_parent_thread && !owned_by_legacy_activation {
-            return Err("不能升格其他父 Thread generation 拥有的 attached Thread".into());
+            return Err(
+                "An attached Thread owned by another parent Thread generation cannot be promoted"
+                    .into(),
+            );
         }
         let source_group_id = target
             .supervision
             .thread_group_id
             .clone()
-            .ok_or("attached Thread 缺少源 Thread Group，不能安全转移监督权")?;
-        let objectives = self
-            .objectives
-            .as_ref()
-            .ok_or("当前 Runtime 未配置 Objective Store，不能升格 durable Thread")?;
+            .ok_or("Attached Thread has no source Thread Group, so supervision cannot be transferred safely")?;
+        let objectives = self.objectives.as_ref().ok_or(
+            "Current Runtime has no Objective Store configured and cannot promote a durable Thread",
+        )?;
 
         let (objective_id, expected_objective_revision, new_objective_spec, completion_criteria) =
             match objective_binding {
@@ -3342,12 +3417,12 @@ impl ScheduleTxTool {
                         .ok()
                         .flatten()
                         .ok_or(
-                        "当前 Evaluation 未绑定 Objective，不能使用 objective.mode=current",
+                        "the current Evaluation is not bound to an Objective, so objective.mode=current cannot be used",
                     )?;
                     let objective = objectives
                         .get_objective(&objective_id)
                         .await?
-                        .ok_or_else(|| format!("Objective '{objective_id}' 不存在"))?;
+                        .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
                     validate_promotion_objective(&objective, &target)?;
                     (
                         objective_id,
@@ -3359,12 +3434,12 @@ impl ScheduleTxTool {
                 ScheduleObjectiveBinding::Existing { objective_id } => {
                     let objective_id = objective_id.trim().to_string();
                     if objective_id.is_empty() {
-                        return Err("objective_id 不能为空".into());
+                        return Err("objective_id must not be empty".into());
                     }
                     let objective = objectives
                         .get_objective(&objective_id)
                         .await?
-                        .ok_or_else(|| format!("Objective '{objective_id}' 不存在"))?;
+                        .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
                     validate_promotion_objective(&objective, &target)?;
                     (
                         objective_id,
@@ -3381,7 +3456,7 @@ impl ScheduleTxTool {
                     let stated_objective = stated_objective.trim().to_string();
                     let completion_criteria = completion_criteria.trim().to_string();
                     if stated_objective.is_empty() || completion_criteria.is_empty() {
-                        return Err("objective.mode=create 必须提供非空目标与完成标准".into());
+                        return Err("objective.mode=create requires a non-empty objective and completion criteria".into());
                     }
                     let digest = sha256_hex(
                     format!(
@@ -3447,7 +3522,7 @@ impl ScheduleTxTool {
                     },
                     initial_wait_condition: initial_wait_condition.clone(),
                     status_reason: format!(
-                        "接管已运行的 attached Thread；验收标准：{new_completion_criteria}"
+                        "adopt an already running attached Thread; completion criteria: {new_completion_criteria}"
                     ),
                     created_event: Event::new(
                         source_event_id,
@@ -3499,7 +3574,7 @@ impl ScheduleTxTool {
                 "target_generation": target_generation,
                 "completion_criteria": completion_criteria,
                 "text": format!(
-                    "Thread '{}' 已由当前父 Thread 原子移交给 Objective '{}'",
+                    "Thread '{}' was atomically transferred from the current parent Thread to Objective '{}'",
                     thread_id, objective_id
                 ),
             })
@@ -3533,7 +3608,11 @@ impl ScheduleTxTool {
                 .await?
             {
                 KernelResult::ThreadPromoted(mutation) => mutation,
-                _ => return Err("Scheduler Kernel 返回了错误的 Thread promotion 结果".into()),
+                _ => {
+                    return Err(
+                        "Scheduler Kernel returned an invalid Thread-promotion result".into(),
+                    )
+                }
             }
         } else {
             // Constructor compatibility for narrow unit fixtures. Runtime
@@ -3585,14 +3664,14 @@ fn validate_promotion_objective(
         || objective.status != ObjectiveStatus::Active
     {
         return Err(format!(
-            "Objective '{}' 不是当前 Agent/Context/Session 中的 active Objective",
+            "Objective '{}' is not an active Objective in the current Agent/Context/Session",
             objective.id
         )
         .into());
     }
     if objective.wait_condition.is_some() {
         return Err(format!(
-            "Objective '{}' 已有等待条件，不能再接管另一个独立 Thread Group",
+            "Objective '{}' already has a wait condition and cannot adopt another independent Thread Group",
             objective.id
         )
         .into());
@@ -3708,6 +3787,8 @@ enum ScheduleOperation {
         delay_seconds: Option<u64>,
         #[serde(default)]
         after: Vec<String>,
+        #[serde(default)]
+        model: Option<String>,
     },
     Spawn {
         #[serde(default)]
@@ -3728,6 +3809,8 @@ enum ScheduleOperation {
         objective: Option<ScheduleObjectiveBinding>,
         #[serde(default)]
         completion: ScheduleCompletionArgs,
+        #[serde(default)]
+        model: Option<String>,
     },
     /// Transfer an already-running attached Thread from the current
     /// Evaluation to a durable Objective without starting duplicate work.
@@ -3840,9 +3923,20 @@ impl Tool for ScheduleTxTool {
     fn definition(&self) -> ToolDefinition {
         let objective_binding_schema = schedule_objective_binding_schema();
         let promote_operation_schema = schedule_promote_operation_schema();
+        let mut allowed_models = self
+            .allowed_evaluation_models
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        allowed_models.sort();
+        let model_schema = serde_json::json!({
+            "type": "string",
+            "enum": allowed_models,
+            "description": "Agent-authorized logical model route for this Evaluation; omit to inherit the Session or Runtime primary model"
+        });
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Create or control supervised Thread schedules. spawn requires a lifetime: attached is checked by the current parent Thread generation; durable must bind a current, existing, or newly created Objective; disposable is best effort with no recovery or delivery guarantee. Multiple siblings may form one authoritative group(all|any) barrier. promote atomically transfers an already started attached Thread from the current parent to a current/existing/create Objective without restarting work. objective.mode=create atomically commits an independent Objective, initial wait, Thread, Group, and Schedule. enqueue/spawn support atomic batches. promote and inspect/pause/resume/reschedule/cancel must be submitted alone and use expected_revision to prevent stale writes. not_before or delay_seconds sets timing, every_seconds sets recurrence, and after declares Thread dependencies. schedule_tx must be the only tool call in the response.".to_string(),
+            description: "Create or control supervised Thread schedules. One call may atomically create multiple sibling tasks: operations without `after` are independent and may run concurrently; array order does not serialize them. For two or more spawns, every spawn must provide a unique client_id so receipts and dependencies remain stable. spawn requires a lifetime: attached is checked by the current parent Thread generation; durable must bind a current, existing, or newly created Objective; disposable is best effort with no recovery or delivery guarantee. Multiple siblings may form one authoritative group(all|any) barrier. enqueue/spawn may select an Agent-authorized model route; omit model to inherit the Session model or Runtime primary model. Explicit invalid or unauthorized models fail the whole transaction without fallback. promote atomically transfers an already started attached Thread from the current parent to a current/existing/create Objective without restarting work. objective.mode=create atomically commits an independent Objective, initial wait, Thread, Group, and Schedule. promote and inspect/pause/resume/reschedule/cancel must be submitted alone and use expected_revision to prevent stale writes. not_before or delay_seconds sets timing, every_seconds sets recurrence, and after declares Thread dependencies. schedule_tx must be the only tool call in the response.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -3850,7 +3944,7 @@ impl Tool for ScheduleTxTool {
                         "type": "array",
                         "minItems": 1,
                         "maxItems": MAX_SCHEDULE_OPERATIONS,
-                        "description": "Schedule operations committed atomically in array order",
+                        "description": "Schedule operations committed atomically. Array order is used only for deterministic receipts; operations run concurrently unless `after` declares a dependency.",
                         "items": {
                             "oneOf": [
                                 {
@@ -3861,7 +3955,8 @@ impl Tool for ScheduleTxTool {
                                         "intent": {"type": "string", "description": "Natural-language intent to execute when the Thread wakes"},
                                         "not_before": {"type": "string", "description": "RFC3339 absolute time expressed in evaluation-environment.local-time with an explicit offset; prefer delay_seconds for a relative wait"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
-                                        "after": {"type": "array", "items": {"type": "string"}, "description": "Dependency Thread IDs or $client_id references to spawns in this transaction"}
+                                        "after": {"type": "array", "items": {"type": "string"}, "description": "Dependency Thread IDs or $client_id references to spawns in this transaction"},
+                                        "model": model_schema.clone()
                                     },
                                     "required": ["op", "intent"],
                                     "additionalProperties": false
@@ -3893,7 +3988,8 @@ impl Tool for ScheduleTxTool {
                                                 "contract": {"type": "object", "description": "Bounded completion contract verifiable by the Runtime or Harness"}
                                             },
                                             "additionalProperties": false
-                                        }
+                                        },
+                                        "model": model_schema.clone()
                                     },
                                     "required": ["op", "intent", "lifetime"],
                                     "additionalProperties": false
@@ -3976,31 +4072,76 @@ impl Tool for ScheduleTxTool {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: ScheduleTxArgs = serde_json::from_str(arguments)?;
         if args.operations.is_empty() || args.operations.len() > MAX_SCHEDULE_OPERATIONS {
-            return Err(
-                format!("schedule_tx.operations 数量必须在 1..={MAX_SCHEDULE_OPERATIONS}").into(),
-            );
+            return Err(format!(
+                "schedule_tx.operations count must be within 1..={MAX_SCHEDULE_OPERATIONS}"
+            )
+            .into());
+        }
+        let spawn_count = args
+            .operations
+            .iter()
+            .filter(|operation| matches!(operation, ScheduleOperation::Spawn { .. }))
+            .count();
+        if spawn_count > 1 {
+            let mut client_ids = std::collections::HashSet::new();
+            for operation in &args.operations {
+                let ScheduleOperation::Spawn { client_id, .. } = operation else {
+                    continue;
+                };
+                let client_id = client_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|client_id| !client_id.is_empty())
+                    .ok_or("Each spawn must provide a non-empty client_id when several spawns are created concurrently")?;
+                if !client_ids.insert(client_id) {
+                    return Err("client_id values must be unique when several spawns are created concurrently".into());
+                }
+            }
+        }
+        for operation in &args.operations {
+            let requested_model = match operation {
+                ScheduleOperation::Enqueue { model, .. }
+                | ScheduleOperation::Spawn { model, .. } => model.as_deref(),
+                _ => None,
+            };
+            let Some(requested_model) = requested_model else {
+                continue;
+            };
+            let requested_model = requested_model.trim();
+            if requested_model.is_empty() {
+                return Err(
+                    "schedule_tx model must not be empty; omit the field to inherit the model"
+                        .into(),
+                );
+            }
+            if !self.allowed_evaluation_models.contains(requested_model) {
+                return Err(format!(
+                    "model route '{requested_model}' is not authorized for the Agent by llm.allowed_evaluation_models"
+                )
+                .into());
+            }
         }
         let session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
-            .map_err(|_| "schedule_tx 缺少当前 Session 路由")?;
+            .map_err(|_| "schedule_tx is missing the current Session route")?;
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "schedule_tx 缺少当前 Context 路由")?;
+            .map_err(|_| "schedule_tx is missing the current Context route")?;
         let attempt_id = CURRENT_ATTEMPT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "schedule_tx 缺少当前 Evaluation 路由")?;
+            .map_err(|_| "schedule_tx is missing the current Evaluation route")?;
         let route = CURRENT_CAUSAL_ROUTE
             .try_with(Clone::clone)
             .ok()
             .flatten()
-            .ok_or("schedule_tx 缺少当前 Thread 路由")?;
+            .ok_or("schedule_tx is missing the current Thread route")?;
         let session = self
             .sessions
             .get_session(&session_id)
             .await?
-            .ok_or("schedule_tx 当前 Session 不存在")?;
+            .ok_or("Current schedule_tx Session does not exist")?;
         if session.context_id != context_id {
-            return Err("schedule_tx Session 与 Context 路由不一致".into());
+            return Err("schedule_tx Session and Context routes are inconsistent".into());
         }
         let control_count = args
             .operations
@@ -4009,11 +4150,11 @@ impl Tool for ScheduleTxTool {
             .count();
         if control_count > 0 {
             if args.group.is_some() {
-                return Err("Schedule 控制操作不能携带 group".into());
+                return Err("A Schedule control operation cannot include a group".into());
             }
             if control_count != 1 || args.operations.len() != 1 {
                 return Err(
-                    "Schedule 控制操作必须单独提交，不能与创建操作或其他控制操作混合".into(),
+                    "A Schedule control operation must be submitted alone and cannot be mixed with create operations or other control operations".into(),
                 );
             }
             return self
@@ -4030,7 +4171,7 @@ impl Tool for ScheduleTxTool {
             .sessions
             .get_thread(&route.thread_id)
             .await?
-            .ok_or("schedule_tx 当前 Thread 不存在")?;
+            .ok_or("Current schedule_tx Thread does not exist")?;
         let promotion_count = args
             .operations
             .iter()
@@ -4038,10 +4179,10 @@ impl Tool for ScheduleTxTool {
             .count();
         if promotion_count > 0 {
             if args.group.is_some() {
-                return Err("Thread 升格会原子建立新的 Objective Group，不能再携带 group".into());
+                return Err("Thread promotion atomically creates a new Objective Group and cannot also include group".into());
             }
             if promotion_count != 1 || args.operations.len() != 1 {
-                return Err("promote 必须单独提交，不能与创建、控制或其他升格操作混合".into());
+                return Err("promote must be submitted alone and cannot be mixed with create, control, or other promotion operations".into());
             }
             let ScheduleOperation::Promote {
                 thread_id,
@@ -4083,12 +4224,15 @@ impl Tool for ScheduleTxTool {
                 continue;
             };
             if *lifetime != ThreadLifetime::Durable {
-                return Err("objective.mode=create 只能用于 lifetime=durable".into());
+                return Err("objective.mode=create can be used only with lifetime=durable".into());
             }
             let stated_objective = stated_objective.trim();
             let completion_criteria = completion_criteria.trim();
             if stated_objective.is_empty() || completion_criteria.is_empty() {
-                return Err("objective.mode=create 必须提供非空目标与完成标准".into());
+                return Err(
+                    "objective.mode=create requires a non-empty objective and completion criteria"
+                        .into(),
+                );
             }
             let candidate = (
                 stated_objective.to_string(),
@@ -4098,7 +4242,7 @@ impl Tool for ScheduleTxTool {
             if let Some(existing) = &create_spec {
                 if existing != &candidate {
                     return Err(
-                        "一次 schedule_tx 只能原子创建一个 Objective；多个 spawn 必须复用完全相同的 create 声明"
+                        "one schedule_tx can atomically create only one Objective; multiple spawn operations must reuse an identical create declaration"
                             .into(),
                     );
                 }
@@ -4143,7 +4287,7 @@ impl Tool for ScheduleTxTool {
                 let root_turn_id = format!("scheduled_root_{}", &digest[..24]);
                 if let Some(client_id) = client_id {
                     if client_id.trim().is_empty() || local_refs.contains_key(client_id) {
-                        return Err("schedule_tx.spawn.client_id 必须非空且在事务内唯一".into());
+                        return Err("schedule_tx.spawn.client_id must be non-empty and unique within the transaction".into());
                     }
                     local_refs.insert(client_id.clone(), thread_id.clone());
                 }
@@ -4151,7 +4295,7 @@ impl Tool for ScheduleTxTool {
                     ThreadLifetime::Attached => {
                         if objective.is_some() {
                             return Err(
-                                "lifetime=attached 由当前父 Thread generation 监督，不能携带 objective"
+                                "lifetime=attached is supervised by the current parent Thread generation and cannot carry an objective"
                                     .into(),
                             );
                         }
@@ -4163,7 +4307,7 @@ impl Tool for ScheduleTxTool {
                     }
                     ThreadLifetime::Durable => {
                         let binding = objective.as_ref().ok_or(
-                            "lifetime=durable 必须显式绑定 objective=current 或 objective=existing",
+                            "lifetime=durable must explicitly bind objective=current or objective=existing",
                         )?;
                         let objective_id = match binding {
                             ScheduleObjectiveBinding::Current => {
@@ -4171,17 +4315,17 @@ impl Tool for ScheduleTxTool {
                                     .try_with(Clone::clone)
                                     .ok()
                                     .flatten()
-                                    .ok_or("当前 Evaluation 未绑定 Objective，不能使用 objective.mode=current")?
+                                    .ok_or("Current Evaluation is not bound to an Objective, so objective.mode=current cannot be used")?
                             }
                             ScheduleObjectiveBinding::Existing { objective_id } => {
                                 objective_id.trim().to_string()
                             }
                             ScheduleObjectiveBinding::Create { .. } => created_objective_id
                                 .clone()
-                                .ok_or("objective.mode=create 缺少预备 Objective")?,
+                                .ok_or("objective.mode=create is missing its prepared Objective")?,
                         };
                         if objective_id.is_empty() {
-                            return Err("objective_id 不能为空".into());
+                            return Err("objective_id must not be empty".into());
                         }
                         let objective_revision = if created_objective_id.as_deref()
                             == Some(objective_id.as_str())
@@ -4193,26 +4337,26 @@ impl Tool for ScheduleTxTool {
                             *revision
                         } else {
                             let objectives = self.objectives.as_ref().ok_or(
-                                "当前 Runtime 未配置 Objective Store，不能创建 durable Thread",
+                                "the current Runtime has no Objective Store configured and cannot create a durable Thread",
                             )?;
-                            let objective = objectives
-                                .get_objective(&objective_id)
-                                .await?
-                                .ok_or_else(|| format!("Objective '{}' 不存在", objective_id))?;
+                            let objective =
+                                objectives.get_objective(&objective_id).await?.ok_or_else(
+                                    || format!("Objective '{}' does not exist", objective_id),
+                                )?;
                             if objective.agent_id != session.agent_id
                                 || objective.context_id != context_id
                                 || objective.coordinator_session_id != session_id
                                 || objective.status != ObjectiveStatus::Active
                             {
                                 return Err(format!(
-                                    "Objective '{}' 不是当前 Agent/Context/Session 中的 active Objective",
+                                    "Objective '{}' is not an active Objective in the current Agent/Context/Session",
                                     objective_id
                                 )
                                 .into());
                             }
                             if objective.wait_condition.is_some() {
                                 return Err(format!(
-                                    "Objective '{}' 已有等待条件，不能同时绑定新的 required Thread Group",
+                                    "Objective '{}' already has a wait condition and cannot bind a new required Thread Group",
                                     objective_id
                                 )
                                 .into());
@@ -4231,13 +4375,13 @@ impl Tool for ScheduleTxTool {
                     ThreadLifetime::Disposable => {
                         if objective.is_some() {
                             return Err(
-                                "lifetime=disposable 不受 Objective 监督，不能携带 objective"
+                                "lifetime=disposable is not supervised by an Objective and cannot carry an objective"
                                     .into(),
                             );
                         }
                         if completion.required {
                             return Err(
-                                "disposable Thread 不保证恢复或交付，completion.required 必须为 false"
+                                "a disposable Thread does not guarantee recovery or delivery, so completion.required must be false"
                                     .into(),
                             );
                         }
@@ -4305,14 +4449,14 @@ impl Tool for ScheduleTxTool {
         let mut group_plans = Vec::new();
         if create_group {
             if spawn_indices.is_empty() {
-                return Err("group 至少需要一个 spawn Thread".into());
+                return Err("group requires at least one spawned Thread".into());
             }
             let first = prepared_supervisions[spawn_indices[0]]
                 .as_ref()
                 .expect("spawn supervision")
                 .clone();
             if first.lifetime == ThreadLifetime::Disposable {
-                return Err("disposable Thread 不能加入受监督 Thread Group".into());
+                return Err("A disposable Thread cannot join a supervised Thread Group".into());
             }
             for index in &spawn_indices {
                 let supervision = prepared_supervisions[*index]
@@ -4323,7 +4467,7 @@ impl Tool for ScheduleTxTool {
                     || supervision.generation != first.generation
                 {
                     return Err(
-                        "同一个 Thread Group 的成员必须拥有相同 lifetime、supervisor 与 generation；请拆成多个 schedule_tx"
+                        "members of the same Thread Group must have identical lifetime, supervisor, and generation; split them into multiple schedule_tx calls"
                             .into(),
                     );
                 }
@@ -4353,7 +4497,7 @@ impl Tool for ScheduleTxTool {
                     supervisor_id: first
                         .supervisor_id
                         .clone()
-                        .ok_or("受监督 Thread Group 缺少 supervisor_id")?,
+                        .ok_or("Supervised Thread Group is missing supervisor_id")?,
                     generation: first.generation,
                     policy: group_args
                         .map(|group| group.policy)
@@ -4386,7 +4530,7 @@ impl Tool for ScheduleTxTool {
                 .copied()
                 .ok_or_else(|| {
                     format!(
-                        "Objective Group '{}' 缺少现有 Objective '{}' 的 revision fence",
+                        "Objective Group '{}' is missing the revision fence for existing Objective '{}'",
                         plan.group.id, plan.group.supervisor_id
                     )
                 })?;
@@ -4427,7 +4571,8 @@ impl Tool for ScheduleTxTool {
                 objective_id: plan.group.supervisor_id.clone(),
                 expected_revision,
                 wait_condition,
-                status_reason: "等待受监督执行线程组完成".to_string(),
+                status_reason: "waiting for the supervised execution Thread Group to complete"
+                    .to_string(),
                 bound_event,
             });
         }
@@ -4444,7 +4589,9 @@ impl Tool for ScheduleTxTool {
                 .map(|thread| thread.id.clone())
                 .collect::<Vec<_>>();
             if member_thread_ids.is_empty() {
-                return Err("objective.mode=create 没有对应的初始 durable Thread".into());
+                return Err(
+                    "objective.mode=create has no corresponding initial durable Thread".into(),
+                );
             }
             let initial_wait_condition = if let Some(group) = group_plans.iter().find(|plan| {
                 plan.group.supervisor_id == *objective_id
@@ -4454,7 +4601,7 @@ impl Tool for ScheduleTxTool {
                     group_id: group.group.id.clone(),
                 }
             } else {
-                return Err("新 Objective 的初始 Thread 必须属于同一个受监督 Thread Group".into());
+                return Err("The initial Thread for a new Objective must belong to the same supervised Thread Group".into());
             };
             let source_event_id = format!("objective_scheduled_{objective_id}");
             let created_event = Event::new(
@@ -4493,56 +4640,67 @@ impl Tool for ScheduleTxTool {
                     token_budget: *token_budget,
                 },
                 initial_wait_condition,
-                status_reason: format!("等待首批受监督执行完成；验收标准：{completion_criteria}"),
+                status_reason: format!("waiting for the first supervised executions to complete; completion criteria: {completion_criteria}"),
                 created_event,
             });
         }
 
         let mut intents = Vec::with_capacity(args.operations.len());
         for (index, operation) in args.operations.into_iter().enumerate() {
-            let (target_thread_id, intent, not_before, delay_seconds, interval_seconds, after) =
-                match operation {
-                    ScheduleOperation::Enqueue {
-                        thread_id,
-                        intent,
-                        not_before,
-                        delay_seconds,
-                        after,
-                    } => (
-                        thread_id.unwrap_or_else(|| route.thread_id.clone()),
-                        intent,
-                        not_before,
-                        delay_seconds,
-                        None,
-                        after,
-                    ),
-                    ScheduleOperation::Spawn {
-                        intent,
-                        not_before,
-                        delay_seconds,
-                        every_seconds,
-                        after,
-                        ..
-                    } => (
-                        prepared[index].clone(),
-                        intent,
-                        not_before,
-                        delay_seconds,
-                        every_seconds,
-                        after,
-                    ),
-                    ScheduleOperation::Inspect { .. }
-                    | ScheduleOperation::Pause { .. }
-                    | ScheduleOperation::Resume { .. }
-                    | ScheduleOperation::Reschedule { .. }
-                    | ScheduleOperation::Promote { .. }
-                    | ScheduleOperation::Cancel { .. } => {
-                        unreachable!("control operations returned before create transaction")
-                    }
-                };
+            let (
+                target_thread_id,
+                intent,
+                model_alias,
+                not_before,
+                delay_seconds,
+                interval_seconds,
+                after,
+            ) = match operation {
+                ScheduleOperation::Enqueue {
+                    thread_id,
+                    intent,
+                    model,
+                    not_before,
+                    delay_seconds,
+                    after,
+                } => (
+                    thread_id.unwrap_or_else(|| route.thread_id.clone()),
+                    intent,
+                    model,
+                    not_before,
+                    delay_seconds,
+                    None,
+                    after,
+                ),
+                ScheduleOperation::Spawn {
+                    intent,
+                    model,
+                    not_before,
+                    delay_seconds,
+                    every_seconds,
+                    after,
+                    ..
+                } => (
+                    prepared[index].clone(),
+                    intent,
+                    model,
+                    not_before,
+                    delay_seconds,
+                    every_seconds,
+                    after,
+                ),
+                ScheduleOperation::Inspect { .. }
+                | ScheduleOperation::Pause { .. }
+                | ScheduleOperation::Resume { .. }
+                | ScheduleOperation::Reschedule { .. }
+                | ScheduleOperation::Promote { .. }
+                | ScheduleOperation::Cancel { .. } => {
+                    unreachable!("control operations returned before create transaction")
+                }
+            };
             validate_schedule_intent(&intent)?;
             if not_before.is_some() && delay_seconds.is_some() {
-                return Err("not_before 与 delay_seconds 只能提供一个".into());
+                return Err("Provide only one of not_before and delay_seconds".into());
             }
             let waits_for_future = not_before.is_some()
                 || delay_seconds.is_some_and(|seconds| seconds > 0)
@@ -4551,7 +4709,7 @@ impl Tool for ScheduleTxTool {
                 && current_thread.kind == ThreadKind::DialogueTurn
                 && waits_for_future
             {
-                return Err("DialogueTurn Thread 不能挂起等待未来时间或依赖；请使用 spawn 创建独立 Execution Thread，再向当前 Session 回复调度结果".into());
+                return Err("A DialogueTurn Thread cannot suspend while waiting for a future time or dependency; use spawn to create an independent Execution Thread, then report the scheduling result to the current Session".into());
             }
             let not_before = schedule_due_at(not_before.as_deref(), delay_seconds)?;
             let mut dependencies = Vec::with_capacity(after.len());
@@ -4562,7 +4720,7 @@ impl Tool for ScheduleTxTool {
                     .cloned()
                     .unwrap_or(dependency);
                 if resolved == target_thread_id {
-                    return Err("Thread 不能依赖自己".into());
+                    return Err("A Thread cannot depend on itself".into());
                 }
                 dependencies.push(resolved);
             }
@@ -4574,6 +4732,7 @@ impl Tool for ScheduleTxTool {
                 thread_id: target_thread_id,
                 source_turn_id: route.root_turn_id.clone(),
                 intent,
+                model_alias: model_alias.map(|model| model.trim().to_string()),
                 not_before,
                 interval_seconds,
                 dependency_thread_ids: dependencies,
@@ -4583,7 +4742,9 @@ impl Tool for ScheduleTxTool {
             for dependency_id in &intent.dependency_thread_ids {
                 let newly_created = threads.iter().any(|thread| thread.id == *dependency_id);
                 if !newly_created && self.sessions.get_thread(dependency_id).await?.is_none() {
-                    return Err(format!("依赖 Thread '{dependency_id}' 不存在").into());
+                    return Err(
+                        format!("Dependency Thread '{dependency_id}' does not exist").into(),
+                    );
                 }
             }
         }
@@ -4604,7 +4765,11 @@ impl Tool for ScheduleTxTool {
                 .await?
             {
                 KernelResult::SupervisedGroupSpawned { schedules } => schedules,
-                _ => return Err("Scheduler Kernel 返回了错误的 schedule transaction 结果".into()),
+                _ => {
+                    return Err(
+                        "Scheduler Kernel returned an invalid schedule-transaction result".into(),
+                    )
+                }
             }
         } else {
             // Narrow unit fixtures may still construct ScheduleTxTool around a
@@ -4636,9 +4801,26 @@ impl Tool for ScheduleTxTool {
                 self.scheduler.arm(record.clone()).await?;
             }
         }
+        let mut client_receipts = local_refs
+            .iter()
+            .map(|(client_id, thread_id)| {
+                let schedule_id = records
+                    .iter()
+                    .find(|record| record.thread_id == *thread_id)
+                    .map(|record| record.id.clone());
+                serde_json::json!({
+                    "client_id": client_id,
+                    "thread_id": thread_id,
+                    "schedule_id": schedule_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        client_receipts
+            .sort_by(|left, right| left["client_id"].as_str().cmp(&right["client_id"].as_str()));
         Ok(crate::local_time::localized_runtime_json(serde_json::json!({
             "status": "committed",
             "operations": records,
+            "client_receipts": client_receipts,
             "created_thread_ids": threads.iter().map(|thread| &thread.id).collect::<Vec<_>>(),
             "created_objective_ids": scheduled_objectives.iter().map(|objective| &objective.objective.id).collect::<Vec<_>>(),
             "thread_groups": group_plans.iter().map(|plan| serde_json::json!({
@@ -4649,9 +4831,9 @@ impl Tool for ScheduleTxTool {
                 "member_thread_ids": plan.members.iter().map(|member| &member.thread_id).collect::<Vec<_>>()
             })).collect::<Vec<_>>(),
             "guidance": if group_plans.is_empty() {
-                "调度计划已原子持久化。durable Thread 的终态将唤醒绑定 Objective；disposable Thread 不保证恢复或交付。"
+                "The scheduling plan was persisted atomically. A durable Thread's terminal state will wake its bound Objective; a disposable Thread does not guarantee recovery or delivery."
             } else {
-                "调度计划与 Thread Group 已原子持久化。Group 达到 all/any 条件后只产生一次 barrier；attached 会重新唤醒父 Thread，durable 会唤醒绑定 Objective。"
+                "The scheduling plan and Thread Group were persisted atomically. The Group emits one barrier when its all/any condition is reached; attached wakes the parent Thread and durable wakes its bound Objective."
             }
         }))
         .to_string())
@@ -4660,10 +4842,12 @@ impl Tool for ScheduleTxTool {
 
 fn validate_schedule_intent(intent: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if intent.trim().is_empty() {
-        return Err("schedule_tx intent 不能为空".into());
+        return Err("schedule_tx intent must not be empty".into());
     }
     if intent.chars().count() > MAX_SCHEDULE_INTENT_CHARS {
-        return Err(format!("schedule_tx intent 超过 {MAX_SCHEDULE_INTENT_CHARS} 字符").into());
+        return Err(
+            format!("schedule_tx intent exceeds {MAX_SCHEDULE_INTENT_CHARS} characters").into(),
+        );
     }
     Ok(())
 }
@@ -4675,7 +4859,7 @@ fn schedule_due_at(
     if let Some(value) = not_before {
         return Ok(Some(
             chrono::DateTime::parse_from_rfc3339(value)
-                .map_err(|error| format!("not_before 不是合法 RFC 3339 时间: {error}"))?
+                .map_err(|error| format!("not_before is not a valid RFC 3339 timestamp: {error}"))?
                 .with_timezone(&chrono::Utc),
         ));
     }
@@ -4774,7 +4958,7 @@ fn terminate_local_background_process(task_id: &str) -> Result<Option<(i32, bool
         Ok(()) => Ok(Some((process_group_id, true))),
         Err(nix::errno::Errno::ESRCH) => Ok(Some((process_group_id, false))),
         Err(error) => Err(format!(
-            "强杀进程组 {process_group_id} 遭遇系统级错误: {error:?}；取消请求仍保持持久化"
+            "force-killing process group {process_group_id} encountered a system error: {error:?}; the cancellation request remains persisted"
         )),
     }
 }
@@ -4946,7 +5130,7 @@ fn background_check_due_payload(
 ) -> serde_json::Map<String, serde_json::Value> {
     let elapsed_secs = (chrono::Utc::now() - task.started_at).num_seconds().max(0);
     let output_tail = if task.output_tail.is_empty() {
-        "（任务尚未产生输出）".to_string()
+        "(task has not produced output yet)".to_string()
     } else {
         task.output_tail.clone()
     };
@@ -5002,7 +5186,7 @@ fn background_check_due_payload(
         }),
     );
     payload.insert("text".to_string(), serde_json::json!(format!(
-        "后台任务 {} 的 {} 秒检查点已经到达；任务仍在运行，Runtime 没有终止它。\n--- 最近输出 ---\n{}\n\n请自行决定：若有明确的下一检查期限，调用 check_task_after；否则继续依赖完成事件唤醒；不应继续时调用 kill_task。",
+        "The checkpoint for background task {} at {} seconds has been reached; the task is still running and the Runtime did not terminate it.\n--- Recent output ---\n{}\n\nDecide how to proceed: call check_task_after if there is a specific next-check deadline; otherwise continue relying on the completion event to wake you; call kill_task if it should not continue.",
         task.id, check_after_secs, output_tail
     )));
     extend_causal_route(&mut payload, task.causal_route.as_ref());
@@ -5076,7 +5260,7 @@ fn background_check_due_payload_from_job(
         (
             "text".to_string(),
             serde_json::json!(format!(
-                "后台任务 {} 的 {} 秒检查点已经到达；任务由另一个 Runtime 实例持有，当前调度器没有它的进程内输出缓存，也没有终止它。请用 read_task 读取持久状态；若有明确的下一检查期限，调用 check_task_after；不应继续时调用 kill_task。",
+                "The checkpoint for background task {} at {} seconds has been reached; another Runtime instance owns the task, so this scheduler has neither its in-process output buffer nor authority to terminate it. Use read_task to read persisted state; call check_task_after if there is a specific next-check deadline; call kill_task if it should not continue.",
                 job.id, check_after_secs
             )),
         ),
@@ -5207,7 +5391,7 @@ impl ExecutionBuffer {
                 .rev()
                 .collect::<String>();
             format!(
-                "[本事件合并了 {total_chars} 字符，仅展示末尾 {} 字符；完整输出见 {}]\n{tail}",
+                "[This event merged {total_chars} characters and shows only the final {} characters; see {} for the complete output]\n{tail}",
                 self.max_event_chars, self.archive_path
             )
         } else {
@@ -5267,7 +5451,7 @@ impl ExecutionBuffer {
         };
         if self.truncated.load(Ordering::Relaxed) {
             format!(
-                "[Context preview 已按缓冲上限截断；完整原始输出: {}]\n{}",
+                "[Context preview was truncated at the buffer limit; complete raw output: {}]\n{}",
                 self.archive_path, *guard
             )
         } else {
@@ -5348,21 +5532,26 @@ fn is_sensitive_environment_name(name: &str) -> bool {
 }
 
 fn read_text_snapshot(path: &Path) -> Result<FileSnapshot, String> {
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("无法读取文件元数据 '{}': {}", path.display(), error))?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "Failed to read file metadata '{}': {}",
+            path.display(),
+            error
+        )
+    })?;
     if metadata.file_type().is_symlink() {
         return Err(format!(
-            "为避免原子替换改变符号链接语义，禁止直接修改符号链接 '{}'",
+            "direct modification of symlink '{}' is prohibited because atomic replacement would change symlink semantics",
             path.display()
         ));
     }
     if !metadata.is_file() {
-        return Err(format!("'{}' 不是普通文件", path.display()));
+        return Err(format!("'{}' is not a regular file", path.display()));
     }
     let bytes = std::fs::read(path)
-        .map_err(|error| format!("无法读取文件 '{}': {}", path.display(), error))?;
+        .map_err(|error| format!("Failed to read file '{}': {}", path.display(), error))?;
     let content = String::from_utf8(bytes.clone())
-        .map_err(|_| format!("文件 '{}' 不是 UTF-8 文本", path.display()))?;
+        .map_err(|_| format!("File '{}' is not UTF-8 text", path.display()))?;
     Ok(FileSnapshot {
         sha256: sha256_hex(&bytes),
         bytes: bytes.len(),
@@ -5378,9 +5567,14 @@ fn atomic_write_text(
 ) -> Result<(), String> {
     let parent = path
         .parent()
-        .ok_or_else(|| format!("写入路径 '{}' 缺少父目录", path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("无法创建目录 '{}': {}", parent.display(), error))?;
+        .ok_or_else(|| format!("Write path '{}' has no parent directory", path.display()))?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "Failed to create directory '{}': {}",
+            parent.display(),
+            error
+        )
+    })?;
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -5398,23 +5592,23 @@ fn atomic_write_text(
             .open(&temp_path)
             .map_err(|error| {
                 format!(
-                    "无法创建原子写入临时文件 '{}': {}",
+                    "failed to create atomic-write temporary file '{}': {}",
                     temp_path.display(),
                     error
                 )
             })?;
         file.write_all(content.as_bytes())
-            .map_err(|error| format!("写入临时文件失败: {}", error))?;
+            .map_err(|error| format!("Failed to write temporary file: {}", error))?;
         if let Some(permissions) = permissions {
             file.set_permissions(permissions)
-                .map_err(|error| format!("保留文件权限失败: {}", error))?;
+                .map_err(|error| format!("Failed to preserve file permissions: {}", error))?;
         }
         file.sync_all()
-            .map_err(|error| format!("同步临时文件失败: {}", error))?;
+            .map_err(|error| format!("Failed to sync temporary file: {}", error))?;
         drop(file);
         std::fs::rename(&temp_path, path).map_err(|error| {
             format!(
-                "原子替换 '{}' -> '{}' 失败: {}",
+                "atomic replacement '{}' -> '{}' failed: {}",
                 temp_path.display(),
                 path.display(),
                 error
@@ -5473,7 +5667,7 @@ fn bounded_text(text: &str, max_chars: usize) -> String {
     }
     let head = text.chars().take(max_chars).collect::<String>();
     format!(
-        "{}\n...[diff 截断，原文 {} 字符]",
+        "{}\n...[diff truncated; original length {} characters]",
         head,
         text.chars().count()
     )
@@ -5527,7 +5721,7 @@ async fn publish_file_change(
         (
             "text".to_string(),
             serde_json::json!(format!(
-                "文件变更已提交：operation={} path={} sha256={}\n{}",
+                "File change committed: operation={} path={} sha256={}\n{}",
                 change.operation,
                 change.path,
                 change.after_sha256,
@@ -5682,7 +5876,11 @@ impl Tool for WriteFileTool {
             .await
         {
             Ok(path) => path,
-            Err(e) => return Ok(format!("系统报错：写入路径被权限策略拒绝：{}", e)),
+            Err(error) => {
+                return Ok(format!(
+                    "System error: the permission policy rejected the write path: {error}"
+                ))
+            }
         };
 
         let (operation, before_content, before_sha256, before_bytes, permissions) = match args
@@ -5692,7 +5890,7 @@ impl Tool for WriteFileTool {
             "create" => {
                 if absolute_path.exists() {
                     return Err(format!(
-                        "create 拒绝覆盖已存在文件 '{}'；请先 read，再使用 edit 或 overwrite",
+                        "create refuses to overwrite existing file '{}'; read it first, then use edit or overwrite",
                         args.path
                     )
                     .into());
@@ -5702,7 +5900,7 @@ impl Tool for WriteFileTool {
             "overwrite" => {
                 if !absolute_path.exists() {
                     return Err(format!(
-                        "overwrite 目标 '{}' 不存在；创建新文件请使用 mode=create",
+                        "overwrite target '{}' does not exist; use mode=create for a new file",
                         args.path
                     )
                     .into());
@@ -5711,10 +5909,10 @@ impl Tool for WriteFileTool {
                 let expected = args
                     .expected_sha256
                     .as_deref()
-                    .ok_or("overwrite 必须提供最近一次 read 返回的 expected_sha256")?;
+                    .ok_or("overwrite requires expected_sha256 from the most recent read")?;
                 if expected != snapshot.sha256 {
                     return Err(format!(
-                            "文件版本冲突：'{}' 当前 sha256={}，expected_sha256={}。请重新 read 后再修改",
+                            "File version conflict: '{}' currently has sha256={}, but expected_sha256={}. Read it again before modifying it",
                             args.path, snapshot.sha256, expected
                         )
                         .into());
@@ -5728,9 +5926,10 @@ impl Tool for WriteFileTool {
                 )
             }
             other => {
-                return Err(
-                    format!("write.mode 只支持 create 或 overwrite，实际为 '{other}'").into(),
+                return Err(format!(
+                    "write.mode supports only create or overwrite; received '{other}'"
                 )
+                .into())
             }
         };
 
@@ -5760,7 +5959,7 @@ impl Tool for WriteFileTool {
         )
         .await?;
         Ok(format!(
-            "文件写入成功：operation={} path={} bytes={} sha256={}\n{}",
+            "File write succeeded: operation={} path={} bytes={} sha256={}\n{}",
             operation,
             args.path,
             args.content.len(),
@@ -5921,15 +6120,14 @@ impl Tool for ReadFileTool {
             Ok(path) => path,
             Err(e) => {
                 return Ok(ToolExecutionResult::text(format!(
-                    "系统报错：读取路径被权限策略拒绝：{}",
-                    e
+                    "System error: the permission policy rejected the read path: {e}"
                 )))
             }
         };
 
         if !absolute_path.exists() {
             return Ok(ToolExecutionResult::text(format!(
-                "系统报错：读取失败。指定的文件路径 '{}' 不存在，请检查路径是否正确。",
+                "System error: read failed because file path '{}' does not exist; verify the path.",
                 args.path
             )));
         }
@@ -5948,7 +6146,7 @@ impl Tool for ReadFileTool {
                     let bytes_read = file.read(&mut header).await.unwrap_or_default();
                     if supported_image_media_type(&header[..bytes_read]).is_some() {
                         return Err(format!(
-                            "图片 '{}' 大小为 {} bytes，超过当前模型输入单文件上限 {} bytes",
+                            "Image '{}' is {} bytes, exceeding the current per-file model-input limit of {} bytes",
                             args.path,
                             metadata.len(),
                             self.max_model_input_attachment_bytes,
@@ -5963,13 +6161,13 @@ impl Tool for ReadFileTool {
             Ok(data) => data,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 return Ok(ToolExecutionResult::text(format!(
-                    "系统报错：无权限读取文件 '{}'。请检查操作系统权限设置或更换有读取权限的路径。",
+                    "System error: permission denied while reading file '{}'; check the operating-system permissions or use a readable path.",
                     absolute_path.display()
                 )))
             }
             Err(error) => {
                 return Ok(ToolExecutionResult::text(format!(
-                    "系统报错：读取文件 '{}' 失败，原因: {:?}",
+                    "System error: failed to read file '{}': {:?}",
                     absolute_path.display(),
                     error
                 )))
@@ -5983,11 +6181,11 @@ impl Tool for ReadFileTool {
                 || args.context_lines.is_some()
                 || args.max_matches.is_some()
             {
-                return Err("图片 read 不能使用 start_line、end_line、query、context_lines 或 max_matches；只传 path 即可".into());
+                return Err("Image reads cannot use start_line, end_line, query, context_lines, or max_matches; pass only path".into());
             }
             if data.len() > self.max_model_input_attachment_bytes {
                 return Err(format!(
-                    "图片 '{}' 大小为 {} bytes，超过当前模型输入单文件上限 {} bytes",
+                    "Image '{}' is {} bytes, exceeding the current per-file model-input limit of {} bytes",
                     args.path,
                     data.len(),
                     self.max_model_input_attachment_bytes,
@@ -6022,7 +6220,7 @@ impl Tool for ReadFileTool {
 
         let content = String::from_utf8(data).map_err(|_| {
             format!(
-                "文件 '{}' 不是 UTF-8 文本，也不是受支持的 JPEG、PNG、GIF 或 WebP 图片",
+                "file '{}' is neither UTF-8 text nor a supported JPEG, PNG, GIF, or WebP image",
                 args.path
             )
         })?;
@@ -6067,7 +6265,7 @@ fn select_file_lines(
     let end = args.end_line.unwrap_or(total).min(total);
     if start == 0 || (total > 0 && start > total) || end < start {
         return Err(format!(
-            "无效行范围：start_line={}，end_line={}，文件共 {} 行",
+            "invalid line range: start_line={}, end_line={}, file has {} lines",
             start, end, total
         )
         .into());
@@ -6079,7 +6277,7 @@ fn select_file_lines(
     if let Some(query) = args.query.as_deref() {
         let query = query.trim();
         if query.is_empty() {
-            return Err("query 不能为空字符串".into());
+            return Err("query must not be empty".into());
         }
         let needle = query.to_lowercase();
         let context = args.context_lines.unwrap_or(3).min(20);
@@ -6238,7 +6436,7 @@ impl Tool for EditFileTool {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: EditFileArgs = serde_json::from_str(arguments)?;
         if args.edits.is_empty() {
-            return Err("edit.edits 至少需要一项".into());
+            return Err("edit.edits requires at least one item".into());
         }
         let absolute_path = self
             .permissions
@@ -6253,7 +6451,7 @@ impl Tool for EditFileTool {
         let snapshot = read_text_snapshot(&absolute_path)?;
         if snapshot.sha256 != args.expected_sha256 {
             return Err(format!(
-                "文件版本冲突：'{}' 当前 sha256={}，expected_sha256={}。请重新 read 后再编辑",
+                "file version conflict: '{}' currently has sha256={}, expected_sha256={}. Read it again before editing",
                 args.path, snapshot.sha256, args.expected_sha256
             )
             .into());
@@ -6262,7 +6460,7 @@ impl Tool for EditFileTool {
         let mut replacements = Vec::new();
         for (index, edit) in args.edits.iter().enumerate() {
             if edit.old_text.is_empty() {
-                return Err(format!("edit.edits[{index}].old_text 不能为空").into());
+                return Err(format!("edit.edits[{index}].old_text must not be empty").into());
             }
             let matches = snapshot
                 .content
@@ -6271,14 +6469,14 @@ impl Tool for EditFileTool {
                 .collect::<Vec<_>>();
             if matches.is_empty() {
                 return Err(format!(
-                    "edit.edits[{index}] 的 old_text 在 '{}' 中没有精确匹配；请重新 read 并扩大上下文",
+                    "edit.edits[{index}].old_text has no exact match in '{}'; read the file again and include more context",
                     args.path
                 )
                 .into());
             }
             if !edit.replace_all && matches.len() != 1 {
                 return Err(format!(
-                    "edit.edits[{index}] 的 old_text 匹配 {} 次；默认编辑要求唯一匹配。请扩大 old_text 上下文，或明确设置 replace_all=true",
+                    "edit.edits[{index}].old_text matches {} times; edits require a unique match by default. Include more context in old_text or explicitly set replace_all=true",
                     matches.len()
                 )
                 .into());
@@ -6298,7 +6496,7 @@ impl Tool for EditFileTool {
         replacements.sort_by_key(|replacement| replacement.start);
         for pair in replacements.windows(2) {
             if pair[0].end > pair[1].start {
-                return Err("edit 中的两个替换范围发生重叠；请合并为一个更大的精确替换".into());
+                return Err("Two replacement ranges in edit overlap; merge them into one larger exact replacement".into());
             }
         }
 
@@ -6329,7 +6527,7 @@ impl Tool for EditFileTool {
         }
         updated.push_str(&snapshot.content[cursor..]);
         if updated == snapshot.content {
-            return Err("edit 没有产生任何内容变化".into());
+            return Err("edit produced no content change".into());
         }
 
         atomic_write_text(&absolute_path, &updated, Some(snapshot.permissions.clone()))?;
@@ -6349,7 +6547,7 @@ impl Tool for EditFileTool {
         )
         .await?;
         Ok(format!(
-            "文件编辑成功：path={} replacements={} bytes={} sha256={}\n{}",
+            "File edit succeeded: path={} replacements={} bytes={} sha256={}\n{}",
             args.path,
             replacements.len(),
             updated.len(),
@@ -6502,10 +6700,10 @@ impl Tool for ListFilesTool {
             )
             .await?;
         if !root.is_dir() {
-            return Err(format!("list_files.path '{}' 不是目录", args.path).into());
+            return Err(format!("list_files.path '{}' is not a directory", args.path).into());
         }
         let pattern = Pattern::new(&args.glob)
-            .map_err(|error| format!("无效 glob '{}': {}", args.glob, error))?;
+            .map_err(|error| format!("Invalid glob '{}': {}", args.glob, error))?;
         let limit = args.max_results.clamp(1, 2_000);
         let mut matches = Vec::new();
         let mut truncated = false;
@@ -6624,7 +6822,7 @@ impl Tool for SearchTool {
     ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
         let args: SearchArgs = serde_json::from_str(arguments)?;
         if args.paths.is_empty() {
-            return Err("search.paths 至少需要一个路径".into());
+            return Err("search.paths requires at least one path".into());
         }
         let mut requested = CapabilityDelta::default();
         let mut targets = Vec::new();
@@ -6661,7 +6859,7 @@ impl Tool for SearchTool {
             },
             requested,
             format!(
-                "工具 search 需要读取边界外路径：{}",
+                "the search tool requires access to a path outside its boundary: {}",
                 targets
                     .iter()
                     .map(|path| path.display().to_string())
@@ -6677,13 +6875,13 @@ impl Tool for SearchTool {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: SearchArgs = serde_json::from_str(arguments)?;
         if args.query.trim().is_empty() {
-            return Err("search.query 不能为空".into());
+            return Err("search.query must not be empty".into());
         }
         if args.paths.is_empty() {
-            return Err("search.paths 至少需要一个路径".into());
+            return Err("search.paths requires at least one path".into());
         }
         let pattern = Pattern::new(&args.glob)
-            .map_err(|error| format!("无效 glob '{}': {}", args.glob, error))?;
+            .map_err(|error| format!("Invalid glob '{}': {}", args.glob, error))?;
         let limit = args.max_matches.clamp(1, 1_000);
         let context_lines = args.context_lines.min(20);
         let needle = if args.case_sensitive {
@@ -6728,7 +6926,7 @@ impl Tool for SearchTool {
                 })
                 .collect::<Vec<_>>()
             } else {
-                return Err(format!("search 路径 '{}' 不存在", input).into());
+                return Err(format!("Search path '{}' does not exist", input).into());
             };
 
             for (path, relative) in candidates {
@@ -6829,7 +7027,7 @@ impl ExecuteCommandTool {
             background_config,
             config,
             Arc::new(DenyAllApprovalProvider::new(
-                "当前 ExecuteCommandTool 未配置审批提供者",
+                "the current ExecuteCommandTool has no approval provider configured",
             )),
             tool_timeout_secs,
         )
@@ -6843,7 +7041,7 @@ impl ExecuteCommandTool {
         tool_timeout_secs: u64,
     ) -> Self {
         let profile = PermissionProfile::from_config(&config)
-            .unwrap_or_else(|error| panic!("无效 PermissionConfig: {error}"));
+            .unwrap_or_else(|error| panic!("invalid PermissionConfig: {error}"));
         Self::new_with_permissions(
             bus,
             background_config,
@@ -6876,7 +7074,7 @@ impl ExecuteCommandTool {
     ) -> Self {
         let secret_store = Arc::new(
             crate::secret_store::SecretStore::native_default()
-                .expect("无法初始化默认 Secret Store metadata catalog"),
+                .expect("Failed to initialize the default Secret Store metadata catalog"),
         );
         Self::new_with_permissions_scheduler_and_secret_store(
             bus,
@@ -6918,7 +7116,7 @@ impl ExecuteCommandTool {
         for name in validate_secret_env_names(names)? {
             if !self.secret_store.contains_alias(&name)? {
                 return Err(format!(
-                    "secret_env '{}' 在 Secret Store 或 Runtime bootstrap 环境中不存在",
+                    "secret_env '{}' does not exist in the Secret Store or Runtime bootstrap environment",
                     name
                 )
                 .into());
@@ -6992,7 +7190,9 @@ fn validate_secret_env_names(
                 .chars()
                 .all(|character| character.is_ascii_alphanumeric() || character == '_')
         {
-            return Err(format!("secret_env 包含非法环境变量名 '{name}'").into());
+            return Err(
+                format!("secret_env contains invalid environment-variable name '{name}'").into(),
+            );
         }
         if !validated.iter().any(|existing| existing == normalized) {
             validated.push(normalized.to_string());
@@ -7008,7 +7208,11 @@ fn canonicalize_permission_roots(
         .iter()
         .map(|root| {
             std::fs::canonicalize(root).map_err(|error| {
-                format!("无法解析当前沙箱权限目录 '{}': {error}", root.display()).into()
+                format!(
+                    "Failed to resolve current sandbox permission directory '{}': {error}",
+                    root.display()
+                )
+                .into()
             })
         })
         .collect()
@@ -7109,7 +7313,7 @@ fn validate_managed_shell_command(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if contains_unquoted_background_operator(command) {
         return Err(
-            "exec 禁止使用 Shell '&' 自行创建非托管后台进程。请直接执行前台命令；超过 wait_ms 后 Runtime 会自动转入后台并返回 task_id。"
+            "exec prohibits using shell '&' to create an unmanaged background process. Run the command in the foreground; after wait_ms the Runtime will move it to the background automatically and return a task_id."
                 .into(),
         );
     }
@@ -7126,7 +7330,7 @@ fn terminate_residual_process_group(
             Ok(true)
         }
         Err(nix::errno::Errno::ESRCH) => Ok(false),
-        Err(error) => Err(format!("检查 exec 残留进程组失败: {error}").into()),
+        Err(error) => Err(format!("Failed to inspect residual exec process group: {error}").into()),
     }
 }
 
@@ -7217,15 +7421,15 @@ struct ExecuteCommandArgs {
 
 fn boundary_remediation(permission_request_available: bool, network_enabled: bool) -> String {
     if !permission_request_available {
-        return "当前 Permission Profile 不允许申请额外能力；不要重复调用。".to_string();
+        return "The current Permission Profile does not allow requesting additional capabilities; do not retry.".to_string();
     }
     let network = if network_enabled {
-        "当前网络已启用；不要把普通网络服务错误误判为沙箱拒绝。"
+        "Network access is enabled; do not misclassify ordinary network-service errors as sandbox denials."
     } else {
-        "当前网络未启用。"
+        "Network access is disabled."
     };
     format!(
-        "{network} 仅当 stderr/事实明确表明失败源于缺少网络、边界外目录或秘密环境变量时，才用同一条必要命令重试一次：sandbox_permissions=require_escalated，requested_permissions 只列最小能力，并提供 justification。protected_paths 或审批拒绝不可覆盖。"
+        "{network} Retry the same necessary command once with sandbox_permissions=require_escalated only when stderr or other evidence clearly shows that the failure was caused by missing network access, an out-of-boundary directory, or a secret environment variable. List only the minimum capabilities in requested_permissions and provide a justification. protected_paths and approval denials cannot be overridden."
     )
 }
 
@@ -7317,13 +7521,13 @@ impl Tool for ExecuteCommandTool {
         let resolved_cwd = profile.resolve_candidate(cwd_input)?;
         if resolved_cwd.protected {
             return Err(format!(
-                "exec.cwd '{}' 命中不可覆盖的 protected_paths 规则",
+                "exec.cwd '{}' matches a protected_paths rule that cannot be overridden",
                 cwd_input
             )
             .into());
         }
         if !resolved_cwd.candidate.is_dir() {
-            return Err(format!("exec.cwd '{}' 不是已存在目录", cwd_input).into());
+            return Err(format!("exec.cwd '{}' is not an existing directory", cwd_input).into());
         }
         let exec_cwd = std::fs::canonicalize(&resolved_cwd.candidate)?;
         let policy = SandboxPolicy {
@@ -7353,7 +7557,7 @@ impl Tool for ExecuteCommandTool {
         }
         match args.sandbox_permissions {
             SandboxPermissionMode::UseDefault if !requested.is_empty() => Err(
-                "requested_permissions 只能与 sandbox_permissions=require_escalated 一起使用"
+                "requested_permissions can be used only with sandbox_permissions=require_escalated"
                     .into(),
             ),
             SandboxPermissionMode::RequireEscalated if !requested.is_empty() => {
@@ -7362,7 +7566,7 @@ impl Tool for ExecuteCommandTool {
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                    .ok_or("require_escalated 必须提供非空 justification")?;
+                    .ok_or("require_escalated requires a non-empty justification")?;
                 self.permissions.approval_requirement_for_delta(
                     ApprovalAction::Shell {
                         command: command.to_string(),
@@ -7421,14 +7625,14 @@ impl Tool for ExecuteCommandTool {
         let resolved_cwd = profile.resolve_candidate(cwd_input)?;
         if resolved_cwd.protected {
             return Err(format!(
-                "exec.cwd '{}' 命中不可覆盖的 protected_paths 规则",
+                "exec.cwd '{}' matches a protected_paths rule that cannot be overridden",
                 cwd_input
             )
             .into());
         }
         let exec_cwd = resolved_cwd.candidate;
         if !exec_cwd.is_dir() {
-            return Err(format!("exec.cwd '{}' 不是已存在目录", cwd_input).into());
+            return Err(format!("exec.cwd '{}' is not an existing directory", cwd_input).into());
         }
         let exec_cwd = std::fs::canonicalize(&exec_cwd)?;
         let workspace_root = profile.workspace_root.clone();
@@ -7456,7 +7660,7 @@ impl Tool for ExecuteCommandTool {
                 || args.sandbox_permissions != SandboxPermissionMode::RequireEscalated
             {
                 return Err(
-                    "Runtime Managed SSH authority 只允许内部生成的 ssh 命令及固定网络/Target 绑定凭证能力"
+                    "Runtime Managed SSH authority allows only internally generated ssh commands and fixed network/Target-bound credential capabilities"
                         .into(),
                 );
             }
@@ -7499,7 +7703,7 @@ impl Tool for ExecuteCommandTool {
             }
             match args.sandbox_permissions {
                 SandboxPermissionMode::UseDefault if !requested.is_empty() => {
-                    return Err("requested_permissions 只能与 sandbox_permissions=require_escalated 一起使用".into());
+                    return Err("requested_permissions can be used only with sandbox_permissions=require_escalated".into());
                 }
                 SandboxPermissionMode::RequireEscalated if !requested.is_empty() => {
                     let justification = args
@@ -7507,7 +7711,7 @@ impl Tool for ExecuteCommandTool {
                         .as_deref()
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
-                        .ok_or("require_escalated 必须提供非空 justification")?;
+                        .ok_or("require_escalated requires a non-empty justification")?;
                     self.permissions
                         .authorize_delta(
                             ApprovalAction::Shell {
@@ -7593,13 +7797,17 @@ impl Tool for ExecuteCommandTool {
                                     target_id: target_id.as_deref(),
                                 },
                             )?
-                            .ok_or_else(|| format!("secret_env '{}' 在 Runtime 中不存在", name))?;
+                            .ok_or_else(|| {
+                                format!("secret_env '{}' does not exist in Runtime", name)
+                            })?;
                         Ok((name, value))
                     })
                     .collect()
             })
             .await
-            .map_err(|error| format!("Secret Store 阻塞任务异常终止：{error}"))??;
+            .map_err(|error| {
+                format!("Secret Store blocking task terminated unexpectedly: {error}")
+            })??;
         let mut injected_secret_values = Vec::with_capacity(resolved_secret_env.len());
         for (name, value) in resolved_secret_env {
             cmd.env(&name, &value);
@@ -7609,7 +7817,7 @@ impl Tool for ExecuteCommandTool {
         let artifact_dir = std::path::PathBuf::from(&self.background_config.artifact_dir);
         std::fs::create_dir_all(&artifact_dir).map_err(|error| {
             format!(
-                "无法创建 exec 原始输出归档目录 '{}': {}",
+                "failed to create exec raw-output archive directory '{}': {}",
                 artifact_dir.display(),
                 error
             )
@@ -7626,7 +7834,7 @@ impl Tool for ExecuteCommandTool {
         }
 
         let mut child = cmd.spawn()?;
-        let pid = child.id().ok_or("无法获取进程 ID")? as i32;
+        let pid = child.id().ok_or("Failed to obtain process ID")? as i32;
         let mut process_group_guard = ProcessGroupGuard::new(pid);
 
         let task_id = match (
@@ -7708,7 +7916,7 @@ impl Tool for ExecuteCommandTool {
                 let _ = child.wait().await;
                 tasks.remove(&task_id);
                 return Err(format!(
-                    "无法创建 exec 原始输出归档 '{}': {}",
+                    "failed to create exec raw-output archive '{}': {}",
                     archive_path.display(),
                     error
                 )
@@ -7716,8 +7924,8 @@ impl Tool for ExecuteCommandTool {
             }
         };
 
-        let stdout = child.stdout.take().ok_or("无法捕获 stdout 管道")?;
-        let stderr = child.stderr.take().ok_or("无法捕获 stderr 管道")?;
+        let stdout = child.stdout.take().ok_or("Failed to capture stdout pipe")?;
+        let stderr = child.stderr.take().ok_or("Failed to capture stderr pipe")?;
 
         let bus_clone = Arc::clone(&self.bus);
         let session_id_clone = session_id.clone();
@@ -7809,7 +8017,7 @@ impl Tool for ExecuteCommandTool {
                     .then(|| boundary_remediation(permission_request_available, effective_network));
                 if residual_processes_terminated {
                     return Err(format!(
-                        "exec 检测到 Shell 主进程退出后仍有子进程存活，已终止整个残留进程组。禁止自行后台化；请让前台命令运行超过 wait_ms，由 Runtime 托管。\n--- 已捕获输出 ---\n{output_str}"
+                        "exec detected child processes still alive after the shell process exited and terminated the entire remaining process group. Self-backgrounding is prohibited; let the foreground command run past wait_ms so the Runtime can manage it.\n--- Captured output ---\n{output_str}"
                     )
                     .into());
                 }
@@ -7848,7 +8056,7 @@ impl Tool for ExecuteCommandTool {
                             let _ = stderr_task.await;
                             tasks.remove(&task_id);
                             return Err(format!(
-                                "后台进程未能交接给持久 ExecutionJob，已终止进程组: {error}"
+                                "background process could not be handed off to a persistent ExecutionJob, so its process group was terminated: {error}"
                             )
                             .into());
                         }
@@ -7895,9 +8103,9 @@ impl Tool for ExecuteCommandTool {
                     let code = wait_res.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
                     let output_str = buffer_cleanup.get_all();
                     let residual_note = match residual_cleanup {
-                        Ok(true) => "\n[Runtime 已终止 Shell 退出后残留的非托管子进程组。请勿在 exec 命令中自行后台化。]",
+                        Ok(true) => "\n[Runtime terminated an unmanaged child process group left after the shell exited. Do not self-background processes in exec commands.]",
                         Ok(false) => "",
-                        Err(_) => "\n[Runtime 无法确认 Shell 退出后的进程组是否已完整清理。]",
+                        Err(_) => "\n[Runtime could not confirm that the process group was fully cleaned up after the shell exited.]",
                     };
                     if let Some(scheduler) = &background_scheduler_cleanup {
                         if scheduler.execution_jobs.is_some() {
@@ -7989,7 +8197,7 @@ impl Tool for ExecuteCommandTool {
                     payload.insert(
                         "text".to_string(),
                         serde_json::json!(format!(
-                            "\n[后台任务 {} 执行结束，退出码: {}]{}\n--- 输出 ---\n{}",
+                            "\n[Background task {} finished with exit code {}]{}\n--- Output ---\n{}",
                             task_id_cleanup, code, residual_note, output_str
                         )),
                     );
@@ -8019,7 +8227,7 @@ impl Tool for ExecuteCommandTool {
                     prune_background_task_history();
                 });
 
-                let elapsed_str = format!("{} 毫秒", wait_duration.as_millis());
+                let elapsed_str = format!("{} ms", wait_duration.as_millis());
 
                 let output_str = buffer.get_all();
                 Ok(serde_json::json!({
@@ -8134,9 +8342,11 @@ fn require_visible_task(
 ) -> Result<dashmap::mapref::one::Ref<'static, String, BackgroundTask>, String> {
     let task = get_tasks_map()
         .get(task_id)
-        .ok_or_else(|| format!("未找到后台任务 '{task_id}'，它可能已被历史保留策略清理"))?;
+        .ok_or_else(|| format!("Background task '{task_id}' was not found; it may have been removed by the history-retention policy"))?;
     if !task_visible_in_current_context(&task) {
-        return Err(format!("后台任务 '{task_id}' 不属于当前 Context"));
+        return Err(format!(
+            "Background task '{task_id}' does not belong to the current Context"
+        ));
     }
     Ok(task)
 }
@@ -8345,9 +8555,13 @@ impl Tool for CheckTaskAfterTool {
                 .background_scheduler
                 .get_background_job(&args.task_id)
                 .await?
-                .ok_or_else(|| format!("未找到后台任务 '{}'", args.task_id))?;
+                .ok_or_else(|| format!("Background task '{}' was not found", args.task_id))?;
             if !current_context.is_empty() && job.context_id != current_context {
-                return Err(format!("后台任务 '{}' 不属于当前 Context", args.task_id).into());
+                return Err(format!(
+                    "Background task '{}' does not belong to the current Context",
+                    args.task_id
+                )
+                .into());
             }
             if job.status.is_terminal() {
                 let live = get_tasks_map().get(&args.task_id);
@@ -8473,7 +8687,11 @@ impl Tool for KillTaskTool {
 
         if let Some(mut task) = tasks.get_mut(&args.task_id) {
             if !task_visible_in_current_context(&task) {
-                return Err(format!("后台任务 '{}' 不属于当前 Context", args.task_id).into());
+                return Err(format!(
+                    "Background task '{}' does not belong to the current Context",
+                    args.task_id
+                )
+                .into());
             }
             if task.status.is_terminal() {
                 return Ok(serde_json::json!({
@@ -8492,7 +8710,7 @@ impl Tool for KillTaskTool {
             if let Some(scheduler) = &self.background_scheduler {
                 scheduler.cancel(&args.task_id).await;
             }
-            let pgid = nix::unistd::Pid::from_raw(-task_pgid); // 负数代表杀死整个进程组
+            let pgid = nix::unistd::Pid::from_raw(-task_pgid); // A negative PID targets the entire process group.
             match nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL) {
                 Ok(_) => Ok(serde_json::json!({
                     "kind": "background_task_kill",
@@ -8524,13 +8742,13 @@ impl Tool for KillTaskTool {
                         if let Some(mut task) = tasks.get_mut(&args.task_id) {
                             task.status = BackgroundTaskStatus::Running;
                         }
-                        Err(format!("强杀进程组 {} 遭遇系统级错误: {:?}", task_pgid, e).into())
+                        Err(format!("Force-killing process group {} encountered an operating-system error: {:?}", task_pgid, e).into())
                     }
                 }
             }
         } else {
             Err(format!(
-                "未找到后台任务 '{}'，它可能已被历史保留策略清理",
+                "background task '{}' was not found; it may have been removed by the retention policy",
                 args.task_id
             )
             .into())
@@ -8619,20 +8837,22 @@ impl Tool for DelegateTool {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: DelegateArgs = serde_json::from_str(arguments)?;
         if args.task.trim().is_empty() {
-            return Err("delegate.task 不能为空".into());
+            return Err("delegate.task must not be empty".into());
         }
         if !matches!(args.context_scope.as_str(), "current_session" | "mind_only") {
-            return Err(format!("不支持的 delegate.context_scope: {}", args.context_scope).into());
+            return Err(
+                format!("Unsupported delegate.context_scope: {}", args.context_scope).into(),
+            );
         }
         if !matches!(args.mode.as_str(), "attached" | "detached") {
-            return Err(format!("不支持的 delegate.mode: {}", args.mode).into());
+            return Err(format!("Unsupported delegate.mode: {}", args.mode).into());
         }
         let parent_session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
-            .map_err(|_| "delegate 必须在 Session 求值中调用")?;
+            .map_err(|_| "delegate must be called during Session evaluation")?;
         let parent_context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .map_err(|_| "delegate 缺少当前 Context 路由")?;
+            .map_err(|_| "delegate is missing the current Context route")?;
         let suffix = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
         let delegation_id = format!("delegation_{suffix}");
         let child_context_id = format!("delegate-context-{suffix}");
@@ -8954,7 +9174,11 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
         return s.to_string();
     }
     let tail: String = s.chars().skip(total - max_chars).collect();
-    format!("... [前 {} 字符已省略]\n{}", total - max_chars, tail)
+    format!(
+        "... [first {} characters omitted]\n{}",
+        total - max_chars,
+        tail
+    )
 }
 
 #[cfg(test)]
@@ -9845,6 +10069,155 @@ Body
     }
 
     #[tokio::test]
+    async fn schedule_tx_atomically_creates_concurrent_tasks_with_independent_models() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-model-batch".to_string(),
+                title: "Model Batch Agent".to_string(),
+                root_context_id: "context-model-batch".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-model-batch".to_string(),
+                agent_id: "agent-model-batch".to_string(),
+                title: "Model Batch Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_session(NewSession {
+                id: "session-model-batch".to_string(),
+                agent_id: "agent-model-batch".to_string(),
+                context_id: "context-model-batch".to_string(),
+                parent_session_id: None,
+                title: "Model Batch Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: "thread-model-batch-current".to_string(),
+                agent_id: "agent-model-batch".to_string(),
+                context_id: "context-model-batch".to_string(),
+                session_id: "session-model-batch".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-model-batch-current".to_string(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let tool = ScheduleTxTool::new(
+            Arc::clone(&scheduler),
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+        )
+        .with_allowed_evaluation_models(vec![
+            "primary-route".to_string(),
+            "fast-route".to_string(),
+        ]);
+        let arguments = serde_json::json!({
+            "operations": [
+                {
+                    "op": "spawn",
+                    "client_id": "research",
+                    "intent": "research independently",
+                    "lifetime": "attached",
+                    "delay_seconds": 3600,
+                    "model": "fast-route"
+                },
+                {
+                    "op": "spawn",
+                    "client_id": "review",
+                    "intent": "review independently",
+                    "lifetime": "attached",
+                    "delay_seconds": 3600,
+                    "model": "primary-route"
+                }
+            ],
+            "group": {"policy": "all"}
+        })
+        .to_string();
+        let route = Some(ToolCausalRoute {
+            thread_id: "thread-model-batch-current".to_string(),
+            activation_id: "activation-model-batch".to_string(),
+            root_turn_id: "root-model-batch-current".to_string(),
+            trigger_event_id: "trigger-model-batch".to_string(),
+            trigger_sequence: 1,
+        });
+        let output = CURRENT_SESSION_ID
+            .scope(
+                "session-model-batch".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-model-batch".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-model-batch".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(route.clone(), tool.execute(&arguments)),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(receipt["status"], "committed");
+        assert_eq!(receipt["client_receipts"].as_array().unwrap().len(), 2);
+        assert_eq!(receipt["thread_groups"].as_array().unwrap().len(), 1);
+        let schedules = store.list_schedules(None, None).await.unwrap();
+        assert_eq!(schedules.len(), 2);
+        assert!(schedules
+            .iter()
+            .all(|schedule| schedule.dependency_thread_ids.is_empty()));
+        assert!(schedules
+            .iter()
+            .any(|schedule| schedule.model_alias.as_deref() == Some("fast-route")));
+        assert!(schedules
+            .iter()
+            .any(|schedule| schedule.model_alias.as_deref() == Some("primary-route")));
+
+        let unauthorized = serde_json::json!({
+            "operations": [{
+                "op": "spawn",
+                "client_id": "forbidden",
+                "intent": "must roll back",
+                "lifetime": "attached",
+                "delay_seconds": 3600,
+                "model": "not-authorized"
+            }]
+        })
+        .to_string();
+        let error = CURRENT_SESSION_ID
+            .scope(
+                "session-model-batch".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-model-batch".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-model-batch-forbidden".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(route, tool.execute(&unauthorized)),
+                    ),
+                ),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("allowed_evaluation_models"));
+        assert_eq!(store.list_schedules(None, None).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
     async fn schedule_tx_atomically_creates_objective_singleton_group_and_durable_thread() {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
@@ -10423,6 +10796,7 @@ Body
                 thread_id: thread_id.to_string(),
                 source_turn_id: format!("source-{id}"),
                 intent: format!("intent-{id}"),
+                model_alias: None,
                 not_before: Some(due_at),
                 interval_seconds: None,
                 dependency_thread_ids: Vec::new(),
@@ -10972,6 +11346,7 @@ Body
                 thread_id: "thread-dependent".to_string(),
                 source_turn_id: "root-dependent".to_string(),
                 intent: "依赖结束后再执行".to_string(),
+                model_alias: None,
                 not_before: None,
                 interval_seconds: None,
                 dependency_thread_ids: vec!["thread-dependency".to_string()],
@@ -11057,6 +11432,7 @@ Body
                 thread_id: "thread-recovery-dependent".to_string(),
                 source_turn_id: "root-recovery-dependent".to_string(),
                 intent: "恢复后由依赖终态唤醒".to_string(),
+                model_alias: None,
                 not_before: None,
                 interval_seconds: None,
                 dependency_thread_ids: vec!["thread-recovery-dependency".to_string()],
@@ -11149,6 +11525,7 @@ Body
                 thread_id: "thread-fenced-dependent".to_string(),
                 source_turn_id: "root-fenced-dependent".to_string(),
                 intent: "并发通知只投递一次".to_string(),
+                model_alias: None,
                 not_before: None,
                 interval_seconds: None,
                 dependency_thread_ids: vec!["thread-fenced-dependency".to_string()],
@@ -11215,6 +11592,7 @@ Body
                 thread_id: "thread-after-restart".to_string(),
                 source_turn_id: "root-after-restart".to_string(),
                 intent: "重启后继续执行".to_string(),
+                model_alias: None,
                 not_before: Some(chrono::Utc::now() + chrono::Duration::milliseconds(40)),
                 interval_seconds: None,
                 dependency_thread_ids: Vec::new(),
@@ -11272,6 +11650,7 @@ Body
                 thread_id: "thread-recurring-template".to_string(),
                 source_turn_id: "root-recurring-template".to_string(),
                 intent: "run one independent recurring occurrence".to_string(),
+                model_alias: None,
                 not_before: Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
                 interval_seconds: Some(60),
                 dependency_thread_ids: Vec::new(),
@@ -11481,7 +11860,7 @@ Body
         });
 
         let write_res = write_tool.execute(&write_args.to_string()).await.unwrap();
-        assert!(write_res.contains("成功"));
+        assert!(write_res.contains("succeeded"));
 
         let read_args = serde_json::json!({
             "path": path_str
@@ -11552,13 +11931,17 @@ Body
             .execute_result(&serde_json::json!({ "path": image, "start_line": 1 }).to_string())
             .await
             .unwrap_err();
-        assert!(selector_error.to_string().contains("图片 read 不能使用"));
+        assert!(selector_error
+            .to_string()
+            .contains("Image reads cannot use"));
 
         let binary_error = read
             .execute_result(&serde_json::json!({ "path": binary }).to_string())
             .await
             .unwrap_err();
-        assert!(binary_error.to_string().contains("不是 UTF-8 文本"));
+        assert!(binary_error
+            .to_string()
+            .contains("is neither UTF-8 text nor a supported"));
     }
 
     #[tokio::test]
@@ -11574,7 +11957,9 @@ Body
             .execute_result(&serde_json::json!({ "path": image }).to_string())
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("单文件上限 8 bytes"));
+        assert!(error
+            .to_string()
+            .contains("per-file model-input limit of 8 bytes"));
     }
 
     #[tokio::test]
@@ -11620,7 +12005,7 @@ Body
             )
             .await
             .unwrap_err();
-        assert!(create_error.to_string().contains("拒绝覆盖"));
+        assert!(create_error.to_string().contains("refuses to overwrite"));
 
         let stale_error = write_tool
             .execute(
@@ -11634,7 +12019,7 @@ Body
             )
             .await
             .unwrap_err();
-        assert!(stale_error.to_string().contains("版本冲突"));
+        assert!(stale_error.to_string().contains("File version conflict"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "original");
     }
 
@@ -11724,7 +12109,7 @@ Body
             )
             .await
             .unwrap_err();
-        assert!(stale.to_string().contains("版本冲突"));
+        assert!(stale.to_string().contains("version conflict"));
 
         let hash = sha256_hex(b"same\nsame\n");
         let ambiguous = edit_tool
@@ -11738,7 +12123,7 @@ Body
             )
             .await
             .unwrap_err();
-        assert!(ambiguous.to_string().contains("匹配 2 次"));
+        assert!(ambiguous.to_string().contains("matches 2 times"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "same\nsame\n");
     }
 
@@ -11956,7 +12341,7 @@ Body
         );
         let guidance = output["boundary_remediation"].as_str().unwrap();
         assert!(guidance.contains("sandbox_permissions=require_escalated"));
-        assert!(guidance.contains("仅当 stderr/事实明确"));
+        assert!(guidance.contains("only when stderr or other evidence clearly shows"));
         assert!(guidance.contains("protected_paths"));
     }
 
@@ -11968,7 +12353,7 @@ Body
             "path": "/obviously_not_exist_dir/no_file.txt"
         });
         let res = read_tool.execute(&bad_args.to_string()).await.unwrap();
-        assert!(res.contains("不存在") || res.contains("系统报错"));
+        assert!(res.contains("does not exist") || res.contains("System error"));
     }
 
     #[tokio::test]
@@ -11980,7 +12365,7 @@ Body
             "path": "/etc/passwd"
         });
         let res = read_tool.execute(&bad_args.to_string()).await.unwrap();
-        assert!(res.contains("权限策略") || res.contains("系统报错"));
+        assert!(res.contains("permission policy") || res.contains("System error"));
     }
 
     #[tokio::test]
@@ -12093,7 +12478,7 @@ Body
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("禁止使用 Shell '&'"));
+        assert!(error.to_string().contains("prohibits using shell '&'"));
     }
 
     #[tokio::test]
@@ -12124,7 +12509,7 @@ Body
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("仍有子进程存活"));
+        assert!(error.to_string().contains("child processes still alive"));
     }
 
     #[tokio::test]
@@ -12281,7 +12666,7 @@ Body
             )
             .await
             .unwrap();
-        assert!(!denied.contains("退出码: 0"));
+        assert!(!denied.contains("exit code 0"));
         assert!(!denied_path.exists());
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     }
@@ -12380,7 +12765,7 @@ Body
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("权限审批拒绝"));
+        assert!(error.to_string().contains("permission review rejected"));
         assert!(!workspace.path().join("denied.txt").exists());
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     }
@@ -12399,7 +12784,7 @@ Body
             .execute(&serde_json::json!({ "command": "printf abcdefghi" }).to_string())
             .await
             .unwrap();
-        assert!(result.contains("Context preview 已按缓冲上限截断"));
+        assert!(result.contains("Context preview was truncated at the buffer limit"));
 
         let archive_path = std::fs::read_dir(tmp.path())
             .unwrap()
@@ -15110,7 +15495,7 @@ Body
 
         buffer.append("你好world", false);
         let output = buffer.get_all();
-        assert!(output.contains("完整原始输出"));
+        assert!(output.contains("complete raw output"));
         assert!(output.ends_with("world"));
         assert_eq!(std::fs::read_to_string(archive_path).unwrap(), "你好world");
     }

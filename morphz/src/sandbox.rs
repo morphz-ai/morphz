@@ -225,7 +225,7 @@ impl NativeSandbox {
             arguments: platform_shell_arguments(command),
             report: BackendReport::unavailable(
                 self.backend.report().backend,
-                "原生沙箱已被配置显式关闭；命令未获得操作系统隔离",
+                "the native sandbox is explicitly disabled by configuration; the command has no operating-system isolation",
             ),
         }
     }
@@ -248,7 +248,7 @@ fn canonical_roots(paths: &[PathBuf], kind: &str) -> Result<Vec<PathBuf>, Sandbo
     for path in paths {
         let canonical = std::fs::canonicalize(path).map_err(|error| {
             SandboxError::new(format!(
-                "无法解析沙箱 {kind} root '{}': {error}",
+                "failed to resolve sandbox {kind} root '{}': {error}",
                 path.display()
             ))
         })?;
@@ -272,7 +272,7 @@ fn denied_roots(paths: &[PathBuf], kind: &str) -> Result<Vec<PathBuf>, SandboxEr
             Err(error) if error.kind() == ErrorKind::NotFound => absolute_lexical_path(path)?,
             Err(error) => {
                 return Err(SandboxError::new(format!(
-                    "无法解析沙箱 {kind} root '{}': {error}",
+                    "failed to resolve sandbox {kind} root '{}': {error}",
                     path.display()
                 )));
             }
@@ -287,7 +287,9 @@ fn absolute_lexical_path(path: &Path) -> Result<PathBuf, SandboxError> {
         path.to_path_buf()
     } else {
         std::env::current_dir()
-            .map_err(|error| SandboxError::new(format!("无法读取当前目录：{error}")))?
+            .map_err(|error| {
+                SandboxError::new(format!("failed to read the current directory: {error}"))
+            })?
             .join(path)
     };
     let mut normalized = PathBuf::new();
@@ -299,7 +301,7 @@ fn absolute_lexical_path(path: &Path) -> Result<PathBuf, SandboxError> {
             Component::ParentDir => {
                 if !normalized.pop() {
                     return Err(SandboxError::new(format!(
-                        "沙箱 deny path 无法规范化：'{}'",
+                        "sandbox deny path cannot be normalized: '{}'",
                         path.display()
                     )));
                 }
@@ -319,7 +321,7 @@ fn platform_backend() -> Arc<dyn SandboxBackend> {
 fn platform_backend() -> Arc<dyn SandboxBackend> {
     Arc::new(UnsupportedNativeBackend::new(
         BackendKind::LinuxNative,
-        "Linux 原生沙箱 Backend 尚未实现和实机验证",
+        "the native Linux sandbox Backend is not implemented and validated on a real host",
     ))
 }
 
@@ -327,7 +329,7 @@ fn platform_backend() -> Arc<dyn SandboxBackend> {
 fn platform_backend() -> Arc<dyn SandboxBackend> {
     Arc::new(UnsupportedNativeBackend::new(
         BackendKind::WindowsNative,
-        "Windows 原生沙箱 Backend 尚未实现和实机验证",
+        "the native Windows sandbox Backend is not implemented and validated on a real host",
     ))
 }
 
@@ -335,7 +337,7 @@ fn platform_backend() -> Arc<dyn SandboxBackend> {
 fn platform_backend() -> Arc<dyn SandboxBackend> {
     Arc::new(UnsupportedNativeBackend::new(
         BackendKind::Unsupported,
-        "当前操作系统没有 Morphz 原生沙箱 Backend",
+        "the current operating system has no native Morphz sandbox Backend",
     ))
 }
 
@@ -363,7 +365,7 @@ impl SandboxBackend for UnsupportedNativeBackend {
     fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError> {
         if request.policy.fail_closed {
             return Err(SandboxError::new(format!(
-                "{}；fail_closed=true，拒绝降级为未隔离 Shell",
+                "{}; fail_closed=true refuses fallback to an unsandboxed Shell",
                 self.reason
             )));
         }
@@ -408,12 +410,12 @@ mod macos {
             if executable.is_file() {
                 BackendReport::enforced(
                     BackendKind::MacOsSeatbelt,
-                    "macOS Seatbelt 可通过 /usr/bin/sandbox-exec 使用",
+                    "macOS Seatbelt is available through /usr/bin/sandbox-exec",
                 )
             } else {
                 BackendReport::unavailable(
                     BackendKind::MacOsSeatbelt,
-                    "/usr/bin/sandbox-exec 不存在",
+                    "/usr/bin/sandbox-exec does not exist",
                 )
             }
         }
@@ -423,7 +425,7 @@ mod macos {
             if report.status != EnforcementStatus::Enforced {
                 if request.policy.fail_closed {
                     return Err(SandboxError::new(format!(
-                        "macOS Seatbelt 不可用；fail_closed=true：{}",
+                        "macOS Seatbelt is unavailable and fail_closed=true: {}",
                         report.notes.join("; ")
                     )));
                 }
@@ -460,7 +462,7 @@ mod macos {
             denied_pattern_regexes(&policy.denied_write_patterns, "denied write pattern")?;
         if write_roots.is_empty() {
             return Err(SandboxError::new(
-                "macOS Seatbelt policy 至少需要一个 write root",
+                "macOS Seatbelt policy requires at least one write root",
             ));
         }
 
@@ -560,7 +562,7 @@ mod macos {
         for pattern in patterns {
             let root = std::fs::canonicalize(&pattern.root).map_err(|error| {
                 SandboxError::new(format!(
-                    "无法解析沙箱 {kind} root '{}': {error}",
+                    "failed to resolve sandbox {kind} root '{}': {error}",
                     pattern.root.display()
                 ))
             })?;
@@ -630,7 +632,7 @@ mod macos {
                     }
                     if index == characters.len() {
                         return Err(SandboxError::new(format!(
-                            "沙箱 protected path glob 存在未闭合字符组：{glob}"
+                            "sandbox protected-path glob contains an unclosed character class: {glob}"
                         )));
                     }
                     regex.push('[');
@@ -700,7 +702,7 @@ mod tests {
         };
 
         let error = backend.prepare_shell(&request).unwrap_err();
-        assert!(error.to_string().contains("拒绝降级"));
+        assert!(error.to_string().contains("refuses fallback"));
     }
 
     #[test]
@@ -727,7 +729,9 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let missing = temp.path().join("missing-workspace");
         let error = canonical_roots(&[missing], "read").unwrap_err();
-        assert!(error.to_string().contains("无法解析沙箱 read root"));
+        assert!(error
+            .to_string()
+            .contains("failed to resolve sandbox read root"));
     }
 
     #[test]

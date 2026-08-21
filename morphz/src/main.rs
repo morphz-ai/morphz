@@ -1984,7 +1984,7 @@ async fn set_provider_instance(
         .get(1)
         .ok_or("用法: morphz provider set PROVIDER FILE")?;
     let provider: config::ProviderInstanceConfig = read_toml_object(Path::new(file))?;
-    let path = config::managed_config_path()?;
+    let path = config::managed_model_config_path()?;
     let receipt = MorphzSdk::new(runtime.clone())
         .put_provider_instance_config(&path, provider_id, provider)
         .await?;
@@ -2004,7 +2004,7 @@ async fn set_provider_account(
         .get(1)
         .ok_or("用法: morphz provider account set ACCOUNT FILE")?;
     let account: config::AuthAccountConfig = read_toml_object(Path::new(file))?;
-    let path = config::managed_config_path()?;
+    let path = config::managed_model_config_path()?;
     let receipt = MorphzSdk::new(runtime.clone())
         .put_auth_account_config(&path, account_id, account)
         .await?;
@@ -2064,7 +2064,7 @@ async fn set_model_route(runtime: &MorphzRuntime, invocation: &Invocation) -> Re
         .get(1)
         .ok_or("用法: morphz model route set ROUTE FILE")?;
     let route: config::ModelRouteConfig = read_toml_object(Path::new(file))?;
-    let path = config::managed_config_path()?;
+    let path = config::managed_model_config_path()?;
     let receipt = MorphzSdk::new(runtime.clone())
         .put_model_route_config(&path, route_id, route)
         .await?;
@@ -2407,7 +2407,7 @@ fn use_model(app_config: &config::AppConfig, invocation: &Invocation) -> Result<
                 .map(|(route_id, _)| route_id.to_string())
         })
     {
-        let path = config::managed_config_path()?;
+        let path = config::managed_model_config_path()?;
         config::save_managed_inference_at(
             &path,
             None,
@@ -3910,6 +3910,7 @@ async fn run_once(
                 references: Vec::new(),
                 harness,
                 dispatch_mode: None,
+                model_alias: None,
             },
         )
         .await?;
@@ -4290,6 +4291,7 @@ async fn run_interactive(
                     // Console-only commands above do not consume it.
                     harness: initial_harness.take(),
                     dispatch_mode: None,
+                    model_alias: None,
                 },
             )) {
                 if let Ok(mut waiting) = waiting_for_reply.lock() {

@@ -367,7 +367,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::TerminalThreadMissingOutcome,
                 "thread",
                 &thread.id,
-                "terminal Thread 没有唯一 ThreadOutcome",
+                "terminal Thread does not have exactly one ThreadOutcome",
             ));
         }
         if thread.lifecycle == ThreadLifecycle::Open && outcome.is_some() {
@@ -376,7 +376,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::OpenThreadHasOutcome,
                 "thread",
                 &thread.id,
-                "open Thread 已存在终态 ThreadOutcome",
+                "open Thread already has a terminal ThreadOutcome",
             ));
         }
 
@@ -402,7 +402,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::ObjectivePrimaryExecutionOwnerMismatch,
                 "thread",
                 &thread.id,
-                "Objective 的 open 主执行线程不属于当前 active Objective generation",
+                "the open primary execution Thread does not belong to the active Objective generation",
             ));
             continue;
         }
@@ -440,7 +440,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::DuplicateObjectivePrimaryExecutionThread,
                 "thread",
                 &thread.id,
-                "同一 Objective generation 存在多个 open 主执行线程",
+                "an Objective generation has multiple open primary execution Threads",
             ));
         }
     }
@@ -458,7 +458,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::ActivationGenerationAheadOfThread,
                 "activation",
                 &activation.id,
-                "Activation generation 超过所属 Thread generation",
+                "Activation generation exceeds its owning Thread generation",
             ));
         }
         if thread.lifecycle.is_terminal()
@@ -470,7 +470,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::TerminalThreadHasLiveActivation,
                 "activation",
                 &activation.id,
-                "terminal Thread 的当前 generation 仍有非终态 Activation",
+                "the current generation of a terminal Thread still has a non-terminal Activation",
             ));
         }
     }
@@ -508,7 +508,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::GroupCountMismatch,
                 "thread_group",
                 &group.id,
-                "ThreadGroup 计数与成员权威行不一致",
+                "ThreadGroup counters are inconsistent with authoritative member rows",
             ));
         }
         if group.status.is_terminal()
@@ -521,7 +521,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::TerminalGroupHasPendingMember,
                 "thread_group",
                 &group.id,
-                "terminal ThreadGroup 仍有 required pending member",
+                "terminal ThreadGroup still has a required pending member",
             ));
         }
         if group.status == ThreadGroupStatus::Satisfied && group.barrier_event_id.is_none() {
@@ -530,7 +530,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::SatisfiedGroupMissingBarrier,
                 "thread_group",
                 &group.id,
-                "satisfied ThreadGroup 缺少原子提交的 barrier Event",
+                "satisfied ThreadGroup is missing its atomically committed barrier Event",
             ));
         }
     }
@@ -550,7 +550,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::PendingDependencyTargetsTerminalGroup,
                 "scheduler_dependency",
                 &dependency.id,
-                "pending dependency 指向已经终结的 ThreadGroup",
+                "pending dependency points to a terminal ThreadGroup",
             ));
         }
     }
@@ -575,7 +575,7 @@ pub fn audit_scheduler_invariants(
                 SchedulerInvariantCode::ObjectiveWaitDisagreesWithDependencies,
                 "objective",
                 &objective.id,
-                "迁移桥期间 wait_condition 与 scheduler_dependencies 不一致",
+                "wait_condition is inconsistent with scheduler_dependencies during migration",
             ));
         }
     }
@@ -790,6 +790,7 @@ mod tests {
             trigger_kind: "test".into(),
             parent_activation_id: None,
             root_turn_id: "root-1".into(),
+            model_alias: None,
             context_snapshot_version: None,
             status: ThreadActivationStatus::Running,
             claimed_by: Some("worker-1".into()),
