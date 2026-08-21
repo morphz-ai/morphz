@@ -238,7 +238,7 @@ syntax.
 
 ### 9.2 Program capability declaration
 
-An Entry Program MAY declare a Tool subset:
+An Entry Program declares a Tool subset:
 
 ```lisp
 (eval
@@ -247,9 +247,11 @@ An Entry Program MAY declare a Tool subset:
 ```
 
 Every declared Entry Program Tool MUST also appear in the Manifest Tool set. The program
-declaration narrows the Package requirement; it does not grant authority. Omitting a program-level
-Tool declaration means the language profile determines inheritance from the Manifest; it MUST NOT
-mean unrestricted Tool access.
+declaration narrows the Package requirement; it does not grant authority. A model-owned `(infer
+...)` Entry Program MUST contain an explicit `(requires (tools ...))`; `(requires (tools))` means
+pure inference and exposes no model-callable Tool. A Loader MUST reject omission for a model-owned
+entry. A Runtime-owned `(eval ...)` entry MAY omit the declaration only when the active Language
+Profile defines the effective subset; omission MUST NOT mean unrestricted Tool access.
 
 ### 9.3 Execution boundary
 

@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn typed_identity_ignores_spans_comments_and_dict_insertion_order() {
         let left = analyze(
-            r#"(eval (version "0.1") (dict (b 2) (a 1)))"#,
+            r#"(eval (dict (b 2) (a 1)))"#,
             &StaticProfile::default(),
             AnalysisLimits::default(),
         )
@@ -157,8 +157,7 @@ mod tests {
         let right = analyze(
             r#"
               ; provenance changes, meaning does not
-              (eval (version "0.1")
-                (dict (a 1) (b 2)))
+              (eval (dict (a 1) (b 2)))
             "#,
             &StaticProfile::default(),
             AnalysisLimits::default(),
@@ -171,13 +170,13 @@ mod tests {
     #[test]
     fn typed_identity_preserves_parallel_source_order() {
         let left = analyze(
-            r#"(eval (version "0.1") (par (branch a 1) (branch b 2)))"#,
+            r#"(eval (par (branch a 1) (branch b 2)))"#,
             &StaticProfile::default(),
             AnalysisLimits::default(),
         )
         .unwrap();
         let right = analyze(
-            r#"(eval (version "0.1") (par (branch b 2) (branch a 1)))"#,
+            r#"(eval (par (branch b 2) (branch a 1)))"#,
             &StaticProfile::default(),
             AnalysisLimits::default(),
         )

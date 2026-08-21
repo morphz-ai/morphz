@@ -13117,7 +13117,10 @@ mod tests {
                   (title "Discovery Test")
                   (capabilities (tools read)))
                 (contract (identity "discovery-contract"))
-                (infer (task "complete the current evaluation"))
+                (infer
+                  (requires (tools))
+                  (task "complete the current evaluation")
+                  (returns String))
             "#,
         )
         .unwrap();

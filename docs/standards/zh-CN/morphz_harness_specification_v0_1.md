@@ -216,6 +216,11 @@ Runtime-owned 入口可以包含确定性顺序、绑定、分支、有界映射
 Model-owned 入口将步骤选择交给模型。它仍必须使用 Runtime 中介的 Tool、Context、权限、
 预算与 Delivery 操作。模型持有 Evaluation Loop，并不代表它持有 Runtime Control Loop。
 
+Model-owned Entry Program 必须显式声明 `(requires (tools ...))`。声明集合与 Package、
+Principal、部署及 Runtime Policy 求交后，构成该 Evaluation 对模型可见的完整 Tool 上界。
+`(requires (tools))` 表示不向模型提供可调用证据 Tool 的纯推理。省略该声明必须被拒绝，
+不得解释为继承或不受限制的访问。
+
 ### 6.4 嵌套推理
 
 Runtime-owned 程序可以创建有界子推理。子推理必须具有显式因果身份，其有效能力范围不得
@@ -299,12 +304,13 @@ Native Code 加载进 Runtime 进程。Verifier 结果必须记录检查了什�
 
 ## 11. 兼容性与版本
 
-Harness 规范版本、Package 版本、源语言版本和 Runtime 版本相互独立。
+Harness 规范版本、Package 版本、Yao 规范/IR 的带外修订和 Runtime 版本相互独立。Yao 源码
+本身没有内嵌版本声明。
 
 - Package 版本标识发布者声明的 Harness 演进；
 - 内容哈希标识精确 Package 内容；
 - Harness 规范版本标识可移植语义；
-- 源语言或 IR 版本标识解析或 lowering 行为。
+- Yao 规范或持久化 IR 修订标识解析或 Lowering 行为，但不成为源码 Form。
 
 实现不得仅从语义版本推断内容身份。不兼容 Package 必须在 Entry Program 产生副作用前失败。
 

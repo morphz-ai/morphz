@@ -14,7 +14,7 @@
 不是一致性证书，也不能替代规范文本。
 
 测试边界不只覆盖成功示例，还覆盖无效和对抗性源码、静态权限拒绝、确定性身份、序列化与
-恢复、部分并行完成、失败聚合、伪造 Host 值、数据库迁移和旧语义兼容。
+恢复、部分并行完成、失败聚合、伪造 Host 值、数据库迁移和 Legacy 源码拒绝。
 
 ## 2. 自动化证据
 
@@ -26,33 +26,43 @@
 | 命名 Record/Union、穷尽 `match`、集合、`Option`、`Result`、`Ref`、`Program` | `yao::sema::tests`、`yao::eval::tests` | 通过 |
 | 静态 Effect 推导、Effect 上界、Tool 范围、Host Effect、Effect Normal Form | `yao::sema::tests`、`sexpr_eval::tests` | 通过 |
 | 纯求值、受检 Decode、溢出/失败路径、分支作用域和确定性 `par` 顺序 | `yao::eval::tests`、`sexpr_eval::tests` | 通过 |
-| 显式 typed-v0.1 准入与旧源码兼容 | `explicit_root_version_is_the_only_typed_compatibility_boundary` 和旧求值器测试集 | 通过 |
+| 唯一无版本 Typed 源码语言并拒绝 `(version ...)` | `typed_source_is_the_only_public_source_language_and_rejects_version_forms` 与仅用于迁移的 Legacy Fixture | 通过 |
+| 精确类型名，以及拒绝历史小写 `text` / `json` 别名 | `rejects_historical_lowercase_type_aliases`、`rejects_unknown_and_recursive_named_types` | 通过 |
+| 唯一共享的模型可见 Yao Language Card 及大小预算 | `language_card_is_parseable_bounded_and_unversioned`、Context Protocol 与 `eval` Tool 契约测试 | 通过 |
 | 类型化 Infer 请求/响应、Continuation 序列化与精确恢复 | `sexpr_eval::tests`、`plan_execution::tests` | 通过 |
+| 持久 Infer 默认从空 Tool 集合开始，只能使用节点显式声明的更窄集合 | `plan_infer_tool_scope_never_inherits_parent_tools_implicitly`、`infer_may_gather_evidence_but_is_never_offered_eval`、`plan_infer_handoff` | 通过 |
 | 持久 `par` 子计划、分支隔离、全终态 Barrier、有序 Join、聚合失败与重启 | `sexpr_eval` 和 `plan_execution` 中的 `typed_par_*` 测试 | 通过 |
-| Program Value 准入、规范 Hash、Effect/输出上界、调用者局部变量隔离、持久子计划与共享深度预算 | `program_*`、`generated_program_*`、`nested_program_*` 测试 | 通过 |
+| Program Value 精确对象 Transport、准入、规范 Hash、Effect/输出上界、调用者局部变量隔离、持久子计划与共享深度预算 | `program_admission_requires_object_transport_*`、`program_*`、`generated_program_*`、`nested_program_*` 测试 | 通过 |
+| Typed Harness 入口、保留引号的规范化、模型入口显式 Tool 上界与真实 Function Calling 裁剪 | `typed_program_string_identity_survives_package_normalization`、`model_owned_entry_requires_an_explicit_tool_upper_bound`、Harness 与 Orchestrator 测试 | 通过 |
 | Runtime 环境注入与类型化可选字段投影 | `runtime_context_is_injected_*`、`host_view_normalizes_*` | 通过 |
 | Host Receipt 重放、Candidate 封闭性、引用不可伪造、同 Context Evidence 与 Objective 权限 | `plan_execution::tests` 中的 Host 测试和 `yao::eval::tests` 中的 Candidate 测试 | 通过 |
 | SQLite Plan Wait 迁移、索引、终态 Fence Trigger 与重启生命周期 | SQLite 迁移测试及 `memory::sqlite::plan_execution::tests` | 通过 |
-| Morphz 全仓回归 | `cargo test --workspace` | 通过 |
+| 生产 Runtime、CLI、持久 Handoff、Store 一致性、评测包与向量扩展回归 | 下列 Package 与集成门禁 | 通过 |
 
 ## 3. 可复现门禁
 
 2026-08-21 的验证运行使用了：
 
 ```text
-cargo test -p yao-lang
-cargo test -p morphz sexpr_eval::tests --lib
-cargo test -p morphz plan_execution::tests --lib
-cargo test -p morphz plan_execution_program_wait_migration_preserves_rows_indexes_and_fence_trigger --lib
-cargo clippy -p yao-lang --all-targets -- -D warnings
-cargo clippy -p morphz --all-targets -- -D warnings
-cargo clippy -p morphz-evals --all-targets -- -D warnings
-cargo test --workspace
+cargo test -p yao-lang --offline
+cargo test -p morphz --lib --offline -- --test-threads=1
+cargo test -p morphz --bin morphz --offline -- --test-threads=1
+cargo test -p morphz --test attempt_loop --offline -- --test-threads=1
+cargo test -p morphz --test cli_contract --offline -- --test-threads=1
+cargo test -p morphz --test objective_group_handoff --offline -- --test-threads=1
+cargo test -p morphz --test plan_infer_handoff --offline -- --test-threads=1
+cargo test -p morphz --test runtime_stability --offline -- --test-threads=1
+cargo test -p morphz --test runtime_store_conformance --offline -- --test-threads=1
+cargo test -p morphz --test terminal_handoff --offline -- --test-threads=1
+cargo test -p morphz-evals --lib --offline -- --test-threads=1
+cargo test -p morphz-memory-vector --offline -- --test-threads=1
+cargo clippy --workspace --all-targets --offline -- -D warnings
 ```
 
-语言 crate 完成 33 项测试；Morphz 求值器和 Plan 聚焦测试分别完成 44 项与 17 项；完整
-workspace 完成 1,172 项测试、无失败。另有 6 项测试因明确要求真实外部登录或人工终端检查，
-保持其原有 `ignored` 声明。
+语言 crate 完成 36 项测试；Morphz 求值器、Plan 和 Harness 聚焦测试分别完成 44、17 和
+25 项；上述门禁共完成 1,147 项测试、无失败。另有 6 项测试因明确要求真实外部登录或人工
+终端检查，保持其原有 `ignored` 声明。共享 Yao Language Card 同时通过 4,800 字符的硬性
+产物上限和 Context Encoding 中 1,200 估算 Token 的门禁。
 
 绑定本地 Mock Server 或验证 Morphz 自身 macOS Sandbox 的测试必须在受限父 Sandbox 之外
 运行。在嵌套 Sandbox 内执行时，操作系统会在测试对象运行前以 `Operation not permitted`

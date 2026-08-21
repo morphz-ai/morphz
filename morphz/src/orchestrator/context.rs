@@ -7564,6 +7564,8 @@ fn render_usage(usage: &ContextUsage) -> SExpr {
 }
 
 fn render_protocol() -> SExpr {
+    let yao_language_card = crate::sexpr::parse(crate::yao::LANGUAGE_CARD)
+        .expect("canonical Yao Language Card must remain one valid S-expression");
     let operations = CONTEXT_OPERATIONS
         .iter()
         .map(|operation| {
@@ -7582,6 +7584,7 @@ fn render_protocol() -> SExpr {
         "protocol",
         vec![
             pair("version", atom(CONTEXT_PROTOCOL_VERSION.to_string())),
+            yao_language_card,
             list(
                 "layout-contract",
                 vec![
@@ -10062,6 +10065,10 @@ mod tests {
         assert!(!contains_cjk(&protocol), "protocol: {protocol}");
         assert!(protocol.contains("event-sequence"));
         assert!(protocol.contains("persisted Event"));
+        assert_eq!(protocol.matches("(language-card").count(), 1);
+        assert!(protocol.contains("source has no version declaration"));
+        assert!(!protocol.contains("(version \"0.1\")"));
+        assert!(estimate_text_tokens(crate::yao::LANGUAGE_CARD) <= 1_200);
         let context_tx = context_tx_tool_description();
         assert!(!contains_cjk(&context_tx), "context_tx: {context_tx}");
         assert!(context_tx.contains("full Event IDs before commit"));

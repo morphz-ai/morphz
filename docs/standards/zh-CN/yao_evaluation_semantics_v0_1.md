@@ -133,15 +133,15 @@ Budget 具有层级。父 Program 为嵌套 inference、并行分支与 Program 
 到 Agent/Context、父 Evaluation/Plan、可选 Objective、Source Artifact/Program Hash、
 Source Span/Generated Provenance、Principal/Capability Decision 以及稳定因果父级与 Sequence。
 
-## 13. 兼容执行
+## 13. 持久化 IR 迁移
 
-历史未类型化 Yao 编译成带 Legacy 标记的 HIR，使用 `String` Literal、`Json` Tool Result、
-显式 Legacy Truthiness 与原有 Map 上限。迁移期间历史 Plan IR 必须可读；新的 typed construct
-始终使用本规范。
+所有新准入源码统一使用 Typed Yao 语义。Runtime 可在有界迁移期内读取已持久化 Legacy
+Plan IR，但不得重新解析 Legacy 源码，也不得通过 `eval`、Harness 加载、Program Value 准入
+或任何模型路径暴露该读取器。迁移是存储问题，不能形成第二种源码语言。
 
 ## 14. 一致性测试矩阵
 
 参考套件必须包含 Golden Parser/Diagnostic/Canonical Fixture、表驱动类型与 Effect 测试、
 纯求值属性测试、Mock Tool/Model Failure、所有 Machine Frame 的序列化恢复、SQLite 与
-PostgreSQL Crash Window、Parser/Decoder/Canonicalizer/Program Admission Fuzz、Legacy Harness
-Corpus、Resource/Adversarial Output，以及 Worker 替换前后观察等价的 E2E 测试。
+PostgreSQL Crash Window、Parser/Decoder/Canonicalizer/Program Admission Fuzz、Legacy 源码拒绝
+与持久化 IR 迁移 Fixture、Resource/Adversarial Output，以及 Worker 替换前后观察等价的 E2E 测试。

@@ -6,6 +6,7 @@ use crate::canonical::{canonical_source, program_hash};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, SourceSpan};
 use crate::syntax::{parse_one, AtomKind, Expr, ParseLimits};
 use crate::types::{Effect, EffectSet, Type};
+use crate::TYPED_IR_SCHEMA_VERSION;
 
 pub const DEFAULT_MAX_EXPRESSION_DEPTH: usize = 32;
 pub const DEFAULT_MAX_HIR_NODES: usize = 4_096;
@@ -398,25 +399,12 @@ impl<'a> Analyzer<'a> {
         };
 
         let mut cursor = 1;
-        let mut language_version = "0.1".to_string();
         if is_form(items.get(cursor), "version") {
-            let declaration = expect_list(&items[cursor], "version declaration must be a list")?;
-            let [_, value] = declaration else {
-                return Err(diag(
-                    DiagnosticCode::InvalidType,
-                    "(version ...) expects exactly one string",
-                    items[cursor].span(),
-                ));
-            };
-            language_version = expect_string(value, "language version must be a string")?.into();
-            if language_version != "0.1" {
-                return Err(diag(
-                    DiagnosticCode::InvalidType,
-                    format!("unsupported Yao language version '{language_version}'"),
-                    value.span(),
-                ));
-            }
-            cursor += 1;
+            return Err(diag(
+                DiagnosticCode::InvalidType,
+                "Yao source has no in-band version declaration; remove (version ...)",
+                items[cursor].span(),
+            ));
         }
         if is_form(items.get(cursor), "requires") {
             self.requirements = self.parse_requirements(&items[cursor])?;
@@ -464,7 +452,7 @@ impl<'a> Analyzer<'a> {
             }
         }
         let mut program = Program {
-            language_version,
+            language_version: TYPED_IR_SCHEMA_VERSION.to_string(),
             owner,
             requirements: self.requirements,
             types: self.definitions,
@@ -1652,6 +1640,7 @@ impl<'a> Analyzer<'a> {
                 span,
             ));
         };
+        self.validate_type_names(&result, span)?;
         let named = self.analyze_named_arguments(&data, scope, depth + 1)?;
         require_pure_all(
             named.iter().flat_map(|argument| argument.values.iter()),
@@ -2584,9 +2573,9 @@ impl<'a> Analyzer<'a> {
                 "Bool" => Type::Bool,
                 "Int" => Type::Int,
                 "Float" => Type::Float,
-                "String" | "text" => Type::String,
+                "String" => Type::String,
                 "Bytes" => Type::Bytes,
-                "Json" | "json" => Type::Json,
+                "Json" => Type::Json,
                 "EvidenceCandidate" => Type::EvidenceCandidate,
                 "OutcomeCandidate" => Type::OutcomeCandidate,
                 other if is_identifier(other) => Type::Named(other.to_string()),
@@ -2771,17 +2760,6 @@ fn expect_symbol<'a>(expression: &'a Expr, message: &str) -> Result<&'a str, Dia
     expression
         .as_symbol()
         .ok_or_else(|| diag(DiagnosticCode::UnknownName, message, expression.span()))
-}
-
-fn expect_string<'a>(expression: &'a Expr, message: &str) -> Result<&'a str, Diagnostic> {
-    match expression {
-        Expr::Atom(atom) if atom.kind == AtomKind::String => Ok(&atom.value),
-        _ => Err(diag(
-            DiagnosticCode::TypeMismatch,
-            message,
-            expression.span(),
-        )),
-    }
 }
 
 fn atom_text<'a>(expression: &'a Expr, message: &str) -> Result<&'a str, Diagnostic> {
@@ -3103,7 +3081,7 @@ mod tests {
     }
 
     fn typed(body: &str) -> String {
-        format!("(eval (version \"0.1\") {body})")
+        format!("(eval {body})")
     }
 
     #[test]
@@ -3178,7 +3156,6 @@ mod tests {
 
         let narrowed = analyze(
             r#"(eval
-                 (version "0.1")
                  (requires (objects Context))
                  (host.view $runtime.objective (returns Json)))"#,
             &profile(),
@@ -3233,7 +3210,7 @@ mod tests {
             assert!(analyze(&typed(source), &profile(), AnalysisLimits::default()).is_err());
         }
         let source = r#"
-          (eval (version "0.1")
+          (eval
             (requires (tools read))
             (some (call read (path "x"))))
         "#;
@@ -3257,7 +3234,7 @@ mod tests {
         }
 
         let nested = r#"
-          (eval (version "0.1")
+          (eval
             (types (record Forged (objective (Ref Objective))))
             (decode Forged (dict (objective nil))))
         "#;
@@ -3284,10 +3261,31 @@ mod tests {
     }
 
     #[test]
+    fn rejects_in_band_source_version_declarations() {
+        let error = analyze(
+            r#"(eval (version "0.1") (add 20 22))"#,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::InvalidType);
+        assert!(error.message.contains("no in-band version declaration"));
+    }
+
+    #[test]
+    fn rejects_historical_lowercase_type_aliases() {
+        for alias in ["text", "json"] {
+            let source = format!("(infer (requires (tools)) (task \"decide\") (returns {alias}))");
+            let error = analyze(&source, &profile(), AnalysisLimits::default()).unwrap_err();
+            assert_eq!(error.code, DiagnosticCode::InvalidType);
+            assert!(error.message.contains("unknown type"), "{error}");
+        }
+    }
+
+    #[test]
     fn named_union_match_is_exhaustive_and_typed() {
         let source = r#"
           (eval
-            (version "0.1")
             (types
               (union Decision
                 (accept (reason String) (confidence Float))
@@ -3311,19 +3309,16 @@ mod tests {
 
     #[test]
     fn rejects_unknown_and_recursive_named_types() {
-        let unknown = typed("(seq 1)").replace(
-            "(version \"0.1\")",
-            "(version \"0.1\") (types (record A (value Missing)))",
-        );
+        let unknown = "(eval (types (record A (value Missing))) (seq 1))";
         assert_eq!(
-            analyze(&unknown, &profile(), AnalysisLimits::default())
+            analyze(unknown, &profile(), AnalysisLimits::default())
                 .unwrap_err()
                 .code,
             DiagnosticCode::InvalidType
         );
 
         let recursive = r#"
-          (eval (version "0.1")
+          (eval
             (types (record A (next (Option B))) (record B (next A)))
             nil)
         "#;
@@ -3339,7 +3334,6 @@ mod tests {
     fn statically_infers_tool_infer_and_host_effects() {
         let source = r#"
           (eval
-            (version "0.1")
             (requires
               (tools read search)
               (effects infer (tool read) (tool search) (host objective.report)))
@@ -3365,7 +3359,6 @@ mod tests {
     fn rejects_effect_escape_before_execution() {
         let source = r#"
           (eval
-            (version "0.1")
             (requires (tools read) (effects (tool read)))
             (infer (task "judge") (returns String)))
         "#;
@@ -3377,7 +3370,6 @@ mod tests {
     fn parallel_branches_are_isolated_named_and_effect_typed() {
         let source = r#"
           (eval
-            (version "0.1")
             (requires (tools read))
             (par
               (branch local (seq (bind private 1) (add $private 1)))
@@ -3404,7 +3396,6 @@ mod tests {
     fn program_values_keep_output_and_effect_upper_bound() {
         let source = r#"
           (eval
-            (version "0.1")
             (requires (tools read) (effects infer (program (tool read))))
             (seq
               (bind plan

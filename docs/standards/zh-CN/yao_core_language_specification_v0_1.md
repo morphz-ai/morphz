@@ -63,7 +63,6 @@ Runtime Control Loop 始终由 Runtime 掌握。
 声明必须出现在正文前，并可以按顺序包含：
 
 ```lisp
-(version "0.1")
 (requires
   (tools TOOL...)
   (effects EFFECT...)
@@ -71,11 +70,16 @@ Runtime Control Loop 始终由 Runtime 掌握。
 (types TYPE-DECLARATION...)
 ```
 
-Typed v0.1 源码必须以 `(version "0.1")` 作为第一个声明。Morphz 中省略该声明的源码进入
-Legacy Compatibility Profile；历史 Tool/Inference 的 Argument Name 可能与新 Core Operator
-重名，依据嵌套名称猜测版本会改变已有合法程序的含义。每种声明最多出现一次，未知声明
-必须被拒绝。为兼容现有程序，可单独使用 `(requires (tools ...))`。声明的 Tool 是静态
-`call` 与嵌套 `infer` 证据工具的闭合上界。
+Yao 源码没有内嵌语言版本声明。`(version ...)` 不是 Core Form，必须被拒绝。规范版本、
+Harness Package 版本和实现内部持久化 Typed IR Schema 版本是彼此独立的元数据边界，程序
+不能从源码内部改变其语义。每种声明最多出现一次，未知声明必须被拒绝。可单独使用
+`(requires (tools ...))`；声明的 Tool 是静态 `call` 与嵌套 `infer` 证据工具的闭合上界。
+
+### 4.1 模型可见 Language Card
+
+承载模型的 Profile 必须发布一份由同一语言实现产生的紧凑 Yao Language Card，并把它放在
+稳定的共享 Context 前缀中。Tool Description 与 Harness 文本必须引用该 Card，不得重新发布
+Operator Table 或另一套语法。Language Card 必须可解析、在源码之外演进，并受显式大小预算保护。
 
 ## 5. 类型
 
@@ -236,7 +240,8 @@ Schema；Effect 为 `(tool TOOL)`。
 
 嵌套 typed inference 必须提供 `task` 与 `returns`；`tools` 可选且只能收窄证据工具。
 Runtime 必须先解码、校验终值，再允许其进入确定性数据流。失败解码属于 inference 分类
-失败。兼容语法 `(returns text)` 等价于 `String`，`(returns json)` 等价于 `Json`。
+失败。类型名区分大小写；历史小写别名 `text`、`json` 不属于 Core 类型，必须拒绝，不得
+静默归一化。
 
 ## 10. 结构化并行
 
@@ -266,7 +271,13 @@ v0.1 不包含 detached execution、race、quorum 或隐式共享状态。
   (input $request))
 ```
 
-Program Value 的传输形态是候选 Yao 源码，但候选源码不是普通 `String`，也不得交给字符串
+Program Value 的模型传输形态必须恰好是只含一个字段的 JSON 对象：
+
+```json
+{"source":"(eval ...)"}
+```
+
+对象不得包含额外字段；裸源码字符串不是 Program Value，必须拒绝。候选源码不得交给字符串
 eval。Runtime 构造 `Program<T,E>` 前必须进行带 Span 解析、名字与类型检查、Effect 子集
 检查、资源检查、规范化、Hash/Provenance 生成及先持久化后执行。
 
@@ -291,15 +302,16 @@ Runtime Profile 必须公布 Source Byte、语法深度、Typed IR 节点、Reco
 元素、Tool/Inference Effect、并行分支、Program Value 嵌套和总子工作量的有限上限。
 静态超限在准入时拒绝，动态超限产生分类 Resource Failure。
 
-## 14. 兼容性
+## 14. 兼容性与迁移
 
-Morphz 参考实现必须继续接受原 v0 子集：`seq`、`bind`、值引用、`if`、`fallback`、有限
-串行 `map`、`call` 及返回 `text/json` 的 `infer`。兼容语法在准入时获得 typed v0.1
-语义。历史 truthiness 只存在于显式 legacy profile。
+Morphz 参考实现只准入一种源码语言：本规范定义的 Typed Yao。历史未类型化源码与源码内
+`(version ...)` 声明必须被拒绝，不存在源码级 Legacy Profile。部署可在有界迁移期内保留
+已持久化 Legacy Plan IR 的读取器；该存储读取器不得形成可接收 Legacy 源码的 Parser、Tool、
+Harness 或模型路径。
 
 ## 15. 一致性要求
 
 Core v0.1 实现必须发布测试，覆盖解析与 Span、规范编码、所有内置类型与算子、名字解析、
 不可变性、作用域、穷尽性、类型拒绝、Effect 推导、能力越界、typed inference、`par`
-隔离与恢复、Program Value 校验与安全、资源边界及历史 Harness Corpus。每个规范样例在
+隔离与恢复、Program Value 校验与安全、资源边界、Legacy 源码拒绝及持久化 IR 迁移 Fixture。每个规范样例在
 序列化/重启前后必须得到观察等价结果。

@@ -2408,6 +2408,10 @@ fn infer_request_event(
     let result_instruction = match result {
         crate::sexpr_eval::InferResultKind::Text => String::new(),
         crate::sexpr_eval::InferResultKind::Json => "本节点声明 returns=json；最终正文必须只包含一个完整、合法的 JSON 值，不要使用 Markdown 代码围栏或附加说明。".to_string(),
+        crate::sexpr_eval::InferResultKind::Yao {
+            ty: crate::yao::Type::Program { .. },
+            ..
+        } => "本节点要求返回一个 Yao Program Value 候选。最终正文必须只包含一个合法 JSON 对象，格式为 {\"source\":\"(eval ...)\"}；source 必须遵循 Context Encoding 中唯一的 Yao Language Card，不得包含 (version ...)；不要使用 Markdown 代码围栏、解释或额外字段。Runtime 将执行解析、类型检查、effect 上限校验、规范化、哈希与持久化，禁止直接执行源码字符串。".to_string(),
         crate::sexpr_eval::InferResultKind::Yao { ty, .. } => format!(
             "本节点声明 typed Yao 返回类型 {ty:?}；最终正文必须只包含该值的合法 JSON transport，不要使用 Markdown 代码围栏或附加说明。"
         ),
@@ -2454,7 +2458,7 @@ fn infer_request_event(
                 .map(|items| {
                     JsonValue::Array(items.iter().cloned().map(JsonValue::String).collect())
                 })
-                .unwrap_or(JsonValue::Null),
+                .unwrap_or_else(|| JsonValue::Array(Vec::new())),
         ),
         (
             "result_kind".to_string(),
@@ -2869,7 +2873,6 @@ mod tests {
         let registry = Arc::new(Registry::new());
         let program = validate(
             r#"(eval
-                 (version "0.1")
                  (host.view $runtime.context (returns Json)))"#,
             &registry,
             &AllowList::new(std::iter::empty::<&str>()),
@@ -2946,7 +2949,6 @@ mod tests {
         let registry = Arc::new(Registry::new());
         let program = validate(
             r#"(eval
-                 (version "0.1")
                  (types
                    (record ContextProjection
                      (id String)
@@ -2996,7 +2998,6 @@ mod tests {
         let registry = Arc::new(Registry::new());
         let program = validate(
             r#"(eval
-                 (version "0.1")
                  (seq
                    (bind checked
                      (evidence.commit
@@ -3073,7 +3074,7 @@ mod tests {
         );
         let registry = Arc::new(Registry::new());
         let program = validate(
-            r#"(eval (version "0.1") (evidence.commit
+            r#"(eval (evidence.commit
                  (evidence (kind "test-result") (value true) (refs))))"#,
             &registry,
             &AllowList::new(std::iter::empty::<&str>()),
@@ -3543,7 +3544,7 @@ mod tests {
                    (bind judgement
                      (infer
                        (task "判断证据是否充分")
-                       (returns json)
+                       (returns Json)
                        (evidence "A")))
                    $judgement))"#,
             &registry,
@@ -3587,7 +3588,7 @@ mod tests {
             Some(PlanExecutionWaitKind::Evaluation)
         );
         assert_eq!(waiting.pending_id.as_deref(), Some(activation_id.as_str()));
-        assert_eq!(request_event.payload["result_kind"], "json");
+        assert_eq!(request_event.payload["result_kind"], "yao");
 
         // The durable infer hand-off intentionally precedes asynchronous
         // Scheduler materialization.  A reconciler observing this crash
@@ -3832,11 +3833,12 @@ mod tests {
         let program = validate(
             r#"(eval
                  (requires (tools read))
+                 (types (record ReadDecision (path String)))
                  (seq
                    (bind decision
                      (infer
                        (task "返回后续 read 的结构化决策")
-                       (returns json)))
+                       (returns ReadDecision)))
                    (call read (path $decision.path))))"#,
             &registry,
             &AllowList::new(["read"]),
@@ -4034,7 +4036,6 @@ mod tests {
         registry.register(Arc::new(DefinitionOnlyTool));
         let program = validate(
             r#"(eval
-                 (version "0.1")
                  (requires (tools read))
                  (par
                    (branch alpha (call read (path "a")))
@@ -4267,7 +4268,6 @@ mod tests {
         let registry = Arc::new(Registry::new());
         let program = validate(
             r#"(eval
-                 (version "0.1")
                  (par
                    (branch broken
                      (seq (host.view $runtime.context (returns Json)) (div 1 0)))
@@ -4383,7 +4383,6 @@ mod tests {
         let registry = Arc::new(Registry::new());
         let parent_program = validate(
             r#"(eval
-                 (version "0.1")
                  (seq
                    (bind generated
                      (infer
@@ -4412,7 +4411,7 @@ mod tests {
         let admitted = admit_program_value_candidate(
             &output,
             &effects,
-            JsonValue::String(r#"(eval (version "0.1") (add 20 22))"#.to_string()),
+            serde_json::json!({"source": r#"(eval (add 20 22))"#}),
             &registry,
             ProgramValueProvenance {
                 parent_plan_execution_id: "durable-parent".into(),
@@ -4451,6 +4450,13 @@ mod tests {
             })
             .await
             .unwrap();
+        let request_event = infer_request_event(&parent, &infer).unwrap();
+        assert_eq!(request_event.payload["tools"], serde_json::json!([]));
+        let instruction = request_event.payload["text"].as_str().unwrap();
+        assert!(instruction.contains("{\"source\":\"(eval ...)\"}"));
+        assert!(instruction.contains("唯一的 Yao Language Card"));
+        assert!(instruction.contains("不得包含 (version ...)"));
+        assert!(instruction.contains("禁止直接执行源码字符串"));
         let runtime_store: Arc<dyn RuntimeStore> = store.clone();
         let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));
         let (waiting_parent, child) = match coordinator

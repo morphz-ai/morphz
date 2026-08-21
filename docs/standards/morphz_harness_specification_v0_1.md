@@ -233,6 +233,12 @@ A model-owned entry delegates step selection to the model. It MUST still use Run
 Context, permission, budget, and delivery operations. Model ownership of the Evaluation Loop does
 not grant ownership of the Runtime Control Loop.
 
+A model-owned Entry Program MUST explicitly declare `(requires (tools ...))`. The declared set is
+the complete model-visible Tool upper bound for that Evaluation after intersection with Package,
+Principal, deployment, and Runtime policy. `(requires (tools))` declares pure inference with no
+model-callable evidence Tool. Omission MUST be rejected rather than interpreted as inheritance or
+unrestricted access.
+
 ### 6.4 Nested inference
 
 A Runtime-owned program MAY create a bounded child inference. The child MUST have explicit causal
@@ -326,13 +332,14 @@ external effects unless all repeated effects are proven idempotent.
 
 ## 11. Compatibility and versioning
 
-Harness specification versions, Package versions, source-language versions, and Runtime versions
-are distinct.
+Harness specification versions, Package versions, the out-of-band Yao specification/IR revisions,
+and Runtime versions are distinct. Yao source itself has no in-band version declaration.
 
 - A Package version identifies publisher-declared Harness evolution.
 - A content hash identifies exact Package content.
 - A Harness specification version identifies portable semantics.
-- A source-language or IR version identifies parsing or lowering behavior.
+- A Yao specification or persisted IR revision identifies parsing or lowering behavior without
+  becoming a source form.
 
 An implementation MUST NOT infer content identity from a semantic version alone. An incompatible
 Package MUST fail before its Entry Program produces an effect.

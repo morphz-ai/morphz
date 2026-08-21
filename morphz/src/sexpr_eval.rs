@@ -1,16 +1,14 @@
-//! Deterministic evaluator for Agent-submitted S-expression programs.
+//! Morphz admission and durable execution bridge for typed Yao programs.
 //!
-//! The same operator names the model is given in `sexpr_vm_contract` are
-//! implemented here a second time, in code. A model that evaluates `seq` in its
-//! head and a Runtime that evaluates `seq` over real tools are two
-//! implementations of one semantics; this module is the deterministic one.
+//! The model-visible language surface is defined once by
+//! [`crate::yao::LANGUAGE_CARD`]. This module enforces that surface and lowers
+//! admitted source to executable Plan IR; it does not publish another syntax
+//! description.
 //!
-//! The language is deliberately *total*: `seq`, `call`, `bind`, `if` and `map`
-//! cannot express unbounded recursion, so every accepted program terminates.
-//! That is what lets [`validate`] reject a program before a single side effect
-//! runs. Adding a conditional loop would trade this for runtime fuel
-//! accounting, which is why iteration here only ranges over a collection that
-//! some earlier step already produced.
+//! Core control is deliberately bounded: there is no unbounded loop or source
+//! recursion, collection traversal and structured parallelism have finite
+//! ceilings, and Program Value nesting shares a non-renewable depth budget.
+//! This lets [`validate`] reject statically invalid work before any side effect.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -19,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
 use crate::sexpr::SExpr;
 use crate::tool::Registry;
 
@@ -50,23 +49,18 @@ pub const MAX_PROGRAM_VALUE_NESTING: usize = 4;
 /// [`MAX_PROGRAM_INFERS`]. Without it one question could spend a whole turn.
 pub const MAX_INFER_ROUNDS: usize = 4;
 
-/// One operator's self-description: name, surface form, and meaning.
-///
-/// Every surface that tells the model what it may write is generated from this
-/// table, so the account it reads cannot drift from what the validator accepts.
-/// A name alone leaves the model guessing at the form, which is exactly the
-/// class of mistake the first evaluation produced.
-pub struct OperatorSpec {
-    pub name: &'static str,
-    pub form: &'static str,
-    pub description: &'static str,
-    /// Where this operator can be evaluated. One language, two evaluators:
-    /// an operator missing on one side is annotated, never redefined.
-    pub available: Availability,
+/// Internal availability metadata retained for persisted Plan IR migration
+/// tests and evaluator error messages. It is not a language-description
+/// surface; syntax and meaning belong to the shared Yao Language Card.
+#[cfg(test)]
+struct OperatorSpec {
+    name: &'static str,
+    available: Availability,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Availability {
+#[cfg(test)]
+enum Availability {
     /// Both the LLM's own evaluation and a submitted program.
     Both,
     /// Only inside a program submitted for deterministic evaluation.
@@ -75,67 +69,48 @@ pub enum Availability {
     LlmOnly,
 }
 
-/// The single operator table. Shared operators carry exactly the form the
-/// production contract (`sexpr_vm_contract`) teaches; a consistency test locks
-/// the two together so this table cannot drift into a second dialect.
-pub const OPERATORS: [OperatorSpec; 9] = [
+#[cfg(test)]
+const OPERATORS: [OperatorSpec; 9] = [
     OperatorSpec {
         name: "seq",
-        form: "(seq step...)",
-        description: "Evaluate each step from left to right and return the last step's value. To return a binding, place $name as the final step.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "bind",
-        form: "(bind name expression)",
-        description: "Fully evaluate expression, then bind it to name. Define name without $, reference it as $name, and access fields as $name.field. Bindings cannot be overwritten.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "call",
-        form: "(call tool argument...)",
-        description: "Call a tool. Arguments are standard JSON tool parameters written as (parameter value...) lists, for example (call read (path \"src/a.rs\")). Multiple values for one parameter form an array. Values must be literals or $references; the Runtime converts types according to the tool schema.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "if",
-        form: "(if condition when-true when-false)",
-        description: "condition must be a literal or $reference. Evaluate only the selected branch; the unselected branch makes no tool calls. Branch-local bindings do not escape the branch.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "map",
-        form: "(map $collection element body)",
-        description: "Evaluate body for each item in $collection and return an array. $collection must be a bound array. Define element without $ and reference it as $element inside body.",
         available: Availability::RuntimeEval,
     },
     OperatorSpec {
         name: "infer",
-        form: "(infer (task \"what to determine\") (tools TOOL...) (returns text|json) argument...)",
-        description: "Delegate a judgment to the nondeterministic evaluator (yourself). (task ...) is required; other (parameter value) entries are evidence. Optional (tools ...) narrows tools for this node, and empty (tools) means pure inference. Optional (returns ...) defaults to text. With returns=json, the final content must be one complete JSON value; the Runtime binds it only after successful parsing.",
         available: Availability::RuntimeEval,
     },
     OperatorSpec {
         name: "reply",
-        form: "(reply content)",
-        description: "Deliver a user-visible reply. This exists only in your own evaluation; a program submitted to the Runtime produces a value, not a reply.",
         available: Availability::LlmOnly,
     },
     OperatorSpec {
         name: "fallback",
-        form: "(fallback primary backup)",
-        description: "Evaluate primary first and evaluate backup only when primary returns a classified failure. A successful primary prevents all backup calls. Bindings in either branch do not escape it.",
         available: Availability::Both,
     },
     OperatorSpec {
         name: "process",
-        form: "(process ...)",
-        description: "Define a named process. This exists only in your own evaluation.",
         available: Availability::LlmOnly,
     },
 ];
 
 /// Names by availability, derived from the one table.
+#[cfg(test)]
 fn names_with(available: Availability) -> Vec<&'static str> {
     OPERATORS
         .iter()
@@ -145,30 +120,13 @@ fn names_with(available: Availability) -> Vec<&'static str> {
 }
 
 /// Names the deterministic evaluator accepts, for error messages.
-pub fn evaluable_names() -> Vec<&'static str> {
+#[cfg(test)]
+fn evaluable_names() -> Vec<&'static str> {
     OPERATORS
         .iter()
         .filter(|spec| spec.available != Availability::LlmOnly)
         .map(|spec| spec.name)
         .collect()
-}
-
-/// Renders the operator table as the S-expression the model reads, matching
-/// how `sexpr_vm_contract` presents the operators it already knows.
-pub fn operator_contract() -> String {
-    let mut lines = Vec::new();
-    for spec in &OPERATORS {
-        if spec.available == Availability::LlmOnly {
-            continue;
-        }
-        lines.push(format!(
-            "    (operator {name}\n      (form {form})\n      (description {description:?}))",
-            name = spec.name,
-            form = spec.form,
-            description = spec.description,
-        ));
-    }
-    format!("  (operators\n{})", lines.join("\n"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +161,7 @@ fn err<T>(message: impl Into<String>) -> Result<T, EvalError> {
     })
 }
 
+#[cfg(test)]
 fn parse_source_forms(source: &str) -> Result<Vec<SExpr>, EvalError> {
     crate::yao::parse_all(source, crate::yao::ParseLimits::default())
         .map(|forms| forms.iter().map(lower_spanned_sexpr).collect())
@@ -212,6 +171,7 @@ fn parse_source_forms(source: &str) -> Result<Vec<SExpr>, EvalError> {
         })
 }
 
+#[cfg(test)]
 fn lower_spanned_sexpr(expression: &crate::yao::Expr) -> SExpr {
     match expression {
         crate::yao::Expr::Atom(atom) => SExpr::Atom(atom.value.clone()),
@@ -295,8 +255,8 @@ impl InferResultKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum PlanNode {
-    /// Fully typed Yao v0.1 program. Legacy Plan IR remains readable while the
-    /// typed frontend and machine are introduced behind this versioned node.
+    /// Fully typed Yao program. Persisted legacy Plan IR remains readable as a
+    /// storage migration concern; no legacy source is admitted.
     Typed {
         program: Box<crate::yao::Program>,
     },
@@ -360,9 +320,10 @@ pub struct Program {
     ///
     /// Declaration exists for the part static analysis cannot see: which
     /// tools an `infer` may gather evidence with is decided at run time. An
-    /// infer node may inherit this scope or narrow it locally with `(tools
-    /// ...)`; `(tools)` explicitly closes the scope. The declaration lives in
-    /// the program text —
+    /// infer node must declare its own `(tools ...)` scope; omission or
+    /// `(tools)` makes that node pure. The root declaration is only the
+    /// admissible upper bound for those node-local scopes. It is never an
+    /// implicit grant. The declaration lives in the program text —
     /// not in a side channel — because a `.yao` file loaded by the Runtime
     /// has no other way to state its needs; the model's `program` argument
     /// and a `.yao` file are the same artifact. `None` means no declaration
@@ -457,6 +418,7 @@ fn decode_program_value(value: &JsonValue) -> Result<PlanProgramValue, String> {
     if declared_hash != admitted.hash
         || admitted.hash != typed.source_hash
         || admitted.hash != computed_hash
+        || admitted.source != typed.canonical_source
         || admitted.output != typed.output
         || admitted.effects != typed.effects
     {
@@ -475,15 +437,17 @@ pub fn admit_program_value_candidate(
     registry: &Registry,
     provenance: ProgramValueProvenance,
 ) -> Result<JsonValue, String> {
-    let source = match value {
-        JsonValue::String(source) => source,
-        JsonValue::Object(mut object) => object
-            .remove("source")
-            .and_then(|value| value.as_str().map(str::to_string))
-            .ok_or("Program candidate 必须是 Yao 源码字符串或 {\"source\": ...}")?,
-        _ => return Err("Program candidate 必须是 Yao 源码字符串或 {\"source\": ...}".into()),
+    let JsonValue::Object(object) = value else {
+        return Err("Program Value transport 必须是且仅是 {\"source\": \"(eval ...)\"}".into());
     };
-    require_explicit_program_value_version(&source)?;
+    if object.len() != 1 {
+        return Err("Program Value transport 必须是且仅是 {\"source\": \"(eval ...)\"}".into());
+    }
+    let source = object
+        .get("source")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string)
+        .ok_or("Program Value transport 必须是且仅是 {\"source\": \"(eval ...)\"}")?;
     let allowed_tools = expected_effects.iter().filter_map(|effect| match effect {
         crate::yao::Effect::Tool(name) => Some(name.clone()),
         _ => None,
@@ -509,6 +473,7 @@ pub fn admit_program_value_candidate(
         ));
     }
     let hash = typed.source_hash.clone();
+    let source = typed.canonical_source.clone();
     let output = typed.output.clone();
     let effects = typed.effects.clone();
     let admitted = PlanProgramValue {
@@ -520,23 +485,6 @@ pub fn admit_program_value_candidate(
         provenance,
     };
     encode_program_value(&admitted)
-}
-
-fn require_explicit_program_value_version(source: &str) -> Result<(), String> {
-    let root = crate::yao::parse_one(source, crate::yao::ParseLimits::default())
-        .map_err(|error| format!("Program candidate 解析失败: {error}"))?;
-    let crate::yao::Expr::List { items, .. } = root else {
-        return Err("Program candidate 必须有 (eval ...) 根".to_string());
-    };
-    let explicit = items.iter().skip(1).any(|item| {
-        matches!(item, crate::yao::Expr::List { items, .. }
-            if items.first().and_then(crate::yao::Expr::as_symbol) == Some("version"))
-    });
-    if explicit {
-        Ok(())
-    } else {
-        Err("Program Value candidate 必须显式声明 (version \"0.1\")".to_string())
-    }
 }
 
 /// What a `call` node may reach. Callers narrow this; the evaluator never
@@ -574,8 +522,8 @@ impl ToolGate for AllowList {
     }
 }
 
-/// Validates a program against the operator table, the tool registry and the
-/// gate, without evaluating anything.
+/// Validates one typed Yao source artifact against the semantic profile, Tool
+/// registry and deployment gate, without evaluating anything.
 ///
 /// Everything checkable before execution is checked here, because a rejection
 /// that arrives after three files were already read is not a rejection.
@@ -584,9 +532,18 @@ pub fn validate(
     registry: &Registry,
     gate: &dyn ToolGate,
 ) -> Result<Program, EvalError> {
-    if source_requests_typed_semantics(source)? {
-        return validate_typed(source, registry, gate);
-    }
+    validate_typed(source, registry, gate)
+}
+
+/// Historical source admission retained only for migration fixtures. New
+/// source, Tools, Harnesses, and public callers all enter typed Yao through
+/// [`validate`]. Persisted lowered Plan IR remains independently readable.
+#[cfg(test)]
+fn validate_legacy_source(
+    source: &str,
+    registry: &Registry,
+    gate: &dyn ToolGate,
+) -> Result<Program, EvalError> {
     let forms = parse_source_forms(source)?;
     let (owner, declared, root) = split_program(forms)?;
     if let Some(declared) = &declared {
@@ -656,30 +613,6 @@ fn validate_typed(
         tools,
         declared,
     })
-}
-
-fn source_requests_typed_semantics(source: &str) -> Result<bool, EvalError> {
-    let root = crate::yao::parse_one(source, crate::yao::ParseLimits::default()).map_err(
-        |diagnostic| EvalError {
-            message: format!("program 不是合法的 Yao 源码: {diagnostic}"),
-            diagnostic: Some(Box::new(diagnostic)),
-        },
-    )?;
-    let items = root
-        .as_list()
-        .ok_or_else(|| EvalError::from("program root 必须是显式 eval 或 infer".to_string()))?;
-    // Morphz used S-expression eval programs before typed Yao v0.1. Their
-    // arbitrary call/infer argument names can legitimately be `evidence`,
-    // `get`, `record`, and so on, so scanning nested lists for new operator
-    // names is not a sound language-version discriminator. The explicit root
-    // declaration is the only ambiguity-free opt-in boundary.
-    Ok(items.get(1).is_some_and(|candidate| {
-        candidate
-            .as_list()
-            .and_then(|declaration| declaration.first())
-            .and_then(crate::yao::Expr::as_symbol)
-            == Some("version")
-    }))
 }
 
 struct MorphzAnalysisProfile<'a> {
@@ -842,12 +775,71 @@ fn runtime_environment_type() -> crate::yao::Type {
 /// Harness loading can use this without a live tool registry. Full operator,
 /// schema and deployment-gate validation still happens before activation.
 pub fn inspect_program_source(source: &str) -> Result<ProgramHeader, EvalError> {
-    let forms = parse_source_forms(source)?;
-    let (owner, declared_tools, _) = split_program(forms)?;
+    let root = crate::yao::parse_one(source, crate::yao::ParseLimits::default()).map_err(
+        |diagnostic| EvalError {
+            message: format!("program 不是合法的 Yao 源码: {diagnostic}"),
+            diagnostic: Some(Box::new(diagnostic)),
+        },
+    )?;
+    let items = root
+        .as_list()
+        .ok_or_else(|| EvalError::from("program root 必须是显式 eval 或 infer".to_string()))?;
+    let owner = match items.first().and_then(crate::yao::Expr::as_symbol) {
+        Some("eval") => EvaluationOwner::Runtime,
+        Some("infer") => EvaluationOwner::Model,
+        Some(other) => {
+            return Err(EvalError::from(format!(
+                "未知的 Yao 程序根 '{other}'；必须显式使用 (eval ...) 或 (infer ...)"
+            )))
+        }
+        None => return Err(EvalError::from("Yao 程序根缺少求值器名称".to_string())),
+    };
+    if items.get(1).is_some_and(|item| {
+        item.as_list()
+            .and_then(|parts| parts.first())
+            .and_then(crate::yao::Expr::as_symbol)
+            == Some("version")
+    }) {
+        return Err(EvalError::from(
+            "Yao 源码不支持内嵌版本声明；请删除 (version ...)".to_string(),
+        ));
+    }
+    let declared_tools = items
+        .get(1)
+        .and_then(crate::yao::Expr::as_list)
+        .filter(|parts| parts.first().and_then(crate::yao::Expr::as_symbol) == Some("requires"))
+        .map(parse_typed_requires_tools)
+        .transpose()?;
     Ok(ProgramHeader {
         owner,
         declared_tools,
     })
+}
+
+fn parse_typed_requires_tools(items: &[crate::yao::Expr]) -> Result<Vec<String>, EvalError> {
+    let mut tools = None;
+    for clause in &items[1..] {
+        let parts = clause
+            .as_list()
+            .ok_or_else(|| EvalError::from("(requires ...) 的每个声明必须是列表".to_string()))?;
+        if parts.first().and_then(crate::yao::Expr::as_symbol) != Some("tools") {
+            continue;
+        }
+        if tools.is_some() {
+            return Err(EvalError::from(
+                "(requires ...) 不能重复声明 tools".to_string(),
+            ));
+        }
+        let mut declared = Vec::new();
+        for tool in &parts[1..] {
+            let name = tool
+                .as_symbol()
+                .ok_or_else(|| EvalError::from("(tools ...) 只能包含工具名".to_string()))?;
+            declared.push(name.to_string());
+        }
+        tools = Some(declared);
+    }
+    Ok(tools.unwrap_or_default())
 }
 
 /// Reads the explicit evaluator root and its optional capability narrowing.
@@ -855,6 +847,7 @@ pub fn inspect_program_source(source: &str) -> Result<ProgramHeader, EvalError> 
 /// The outer `(eval ...)` / `(infer ...)` is intentionally mandatory.  The
 /// same inner tree can otherwise change owner merely by being wrapped in
 /// `seq`, which makes persistence and failure semantics impossible to inspect.
+#[cfg(test)]
 fn split_program(
     forms: Vec<SExpr>,
 ) -> Result<(EvaluationOwner, Option<Vec<String>>, SExpr), EvalError> {
@@ -912,6 +905,7 @@ fn split_program(
     Ok((owner, declared, root))
 }
 
+#[cfg(test)]
 fn parse_requires(items: &[SExpr]) -> Result<Vec<String>, EvalError> {
     let mut declared = None;
     for clause in &items[1..] {
@@ -950,21 +944,25 @@ fn parse_requires(items: &[SExpr]) -> Result<Vec<String>, EvalError> {
 /// What the walk learns about a program, for the caller to settle capability
 /// before evaluation starts.
 #[derive(Default)]
+#[cfg(test)]
 struct ProgramFacts {
     tools: Vec<String>,
 }
 
 #[derive(Default)]
+#[cfg(test)]
 struct Scope {
     bound: Vec<String>,
 }
 
+#[cfg(test)]
 impl Scope {
     fn contains(&self, name: &str) -> bool {
         self.bound.iter().any(|item| item == name)
     }
 }
 
+#[cfg(test)]
 fn operator_of(expr: &SExpr) -> Result<(&str, &[SExpr]), EvalError> {
     let SExpr::List(items) = expr else {
         return err(format!(
@@ -977,6 +975,7 @@ fn operator_of(expr: &SExpr) -> Result<(&str, &[SExpr]), EvalError> {
     Ok((name.as_str(), &items[1..]))
 }
 
+#[cfg(test)]
 fn check(
     expr: &SExpr,
     depth: usize,
@@ -1139,6 +1138,7 @@ fn check(
     }
 }
 
+#[cfg(test)]
 fn check_call_arguments(tool: &str, args: &[SExpr], scope: &Scope) -> Result<(), EvalError> {
     check_pair_arguments(&format!("call {tool}"), args, scope)
 }
@@ -1146,6 +1146,7 @@ fn check_call_arguments(tool: &str, args: &[SExpr], scope: &Scope) -> Result<(),
 /// Arguments are the language's own idiom for named data: `(name value...)`
 /// lists, exactly as Kernel, Mind and the protocol render everything else.
 /// Multiple values under one name form an array.
+#[cfg(test)]
 fn check_pair_arguments(form: &str, args: &[SExpr], scope: &Scope) -> Result<(), EvalError> {
     let mut seen = HashSet::new();
     for argument in args {
@@ -1172,6 +1173,7 @@ fn check_pair_arguments(form: &str, args: &[SExpr], scope: &Scope) -> Result<(),
 
 /// A value position accepts a literal or a `$name` reference to something an
 /// earlier `bind` produced.
+#[cfg(test)]
 fn check_value(expr: &SExpr, scope: &Scope) -> Result<(), EvalError> {
     match expr {
         SExpr::Atom(atom) => {
@@ -1195,6 +1197,7 @@ fn check_value(expr: &SExpr, scope: &Scope) -> Result<(), EvalError> {
     }
 }
 
+#[cfg(test)]
 fn lower_value(expr: &SExpr) -> Result<PlanValue, EvalError> {
     let SExpr::Atom(atom) = expr else {
         return err(format!("值的位置不接受子表达式 '{expr}'"));
@@ -1205,6 +1208,7 @@ fn lower_value(expr: &SExpr) -> Result<PlanValue, EvalError> {
     })
 }
 
+#[cfg(test)]
 fn lower_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError> {
     args.iter()
         .map(|argument| {
@@ -1226,6 +1230,7 @@ fn lower_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError> {
         .collect()
 }
 
+#[cfg(test)]
 fn argument_name(expr: &SExpr) -> Option<&str> {
     let SExpr::List(items) = expr else {
         return None;
@@ -1236,6 +1241,7 @@ fn argument_name(expr: &SExpr) -> Option<&str> {
     Some(name)
 }
 
+#[cfg(test)]
 fn infer_result_kind(args: &[SExpr]) -> Result<InferResultKind, EvalError> {
     let declarations = args
         .iter()
@@ -1262,6 +1268,7 @@ fn infer_result_kind(args: &[SExpr]) -> Result<InferResultKind, EvalError> {
     }
 }
 
+#[cfg(test)]
 fn infer_tool_names(args: &[SExpr]) -> Result<Option<Vec<String>>, EvalError> {
     let declarations = args
         .iter()
@@ -1292,6 +1299,7 @@ fn infer_tool_names(args: &[SExpr]) -> Result<Option<Vec<String>>, EvalError> {
     Ok(Some(names))
 }
 
+#[cfg(test)]
 fn lower_infer_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError> {
     let data_arguments = args
         .iter()
@@ -1301,6 +1309,7 @@ fn lower_infer_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError>
     lower_arguments(&data_arguments)
 }
 
+#[cfg(test)]
 fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
     if matches!(expr, SExpr::Atom(_)) {
         return Ok(PlanNode::Value {
@@ -1655,7 +1664,7 @@ impl PlanMachine {
             objects: None,
         };
         let typed = crate::yao::Program {
-            language_version: "0.1".to_string(),
+            language_version: crate::yao::TYPED_IR_SCHEMA_VERSION.to_string(),
             owner: crate::yao::EvaluationOwner::Runtime,
             requirements,
             types: self.typed_definitions.clone(),
@@ -2782,7 +2791,15 @@ pub fn decode_infer_result_with_admission(
         InferResultKind::Yao {
             ty: crate::yao::Type::Program { output, effects },
             ..
-        } => admit_program_value_candidate(&output, &effects, value, registry, provenance),
+        } => {
+            let transport = match value {
+                JsonValue::String(text) => serde_json::from_str(text.trim()).map_err(|_| {
+                    "Program Value transport 必须是且仅是 {\"source\": \"(eval ...)\"}".to_string()
+                })?,
+                structured => structured,
+            };
+            admit_program_value_candidate(&output, &effects, transport, registry, provenance)
+        }
         other => decode_infer_result(other, value),
     }
 }
@@ -2847,10 +2864,11 @@ tokio::task_local! {
 /// have been part of what was admitted, so the program is refused rather than
 /// escalated. Individual tools still run their own jail and path checks.
 ///
-/// An operator may widen or narrow this through configuration. Both `call`
-/// and nested `infer` inside a Runtime-owned `(eval ...)` read this same list
-/// — see `eval_callable_tools`. A model-owned top-level `(infer ...)` Harness
-/// instead declares a narrowing of the ordinary Function Calling surface; it
+/// An operator may widen or narrow this deployment gate through configuration.
+/// `call` reads the gate directly. A nested `infer` receives only the tools in
+/// its own explicit `(tools ...)` clause, intersected with this gate; omission
+/// or `(tools)` means no tools. A model-owned top-level `(infer ...)` Harness
+/// likewise declares a narrowing of the ordinary Function Calling surface and
 /// never executes through `EvalTool`.
 pub const DEFAULT_CALLABLE_TOOLS: [&str; 3] = ["read", "list_files", "search"];
 
@@ -2876,8 +2894,8 @@ impl EvalTool {
         )
     }
 
-    /// Built from the tables and the configured list, so what the model is told
-    /// it may write cannot drift from what the validator will accept.
+    /// Deployment-specific boundary only. The language surface itself is
+    /// published once as `protocol.language-card` in Context Encoding.
     pub fn description(callable: &[String]) -> String {
         let tools = if callable.is_empty() {
             "(this deployment exposes no tools inside the tree; the program may use only structural operators and infer)".to_string()
@@ -2888,22 +2906,7 @@ impl EvalTool {
             )
         };
         format!(
-            "Submit an evaluable S-expression program for deterministic Runtime execution of multiple data-dependent steps in one call.\
-             Use it when the steps are known in advance and later steps consume earlier results. For a single step, or when you must inspect a result before deciding what to do next, continue using ordinary Function Calling; this tool does not replace it.\n\
-             This tool accepts only an explicit (eval ...) root. Model-directed (infer ...) roots are turned into formal Evaluations by the Runtime and are not submitted to this tool.\n\
-             An (eval ...) may begin with (requires (tools NAME...)) to narrow its capabilities and must then contain exactly one program body; combine multiple steps with (seq ...).\n\
-             The declaration cannot exceed the tool list below. Once declared, both call and infer evidence gathering are restricted to those tools.\n\
-             Callable tools: {tools}\n\
-             `reply` and `process` belong to your own evaluation and are unavailable inside this program.\n\
-             Operator contract:\n{contract}\n\
-             Example:\n\
-             (eval\n\
-               (requires (tools list_files read))\n\
-               (seq\n\
-                 (bind files (call list_files (path \"src\")))\n\
-                 (bind bodies (map $files f (call read (path $f))))\n\
-                 (infer (task \"Which files contain TODO?\") (evidence $bodies))))",
-            contract = operator_contract(),
+            "Execute one typed, unversioned Yao program with an explicit (eval ...) root. Use the sole (language-card ...) in Context Encoding for syntax and semantics; this Tool does not define another dialect. The Runtime validates the complete program before any effect, lowers it to durable Plan IR, and rechecks authority at effect boundaries. (requires (tools ...)) may only narrow this deployment boundary. Callable tools: {tools}"
         )
     }
 }
@@ -2936,7 +2939,7 @@ impl crate::tool::Tool for EvalTool {
                 "properties": {
                     "program": {
                         "type": "string",
-                        "description": "A canonical Yao program with an explicit eval root, for example (eval (seq (bind files (call list_files (path \"src\"))) (map $files f (call read (path $f)))))"
+                        "description": "One unversioned typed Yao source artifact with an explicit (eval ...) root. Follow protocol.language-card in Context Encoding."
                     }
                 },
                 "required": ["program"]
@@ -2951,6 +2954,9 @@ impl crate::tool::Tool for EvalTool {
         let args: EvalArgs = serde_json::from_str(arguments)?;
         let gate = AllowList::new(self.callable.clone());
         let program = validate(&args.program, &self.registry, &gate)?;
+        if program.owner() != EvaluationOwner::Runtime {
+            return Err("eval Tool 只接受 Runtime-owned (eval ...) 根；(infer ...) 由 Runtime 建立正式 Evaluation".into());
+        }
         if let Some(executor) = CURRENT_PLAN_EXECUTOR.try_with(Clone::clone).ok().flatten() {
             let value = executor.execute_plan(program).await?;
             return Ok(serde_json::to_string(&value)?);
@@ -2983,9 +2989,8 @@ mod tests {
     }
 
     #[test]
-    fn model_visible_eval_language_contract_is_english_only() {
-        let contract = operator_contract();
-        assert!(!contains_cjk(&contract), "operator contract: {contract}");
+    fn shared_language_card_and_eval_boundary_are_english_only() {
+        assert!(!contains_cjk(crate::yao::LANGUAGE_CARD));
         let description = EvalTool::description(
             &DEFAULT_CALLABLE_TOOLS
                 .iter()
@@ -3112,7 +3117,7 @@ mod tests {
         let (registry, seen) = fixture(replies);
         let (inference, _) = host("inferred");
         let source = format!("(eval {source})");
-        let outcome = match validate(&source, &registry, &gate()) {
+        let outcome = match validate_legacy_source(&source, &registry, &gate()) {
             Ok(program) => evaluate(&program, Arc::clone(&registry), inference).await,
             Err(error) => Err(error),
         };
@@ -3215,7 +3220,7 @@ mod tests {
         ];
         for (source, expected) in cases {
             let source = format!("(eval {source})");
-            let error = validate(&source, &registry, &gate())
+            let error = validate_legacy_source(&source, &registry, &gate())
                 .expect_err(&format!("must reject: {source}"))
                 .message;
             assert!(
@@ -3228,7 +3233,7 @@ mod tests {
     #[tokio::test]
     async fn a_branch_binding_does_not_escape_its_branch() {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
-        let error = validate(
+        let error = validate_legacy_source(
             r#"(eval (seq
                  (if true (bind inner (call read (path "a"))) (call read (path "b")))
                  (call read (path $inner))))"#,
@@ -3271,7 +3276,7 @@ mod tests {
             source = format!("(seq {source})");
         }
         source = format!("(eval {source})");
-        let error = validate(&source, &registry, &gate())
+        let error = validate_legacy_source(&source, &registry, &gate())
             .expect_err("deep programs are refused")
             .message;
         assert!(error.contains("嵌套超过"), "got: {error}");
@@ -3280,7 +3285,7 @@ mod tests {
     #[tokio::test]
     async fn declared_tools_are_reported_for_capability_settlement() {
         let registry = fixture(&[("list_files", JsonValue::Null), ("read", JsonValue::Null)]).0;
-        let program = validate(
+        let program = validate_legacy_source(
             r#"(eval (seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e)))))"#,
             &registry,
             &gate(),
@@ -3298,7 +3303,7 @@ mod tests {
             ("search", JsonValue::Null),
         ]);
         let (inference, requests) = host("两半");
-        let program = validate(
+        let program = validate_legacy_source(
             r#"(eval (seq
                  (bind body (call read (path "ch041.md")))
                  (bind form (infer (task "铜印现在是什么形态") (evidence $body)))
@@ -3329,7 +3334,7 @@ mod tests {
     #[tokio::test]
     async fn json_infer_results_become_addressable_plan_data() {
         let (registry, seen) = fixture(&[("search", serde_json::json!(["matched"]))]);
-        let program = validate(
+        let program = validate_legacy_source(
             r#"(eval
                  (requires (tools search))
                  (seq
@@ -3358,7 +3363,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_json_infer_results_are_classified_failures_for_fallback() {
         let registry = fixture(&[]).0;
-        let program = validate(
+        let program = validate_legacy_source(
             r#"(eval
                  (fallback
                    (infer (task "返回对象") (returns json))
@@ -3384,9 +3389,10 @@ mod tests {
             r#"(eval (infer (task "x") (returns json) (returns text)))"#,
             r#"(eval (infer (task "x") (tools) (tools search)))"#,
         ] {
-            let error = validate(source, &registry, &AllowList::new(Vec::<String>::new()))
-                .unwrap_err()
-                .message;
+            let error =
+                validate_legacy_source(source, &registry, &AllowList::new(Vec::<String>::new()))
+                    .unwrap_err()
+                    .message;
             assert!(
                 error.contains("returns") || error.contains("结果类型") || error.contains("tools"),
                 "{error}"
@@ -3397,7 +3403,7 @@ mod tests {
     #[tokio::test]
     async fn infer_must_say_what_it_is_asking() {
         let registry = fixture(&[]).0;
-        let error = validate(r#"(infer (evidence "x"))"#, &registry, &gate())
+        let error = validate_legacy_source(r#"(infer (evidence "x"))"#, &registry, &gate())
             .expect_err("an infer without a task has no question")
             .message;
         assert!(error.contains("(task"), "got: {error}");
@@ -3410,7 +3416,7 @@ mod tests {
             .collect::<Vec<_>>();
         let (registry, _) = fixture(&[("list_files", serde_json::json!(items))]);
         let (inference, requests) = host("ok");
-        let program = validate(
+        let program = validate_legacy_source(
             r#"(eval (seq (bind f (call list_files (path "src"))) (map $f e (infer (task "看一下") (item $e)))))"#,
             &registry,
             &gate(),
@@ -3434,7 +3440,7 @@ mod tests {
         ]);
         let tool = EvalTool::with_default_tools(Arc::clone(&registry));
         let arguments = serde_json::json!({
-            "program": r#"(eval (seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e)))))"#
+            "program": r#"(eval (seq (bind raw (call list_files (path "src"))) (bind f (decode (List String) $raw)) (map $f e (call read (path $e)))))"#
         })
         .to_string();
         let output = CURRENT_INFERENCE
@@ -3488,7 +3494,7 @@ mod tests {
             .await
             .expect_err("an inadmissible tree is refused whole")
             .to_string();
-        assert!(error.contains("不能在 eval 程序中调用"), "got: {error}");
+        assert!(error.contains("unknown tool 'exec'"), "got: {error}");
         assert!(
             calls.lock().unwrap().is_empty(),
             "validation must precede every side effect"
@@ -3501,7 +3507,9 @@ mod tests {
 
         let registry = fixture(&[]).0;
         let tool = EvalTool::with_default_tools(registry);
-        let arguments = serde_json::json!({"program": r#"(infer (task "判断"))"#}).to_string();
+        let arguments =
+            serde_json::json!({"program": r#"(eval (infer (task "判断") (returns String)))"#})
+                .to_string();
         let error = CURRENT_INFERENCE
             .scope(None, tool.execute(&arguments))
             .await
@@ -3511,46 +3519,16 @@ mod tests {
     }
 
     #[test]
-    fn the_advertised_operators_are_the_implemented_ones() {
-        // The description is the model's only account of what it may write, so
-        // it is generated from the tables rather than restated by hand.
+    fn eval_tool_refers_to_the_shared_language_card_instead_of_republishing_a_dialect() {
         let callable = DEFAULT_CALLABLE_TOOLS
             .iter()
             .map(|name| (*name).to_string())
             .collect::<Vec<_>>();
         let description = EvalTool::description(&callable);
-        let contract = operator_contract();
-        // Not just the names: the form and the meaning have to reach the model
-        // too, or it is left guessing at the surface — which is what the first
-        // evaluation showed it doing.
-        for spec in OPERATORS
-            .iter()
-            .filter(|spec| spec.available != Availability::LlmOnly)
-        {
-            assert!(description.contains(spec.name), "missing {}", spec.name);
-            assert!(
-                description.contains(spec.form),
-                "missing form for {}",
-                spec.name
-            );
-            // Compared against the rendered contract rather than the raw
-            // literal: quoting escapes embedded quotes on the way out.
-            assert!(
-                contract.contains(spec.description)
-                    || contract.contains(&format!("{:?}", spec.description)),
-                "missing description for {}",
-                spec.name
-            );
-        }
-        for spec in OPERATORS
-            .iter()
-            .filter(|spec| spec.available == Availability::LlmOnly)
-        {
-            if spec.name == "reply" {
-                continue;
-            }
-            assert!(description.contains(spec.name), "unexplained {}", spec.name);
-        }
+        assert!(description.contains("language-card"));
+        assert!(!description.contains("Operator contract"));
+        assert!(!description.contains("(operator seq"));
+        assert!(description.len() < crate::yao::LANGUAGE_CARD.len());
     }
 
     #[tokio::test]
@@ -3575,7 +3553,7 @@ mod tests {
             .await
             .expect_err("a tool outside the configured gate is refused")
             .to_string();
-        assert!(error.contains("只接受 search"), "got: {error}");
+        assert!(error.contains("unknown tool 'read'"), "got: {error}");
         assert!(calls.lock().unwrap().is_empty());
     }
 
@@ -3602,7 +3580,7 @@ mod tests {
         // deployment gate would allow it, and the infer host is offered
         // exactly the declaration — the part static analysis cannot reach.
         let (registry, _) = fixture(&[("search", serde_json::json!([]))]);
-        let error = validate(
+        let error = validate_legacy_source(
             r#"(eval (requires (tools search)) (call read (path "a")))"#,
             &registry,
             &gate(),
@@ -3611,7 +3589,7 @@ mod tests {
         .message;
         assert!(error.contains("只接受 search"), "got: {error}");
 
-        let program = validate(
+        let program = validate_legacy_source(
             r#"(eval (requires (tools search)) (seq (bind r (call search (query "x"))) (infer (task "判断") (hits $r))))"#,
             &registry,
             &gate(),
@@ -3640,7 +3618,7 @@ mod tests {
             ("read", serde_json::json!("evidence")),
             ("search", serde_json::json!([])),
         ]);
-        let pure = validate(
+        let pure = validate_legacy_source(
             r#"(eval
                  (requires (tools read search))
                  (seq
@@ -3660,7 +3638,7 @@ mod tests {
         evaluate(&pure, Arc::clone(&registry), host).await.unwrap();
         assert_eq!(offered.lock().unwrap().as_slice(), &[Some(Vec::new())]);
 
-        let narrowed = validate(
+        let narrowed = validate_legacy_source(
             r#"(eval
                  (requires (tools read search))
                  (infer (task "research") (tools search)))"#,
@@ -3687,7 +3665,7 @@ mod tests {
         // Asking for exec does not grant exec: the gate is the outer bound and
         // a program only ever narrows it.
         let registry = fixture(&[("read", JsonValue::Null)]).0;
-        let error = validate(
+        let error = validate_legacy_source(
             r#"(eval (requires (tools exec)) (call exec (command "ls")))"#,
             &registry,
             &gate(),
@@ -3698,7 +3676,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_undeclared_program_keeps_the_old_meaning() {
+    async fn legacy_migration_fixture_preserves_undeclared_plan_ir_semantics() {
         let (outcome, calls) = run(
             r#"(seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e))))"#,
             &[
@@ -3712,23 +3690,14 @@ mod tests {
     }
 
     #[test]
-    fn shared_operators_match_the_production_contract_verbatim() {
-        // One language, two evaluators: an operator available on both sides
-        // has exactly one form. If this fails, someone grew a second dialect.
-        let kernel = crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
-        for spec in OPERATORS
-            .iter()
-            .filter(|spec| spec.available == Availability::Both)
-        {
-            assert!(
-                kernel.contains(&format!("(form {}", spec.form.trim_end_matches("...)")))
-                    || kernel.contains(&format!("(form {})", spec.form))
-                    || kernel.contains(spec.form),
-                "operator '{}' 的 form '{}' 与生产契约不一致",
-                spec.name,
-                spec.form
-            );
-        }
+    fn shared_language_card_is_the_only_model_visible_operator_contract() {
+        let card = crate::yao::LANGUAGE_CARD;
+        assert!(card.contains("(seq E...)"));
+        assert!(card.contains("(bind NAME E)"));
+        assert!(card.contains("(match VALUE"));
+        assert!(card.contains("call TOOL"));
+        assert!(card.contains("(par (branch NAME EXPR)..."));
+        assert!(!EvalTool::description(&[]).contains("(operator seq"));
     }
 
     #[test]
@@ -3744,23 +3713,33 @@ mod tests {
         let error = validate(r#"(call read (path "README.md"))"#, &registry, &gate())
             .unwrap_err()
             .message;
-        assert!(error.contains("显式使用"), "{error}");
+        assert!(error.contains("expected eval or infer"), "{error}");
 
-        let model = validate(r#"(infer (task "判断当前状态"))"#, &registry, &gate()).unwrap();
+        let model = validate(
+            r#"(infer (task "判断当前状态") (returns String))"#,
+            &registry,
+            &gate(),
+        )
+        .unwrap();
         assert_eq!(model.owner(), EvaluationOwner::Model);
     }
 
     #[test]
-    fn explicit_root_version_is_the_only_typed_compatibility_boundary() {
-        assert!(
-            source_requests_typed_semantics(r#"(eval (version "0.1") (dict (answer 1)))"#).unwrap()
-        );
-        assert!(!source_requests_typed_semantics(
-            r#"(eval (seq
-                 (bind value (infer (task "legacy") (evidence "x")))
-                 (call search (get $value))))"#
+    fn typed_source_is_the_only_public_source_language_and_rejects_version_forms() {
+        let registry = fixture(&[]).0;
+        validate(
+            "(eval (dict (answer 1)))",
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
         )
-        .unwrap());
+        .expect("unversioned typed source is admitted");
+        let error = validate(
+            r#"(eval (version "0.1") (dict (answer 1)))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("no in-band version"), "{error}");
     }
 
     #[test]
@@ -3771,7 +3750,7 @@ mod tests {
                  (requires (tools read))
                  (seq
                    (bind body (call read (path "README.md")))
-                   (infer (task "归纳") (input $body))))"#,
+                   (infer (task "归纳") (returns String) (input $body))))"#,
             &registry,
             &gate(),
         )
@@ -3780,7 +3759,7 @@ mod tests {
         let restored: Program = serde_json::from_str(&encoded).unwrap();
         assert_eq!(restored, program);
         assert!(encoded.contains("\"op\":\"call\""));
-        assert!(encoded.contains("\"kind\":\"reference\""));
+        assert!(encoded.contains("\"op\":\"reference\""));
     }
 
     #[test]
@@ -3793,7 +3772,8 @@ mod tests {
         let program = validate(
             r#"(eval
                  (seq
-                   (bind files (call list_files (path "src")))
+                   (bind raw (call list_files (path "src")))
+                   (bind files (decode (List String) $raw))
                    (map $files file (call read (path $file)))))"#,
             &registry,
             &gate(),
@@ -3909,7 +3889,6 @@ mod tests {
         let registry = fixture(&[]).0;
         let program = validate(
             r#"(eval
-                 (version "0.1")
                  (seq
                    (bind x (add 2 3))
                    (if (eq $x 5) (mul $x 2) 0)))"#,
@@ -3931,7 +3910,6 @@ mod tests {
         let registry = fixture(&[("read", serde_json::json!("evidence"))]).0;
         let program = validate(
             r#"(eval
-                 (version "0.1")
                  (requires (tools read))
                  (seq
                    (bind evidence (call read (path "a.txt")))
@@ -3991,7 +3969,6 @@ mod tests {
         let registry = fixture(&[]).0;
         let parent = validate(
             r#"(eval
-                 (version "0.1")
                  (seq
                    (bind generated
                      (infer
@@ -4012,7 +3989,7 @@ mod tests {
         };
         let admitted = decode_infer_result_with_admission(
             result,
-            JsonValue::String(r#"(eval (version "0.1") (add 20 22))"#.to_string()),
+            JsonValue::String(r#"{"source":"(eval (add 20 22))"}"#.to_string()),
             &registry,
             ProgramValueProvenance {
                 parent_plan_execution_id: "parent-plan".into(),
@@ -4064,7 +4041,6 @@ mod tests {
         let registry = fixture(&[]).0;
         let parent = validate(
             r#"(eval
-                 (version "0.1")
                  (seq
                    (bind caller-local "must-not-leak")
                    (bind generated
@@ -4122,7 +4098,7 @@ mod tests {
         };
         let admitted = decode_infer_result_with_admission(
             result,
-            JsonValue::String(r#"(eval (version "0.1") $runtime.context)"#.to_string()),
+            serde_json::json!({"source": r#"(eval $runtime.context)"#}),
             &registry,
             ProgramValueProvenance {
                 parent_plan_execution_id: "parent-plan".into(),
@@ -4156,7 +4132,8 @@ mod tests {
     }
 
     #[test]
-    fn program_admission_rejects_implicit_versions_contract_escape_and_forgery() {
+    fn program_admission_requires_object_transport_and_rejects_version_contract_escape_and_forgery()
+    {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let provenance = || ProgramValueProvenance {
             parent_plan_execution_id: "parent-plan".into(),
@@ -4165,10 +4142,28 @@ mod tests {
             validation_version: "yao-0.1".into(),
         };
         let empty = crate::yao::EffectSet::default();
+        let admitted = admit_program_value_candidate(
+            &crate::yao::Type::Int,
+            &empty,
+            serde_json::json!({"source": "(eval   1 ; normalize me\n)"}),
+            &registry,
+            provenance(),
+        )
+        .expect("unversioned Program Value source is admitted");
+        let decoded = decode_program_value(&admitted).expect("admitted Program Value is decodable");
+        assert_eq!(decoded.source, "(eval 1)");
+        let mut tampered_source = admitted.clone();
+        *tampered_source
+            .pointer_mut("/$yao/value/source")
+            .expect("encoded Program Value carries canonical source") =
+            JsonValue::String("(eval 2)".to_string());
+        assert!(decode_program_value(&tampered_source)
+            .unwrap_err()
+            .contains("content hash"));
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Int,
             &empty,
-            JsonValue::String("(eval 1)".into()),
+            serde_json::json!({"source": r#"(eval (version "0.1") 1)"#}),
             &registry,
             provenance(),
         )
@@ -4177,7 +4172,7 @@ mod tests {
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Int,
             &empty,
-            JsonValue::String(r#"(eval (version "0.1") "wrong")"#.into()),
+            serde_json::json!({"source": r#"(eval "wrong")"#}),
             &registry,
             provenance(),
         )
@@ -4186,13 +4181,29 @@ mod tests {
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Json,
             &empty,
-            JsonValue::String(
-                r#"(eval (version "0.1") (requires (tools read)) (call read (path "x")))"#.into(),
-            ),
+            serde_json::json!({"source": r#"(eval (requires (tools read)) (call read (path "x")))"#}),
             &registry,
             provenance(),
         )
         .is_err());
+        assert!(admit_program_value_candidate(
+            &crate::yao::Type::Int,
+            &empty,
+            JsonValue::String("(eval 1)".into()),
+            &registry,
+            provenance(),
+        )
+        .unwrap_err()
+        .contains("且仅是"));
+        assert!(admit_program_value_candidate(
+            &crate::yao::Type::Int,
+            &empty,
+            serde_json::json!({"source": "(eval 1)", "extra": true}),
+            &registry,
+            provenance(),
+        )
+        .unwrap_err()
+        .contains("且仅是"));
         assert!(decode_program_value(&serde_json::json!({
             "$yao": {"kind": "program", "hash": "sha256:forged", "value": {}}
         }))
@@ -4203,8 +4214,7 @@ mod tests {
     fn nested_program_values_consume_the_shared_depth_budget_without_refill() {
         let registry = fixture(&[]).0;
         let parent_source = r#"(eval
-             (version "0.1")
-             (seq
+              (seq
                (bind generated
                  (infer
                    (task "produce a pure integer program")
@@ -4232,7 +4242,7 @@ mod tests {
         };
         let admitted = decode_infer_result_with_admission(
             result,
-            JsonValue::String(r#"(eval (version "0.1") 42)"#.to_string()),
+            JsonValue::String(r#"{"source":"(eval 42)"}"#.to_string()),
             &registry,
             provenance(),
         )
@@ -4270,7 +4280,6 @@ mod tests {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let error = validate(
             r#"(eval
-                 (version "0.1")
                  (requires (tools read))
                  (call read (path 42)))"#,
             &registry,
@@ -4287,7 +4296,6 @@ mod tests {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let program = validate(
             r#"(eval
-                 (version "0.1")
                  (requires (tools read))
                  (par
                    (branch alpha (call read (path "a")))
@@ -4352,7 +4360,6 @@ mod tests {
         let (registry, calls) = fixture(&[("read", JsonValue::Null)]);
         let program = validate(
             r#"(eval
-                 (version "0.1")
                  (requires (tools read))
                  (par
                    (branch first (call read (path "one")))

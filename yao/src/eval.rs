@@ -979,7 +979,7 @@ mod tests {
 
     fn evaluate(source: &str) -> Result<JsonValue, EvalFailure> {
         let program = analyze(
-            &format!("(eval (version \"0.1\") {source})"),
+            &format!("(eval {source})"),
             &StaticProfile::default(),
             AnalysisLimits::default(),
         )
@@ -1113,7 +1113,7 @@ mod tests {
     #[test]
     fn evaluates_nominal_union_match_without_leaking_case_bindings() {
         let source = r#"
-          (eval (version "0.1")
+          (eval
             (types (union Decision (accept (reason String)) (reject (reason String))))
             (seq
               (bind decision (variant Decision.accept (reason "verified")))
@@ -1153,7 +1153,7 @@ mod tests {
             ..StaticProfile::default()
         };
         let program = analyze(
-            "(eval (version \"0.1\") (requires (tools read)) (call read (path \"x\")))",
+            "(eval (requires (tools read)) (call read (path \"x\")))",
             &profile,
             AnalysisLimits::default(),
         )

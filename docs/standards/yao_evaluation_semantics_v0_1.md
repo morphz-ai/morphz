@@ -212,12 +212,12 @@ be attributable to:
 Internal scheduler implementation details MAY remain private. Observable causal semantics MUST be
 portable.
 
-## 13. Compatibility execution
+## 13. Persisted-IR migration
 
-Legacy untyped Yao accepted by the reference implementation is compiled into typed HIR using
-`String` literals, `Json` Tool results, explicit legacy truthiness, and the existing sequential map
-limit. Its persisted Plan IR remains readable across the migration. Newly typed constructs MUST
-use this specification even when invoked from a legacy-compatible Harness.
+All newly admitted source uses typed Yao semantics. A Runtime MAY decode already-persisted legacy
+Plan IR during a bounded migration window, but MUST NOT reparse legacy source or expose that reader
+through `eval`, Harness loading, Program Value admission, or any model-owned path. Migration is a
+storage concern and cannot create a second source language.
 
 ## 14. Conformance test matrix
 
@@ -230,6 +230,6 @@ The reference conformance suite MUST include:
 5. deterministic serialization/resume tests at every machine frame;
 6. SQLite and PostgreSQL crash-window tests for single effects, Branch Groups, and sub-plans;
 7. fuzzing for parser, decoder, canonicalizer, and Program Value admission;
-8. legacy Harness corpus tests;
+8. legacy source rejection and persisted-IR migration fixture tests;
 9. resource-limit and adversarial model-output tests;
 10. end-to-end tests proving the same observable result before and after worker replacement.

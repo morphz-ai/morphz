@@ -42,5 +42,6 @@
 (infer
   (requires
     (tools list_files search read write edit exec context_tx))
+  (returns String)
   (task
     "自主推进并完成当前 Evaluation 承载的编码工作。若存在 Objective，以其完成条件为准；否则直接完成当前用户要求。按照 Harness Contract 获取真实仓库证据、实施最小充分修改、验证最终工作区状态，并向发起会话如实交付结果。由你根据证据决定具体工具顺序；不要机械调用不需要的工具。"))

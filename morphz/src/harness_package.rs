@@ -115,18 +115,39 @@ impl HarnessPackage {
         let forms = crate::sexpr::parse_all(source).map_err(|error| {
             HarnessPackageError::new(format!("{} 不是合法的 Yao：{error}", source_name.display()))
         })?;
+        let typed_forms = crate::yao::parse_all(source, crate::yao::ParseLimits::default())
+            .map_err(|error| {
+                HarnessPackageError::new(format!(
+                    "{} 不是合法的 Typed Yao：{error}",
+                    source_name.display()
+                ))
+            })?;
+        if forms.len() != typed_forms.len() {
+            return Err(HarnessPackageError::new(
+                "Harness artifact parser disagreement".to_string(),
+            ));
+        }
 
         let mut manifest = None;
         let mut contract = None;
         let mut mind = None;
-        let mut program = None;
+        let mut program_source = None;
 
-        for form in forms {
+        for (form, typed_form) in forms.into_iter().zip(typed_forms) {
             match root_name(&form)? {
                 "manifest" => set_once(&mut manifest, form, "manifest")?,
                 "contract" => set_once(&mut contract, form, "contract")?,
                 "mind" => set_once(&mut mind, form, "mind")?,
-                "eval" | "infer" => set_once(&mut program, form, "eval/infer")?,
+                "eval" | "infer" => {
+                    if program_source
+                        .replace(crate::yao::canonical_source(&typed_form))
+                        .is_some()
+                    {
+                        return Err(HarnessPackageError::new(
+                            "单文件 .hns 只能包含一个 (eval/infer ...)".to_string(),
+                        ));
+                    }
+                }
                 other => {
                     return Err(HarnessPackageError::new(format!(
                         "单文件 .hns 包含未知顶层 artifact '({other} ...)'; v1 只接受 manifest、contract、mind、eval/infer"
@@ -140,12 +161,12 @@ impl HarnessPackage {
         )?;
         let contract =
             contract.ok_or_else(|| HarnessPackageError::new("单文件 .hns 缺少 (contract ...)"))?;
-        let program = program.ok_or_else(|| {
+        let program_source = program_source.ok_or_else(|| {
             HarnessPackageError::new("单文件 .hns 缺少 (eval ...) 或 (infer ...)")
         })?;
-        let program_source = program.to_string();
         let header = inspect_program_source(&program_source)
             .map_err(|error| HarnessPackageError::new(error.to_string()))?;
+        validate_model_entry_declaration(header.owner, header.declared_tools.as_deref())?;
         validate_program_capabilities(&manifest, header.declared_tools.as_deref())?;
         let program_id = manifest.entry.clone().unwrap_or_else(|| "main".to_string());
 
@@ -177,10 +198,10 @@ impl HarnessPackage {
             HarnessPackageError::new("目录 .hns 的 manifest 必须声明 (entry \"相对路径\")")
         })?;
         let entry_path = resolve_package_path(path, entry)?;
-        let program_form = read_program_artifact(&entry_path)?;
-        let program_source = program_form.to_string();
+        let program_source = read_program_artifact(&entry_path)?;
         let header = inspect_program_source(&program_source)
             .map_err(|error| HarnessPackageError::new(error.to_string()))?;
+        validate_model_entry_declaration(header.owner, header.declared_tools.as_deref())?;
         validate_program_capabilities(&manifest, header.declared_tools.as_deref())?;
 
         let contract = read_one_artifact(&path.join("contract.yao"), "contract")?;
@@ -715,23 +736,26 @@ fn read_one_artifact(path: &Path, expected: &str) -> Result<SExpr, HarnessPackag
     Ok(form.clone())
 }
 
-fn read_program_artifact(path: &Path) -> Result<SExpr, HarnessPackageError> {
+fn read_program_artifact(path: &Path) -> Result<String, HarnessPackageError> {
     let source = fs::read_to_string(path).map_err(|error| {
         HarnessPackageError::new(format!("读取 {} 失败：{error}", path.display()))
     })?;
-    let forms = crate::sexpr::parse_all(&source).map_err(|error| {
-        HarnessPackageError::new(format!("{} 不是合法的 Yao：{error}", path.display()))
-    })?;
-    let [form] = forms.as_slice() else {
-        return Err(HarnessPackageError::new(format!(
-            "{} 必须恰好包含一个 (eval ...) 或 (infer ...)",
-            path.display()
-        )));
-    };
-    match root_name(form)? {
-        "eval" | "infer" => Ok(form.clone()),
-        actual => Err(HarnessPackageError::new(format!(
+    let form =
+        crate::yao::parse_one(&source, crate::yao::ParseLimits::default()).map_err(|error| {
+            HarnessPackageError::new(format!("{} 不是合法的 Typed Yao：{error}", path.display()))
+        })?;
+    match form
+        .as_list()
+        .and_then(|items| items.first())
+        .and_then(crate::yao::Expr::as_symbol)
+    {
+        Some("eval" | "infer") => Ok(crate::yao::canonical_source(&form)),
+        Some(actual) => Err(HarnessPackageError::new(format!(
             "{} 应以 (eval ...) 或 (infer ...) 为根，实际是 ({actual} ...)",
+            path.display()
+        ))),
+        None => Err(HarnessPackageError::new(format!(
+            "{} 必须恰好包含一个 (eval ...) 或 (infer ...)",
             path.display()
         ))),
     }
@@ -880,6 +904,18 @@ fn validate_program_capabilities(
     Ok(())
 }
 
+fn validate_model_entry_declaration(
+    owner: EvaluationOwner,
+    declared_tools: Option<&[String]>,
+) -> Result<(), HarnessPackageError> {
+    if owner == EvaluationOwner::Model && declared_tools.is_none() {
+        return Err(HarnessPackageError::new(
+            "Model-owned Harness entry 必须显式声明 (requires (tools ...))；空列表表示纯推理",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,6 +1048,42 @@ mod tests {
         .unwrap();
         assert_eq!(first.artifact_hash, second.artifact_hash);
         assert_eq!(first.canonical_source(), second.canonical_source());
+    }
+
+    #[test]
+    fn typed_program_string_identity_survives_package_normalization() {
+        let source = SINGLE.replace("\"README.md\"", "\"/tmp/no-spaces.txt\"");
+        let package = HarnessPackage::from_source("coding.hns", &source).unwrap();
+
+        assert!(package.entry.source.contains("\"/tmp/no-spaces.txt\""));
+        assert!(!package.entry.source.contains("(path /tmp/no-spaces.txt)"));
+        assert_eq!(
+            inspect_program_source(&package.entry.source).unwrap().owner,
+            EvaluationOwner::Runtime
+        );
+    }
+
+    #[test]
+    fn model_owned_entry_requires_an_explicit_tool_upper_bound() {
+        let source = SINGLE
+            .replace("(capabilities\n            (tools read search)\n            (skills rust testing))", "(capabilities (tools read search) (skills rust testing))")
+            .replace(
+                "(eval\n          (requires (tools read))\n          (call read (path \"README.md\")))",
+                "(infer (task \"decide\") (returns String))",
+            );
+        let error = HarnessPackage::from_source("coding.hns", &source)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("必须显式声明 (requires (tools ...))"),
+            "{error}"
+        );
+
+        let pure = source.replace(
+            "(infer (task \"decide\") (returns String))",
+            "(infer (requires (tools)) (task \"decide\") (returns String))",
+        );
+        HarnessPackage::from_source("coding.hns", &pure).unwrap();
     }
 
     #[test]

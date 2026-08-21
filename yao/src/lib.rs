@@ -8,6 +8,7 @@
 pub mod canonical;
 pub mod diagnostic;
 pub mod eval;
+pub mod language_card;
 pub mod sema;
 pub mod syntax;
 pub mod types;
@@ -20,6 +21,7 @@ pub use eval::{
     structural_record_value, variant_view, EvalFailure, EvidenceCandidateView,
     OutcomeCandidateView,
 };
+pub use language_card::{LANGUAGE_CARD, LANGUAGE_CARD_MAX_CHARS, TYPED_IR_SCHEMA_VERSION};
 pub use sema::{
     analyze, AnalysisLimits, AnalysisProfile, EvaluationOwner, HirExpr, HirKind, Program,
     StaticProfile, ToolSignature, TypeDefinition,

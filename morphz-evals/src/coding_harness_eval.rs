@@ -904,7 +904,7 @@ mod tests {
             runtime.entry.owner,
             morphz::sexpr_eval::EvaluationOwner::Runtime
         );
-        assert!(runtime.entry.source.contains("(returns json)"));
+        assert!(runtime.entry.source.contains("(returns EditDecision)"));
         assert!(runtime.entry.source.contains("(tools)"));
         assert!(package.contract.to_string().contains("inspect-before-edit"));
         assert!(package.mind.is_some());

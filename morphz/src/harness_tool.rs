@@ -216,7 +216,7 @@ mod tests {
           (title "Coding")
           (capabilities (tools read write) (skills rust)))
         (contract (identity "coding"))
-        (infer (task "work carefully"))
+        (infer (requires (tools)) (task "work carefully") (returns String))
     "#;
 
     #[tokio::test]

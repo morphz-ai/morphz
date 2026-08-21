@@ -143,11 +143,11 @@ Effect。CapabilitySetView 不得包含 Secret 或 Provider Credential。
 
 部署可以降低但不能提供无界上限。
 
-## 12. Legacy Profile
+## 12. 源码与存储迁移 Profile
 
-现有 `.hns` 与 `eval` Function Call 继续可用，并编译为带 Legacy Marker 的 typed HIR。历史
-上限为 16 层语义嵌套、64 个串行 Map 元素、128 次 Tool、8 次嵌套 Inference。Plan IR v1
-必须保持可解码，直到正式迁移移除。
+Morphz `.hns` Entry、`eval` Function Call 和 Program Value Candidate 必须使用唯一的 Typed
+Yao 源码语言，且不得包含 `(version ...)`。Plan IR v1 可保持可解码，直到正式迁移移除；
+该 Decoder 仅服务于存储迁移，不得形成 Legacy 源码准入路径。
 
 ## 13. 安全要求
 

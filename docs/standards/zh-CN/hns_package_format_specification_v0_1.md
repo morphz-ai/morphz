@@ -225,7 +225,7 @@ Loader 必须拒绝未知入口根，不得从任何其他语法推断控制权�
 
 ### 9.2 Program 能力声明
 
-Entry Program 可以声明 Tool 子集：
+Entry Program 声明 Tool 子集：
 
 ```lisp
 (eval
@@ -234,8 +234,10 @@ Entry Program 可以声明 Tool 子集：
 ```
 
 Entry Program 声明的每个 Tool 都必须出现在 Manifest Tool 集合中。程序声明收窄 Package
-需求，不授予权限。省略程序级 Tool 声明时，由 Language Profile 决定如何从 Manifest 继承；
-省略不得表示不受限制的 Tool 访问。
+需求，不授予权限。Model-owned `(infer ...)` Entry Program 必须包含显式的
+`(requires (tools ...))`；`(requires (tools))` 表示纯推理，不向模型暴露可调用 Tool。
+Loader 必须拒绝 Model-owned 入口省略该声明。Runtime-owned `(eval ...)` 入口只有在当前
+Language Profile 能够确定有效子集时才可以省略；省略不得表示不受限制的 Tool 访问。
 
 ### 9.3 执行边界
 

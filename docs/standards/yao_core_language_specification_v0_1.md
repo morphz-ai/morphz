@@ -72,7 +72,6 @@ Evaluation Loop while leaving the Runtime Control Loop authoritative.
 Declarations precede the body and MAY include, in this order:
 
 ```lisp
-(version "0.1")
 (requires
   (tools TOOL...)
   (effects EFFECT...)
@@ -80,14 +79,21 @@ Declarations precede the body and MAY include, in this order:
 (types TYPE-DECLARATION...)
 ```
 
-Typed v0.1 source MUST explicitly begin its declarations with `(version "0.1")`. Morphz source
-without that declaration enters the legacy compatibility profile because historical Tool and
-inference argument names overlap with new Core operators; guessing from nested names would change
-the meaning of already-valid programs. A program MUST contain at most one declaration of each
-kind. An implementation MUST reject an unknown declaration instead of ignoring it.
+Yao source has no in-band language-version declaration. `(version ...)` is not a Core form and
+MUST be rejected. The specification version, a Harness Package version, and an implementation's
+persisted typed-IR schema version are independent metadata boundaries; none changes source meaning
+from inside a program. A program MUST contain at most one declaration of each kind. An
+implementation MUST reject an unknown declaration instead of ignoring it.
 
-For compatibility, `(requires (tools ...))` remains valid without `(effects ...)`. Tool names in
+`(requires (tools ...))` is valid without `(effects ...)`. Tool names in
 `requires` are a closed upper bound for statically named `call` and nested `infer` evidence tools.
+
+### 4.1 Model-visible Language Card
+
+A model-hosting profile MUST publish one compact Yao Language Card derived from the same language
+implementation and MUST place it in a stable shared context prefix. Tool descriptions and Harness
+prose MUST refer to that card instead of republishing operator tables or alternate syntax. The card
+MUST be parseable, version-controlled out of band, and protected by an explicit size budget.
 
 ## 5. Types
 
@@ -286,7 +292,8 @@ Argument fields and results MUST be checked against the Tool schema. A `call` ha
 the available evidence tools. The Runtime MUST decode and validate the terminal result before it
 enters deterministic data flow. Failure to decode is a classified inference failure.
 
-For migration, `(returns text)` means `String` and `(returns json)` means `Json`.
+Type names are case-sensitive. Historical lowercase aliases such as `text` and `json` are not Core
+types and MUST be rejected rather than silently normalized.
 
 ## 10. Structured parallelism
 
@@ -325,12 +332,18 @@ An inference may return a Program Value:
   (input $request))
 ```
 
-Its transport representation is candidate Yao source, but candidate source is not a normal
-`String` and MUST NOT be passed to a string evaluator. The Runtime MUST perform this admission
-pipeline before constructing `Program<T, E>`:
+Its model transport representation is exactly one JSON object with one field:
+
+```json
+{"source":"(eval ...)"}
+```
+
+The object MUST contain no additional fields. A bare source string is not a Program Value and MUST
+be rejected. Candidate source MUST NOT be passed to a string evaluator. The Runtime MUST perform
+this admission pipeline before constructing `Program<T, E>`:
 
 1. parse with source spans;
-2. require a compatible explicit root;
+2. require an explicit `eval` root;
 3. resolve declarations and names;
 4. type check the terminal value against `T`;
 5. infer effects and require them to be a subset of `E` and current authority;
@@ -373,13 +386,13 @@ nodes, record fields, collection elements, Tool effects, inference effects, para
 Program Value nesting, and total child work. Admission MUST reject statically exceeded limits;
 dynamic excess becomes a classified resource failure.
 
-## 14. Compatibility
+## 14. Compatibility and migration
 
-The Morphz reference implementation MUST continue to accept the existing v0 evaluator subset:
-`seq`, `bind`, value references, `if`, `fallback`, bounded sequential `map`, `call`, and
-`infer` with `text` or `json` results. Compatibility syntax is assigned typed v0.1 semantics at
-admission. Existing truthiness behavior is available only in the explicit legacy profile and MUST
-NOT leak into newly typed programs.
+The Morphz reference implementation admits one source language: typed Yao described by this
+specification. Historical untyped source and in-band `(version ...)` declarations MUST be rejected;
+there is no source-level legacy profile. A deployment MAY retain readers for already-persisted
+legacy Plan IR during a bounded migration window. Such a storage reader MUST NOT expose a parser,
+Tool, Harness, or model path that admits legacy source.
 
 ## 15. Conformance requirements
 
@@ -393,7 +406,8 @@ A Core implementation claiming v0.1 conformance MUST publish tests that cover:
 - `par` ordering, isolation, bounded concurrency, multi-failure reporting, and restart equivalence;
 - Program Value validation, effect escape rejection, hashing, provenance, nesting limits, and
   durable execution;
-- compatibility examples from the preceding evaluator profile.
+- rejection of historical untyped source and in-band version declarations, plus persisted-IR
+  migration fixtures where that storage format remains supported.
 
 The same normative example MUST produce an observationally equivalent result before and after a
 serialization/restart boundary.

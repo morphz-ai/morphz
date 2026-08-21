@@ -58,7 +58,6 @@ use crate::scheduler::{
     SchedulerDependencyStatus, SchedulerInvariantViolation,
 };
 use crate::sexpr::SExpr;
-use crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
 use crate::timer::{TimerDisposition, TimerEngine};
 use crate::tool::{
     active_background_task_count, active_background_task_count_for_root, BackgroundTaskScheduler,
@@ -631,8 +630,18 @@ fn build_semantic_sexpr_system_prompt() -> String {
     let architecture = render_semantic_sections("architecture", SEXPR_COGNITIVE_MACHINE_PREAMBLE);
     let guidance = render_semantic_sections("runtime-guidance", common_rules);
     let prompt = format!(
-        "(system-prompt morphz\n  {kernel}\n  {architecture}\n  {guidance}\n  {contracts})",
-        kernel = ANNOTATED_RESPONSE_KERNEL,
+        "(system-prompt morphz\n  {role}\n  {architecture}\n  {guidance}\n  {contracts})",
+        role = SExpr::List(vec![
+            SExpr::Atom("model-role".to_string()),
+            SExpr::List(vec![
+                SExpr::Atom("identity".to_string()),
+                SExpr::Atom("nondeterministic semantic processor of the Morphz S-Expression Cognitive Machine".to_string()),
+            ]),
+            SExpr::List(vec![
+                SExpr::Atom("language".to_string()),
+                SExpr::Atom("use the sole Yao Language Card in Context Encoding; do not infer syntax from tool descriptions or Harness prose".to_string()),
+            ]),
+        ]),
         contracts = render_system_contract_sexpr(),
     );
     crate::sexpr::parse(&prompt).expect("Semantic SExpr VM system prompt 必须是完整合法的 SExpr");
@@ -717,6 +726,13 @@ fn validate_harness_entry_program(
     model_tool_definitions: &[ToolDefinition],
 ) -> Result<crate::sexpr_eval::Program, crate::sexpr_eval::EvalError> {
     let header = crate::sexpr_eval::inspect_program_source(source)?;
+    if header.owner == crate::sexpr_eval::EvaluationOwner::Model && header.declared_tools.is_none()
+    {
+        return Err(crate::sexpr_eval::EvalError::from(
+            "Model-owned Harness entry 必须显式声明 (requires (tools ...))；空列表表示纯推理"
+                .to_string(),
+        ));
+    }
     let callable =
         harness_entry_callable_tools(header.owner, runtime_eval_tools, model_tool_definitions);
     crate::sexpr_eval::validate(
@@ -724,6 +740,15 @@ fn validate_harness_entry_program(
         registry,
         &crate::sexpr_eval::AllowList::new(callable),
     )
+}
+
+fn model_harness_tool_scope(
+    owner_and_tools: Option<(crate::sexpr_eval::EvaluationOwner, Option<&[String]>)>,
+) -> Option<HashSet<String>> {
+    owner_and_tools.and_then(|(owner, declared)| {
+        (owner == crate::sexpr_eval::EvaluationOwner::Model)
+            .then(|| declared.unwrap_or_default().iter().cloned().collect())
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -779,8 +804,6 @@ fn render_harness_context(
     if let Some(source) = harness.entry_program() {
         let header = crate::sexpr_eval::inspect_program_source(&source)
             .map_err(|error| format!("Harness entry 不是合法的显式 eval/infer 程序：{error}"))?;
-        let program = crate::sexpr::parse(&source)
-            .map_err(|error| format!("Harness entry 不是单一合法 S 表达式：{error}"))?;
         let (owner, instruction) = match header.owner {
             crate::sexpr_eval::EvaluationOwner::Runtime => (
                 "runtime",
@@ -791,7 +814,7 @@ fn render_harness_context(
                 "This is the active entry program for the current Evaluation. Interpret it under the Contract, current Context, and physical Runtime constraints rather than restating it as reference material.",
             ),
         };
-        profile.push(SExpr::List(vec![
+        let mut entry = vec![
             SExpr::Atom("entry".to_string()),
             SExpr::List(vec![
                 SExpr::Atom("owner".to_string()),
@@ -801,8 +824,20 @@ fn render_harness_context(
                 SExpr::Atom("instruction".to_string()),
                 SExpr::Atom(instruction.to_string()),
             ]),
-            SExpr::List(vec![SExpr::Atom("program".to_string()), program]),
-        ]));
+        ];
+        // Runtime-owned source is already validated, content-addressed and
+        // dispatched by the Runtime. Repeating it here wastes Context and can
+        // invite simulation. A model-owned entry remains visible because it
+        // is the active loop the model must execute.
+        if header.owner == crate::sexpr_eval::EvaluationOwner::Model {
+            let program = crate::sexpr::parse(&source)
+                .map_err(|error| format!("Harness entry 不是单一合法 S 表达式：{error}"))?;
+            entry.push(SExpr::List(vec![
+                SExpr::Atom("program".to_string()),
+                program,
+            ]));
+        }
+        profile.push(SExpr::List(entry));
     }
     if let Some(mind) = harness.default_mind() {
         let mind = crate::sexpr::parse(&mind)
@@ -961,10 +996,10 @@ fn should_dispatch_runtime_harness_entry(executor_kind: &str, phase: &str) -> bo
 
 fn plan_infer_tool_scope(event: &Event) -> Result<Option<HashSet<String>>, String> {
     let Some(value) = event.payload.get("tools") else {
-        return Ok(None);
+        return Ok(Some(HashSet::new()));
     };
     if value.is_null() {
-        return Ok(None);
+        return Ok(Some(HashSet::new()));
     }
     let values = value
         .as_array()
@@ -9091,6 +9126,11 @@ impl Orchestrator {
                 })
             })
             .transpose()?;
+        let model_harness_tool_scope = model_harness_tool_scope(
+            harness_entry_program
+                .as_ref()
+                .map(|(_, program)| (program.owner(), program.declared_tools())),
+        );
         let plan_infer_tools = if thread.executor_kind == "plan_infer" {
             let request = self
                 .context_engine
@@ -9157,6 +9197,7 @@ impl Orchestrator {
             measurement_tools.retain(|tool| !is_dialogue_objective_tool(&tool.name));
         }
         restrict_tools_to_scope(&mut measurement_tools, plan_infer_tools.as_ref());
+        restrict_tools_to_scope(&mut measurement_tools, model_harness_tool_scope.as_ref());
         if thread.executor_kind != "plan_infer" {
             measurement_tools.push(no_reply_tool_definition());
         }
@@ -9344,6 +9385,7 @@ impl Orchestrator {
             }
         }
         restrict_tools_to_scope(&mut tools, plan_infer_tools.as_ref());
+        restrict_tools_to_scope(&mut tools, model_harness_tool_scope.as_ref());
         if thread.executor_kind != "plan_infer" {
             tools.push(no_reply_tool_definition());
         }
@@ -18131,7 +18173,7 @@ mod tests {
         derived_thread_kind, durable_activation_revocation_reason,
         durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
         harness_entry_callable_tools, legacy_plan_effect_sequence, model_binding_completion_error,
-        model_visible_attachment_references, new_runtime_claimant_id,
+        model_harness_tool_scope, model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
         persistent_provider_wait_contexts, plan_infer_tool_scope,
         production_system_prompt_inspection, provider_delivery_retry_delay,
@@ -19234,7 +19276,7 @@ mod tests {
         assert!(context.contains("(read-only-default-mind (mind"));
         assert!(context.contains("(capabilities read rust)"));
         assert!(context.contains("(entry (owner runtime)"));
-        assert!(context.contains("(program (eval"));
+        assert!(!context.contains("(program (eval"));
         assert!(context.contains("Runtime lowers this entry to Typed Plan IR"));
         assert!(context.find("(evaluation-profile").unwrap() < context.find("(inbox").unwrap());
         assert!(context.find("(evaluation-environment").unwrap() > context.find("(inbox").unwrap());
@@ -19282,7 +19324,10 @@ mod tests {
                   (version "1.0.0")
                   (title "Research"))
                 (contract (identity "research"))
-                (infer (task "形成有证据边界的研究结论"))
+                (infer
+                  (requires (tools))
+                  (task "形成有证据边界的研究结论")
+                  (returns String))
             "#,
         )
         .unwrap();
@@ -19331,6 +19376,29 @@ mod tests {
             harness_entry_callable_tools(crate::sexpr_eval::EvaluationOwner::Model, &[], &model,),
             vec!["read".to_string(), "write".to_string(), "exec".to_string()]
         );
+
+        let declared = vec!["read".to_string()];
+        let scope = model_harness_tool_scope(Some((
+            crate::sexpr_eval::EvaluationOwner::Model,
+            Some(&declared),
+        )))
+        .unwrap();
+        let mut narrowed = model;
+        restrict_tools_to_scope(&mut narrowed, Some(&scope));
+        assert_eq!(
+            narrowed
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect::<Vec<_>>(),
+            vec!["read"]
+        );
+        assert_eq!(
+            model_harness_tool_scope(Some((
+                crate::sexpr_eval::EvaluationOwner::Runtime,
+                Some(&declared),
+            ))),
+            None
+        );
     }
 
     #[test]
@@ -19352,7 +19420,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_infer_tool_scope_distinguishes_inheritance_from_explicit_purity() {
+    fn plan_infer_tool_scope_never_inherits_parent_tools_implicitly() {
         let base = serde_json::Map::from_iter([
             ("context_id".to_string(), json!("context-1")),
             ("session_id".to_string(), json!("session-1")),
@@ -19364,7 +19432,10 @@ mod tests {
             "chat/infer_request".to_string(),
             base.clone(),
         );
-        assert_eq!(plan_infer_tool_scope(&inherited).unwrap(), None);
+        assert_eq!(
+            plan_infer_tool_scope(&inherited).unwrap(),
+            Some(HashSet::new())
+        );
 
         let mut pure_payload = base.clone();
         pure_payload.insert("tools".to_string(), json!([]));
@@ -19583,15 +19654,9 @@ mod tests {
         assert!(!semantic.contains("Cognitive S-Expression Machine"));
         assert!(!semantic.contains("S-expression semantic virtual machine"));
         for marker in [
-            "(operator seq",
-            "(operator call",
-            "(operator fallback",
-            "(operator bind",
-            "(operator if",
-            "(operator reply",
+            "(model-role",
+            "sole Yao Language Card in Context Encoding",
             "ordinary assistant text",
-            "not a model-response format",
-            "never send the (reply ...) parentheses, operator name, or a code fence to the Session",
             "no_reply",
             "runtime-contracts",
             "reality-contract-v1",
@@ -19602,6 +19667,8 @@ mod tests {
         ] {
             assert!(semantic.contains(marker), "missing marker: {marker}");
         }
+        assert!(!semantic.contains("(operator seq"));
+        assert!(!semantic.contains("(vm morphz"));
         for leaked_task_hint in ["ALPHA", "BETA", "CHARLIE", "approved-current"] {
             assert!(!semantic.contains(leaked_task_hint));
         }

@@ -210,12 +210,12 @@ Morphz v0.1 publishes these default hard ceilings:
 Deployments MAY lower ceilings. Raising them creates a different resource profile and MUST remain
 finite.
 
-## 12. Legacy profile
+## 12. Source and storage migration profile
 
-Existing Morphz `.hns` packages and `eval` Function Calls remain accepted. They are compiled into
-the new typed representation with a legacy marker and the historical limits of 16 semantic nesting
-levels, 64 sequential map elements, 128 Tool calls, and 8 nested inference calls. Existing Plan IR
-schema version 1 remains decodable until a documented migration removes it.
+Morphz `.hns` entries, `eval` Function Calls, and Program Value candidates MUST use the one typed
+Yao source language and MUST NOT contain `(version ...)`. Existing Plan IR schema version 1 MAY
+remain decodable until a documented migration removes it. That decoder is storage-only and MUST
+NOT be reachable as a legacy source admission path.
 
 ## 13. Security requirements
 
