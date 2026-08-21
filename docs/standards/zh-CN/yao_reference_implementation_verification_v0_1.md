@@ -1,0 +1,74 @@
+# Yao 参考实现验证记录 v0.1
+
+> 状态：Draft 实现证据
+>
+> 维护者：新变元（Newvar）
+>
+> 最后更新：2026-08-21
+>
+> 规范文本：[English](../yao_reference_implementation_verification_v0_1.md)
+
+## 1. 目的
+
+本文档把 Yao v0.1 Draft 规范映射到 Morphz 参考实现中的自动化证据。它是实现验证记录，
+不是一致性证书，也不能替代规范文本。
+
+测试边界不只覆盖成功示例，还覆盖无效和对抗性源码、静态权限拒绝、确定性身份、序列化与
+恢复、部分并行完成、失败聚合、伪造 Host 值、数据库迁移和旧语义兼容。
+
+## 2. 自动化证据
+
+| 要求范围 | 主要自动化证据 | 状态 |
+| --- | --- | --- |
+| UTF-8 语法、精确 Span、转义、注释、畸形输入、源码和嵌套限制 | `yao::syntax::tests` | 通过 |
+| Parser 稳健性 | `arbitrary_short_inputs_never_panic` 中 4,096 个确定性生成的短输入 | 通过 |
+| 规范化源码与类型化身份 | `yao::canonical::tests` | 通过 |
+| 命名 Record/Union、穷尽 `match`、集合、`Option`、`Result`、`Ref`、`Program` | `yao::sema::tests`、`yao::eval::tests` | 通过 |
+| 静态 Effect 推导、Effect 上界、Tool 范围、Host Effect、Effect Normal Form | `yao::sema::tests`、`sexpr_eval::tests` | 通过 |
+| 纯求值、受检 Decode、溢出/失败路径、分支作用域和确定性 `par` 顺序 | `yao::eval::tests`、`sexpr_eval::tests` | 通过 |
+| 显式 typed-v0.1 准入与旧源码兼容 | `explicit_root_version_is_the_only_typed_compatibility_boundary` 和旧求值器测试集 | 通过 |
+| 类型化 Infer 请求/响应、Continuation 序列化与精确恢复 | `sexpr_eval::tests`、`plan_execution::tests` | 通过 |
+| 持久 `par` 子计划、分支隔离、全终态 Barrier、有序 Join、聚合失败与重启 | `sexpr_eval` 和 `plan_execution` 中的 `typed_par_*` 测试 | 通过 |
+| Program Value 准入、规范 Hash、Effect/输出上界、调用者局部变量隔离、持久子计划与共享深度预算 | `program_*`、`generated_program_*`、`nested_program_*` 测试 | 通过 |
+| Runtime 环境注入与类型化可选字段投影 | `runtime_context_is_injected_*`、`host_view_normalizes_*` | 通过 |
+| Host Receipt 重放、Candidate 封闭性、引用不可伪造、同 Context Evidence 与 Objective 权限 | `plan_execution::tests` 中的 Host 测试和 `yao::eval::tests` 中的 Candidate 测试 | 通过 |
+| SQLite Plan Wait 迁移、索引、终态 Fence Trigger 与重启生命周期 | SQLite 迁移测试及 `memory::sqlite::plan_execution::tests` | 通过 |
+| Morphz 全仓回归 | `cargo test --workspace` | 通过 |
+
+## 3. 可复现门禁
+
+2026-08-21 的验证运行使用了：
+
+```text
+cargo test -p yao-lang
+cargo test -p morphz sexpr_eval::tests --lib
+cargo test -p morphz plan_execution::tests --lib
+cargo test -p morphz plan_execution_program_wait_migration_preserves_rows_indexes_and_fence_trigger --lib
+cargo clippy -p yao-lang --all-targets -- -D warnings
+cargo clippy -p morphz --all-targets -- -D warnings
+cargo clippy -p morphz-evals --all-targets -- -D warnings
+cargo test --workspace
+```
+
+语言 crate 完成 33 项测试；Morphz 求值器和 Plan 聚焦测试分别完成 44 项与 17 项；完整
+workspace 完成 1,172 项测试、无失败。另有 6 项测试因明确要求真实外部登录或人工终端检查，
+保持其原有 `ignored` 声明。
+
+绑定本地 Mock Server 或验证 Morphz 自身 macOS Sandbox 的测试必须在受限父 Sandbox 之外
+运行。在嵌套 Sandbox 内执行时，操作系统会在测试对象运行前以 `Operation not permitted`
+拒绝环境初始化。
+
+## 4. Draft 缺口
+
+以下规范目标尚未获得完整实现证据，因此继续保持 Draft：
+
+- 父计划取消向所有未终止 `par` 和 Program 子计划的传播；
+- Proposal 记录之后真正应用 Objective 状态变更和类型化 Context Transaction；
+- `ExecutionTargetView` 的注入与授权行为；
+- 每一种新增 Yao Wait Boundary 的 PostgreSQL 真实崩溃窗口测试；
+- 在确定性 Parser 稳健性输入集之外，对语义 Decode、Canonicalization 和 Program 准入进行
+  持续 Fuzz；
+- 与独立 Yao 实现的互操作验证。
+
+在这些缺口补齐之前，或尚未发布独立的一致性测试套件与版本化证据包时，任何发布都不得
+宣称完整符合 Yao v0.1。

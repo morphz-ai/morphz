@@ -48,6 +48,20 @@ category and conformance semantics implementation-independent.
    defines the `.hns` physical forms, logical artifacts, normalization, identity, and Loader
    behavior.
 
+## Yao language deliverables
+
+1. [Yao Core Language Specification v0.1](yao_core_language_specification_v0_1.md)
+   defines the implementation-independent typed language, effects, structured concurrency, and
+   Program Values.
+2. [Yao Evaluation Semantics v0.1](yao_evaluation_semantics_v0_1.md)
+   defines model-owned and Runtime-owned evaluation, durable lowering, recovery, and failure
+   semantics.
+3. [Yao Morphz Runtime Profile v0.1](yao_morphz_runtime_profile_v0_1.md)
+   defines Morphz host objects, effects, capability settlement, lowering targets, and resource
+   limits.
+4. [Yao Reference Implementation Verification v0.1](yao_reference_implementation_verification_v0_1.md)
+   maps Draft requirements to executable evidence and records the remaining implementation gaps.
+
 [Project governance](../../GOVERNANCE.md) and
 [MEP-0001](../meps/MEP-0001-specification-governance.md) define how all standards and the official
 implementation evolve. The [IPR Status Notice](IPR_STATUS.md) records the provisional copyright,

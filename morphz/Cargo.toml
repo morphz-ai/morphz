@@ -50,6 +50,7 @@ vt100 = "0.16.2"
 clap = "4.5"
 clap_complete = "4.5"
 tempfile = "3.8"
+yao-lang = { path = "../yao" }
 
 [lints]
 workspace = true

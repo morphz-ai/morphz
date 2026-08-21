@@ -949,7 +949,7 @@ impl SqliteStore {
                 'queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'
             )),
             pending_kind TEXT CHECK(pending_kind IN (
-                'execution_job', 'action_group', 'evaluation'
+                'execution_job', 'action_group', 'evaluation', 'plan_execution'
             )),
             pending_id TEXT,
             claimed_by TEXT,
@@ -1536,6 +1536,7 @@ impl SqliteStore {
         .execute(&pool)
         .await?;
         migrate_runtime_timer_delivery_flush_kind(&pool).await?;
+        migrate_plan_execution_program_wait_kind(&pool).await?;
         migrate_schedule_paused_status(&pool).await?;
         migrate_schedule_dependency_index(&pool).await?;
         if !sqlite_migration_applied(&pool, LEGACY_ACTIVATION_WAIT_STATUS_MIGRATION).await? {
@@ -3989,6 +3990,111 @@ async fn migrate_runtime_timer_delivery_flush_kind(
     )
     .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// SQLite cannot widen the pending-kind CHECK in place. Program Values add a
+/// parent Plan waiting on a durable child Plan, so preserve every existing row
+/// while rebuilding only this internal authority table.
+async fn migrate_plan_execution_program_wait_kind(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let table_sql = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'plan_executions'",
+    )
+    .fetch_one(pool)
+    .await?
+    .unwrap_or_default();
+    if table_sql.contains("'plan_execution'") {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    sqlx::query("ALTER TABLE plan_executions RENAME TO plan_executions_legacy")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        r#"CREATE TABLE plan_executions (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            activation_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            initiating_principal_id TEXT,
+            tool_call_id TEXT NOT NULL,
+            objective_id TEXT,
+            objective_evaluation_id TEXT,
+            harness_id TEXT,
+            harness_version TEXT,
+            source_artifact_hash TEXT NOT NULL,
+            ir_schema_version INTEGER NOT NULL CHECK(ir_schema_version >= 1),
+            program_json TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            budget_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'
+            )),
+            pending_kind TEXT CHECK(pending_kind IN (
+                'execution_job', 'action_group', 'evaluation', 'plan_execution'
+            )),
+            pending_id TEXT,
+            claimed_by TEXT,
+            claim_token TEXT,
+            lease_expires_at TEXT,
+            result_json TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            finished_at TEXT,
+            UNIQUE(activation_id, tool_call_id),
+            FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            CHECK((status = 'waiting' AND pending_kind IS NOT NULL AND pending_id IS NOT NULL)
+               OR (status <> 'waiting' AND pending_kind IS NULL AND pending_id IS NULL))
+        )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO plan_executions
+           (id, revision, activation_id, thread_id, agent_id, context_id, session_id,
+            initiating_principal_id, tool_call_id, objective_id, objective_evaluation_id,
+            harness_id, harness_version, source_artifact_hash, ir_schema_version,
+            program_json, state_json, budget_json, status, pending_kind, pending_id,
+            claimed_by, claim_token, lease_expires_at, result_json, error,
+            created_at, updated_at, finished_at)
+           SELECT id, revision, activation_id, thread_id, agent_id, context_id, session_id,
+                  initiating_principal_id, tool_call_id, objective_id, objective_evaluation_id,
+                  harness_id, harness_version, source_artifact_hash, ir_schema_version,
+                  program_json, state_json, budget_json, status, pending_kind, pending_id,
+                  claimed_by, claim_token, lease_expires_at, result_json, error,
+                  created_at, updated_at, finished_at
+             FROM plan_executions_legacy"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DROP TABLE plan_executions_legacy")
+        .execute(&mut *tx)
+        .await?;
+    for statement in [
+        "CREATE INDEX idx_plan_executions_queue ON plan_executions(status, lease_expires_at, created_at, id)",
+        "CREATE INDEX idx_plan_executions_context_status ON plan_executions(context_id, status, updated_at DESC)",
+        "CREATE INDEX idx_plan_executions_pending ON plan_executions(pending_kind, pending_id) WHERE status = 'waiting'",
+        "CREATE INDEX idx_plan_executions_wait_kind ON plan_executions(pending_kind, updated_at DESC, id) WHERE status = 'waiting'",
+        r#"CREATE TRIGGER plan_executions_terminal_status_is_irreversible
+           BEFORE UPDATE OF status ON plan_executions
+           WHEN OLD.status IN ('succeeded', 'failed', 'cancelled')
+                AND NEW.status <> OLD.status
+           BEGIN
+             SELECT RAISE(ABORT, 'plan execution terminal status is irreversible');
+           END"#,
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(())
 }
@@ -22835,6 +22941,165 @@ mod tests {
             sqlite_has_wal_reset_fix(&version),
             "linked SQLite {version} is vulnerable to the WAL-reset race"
         );
+    }
+
+    #[tokio::test]
+    async fn plan_execution_program_wait_migration_preserves_rows_indexes_and_fence_trigger() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .foreign_keys(false),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE plan_executions (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                activation_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                context_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                initiating_principal_id TEXT,
+                tool_call_id TEXT NOT NULL,
+                objective_id TEXT,
+                objective_evaluation_id TEXT,
+                harness_id TEXT,
+                harness_version TEXT,
+                source_artifact_hash TEXT NOT NULL,
+                ir_schema_version INTEGER NOT NULL CHECK(ir_schema_version >= 1),
+                program_json TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                budget_json TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN (
+                    'queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'
+                )),
+                pending_kind TEXT CHECK(pending_kind IN (
+                    'execution_job', 'action_group', 'evaluation'
+                )),
+                pending_id TEXT,
+                claimed_by TEXT,
+                claim_token TEXT,
+                lease_expires_at TEXT,
+                result_json TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                finished_at TEXT,
+                UNIQUE(activation_id, tool_call_id),
+                CHECK((status = 'waiting' AND pending_kind IS NOT NULL AND pending_id IS NOT NULL)
+                   OR (status <> 'waiting' AND pending_kind IS NULL AND pending_id IS NULL))
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO plan_executions
+               (id, activation_id, thread_id, agent_id, context_id, session_id,
+                tool_call_id, source_artifact_hash, ir_schema_version,
+                program_json, state_json, budget_json, status, pending_kind,
+                pending_id, created_at, updated_at)
+               VALUES ('legacy-plan', 'activation-1', 'thread-1', 'agent-1',
+                       'context-1', 'session-1', 'call-1', 'sha256:legacy', 1,
+                       '{}', '{}', '{}', 'waiting', 'action_group', 'group-1',
+                       '2026-08-21T00:00:00Z', '2026-08-21T00:00:00Z')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        migrate_plan_execution_program_wait_kind(&pool)
+            .await
+            .unwrap();
+
+        let table_sql = sqlx::query_scalar::<_, String>(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'plan_executions'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(table_sql.contains("'plan_execution'"));
+        let preserved = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT id, pending_kind, pending_id FROM plan_executions WHERE id = 'legacy-plan'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            preserved,
+            (
+                "legacy-plan".to_string(),
+                "action_group".to_string(),
+                "group-1".to_string()
+            )
+        );
+
+        sqlx::query(
+            r#"INSERT INTO plan_executions
+               (id, activation_id, thread_id, agent_id, context_id, session_id,
+                tool_call_id, source_artifact_hash, ir_schema_version,
+                program_json, state_json, budget_json, status, pending_kind,
+                pending_id, created_at, updated_at)
+               VALUES ('program-parent', 'activation-2', 'thread-2', 'agent-1',
+                       'context-1', 'session-1', 'call-2', 'sha256:new', 1,
+                       '{}', '{}', '{}', 'waiting', 'plan_execution', 'program-child',
+                       '2026-08-21T00:00:00Z', '2026-08-21T00:00:00Z')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM plan_executions WHERE pending_kind = 'plan_execution'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+
+        for name in [
+            "idx_plan_executions_queue",
+            "idx_plan_executions_context_status",
+            "idx_plan_executions_pending",
+            "idx_plan_executions_wait_kind",
+            "plan_executions_terminal_status_is_irreversible",
+        ] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master WHERE name = ?",)
+                    .bind(name)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                1,
+                "migration must recreate {name}"
+            );
+        }
+
+        sqlx::query(
+            r#"INSERT INTO plan_executions
+               (id, activation_id, thread_id, agent_id, context_id, session_id,
+                tool_call_id, source_artifact_hash, ir_schema_version,
+                program_json, state_json, budget_json, status, created_at, updated_at, finished_at)
+               VALUES ('terminal-plan', 'activation-3', 'thread-3', 'agent-1',
+                       'context-1', 'session-1', 'call-3', 'sha256:terminal', 1,
+                       '{}', '{}', '{}', 'succeeded',
+                       '2026-08-21T00:00:00Z', '2026-08-21T00:00:00Z',
+                       '2026-08-21T00:00:00Z')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(sqlx::query(
+            "UPDATE plan_executions SET status = 'queued' WHERE id = 'terminal-plan'"
+        )
+        .execute(&pool)
+        .await
+        .is_err());
     }
 
     #[tokio::test]

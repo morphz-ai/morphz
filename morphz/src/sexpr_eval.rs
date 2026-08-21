@@ -12,11 +12,12 @@
 //! accounting, which is why iteration here only ranges over a collection that
 //! some earlier step already produced.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use sha2::{Digest, Sha256};
 
 use crate::sexpr::SExpr;
 use crate::tool::Registry;
@@ -37,6 +38,11 @@ pub const MAX_PROGRAM_CALLS: usize = 128;
 /// Total `infer` evaluations in one program. Each one is a model request, so
 /// this bounds cost and latency rather than termination.
 pub const MAX_PROGRAM_INFERS: usize = 8;
+
+/// A Program Value may recursively launch only a finite number of child
+/// Programs. The budget is transferred down the durable child chain and is
+/// never replenished by restart.
+pub const MAX_PROGRAM_VALUE_NESTING: usize = 4;
 
 /// Model requests within a single `infer` while it gathers evidence.
 ///
@@ -168,6 +174,9 @@ pub fn operator_contract() -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvalError {
     pub message: String,
+    /// Structured source diagnostic when rejection happened in the Yao
+    /// frontend. Runtime/execution failures need not carry source syntax.
+    pub diagnostic: Option<Box<crate::yao::Diagnostic>>,
 }
 
 impl std::fmt::Display for EvalError {
@@ -180,14 +189,36 @@ impl std::error::Error for EvalError {}
 
 impl From<String> for EvalError {
     fn from(message: String) -> Self {
-        Self { message }
+        Self {
+            message,
+            diagnostic: None,
+        }
     }
 }
 
 fn err<T>(message: impl Into<String>) -> Result<T, EvalError> {
     Err(EvalError {
         message: message.into(),
+        diagnostic: None,
     })
+}
+
+fn parse_source_forms(source: &str) -> Result<Vec<SExpr>, EvalError> {
+    crate::yao::parse_all(source, crate::yao::ParseLimits::default())
+        .map(|forms| forms.iter().map(lower_spanned_sexpr).collect())
+        .map_err(|diagnostic| EvalError {
+            message: format!("program 不是合法的 Yao 源码: {diagnostic}"),
+            diagnostic: Some(Box::new(diagnostic)),
+        })
+}
+
+fn lower_spanned_sexpr(expression: &crate::yao::Expr) -> SExpr {
+    match expression {
+        crate::yao::Expr::Atom(atom) => SExpr::Atom(atom.value.clone()),
+        crate::yao::Expr::List { items, .. } => {
+            SExpr::List(items.iter().map(lower_spanned_sexpr).collect())
+        }
+    }
 }
 
 /// Which evaluator owns the outer program loop.
@@ -231,19 +262,27 @@ pub struct PlanArgument {
 /// answer crosses back into deterministic data flow.  Keeping the contract in
 /// Typed Plan IR makes restart recovery apply the same decoding rule as the
 /// initial in-process execution.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InferResultKind {
     #[default]
     Text,
     Json,
+    /// A typed Yao value. The definitions travel with the durable effect so a
+    /// different worker applies exactly the admission-time decoder on resume.
+    Yao {
+        ty: crate::yao::Type,
+        definitions: BTreeMap<String, crate::yao::TypeDefinition>,
+        span: crate::yao::SourceSpan,
+    },
 }
 
 impl InferResultKind {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Text => "text",
             Self::Json => "json",
+            Self::Yao { .. } => "yao",
         }
     }
 }
@@ -256,6 +295,11 @@ impl InferResultKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum PlanNode {
+    /// Fully typed Yao v0.1 program. Legacy Plan IR remains readable while the
+    /// typed frontend and machine are introduced behind this versioned node.
+    Typed {
+        program: Box<crate::yao::Program>,
+    },
     Value {
         value: PlanValue,
     },
@@ -342,6 +386,157 @@ impl Program {
     pub fn declared_tools(&self) -> Option<&[String]> {
         self.declared.as_deref()
     }
+
+    pub fn typed_program(&self) -> Option<&crate::yao::Program> {
+        match &self.root {
+            PlanNode::Typed { program } => Some(program),
+            _ => None,
+        }
+    }
+}
+
+/// Provenance captured when model output crosses the quarantined Program
+/// Value admission boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramValueProvenance {
+    pub parent_plan_execution_id: String,
+    pub producer_evaluation_id: String,
+    pub terminal_event_id: Option<String>,
+    pub validation_version: String,
+}
+
+/// Runtime-admitted immutable Program Value. Source alone is never this type:
+/// the validated Program, typed contracts, hash, and producer provenance must
+/// travel together across persistence and restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanProgramValue {
+    pub hash: String,
+    pub source: String,
+    pub program: Program,
+    pub output: crate::yao::Type,
+    pub effects: crate::yao::EffectSet,
+    pub provenance: ProgramValueProvenance,
+}
+
+const YAO_TRANSPORT_TAG: &str = "$yao";
+
+fn encode_program_value(value: &PlanProgramValue) -> Result<JsonValue, String> {
+    Ok(serde_json::json!({
+        YAO_TRANSPORT_TAG: {
+            "kind": "program",
+            "hash": value.hash,
+            "value": serde_json::to_value(value)
+                .map_err(|error| format!("Program Value 序列化失败: {error}"))?,
+        }
+    }))
+}
+
+fn decode_program_value(value: &JsonValue) -> Result<PlanProgramValue, String> {
+    let tag = value
+        .get(YAO_TRANSPORT_TAG)
+        .and_then(JsonValue::as_object)
+        .ok_or("run operand 不是 Runtime-admitted Program Value")?;
+    if tag.get("kind").and_then(JsonValue::as_str) != Some("program") {
+        return Err("run operand 不是 Program Value".to_string());
+    }
+    let declared_hash = tag
+        .get("hash")
+        .and_then(JsonValue::as_str)
+        .ok_or("Program Value 缺少 content hash")?;
+    let admitted: PlanProgramValue = serde_json::from_value(
+        tag.get("value")
+            .cloned()
+            .ok_or("Program Value 缺少 admitted representation")?,
+    )
+    .map_err(|error| format!("Program Value representation 非法: {error}"))?;
+    let typed = admitted
+        .program
+        .typed_program()
+        .ok_or("Program Value 未携带 typed Yao Program")?;
+    let computed_hash = crate::yao::program_hash(typed);
+    if declared_hash != admitted.hash
+        || admitted.hash != typed.source_hash
+        || admitted.hash != computed_hash
+        || admitted.output != typed.output
+        || admitted.effects != typed.effects
+    {
+        return Err("Program Value content hash 或 typed contract 校验失败".to_string());
+    }
+    Ok(admitted)
+}
+
+/// Converts quarantined model output into a non-forgeable Program Value.
+/// Validation uses the declared Program effect ceiling as a Tool gate and then
+/// verifies the complete typed output/effect contract before encoding it.
+pub fn admit_program_value_candidate(
+    expected_output: &crate::yao::Type,
+    expected_effects: &crate::yao::EffectSet,
+    value: JsonValue,
+    registry: &Registry,
+    provenance: ProgramValueProvenance,
+) -> Result<JsonValue, String> {
+    let source = match value {
+        JsonValue::String(source) => source,
+        JsonValue::Object(mut object) => object
+            .remove("source")
+            .and_then(|value| value.as_str().map(str::to_string))
+            .ok_or("Program candidate 必须是 Yao 源码字符串或 {\"source\": ...}")?,
+        _ => return Err("Program candidate 必须是 Yao 源码字符串或 {\"source\": ...}".into()),
+    };
+    require_explicit_program_value_version(&source)?;
+    let allowed_tools = expected_effects.iter().filter_map(|effect| match effect {
+        crate::yao::Effect::Tool(name) => Some(name.clone()),
+        _ => None,
+    });
+    let gate = AllowList::new(allowed_tools);
+    let program = validate_typed(&source, registry, &gate).map_err(|error| error.message)?;
+    if program.owner() != EvaluationOwner::Runtime {
+        return Err("Program Value candidate 必须以 (eval ...) 为根".to_string());
+    }
+    let typed = program
+        .typed_program()
+        .ok_or("Program Value candidate 没有生成 typed Yao Program")?;
+    if !typed.output.is_assignable_to(expected_output) {
+        return Err(format!(
+            "Program Value 输出 {:?} 不能赋给声明的 {:?}",
+            typed.output, expected_output
+        ));
+    }
+    if !typed.effects.is_subset(expected_effects) {
+        return Err(format!(
+            "Program Value effects {:?} 超过声明上限 {:?}",
+            typed.effects, expected_effects
+        ));
+    }
+    let hash = typed.source_hash.clone();
+    let output = typed.output.clone();
+    let effects = typed.effects.clone();
+    let admitted = PlanProgramValue {
+        hash,
+        source,
+        program,
+        output,
+        effects,
+        provenance,
+    };
+    encode_program_value(&admitted)
+}
+
+fn require_explicit_program_value_version(source: &str) -> Result<(), String> {
+    let root = crate::yao::parse_one(source, crate::yao::ParseLimits::default())
+        .map_err(|error| format!("Program candidate 解析失败: {error}"))?;
+    let crate::yao::Expr::List { items, .. } = root else {
+        return Err("Program candidate 必须有 (eval ...) 根".to_string());
+    };
+    let explicit = items.iter().skip(1).any(|item| {
+        matches!(item, crate::yao::Expr::List { items, .. }
+            if items.first().and_then(crate::yao::Expr::as_symbol) == Some("version"))
+    });
+    if explicit {
+        Ok(())
+    } else {
+        Err("Program Value candidate 必须显式声明 (version \"0.1\")".to_string())
+    }
 }
 
 /// What a `call` node may reach. Callers narrow this; the evaluator never
@@ -389,9 +584,10 @@ pub fn validate(
     registry: &Registry,
     gate: &dyn ToolGate,
 ) -> Result<Program, EvalError> {
-    let forms = crate::sexpr::parse_all(source).map_err(|error| EvalError {
-        message: format!("program 不是合法的 S 表达式: {error}"),
-    })?;
+    if source_requests_typed_semantics(source)? {
+        return validate_typed(source, registry, gate);
+    }
+    let forms = parse_source_forms(source)?;
     let (owner, declared, root) = split_program(forms)?;
     if let Some(declared) = &declared {
         // The declaration must sit inside the deployment gate: a program
@@ -424,14 +620,229 @@ pub fn validate(
     })
 }
 
+fn validate_typed(
+    source: &str,
+    registry: &Registry,
+    gate: &dyn ToolGate,
+) -> Result<Program, EvalError> {
+    let profile = MorphzAnalysisProfile { registry, gate };
+    let typed = crate::yao::analyze(source, &profile, crate::yao::AnalysisLimits::default())
+        .map_err(|diagnostic| EvalError {
+            message: format!("Yao typed admission 失败: {diagnostic}"),
+            diagnostic: Some(Box::new(diagnostic)),
+        })?;
+    let owner = match typed.owner {
+        crate::yao::EvaluationOwner::Runtime => EvaluationOwner::Runtime,
+        crate::yao::EvaluationOwner::Model => EvaluationOwner::Model,
+    };
+    let declared = typed
+        .requirements
+        .tools
+        .as_ref()
+        .map(|tools| tools.iter().cloned().collect::<Vec<_>>());
+    let tools = typed
+        .effects
+        .iter()
+        .filter_map(|effect| match effect {
+            crate::yao::Effect::Tool(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    Ok(Program {
+        owner,
+        root: PlanNode::Typed {
+            program: Box::new(typed),
+        },
+        tools,
+        declared,
+    })
+}
+
+fn source_requests_typed_semantics(source: &str) -> Result<bool, EvalError> {
+    let root = crate::yao::parse_one(source, crate::yao::ParseLimits::default()).map_err(
+        |diagnostic| EvalError {
+            message: format!("program 不是合法的 Yao 源码: {diagnostic}"),
+            diagnostic: Some(Box::new(diagnostic)),
+        },
+    )?;
+    let items = root
+        .as_list()
+        .ok_or_else(|| EvalError::from("program root 必须是显式 eval 或 infer".to_string()))?;
+    // Morphz used S-expression eval programs before typed Yao v0.1. Their
+    // arbitrary call/infer argument names can legitimately be `evidence`,
+    // `get`, `record`, and so on, so scanning nested lists for new operator
+    // names is not a sound language-version discriminator. The explicit root
+    // declaration is the only ambiguity-free opt-in boundary.
+    Ok(items.get(1).is_some_and(|candidate| {
+        candidate
+            .as_list()
+            .and_then(|declaration| declaration.first())
+            .and_then(crate::yao::Expr::as_symbol)
+            == Some("version")
+    }))
+}
+
+struct MorphzAnalysisProfile<'a> {
+    registry: &'a Registry,
+    gate: &'a dyn ToolGate,
+}
+
+impl crate::yao::AnalysisProfile for MorphzAnalysisProfile<'_> {
+    fn tool_signature(&self, name: &str) -> Option<crate::yao::ToolSignature> {
+        if !self.gate.is_callable(name) {
+            return None;
+        }
+        let definition = self.registry.get(name)?.definition();
+        Some(tool_signature_from_json_schema(&definition.parameters))
+    }
+
+    fn implicit_binding(&self, name: &str) -> Option<crate::yao::Type> {
+        (name == "runtime").then(runtime_environment_type)
+    }
+
+    fn host_signature(&self, name: &str) -> Option<crate::yao::ToolSignature> {
+        use crate::yao::Type;
+        let signature = match name {
+            "evidence.commit" => crate::yao::ToolSignature {
+                arguments: BTreeMap::from([("candidate".into(), Type::EvidenceCandidate)]),
+                required: BTreeSet::from(["candidate".into()]),
+                result: Type::Ref("Evidence".into()),
+            },
+            "outcome.commit" => crate::yao::ToolSignature {
+                arguments: BTreeMap::from([("candidate".into(), Type::OutcomeCandidate)]),
+                required: BTreeSet::from(["candidate".into()]),
+                result: Type::Ref("Outcome".into()),
+            },
+            "objective.report" => crate::yao::ToolSignature {
+                arguments: BTreeMap::from([
+                    ("objective".into(), Type::Ref("Objective".into())),
+                    ("progress".into(), Type::Json),
+                    (
+                        "evidence".into(),
+                        Type::List(Box::new(Type::Ref("Evidence".into()))),
+                    ),
+                ]),
+                required: BTreeSet::from(["objective".into(), "progress".into()]),
+                result: Type::Nil,
+            },
+            "objective.propose-wait" => crate::yao::ToolSignature {
+                arguments: BTreeMap::from([
+                    ("objective".into(), Type::Ref("Objective".into())),
+                    ("condition".into(), Type::Json),
+                    ("reason".into(), Type::String),
+                ]),
+                required: BTreeSet::from(["objective".into(), "condition".into(), "reason".into()]),
+                result: Type::Nil,
+            },
+            "objective.propose-completion" => crate::yao::ToolSignature {
+                arguments: BTreeMap::from([
+                    ("objective".into(), Type::Ref("Objective".into())),
+                    ("outcome".into(), Type::Ref("Outcome".into())),
+                ]),
+                required: BTreeSet::from(["objective".into(), "outcome".into()]),
+                result: Type::Nil,
+            },
+            "context.propose" => crate::yao::ToolSignature {
+                arguments: BTreeMap::from([("transaction".into(), Type::Json)]),
+                required: BTreeSet::from(["transaction".into()]),
+                result: Type::Json,
+            },
+            _ => return None,
+        };
+        Some(signature)
+    }
+}
+
+fn tool_signature_from_json_schema(schema: &JsonValue) -> crate::yao::ToolSignature {
+    let arguments = schema
+        .get("properties")
+        .and_then(JsonValue::as_object)
+        .map(|properties| {
+            properties
+                .iter()
+                .map(|(name, schema)| (name.clone(), yao_type_from_json_schema(schema)))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let required = schema
+        .get("required")
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    crate::yao::ToolSignature {
+        arguments,
+        required,
+        // Morphz Tools currently publish JSON input schemas and return a
+        // transport observation. Narrower results enter typed flow through
+        // explicit `(decode TYPE ...)` until output schemas are published.
+        result: crate::yao::Type::Json,
+    }
+}
+
+fn yao_type_from_json_schema(schema: &JsonValue) -> crate::yao::Type {
+    match schema.get("type").and_then(JsonValue::as_str) {
+        Some("null") => crate::yao::Type::Nil,
+        Some("boolean") => crate::yao::Type::Bool,
+        Some("integer") => crate::yao::Type::Int,
+        Some("number") => crate::yao::Type::Float,
+        Some("string") => crate::yao::Type::String,
+        Some("array") => crate::yao::Type::List(Box::new(
+            schema
+                .get("items")
+                .map(yao_type_from_json_schema)
+                .unwrap_or(crate::yao::Type::Json),
+        )),
+        Some("object") => crate::yao::Type::Map(Box::new(crate::yao::Type::Json)),
+        _ => crate::yao::Type::Json,
+    }
+}
+
+fn runtime_environment_type() -> crate::yao::Type {
+    crate::yao::Type::StructuralRecord(BTreeMap::from([
+        ("agent".to_string(), crate::yao::Type::Ref("Agent".into())),
+        (
+            "evaluation".to_string(),
+            crate::yao::Type::Ref("Evaluation".into()),
+        ),
+        (
+            "context".to_string(),
+            crate::yao::Type::Ref("Context".into()),
+        ),
+        (
+            "objective".to_string(),
+            crate::yao::Type::Option(Box::new(crate::yao::Type::Ref("Objective".into()))),
+        ),
+        (
+            "harness".to_string(),
+            crate::yao::Type::Option(Box::new(crate::yao::Type::Ref("HarnessBinding".into()))),
+        ),
+        (
+            "capabilities".to_string(),
+            crate::yao::Type::Ref("CapabilitySet".into()),
+        ),
+        (
+            "principal".to_string(),
+            crate::yao::Type::Option(Box::new(crate::yao::Type::Ref("Principal".into()))),
+        ),
+        (
+            "execution_target".to_string(),
+            crate::yao::Type::Option(Box::new(crate::yao::Type::Ref("ExecutionTarget".into()))),
+        ),
+    ]))
+}
+
 /// Parses only the stable program envelope.
 ///
 /// Harness loading can use this without a live tool registry. Full operator,
 /// schema and deployment-gate validation still happens before activation.
 pub fn inspect_program_source(source: &str) -> Result<ProgramHeader, EvalError> {
-    let forms = crate::sexpr::parse_all(source).map_err(|error| EvalError {
-        message: format!("program 不是合法的 S 表达式: {error}"),
-    })?;
+    let forms = parse_source_forms(source)?;
     let (owner, declared_tools, _) = split_program(forms)?;
     Ok(ProgramHeader {
         owner,
@@ -1002,12 +1413,41 @@ pub enum PlanEffect {
         #[serde(default)]
         result: InferResultKind,
     },
+    Parallel {
+        sequence: u64,
+        branches: Vec<PlanParallelBranch>,
+    },
+    Program {
+        sequence: u64,
+        value: Box<PlanProgramValue>,
+        machine: Box<PlanMachine>,
+    },
+    Host {
+        sequence: u64,
+        operation: String,
+        arguments: JsonMap<String, JsonValue>,
+        result: InferResultKind,
+    },
+}
+
+/// One lexically scoped child of a typed `par` expression. Both the validated
+/// Program and its initialized machine are persisted in the parent intent so
+/// branch materialization is deterministic after any crash window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanParallelBranch {
+    pub name: String,
+    pub program: Program,
+    pub machine: PlanMachine,
 }
 
 impl PlanEffect {
     pub fn sequence(&self) -> u64 {
         match self {
-            Self::Call { sequence, .. } | Self::Infer { sequence, .. } => *sequence,
+            Self::Call { sequence, .. }
+            | Self::Infer { sequence, .. }
+            | Self::Parallel { sequence, .. }
+            | Self::Program { sequence, .. }
+            | Self::Host { sequence, .. } => *sequence,
         }
     }
 
@@ -1015,6 +1455,11 @@ impl PlanEffect {
         match self {
             Self::Call { tool, .. } => format!("(call {tool} ...) 失败: {message}"),
             Self::Infer { .. } => format!("(infer ...) 失败: {message}"),
+            Self::Parallel { .. } => format!("(par ...) 失败: {message}"),
+            Self::Program { .. } => format!("(run ...) 失败: {message}"),
+            Self::Host { operation, .. } => {
+                format!("host operation '{operation}' 失败: {message}")
+            }
         }
     }
 }
@@ -1030,6 +1475,12 @@ pub enum PlanAdvance {
 struct PlanBudget {
     calls_left: usize,
     infers_left: usize,
+    #[serde(default = "default_programs_left")]
+    programs_left: usize,
+}
+
+const fn default_programs_left() -> usize {
+    MAX_PROGRAM_VALUE_NESTING
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1076,6 +1527,28 @@ enum MachineFrame {
         results: Vec<JsonValue>,
         saved_env: HashMap<String, JsonValue>,
     },
+    TypedEval {
+        expression: crate::yao::HirExpr,
+    },
+    TypedSeq {
+        steps: Vec<crate::yao::HirExpr>,
+        next: usize,
+    },
+    TypedBind {
+        name: String,
+    },
+    TypedFallbackPrimary {
+        backup: crate::yao::HirExpr,
+        saved_env: HashMap<String, JsonValue>,
+    },
+    TypedMapItem {
+        items: Vec<JsonValue>,
+        next: usize,
+        element: String,
+        body: crate::yao::HirExpr,
+        results: Vec<JsonValue>,
+        saved_env: HashMap<String, JsonValue>,
+    },
 }
 
 /// Durable deterministic state of one Runtime-owned Yao program.
@@ -1095,6 +1568,10 @@ pub struct PlanMachine {
     declared_tools: Option<Vec<String>>,
     budget: PlanBudget,
     next_effect_sequence: u64,
+    /// Named type definitions are part of the validated artifact and must be
+    /// present after restart for `decode`, `match`, and typed infer results.
+    #[serde(default)]
+    typed_definitions: BTreeMap<String, crate::yao::TypeDefinition>,
 }
 
 impl PlanMachine {
@@ -1105,6 +1582,10 @@ impl PlanMachine {
                     .to_string(),
             );
         }
+        let typed_definitions = match &program.root {
+            PlanNode::Typed { program } => program.types.clone(),
+            _ => BTreeMap::new(),
+        };
         Ok(Self {
             frames: vec![MachineFrame::Eval {
                 node: program.root.clone(),
@@ -1117,13 +1598,105 @@ impl PlanMachine {
             budget: PlanBudget {
                 calls_left: MAX_PROGRAM_CALLS,
                 infers_left: MAX_PROGRAM_INFERS,
+                programs_left: MAX_PROGRAM_VALUE_NESTING,
             },
             next_effect_sequence: 1,
+            typed_definitions,
         })
     }
 
     pub fn pending_effect(&self) -> Option<&PlanEffect> {
         self.pending.as_ref()
+    }
+
+    /// Installs the non-forgeable, Evaluation-bound Runtime snapshot before a
+    /// root machine is persisted. Rebinding is rejected so a resumed Plan
+    /// cannot silently change authority or causal identity.
+    pub fn bind_runtime_environment(&mut self, value: JsonValue) -> Result<(), EvalError> {
+        if self.env.contains_key("runtime") {
+            return err("Plan Machine 的 runtime 环境已经绑定".to_string());
+        }
+        let span = crate::yao::SourceSpan::empty(crate::yao::SourceLocation::start());
+        let value = crate::yao::decode_value(
+            &runtime_environment_type(),
+            value,
+            &self.typed_definitions,
+            span,
+        )
+        .map_err(|error| EvalError::from(format!("runtime 环境不满足 Profile 类型: {error}")))?;
+        self.env.insert("runtime".to_string(), value);
+        Ok(())
+    }
+
+    fn runtime_environment(&self) -> Option<JsonValue> {
+        self.env.get("runtime").cloned()
+    }
+
+    pub fn runtime_reference_id(&self, field: &str) -> Option<String> {
+        let runtime = self.env.get("runtime")?;
+        let value = crate::yao::structural_record_field(runtime, field)?;
+        crate::yao::reference_view(value).map(|(_, id)| id.to_string())
+    }
+
+    fn typed_parallel_branch(
+        &self,
+        name: String,
+        body: crate::yao::HirExpr,
+        budget: PlanBudget,
+    ) -> PlanParallelBranch {
+        let encoded = serde_json::to_vec(&body).unwrap_or_default();
+        let source_hash = format!("sha256:{:x}", Sha256::digest(&encoded));
+        let requirements = crate::yao::sema::Requirements {
+            tools: self
+                .declared_tools
+                .as_ref()
+                .map(|tools| tools.iter().cloned().collect()),
+            effects: Some(body.effects.clone()),
+            objects: None,
+        };
+        let typed = crate::yao::Program {
+            language_version: "0.1".to_string(),
+            owner: crate::yao::EvaluationOwner::Runtime,
+            requirements,
+            types: self.typed_definitions.clone(),
+            output: body.ty.clone(),
+            effects: body.effects.clone(),
+            body: body.clone(),
+            canonical_source: format!("(generated-par-branch {name} {source_hash})"),
+            source_hash,
+        };
+        let tools = body
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                crate::yao::Effect::Tool(tool) => Some(tool.clone()),
+                _ => None,
+            })
+            .collect();
+        let program = Program {
+            owner: EvaluationOwner::Runtime,
+            root: PlanNode::Typed {
+                program: Box::new(typed),
+            },
+            tools,
+            declared: self.declared_tools.clone(),
+        };
+        let machine = Self {
+            frames: vec![MachineFrame::TypedEval { expression: body }],
+            env: self.env.clone(),
+            signal: None,
+            pending: None,
+            terminal: None,
+            declared_tools: self.declared_tools.clone(),
+            budget,
+            next_effect_sequence: 1,
+            typed_definitions: self.typed_definitions.clone(),
+        };
+        PlanParallelBranch {
+            name,
+            program,
+            machine,
+        }
     }
 
     /// Highest effect sequence that may already have produced an external
@@ -1177,6 +1750,12 @@ impl PlanMachine {
                         return self.fail_internal("Plan Machine 在已有结果时仍尝试求值新节点");
                     }
                     match node {
+                        PlanNode::Typed { program } => {
+                            self.typed_definitions = program.types.clone();
+                            self.frames.push(MachineFrame::TypedEval {
+                                expression: program.body,
+                            });
+                        }
                         PlanNode::Value { value } => match resolve_value(&value, &self.env) {
                             Ok(value) => self.signal = Some(MachineSignal::Value { value }),
                             Err(error) => self.raise(error),
@@ -1311,6 +1890,14 @@ impl PlanMachine {
                         }
                     }
                 }
+                MachineFrame::TypedEval { expression } => {
+                    if self.signal.is_some() {
+                        return self.fail_internal("Plan Machine 在已有结果时仍尝试求值 typed HIR");
+                    }
+                    if let Some(advance) = self.advance_typed(expression, registry) {
+                        return advance;
+                    }
+                }
                 MachineFrame::Seq { steps, next } => {
                     let Some(signal) = self.signal.take() else {
                         return self.fail_internal("seq continuation 缺少前一步结果");
@@ -1404,8 +1991,461 @@ impl PlanMachine {
                         }
                     }
                 }
+                MachineFrame::TypedSeq { steps, next } => {
+                    let Some(signal) = self.signal.take() else {
+                        return self.fail_internal("typed seq continuation 缺少前一步结果");
+                    };
+                    match signal {
+                        failure @ MachineSignal::Failure { .. } => self.signal = Some(failure),
+                        value @ MachineSignal::Value { .. } if next >= steps.len() => {
+                            self.signal = Some(value);
+                        }
+                        MachineSignal::Value { .. } => {
+                            let expression = steps[next].clone();
+                            self.frames.push(MachineFrame::TypedSeq {
+                                steps,
+                                next: next + 1,
+                            });
+                            self.frames.push(MachineFrame::TypedEval { expression });
+                        }
+                    }
+                }
+                MachineFrame::TypedBind { name } => {
+                    let Some(signal) = self.signal.take() else {
+                        return self.fail_internal("typed bind continuation 缺少被绑定值");
+                    };
+                    match signal {
+                        MachineSignal::Value { value } => {
+                            if self.env.insert(name.clone(), value).is_some() {
+                                self.raise(EvalError::from(format!(
+                                    "typed binding '{name}' 试图覆盖已有绑定"
+                                )));
+                            } else {
+                                self.signal = Some(MachineSignal::Value {
+                                    value: JsonValue::Null,
+                                });
+                            }
+                        }
+                        failure @ MachineSignal::Failure { .. } => self.signal = Some(failure),
+                    }
+                }
+                MachineFrame::TypedFallbackPrimary { backup, saved_env } => {
+                    let Some(signal) = self.signal.take() else {
+                        return self.fail_internal("typed fallback primary 缺少结果");
+                    };
+                    self.env = saved_env.clone();
+                    match signal {
+                        value @ MachineSignal::Value { .. } => self.signal = Some(value),
+                        MachineSignal::Failure { .. } => {
+                            self.frames.push(MachineFrame::RestoreScope { saved_env });
+                            self.frames
+                                .push(MachineFrame::TypedEval { expression: backup });
+                        }
+                    }
+                }
+                MachineFrame::TypedMapItem {
+                    items,
+                    next,
+                    element,
+                    body,
+                    mut results,
+                    saved_env,
+                } => {
+                    let Some(signal) = self.signal.take() else {
+                        return self.fail_internal("typed map body 缺少结果");
+                    };
+                    self.env = saved_env.clone();
+                    match signal {
+                        MachineSignal::Failure { message } => {
+                            self.signal = Some(MachineSignal::Failure { message });
+                        }
+                        MachineSignal::Value { value } => {
+                            results.push(value);
+                            if next >= items.len() {
+                                self.signal = Some(MachineSignal::Value {
+                                    value: JsonValue::Array(results),
+                                });
+                            } else {
+                                self.env.insert(element.clone(), items[next].clone());
+                                self.frames.push(MachineFrame::TypedMapItem {
+                                    items,
+                                    next: next + 1,
+                                    element,
+                                    body: body.clone(),
+                                    results,
+                                    saved_env,
+                                });
+                                self.frames
+                                    .push(MachineFrame::TypedEval { expression: body });
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+
+    /// Advances one typed HIR node. `None` means control returned to the
+    /// deterministic frame loop; `Some` is a suspension or terminal integrity
+    /// failure that must be returned immediately.
+    fn advance_typed(
+        &mut self,
+        expression: crate::yao::HirExpr,
+        registry: &Registry,
+    ) -> Option<PlanAdvance> {
+        if expression.effects.is_empty() {
+            match crate::yao::evaluate_pure(&expression, &mut self.env, &self.typed_definitions) {
+                Ok(value) => self.signal = Some(MachineSignal::Value { value }),
+                Err(error) => self.raise(EvalError::from(format!("Yao value failure: {error}"))),
+            }
+            return None;
+        }
+
+        let span = expression.span;
+        match expression.kind {
+            crate::yao::HirKind::Seq { steps } => {
+                let Some(first) = steps.first().cloned() else {
+                    self.raise(EvalError::from("typed HIR seq 不应为空".to_string()));
+                    return None;
+                };
+                self.frames.push(MachineFrame::TypedSeq { steps, next: 1 });
+                self.frames
+                    .push(MachineFrame::TypedEval { expression: first });
+            }
+            crate::yao::HirKind::Bind { name, value } => {
+                self.frames.push(MachineFrame::TypedBind { name });
+                self.frames
+                    .push(MachineFrame::TypedEval { expression: *value });
+            }
+            crate::yao::HirKind::If {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                match crate::yao::evaluate_pure(&condition, &mut self.env, &self.typed_definitions)
+                {
+                    Ok(JsonValue::Bool(value)) => {
+                        let selected = if value { *when_true } else { *when_false };
+                        self.frames.push(MachineFrame::RestoreScope {
+                            saved_env: self.env.clone(),
+                        });
+                        self.frames.push(MachineFrame::TypedEval {
+                            expression: selected,
+                        });
+                    }
+                    Ok(_) => self.raise(EvalError::from(
+                        "typed if condition 在运行时不是 Bool".to_string(),
+                    )),
+                    Err(error) => {
+                        self.raise(EvalError::from(format!("Yao value failure: {error}")))
+                    }
+                }
+            }
+            crate::yao::HirKind::Match { value, cases } => {
+                match crate::yao::evaluate_pure(&value, &mut self.env, &self.typed_definitions) {
+                    Ok(value) => {
+                        let Some((variant, fields)) = crate::yao::variant_view(&value) else {
+                            self.raise(EvalError::from(
+                                "typed match value 不是 Yao union variant".to_string(),
+                            ));
+                            return None;
+                        };
+                        let Some(case) = cases.into_iter().find(|case| case.variant == variant)
+                        else {
+                            self.raise(EvalError::from(format!(
+                                "typed match 没有 variant '{variant}' 的分支"
+                            )));
+                            return None;
+                        };
+                        let saved_env = self.env.clone();
+                        for binding in case.bindings {
+                            let Some(value) = fields.get(&binding.field).cloned() else {
+                                self.raise(EvalError::from(format!(
+                                    "variant '{variant}' 缺少字段 '{}'",
+                                    binding.field
+                                )));
+                                return None;
+                            };
+                            self.env.insert(binding.binding, value);
+                        }
+                        self.frames.push(MachineFrame::RestoreScope { saved_env });
+                        self.frames.push(MachineFrame::TypedEval {
+                            expression: case.body,
+                        });
+                    }
+                    Err(error) => {
+                        self.raise(EvalError::from(format!("Yao value failure: {error}")))
+                    }
+                }
+            }
+            crate::yao::HirKind::Fallback { primary, backup } => {
+                self.frames.push(MachineFrame::TypedFallbackPrimary {
+                    backup: *backup,
+                    saved_env: self.env.clone(),
+                });
+                self.frames.push(MachineFrame::TypedEval {
+                    expression: *primary,
+                });
+            }
+            crate::yao::HirKind::Map {
+                collection,
+                element,
+                body,
+            } => {
+                match crate::yao::evaluate_pure(&collection, &mut self.env, &self.typed_definitions)
+                {
+                    Ok(JsonValue::Array(items)) if items.len() <= MAX_MAP_ELEMENTS => {
+                        if items.is_empty() {
+                            self.signal = Some(MachineSignal::Value {
+                                value: JsonValue::Array(Vec::new()),
+                            });
+                        } else {
+                            let saved_env = self.env.clone();
+                            self.env.insert(element.clone(), items[0].clone());
+                            self.frames.push(MachineFrame::TypedMapItem {
+                                items,
+                                next: 1,
+                                element,
+                                body: *body.clone(),
+                                results: Vec::new(),
+                                saved_env,
+                            });
+                            self.frames
+                                .push(MachineFrame::TypedEval { expression: *body });
+                        }
+                    }
+                    Ok(JsonValue::Array(items)) => self.raise(EvalError::from(format!(
+                        "typed map 集合有 {} 个元素，超过上限 {MAX_MAP_ELEMENTS}",
+                        items.len()
+                    ))),
+                    Ok(_) => self.raise(EvalError::from(
+                        "typed map collection 在运行时不是 List".to_string(),
+                    )),
+                    Err(error) => {
+                        self.raise(EvalError::from(format!("Yao value failure: {error}")))
+                    }
+                }
+            }
+            crate::yao::HirKind::Call { tool, arguments } => {
+                if self.budget.calls_left == 0 {
+                    self.raise(EvalError::from(format!(
+                        "程序的工具调用次数超过上限 {MAX_PROGRAM_CALLS}"
+                    )));
+                    return None;
+                }
+                if registry.get(&tool).is_none() {
+                    self.raise(EvalError::from(format!("工具 '{tool}' 不存在")));
+                    return None;
+                }
+                match build_typed_arguments(&arguments, &mut self.env, &self.typed_definitions) {
+                    Ok(arguments) => {
+                        self.budget.calls_left -= 1;
+                        let effect = PlanEffect::Call {
+                            sequence: self.take_effect_sequence(),
+                            tool,
+                            arguments,
+                        };
+                        self.pending = Some(effect.clone());
+                        return Some(PlanAdvance::Suspended(effect));
+                    }
+                    Err(error) => self.raise(error),
+                }
+            }
+            crate::yao::HirKind::Infer {
+                arguments,
+                tools,
+                result,
+            } => {
+                if self.budget.infers_left == 0 {
+                    self.raise(EvalError::from(format!(
+                        "程序的 infer 次数超过上限 {MAX_PROGRAM_INFERS}"
+                    )));
+                    return None;
+                }
+                match build_typed_arguments(&arguments, &mut self.env, &self.typed_definitions) {
+                    Ok(request) => {
+                        self.budget.infers_left -= 1;
+                        let effect = PlanEffect::Infer {
+                            sequence: self.take_effect_sequence(),
+                            request,
+                            tools: tools.or_else(|| self.declared_tools.clone()),
+                            result: InferResultKind::Yao {
+                                ty: result,
+                                definitions: self.typed_definitions.clone(),
+                                span,
+                            },
+                        };
+                        self.pending = Some(effect.clone());
+                        return Some(PlanAdvance::Suspended(effect));
+                    }
+                    Err(error) => self.raise(error),
+                }
+            }
+            crate::yao::HirKind::Par { branches } => {
+                let tool_branch_count = branches
+                    .iter()
+                    .filter(|branch| {
+                        branch
+                            .body
+                            .effects
+                            .iter()
+                            .any(|effect| matches!(effect, crate::yao::Effect::Tool(_)))
+                    })
+                    .count();
+                let infer_branch_count = branches
+                    .iter()
+                    .filter(|branch| branch.body.effects.contains(&crate::yao::Effect::Infer))
+                    .count();
+                let program_branch_count = branches
+                    .iter()
+                    .filter(|branch| {
+                        branch
+                            .body
+                            .effects
+                            .iter()
+                            .any(|effect| matches!(effect, crate::yao::Effect::Program(_)))
+                    })
+                    .count();
+                let calls_per_branch = self
+                    .budget
+                    .calls_left
+                    .checked_div(tool_branch_count)
+                    .unwrap_or(0);
+                let infers_per_branch = self
+                    .budget
+                    .infers_left
+                    .checked_div(infer_branch_count)
+                    .unwrap_or(0);
+                let programs_per_branch = self
+                    .budget
+                    .programs_left
+                    .checked_div(program_branch_count)
+                    .unwrap_or(0);
+                self.budget.calls_left = self
+                    .budget
+                    .calls_left
+                    .saturating_sub(calls_per_branch.saturating_mul(tool_branch_count));
+                self.budget.infers_left = self
+                    .budget
+                    .infers_left
+                    .saturating_sub(infers_per_branch.saturating_mul(infer_branch_count));
+                self.budget.programs_left = self
+                    .budget
+                    .programs_left
+                    .saturating_sub(programs_per_branch.saturating_mul(program_branch_count));
+                let children = branches
+                    .into_iter()
+                    .map(|branch| {
+                        let budget = PlanBudget {
+                            calls_left: if branch
+                                .body
+                                .effects
+                                .iter()
+                                .any(|effect| matches!(effect, crate::yao::Effect::Tool(_)))
+                            {
+                                calls_per_branch
+                            } else {
+                                0
+                            },
+                            infers_left: if branch.body.effects.contains(&crate::yao::Effect::Infer)
+                            {
+                                infers_per_branch
+                            } else {
+                                0
+                            },
+                            programs_left: if branch
+                                .body
+                                .effects
+                                .iter()
+                                .any(|effect| matches!(effect, crate::yao::Effect::Program(_)))
+                            {
+                                programs_per_branch
+                            } else {
+                                0
+                            },
+                        };
+                        self.typed_parallel_branch(branch.name, branch.body, budget)
+                    })
+                    .collect::<Vec<_>>();
+                let effect = PlanEffect::Parallel {
+                    sequence: self.take_effect_sequence(),
+                    branches: children,
+                };
+                self.pending = Some(effect.clone());
+                return Some(PlanAdvance::Suspended(effect));
+            }
+            crate::yao::HirKind::Run { program } => {
+                if self.budget.programs_left == 0 {
+                    self.raise(EvalError::from(format!(
+                        "Program Value 嵌套超过上限 {MAX_PROGRAM_VALUE_NESTING}"
+                    )));
+                    return None;
+                }
+                match crate::yao::evaluate_pure(&program, &mut self.env, &self.typed_definitions)
+                    .map_err(|error| format!("Yao value failure: {error}"))
+                    .and_then(|value| decode_program_value(&value))
+                {
+                    Ok(value) => {
+                        self.budget.programs_left -= 1;
+                        let mut child = match PlanMachine::new(&value.program) {
+                            Ok(machine) => machine,
+                            Err(error) => {
+                                self.raise(error);
+                                return None;
+                            }
+                        };
+                        // Program Values are isolated from caller-local bindings,
+                        // but inherit the same immutable Runtime authority snapshot.
+                        if let Some(runtime) = self.runtime_environment() {
+                            if let Err(error) = child.bind_runtime_environment(runtime) {
+                                self.raise(error);
+                                return None;
+                            }
+                        }
+                        // Transfer the remaining aggregate ceilings to the
+                        // child. v0.1 deliberately does not refund unused
+                        // child budget after join; this is conservative and
+                        // restart-stable.
+                        child.budget = self.budget.clone();
+                        self.budget.calls_left = 0;
+                        self.budget.infers_left = 0;
+                        self.budget.programs_left = 0;
+                        let effect = PlanEffect::Program {
+                            sequence: self.take_effect_sequence(),
+                            value: Box::new(value),
+                            machine: Box::new(child),
+                        };
+                        self.pending = Some(effect.clone());
+                        return Some(PlanAdvance::Suspended(effect));
+                    }
+                    Err(error) => self.raise(EvalError::from(error)),
+                }
+            }
+            crate::yao::HirKind::Host {
+                operation,
+                arguments,
+            } => match build_typed_arguments(&arguments, &mut self.env, &self.typed_definitions) {
+                Ok(arguments) => {
+                    let effect = PlanEffect::Host {
+                        sequence: self.take_effect_sequence(),
+                        operation,
+                        arguments,
+                        result: InferResultKind::Yao {
+                            ty: expression.ty,
+                            definitions: self.typed_definitions.clone(),
+                            span,
+                        },
+                    };
+                    self.pending = Some(effect.clone());
+                    return Some(PlanAdvance::Suspended(effect));
+                }
+                Err(error) => self.raise(error),
+            },
+            _ => self.raise(EvalError::from(
+                "effectful 标记出现在不允许产生 effect 的 typed HIR 节点".to_string(),
+            )),
+        }
+        None
     }
 
     /// Supplies the result of the exact pending effect.  The sequence is a
@@ -1474,7 +2514,14 @@ pub async fn evaluate(
     registry: Arc<Registry>,
     host: Arc<dyn RuntimeInference>,
 ) -> Result<JsonValue, EvalError> {
-    let mut machine = PlanMachine::new(program)?;
+    evaluate_machine(PlanMachine::new(program)?, registry, host).await
+}
+
+async fn evaluate_machine(
+    mut machine: PlanMachine,
+    registry: Arc<Registry>,
+    host: Arc<dyn RuntimeInference>,
+) -> Result<JsonValue, EvalError> {
     loop {
         match machine.advance(&registry) {
             PlanAdvance::Complete(value) => return Ok(value),
@@ -1502,9 +2549,59 @@ pub async fn evaluate(
                         result,
                         ..
                     } => match host.infer(&request, tools.as_deref()).await {
-                        Ok(value) => decode_infer_result(result, JsonValue::String(value)),
+                        Ok(value) => decode_infer_result_with_admission(
+                            result,
+                            JsonValue::String(value),
+                            &registry,
+                            ProgramValueProvenance {
+                                parent_plan_execution_id: "in-process".to_string(),
+                                producer_evaluation_id: "in-process".to_string(),
+                                terminal_event_id: None,
+                                validation_version: "yao-0.1".to_string(),
+                            },
+                        ),
                         Err(error) => Err(error.to_string()),
                     },
+                    PlanEffect::Parallel { branches, .. } => {
+                        // The convenience evaluator has no durable scheduler;
+                        // it preserves the same isolated branch machines and
+                        // deterministic join while executing them serially.
+                        // Production Morphz lowers this effect to a durable
+                        // Action Group whose branches may run concurrently.
+                        let mut fields = Vec::with_capacity(branches.len());
+                        let mut failures = Vec::new();
+                        for branch in branches {
+                            match Box::pin(evaluate_machine(
+                                branch.machine,
+                                Arc::clone(&registry),
+                                Arc::clone(&host),
+                            ))
+                            .await
+                            {
+                                Ok(value) => fields.push((branch.name, value)),
+                                Err(error) => failures.push((branch.name, error.message)),
+                            }
+                        }
+                        if failures.is_empty() {
+                            Ok(crate::yao::structural_record_value(fields))
+                        } else {
+                            Err(failures
+                                .into_iter()
+                                .map(|(name, error)| format!("{name}: {error}"))
+                                .collect::<Vec<_>>()
+                                .join("; "))
+                        }
+                    }
+                    PlanEffect::Program { machine: child, .. } => Box::pin(evaluate_machine(
+                        *child,
+                        Arc::clone(&registry),
+                        Arc::clone(&host),
+                    ))
+                    .await
+                    .map_err(|error| error.message),
+                    PlanEffect::Host { operation, .. } => Err(format!(
+                        "in-process convenience evaluator 没有 Morphz authority，不能执行 host operation '{operation}'"
+                    )),
                 };
                 machine.resume_effect(sequence, outcome)?;
             }
@@ -1550,6 +2647,33 @@ fn build_arguments(
         arguments.insert(argument.name.clone(), value);
     }
     Ok(arguments)
+}
+
+fn build_typed_arguments(
+    args: &[crate::yao::sema::NamedArgument],
+    env: &mut HashMap<String, JsonValue>,
+    definitions: &BTreeMap<String, crate::yao::TypeDefinition>,
+) -> Result<JsonMap<String, JsonValue>, EvalError> {
+    let mut output = JsonMap::new();
+    for argument in args {
+        let mut values = argument
+            .values
+            .iter()
+            .map(|value| {
+                crate::yao::evaluate_pure(value, env, definitions)
+                    .map_err(|error| EvalError::from(format!("Yao argument failure: {error}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let value = if values.len() == 1 {
+            values.pop().expect("length checked above")
+        } else {
+            JsonValue::Array(values)
+        };
+        if output.insert(argument.name.clone(), value).is_some() {
+            return err(format!("typed argument '{}' 重复", argument.name));
+        }
+    }
+    Ok(output)
 }
 
 /// Resolves a value position: `$name` and `$name.field` read the environment,
@@ -1620,6 +2744,46 @@ pub fn decode_infer_result(kind: InferResultKind, value: JsonValue) -> Result<Js
             }),
             structured => Ok(structured),
         },
+        InferResultKind::Yao {
+            ty,
+            definitions,
+            span,
+        } => {
+            if matches!(ty, crate::yao::Type::Program { .. }) {
+                return Err(
+                    "Program candidate 不能由普通 decoder 接纳；必须经过 Runtime admission"
+                        .to_string(),
+                );
+            }
+            let transport = match (&ty, value) {
+                (crate::yao::Type::String, value @ JsonValue::String(_)) => value,
+                (_, JsonValue::String(text)) => {
+                    serde_json::from_str(text.trim()).map_err(|error| {
+                        format!(
+                        "infer 声明了 typed Yao 返回值，但最终正文不是合法 JSON transport: {error}"
+                    )
+                    })?
+                }
+                (_, structured) => structured,
+            };
+            crate::yao::decode_value(&ty, transport, &definitions, span)
+                .map_err(|error| format!("infer 返回值不满足 Yao 类型 {ty:?}: {error}"))
+        }
+    }
+}
+
+pub fn decode_infer_result_with_admission(
+    kind: InferResultKind,
+    value: JsonValue,
+    registry: &Registry,
+    provenance: ProgramValueProvenance,
+) -> Result<JsonValue, String> {
+    match kind {
+        InferResultKind::Yao {
+            ty: crate::yao::Type::Program { output, effects },
+            ..
+        } => admit_program_value_candidate(&output, &effects, value, registry, provenance),
+        other => decode_infer_result(other, value),
     }
 }
 
@@ -1849,7 +3013,14 @@ mod tests {
             crate::llm::ToolDefinition {
                 name: self.name.to_string(),
                 description: String::new(),
-                parameters: serde_json::json!({"type": "object"}),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "query": {"type": "string"},
+                        "input": {}
+                    }
+                }),
             }
         }
 
@@ -2580,6 +3751,19 @@ mod tests {
     }
 
     #[test]
+    fn explicit_root_version_is_the_only_typed_compatibility_boundary() {
+        assert!(
+            source_requests_typed_semantics(r#"(eval (version "0.1") (dict (answer 1)))"#).unwrap()
+        );
+        assert!(!source_requests_typed_semantics(
+            r#"(eval (seq
+                 (bind value (infer (task "legacy") (evidence "x")))
+                 (call search (get $value))))"#
+        )
+        .unwrap());
+    }
+
+    #[test]
     fn typed_plan_ir_round_trips_without_reparsing_yao() {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let program = validate(
@@ -2718,5 +3902,471 @@ mod tests {
             machine.advance(&registry),
             PlanAdvance::Complete(serde_json::json!("recovered"))
         );
+    }
+
+    #[test]
+    fn typed_pure_program_executes_through_the_same_plan_machine() {
+        let registry = fixture(&[]).0;
+        let program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (seq
+                   (bind x (add 2 3))
+                   (if (eq $x 5) (mul $x 2) 0)))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        assert!(matches!(program.root(), PlanNode::Typed { .. }));
+
+        let mut machine = PlanMachine::new(&program).unwrap();
+        assert_eq!(
+            machine.advance(&registry),
+            PlanAdvance::Complete(serde_json::json!(10))
+        );
+    }
+
+    #[test]
+    fn typed_effects_decode_and_resume_identically_after_serialization() {
+        let registry = fixture(&[("read", serde_json::json!("evidence"))]).0;
+        let program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (requires (tools read))
+                 (seq
+                   (bind evidence (call read (path "a.txt")))
+                   (bind score
+                     (infer
+                       (task "return an integer")
+                       (returns Int)
+                       (evidence (decode String $evidence))))
+                   (add $score 1)))"#,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap();
+        let mut machine = PlanMachine::new(&program).unwrap();
+
+        let call = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Call { .. }) => effect,
+            other => panic!("expected typed call, got {other:?}"),
+        };
+        let encoded = serde_json::to_string(&machine).unwrap();
+        let mut machine: PlanMachine = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(machine.pending_effect(), Some(&call));
+        machine
+            .resume_effect(call.sequence(), Ok(serde_json::json!("evidence")))
+            .unwrap();
+
+        let inference = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => effect,
+            other => panic!("expected typed infer, got {other:?}"),
+        };
+        let PlanEffect::Infer { result, .. } = inference.clone() else {
+            unreachable!()
+        };
+        assert!(matches!(
+            result,
+            InferResultKind::Yao {
+                ty: crate::yao::Type::Int,
+                ..
+            }
+        ));
+        let decoded = decode_infer_result(result, JsonValue::String("41".to_string())).unwrap();
+
+        let encoded = serde_json::to_string(&machine).unwrap();
+        let mut machine: PlanMachine = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(machine.pending_effect(), Some(&inference));
+        machine
+            .resume_effect(inference.sequence(), Ok(decoded))
+            .unwrap();
+        assert_eq!(
+            machine.advance(&registry),
+            PlanAdvance::Complete(serde_json::json!(42))
+        );
+    }
+
+    #[test]
+    fn program_candidate_is_admitted_then_run_as_an_isolated_child_machine() {
+        let registry = fixture(&[]).0;
+        let parent = validate(
+            r#"(eval
+                 (version "0.1")
+                 (seq
+                   (bind generated
+                     (infer
+                       (task "produce a pure integer program")
+                       (returns (Program Int (effects)))))
+                   (run $generated)))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let mut machine = PlanMachine::new(&parent).unwrap();
+        let inference = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => effect,
+            other => panic!("expected Program-producing infer, got {other:?}"),
+        };
+        let PlanEffect::Infer { result, .. } = inference.clone() else {
+            unreachable!()
+        };
+        let admitted = decode_infer_result_with_admission(
+            result,
+            JsonValue::String(r#"(eval (version "0.1") (add 20 22))"#.to_string()),
+            &registry,
+            ProgramValueProvenance {
+                parent_plan_execution_id: "parent-plan".into(),
+                producer_evaluation_id: "child-eval".into(),
+                terminal_event_id: Some("terminal-event".into()),
+                validation_version: "yao-0.1".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(admitted["$yao"]["kind"], "program");
+        assert!(admitted["$yao"]["hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        machine
+            .resume_effect(inference.sequence(), Ok(admitted))
+            .unwrap();
+
+        let program_effect = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Program { .. }) => effect,
+            other => panic!("expected durable Program child boundary, got {other:?}"),
+        };
+        let encoded = serde_json::to_string(&machine).unwrap();
+        let mut restored: PlanMachine = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.pending_effect(), Some(&program_effect));
+        let PlanEffect::Program {
+            sequence,
+            mut machine,
+            ..
+        } = program_effect
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            machine.advance(&registry),
+            PlanAdvance::Complete(serde_json::json!(42))
+        );
+        restored
+            .resume_effect(sequence, Ok(serde_json::json!(42)))
+            .unwrap();
+        assert_eq!(
+            restored.advance(&registry),
+            PlanAdvance::Complete(serde_json::json!(42))
+        );
+    }
+
+    #[test]
+    fn generated_program_inherits_only_the_runtime_snapshot() {
+        let registry = fixture(&[]).0;
+        let parent = validate(
+            r#"(eval
+                 (version "0.1")
+                 (seq
+                   (bind caller-local "must-not-leak")
+                   (bind generated
+                     (infer
+                       (task "produce a program that reads its Context Ref")
+                       (returns (Program (Ref Context) (effects)))))
+                   (run $generated)))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let mut machine = PlanMachine::new(&parent).unwrap();
+        machine
+            .bind_runtime_environment(crate::yao::structural_record_value([
+                (
+                    "agent".into(),
+                    crate::yao::reference_value("Agent", "agent-1"),
+                ),
+                (
+                    "evaluation".into(),
+                    crate::yao::reference_value("Evaluation", "evaluation-1"),
+                ),
+                (
+                    "context".into(),
+                    crate::yao::reference_value("Context", "context-1"),
+                ),
+                (
+                    "objective".into(),
+                    crate::yao::optional_reference_value("Objective", None),
+                ),
+                (
+                    "harness".into(),
+                    crate::yao::optional_reference_value("HarnessBinding", None),
+                ),
+                (
+                    "capabilities".into(),
+                    crate::yao::reference_value("CapabilitySet", "capabilities-1"),
+                ),
+                (
+                    "principal".into(),
+                    crate::yao::optional_reference_value("Principal", None),
+                ),
+                (
+                    "execution_target".into(),
+                    crate::yao::optional_reference_value("ExecutionTarget", None),
+                ),
+            ]))
+            .unwrap();
+        let inference = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => effect,
+            other => panic!("expected Program-producing infer, got {other:?}"),
+        };
+        let PlanEffect::Infer { result, .. } = inference.clone() else {
+            unreachable!()
+        };
+        let admitted = decode_infer_result_with_admission(
+            result,
+            JsonValue::String(r#"(eval (version "0.1") $runtime.context)"#.to_string()),
+            &registry,
+            ProgramValueProvenance {
+                parent_plan_execution_id: "parent-plan".into(),
+                producer_evaluation_id: "child-eval".into(),
+                terminal_event_id: Some("terminal-event".into()),
+                validation_version: "yao-0.1".into(),
+            },
+        )
+        .unwrap();
+        machine
+            .resume_effect(inference.sequence(), Ok(admitted))
+            .unwrap();
+        let PlanEffect::Program {
+            machine: mut child, ..
+        } = (match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Program { .. }) => effect,
+            other => panic!("expected Program child, got {other:?}"),
+        })
+        else {
+            unreachable!()
+        };
+        assert!(!child.env.contains_key("caller-local"));
+        assert_eq!(
+            child.runtime_reference_id("context").as_deref(),
+            Some("context-1")
+        );
+        assert_eq!(
+            child.advance(&registry),
+            PlanAdvance::Complete(crate::yao::reference_value("Context", "context-1"))
+        );
+    }
+
+    #[test]
+    fn program_admission_rejects_implicit_versions_contract_escape_and_forgery() {
+        let registry = fixture(&[("read", JsonValue::Null)]).0;
+        let provenance = || ProgramValueProvenance {
+            parent_plan_execution_id: "parent-plan".into(),
+            producer_evaluation_id: "child-eval".into(),
+            terminal_event_id: None,
+            validation_version: "yao-0.1".into(),
+        };
+        let empty = crate::yao::EffectSet::default();
+        assert!(admit_program_value_candidate(
+            &crate::yao::Type::Int,
+            &empty,
+            JsonValue::String("(eval 1)".into()),
+            &registry,
+            provenance(),
+        )
+        .unwrap_err()
+        .contains("version"));
+        assert!(admit_program_value_candidate(
+            &crate::yao::Type::Int,
+            &empty,
+            JsonValue::String(r#"(eval (version "0.1") "wrong")"#.into()),
+            &registry,
+            provenance(),
+        )
+        .unwrap_err()
+        .contains("不能赋给"));
+        assert!(admit_program_value_candidate(
+            &crate::yao::Type::Json,
+            &empty,
+            JsonValue::String(
+                r#"(eval (version "0.1") (requires (tools read)) (call read (path "x")))"#.into(),
+            ),
+            &registry,
+            provenance(),
+        )
+        .is_err());
+        assert!(decode_program_value(&serde_json::json!({
+            "$yao": {"kind": "program", "hash": "sha256:forged", "value": {}}
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn nested_program_values_consume_the_shared_depth_budget_without_refill() {
+        let registry = fixture(&[]).0;
+        let parent_source = r#"(eval
+             (version "0.1")
+             (seq
+               (bind generated
+                 (infer
+                   (task "produce a pure integer program")
+                   (returns (Program Int (effects)))))
+               (run $generated)))"#;
+        let program = validate(
+            parent_source,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let mut machine = PlanMachine::new(&program).unwrap();
+        let provenance = || ProgramValueProvenance {
+            parent_plan_execution_id: "recursive-parent".into(),
+            producer_evaluation_id: "recursive-evaluation".into(),
+            terminal_event_id: None,
+            validation_version: "yao-0.1".into(),
+        };
+        let inference = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => effect,
+            other => panic!("expected Program-producing inference, got {other:?}"),
+        };
+        let PlanEffect::Infer { result, .. } = inference.clone() else {
+            unreachable!()
+        };
+        let admitted = decode_infer_result_with_admission(
+            result,
+            JsonValue::String(r#"(eval (version "0.1") 42)"#.to_string()),
+            &registry,
+            provenance(),
+        )
+        .unwrap();
+        machine
+            .resume_effect(inference.sequence(), Ok(admitted.clone()))
+            .unwrap();
+        let child = match machine.advance(&registry) {
+            PlanAdvance::Suspended(PlanEffect::Program { machine, .. }) => *machine,
+            other => panic!("expected admitted child, got {other:?}"),
+        };
+        assert_eq!(machine.budget.programs_left, 0);
+        assert_eq!(child.budget.programs_left, MAX_PROGRAM_VALUE_NESTING - 1);
+
+        let mut exhausted = PlanMachine::new(&program).unwrap();
+        let inference = match exhausted.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => effect,
+            other => panic!("expected Program-producing inference, got {other:?}"),
+        };
+        exhausted
+            .resume_effect(inference.sequence(), Ok(admitted))
+            .unwrap();
+        exhausted.budget.programs_left = 0;
+        match exhausted.advance(&registry) {
+            PlanAdvance::Failed(error) => assert!(
+                error.message.contains("嵌套超过上限"),
+                "unexpected error: {error}"
+            ),
+            other => panic!("depth budget was silently refilled: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_tool_arguments_are_rejected_before_effect_handoff() {
+        let registry = fixture(&[("read", JsonValue::Null)]).0;
+        let error = validate(
+            r#"(eval
+                 (version "0.1")
+                 (requires (tools read))
+                 (call read (path 42)))"#,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("Yao typed admission"), "{error}");
+        assert!(error.message.contains("type"), "{error}");
+        assert!(error.diagnostic.is_some());
+    }
+
+    #[test]
+    fn typed_par_persists_isolated_child_machines_and_joins_in_source_order() {
+        let registry = fixture(&[("read", JsonValue::Null)]).0;
+        let program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (requires (tools read))
+                 (par
+                   (branch alpha (call read (path "a")))
+                   (branch beta (call read (path "b")))))"#,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap();
+        let mut parent = PlanMachine::new(&program).unwrap();
+        let effect = match parent.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Parallel { .. }) => effect,
+            other => panic!("expected persistent par boundary, got {other:?}"),
+        };
+        let encoded = serde_json::to_string(&parent).unwrap();
+        let mut parent: PlanMachine = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(parent.pending_effect(), Some(&effect));
+
+        let PlanEffect::Parallel { branches, sequence } = effect else {
+            unreachable!()
+        };
+        assert_eq!(
+            branches
+                .iter()
+                .map(|branch| branch.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+        let mut results = Vec::new();
+        for (index, branch) in branches.into_iter().enumerate() {
+            let mut child = branch.machine;
+            let call = match child.advance(&registry) {
+                PlanAdvance::Suspended(effect @ PlanEffect::Call { .. }) => effect,
+                other => panic!("expected branch call, got {other:?}"),
+            };
+            let encoded = serde_json::to_string(&child).unwrap();
+            let mut child: PlanMachine = serde_json::from_str(&encoded).unwrap();
+            let value = serde_json::json!(format!("result-{index}"));
+            child
+                .resume_effect(call.sequence(), Ok(value.clone()))
+                .unwrap();
+            assert_eq!(
+                child.advance(&registry),
+                PlanAdvance::Complete(value.clone())
+            );
+            results.push((branch.name, value));
+        }
+        parent
+            .resume_effect(sequence, Ok(crate::yao::structural_record_value(results)))
+            .unwrap();
+        let PlanAdvance::Complete(value) = parent.advance(&registry) else {
+            panic!("joined par did not complete")
+        };
+        let fields = value["$yao"]["fields"].as_array().unwrap();
+        assert_eq!(fields[0]["name"], "alpha");
+        assert_eq!(fields[1]["name"], "beta");
+        assert_eq!(fields[0]["value"], "result-0");
+        assert_eq!(fields[1]["value"], "result-1");
+    }
+
+    #[tokio::test]
+    async fn convenience_evaluator_preserves_par_isolation_and_result_order() {
+        let (registry, calls) = fixture(&[("read", JsonValue::Null)]);
+        let program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (requires (tools read))
+                 (par
+                   (branch first (call read (path "one")))
+                   (branch second (call read (path "two")))))"#,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap();
+        let value = evaluate(&program, registry, host("unused").0)
+            .await
+            .unwrap();
+        let fields = value["$yao"]["fields"].as_array().unwrap();
+        assert_eq!(fields[0]["name"], "first");
+        assert_eq!(fields[1]["name"], "second");
+        assert_eq!(calls.lock().unwrap().len(), 2);
     }
 }

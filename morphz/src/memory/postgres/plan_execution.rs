@@ -42,7 +42,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
                 'queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'
             )),
             pending_kind TEXT CHECK(pending_kind IN (
-                'execution_job', 'action_group', 'evaluation'
+                'execution_job', 'action_group', 'evaluation', 'plan_execution'
             )),
             pending_id TEXT,
             claimed_by TEXT,
@@ -57,6 +57,24 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             CHECK((status = 'waiting' AND pending_kind IS NOT NULL AND pending_id IS NOT NULL)
                OR (status <> 'waiting' AND pending_kind IS NULL AND pending_id IS NULL))
         )"#,
+        r#"DO $$
+           BEGIN
+             IF NOT EXISTS (
+               SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'plan_executions'::regclass
+                  AND conname = 'plan_executions_pending_kind_check'
+                  AND pg_get_constraintdef(oid) LIKE '%''plan_execution''%'
+             ) THEN
+               ALTER TABLE plan_executions
+                 DROP CONSTRAINT IF EXISTS plan_executions_pending_kind_check;
+               ALTER TABLE plan_executions
+                 ADD CONSTRAINT plan_executions_pending_kind_check
+                 CHECK(pending_kind IN (
+                   'execution_job', 'action_group', 'evaluation', 'plan_execution'
+                 ));
+             END IF;
+           END
+           $$"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_plan_executions_queue
            ON plan_executions(status, lease_expires_at, created_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_plan_executions_context_status
@@ -103,6 +121,7 @@ fn parse_wait_kind(value: &str) -> Result<PlanExecutionWaitKind, StoreError> {
         "execution_job" => Ok(PlanExecutionWaitKind::ExecutionJob),
         "action_group" => Ok(PlanExecutionWaitKind::ActionGroup),
         "evaluation" => Ok(PlanExecutionWaitKind::Evaluation),
+        "plan_execution" => Ok(PlanExecutionWaitKind::PlanExecution),
         other => Err(format!("未知 PlanExecution wait kind：'{other}'").into()),
     }
 }

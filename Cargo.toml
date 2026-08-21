@@ -6,6 +6,7 @@ members = [
     "morphz",
     "morphz-evals",
     "tools/morphz-cli-docs",
+    "yao",
 ]
 default-members = ["morphz"]
 

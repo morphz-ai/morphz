@@ -41,6 +41,17 @@
 2. [《HNS 包格式规范 v0.1》](hns_package_format_specification_v0_1.md)
    定义 `.hns` 的物理形态、逻辑 Artifact、归一化、身份和 Loader 行为。
 
+## Yao 语言交付物
+
+1. [《Yao 核心语言规范 v0.1》](yao_core_language_specification_v0_1.md)
+   定义与实现无关的类型语言、Effect、结构化并发和 Program Value。
+2. [《Yao 求值语义 v0.1》](yao_evaluation_semantics_v0_1.md)
+   定义模型与 Runtime 所有的求值、持久 Lowering、恢复和失败语义。
+3. [《Yao Morphz Runtime Profile v0.1》](yao_morphz_runtime_profile_v0_1.md)
+   定义 Morphz Host Object、Effect、Capability Settlement、Lowering Target 与资源限制。
+4. [《Yao 参考实现验证记录 v0.1》](yao_reference_implementation_verification_v0_1.md)
+   把 Draft 要求映射到可执行证据，并记录仍待补齐的实现缺口。
+
 [项目治理](../../../GOVERNANCE.zh-CN.md)与
 [MEP-0001](../../meps/zh-CN/MEP-0001-specification-governance.md)定义全部标准与官方实现如何演进。
 [知识产权状态说明](IPR_STATUS.md)记录 Draft 阶段临时的著作权、专利、贡献和商标边界。

@@ -39,6 +39,7 @@ fn parse_wait_kind(value: &str) -> Result<PlanExecutionWaitKind, StoreError> {
         "execution_job" => Ok(PlanExecutionWaitKind::ExecutionJob),
         "action_group" => Ok(PlanExecutionWaitKind::ActionGroup),
         "evaluation" => Ok(PlanExecutionWaitKind::Evaluation),
+        "plan_execution" => Ok(PlanExecutionWaitKind::PlanExecution),
         other => Err(format!("未知 PlanExecution wait kind：'{other}'").into()),
     }
 }

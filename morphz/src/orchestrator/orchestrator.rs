@@ -2229,6 +2229,8 @@ pub struct Orchestrator {
     plan_reconcile_wakeup: Arc<Notify>,
     plan_job_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
     plan_evaluation_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
+    plan_action_group_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
+    plan_program_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
     action_group_reconcile_dirty: Arc<DashMap<String, ()>>,
     action_group_reconcile_wakeup: Arc<Notify>,
     /// Rotating keyset cursor for the slow lost-notification fallback. A
@@ -3203,6 +3205,8 @@ impl Orchestrator {
             plan_reconcile_wakeup: Arc::new(Notify::new()),
             plan_job_reconcile_cursor: Mutex::new(None),
             plan_evaluation_reconcile_cursor: Mutex::new(None),
+            plan_action_group_reconcile_cursor: Mutex::new(None),
+            plan_program_reconcile_cursor: Mutex::new(None),
             action_group_reconcile_dirty: Arc::new(DashMap::new()),
             action_group_reconcile_wakeup: Arc::new(Notify::new()),
             action_group_reconcile_cursor: Mutex::new(None),
@@ -4675,14 +4679,127 @@ impl Orchestrator {
                 PLAN_RECONCILE_BATCH,
             )
             .await?;
+        let action_group_cursor = self.plan_action_group_reconcile_cursor.lock().await.clone();
+        let parallel_parents = store
+            .list_plan_executions(PlanExecutionFilter {
+                status: Some(PlanExecutionStatus::Waiting),
+                pending_kind: Some(PlanExecutionWaitKind::ActionGroup),
+                include_terminal: false,
+                oldest_first: true,
+                after_updated_at: action_group_cursor
+                    .as_ref()
+                    .map(|(updated_at, _)| *updated_at),
+                after_id: action_group_cursor.as_ref().map(|(_, id)| id.clone()),
+                limit: Some(PLAN_RECONCILE_BATCH),
+                ..PlanExecutionFilter::default()
+            })
+            .await?;
+        let mut parallel_resumed = 0usize;
+        let mut parallel_conflicts = 0usize;
+        for parent in &parallel_parents {
+            let children = match coordinator
+                .ensure_parallel_children_for_waiting(parent)
+                .await
+            {
+                Ok(children) => children,
+                Err(error) => {
+                    parallel_conflicts = parallel_conflicts.saturating_add(1);
+                    tracing::warn!(
+                        plan_execution_id = %parent.id,
+                        %error,
+                        event_code = "plan_execution.par_children_recovery_failed",
+                        "Could not recover durable Yao par branches"
+                    );
+                    continue;
+                }
+            };
+            self.spawn_plan_children(children.clone())?;
+            if children.iter().all(|child| child.status.is_terminal()) {
+                let Some(group_id) = parent.pending_id.as_deref() else {
+                    parallel_conflicts = parallel_conflicts.saturating_add(1);
+                    continue;
+                };
+                match coordinator
+                    .reconcile_action_group(&parent.id, group_id)
+                    .await?
+                {
+                    PlanResumeReceipt::Queued(_) | PlanResumeReceipt::Existing(_) => {
+                        parallel_resumed = parallel_resumed.saturating_add(1);
+                    }
+                    PlanResumeReceipt::Conflict { .. } => {
+                        parallel_conflicts = parallel_conflicts.saturating_add(1);
+                    }
+                }
+            }
+        }
+        let program_cursor = self.plan_program_reconcile_cursor.lock().await.clone();
+        let program_parents = store
+            .list_plan_executions(PlanExecutionFilter {
+                status: Some(PlanExecutionStatus::Waiting),
+                pending_kind: Some(PlanExecutionWaitKind::PlanExecution),
+                include_terminal: false,
+                oldest_first: true,
+                after_updated_at: program_cursor.as_ref().map(|(updated_at, _)| *updated_at),
+                after_id: program_cursor.as_ref().map(|(_, id)| id.clone()),
+                limit: Some(PLAN_RECONCILE_BATCH),
+                ..PlanExecutionFilter::default()
+            })
+            .await?;
+        let mut programs_resumed = 0usize;
+        let mut program_conflicts = 0usize;
+        for parent in &program_parents {
+            let child = match coordinator.ensure_program_child_for_waiting(parent).await {
+                Ok(child) => child,
+                Err(error) => {
+                    program_conflicts = program_conflicts.saturating_add(1);
+                    tracing::warn!(
+                        plan_execution_id = %parent.id,
+                        %error,
+                        event_code = "plan_execution.program_child_recovery_failed",
+                        "Could not recover durable Yao Program child"
+                    );
+                    continue;
+                }
+            };
+            self.spawn_plan_children(vec![child.clone()])?;
+            if child.status.is_terminal() {
+                match coordinator
+                    .reconcile_program_child(&parent.id, &child.id)
+                    .await?
+                {
+                    PlanResumeReceipt::Queued(_) | PlanResumeReceipt::Existing(_) => {
+                        programs_resumed = programs_resumed.saturating_add(1);
+                    }
+                    PlanResumeReceipt::Conflict { .. } => {
+                        program_conflicts = program_conflicts.saturating_add(1);
+                    }
+                }
+            }
+        }
         let more_jobs = jobs.scanned == PLAN_RECONCILE_BATCH;
         let more_evaluations = evaluations.scanned == PLAN_RECONCILE_BATCH;
+        let more_action_groups = parallel_parents.len() == PLAN_RECONCILE_BATCH;
+        let more_programs = program_parents.len() == PLAN_RECONCILE_BATCH;
         *self.plan_job_reconcile_cursor.lock().await =
             more_jobs.then_some(jobs.next_cursor.clone()).flatten();
         *self.plan_evaluation_reconcile_cursor.lock().await = more_evaluations
             .then_some(evaluations.next_cursor.clone())
             .flatten();
-        if more_jobs || more_evaluations {
+        *self.plan_action_group_reconcile_cursor.lock().await = more_action_groups
+            .then(|| {
+                parallel_parents
+                    .last()
+                    .map(|plan| (plan.updated_at, plan.id.clone()))
+            })
+            .flatten();
+        *self.plan_program_reconcile_cursor.lock().await = more_programs
+            .then(|| {
+                program_parents
+                    .last()
+                    .map(|plan| (plan.updated_at, plan.id.clone()))
+            })
+            .flatten();
+        if more_jobs || more_evaluations || more_action_groups || more_programs {
             // The next page must not wait for the 30-second cross-process
             // fallback. Notify retains one permit even during startup before
             // the reconciler task begins.
@@ -4691,14 +4808,23 @@ impl Orchestrator {
         if !recovered.is_empty()
             || !jobs.resumed.is_empty()
             || !evaluations.resumed.is_empty()
+            || parallel_resumed > 0
+            || programs_resumed > 0
             || !jobs.conflicts.is_empty()
             || !evaluations.conflicts.is_empty()
+            || parallel_conflicts > 0
+            || program_conflicts > 0
         {
             tracing::info!(
                 expired_running_requeued = recovered.len(),
                 execution_jobs_resumed = jobs.resumed.len(),
                 evaluations_resumed = evaluations.resumed.len(),
-                conflicts = jobs.conflicts.len() + evaluations.conflicts.len(),
+                parallel_groups_resumed = parallel_resumed,
+                program_children_resumed = programs_resumed,
+                conflicts = jobs.conflicts.len()
+                    + evaluations.conflicts.len()
+                    + parallel_conflicts
+                    + program_conflicts,
                 event_code = "orchestrator.plan_execution.recovery_cycle_completed",
                 "PlanExecution recovery cycle completed"
             );
@@ -12501,6 +12627,49 @@ impl Orchestrator {
         })
     }
 
+    fn spawn_plan_children(&self, children: Vec<PlanExecutionRecord>) -> PlanExecutionResult<()> {
+        let orchestrator = self
+            .self_ref
+            .get()
+            .cloned()
+            .ok_or("Orchestrator 尚未启动，不能调度 Yao child Plan")?;
+        for child in children {
+            if child.status.is_terminal() {
+                continue;
+            }
+            let program: crate::sexpr_eval::Program =
+                serde_json::from_value(child.program_json.clone())?;
+            let route = PlanExecutionRoute {
+                activation_id: child.activation_id.clone(),
+                thread_id: child.thread_id.clone(),
+                agent_id: child.agent_id.clone(),
+                context_id: child.context_id.clone(),
+                session_id: child.session_id.clone(),
+                initiating_principal_id: child.initiating_principal_id.clone(),
+                tool_call_id: child.tool_call_id.clone(),
+                objective_id: child.objective_id.clone(),
+                objective_evaluation_id: child.objective_evaluation_id.clone(),
+            };
+            let weak = orchestrator.clone();
+            tokio::spawn(async move {
+                let Some(orchestrator) = weak.upgrade() else {
+                    return;
+                };
+                let child_id = child.id;
+                if let Err(error) = orchestrator.execute_durable_plan(route, program).await {
+                    tracing::error!(
+                        plan_execution_id = %child_id,
+                        %error,
+                        event_code = "plan_execution.child_failed",
+                        "A durable Yao child Plan ended with failure"
+                    );
+                }
+                orchestrator.plan_reconcile_wakeup.notify_one();
+            });
+        }
+        Ok(())
+    }
+
     async fn execute_durable_plan(
         &self,
         route: PlanExecutionRoute,
@@ -12573,6 +12742,7 @@ impl Orchestrator {
             .await?;
         let worker_id = format!("plan-runner-{}", self.runtime_claimant_id);
         let mut suspended_admission = None;
+        let mut spawned_child_plans = HashSet::new();
 
         loop {
             if plan.status == PlanExecutionStatus::Waiting {
@@ -12641,6 +12811,16 @@ impl Orchestrator {
                                 .await?;
                             plan
                         }
+                        PlanDriveReceipt::WaitingForActionGroup { plan, .. }
+                        | PlanDriveReceipt::WaitingForPlanExecution { plan, .. } => {
+                            if suspended_admission.is_none() {
+                                suspended_admission = Some(
+                                    self.suspend_activation_admission(&route.activation_id)
+                                        .await?,
+                                );
+                            }
+                            plan
+                        }
                         PlanDriveReceipt::WaitingForExecutionJob { plan, .. }
                         | PlanDriveReceipt::Succeeded { plan, .. }
                         | PlanDriveReceipt::Failed { plan, .. } => plan,
@@ -12696,6 +12876,16 @@ impl Orchestrator {
                                 self.bus
                                     .dispatch_persisted_child_handoff(*request_event)
                                     .await?;
+                                plan
+                            }
+                            PlanDriveReceipt::WaitingForActionGroup { plan, .. }
+                            | PlanDriveReceipt::WaitingForPlanExecution { plan, .. } => {
+                                if suspended_admission.is_none() {
+                                    suspended_admission = Some(
+                                        self.suspend_activation_admission(&route.activation_id)
+                                            .await?,
+                                    );
+                                }
                                 plan
                             }
                             PlanDriveReceipt::WaitingForExecutionJob { plan, .. }
@@ -12872,7 +13062,62 @@ impl Orchestrator {
                         }
                     }
                     Some(PlanExecutionWaitKind::ActionGroup) => {
-                        return Err("Yao Plan v1 尚未产生 Action Group wait".into());
+                        let group_id = plan
+                            .pending_id
+                            .clone()
+                            .ok_or("waiting(action_group) 缺少 pending_id")?;
+                        let children = coordinator
+                            .ensure_parallel_children_for_waiting(&plan)
+                            .await?;
+                        let newly_visible = children
+                            .iter()
+                            .filter(|child| {
+                                !child.status.is_terminal()
+                                    && spawned_child_plans.insert(child.id.clone())
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if !newly_visible.is_empty() {
+                            self.spawn_plan_children(newly_visible)?;
+                        }
+                        if children.iter().all(|child| child.status.is_terminal()) {
+                            plan = plan_from_resume(
+                                coordinator
+                                    .reconcile_action_group(&plan.id, &group_id)
+                                    .await?,
+                            )?;
+                        } else {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            plan = store
+                                .get_plan_execution(&plan.id)
+                                .await?
+                                .ok_or("PlanExecution 在等待 Action Group 时消失")?;
+                        }
+                    }
+                    Some(PlanExecutionWaitKind::PlanExecution) => {
+                        let child_id = plan
+                            .pending_id
+                            .clone()
+                            .ok_or("waiting(plan_execution) 缺少 pending_id")?;
+                        let child = coordinator.ensure_program_child_for_waiting(&plan).await?;
+                        if !child.status.is_terminal()
+                            && spawned_child_plans.insert(child.id.clone())
+                        {
+                            self.spawn_plan_children(vec![child.clone()])?;
+                        }
+                        if child.status.is_terminal() {
+                            plan = plan_from_resume(
+                                coordinator
+                                    .reconcile_program_child(&plan.id, &child_id)
+                                    .await?,
+                            )?;
+                        } else {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            plan = store
+                                .get_plan_execution(&plan.id)
+                                .await?
+                                .ok_or("PlanExecution 在等待 Program child 时消失")?;
+                        }
                     }
                     None => return Err("PlanExecution waiting 状态缺少 pending_kind".into()),
                 },

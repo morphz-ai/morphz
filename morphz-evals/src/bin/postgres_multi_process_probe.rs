@@ -5,10 +5,10 @@ use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
     ActionGroupFilter, ActionGroupStore, ActivationStore, DeliveryIngressStore, EventStore,
     ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore, ExecutionRetrySafety,
-    MessageClaim, NewAgent, NewCognitiveContext, NewExecutionJob, NewPrincipal, NewSession,
-    NewThread, NewThreadActivation, QueryFilter, RuntimeStore, SessionDirectoryStore,
-    SessionMountKind, ThreadKind, ThreadSignalStatus, ThreadStore, ThreadSupervision,
-    WorkerCoordinationMode,
+    MessageClaim, MessageDispatchMode, NewAgent, NewCognitiveContext, NewExecutionJob,
+    NewPrincipal, NewSession, NewThread, NewThreadActivation, QueryFilter, RuntimeStore,
+    SessionDirectoryStore, SessionMountKind, ThreadKind, ThreadSignalStatus, ThreadStore,
+    ThreadSupervision, WorkerCoordinationMode,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
@@ -352,7 +352,7 @@ async fn parent() -> Result<(), ProbeError> {
                 &session_id,
                 &format!("probe-client-message-{suffix}"),
                 &message,
-                false,
+                MessageDispatchMode::FollowUp,
             )
             .await?,
         MessageClaim::Accepted {

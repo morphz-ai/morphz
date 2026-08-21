@@ -16,18 +16,79 @@ use sha2::{Digest, Sha256};
 use crate::event::{Event, TYPE_INFER_REQUEST};
 use crate::execution::deterministic_job_id;
 use crate::memory::{
-    stable_thread_activation_id, ExecutionJobRecord, ExecutionJobStatus, NewExecutionJob,
+    stable_thread_activation_id, ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus,
+    ExecutionJobRecord, ExecutionJobStatus, NewActionGroup, NewActionGroupMember, NewExecutionJob,
     NewPlanExecution, PlanEvaluationCommit, PlanExecutionFilter, PlanExecutionMutation,
     PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeStore,
     ThreadActivationStatus,
 };
-use crate::sexpr_eval::{decode_infer_result, PlanAdvance, PlanEffect, PlanMachine, Program};
+use crate::sexpr_eval::{
+    decode_infer_result, decode_infer_result_with_admission, InferResultKind, PlanAdvance,
+    PlanEffect, PlanMachine, Program, ProgramValueProvenance,
+};
 use crate::tool::Registry;
 
 pub type PlanExecutionResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 const PLAN_ID_DOMAIN: &[u8] = b"morphz.plan-execution.v1\0";
 const EFFECT_ID_DOMAIN: &[u8] = b"morphz.plan-effect.v1\0";
+const PAR_GROUP_ID_DOMAIN: &[u8] = b"morphz.plan-par-group.v1\0";
+const PAR_BRANCH_ID_DOMAIN: &[u8] = b"morphz.plan-par-branch.v1\0";
+const PROGRAM_CHILD_ID_DOMAIN: &[u8] = b"morphz.plan-program-child.v1\0";
+
+fn runtime_environment_value(
+    route: &PlanExecutionRoute,
+    binding: &PlanArtifactBinding,
+    plan_execution_id: &str,
+) -> JsonValue {
+    let evaluation_id = route
+        .objective_evaluation_id
+        .as_deref()
+        .unwrap_or(&route.activation_id);
+    let harness_binding_id = binding.harness_id.as_deref().map(|harness_id| {
+        binding.harness_version.as_deref().map_or_else(
+            || harness_id.to_string(),
+            |version| format!("{harness_id}@{version}"),
+        )
+    });
+    crate::yao::structural_record_value([
+        (
+            "agent".to_string(),
+            crate::yao::reference_value("Agent", &route.agent_id),
+        ),
+        (
+            "evaluation".to_string(),
+            crate::yao::reference_value("Evaluation", evaluation_id),
+        ),
+        (
+            "context".to_string(),
+            crate::yao::reference_value("Context", &route.context_id),
+        ),
+        (
+            "objective".to_string(),
+            crate::yao::optional_reference_value("Objective", route.objective_id.as_deref()),
+        ),
+        (
+            "harness".to_string(),
+            crate::yao::optional_reference_value("HarnessBinding", harness_binding_id.as_deref()),
+        ),
+        (
+            "capabilities".to_string(),
+            crate::yao::reference_value("CapabilitySet", plan_execution_id),
+        ),
+        (
+            "principal".to_string(),
+            crate::yao::optional_reference_value(
+                "Principal",
+                route.initiating_principal_id.as_deref(),
+            ),
+        ),
+        (
+            "execution_target".to_string(),
+            crate::yao::optional_reference_value("ExecutionTarget", None),
+        ),
+    ])
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanExecutionRoute {
@@ -76,6 +137,17 @@ pub enum PlanDriveReceipt {
         plan: PlanExecutionRecord,
         request_event: Box<Event>,
         activation_id: String,
+        existing: bool,
+    },
+    WaitingForActionGroup {
+        plan: PlanExecutionRecord,
+        group: Box<ActionGroupRecord>,
+        children: Vec<PlanExecutionRecord>,
+        existing: bool,
+    },
+    WaitingForPlanExecution {
+        plan: PlanExecutionRecord,
+        child: Box<PlanExecutionRecord>,
         existing: bool,
     },
     Succeeded {
@@ -137,14 +209,20 @@ impl PlanExecutionCoordinator {
         binding: PlanArtifactBinding,
     ) -> PlanExecutionResult<PlanExecutionRecord> {
         let id = deterministic_plan_execution_id(&route.activation_id, &route.tool_call_id)?;
-        let machine = PlanMachine::new(program)?;
+        let mut machine = PlanMachine::new(program)?;
+        machine.bind_runtime_environment(runtime_environment_value(&route, &binding, &id))?;
         let program_json = serde_json::to_value(program)?;
         let state_json = serde_json::to_value(&machine)?;
         let budget_json = machine.budget_json()?;
         let source_artifact_hash = binding.source_artifact_hash.unwrap_or_else(|| {
-            format!(
-                "sha256:{:x}",
-                Sha256::digest(serde_json::to_vec(&program_json).unwrap_or_default())
+            program.typed_program().map_or_else(
+                || {
+                    format!(
+                        "sha256:{:x}",
+                        Sha256::digest(serde_json::to_vec(&program_json).unwrap_or_default())
+                    )
+                },
+                |typed| typed.source_hash.clone(),
             )
         });
         self.store
@@ -220,18 +298,44 @@ impl PlanExecutionCoordinator {
                 .map_err(|error| {
                     format!("PlanExecution '{}' state 无法恢复: {error}", running.id)
                 })?;
-            match machine.advance(&self.registry) {
-                PlanAdvance::Suspended(effect @ PlanEffect::Call { sequence, .. }) => {
-                    let state_json = serde_json::to_value(&machine)?;
-                    let budget_json = machine.budget_json()?;
-                    let effect_tool_call_id = deterministic_plan_effect_id(&running.id, sequence)?;
-                    let job = match planner
-                        .plan_call(&running, &effect, &effect_tool_call_id)
-                        .await
-                    {
-                        Ok(job) => job,
-                        Err(error) => {
-                            let message = format!("Yao call 规划失败: {error}");
+            loop {
+                match machine.advance(&self.registry) {
+                    PlanAdvance::Suspended(effect @ PlanEffect::Call { sequence, .. }) => {
+                        let state_json = serde_json::to_value(&machine)?;
+                        let budget_json = machine.budget_json()?;
+                        let effect_tool_call_id =
+                            deterministic_plan_effect_id(&running.id, sequence)?;
+                        let job = match planner
+                            .plan_call(&running, &effect, &effect_tool_call_id)
+                            .await
+                        {
+                            Ok(job) => job,
+                            Err(error) => {
+                                let message = format!("Yao call 规划失败: {error}");
+                                let mutation = self
+                                    .store
+                                    .finish_plan_execution(
+                                        &running.id,
+                                        running.revision,
+                                        claim_token,
+                                        PlanExecutionStatus::Failed,
+                                        &state_json,
+                                        &budget_json,
+                                        None,
+                                        Some(&message),
+                                    )
+                                    .await?;
+                                let plan = updated_or_conflict(mutation, "fail call planning")?;
+                                return Ok(PlanDriveReceipt::Failed {
+                                    plan,
+                                    error: message,
+                                });
+                            }
+                        };
+                        if let Err(error) =
+                            validate_planned_job(&running, &effect, &effect_tool_call_id, &job)
+                        {
+                            let message = format!("Yao call 规划结果非法: {error}");
                             let mutation = self
                                 .store
                                 .finish_plan_execution(
@@ -245,17 +349,151 @@ impl PlanExecutionCoordinator {
                                     Some(&message),
                                 )
                                 .await?;
-                            let plan = updated_or_conflict(mutation, "fail call planning")?;
+                            let plan = updated_or_conflict(mutation, "fail invalid call planning")?;
                             return Ok(PlanDriveReceipt::Failed {
                                 plan,
                                 error: message,
                             });
                         }
-                    };
-                    if let Err(error) =
-                        validate_planned_job(&running, &effect, &effect_tool_call_id, &job)
-                    {
-                        let message = format!("Yao call 规划结果非法: {error}");
+                        let committed = self
+                            .store
+                            .create_execution_job_and_suspend_plan(
+                                &running.id,
+                                running.revision,
+                                claim_token,
+                                &state_json,
+                                &budget_json,
+                                job,
+                            )
+                            .await?;
+                        return Ok(PlanDriveReceipt::WaitingForExecutionJob {
+                            plan: committed.plan,
+                            job: Box::new(committed.execution_job),
+                            existing: committed.existing,
+                        });
+                    }
+                    PlanAdvance::Suspended(effect @ PlanEffect::Infer { sequence, .. }) => {
+                        let state_json = serde_json::to_value(&machine)?;
+                        let budget_json = machine.budget_json()?;
+                        let request_event = infer_request_event(&running, &effect)?;
+                        let activation_id = deterministic_infer_activation_id(&request_event.id)?;
+                        let committed: PlanEvaluationCommit = self
+                            .store
+                            .create_evaluation_and_suspend_plan(
+                                &running.id,
+                                running.revision,
+                                claim_token,
+                                &state_json,
+                                &budget_json,
+                                &request_event,
+                                &activation_id,
+                            )
+                            .await?;
+                        debug_assert_eq!(
+                            deterministic_plan_effect_id(&running.id, sequence)?,
+                            request_event
+                                .payload
+                                .get("plan_effect_id")
+                                .and_then(JsonValue::as_str)
+                                .unwrap_or_default()
+                        );
+                        return Ok(PlanDriveReceipt::WaitingForEvaluation {
+                            plan: committed.plan,
+                            request_event: Box::new(committed.request_event),
+                            activation_id: committed.activation_id,
+                            existing: committed.existing,
+                        });
+                    }
+                    PlanAdvance::Suspended(effect @ PlanEffect::Parallel { sequence, .. }) => {
+                        let state_json = serde_json::to_value(&machine)?;
+                        let budget_json = machine.budget_json()?;
+                        let group_id = deterministic_plan_parallel_group_id(&running.id, sequence)?;
+                        let (group, members) =
+                            parallel_group_request(&running, &effect, &group_id)?;
+                        let existed_before =
+                            self.store.get_action_group(&group_id).await?.is_some();
+                        let group = self.store.create_action_group(group, members).await?;
+                        let mutation = self
+                            .store
+                            .suspend_plan_execution(
+                                &running.id,
+                                running.revision,
+                                claim_token,
+                                &state_json,
+                                &budget_json,
+                                PlanExecutionWaitKind::ActionGroup,
+                                &group_id,
+                            )
+                            .await?;
+                        let plan = updated_or_conflict(mutation, "suspend on par Action Group")?;
+                        let children = self
+                            .materialize_parallel_children(&plan, &effect, &group_id)
+                            .await?;
+                        return Ok(PlanDriveReceipt::WaitingForActionGroup {
+                            plan,
+                            group: Box::new(group),
+                            children,
+                            existing: existed_before,
+                        });
+                    }
+                    PlanAdvance::Suspended(effect @ PlanEffect::Program { sequence, .. }) => {
+                        let state_json = serde_json::to_value(&machine)?;
+                        let budget_json = machine.budget_json()?;
+                        let child_id = deterministic_plan_program_child_id(
+                            &running.activation_id,
+                            &running.id,
+                            sequence,
+                        )?;
+                        let existed_before =
+                            self.store.get_plan_execution(&child_id).await?.is_some();
+                        let mutation = self
+                            .store
+                            .suspend_plan_execution(
+                                &running.id,
+                                running.revision,
+                                claim_token,
+                                &state_json,
+                                &budget_json,
+                                PlanExecutionWaitKind::PlanExecution,
+                                &child_id,
+                            )
+                            .await?;
+                        let plan = updated_or_conflict(mutation, "suspend on Program child Plan")?;
+                        let child = self
+                            .materialize_program_child(&plan, &effect, &child_id)
+                            .await?;
+                        return Ok(PlanDriveReceipt::WaitingForPlanExecution {
+                            plan,
+                            child: Box::new(child),
+                            existing: existed_before,
+                        });
+                    }
+                    PlanAdvance::Suspended(effect @ PlanEffect::Host { sequence, .. }) => {
+                        let outcome = self.execute_host_effect(&running, &effect).await;
+                        machine.resume_effect(sequence, outcome)?;
+                    }
+                    PlanAdvance::Complete(value) => {
+                        let state_json = serde_json::to_value(&machine)?;
+                        let budget_json = machine.budget_json()?;
+                        let mutation = self
+                            .store
+                            .finish_plan_execution(
+                                &running.id,
+                                running.revision,
+                                claim_token,
+                                PlanExecutionStatus::Succeeded,
+                                &state_json,
+                                &budget_json,
+                                Some(&value),
+                                None,
+                            )
+                            .await?;
+                        let plan = updated_or_conflict(mutation, "complete")?;
+                        return Ok(PlanDriveReceipt::Succeeded { plan, value });
+                    }
+                    PlanAdvance::Failed(error) => {
+                        let state_json = serde_json::to_value(&machine)?;
+                        let budget_json = machine.budget_json()?;
                         let mutation = self
                             .store
                             .finish_plan_execution(
@@ -266,104 +504,15 @@ impl PlanExecutionCoordinator {
                                 &state_json,
                                 &budget_json,
                                 None,
-                                Some(&message),
+                                Some(&error.message),
                             )
                             .await?;
-                        let plan = updated_or_conflict(mutation, "fail invalid call planning")?;
+                        let plan = updated_or_conflict(mutation, "fail")?;
                         return Ok(PlanDriveReceipt::Failed {
                             plan,
-                            error: message,
+                            error: error.message,
                         });
                     }
-                    let committed = self
-                        .store
-                        .create_execution_job_and_suspend_plan(
-                            &running.id,
-                            running.revision,
-                            claim_token,
-                            &state_json,
-                            &budget_json,
-                            job,
-                        )
-                        .await?;
-                    Ok(PlanDriveReceipt::WaitingForExecutionJob {
-                        plan: committed.plan,
-                        job: Box::new(committed.execution_job),
-                        existing: committed.existing,
-                    })
-                }
-                PlanAdvance::Suspended(effect @ PlanEffect::Infer { sequence, .. }) => {
-                    let state_json = serde_json::to_value(&machine)?;
-                    let budget_json = machine.budget_json()?;
-                    let request_event = infer_request_event(&running, &effect)?;
-                    let activation_id = deterministic_infer_activation_id(&request_event.id)?;
-                    let committed: PlanEvaluationCommit = self
-                        .store
-                        .create_evaluation_and_suspend_plan(
-                            &running.id,
-                            running.revision,
-                            claim_token,
-                            &state_json,
-                            &budget_json,
-                            &request_event,
-                            &activation_id,
-                        )
-                        .await?;
-                    debug_assert_eq!(
-                        deterministic_plan_effect_id(&running.id, sequence)?,
-                        request_event
-                            .payload
-                            .get("plan_effect_id")
-                            .and_then(JsonValue::as_str)
-                            .unwrap_or_default()
-                    );
-                    Ok(PlanDriveReceipt::WaitingForEvaluation {
-                        plan: committed.plan,
-                        request_event: Box::new(committed.request_event),
-                        activation_id: committed.activation_id,
-                        existing: committed.existing,
-                    })
-                }
-                PlanAdvance::Complete(value) => {
-                    let state_json = serde_json::to_value(&machine)?;
-                    let budget_json = machine.budget_json()?;
-                    let mutation = self
-                        .store
-                        .finish_plan_execution(
-                            &running.id,
-                            running.revision,
-                            claim_token,
-                            PlanExecutionStatus::Succeeded,
-                            &state_json,
-                            &budget_json,
-                            Some(&value),
-                            None,
-                        )
-                        .await?;
-                    let plan = updated_or_conflict(mutation, "complete")?;
-                    Ok(PlanDriveReceipt::Succeeded { plan, value })
-                }
-                PlanAdvance::Failed(error) => {
-                    let state_json = serde_json::to_value(&machine)?;
-                    let budget_json = machine.budget_json()?;
-                    let mutation = self
-                        .store
-                        .finish_plan_execution(
-                            &running.id,
-                            running.revision,
-                            claim_token,
-                            PlanExecutionStatus::Failed,
-                            &state_json,
-                            &budget_json,
-                            None,
-                            Some(&error.message),
-                        )
-                        .await?;
-                    let plan = updated_or_conflict(mutation, "fail")?;
-                    Ok(PlanDriveReceipt::Failed {
-                        plan,
-                        error: error.message,
-                    })
                 }
             }
         }
@@ -430,6 +579,832 @@ impl PlanExecutionCoordinator {
             }
         }
         advance
+    }
+
+    /// Executes one Runtime-profile Host effect behind an immutable replay
+    /// receipt. If the process crashes after the Event commit but before the
+    /// Plan checkpoint, the next owner returns the stored result instead of
+    /// observing a newer view or submitting a second proposal.
+    async fn execute_host_effect(
+        &self,
+        plan: &PlanExecutionRecord,
+        effect: &PlanEffect,
+    ) -> Result<JsonValue, String> {
+        let PlanEffect::Host {
+            sequence,
+            operation,
+            arguments,
+            result,
+        } = effect
+        else {
+            return Err("只有 Host effect 可以进入 Runtime Host executor".to_string());
+        };
+        let event_id =
+            deterministic_plan_effect_id(&plan.id, *sequence).map_err(|error| error.to_string())?;
+        let existing = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(event_id.clone()),
+                context_id: Some(plan.context_id.clone()),
+                top_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .next();
+        if let Some(existing) = existing {
+            if existing
+                .payload
+                .get("plan_execution_id")
+                .and_then(JsonValue::as_str)
+                != Some(plan.id.as_str())
+                || existing
+                    .payload
+                    .get("effect_sequence")
+                    .and_then(JsonValue::as_u64)
+                    != Some(*sequence)
+                || existing
+                    .payload
+                    .get("operation")
+                    .and_then(JsonValue::as_str)
+                    != Some(operation.as_str())
+                || existing.payload.get("arguments") != Some(&JsonValue::Object(arguments.clone()))
+            {
+                return Err(format!(
+                    "Host effect Event '{}' 已被不同的因果内容占用",
+                    existing.id
+                ));
+            }
+            return existing
+                .payload
+                .get("result")
+                .cloned()
+                .ok_or_else(|| format!("Host effect Event '{}' 缺少 result", existing.id));
+        }
+
+        let raw = self
+            .execute_new_host_operation(plan, &event_id, operation, arguments)
+            .await?;
+        let value = normalize_host_result(result.clone(), raw)?;
+        let (event_type, topic) = host_event_class(operation);
+        let mut payload = serde_json::Map::from_iter([
+            (
+                "plan_execution_id".to_string(),
+                JsonValue::String(plan.id.clone()),
+            ),
+            ("effect_sequence".to_string(), JsonValue::from(*sequence)),
+            (
+                "operation".to_string(),
+                JsonValue::String(operation.clone()),
+            ),
+            (
+                "arguments".to_string(),
+                JsonValue::Object(arguments.clone()),
+            ),
+            ("result".to_string(), value.clone()),
+            (
+                "context_id".to_string(),
+                JsonValue::String(plan.context_id.clone()),
+            ),
+            (
+                "session_id".to_string(),
+                JsonValue::String(plan.session_id.clone()),
+            ),
+            (
+                "thread_id".to_string(),
+                JsonValue::String(plan.thread_id.clone()),
+            ),
+            (
+                "activation_id".to_string(),
+                JsonValue::String(plan.activation_id.clone()),
+            ),
+            (
+                "wake_policy".to_string(),
+                JsonValue::String("none".to_string()),
+            ),
+        ]);
+        if let Some(objective_id) = &plan.objective_id {
+            payload.insert(
+                "objective_id".to_string(),
+                JsonValue::String(objective_id.clone()),
+            );
+        }
+        if let Some(principal_id) = &plan.initiating_principal_id {
+            payload.insert(
+                "principal_id".to_string(),
+                JsonValue::String(principal_id.clone()),
+            );
+        }
+        let mut event = Event::new(
+            event_id,
+            "Runtime-Yao".to_string(),
+            event_type.to_string(),
+            topic.to_string(),
+            payload,
+        );
+        event.timestamp = plan.updated_at;
+        self.store
+            .append(event)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(value)
+    }
+
+    async fn execute_new_host_operation(
+        &self,
+        plan: &PlanExecutionRecord,
+        event_id: &str,
+        operation: &str,
+        arguments: &serde_json::Map<String, JsonValue>,
+    ) -> Result<JsonValue, String> {
+        match operation {
+            "host.view" => {
+                let reference = arguments.get("ref").ok_or("host.view 缺少 ref 参数")?;
+                let (kind, id) = crate::yao::reference_view(reference)
+                    .ok_or("host.view ref 参数不是有效的 opaque Ref")?;
+                self.authorized_host_view(plan, kind, id).await
+            }
+            "evidence.commit" | "outcome.commit" => {
+                let candidate = arguments
+                    .get("candidate")
+                    .ok_or_else(|| format!("{operation} 缺少 candidate 参数"))?;
+                let kind = if operation == "evidence.commit" {
+                    let candidate = crate::yao::evidence_candidate_view(candidate)
+                        .ok_or("evidence.commit candidate 不是合法 EvidenceCandidate")?;
+                    for reference in candidate.refs {
+                        self.require_committed_reference_in_context(plan, reference, "Evidence")
+                            .await?;
+                    }
+                    "Evidence"
+                } else {
+                    let candidate = crate::yao::outcome_candidate_view(candidate)
+                        .ok_or("outcome.commit candidate 不是合法 OutcomeCandidate")?;
+                    for reference in candidate.evidence {
+                        self.require_committed_reference_in_context(plan, reference, "Evidence")
+                            .await?;
+                    }
+                    "Outcome"
+                };
+                Ok(crate::yao::reference_value(kind, event_id))
+            }
+            "objective.report" | "objective.propose-wait" => {
+                self.require_current_objective_ref(plan, arguments, "objective")?;
+                if operation == "objective.report" {
+                    if let Some(evidence) = arguments.get("evidence") {
+                        let evidence = evidence
+                            .as_array()
+                            .ok_or("objective.report evidence 必须是 Ref<Evidence> 列表")?;
+                        for reference in evidence {
+                            self.require_committed_reference_in_context(
+                                plan, reference, "Evidence",
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                Ok(JsonValue::Null)
+            }
+            "objective.propose-completion" => {
+                self.require_current_objective_ref(plan, arguments, "objective")?;
+                self.require_event_ref_in_context(plan, arguments, "outcome", "Outcome")
+                    .await?;
+                Ok(JsonValue::Null)
+            }
+            "context.propose" => {
+                let transaction = arguments
+                    .get("transaction")
+                    .ok_or("context.propose 缺少 transaction 参数")?;
+                if transaction.is_null() {
+                    return Err("context.propose transaction 不能是 nil".to_string());
+                }
+                Ok(serde_json::json!({
+                    "proposal_id": event_id,
+                    "status": "submitted",
+                }))
+            }
+            other => Err(format!("未知 Morphz Host operation '{other}'")),
+        }
+    }
+
+    fn require_current_objective_ref(
+        &self,
+        plan: &PlanExecutionRecord,
+        arguments: &serde_json::Map<String, JsonValue>,
+        argument: &str,
+    ) -> Result<(), String> {
+        let expected = plan
+            .objective_id
+            .as_deref()
+            .ok_or("当前 Plan 没有 Objective authority")?;
+        let value = arguments
+            .get(argument)
+            .ok_or_else(|| format!("缺少 {argument} 参数"))?;
+        let (kind, id) = crate::yao::reference_view(value)
+            .ok_or_else(|| format!("{argument} 不是有效的 opaque Ref"))?;
+        if kind != "Objective" || id != expected {
+            return Err(format!(
+                "{argument} Ref 不属于当前 Plan 的 Objective authority"
+            ));
+        }
+        Ok(())
+    }
+
+    async fn require_event_ref_in_context(
+        &self,
+        plan: &PlanExecutionRecord,
+        arguments: &serde_json::Map<String, JsonValue>,
+        argument: &str,
+        expected_kind: &str,
+    ) -> Result<(), String> {
+        let value = arguments
+            .get(argument)
+            .ok_or_else(|| format!("缺少 {argument} 参数"))?;
+        self.require_committed_reference_in_context(plan, value, expected_kind)
+            .await
+    }
+
+    async fn require_committed_reference_in_context(
+        &self,
+        plan: &PlanExecutionRecord,
+        value: &JsonValue,
+        expected_kind: &str,
+    ) -> Result<(), String> {
+        let (kind, id) = crate::yao::reference_view(value)
+            .ok_or_else(|| format!("值不是有效的 opaque Ref<{expected_kind}>"))?;
+        if kind != expected_kind {
+            return Err(format!("需要 Ref<{expected_kind}>，实际是 Ref<{kind}>"));
+        }
+        let event = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(id.to_string()),
+                context_id: Some(plan.context_id.clone()),
+                top_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|event| event.id == id)
+            .ok_or_else(|| format!("Ref<{expected_kind}> 不属于当前 Context 或尚未提交"))?;
+        let expected_operation = match expected_kind {
+            "Evidence" => "evidence.commit",
+            "Outcome" => "outcome.commit",
+            other => return Err(format!("Host 不支持验证 Ref<{other}> 的提交来源")),
+        };
+        if event.payload.get("operation").and_then(JsonValue::as_str) != Some(expected_operation) {
+            return Err(format!(
+                "Event '{id}' 不是 Runtime 提交的 Ref<{expected_kind}>"
+            ));
+        }
+        Ok(())
+    }
+
+    async fn authorized_host_view(
+        &self,
+        plan: &PlanExecutionRecord,
+        kind: &str,
+        id: &str,
+    ) -> Result<JsonValue, String> {
+        match kind {
+            "Agent" if id == plan.agent_id => Ok(serde_json::json!({"id": id})),
+            "Evaluation"
+                if Some(id) == plan.objective_evaluation_id.as_deref()
+                    || (plan.objective_evaluation_id.is_none() && id == plan.activation_id) =>
+            {
+                let program: Program = serde_json::from_value(plan.program_json.clone())
+                    .map_err(|error| format!("Plan Program 无法读取: {error}"))?;
+                Ok(serde_json::json!({
+                    "id": id,
+                    "owner": "runtime",
+                    "causal_parent": plan.objective_id,
+                    "start_time": plan.created_at.to_rfc3339(),
+                    "budget_summary": plan.budget_json,
+                    "result_contract": program.typed_program().map(|typed| &typed.output),
+                }))
+            }
+            "Context" if id == plan.context_id => {
+                let projection = self
+                    .store
+                    .get_mind_projection(id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(serde_json::json!({
+                    "id": id,
+                    "agent_identity": plan.agent_id,
+                    "active_mind_projection_identity": projection.as_ref().map(|value| &value.state_hash),
+                    "revision": projection.as_ref().map(|value| value.revision),
+                    "authorized_summary": null,
+                }))
+            }
+            "Objective" if plan.objective_id.as_deref() == Some(id) => {
+                let objective = self
+                    .store
+                    .get_objective(id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+                if objective.context_id != plan.context_id || objective.agent_id != plan.agent_id {
+                    return Err("Objective Ref 越过当前 Plan 的 Context/Agent authority".into());
+                }
+                Ok(serde_json::json!({
+                    "id": objective.id,
+                    "stated_objective": objective.stated_objective,
+                    "status": objective.status.as_str(),
+                    "wait_condition_summary": objective.wait_condition,
+                    "completion_intent": objective.completion_intent,
+                    "revision": objective.revision,
+                    "verified_progress_summary": {
+                        "tokens_used": objective.tokens_used,
+                        "time_used_seconds": objective.time_used_seconds,
+                    },
+                }))
+            }
+            "HarnessBinding" => {
+                let expected = plan.harness_id.as_deref().map(|harness_id| {
+                    plan.harness_version.as_deref().map_or_else(
+                        || harness_id.to_string(),
+                        |version| format!("{harness_id}@{version}"),
+                    )
+                });
+                if expected.as_deref() != Some(id) {
+                    return Err("HarnessBinding Ref 不属于当前 Plan".to_string());
+                }
+                Ok(serde_json::json!({
+                    "id": id,
+                    "package_id": plan.harness_id,
+                    "version": plan.harness_version,
+                    "source_artifact_hash": plan.source_artifact_hash,
+                    "binding_identity": id,
+                }))
+            }
+            "CapabilitySet" => {
+                let runtime_capability = extract_runtime_capability_ref(&plan.state_json);
+                if runtime_capability.as_deref() != Some(id) {
+                    return Err("CapabilitySet Ref 不属于当前 Plan 的 inherited authority".into());
+                }
+                let program: Program = serde_json::from_value(plan.program_json.clone())
+                    .map_err(|error| format!("Plan Program 无法读取: {error}"))?;
+                Ok(serde_json::json!({
+                    "id": id,
+                    "descriptions": program.typed_program().map(|typed| &typed.effects),
+                }))
+            }
+            "Principal" if plan.initiating_principal_id.as_deref() == Some(id) => {
+                Ok(serde_json::json!({"id": id, "policy_summary": "initiating-principal"}))
+            }
+            "Evidence" | "Outcome" => {
+                let event = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(id.to_string()),
+                        context_id: Some(plan.context_id.clone()),
+                        top_k: Some(1),
+                        ..QueryFilter::default()
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| format!("Ref<{kind}> '{id}' 不存在于当前 Context"))?;
+                let expected_operation = if kind == "Evidence" {
+                    "evidence.commit"
+                } else {
+                    "outcome.commit"
+                };
+                if event.payload.get("operation").and_then(JsonValue::as_str)
+                    != Some(expected_operation)
+                {
+                    return Err(format!("Event '{id}' 不是已提交的 Ref<{kind}>"));
+                }
+                Ok(serde_json::json!({
+                    "id": event.id,
+                    "kind": kind,
+                    "content_hash": format!("sha256:{:x}", Sha256::digest(serde_json::to_vec(&event.payload).unwrap_or_default())),
+                    "producer": event.actor,
+                    "source": event.payload.get("plan_execution_id"),
+                    "verification_status": "runtime-committed",
+                    "references": event.payload.get("arguments"),
+                }))
+            }
+            "ExecutionTarget" => {
+                Err("当前 Plan 没有绑定可公开观察的 ExecutionTarget Ref".to_string())
+            }
+            _ => Err(format!(
+                "Ref<{kind}> '{id}' 不属于当前 Plan 的 Host View authority"
+            )),
+        }
+    }
+
+    async fn materialize_parallel_children(
+        &self,
+        parent: &PlanExecutionRecord,
+        effect: &PlanEffect,
+        group_id: &str,
+    ) -> PlanExecutionResult<Vec<PlanExecutionRecord>> {
+        let PlanEffect::Parallel { sequence, branches } = effect else {
+            return Err("只有 par effect 可以物化 branch Plans".into());
+        };
+        let expected_group_id = deterministic_plan_parallel_group_id(&parent.id, *sequence)?;
+        if expected_group_id != group_id {
+            return Err("par effect 与 Action Group 稳定身份不一致".into());
+        }
+        let mut output = Vec::with_capacity(branches.len());
+        for branch in branches {
+            let branch_call_id =
+                deterministic_plan_parallel_branch_id(&parent.id, *sequence, &branch.name)?;
+            let id = deterministic_plan_execution_id(&parent.activation_id, &branch_call_id)?;
+            let program_json = serde_json::to_value(&branch.program)?;
+            let state_json = serde_json::to_value(&branch.machine)?;
+            let budget_json = branch.machine.budget_json()?;
+            let source_artifact_hash = if parent.harness_id.is_some() {
+                parent.source_artifact_hash.clone()
+            } else if let Some(typed) = branch.program.typed_program() {
+                typed.source_hash.clone()
+            } else {
+                format!(
+                    "sha256:{:x}",
+                    Sha256::digest(serde_json::to_vec(&program_json).unwrap_or_default())
+                )
+            };
+            output.push(
+                self.store
+                    .create_plan_execution(NewPlanExecution {
+                        id,
+                        activation_id: parent.activation_id.clone(),
+                        thread_id: parent.thread_id.clone(),
+                        agent_id: parent.agent_id.clone(),
+                        context_id: parent.context_id.clone(),
+                        session_id: parent.session_id.clone(),
+                        initiating_principal_id: parent.initiating_principal_id.clone(),
+                        tool_call_id: branch_call_id,
+                        objective_id: parent.objective_id.clone(),
+                        objective_evaluation_id: parent.objective_evaluation_id.clone(),
+                        harness_id: parent.harness_id.clone(),
+                        harness_version: parent.harness_version.clone(),
+                        source_artifact_hash,
+                        ir_schema_version: parent.ir_schema_version,
+                        program_json,
+                        state_json,
+                        budget_json,
+                    })
+                    .await?,
+            );
+        }
+        Ok(output)
+    }
+
+    pub async fn ensure_parallel_children_for_waiting(
+        &self,
+        parent: &PlanExecutionRecord,
+    ) -> PlanExecutionResult<Vec<PlanExecutionRecord>> {
+        if parent.status != PlanExecutionStatus::Waiting
+            || parent.pending_kind != Some(PlanExecutionWaitKind::ActionGroup)
+        {
+            return Err(format!(
+                "PlanExecution '{}' 当前不是 waiting(action_group)",
+                parent.id
+            )
+            .into());
+        }
+        let group_id = parent
+            .pending_id
+            .as_deref()
+            .ok_or("waiting(action_group) 缺少 pending_id")?;
+        let machine: PlanMachine = serde_json::from_value(parent.state_json.clone())?;
+        let effect = machine
+            .pending_effect()
+            .ok_or("waiting(action_group) 缺少 pending par effect")?;
+        self.materialize_parallel_children(parent, effect, group_id)
+            .await
+    }
+
+    async fn materialize_program_child(
+        &self,
+        parent: &PlanExecutionRecord,
+        effect: &PlanEffect,
+        child_id: &str,
+    ) -> PlanExecutionResult<PlanExecutionRecord> {
+        let PlanEffect::Program {
+            sequence,
+            value,
+            machine,
+        } = effect
+        else {
+            return Err("只有 Program effect 可以物化 child Plan".into());
+        };
+        let expected_id =
+            deterministic_plan_program_child_id(&parent.activation_id, &parent.id, *sequence)?;
+        if expected_id != child_id {
+            return Err("Program effect 与 child Plan 稳定身份不一致".into());
+        }
+        let child_call_id = deterministic_plan_program_call_id(&parent.id, *sequence)?;
+        let program_json = serde_json::to_value(&value.program)?;
+        let state_json = serde_json::to_value(machine.as_ref())?;
+        let budget_json = machine.budget_json()?;
+        self.store
+            .create_plan_execution(NewPlanExecution {
+                id: child_id.to_string(),
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: parent.initiating_principal_id.clone(),
+                tool_call_id: child_call_id,
+                objective_id: parent.objective_id.clone(),
+                objective_evaluation_id: parent.objective_evaluation_id.clone(),
+                harness_id: parent.harness_id.clone(),
+                harness_version: parent.harness_version.clone(),
+                source_artifact_hash: if parent.harness_id.is_some() {
+                    parent.source_artifact_hash.clone()
+                } else {
+                    value.hash.clone()
+                },
+                ir_schema_version: parent.ir_schema_version,
+                program_json,
+                state_json,
+                budget_json,
+            })
+            .await
+    }
+
+    pub async fn ensure_program_child_for_waiting(
+        &self,
+        parent: &PlanExecutionRecord,
+    ) -> PlanExecutionResult<PlanExecutionRecord> {
+        if parent.status != PlanExecutionStatus::Waiting
+            || parent.pending_kind != Some(PlanExecutionWaitKind::PlanExecution)
+        {
+            return Err(format!(
+                "PlanExecution '{}' 当前不是 waiting(plan_execution)",
+                parent.id
+            )
+            .into());
+        }
+        let child_id = parent
+            .pending_id
+            .as_deref()
+            .ok_or("waiting(plan_execution) 缺少 pending_id")?;
+        let machine: PlanMachine = serde_json::from_value(parent.state_json.clone())?;
+        let effect = machine
+            .pending_effect()
+            .ok_or("waiting(plan_execution) 缺少 pending Program effect")?;
+        self.materialize_program_child(parent, effect, child_id)
+            .await
+    }
+
+    pub async fn reconcile_program_child(
+        &self,
+        plan_id: &str,
+        child_id: &str,
+    ) -> PlanExecutionResult<PlanResumeReceipt> {
+        let Some(plan) = self.store.get_plan_execution(plan_id).await? else {
+            return Ok(PlanResumeReceipt::Conflict {
+                current: None,
+                reason: format!("PlanExecution '{plan_id}' 不存在"),
+            });
+        };
+        if plan.status != PlanExecutionStatus::Waiting
+            || plan.pending_kind != Some(PlanExecutionWaitKind::PlanExecution)
+            || plan.pending_id.as_deref() != Some(child_id)
+        {
+            return if plan.status.is_terminal()
+                || matches!(
+                    plan.status,
+                    PlanExecutionStatus::Queued | PlanExecutionStatus::Running
+                ) {
+                Ok(PlanResumeReceipt::Existing(plan))
+            } else {
+                Ok(PlanResumeReceipt::Conflict {
+                    current: Some(plan),
+                    reason: "PlanExecution 没有等待该 child Plan".to_string(),
+                })
+            };
+        }
+        let mut machine: PlanMachine = serde_json::from_value(plan.state_json.clone())?;
+        let effect = machine
+            .pending_effect()
+            .cloned()
+            .ok_or("waiting(plan_execution) 的 PlanMachine 缺少 pending effect")?;
+        let PlanEffect::Program {
+            sequence, value, ..
+        } = &effect
+        else {
+            return Err("waiting(plan_execution) 的 pending effect 不是 Program".into());
+        };
+        if deterministic_plan_program_child_id(&plan.activation_id, &plan.id, *sequence)?
+            != child_id
+        {
+            return Err("Plan 与 Program child 的稳定身份不一致".into());
+        }
+        let child = self
+            .materialize_program_child(&plan, &effect, child_id)
+            .await?;
+        if child.activation_id != plan.activation_id
+            || child.thread_id != plan.thread_id
+            || child.agent_id != plan.agent_id
+            || child.context_id != plan.context_id
+            || child.session_id != plan.session_id
+            || child.source_artifact_hash
+                != if plan.harness_id.is_some() {
+                    plan.source_artifact_hash.clone()
+                } else {
+                    value.hash.clone()
+                }
+        {
+            return Err("Program child Plan 与 parent route 或 Program hash 不一致".into());
+        }
+        if !child.status.is_terminal() {
+            return Ok(PlanResumeReceipt::Conflict {
+                current: Some(plan),
+                reason: format!("Program child Plan '{child_id}' 尚未终结"),
+            });
+        }
+        let outcome = match child.status {
+            PlanExecutionStatus::Succeeded => {
+                Ok(child.result_json.clone().unwrap_or(JsonValue::Null))
+            }
+            PlanExecutionStatus::Failed | PlanExecutionStatus::Cancelled => Err(child
+                .error
+                .clone()
+                .unwrap_or_else(|| format!("child Plan status={}", child.status.as_str()))),
+            _ => unreachable!("terminal checked above"),
+        };
+        machine.resume_effect(*sequence, outcome)?;
+        let state_json = serde_json::to_value(&machine)?;
+        let budget_json = machine.budget_json()?;
+        match self
+            .store
+            .resume_plan_execution(
+                &plan.id,
+                plan.revision,
+                PlanExecutionWaitKind::PlanExecution,
+                child_id,
+                &state_json,
+                &budget_json,
+            )
+            .await?
+        {
+            PlanExecutionMutation::Updated(record) | PlanExecutionMutation::Existing(record) => {
+                Ok(PlanResumeReceipt::Queued(record))
+            }
+            PlanExecutionMutation::Conflict { current } => Ok(PlanResumeReceipt::Conflict {
+                current: Some(current),
+                reason: "Program child join revision 冲突".to_string(),
+            }),
+            PlanExecutionMutation::Rejected { current, reason } => {
+                Ok(PlanResumeReceipt::Conflict { current, reason })
+            }
+            PlanExecutionMutation::NotFound => Ok(PlanResumeReceipt::Conflict {
+                current: None,
+                reason: format!("PlanExecution '{}' 在 Program child join 时消失", plan.id),
+            }),
+        }
+    }
+
+    /// Converges a durable `par` barrier from its child Plan terminal facts.
+    /// Exact child/group identities come from the parent's persisted pending
+    /// effect, so this method is safe after worker replacement and partial
+    /// branch materialization.
+    pub async fn reconcile_action_group(
+        &self,
+        plan_id: &str,
+        group_id: &str,
+    ) -> PlanExecutionResult<PlanResumeReceipt> {
+        let Some(plan) = self.store.get_plan_execution(plan_id).await? else {
+            return Ok(PlanResumeReceipt::Conflict {
+                current: None,
+                reason: format!("PlanExecution '{plan_id}' 不存在"),
+            });
+        };
+        if plan.status != PlanExecutionStatus::Waiting
+            || plan.pending_kind != Some(PlanExecutionWaitKind::ActionGroup)
+            || plan.pending_id.as_deref() != Some(group_id)
+        {
+            return if plan.status.is_terminal()
+                || matches!(
+                    plan.status,
+                    PlanExecutionStatus::Queued | PlanExecutionStatus::Running
+                ) {
+                Ok(PlanResumeReceipt::Existing(plan))
+            } else {
+                Ok(PlanResumeReceipt::Conflict {
+                    current: Some(plan),
+                    reason: "PlanExecution 没有等待该 Action Group".to_string(),
+                })
+            };
+        }
+        let mut machine: PlanMachine = serde_json::from_value(plan.state_json.clone())?;
+        let effect = machine
+            .pending_effect()
+            .cloned()
+            .ok_or("waiting(action_group) 的 PlanMachine 缺少 pending effect")?;
+        let PlanEffect::Parallel { sequence, branches } = &effect else {
+            return Err("waiting(action_group) 的 pending effect 不是 par".into());
+        };
+        if deterministic_plan_parallel_group_id(&plan.id, *sequence)? != group_id {
+            return Err("Plan 与 Action Group 的稳定身份不一致".into());
+        }
+        let children = self
+            .materialize_parallel_children(&plan, &effect, group_id)
+            .await?;
+        let group = self
+            .store
+            .get_action_group(group_id)
+            .await?
+            .ok_or_else(|| format!("Action Group '{group_id}' 不存在"))?;
+        let settled_event = parallel_group_settled_event(&plan, &group);
+        for (branch, child) in branches.iter().zip(children.iter()) {
+            if !child.status.is_terminal() {
+                return Ok(PlanResumeReceipt::Conflict {
+                    current: Some(plan),
+                    reason: format!("par branch '{}' 尚未终结", branch.name),
+                });
+            }
+            let branch_call_id =
+                deterministic_plan_parallel_branch_id(&plan.id, *sequence, &branch.name)?;
+            let status = match child.status {
+                PlanExecutionStatus::Succeeded => ActionGroupMemberStatus::Succeeded,
+                PlanExecutionStatus::Failed => ActionGroupMemberStatus::Failed,
+                PlanExecutionStatus::Cancelled => ActionGroupMemberStatus::Cancelled,
+                _ => unreachable!("terminal checked above"),
+            };
+            let result_event =
+                parallel_branch_result_event(&plan, group_id, &branch_call_id, &branch.name, child);
+            self.store
+                .commit_action_group_member_result(
+                    group_id,
+                    &branch_call_id,
+                    status,
+                    &result_event,
+                    &settled_event,
+                )
+                .await?;
+        }
+        let group = self
+            .store
+            .get_action_group(group_id)
+            .await?
+            .ok_or_else(|| format!("Action Group '{group_id}' 在 join 前消失"))?;
+        if group.status != ActionGroupStatus::Settled {
+            return Ok(PlanResumeReceipt::Conflict {
+                current: Some(plan),
+                reason: format!("Action Group '{group_id}' 尚未 settled"),
+            });
+        }
+        let mut values = Vec::with_capacity(branches.len());
+        let mut failures = Vec::new();
+        for (branch, child) in branches.iter().zip(children.iter()) {
+            match child.status {
+                PlanExecutionStatus::Succeeded => values.push((
+                    branch.name.clone(),
+                    child.result_json.clone().unwrap_or(JsonValue::Null),
+                )),
+                status => failures.push(format!(
+                    "{}: {} ({})",
+                    branch.name,
+                    child.error.as_deref().unwrap_or("no error detail"),
+                    status.as_str()
+                )),
+            }
+        }
+        let outcome = if failures.is_empty() {
+            Ok(crate::yao::structural_record_value(values))
+        } else {
+            Err(failures.join("; "))
+        };
+        machine.resume_effect(*sequence, outcome)?;
+        let state_json = serde_json::to_value(&machine)?;
+        let budget_json = machine.budget_json()?;
+        match self
+            .store
+            .resume_plan_execution(
+                &plan.id,
+                plan.revision,
+                PlanExecutionWaitKind::ActionGroup,
+                group_id,
+                &state_json,
+                &budget_json,
+            )
+            .await?
+        {
+            PlanExecutionMutation::Updated(record) | PlanExecutionMutation::Existing(record) => {
+                Ok(PlanResumeReceipt::Queued(record))
+            }
+            PlanExecutionMutation::Conflict { current } => Ok(PlanResumeReceipt::Conflict {
+                current: Some(current),
+                reason: "PlanExecution par join revision 冲突".to_string(),
+            }),
+            PlanExecutionMutation::Rejected { current, reason } => {
+                Ok(PlanResumeReceipt::Conflict { current, reason })
+            }
+            PlanExecutionMutation::NotFound => Ok(PlanResumeReceipt::Conflict {
+                current: None,
+                reason: format!("PlanExecution '{}' 在 par join 时消失", plan.id),
+            }),
+        }
     }
 
     /// Requeues expired pure-control claims with their exact persisted fence.
@@ -624,18 +1599,28 @@ impl PlanExecutionCoordinator {
                 plan.id
             )
         })?;
+        let request_event = infer_request_event(&plan, &effect)?;
         let PlanEffect::Infer {
             sequence, result, ..
         } = effect
         else {
             return Err("PlanExecution 等待 Evaluation，但 pending effect 不是 infer".into());
         };
-        let request_event = infer_request_event(&plan, &effect)?;
         if deterministic_infer_activation_id(&request_event.id)? != activation.id {
             return Err("child Activation 与 Plan infer effect 的稳定身份不一致".into());
         }
         let outcome = match outcome {
-            Ok(value) => decode_infer_result(result, value),
+            Ok(value) => decode_infer_result_with_admission(
+                result,
+                value,
+                &self.registry,
+                ProgramValueProvenance {
+                    parent_plan_execution_id: plan.id.clone(),
+                    producer_evaluation_id: activation_id.to_string(),
+                    terminal_event_id: None,
+                    validation_version: "yao-0.1".to_string(),
+                },
+            ),
             Err(error) => Err(error),
         };
         machine.resume_effect(sequence, outcome)?;
@@ -1000,6 +1985,191 @@ impl PlanExecutionCoordinator {
     }
 }
 
+fn host_event_class(operation: &str) -> (&'static str, &'static str) {
+    match operation {
+        "evidence.commit" => ("evidence", "runtime/yao/evidence"),
+        "outcome.commit" => ("outcome", "runtime/yao/outcome"),
+        "objective.report"
+        | "objective.propose-wait"
+        | "objective.propose-completion"
+        | "context.propose" => ("proposal", "runtime/yao/proposal"),
+        _ => ("runtime_control", "runtime/yao/host_effect"),
+    }
+}
+
+fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonValue, String> {
+    let transport = match &kind {
+        InferResultKind::Yao {
+            ty: crate::yao::Type::Named(name),
+            definitions,
+            ..
+        } => {
+            let Some(crate::yao::TypeDefinition::Record { fields, .. }) = definitions.get(name)
+            else {
+                return Err(format!(
+                    "host.view returns {name}，但它不是已声明的 record projection"
+                ));
+            };
+            let object = raw
+                .as_object()
+                .ok_or_else(|| format!("host.view 无法把非 object 值投影为 {name}"))?;
+            let selected = fields
+                .iter()
+                .map(|field| {
+                    object
+                        .get(&field.name)
+                        .cloned()
+                        .map(|value| {
+                            normalize_host_projection_field(&field.ty, value, definitions)
+                                .map(|value| (field.name.clone(), value))
+                        })
+                        .ok_or_else(|| {
+                            format!("Host projection '{name}' 不提供字段 '{}'", field.name)
+                        })?
+                })
+                .collect::<Result<serde_json::Map<_, _>, _>>()?;
+            serde_json::json!({
+                "$yao": {
+                    "kind": "record",
+                    "type": name,
+                    "fields": selected,
+                }
+            })
+        }
+        InferResultKind::Yao {
+            ty: crate::yao::Type::StructuralRecord(fields),
+            definitions,
+            ..
+        } => {
+            let object = raw
+                .as_object()
+                .ok_or("host.view structural return 需要 object projection")?;
+            let selected = fields
+                .iter()
+                .map(|(name, ty)| {
+                    object
+                        .get(name)
+                        .cloned()
+                        .map(|value| {
+                            normalize_host_projection_field(ty, value, definitions)
+                                .map(|value| (name.clone(), value))
+                        })
+                        .ok_or_else(|| format!("Host projection 不提供字段 '{name}'"))?
+                })
+                .collect::<Result<serde_json::Map<_, _>, _>>()?;
+            JsonValue::Object(selected)
+        }
+        InferResultKind::Yao {
+            ty: crate::yao::Type::Json,
+            ..
+        }
+        | InferResultKind::Json => raw,
+        InferResultKind::Yao {
+            ty: crate::yao::Type::Ref(_) | crate::yao::Type::Nil,
+            ..
+        } => raw,
+        InferResultKind::Yao { ty, .. } => {
+            return Err(format!(
+                "Morphz Host operation 不允许把 authority projection 解码为 {ty:?}"
+            ))
+        }
+        InferResultKind::Text => raw,
+    };
+    decode_infer_result(kind, transport)
+}
+
+fn normalize_host_projection_field(
+    ty: &crate::yao::Type,
+    raw: JsonValue,
+    definitions: &std::collections::BTreeMap<String, crate::yao::TypeDefinition>,
+) -> Result<JsonValue, String> {
+    use crate::yao::Type;
+    match ty {
+        Type::Option(inner) => {
+            if raw.is_null() {
+                Ok(serde_json::json!({"$yao": {
+                    "kind": "option",
+                    "variant": "none"
+                }}))
+            } else {
+                Ok(serde_json::json!({"$yao": {
+                    "kind": "option",
+                    "variant": "some",
+                    "value": normalize_host_projection_field(inner, raw, definitions)?,
+                }}))
+            }
+        }
+        Type::List(element) => raw
+            .as_array()
+            .ok_or_else(|| format!("Host projection 不能把 {raw} 转为 List"))?
+            .iter()
+            .cloned()
+            .map(|value| normalize_host_projection_field(element, value, definitions))
+            .collect::<Result<Vec<_>, _>>()
+            .map(JsonValue::Array),
+        Type::Map(element) => raw
+            .as_object()
+            .ok_or_else(|| format!("Host projection 不能把 {raw} 转为 Map"))?
+            .iter()
+            .map(|(name, value)| {
+                normalize_host_projection_field(element, value.clone(), definitions)
+                    .map(|value| (name.clone(), value))
+            })
+            .collect::<Result<serde_json::Map<_, _>, _>>()
+            .map(JsonValue::Object),
+        Type::StructuralRecord(fields) => {
+            let object = raw
+                .as_object()
+                .ok_or_else(|| format!("Host projection 不能把 {raw} 转为 structural record"))?;
+            fields
+                .iter()
+                .map(|(name, ty)| {
+                    let value = object
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("Host projection 不提供字段 '{name}'"))?;
+                    normalize_host_projection_field(ty, value, definitions)
+                        .map(|value| (name.clone(), value))
+                })
+                .collect::<Result<serde_json::Map<_, _>, _>>()
+                .map(JsonValue::Object)
+        }
+        Type::Named(name) => {
+            let Some(crate::yao::TypeDefinition::Record { fields, .. }) = definitions.get(name)
+            else {
+                return Err(format!(
+                    "Host projection 不支持嵌套的非 record Named type '{name}'"
+                ));
+            };
+            let object = raw
+                .as_object()
+                .ok_or_else(|| format!("Host projection 不能把 {raw} 转为 {name}"))?;
+            let fields = fields
+                .iter()
+                .map(|field| {
+                    let value = object.get(&field.name).cloned().ok_or_else(|| {
+                        format!("Host projection '{name}' 不提供字段 '{}'", field.name)
+                    })?;
+                    normalize_host_projection_field(&field.ty, value, definitions)
+                        .map(|value| (field.name.clone(), value))
+                })
+                .collect::<Result<serde_json::Map<_, _>, _>>()?;
+            Ok(serde_json::json!({"$yao": {
+                "kind": "record",
+                "type": name,
+                "fields": fields,
+            }}))
+        }
+        _ => Ok(raw),
+    }
+}
+
+fn extract_runtime_capability_ref(state_json: &JsonValue) -> Option<String> {
+    serde_json::from_value::<PlanMachine>(state_json.clone())
+        .ok()?
+        .runtime_reference_id("capabilities")
+}
+
 pub fn deterministic_plan_execution_id(
     activation_id: &str,
     tool_call_id: &str,
@@ -1017,6 +2187,201 @@ pub fn deterministic_plan_effect_id(
         plan_execution_id,
         &sequence.to_string(),
     )
+}
+
+pub fn deterministic_plan_parallel_group_id(
+    plan_execution_id: &str,
+    sequence: u64,
+) -> PlanExecutionResult<String> {
+    stable_id(
+        PAR_GROUP_ID_DOMAIN,
+        "plan_par_group",
+        plan_execution_id,
+        &sequence.to_string(),
+    )
+}
+
+pub fn deterministic_plan_parallel_branch_id(
+    plan_execution_id: &str,
+    sequence: u64,
+    branch_name: &str,
+) -> PlanExecutionResult<String> {
+    let group_id = deterministic_plan_parallel_group_id(plan_execution_id, sequence)?;
+    stable_id(
+        PAR_BRANCH_ID_DOMAIN,
+        "plan_par_branch",
+        &group_id,
+        branch_name,
+    )
+}
+
+pub fn deterministic_plan_program_call_id(
+    plan_execution_id: &str,
+    sequence: u64,
+) -> PlanExecutionResult<String> {
+    stable_id(
+        PROGRAM_CHILD_ID_DOMAIN,
+        "plan_program_call",
+        plan_execution_id,
+        &sequence.to_string(),
+    )
+}
+
+pub fn deterministic_plan_program_child_id(
+    activation_id: &str,
+    plan_execution_id: &str,
+    sequence: u64,
+) -> PlanExecutionResult<String> {
+    let call_id = deterministic_plan_program_call_id(plan_execution_id, sequence)?;
+    deterministic_plan_execution_id(activation_id, &call_id)
+}
+
+fn parallel_group_request(
+    plan: &PlanExecutionRecord,
+    effect: &PlanEffect,
+    group_id: &str,
+) -> PlanExecutionResult<(NewActionGroup, Vec<NewActionGroupMember>)> {
+    let PlanEffect::Parallel { sequence, branches } = effect else {
+        return Err("只有 par effect 可以创建 Action Group".into());
+    };
+    if branches.len() < 2 {
+        return Err("par Action Group 至少需要两个 branch".into());
+    }
+    let members = branches
+        .iter()
+        .enumerate()
+        .map(|(ordinal, branch)| {
+            Ok(NewActionGroupMember {
+                ordinal: u64::try_from(ordinal)?,
+                tool_call_id: deterministic_plan_parallel_branch_id(
+                    &plan.id,
+                    *sequence,
+                    &branch.name,
+                )?,
+                tool_name: format!("yao.par/{}", branch.name),
+                execution_job_id: None,
+            })
+        })
+        .collect::<PlanExecutionResult<Vec<_>>>()?;
+    Ok((
+        NewActionGroup {
+            id: group_id.to_string(),
+            activation_id: plan.activation_id.clone(),
+            thread_id: plan.thread_id.clone(),
+            agent_id: plan.agent_id.clone(),
+            context_id: plan.context_id.clone(),
+            session_id: plan.session_id.clone(),
+            assistant_call_event_id: format!("plan_par_request_{}_{}", plan.id, sequence),
+            objective_id: plan.objective_id.clone(),
+            objective_evaluation_id: plan.objective_evaluation_id.clone(),
+            objective_revision: None,
+        },
+        members,
+    ))
+}
+
+fn parallel_branch_result_event(
+    parent: &PlanExecutionRecord,
+    group_id: &str,
+    branch_call_id: &str,
+    branch_name: &str,
+    child: &PlanExecutionRecord,
+) -> Event {
+    let mut event = Event::new(
+        format!("plan_par_result_{}", child.id),
+        "Runtime-Yao".to_string(),
+        "runtime_control".to_string(),
+        "runtime/plan_branch_result".to_string(),
+        serde_json::Map::from_iter([
+            (
+                "action_group_id".to_string(),
+                JsonValue::String(group_id.to_string()),
+            ),
+            (
+                "tool_call_id".to_string(),
+                JsonValue::String(branch_call_id.to_string()),
+            ),
+            (
+                "branch_name".to_string(),
+                JsonValue::String(branch_name.to_string()),
+            ),
+            (
+                "parent_plan_execution_id".to_string(),
+                JsonValue::String(parent.id.clone()),
+            ),
+            (
+                "plan_execution_id".to_string(),
+                JsonValue::String(child.id.clone()),
+            ),
+            (
+                "context_id".to_string(),
+                JsonValue::String(parent.context_id.clone()),
+            ),
+            (
+                "session_id".to_string(),
+                JsonValue::String(parent.session_id.clone()),
+            ),
+            (
+                "status".to_string(),
+                JsonValue::String(child.status.as_str().to_string()),
+            ),
+            (
+                "result".to_string(),
+                child.result_json.clone().unwrap_or(JsonValue::Null),
+            ),
+            (
+                "error".to_string(),
+                child
+                    .error
+                    .clone()
+                    .map(JsonValue::String)
+                    .unwrap_or(JsonValue::Null),
+            ),
+            (
+                "wake_policy".to_string(),
+                JsonValue::String("none".to_string()),
+            ),
+        ]),
+    );
+    event.timestamp = child.finished_at.unwrap_or(child.updated_at);
+    event
+}
+
+fn parallel_group_settled_event(parent: &PlanExecutionRecord, group: &ActionGroupRecord) -> Event {
+    let mut event = Event::new(
+        format!("plan_par_settled_{}", group.id),
+        "Runtime-Yao".to_string(),
+        "runtime_control".to_string(),
+        "runtime/action_group_settled".to_string(),
+        serde_json::Map::from_iter([
+            (
+                "action_group_id".to_string(),
+                JsonValue::String(group.id.clone()),
+            ),
+            (
+                "plan_execution_id".to_string(),
+                JsonValue::String(parent.id.clone()),
+            ),
+            (
+                "context_id".to_string(),
+                JsonValue::String(parent.context_id.clone()),
+            ),
+            (
+                "session_id".to_string(),
+                JsonValue::String(parent.session_id.clone()),
+            ),
+            (
+                "member_count".to_string(),
+                JsonValue::from(group.member_count),
+            ),
+            (
+                "wake_policy".to_string(),
+                JsonValue::String("none".to_string()),
+            ),
+        ]),
+    );
+    event.timestamp = group.created_at;
+    event
 }
 
 fn infer_request_event(
@@ -1040,6 +2405,13 @@ fn infer_request_event(
         &sequence.to_string(),
     )?;
     let root_turn_id = event_id.clone();
+    let result_instruction = match result {
+        crate::sexpr_eval::InferResultKind::Text => String::new(),
+        crate::sexpr_eval::InferResultKind::Json => "本节点声明 returns=json；最终正文必须只包含一个完整、合法的 JSON 值，不要使用 Markdown 代码围栏或附加说明。".to_string(),
+        crate::sexpr_eval::InferResultKind::Yao { ty, .. } => format!(
+            "本节点声明 typed Yao 返回类型 {ty:?}；最终正文必须只包含该值的合法 JSON transport，不要使用 Markdown 代码围栏或附加说明。"
+        ),
+    };
     let mut payload = serde_json::Map::from_iter([
         ("agent_id".to_string(), JsonValue::String(plan.agent_id.clone())),
         (
@@ -1092,10 +2464,7 @@ fn infer_request_event(
             "text".to_string(),
             JsonValue::String(format!(
                 "这是 Runtime 正在执行的 Yao 程序提出的内部 infer 请求。请根据 request 中的任务与证据完成判断；可使用 tools 声明允许的工具补充证据。最终正文只返回供父 Plan 继续求值的结果，不要把它当作用户消息。{}\n\n{}",
-                match result {
-                    crate::sexpr_eval::InferResultKind::Text => "",
-                    crate::sexpr_eval::InferResultKind::Json => "本节点声明 returns=json；最终正文必须只包含一个完整、合法的 JSON 值，不要使用 Markdown 代码围栏或附加说明。",
-                },
+                result_instruction,
                 serde_json::to_string(&JsonValue::Object(request.clone()))?
             )),
         ),
@@ -1325,7 +2694,10 @@ mod tests {
         NewThreadActivation, NewThreadSignal, PlanExecutionStore, SessionDirectoryStore,
         SessionMountKind, ThreadActivationMutation, ThreadKind, ThreadStore,
     };
-    use crate::sexpr_eval::{validate, AllowList};
+    use crate::sexpr_eval::{
+        admit_program_value_candidate, validate, AllowList, PlanProgramValue,
+        ProgramValueProvenance,
+    };
     use crate::tool::Tool;
     use chrono::Duration;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -1484,6 +2856,296 @@ mod tests {
             ExecutionJobMutation::Updated(job) => job,
             other => panic!("expected updated ExecutionJob, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_context_is_injected_and_host_view_replays_its_immutable_receipt() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (host.view $runtime.context (returns Json)))"#,
+            &registry,
+            &AllowList::new(std::iter::empty::<&str>()),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let expected_context_id = route.context_id.clone();
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            queued.source_artifact_hash,
+            program.typed_program().unwrap().source_hash
+        );
+
+        let mut machine: PlanMachine = serde_json::from_value(queued.state_json.clone()).unwrap();
+        assert_eq!(
+            machine.runtime_reference_id("context").as_deref(),
+            Some(expected_context_id.as_str())
+        );
+        let effect = match machine.advance(&coordinator.registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Host { .. }) => effect,
+            other => panic!("expected Host boundary, got {other:?}"),
+        };
+        let first = coordinator
+            .execute_host_effect(&queued, &effect)
+            .await
+            .unwrap();
+        let replay = coordinator
+            .execute_host_effect(&queued, &effect)
+            .await
+            .unwrap();
+        assert_eq!(first, replay);
+        assert_eq!(first["id"], expected_context_id);
+        let receipt_id = deterministic_plan_effect_id(&queued.id, effect.sequence()).unwrap();
+        let receipts = store
+            .query(QueryFilter {
+                event_id: Some(receipt_id),
+                context_id: Some(queued.context_id.clone()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(receipts.len(), 1, "replay must not append a second Event");
+
+        match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "host-worker",
+                "host-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Succeeded { value, .. } => assert_eq!(value, first),
+            other => panic!("expected completed host Plan, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn host_view_normalizes_optional_fields_into_typed_yao_values() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (types
+                   (record ContextProjection
+                     (id String)
+                     (revision (Option Int))))
+                 (host.view $runtime.context (returns ContextProjection)))"#,
+            &registry,
+            &AllowList::new(std::iter::empty::<&str>()),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let value = match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "typed-view-worker",
+                "typed-view-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Succeeded { value, .. } => value,
+            other => panic!("expected typed Host view, got {other:?}"),
+        };
+        assert_eq!(value["$yao"]["type"], "ContextProjection");
+        assert_eq!(
+            value["$yao"]["fields"]["revision"]["$yao"]["variant"],
+            "none"
+        );
+    }
+
+    #[tokio::test]
+    async fn evidence_and_outcome_candidates_commit_once_and_return_opaque_refs() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (seq
+                   (bind checked
+                     (evidence.commit
+                       (evidence
+                         (kind "test-result")
+                         (value (dict (passed true)))
+                         (refs))))
+                   (outcome.commit
+                     (outcome
+                       (status succeeded)
+                       (value (dict (summary "verified")))
+                       (evidence $checked)))))"#,
+            &registry,
+            &AllowList::new(std::iter::empty::<&str>()),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+
+        let value = match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "commit-worker",
+                "commit-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Succeeded { value, .. } => value,
+            other => panic!("expected committed Outcome, got {other:?}"),
+        };
+        let (kind, outcome_id) = crate::yao::reference_view(&value).unwrap();
+        assert_eq!(kind, "Outcome");
+        let evidence_id = deterministic_plan_effect_id(&queued.id, 1).unwrap();
+        assert_eq!(
+            outcome_id,
+            deterministic_plan_effect_id(&queued.id, 2).unwrap()
+        );
+        for (id, operation) in [
+            (evidence_id, "evidence.commit"),
+            (outcome_id.to_string(), "outcome.commit"),
+        ] {
+            let events = store
+                .query(QueryFilter {
+                    event_id: Some(id),
+                    context_id: Some(queued.context_id.clone()),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(
+                events[0].payload["operation"],
+                JsonValue::String(operation.to_string())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn host_commit_rejects_forged_candidates_and_uncommitted_reference_kinds() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let program = validate(
+            r#"(eval (version "0.1") (evidence.commit
+                 (evidence (kind "test-result") (value true) (refs))))"#,
+            &registry,
+            &AllowList::new(std::iter::empty::<&str>()),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+
+        let forged = serde_json::Map::from_iter([(
+            "candidate".to_string(),
+            serde_json::json!({"$yao": {
+                "kind": "evidence_candidate",
+                "evidence_kind": "test-result",
+                "value": true,
+                "refs": [],
+                "injected": true
+            }}),
+        )]);
+        let error = coordinator
+            .execute_new_host_operation(&queued, "forged", "evidence.commit", &forged)
+            .await
+            .unwrap_err();
+        assert!(error.contains("EvidenceCandidate"), "got: {error}");
+
+        let unrelated = Event::new(
+            "not-committed-evidence".to_string(),
+            "Test".to_string(),
+            "observation".to_string(),
+            "test/unrelated".to_string(),
+            serde_json::json!({"context_id": queued.context_id})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        store.append(unrelated).await.unwrap();
+        let wrong_origin = serde_json::Map::from_iter([(
+            "candidate".to_string(),
+            serde_json::json!({"$yao": {
+                "kind": "outcome_candidate",
+                "status": "succeeded",
+                "value": null,
+                "evidence": [crate::yao::reference_value("Evidence", "not-committed-evidence")]
+            }}),
+        )]);
+        let error = coordinator
+            .execute_new_host_operation(&queued, "wrong-origin", "outcome.commit", &wrong_origin)
+            .await
+            .unwrap_err();
+        assert!(error.contains("不是 Runtime 提交"), "got: {error}");
+
+        let unauthorized_objective = serde_json::Map::from_iter([
+            (
+                "objective".to_string(),
+                crate::yao::reference_value("Objective", "foreign-objective"),
+            ),
+            ("progress".to_string(), serde_json::json!({"done": true})),
+        ]);
+        let error = coordinator
+            .execute_new_host_operation(
+                &queued,
+                "wrong-objective",
+                "objective.report",
+                &unauthorized_objective,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("没有 Objective authority"), "got: {error}");
     }
 
     #[tokio::test]
@@ -2358,5 +4020,521 @@ mod tests {
             jobs.is_empty(),
             "malformed infer output must not reach the following physical call"
         );
+    }
+
+    #[tokio::test]
+    async fn typed_par_materializes_durable_child_plans_and_recovers_the_join() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        registry.register(Arc::new(DefinitionOnlyTool));
+        let program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (requires (tools read))
+                 (par
+                   (branch alpha (call read (path "a")))
+                   (branch beta (call read (path "b")))))"#,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let (parent, group, children) = match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "par-parent-worker",
+                "par-parent-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForActionGroup {
+                plan,
+                group,
+                children,
+                existing,
+            } => {
+                assert!(!existing);
+                (plan, group, children)
+            }
+            other => panic!("expected Action Group suspension, got {other:?}"),
+        };
+        assert_eq!(
+            parent.pending_kind,
+            Some(PlanExecutionWaitKind::ActionGroup)
+        );
+        assert_eq!(children.len(), 2);
+        assert_eq!(group.member_count, 2);
+        let replayed_children = coordinator
+            .ensure_parallel_children_for_waiting(&parent)
+            .await
+            .unwrap();
+        assert_eq!(
+            replayed_children
+                .iter()
+                .map(|child| child.id.as_str())
+                .collect::<Vec<_>>(),
+            children
+                .iter()
+                .map(|child| child.id.as_str())
+                .collect::<Vec<_>>(),
+            "recovery must materialize the same child identities"
+        );
+        for child in &children {
+            assert_eq!(
+                child.source_artifact_hash,
+                child.program_json["root"]["program"]["source_hash"]
+                    .as_str()
+                    .unwrap()
+            );
+        }
+
+        for (index, child) in children.into_iter().enumerate() {
+            let (waiting_child, job) = match coordinator
+                .drive_once(
+                    &child.id,
+                    child.revision,
+                    &format!("par-child-worker-{index}"),
+                    &format!("par-child-claim-{index}"),
+                    Utc::now() + Duration::minutes(1),
+                    &TestPlanner,
+                )
+                .await
+                .unwrap()
+            {
+                PlanDriveReceipt::WaitingForExecutionJob { plan, job, .. } => (plan, job),
+                other => panic!("expected branch ExecutionJob, got {other:?}"),
+            };
+            let job_claim = format!("par-job-claim-{index}");
+            let running_job = updated_job(
+                store
+                    .claim_execution_job(
+                        &job.id,
+                        job.revision,
+                        "par-job-worker",
+                        &job_claim,
+                        Utc::now() + Duration::minutes(1),
+                        None,
+                    )
+                    .await
+                    .unwrap(),
+            );
+            let result_event = Event::new(
+                format!("par-tool-result-{index}"),
+                "Test-Executor".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                serde_json::Map::from_iter([
+                    ("context_id".to_string(), serde_json::json!(job.context_id)),
+                    ("session_id".to_string(), serde_json::json!(job.session_id)),
+                    (
+                        "activation_id".to_string(),
+                        serde_json::json!(job.activation_id),
+                    ),
+                    ("thread_id".to_string(), serde_json::json!(job.thread_id)),
+                    (
+                        "tool_call_id".to_string(),
+                        serde_json::json!(job.tool_call_id),
+                    ),
+                    ("tool_name".to_string(), serde_json::json!("read")),
+                    ("tool_status".to_string(), serde_json::json!("success")),
+                    (
+                        "text".to_string(),
+                        serde_json::json!(format!("value-{index}")),
+                    ),
+                ]),
+            );
+            updated_job(
+                store
+                    .finish_execution_job_with_event(
+                        &running_job.id,
+                        running_job.revision,
+                        Some(&job_claim),
+                        ExecutionJobTerminal {
+                            status: ExecutionJobStatus::Succeeded,
+                            result_event_id: Some(result_event.id.clone()),
+                            result_refs: Vec::new(),
+                            error: None,
+                            exit_code: Some(0),
+                        },
+                        &result_event,
+                        false,
+                    )
+                    .await
+                    .unwrap(),
+            );
+            let resumed = match coordinator
+                .reconcile_execution_job(&waiting_child.id, &job.id)
+                .await
+                .unwrap()
+            {
+                PlanResumeReceipt::Queued(plan) => plan,
+                other => panic!("expected queued branch after tool result, got {other:?}"),
+            };
+            match coordinator
+                .drive_once(
+                    &resumed.id,
+                    resumed.revision,
+                    &format!("par-child-finish-worker-{index}"),
+                    &format!("par-child-finish-claim-{index}"),
+                    Utc::now() + Duration::minutes(1),
+                    &TestPlanner,
+                )
+                .await
+                .unwrap()
+            {
+                PlanDriveReceipt::Succeeded { plan, value } => {
+                    assert_eq!(plan.status, PlanExecutionStatus::Succeeded);
+                    assert_eq!(value, serde_json::json!(format!("value-{index}")));
+                }
+                other => panic!("expected terminal branch, got {other:?}"),
+            }
+            if index == 0 {
+                match coordinator
+                    .reconcile_action_group(&parent.id, &group.id)
+                    .await
+                    .unwrap()
+                {
+                    PlanResumeReceipt::Conflict { current, reason } => {
+                        assert_eq!(
+                            current.unwrap().status,
+                            PlanExecutionStatus::Waiting,
+                            "a terminal prefix must not release the parent barrier"
+                        );
+                        assert!(reason.contains("尚未终结"), "got: {reason}");
+                    }
+                    other => panic!("par joined before every branch settled: {other:?}"),
+                }
+            }
+        }
+
+        drop(coordinator);
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let restarted = PlanExecutionCoordinator::new(runtime_store, registry);
+        let resumed_parent = match restarted
+            .reconcile_action_group(&parent.id, &group.id)
+            .await
+            .unwrap()
+        {
+            PlanResumeReceipt::Queued(plan) => plan,
+            other => panic!("expected parent queued after recovered join, got {other:?}"),
+        };
+        match restarted
+            .drive_once(
+                &resumed_parent.id,
+                resumed_parent.revision,
+                "par-parent-finish-worker",
+                "par-parent-finish-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Succeeded { value, .. } => {
+                let fields = value["$yao"]["fields"].as_array().unwrap();
+                assert_eq!(fields[0]["name"], "alpha");
+                assert_eq!(fields[0]["value"], "value-0");
+                assert_eq!(fields[1]["name"], "beta");
+                assert_eq!(fields[1]["value"], "value-1");
+            }
+            other => panic!("expected joined parent completion, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_par_aggregates_failure_only_after_every_branch_is_terminal() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (par
+                   (branch broken
+                     (seq (host.view $runtime.context (returns Json)) (div 1 0)))
+                   (branch healthy
+                     (host.view $runtime.context (returns Json)))))"#,
+            &registry,
+            &AllowList::new(std::iter::empty::<&str>()),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let (parent, group, children) = match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "failure-parent-worker",
+                "failure-parent-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForActionGroup {
+                plan,
+                group,
+                children,
+                ..
+            } => (plan, group, children),
+            other => panic!("expected par suspension, got {other:?}"),
+        };
+
+        match coordinator
+            .drive_once(
+                &children[0].id,
+                children[0].revision,
+                "broken-worker",
+                "broken-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Failed { error, .. } => {
+                assert!(error.contains("zero"), "got: {error}")
+            }
+            other => panic!("broken branch should fail, got {other:?}"),
+        }
+        assert!(matches!(
+            coordinator
+                .reconcile_action_group(&parent.id, &group.id)
+                .await
+                .unwrap(),
+            PlanResumeReceipt::Conflict { .. }
+        ));
+
+        assert!(matches!(
+            coordinator
+                .drive_once(
+                    &children[1].id,
+                    children[1].revision,
+                    "healthy-worker",
+                    "healthy-claim",
+                    Utc::now() + Duration::minutes(1),
+                    &TestPlanner,
+                )
+                .await
+                .unwrap(),
+            PlanDriveReceipt::Succeeded { .. }
+        ));
+        let resumed = match coordinator
+            .reconcile_action_group(&parent.id, &group.id)
+            .await
+            .unwrap()
+        {
+            PlanResumeReceipt::Queued(plan) => plan,
+            other => panic!("expected failed aggregate to queue parent, got {other:?}"),
+        };
+        match coordinator
+            .drive_once(
+                &resumed.id,
+                resumed.revision,
+                "failure-parent-finish-worker",
+                "failure-parent-finish-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Failed { error, .. } => {
+                assert!(error.contains("broken"), "got: {error}");
+                assert!(error.contains("zero"), "got: {error}");
+            }
+            other => panic!("parent should receive aggregate failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn admitted_program_value_runs_as_a_durable_child_and_recovers_the_join() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let parent_program = validate(
+            r#"(eval
+                 (version "0.1")
+                 (seq
+                   (bind generated
+                     (infer
+                       (task "produce a pure integer program")
+                       (returns (Program Int (effects)))))
+                   (run $generated)))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let mut parent_machine = PlanMachine::new(&parent_program).unwrap();
+        let infer = match parent_machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => effect,
+            other => panic!("expected Program-producing infer, got {other:?}"),
+        };
+        let PlanEffect::Infer { result, .. } = infer.clone() else {
+            unreachable!()
+        };
+        let crate::sexpr_eval::InferResultKind::Yao {
+            ty: crate::yao::Type::Program { output, effects },
+            ..
+        } = result
+        else {
+            panic!("infer did not retain its Program contract")
+        };
+        let admitted = admit_program_value_candidate(
+            &output,
+            &effects,
+            JsonValue::String(r#"(eval (version "0.1") (add 20 22))"#.to_string()),
+            &registry,
+            ProgramValueProvenance {
+                parent_plan_execution_id: "durable-parent".into(),
+                producer_evaluation_id: "durable-evaluation".into(),
+                terminal_event_id: Some("durable-terminal-event".into()),
+                validation_version: "yao-0.1".into(),
+            },
+        )
+        .unwrap();
+        parent_machine
+            .resume_effect(infer.sequence(), Ok(admitted))
+            .unwrap();
+
+        let route = seed_route(&store).await;
+        let parent_id =
+            deterministic_plan_execution_id(&route.activation_id, &route.tool_call_id).unwrap();
+        let parent = store
+            .create_plan_execution(NewPlanExecution {
+                id: parent_id,
+                activation_id: route.activation_id,
+                thread_id: route.thread_id,
+                agent_id: route.agent_id,
+                context_id: route.context_id,
+                session_id: route.session_id,
+                initiating_principal_id: route.initiating_principal_id,
+                tool_call_id: route.tool_call_id,
+                objective_id: route.objective_id,
+                objective_evaluation_id: route.objective_evaluation_id,
+                harness_id: None,
+                harness_version: None,
+                source_artifact_hash: "sha256:parent".into(),
+                ir_schema_version: 1,
+                program_json: serde_json::to_value(&parent_program).unwrap(),
+                state_json: serde_json::to_value(&parent_machine).unwrap(),
+                budget_json: parent_machine.budget_json().unwrap(),
+            })
+            .await
+            .unwrap();
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));
+        let (waiting_parent, child) = match coordinator
+            .drive_once(
+                &parent.id,
+                parent.revision,
+                "program-parent-worker",
+                "program-parent-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForPlanExecution {
+                plan,
+                child,
+                existing,
+            } => {
+                assert!(!existing);
+                (plan, *child)
+            }
+            other => panic!("expected Program child suspension, got {other:?}"),
+        };
+        assert_eq!(
+            waiting_parent.pending_kind,
+            Some(PlanExecutionWaitKind::PlanExecution)
+        );
+        let child_value: PlanProgramValue = {
+            let machine: PlanMachine =
+                serde_json::from_value(waiting_parent.state_json.clone()).unwrap();
+            let PlanEffect::Program { value, .. } = machine.pending_effect().unwrap() else {
+                unreachable!()
+            };
+            value.as_ref().clone()
+        };
+        assert_eq!(child.source_artifact_hash, child_value.hash);
+
+        let terminal_child = match coordinator
+            .drive_once(
+                &child.id,
+                child.revision,
+                "program-child-worker",
+                "program-child-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Succeeded { plan, value } => {
+                assert_eq!(value, serde_json::json!(42));
+                plan
+            }
+            other => panic!("expected pure Program child completion, got {other:?}"),
+        };
+
+        drop(coordinator);
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let restarted = PlanExecutionCoordinator::new(runtime_store, registry);
+        let resumed_parent = match restarted
+            .reconcile_program_child(&waiting_parent.id, &terminal_child.id)
+            .await
+            .unwrap()
+        {
+            PlanResumeReceipt::Queued(plan) => plan,
+            other => panic!("expected parent queued after Program join, got {other:?}"),
+        };
+        match restarted
+            .drive_once(
+                &resumed_parent.id,
+                resumed_parent.revision,
+                "program-parent-finish-worker",
+                "program-parent-finish-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Succeeded { value, .. } => {
+                assert_eq!(value, serde_json::json!(42));
+            }
+            other => panic!("expected Program parent completion, got {other:?}"),
+        }
     }
 }

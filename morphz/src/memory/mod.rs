@@ -2338,6 +2338,7 @@ pub enum PlanExecutionWaitKind {
     ExecutionJob,
     ActionGroup,
     Evaluation,
+    PlanExecution,
 }
 
 impl PlanExecutionWaitKind {
@@ -2346,6 +2347,7 @@ impl PlanExecutionWaitKind {
             Self::ExecutionJob => "execution_job",
             Self::ActionGroup => "action_group",
             Self::Evaluation => "evaluation",
+            Self::PlanExecution => "plan_execution",
         }
     }
 }
