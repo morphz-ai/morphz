@@ -2516,7 +2516,6 @@ const Composer = memo(function Composer({
   selectedSessionId,
   sending,
   readOnly,
-  activeWorkCount,
   quotes,
   activeQuoteId,
   t,
@@ -2524,7 +2523,6 @@ const Composer = memo(function Composer({
   onRemoveQuote,
   onUpdateQuoteComment,
   onSend,
-  onCancel,
   onError,
   modelInputPolicy,
   sessionCandidates,
@@ -2535,7 +2533,6 @@ const Composer = memo(function Composer({
   selectedSessionId: string
   sending: boolean
   readOnly: boolean
-  activeWorkCount: number
   quotes: QuoteItem[]
   activeQuoteId: string
   t: TFunction
@@ -2548,7 +2545,6 @@ const Composer = memo(function Composer({
     references: ComposerSessionReference[],
     dispatchMode?: MessageDispatchMode,
   ) => Promise<boolean>
-  onCancel: () => void
   onError: (message: string) => void
   modelInputPolicy?: RuntimeStatus['model_input']
   sessionCandidates: SessionReferenceCandidate[]
@@ -2891,9 +2887,6 @@ const Composer = memo(function Composer({
       >
         <Paperclip size={15} />
       </button>
-      {activeWorkCount > 0 ? (
-        <button className="cancel-button" type="button" title={readOnly ? t('header.principalScopeReadOnly') : t('composer.cancelTitle')} disabled={readOnly} onClick={onCancel}><Square size={14} /></button>
-      ) : null}
       <div className="send-control">
         {sendMenuOpen && (
           <div className="send-mode-menu" role="menu" aria-label={t('composer.modes.menu')}>
@@ -3104,6 +3097,7 @@ export default function App() {
   const principalSelectorRef = useRef<HTMLDivElement>(null)
   const themeSelectorRef = useRef<HTMLDivElement>(null)
   const contextTokenBudgetRef = useRef<HTMLDivElement>(null)
+  const contextTokenBudgetPopoverRef = useRef<HTMLDivElement>(null)
   const appDialogRef = useRef<AppDialogRequest | null>(null)
   const appDialogSequence = useRef(0)
   const principalSearchRequestSequence = useRef(0)
@@ -4652,6 +4646,49 @@ export default function App() {
     themeMenuOpen,
   ])
 
+  const positionContextTokenBudgetPopover = useCallback(() => {
+    const anchor = contextTokenBudgetRef.current?.querySelector<HTMLButtonElement>('.context-budget-button')
+    const popover = contextTokenBudgetPopoverRef.current
+    if (!anchor || !popover) return
+
+    const anchorBox = anchor.getBoundingClientRect()
+    const measured = popover.getBoundingClientRect()
+    const viewportPadding = 12
+    const gap = 10
+    const availableAbove = anchorBox.top - gap - viewportPadding
+    const availableBelow = window.innerHeight - anchorBox.bottom - gap - viewportPadding
+    const below = availableAbove < measured.height && availableBelow > availableAbove
+    const top = below
+      ? Math.min(window.innerHeight - measured.height - viewportPadding, anchorBox.bottom + gap)
+      : Math.max(viewportPadding, anchorBox.top - measured.height - gap)
+    const left = Math.min(
+      Math.max(viewportPadding, anchorBox.right - measured.width),
+      window.innerWidth - measured.width - viewportPadding,
+    )
+    popover.style.top = `${Math.max(viewportPadding, top)}px`
+    popover.style.left = `${Math.max(viewportPadding, left)}px`
+    popover.dataset.placement = below ? 'below' : 'above'
+  }, [])
+
+  useEffect(() => {
+    const popover = contextTokenBudgetPopoverRef.current
+    if (!popover) return
+    if (!contextTokenBudgetOpen) {
+      if (popover.matches(':popover-open')) popover.hidePopover()
+      return
+    }
+
+    if (!popover.matches(':popover-open')) popover.showPopover()
+    const frame = window.requestAnimationFrame(positionContextTokenBudgetPopover)
+    window.addEventListener('resize', positionContextTokenBudgetPopover)
+    window.addEventListener('scroll', positionContextTokenBudgetPopover, true)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('resize', positionContextTokenBudgetPopover)
+      window.removeEventListener('scroll', positionContextTokenBudgetPopover, true)
+    }
+  }, [contextTokenBudgetDraft, contextTokenBudgetOpen, contextTokenBudget, positionContextTokenBudgetPopover])
+
   const selectedContext = contexts.find(item => item.id === selectedContextId)
   const selectedAgent = agents.find(item => item.id === selectedAgentId)
   const parsedContextTokenBudgetDraft = contextTokenBudgetDraft.trim() === ''
@@ -5267,6 +5304,13 @@ export default function App() {
     ? schedulerThreads.filter(item => item.phase === 'waiting').length
     : runningObjectives.filter(item => Boolean(item.wait_condition)).length
   const composerThreads = schedulerThreads.filter(item => item.thread.session_id === selectedSessionId)
+  const activeDialogueThreads = composerThreads
+    .filter(item => item.thread.kind === 'dialogue_turn' && item.thread.lifecycle === 'open' && item.phase !== 'idle')
+    .sort((left, right) => right.thread.updated_at.localeCompare(left.thread.updated_at))
+  const activeDialogueThreadById = new Map(activeDialogueThreads.map(item => [item.thread.id, item.thread]))
+  const pendingDialogueThread = pendingTurn?.rootTurnId
+    ? activeDialogueThreads.find(item => item.thread.root_turn_id === pendingTurn.rootTurnId)?.thread
+    : activeDialogueThreads[0]?.thread
   const composerActivations = composerThreads
     .filter(item => item.phase !== 'idle' && item.thread.lifecycle === 'open')
     .flatMap(item => item.activations)
@@ -5984,23 +6028,6 @@ export default function App() {
     }
   }, [loadOverview, loadSession, retryingTurnEventId, selectedContextId, selectedSessionId, t])
 
-  const cancelCurrentSession = useCallback(async () => {
-    if (!selectedSessionId) return
-    if (principalScopeRef.current) {
-      setError(t('header.principalScopeReadOnly'))
-      return
-    }
-    try {
-      await DASHBOARD_API.command(
-        `/api/sessions/${encodeURIComponent(selectedSessionId)}/cancel`,
-        'POST',
-      )
-      setError('')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    }
-  }, [selectedSessionId, t])
-
   const changeReasoningEffort = async (value: string) => {
     if (changingReasoning || !selectedSessionId) return
     setChangingReasoning(true)
@@ -6250,6 +6277,37 @@ export default function App() {
       setError('')
     } catch (reason) {
       await loadSession(selectedSessionId, selectedContextId).catch(() => {})
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setMutatingThreadId('')
+    }
+  }
+
+  const stopDialogueTurn = async (thread: ThreadRecord) => {
+    if (thread.kind !== 'dialogue_turn' || thread.lifecycle !== 'open' || mutatingThreadId) return
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return
+    }
+    setMutatingThreadId(thread.id)
+    try {
+      await DASHBOARD_API.command(
+        `/api/contexts/${encodeURIComponent(thread.context_id)}/threads/${encodeURIComponent(thread.id)}`,
+        'POST',
+        {
+          action: 'cancel',
+          expected_revision: thread.revision,
+          reason: t('reason.stopDialogueTurnByUser'),
+        },
+      )
+      setPendingTurn(current => current?.rootTurnId === thread.root_turn_id ? null : current)
+      await Promise.all([
+        loadSession(thread.session_id, thread.context_id),
+        loadOverview(thread.context_id, thread.session_id),
+      ])
+      setError('')
+    } catch (reason) {
+      await loadSession(thread.session_id, thread.context_id).catch(() => {})
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setMutatingThreadId('')
@@ -7546,6 +7604,9 @@ export default function App() {
                 })}
                 {dialogueStreamingAttempts.map(attempt => {
                   const lineage = lineageForLiveAttempt(attempt)
+                  const dialogueThread = attempt.threadKind === 'dialogue_turn'
+                    ? activeDialogueThreadById.get(attempt.threadId)
+                    : undefined
                   return (
                   <article className={`message-row agent streaming ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyleForLineage(lineage)} key={`stream-${attempt.attemptId}`} aria-live="polite">
                     <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
@@ -7574,6 +7635,20 @@ export default function App() {
                           : attempt.runtimeState === 'queued'
                             ? t('conversation.waitingForModel')
                             : t('conversation.streaming')}</span>
+                      {dialogueThread && attempt.status !== 'failed' && (
+                        <button
+                          className="turn-stop-button"
+                          type="button"
+                          disabled={Boolean(mutatingThreadId)}
+                          title={t('conversation.stopCurrentResponseHint')}
+                          aria-label={t('conversation.stopCurrentResponse')}
+                          onClick={() => void stopDialogueTurn(dialogueThread)}
+                        >
+                          <Square size={10} /> {mutatingThreadId === dialogueThread.id
+                            ? t('conversation.stoppingCurrentResponse')
+                            : t('conversation.stopCurrentResponse')}
+                        </button>
+                      )}
                     </div>
                   </article>
                   )
@@ -7583,6 +7658,20 @@ export default function App() {
                     <div className="stream-status">
                       <span className="stream-typing" aria-hidden="true"><b /><b /><b /></span>
                       <span>{turnStatus}</span>
+                      {pendingDialogueThread && (
+                        <button
+                          className="turn-stop-button"
+                          type="button"
+                          disabled={Boolean(mutatingThreadId)}
+                          title={t('conversation.stopCurrentResponseHint')}
+                          aria-label={t('conversation.stopCurrentResponse')}
+                          onClick={() => void stopDialogueTurn(pendingDialogueThread)}
+                        >
+                          <Square size={10} /> {mutatingThreadId === pendingDialogueThread.id
+                            ? t('conversation.stoppingCurrentResponse')
+                            : t('conversation.stopCurrentResponse')}
+                        </button>
+                      )}
                     </div>
                   </article>
                 )}
@@ -8658,8 +8747,13 @@ export default function App() {
                   <CircleDot size={11} />
                   <span>{contextTokenBudget ? compactTokens(contextTokenBudget.effective_hard_token_limit) : '—'}</span>
                 </button>
-                {contextTokenBudgetOpen && contextTokenBudget && (
-                  <div className="context-budget-popover">
+                {contextTokenBudget && (
+                  <div
+                    className="context-budget-popover"
+                    popover="auto"
+                    ref={contextTokenBudgetPopoverRef}
+                    onToggle={event => setContextTokenBudgetOpen(event.currentTarget.matches(':popover-open'))}
+                  >
                     <header>
                       <span>
                         <small>{t('contextBudget.eyebrow').toUpperCase()}</small>
@@ -8789,7 +8883,6 @@ export default function App() {
             selectedSessionId={selectedSessionId}
             sending={sending}
             readOnly={observingForeignPrincipal}
-            activeWorkCount={activeWorkCount}
             quotes={quotes}
             activeQuoteId={activeQuoteId}
             t={t}
@@ -8797,7 +8890,6 @@ export default function App() {
             onRemoveQuote={removeQuote}
             onUpdateQuoteComment={updateQuoteComment}
             onSend={sendMessage}
-            onCancel={cancelCurrentSession}
             onError={setError}
             modelInputPolicy={status?.model_input}
             sessionCandidates={sessions}

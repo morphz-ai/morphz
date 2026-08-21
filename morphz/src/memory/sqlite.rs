@@ -4499,8 +4499,8 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
         parent_session_id: row.get("parent_session_id"),
         title: row.get("title"),
         status: parse_session_status(row.get::<String, _>("status").as_str()),
-        model_alias: row.try_get("model_alias").unwrap_or(None),
-        reasoning_effort: row.try_get("reasoning_effort").unwrap_or(None),
+        model_alias: row.get("model_alias"),
+        reasoning_effort: row.get("reasoning_effort"),
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
         last_activity_at: parse_time(&row.get::<String, _>("last_activity_at")),
@@ -7112,7 +7112,8 @@ impl SessionDirectoryStore for SqliteStore {
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
-                      s.status, s.created_at, s.updated_at, s.last_activity_at,
+                      s.status, s.model_alias, s.reasoning_effort,
+                      s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
                FROM sessions s
@@ -14741,6 +14742,7 @@ impl DeliveryIngressStore for SqliteStore {
         }
         let session_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                      s.model_alias, s.reasoning_effort,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -15088,6 +15090,7 @@ impl DeliveryIngressStore for SqliteStore {
         }
         let target_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                      s.model_alias, s.reasoning_effort,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -15504,6 +15507,7 @@ impl DeliveryIngressStore for SqliteStore {
         }
         let target_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                      s.model_alias, s.reasoning_effort,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -23863,6 +23867,17 @@ mod tests {
             .bind_session_principal("identity-session-a1", "principal:b")
             .await
             .unwrap();
+        store
+            .update_session(
+                "identity-session-a1",
+                SessionUpdate {
+                    model_alias: Some(Some("principal-route".to_string())),
+                    reasoning_effort: Some(Some("high".to_string())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
         assert!(store
             .verify_session_principal("identity-session-a2", "principal:a")
@@ -23890,6 +23905,16 @@ mod tests {
                 .len(),
             3
         );
+        let listed = store
+            .list_principal_sessions("principal:a", false)
+            .await
+            .unwrap();
+        let listed_a1 = listed
+            .iter()
+            .find(|session| session.id == "identity-session-a1")
+            .unwrap();
+        assert_eq!(listed_a1.model_alias.as_deref(), Some("principal-route"));
+        assert_eq!(listed_a1.reasoning_effort.as_deref(), Some("high"));
         let mismatch = store
             .ensure_principal(NewPrincipal {
                 id: "principal:a".to_string(),
@@ -23907,6 +23932,18 @@ mod tests {
             .verify_session_principal("identity-session-a1", "principal:b")
             .await
             .unwrap());
+        let listed_after_restart = restarted
+            .list_principal_sessions("principal:b", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            listed_after_restart[0].model_alias.as_deref(),
+            Some("principal-route")
+        );
+        assert_eq!(
+            listed_after_restart[0].reasoning_effort.as_deref(),
+            Some("high")
+        );
         assert_eq!(
             restarted
                 .get_principal("principal:a")

@@ -14,8 +14,9 @@ use morphz::memory::{
     DelegationFilter, DelegationStatus, DelegationStore as _, EventStore, ExecutionJobStore as _,
     ExecutionRetrySafety, NewAgent, NewCognitiveContext, NewExecutionJob, NewSession, NewThread,
     NewThreadActivation, QueryFilter, SessionDirectoryStore as _, SessionMountKind,
-    SessionProjectionStore, SessionStore, ThreadActivationMutation, ThreadActivationStatus,
-    ThreadKind, ThreadLifecycle, ThreadSignalStatus, ThreadStore as _, TimerStore,
+    SessionProjectionStore, SessionStore, SessionUpdate, ThreadActivationMutation,
+    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadSignalStatus, ThreadStore as _,
+    TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -92,6 +93,14 @@ struct CancellableClient {
 struct ReasoningContinuationClient {
     calls: AtomicUsize,
     messages_seen: Mutex<Vec<Vec<Message>>>,
+}
+
+struct SessionModelSwitchContinuationClient {
+    calls: AtomicUsize,
+    bindings: Mutex<Vec<String>>,
+    messages_seen: Mutex<Vec<Vec<Message>>>,
+    store: Arc<SqliteStore>,
+    session_id: String,
 }
 
 struct InvalidProtocolContinuationClient {
@@ -801,6 +810,93 @@ impl Client for ReasoningContinuationClient {
 }
 
 #[async_trait::async_trait]
+impl Client for SessionModelSwitchContinuationClient {
+    fn model(&self) -> Option<String> {
+        Some("route-a".to_string())
+    }
+
+    async fn bind_requested_model_attempt(
+        &self,
+        _request: &ModelRequestContext,
+        requested_model: Option<&str>,
+    ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+        let alias = requested_model.unwrap_or("route-a").to_string();
+        self.bindings.lock().unwrap().push(alias.clone());
+        Ok(ModelAttemptBinding {
+            requested_alias: alias.clone(),
+            route_id: format!("test-{alias}"),
+            route_revision: "test-v1".to_string(),
+            provider_instance_id: "test-switching-provider".to_string(),
+            auth_account_id: "test-account".to_string(),
+            physical_model: alias,
+            protocol: "openai-responses".to_string(),
+            provider_adapter: "test-switching".to_string(),
+            provider_adapter_version: "1".to_string(),
+            endpoint: "http://127.0.0.1/model-switch".to_string(),
+            capabilities: Vec::new(),
+            model_input_limits: Default::default(),
+        })
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        unreachable!("model-switch continuation probe uses the streaming entrypoint")
+    }
+
+    async fn create_completion_measured_stream(
+        &self,
+        messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+        _measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.messages_seen.lock().unwrap().push(messages);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = stream.send(ModelStreamEvent::Started);
+        if call == 0 {
+            self.store
+                .update_session(
+                    &self.session_id,
+                    SessionUpdate {
+                        model_alias: Some(Some("route-b".to_string())),
+                        reasoning_effort: Some(Some("low".to_string())),
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .ok_or("test Session disappeared during model switch")?;
+            let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
+                text: "portable progress from route a".to_string(),
+            });
+            let _ = stream.send(ModelStreamEvent::ProviderContinuation {
+                continuation: ProviderContinuation::OpenaiResponses {
+                    reasoning_items: vec![json!({
+                        "type": "reasoning",
+                        "id": "route-a-reasoning",
+                        "encrypted_content": "route-a-opaque-state",
+                    })],
+                },
+            });
+            let _ = stream.send(ModelStreamEvent::ReasoningSummaryCompleted);
+            let _ = stream.send(ModelStreamEvent::Completed);
+            return Err(Box::new(ModelFailure::new(
+                ModelFailureKind::EmptyResponse,
+                "reasoning segment reached its physical response boundary",
+            )));
+        }
+        let response = text_reply_response("continued with the manually selected model");
+        let _ = stream.send(ModelStreamEvent::TextDelta {
+            text: response.content.clone(),
+        });
+        let _ = stream.send(ModelStreamEvent::Completed);
+        Ok(response)
+    }
+}
+
+#[async_trait::async_trait]
 impl Client for InvalidProtocolContinuationClient {
     fn supports_async_cancellation(&self) -> bool {
         true
@@ -1358,6 +1454,31 @@ fn install_test_session_registry(bus: &Arc<InMemoryEventBus>, store: &Arc<Sqlite
 
 async fn publish_user(bus: &Arc<InMemoryEventBus>, session_id: &str, text: &str) {
     publish_user_in_context(bus, session_id, session_id, text).await;
+}
+
+async fn publish_user_with_model(
+    bus: &Arc<InMemoryEventBus>,
+    session_id: &str,
+    text: &str,
+    model_alias: &str,
+) {
+    let mut payload = serde_json::Map::new();
+    payload.insert("context_id".to_string(), json!(session_id));
+    payload.insert("session_id".to_string(), json!(session_id));
+    payload.insert("text".to_string(), json!(text));
+    payload.insert("model_alias".to_string(), json!(model_alias));
+    bus.publish(Event::new(
+        format!(
+            "test_user_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ),
+        "Test-User".to_string(),
+        TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        payload,
+    ))
+    .await
+    .unwrap();
 }
 
 async fn publish_user_in_context(
@@ -2970,6 +3091,87 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         first_usage.payload["usage"].get("output_tokens"),
         Some(&json!(4_096))
     );
+}
+
+async fn run_session_model_switch_continuation(
+    session_id: &str,
+    explicit_trigger_model: bool,
+) -> (Vec<String>, Vec<Vec<Message>>) {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("session-model-switch.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(SessionModelSwitchContinuationClient {
+        calls: AtomicUsize::new(0),
+        bindings: Mutex::new(Vec::new()),
+        messages_seen: Mutex::new(Vec::new()),
+        store: Arc::clone(&store),
+        session_id: session_id.to_string(),
+    });
+    let config = morphz::config::OrchestratorConfig {
+        reasoning_continuation_safety_limit: None,
+        ..Default::default()
+    };
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    if explicit_trigger_model {
+        publish_user_with_model(&bus, session_id, "keep this task on route a", "route-a").await;
+    } else {
+        publish_user(&bus, session_id, "continue after my manual model switch").await;
+    }
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload.get("text"),
+        Some(&json!("continued with the manually selected model"))
+    );
+    let bindings = client.bindings.lock().unwrap().clone();
+    let messages = client.messages_seen.lock().unwrap().clone();
+    (bindings, messages)
+}
+
+#[tokio::test]
+async fn session_model_switch_applies_at_the_next_physical_request_boundary() {
+    let (bindings, messages) =
+        run_session_model_switch_continuation("attempt-session-model-switch", false).await;
+
+    assert_eq!(bindings, ["route-a", "route-b"]);
+    assert_eq!(messages.len(), 2);
+    assert!(messages[1].iter().any(|message| {
+        message.role == "user" && message.content.contains("portable progress from route a")
+    }));
+    assert!(messages[1]
+        .iter()
+        .all(|message| provider_continuation(message).is_none()));
+}
+
+#[tokio::test]
+async fn explicit_trigger_model_remains_fixed_across_physical_requests() {
+    let (bindings, messages) =
+        run_session_model_switch_continuation("attempt-explicit-model-binding", true).await;
+
+    assert_eq!(bindings, ["route-a", "route-a"]);
+    assert_eq!(messages.len(), 2);
+    assert!(messages[1].iter().any(|message| {
+        matches!(
+            provider_continuation(message),
+            Some(ProviderContinuation::OpenaiResponses { reasoning_items })
+                if reasoning_items.iter().any(|item| item["id"] == "route-a-reasoning")
+        )
+    }));
 }
 
 #[tokio::test]

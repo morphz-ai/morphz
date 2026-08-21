@@ -902,12 +902,13 @@ pub struct ThreadActivationRecord {
     pub parent_activation_id: Option<String>,
     pub root_turn_id: String,
     pub context_snapshot_version: Option<u64>,
-    /// Immutable logical model route for this Evaluation. It is bound once
-    /// before the first physical Provider attempt and survives restarts.
+    /// Logical model route used to compile the Evaluation's initial Context
+    /// Projection. Each physical request may use newer mutable Session policy;
+    /// its exact binding is recorded in the corresponding Model Attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_alias: Option<String>,
-    /// Immutable reasoning policy bound at the same Evaluation boundary.
-    /// `provider_default` means Morphz intentionally emits no override.
+    /// Initial reasoning-policy snapshot for the Evaluation. Physical requests
+    /// resolve current Session policy and persist their effective value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     pub status: ThreadActivationStatus,

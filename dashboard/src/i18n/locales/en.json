@@ -862,6 +862,9 @@
     "reasoningCompleted": "Reasoning ended · waiting for final output",
     "waitingFinalOutput": "Reasoning has ended; final text or tool calls have not arrived yet.",
     "streamFailed": "Streaming response failed",
+    "stopCurrentResponse": "Stop this reply",
+    "stoppingCurrentResponse": "Stopping",
+    "stopCurrentResponseHint": "Stops only this dialogue evaluation; Objectives, Execution Threads, and background jobs continue",
     "pendingHint": "You can keep sending messages; current execution will not block the dialogue.",
     "derivedThreads": "Runtime Threads derived from this message",
     "openThread": "Open the complete causal chain",
@@ -1468,6 +1471,7 @@
     "pauseThreadByUser": "User paused future Thread scheduling via Dashboard",
     "resumeThreadByUser": "User resumed Thread scheduling via Dashboard",
     "cancelThreadByUser": "User cancelled Thread via Dashboard",
+    "stopDialogueTurnByUser": "User stopped the current dialogue reply",
     "supersedeThreadByUser": "User corrected the active Thread via Dashboard",
     "attentionAcknowledged": "User reviewed and acknowledged this exact issue revision; audit history is retained",
     "approval": {

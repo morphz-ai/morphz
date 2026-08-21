@@ -8386,6 +8386,29 @@ mod tests {
                 .as_deref(),
             Some("fixture-model")
         );
+        let refreshed_sessions = handle_list_operator_principal_sessions(
+            State(Arc::clone(&state)),
+            Path("site-user-1".to_string()),
+            dashboard_headers(),
+            Query(OperatorPrincipalSessionsQuery {
+                token: None,
+                include_archived: true,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(refreshed_sessions.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(refreshed_sessions.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let refreshed = body["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["id"] == "gateway-session-a")
+            .unwrap();
+        assert_eq!(refreshed["model_alias"], "fixture-model");
 
         // The exception is intentionally narrow: participant-owned metadata
         // remains read-only to the observing Operator.

@@ -862,6 +862,9 @@
     "reasoningCompleted": "推理已结束 · 等待最终输出",
     "waitingFinalOutput": "推理已经结束，模型尚未产生最终正文或工具调用。",
     "streamFailed": "流式响应失败",
+    "stopCurrentResponse": "停止本轮回复",
+    "stoppingCurrentResponse": "正在停止",
+    "stopCurrentResponseHint": "只停止这条对话消息的当前求值；不会取消目标、执行线程或后台任务",
     "pendingHint": "你可以继续发送消息，当前执行不会阻塞对话。",
     "derivedThreads": "这条消息派生的运行时线程",
     "openThread": "打开完整因果链",
@@ -1473,6 +1476,7 @@
     "pauseThreadByUser": "用户通过控制台暂停线程后续调度",
     "resumeThreadByUser": "用户通过控制台继续线程调度",
     "cancelThreadByUser": "用户通过控制台取消线程",
+    "stopDialogueTurnByUser": "用户停止当前对话回复",
     "supersedeThreadByUser": "用户通过控制台纠正当前线程",
     "attentionAcknowledged": "用户已查看该精确版本的问题并确认已知；保留审计历史",
     "approval": {

@@ -107,6 +107,49 @@ test('message images use an authenticated top-layer hover preview', () => {
   assert.match(appCss, /\.message-attachment-preview:popover-open\.is-positioned/)
 })
 
+test('context budget control opens above the clipped composer status row', () => {
+  assert.match(
+    appSource,
+    /className="context-budget-popover"[\s\S]*?popover="auto"/s,
+    'the context budget editor must enter the browser top layer instead of being clipped by runtime metadata overflow',
+  )
+  assert.match(
+    appSource,
+    /contextTokenBudgetPopoverRef[\s\S]*?showPopover\(\)[\s\S]*?positionContextTokenBudgetPopover/s,
+    'opening the context budget control must display and position its top-layer editor',
+  )
+  assert.match(
+    appCss,
+    /\.context-budget-popover\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*auto;[^}]*max-height:\s*calc\(100dvh - 24px\)/s,
+    'the context budget editor must use viewport coordinates and remain bounded on small displays',
+  )
+})
+
+test('identity selectors reserve stable header widths while allowing responsive shrinkage', () => {
+  assert.match(
+    appCss,
+    /\.identity-trail > \.context-selector\s*\{[^}]*max-width:\s*210px;[^}]*flex:\s*0 1 210px/s,
+  )
+  assert.match(
+    appCss,
+    /\.identity-trail > \.session-selector\s*\{[^}]*max-width:\s*250px;[^}]*flex:\s*0 1 250px/s,
+  )
+  assert.match(
+    appCss,
+    /\.identity-trail > \.principal-selector\s*\{[^}]*max-width:\s*300px;[^}]*flex:\s*0 1 300px/s,
+    'a longer Principal identifier must truncate inside a stable slot rather than shifting the rest of the header',
+  )
+  assert.match(
+    appCss,
+    /\.identity-trail \.context-chip,[\s\S]*?\.identity-trail \.principal-chip\s*\{[^}]*width:\s*100%/s,
+  )
+  assert.match(
+    appCss,
+    /@media \(max-width: 520px\)[\s\S]*?\.identity-trail > \.principal-selector\s*\{[^}]*width:\s*34px;[^}]*max-width:\s*34px;[^}]*flex:\s*0 0 34px/s,
+    'the stable desktop slots must yield to the compact mobile Principal directory button',
+  )
+})
+
 test('composer paste sends clipboard files through the existing attachment importer', () => {
   assert.match(
     appSource,
@@ -328,6 +371,49 @@ test('the composer exposes all three one-shot message scheduling modes', () => {
     appSource,
     /\.\.\.\(dispatchMode \? \{ dispatch_mode: dispatchMode \} : \{\}\)/,
     'an explicit one-shot choice must cross the HTTP boundary without changing the default configuration',
+  )
+})
+
+test('stopping a reply targets its exact DialogueTurn instead of cancelling a Session', () => {
+  assert.doesNotMatch(
+    appSource,
+    /cancelCurrentSession|\/api\/sessions\/\$\{encodeURIComponent\(selectedSessionId\)\}\/cancel/,
+    'the composer must not present broad Session Thread cancellation as a reply stop action',
+  )
+  assert.match(
+    appSource,
+    /const stopDialogueTurn = async \(thread: ThreadRecord\)[\s\S]*?thread\.kind !== 'dialogue_turn'[\s\S]*?action: 'cancel'[\s\S]*?expected_revision: thread\.revision/s,
+    'reply stop must be revision-fenced and restricted to the exact live DialogueTurn',
+  )
+  assert.match(
+    appSource,
+    /dialogueStreamingAttempts\.map[\s\S]*?activeDialogueThreadById\.get\(attempt\.threadId\)[\s\S]*?className="turn-stop-button"[\s\S]*?stopDialogueTurn\(dialogueThread\)/s,
+    'each live reply must expose its own stop control beside the streaming status',
+  )
+  assert.match(
+    appCss,
+    /\.turn-stop-button:hover:not\(:disabled\)[^}]*var\(--red-soft\)/s,
+    'the destructive affordance should remain quiet until the user points at it',
+  )
+})
+
+test('composer runtime metadata reserves green for actual health', () => {
+  assert.match(
+    appCss,
+    /\.composer-runtime-meta \.token-usage\s*\{[^}]*color:\s*var\(--text-soft\)/s,
+  )
+  assert.match(
+    appCss,
+    /\.composer-runtime-meta \.token-usage\.exact-usage\s*\{[^}]*color:\s*var\(--faint\)/s,
+  )
+  assert.match(
+    appCss,
+    /\.composer-model-control\.ok\s*\{[^}]*color:\s*var\(--text-soft\)/s,
+  )
+  assert.match(
+    appCss,
+    /\.connection-status \.status-dot\s*\{[^}]*background:\s*var\(--green\)/s,
+    'green remains a health signal on the actual connection indicator',
   )
 })
 

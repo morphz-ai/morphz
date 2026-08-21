@@ -529,6 +529,10 @@ where
     let second = second.await.unwrap().unwrap();
     assert_eq!(first.id, second.id);
     assert_eq!(first.context_id, "conformance-context");
+    store
+        .bind_session_principal(&race_session.id, "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat")
+        .await
+        .unwrap();
 
     let changed_at = chrono::Utc::now();
     let first_attention = {
@@ -603,6 +607,16 @@ where
     assert_eq!(archived.status, SessionStatus::Archived);
     assert_eq!(archived.model_alias.as_deref(), Some("session-route-a"));
     assert_eq!(archived.reasoning_effort.as_deref(), Some("high"));
+    let principal_sessions = store
+        .list_principal_sessions("o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat", true)
+        .await
+        .unwrap();
+    let projected = principal_sessions
+        .iter()
+        .find(|session| session.id == race_session.id)
+        .expect("Principal Session projection must include the bound Session");
+    assert_eq!(projected.model_alias.as_deref(), Some("session-route-a"));
+    assert_eq!(projected.reasoning_effort.as_deref(), Some("high"));
     let inherited = store
         .update_session(
             &race_session.id,

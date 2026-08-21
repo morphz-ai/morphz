@@ -1384,11 +1384,17 @@ struct ActivationRoute {
     trigger_sequence: u64,
     initiating_principal_id: Option<String>,
     context_snapshot_version: Option<u64>,
-    /// Logical model alias frozen durably on the Activation before its first
-    /// physical request. Every retry and post-restart continuation reuses it.
+    /// Logical model alias used to compile the initial Context Projection and
+    /// retained as an audit snapshot. Ordinary physical requests resolve the
+    /// current Session/Runtime policy again at their request boundary.
     model_alias: String,
-    /// Configured reasoning policy frozen with the Evaluation. The sentinel
-    /// `provider_default` means the request deliberately carries no override.
+    /// A model explicitly attached to the causal trigger (for example an
+    /// infer or scheduled task override). Unlike mutable Session policy, this
+    /// is part of the work contract and remains fixed for the Activation.
+    explicit_model_alias: Option<String>,
+    /// Initial reasoning-policy audit snapshot. Ordinary physical requests
+    /// resolve current Session/Runtime policy at their request boundary. The
+    /// sentinel `provider_default` means no override is emitted.
     reasoning_effort: String,
     /// Exact scalar Context budget compiled for this Evaluation.
     context_token_budget: Option<crate::orchestrator::context::ContextTokenBudget>,
@@ -1401,6 +1407,12 @@ struct ActivationRoute {
     /// results arriving while the model is running belong to a later
     /// Delivery Activation.
     delivery_thread_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EffectiveModelRequestPolicy {
+    model_alias: String,
+    reasoning_effort: String,
 }
 
 #[derive(Debug, Default)]
@@ -1443,6 +1455,18 @@ struct DurableReasoningContinuationState {
     stalled_count: usize,
     summaries: Vec<String>,
     provider_continuations: Vec<ProviderContinuation>,
+    /// Physical model that produced the latest persisted continuation. This
+    /// fences opaque Provider state across both live model switches and
+    /// process restart; portable summaries remain model-independent.
+    last_model_alias: Option<String>,
+}
+
+struct ReasoningContinuationCheckpoint<'a> {
+    continuation_count: usize,
+    reasoning_chars: usize,
+    provider_error: &'a str,
+    provider_continuation: Option<&'a ProviderContinuation>,
+    model_alias: &'a str,
 }
 
 fn durable_reasoning_continuation_state_from_events(
@@ -1491,6 +1515,7 @@ fn durable_reasoning_continuation_state_from_events(
             restored.stalled_count = 0;
             restored.summaries.clear();
             restored.provider_continuations.clear();
+            restored.last_model_alias = None;
         } else if continuation_count <= restored.continuation_count {
             continue;
         }
@@ -1528,6 +1553,11 @@ fn durable_reasoning_continuation_state_from_events(
         if let Some(provider_continuation) = provider_continuation {
             restored.provider_continuations.push(provider_continuation);
         }
+        restored.last_model_alias = event
+            .payload
+            .get("model_alias")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         restored.continuation_count = continuation_count;
     }
     Ok(restored)
@@ -7786,36 +7816,50 @@ impl Orchestrator {
             .parent_session_id)
     }
 
-    async fn request_model_completion(
+    async fn effective_model_request_policy(
         &self,
         session_id: &str,
         attempt_id: &str,
-        messages: Vec<Message>,
-        tools: Vec<crate::llm::ToolDefinition>,
-        prompt_measurement: Option<PromptTokenCount>,
-    ) -> Result<ModelCompletion, ModelCompletionError> {
-        let requested_model = self
-            .activation_route(attempt_id)
-            .map(|route| route.model_alias);
-        self.request_model_completion_with_model(
-            session_id,
-            attempt_id,
-            messages,
-            tools,
-            prompt_measurement,
-            requested_model.as_deref(),
-        )
-        .await
+    ) -> Result<EffectiveModelRequestPolicy, DynError> {
+        let route = self.activation_route(attempt_id);
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Model request policy resolution requires a persistent SessionStore")?;
+        let session = session_store
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
+        let model_alias = route
+            .as_ref()
+            .and_then(|route| route.explicit_model_alias.clone())
+            .or(session.model_alias)
+            .or_else(|| self.client.model())
+            .or_else(|| route.as_ref().map(|route| route.model_alias.clone()))
+            .unwrap_or_else(|| "direct".to_string());
+        let reasoning_effort = session
+            .reasoning_effort
+            .or_else(|| {
+                self.client
+                    .reasoning_effort()
+                    .map(|effort| effort.as_str().to_string())
+            })
+            .or_else(|| route.map(|route| route.reasoning_effort))
+            .unwrap_or_else(|| "provider_default".to_string());
+        Ok(EffectiveModelRequestPolicy {
+            model_alias,
+            reasoning_effort,
+        })
     }
 
-    async fn request_model_completion_with_model(
+    async fn request_model_completion_with_policy(
         &self,
         session_id: &str,
         attempt_id: &str,
         messages: Vec<Message>,
         tools: Vec<crate::llm::ToolDefinition>,
         prompt_measurement: Option<PromptTokenCount>,
-        requested_model: Option<&str>,
+        request_policy: &EffectiveModelRequestPolicy,
     ) -> Result<ModelCompletion, ModelCompletionError> {
         let stream_context_id = self
             .context_id_for_session(session_id)
@@ -7838,7 +7882,7 @@ impl Orchestrator {
         });
         let admission_resource = self
             .client
-            .provider_resource_key_for_requested_model(requested_model);
+            .provider_resource_key_for_requested_model(Some(&request_policy.model_alias));
         self.admit_provider_circuit(
             &admission_resource,
             &stream_context_id,
@@ -7876,10 +7920,7 @@ impl Orchestrator {
         let stream_attempt_id = attempt_id.to_string();
         let mut stream_route = Vec::new();
         self.append_activation_route(attempt_id, &mut stream_route);
-        let configured_reasoning_effort = self
-            .activation_route(attempt_id)
-            .map(|route| route.reasoning_effort)
-            .unwrap_or_else(|| "provider_default".to_string());
+        let configured_reasoning_effort = request_policy.reasoning_effort.clone();
         let request_reasoning_effort = (configured_reasoning_effort != "provider_default")
             .then(|| crate::llm::ReasoningEffort::parse(&configured_reasoning_effort))
             .flatten();
@@ -7901,7 +7942,7 @@ impl Orchestrator {
                     objective_id,
                     required_capabilities: Vec::new(),
                 },
-                requested_model,
+                Some(&request_policy.model_alias),
             )
             .await
             .map_err(model_binding_completion_error)?;
@@ -9308,7 +9349,7 @@ impl Orchestrator {
         let desired_model_alias = activation
             .model_alias
             .clone()
-            .or(trigger_model_alias)
+            .or_else(|| trigger_model_alias.clone())
             .or(session_model_alias)
             .or_else(|| self.client.model())
             // A third-party direct Client may intentionally expose no
@@ -9391,6 +9432,7 @@ impl Orchestrator {
                 initiating_principal_id: activation.initiating_principal_id.clone(),
                 context_snapshot_version: activation.context_snapshot_version,
                 model_alias: activation_model_alias.clone(),
+                explicit_model_alias: trigger_model_alias,
                 reasoning_effort: activation_reasoning_effort,
                 context_token_budget: None,
                 thread_kind,
@@ -10003,10 +10045,35 @@ impl Orchestrator {
             .restore_reasoning_continuation_state(&context_id, session_id, &activation.id)
             .await?;
         let mut protocol_messages = base_protocol_messages.clone();
+        let initial_request_policy = self
+            .effective_model_request_policy(session_id, &attempt_id)
+            .await?;
+        // New records persist the exact physical model that owns the opaque
+        // continuation. Legacy records predate request-boundary switching, so
+        // their Activation snapshot is the correct fallback owner.
+        let restored_continuation_model_alias = restored_reasoning
+            .last_model_alias
+            .clone()
+            .unwrap_or_else(|| activation_model_alias.clone());
+        let mut restored_provider_continuations = restored_reasoning.provider_continuations;
+        if restored_reasoning.physical_continuations > 0
+            && initial_request_policy.model_alias != restored_continuation_model_alias
+            && !restored_provider_continuations.is_empty()
+        {
+            restored_provider_continuations.clear();
+            tracing::info!(
+                session_id,
+                activation_id = %activation.id,
+                previous_model = %restored_continuation_model_alias,
+                current_model = %initial_request_policy.model_alias,
+                event_code = "orchestrator.reasoning_continuation.model_changed",
+                "Discarded opaque Provider continuation state after an explicit model switch; portable reasoning summaries remain available"
+            );
+        }
         if restored_reasoning.physical_continuations > 0 {
             append_reasoning_continuation_input(
                 &mut protocol_messages,
-                &restored_reasoning.provider_continuations,
+                &restored_provider_continuations,
                 &restored_reasoning.summaries,
             )?;
             // The restored protocol envelope is part of the next physical
@@ -10049,7 +10116,11 @@ impl Orchestrator {
         let mut stalled_reasoning_continuations = restored_reasoning.stalled_count;
         let mut previous_reasoning_summary = restored_reasoning.summaries.last().cloned();
         let mut reasoning_history = restored_reasoning.summaries;
-        let mut reasoning_provider_continuations = restored_reasoning.provider_continuations;
+        let mut reasoning_provider_continuations = restored_provider_continuations;
+        let mut last_request_model_alias = restored_reasoning
+            .physical_continuations
+            .gt(&0)
+            .then(|| initial_request_policy.model_alias.clone());
         let mut interrupted_public_text = String::new();
         let mut completion_prepared = recovering_completion_intent;
         let (
@@ -10065,6 +10136,30 @@ impl Orchestrator {
             } else {
                 format!("{attempt_id}_response_retry_{request_index}")
             };
+            let request_policy = self
+                .effective_model_request_policy(session_id, &model_attempt_id)
+                .await?;
+            if last_request_model_alias.as_deref() != Some(request_policy.model_alias.as_str())
+                && !reasoning_provider_continuations.is_empty()
+            {
+                let previous_model = last_request_model_alias.as_deref().unwrap_or("unknown");
+                reasoning_provider_continuations.clear();
+                protocol_messages = base_protocol_messages.clone();
+                append_reasoning_continuation_input(
+                    &mut protocol_messages,
+                    &reasoning_provider_continuations,
+                    &reasoning_history,
+                )?;
+                tracing::info!(
+                    session_id,
+                    activation_id = %activation.id,
+                    previous_model,
+                    current_model = %request_policy.model_alias,
+                    event_code = "orchestrator.reasoning_continuation.model_changed",
+                    "Discarded opaque Provider continuation state after an explicit model switch; portable reasoning summaries remain available"
+                );
+            }
+            last_request_model_alias = Some(request_policy.model_alias.clone());
             let mut signal_input_ids = Vec::new();
             if let Some(focus) = context.activation.as_ref() {
                 signal_input_ids.extend(
@@ -10131,7 +10226,7 @@ impl Orchestrator {
             )
             .await?;
             let completion = self
-                .request_model_completion(
+                .request_model_completion_with_policy(
                     session_id,
                     &model_attempt_id,
                     protocol_messages.clone(),
@@ -10139,6 +10234,7 @@ impl Orchestrator {
                     (request_index == 0)
                         .then(|| request_prompt_measurement.clone())
                         .flatten(),
+                    &request_policy,
                 )
                 .await;
             let (response, provider_continuation) = match completion {
@@ -10404,15 +10500,15 @@ impl Orchestrator {
                     } else {
                         stalled_reasoning_continuations = 0;
                     }
-                    self.record_reasoning_continuation(
-                        session_id,
-                        &model_attempt_id,
-                        reasoning_continuations,
-                        reasoning_summary.chars().count(),
-                        &provider_error,
-                        error.provider_continuation.as_ref(),
-                    )
-                    .await?;
+                    let checkpoint = ReasoningContinuationCheckpoint {
+                        continuation_count: reasoning_continuations,
+                        reasoning_chars: reasoning_summary.chars().count(),
+                        provider_error: &provider_error,
+                        provider_continuation: error.provider_continuation.as_ref(),
+                        model_alias: &request_policy.model_alias,
+                    };
+                    self.record_reasoning_continuation(session_id, &model_attempt_id, &checkpoint)
+                        .await?;
                     let continuation_exhausted = self
                         .orchestrator_config
                         .reasoning_continuation_safety_limit
@@ -11327,23 +11423,30 @@ impl Orchestrator {
         &self,
         session_id: &str,
         attempt_id: &str,
-        continuation_count: usize,
-        reasoning_chars: usize,
-        provider_error: &str,
-        provider_continuation: Option<&ProviderContinuation>,
+        checkpoint: &ReasoningContinuationCheckpoint<'_>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
-            ("continuation_count".to_string(), json!(continuation_count)),
-            ("reasoning_chars".to_string(), json!(reasoning_chars)),
+            (
+                "continuation_count".to_string(),
+                json!(checkpoint.continuation_count),
+            ),
+            (
+                "reasoning_chars".to_string(),
+                json!(checkpoint.reasoning_chars),
+            ),
             ("response_state".to_string(), json!("reasoning_only")),
             ("reason".to_string(), json!(REASONING_ONLY_RESPONSE_REASON)),
-            ("provider_error".to_string(), json!(provider_error)),
+            (
+                "provider_error".to_string(),
+                json!(checkpoint.provider_error),
+            ),
+            ("model_alias".to_string(), json!(checkpoint.model_alias)),
         ];
-        if let Some(provider_continuation) = provider_continuation {
+        if let Some(provider_continuation) = checkpoint.provider_continuation {
             payload.push((
                 "provider_continuation".to_string(),
                 json!(provider_continuation),
@@ -17663,17 +17766,23 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             .collect::<Vec<_>>();
 
         for round in 0..crate::sexpr_eval::MAX_INFER_ROUNDS {
+            let mut request_policy = orchestrator
+                .effective_model_request_policy(&self.session_id, &self.attempt_id)
+                .await?;
+            if let Some(model) = requested_model {
+                request_policy.model_alias = model.to_string();
+            }
             let ModelCompletion {
                 response,
                 provider_continuation,
             } = orchestrator
-                .request_model_completion_with_model(
+                .request_model_completion_with_policy(
                     &self.session_id,
                     &self.attempt_id,
                     messages.clone(),
                     tools.clone(),
                     None,
-                    requested_model,
+                    &request_policy,
                 )
                 .await
                 .map_err(|error| -> DynError { Box::new(error) })?;
@@ -19276,7 +19385,7 @@ mod tests {
                 .collect(),
             )
         };
-        let continuation = |attempt_id: &str, count: usize, opaque: &str| {
+        let continuation = |attempt_id: &str, count: usize, opaque: &str, model_alias: &str| {
             Event::new(
                 format!("continuation-{attempt_id}"),
                 "Runtime-Orchestrator".to_string(),
@@ -19285,6 +19394,7 @@ mod tests {
                 [
                     ("attempt_id".to_string(), json!(attempt_id)),
                     ("continuation_count".to_string(), json!(count)),
+                    ("model_alias".to_string(), json!(model_alias)),
                     (
                         "provider_continuation".to_string(),
                         json!(ProviderContinuation::OpenaiResponses {
@@ -19302,9 +19412,9 @@ mod tests {
         };
         let events = vec![
             summary("attempt-0", "segment one"),
-            continuation("attempt-0", 1, "opaque-1"),
+            continuation("attempt-0", 1, "opaque-1", "route-a"),
             summary("attempt-1", "segment two"),
-            continuation("attempt-1", 2, "opaque-2"),
+            continuation("attempt-1", 2, "opaque-2", "route-b"),
         ];
 
         let restored =
@@ -19313,6 +19423,7 @@ mod tests {
         assert_eq!(restored.continuation_count, 2);
         assert_eq!(restored.stalled_count, 0);
         assert_eq!(restored.summaries, ["segment one", "segment two"]);
+        assert_eq!(restored.last_model_alias.as_deref(), Some("route-b"));
         assert_eq!(restored.provider_continuations.len(), 2);
         assert!(matches!(
             &restored.provider_continuations[1],

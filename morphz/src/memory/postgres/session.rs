@@ -309,7 +309,8 @@ impl SessionDirectoryStore for PostgresStore {
     ) -> Result<Vec<SessionRecord>, StoreError> {
         let rows = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
-                      s.status, s.created_at, s.updated_at, s.last_activity_at,
+                      s.status, s.model_alias, s.reasoning_effort,
+                      s.created_at, s.updated_at, s.last_activity_at,
                       s.attention_state, s.attention_revision, s.attention_reason,
                       s.attention_changed_at, s.attention_event_id, s.mount_kind
                FROM sessions s
