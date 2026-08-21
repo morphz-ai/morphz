@@ -607,7 +607,7 @@ impl<'a> Analyzer<'a> {
                 Literal::Int(value.parse::<i64>().expect("checked above")),
                 Type::Int,
             ),
-            value if is_float_literal(value) => {
+            value if looks_like_float_literal(value) => {
                 if value.parse::<f64>().is_err() {
                     return Err(diag(
                         DiagnosticCode::TypeMismatch,
@@ -2933,11 +2933,17 @@ fn is_builtin_type(value: &str) -> bool {
     )
 }
 
-fn is_float_literal(value: &str) -> bool {
-    (value.contains('.') || value.contains('e') || value.contains('E'))
-        && value.chars().all(|character| {
-            character.is_ascii_digit() || matches!(character, '-' | '+' | '.' | 'e' | 'E')
-        })
+fn looks_like_float_literal(value: &str) -> bool {
+    let unsigned = value
+        .strip_prefix('-')
+        .or_else(|| value.strip_prefix('+'))
+        .unwrap_or(value);
+    let starts_numeric = unsigned
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_digit() || character == '.');
+
+    starts_numeric && (value.contains('.') || value.contains('e') || value.contains('E'))
 }
 
 fn parse_symbol_set(
@@ -3247,6 +3253,27 @@ mod tests {
         .unwrap();
         assert_eq!(program.output, Type::Float);
         assert!(program.effects.is_empty());
+    }
+
+    #[test]
+    fn bare_names_containing_exponent_letters_are_references_not_float_literals() {
+        let program = analyze(
+            &typed("(seq (bind e 2) (bind evidence (add e 1)) (mul evidence e))"),
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(program.output, Type::Int);
+
+        let error = analyze(
+            &typed("(seq (bind value 1) (add value 1e))"),
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::TypeMismatch);
+        assert!(error.message.contains("invalid Float literal '1e'"));
     }
 
     #[test]
