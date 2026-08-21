@@ -24,7 +24,12 @@ normalization, content identity, path safety, and loading behavior.
 
 The `.hns` suffix identifies a Harness Package. The `.yao` suffix identifies Yao source files
 inside a directory Package. `.hns` is not the name of the source language, Evaluation Loop, SDK, or
-complete external application.
+Cognitive Application category.
+
+One HNS Package MAY realize the execution content of a minimal Cognitive Application. HNS Core
+v0.1 packages exactly one Primary Harness and does not define a complete Application Manifest,
+multiple Harnesses, user interface, marketplace metadata, commercial policy, or external service
+bundle. Cognitive Application, Harness, and HNS Package are therefore not synonyms.
 
 This Draft standardizes the minimum Package currently implemented and separates reserved future
 artifacts from active requirements.

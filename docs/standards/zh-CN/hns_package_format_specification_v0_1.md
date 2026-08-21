@@ -24,7 +24,12 @@
 Artifact、基数、Manifest 字段、入口控制权、归一化、内容身份、路径安全和加载行为。
 
 `.hns` 后缀标识 Harness Package；`.yao` 后缀标识目录 Package 内的 Yao 源文件。`.hns`
-不是源语言、Evaluation Loop、SDK 或完整外部应用的名称。
+不是源语言、Evaluation Loop、SDK 或 Cognitive Application 类别的名称。
+
+一个 HNS Package 可以实现最小认知应用的执行内容。HNS Core v0.1 只打包一个 Primary
+Harness，不定义完整 Application Manifest、多个 Harness、用户界面、Marketplace 元数据、
+商业策略或外部服务 Bundle。因此，Cognitive Application、Harness 与 HNS Package 不是
+同义词。
 
 本 Draft 规范当前已经实现的最小 Package，并将保留的未来 Artifact 与现行要求明确分开。
 

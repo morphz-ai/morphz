@@ -10,8 +10,8 @@
 >
 > 规范文本：[English](../README.md)
 
-本目录包含 Morphz 用来定义、实现和验证 Structured Context、Agent Trajectory、可移植
-Harness 执行与 Yao 的公开技术基础。
+本目录包含 Morphz 用来定义、实现和验证 Structured Context、Agent Trajectory、
+Cognitive Application、可移植 Harness 执行与 Yao 的公开技术基础。
 
 ## 命名角色
 
@@ -19,6 +19,8 @@ Harness 执行与 Yao 的公开技术基础。
 - **Morphz 结构化上下文**是由新变元维护的标准族；
 - **Agent Trajectory（Agent 执行轨迹）**是 Agent 经验的可移植因果状态转换记录，不是
   Event History、可观测性 Trace 或聊天记录的同义词；
+- **Cognitive Application（认知应用）**是面向产品与生态的单元，把可复用的认知实践
+  提供给既有 Agent；挂载认知应用不会创建或替换 Agent 身份；
 - **Harness** 是《Morphz Harness 规范》定义的可移植 Evaluation Loop 与实践契约抽象；
 - **HNS** 是 `.hns` Harness Package 分发 Profile；**Yao** 是其当前源语言；
 - **Morphz Runtime** 是新变元的官方参考实现，不是标准本身；

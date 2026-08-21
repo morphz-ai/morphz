@@ -30,6 +30,8 @@ Morphz 采用以下命名边界：
 - **结构化上下文（Structured Context）**：实现无关的技术类别；
 - **Morphz 结构化上下文**：由新变元维护的标准族；
 - **Agent Trajectory（Agent 执行轨迹）**：Agent 经验的可移植因果状态转换记录；
+- **Cognitive Application（认知应用）**：把可复用认知实践提供给既有 Agent 的产品与
+  生态单元；Harness 是其执行核心，二者不是同义词；
 - **Morphz Runtime**：官方参考实现；
 - **Morphz 参考环境**：使用版本化任务、工具、权限、fixture 和验证器运行可复现实践的环境；
 - **兼容实现**：满足相应标准和公开一致性 Profile 的独立实现。

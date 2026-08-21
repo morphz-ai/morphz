@@ -247,6 +247,7 @@ AT-Training 不要求采用同一种优化器、Tokenizer、模型系列或 Rewa
 Binding 应当使用内容身份，而不是浮动名称。适用时包括：
 
 - 任务和 Environment Version；
+- 被选择时的精确 Cognitive Application 身份；
 - Agent、Principal、Context、Session、Objective 与 Attempt；
 - 精确 Harness Package 与 Evaluation Binding；
 - Yao 源码或已验证 Program 身份；
@@ -391,9 +392,9 @@ Reward。以后可以派生新的 Reward Record，而不改变底层 Agent Traje
 任何 Profile 都不要求提供私有思维链。模型产生的 reasoning summary 可以作为非权威
 模型输出纳入，但不得表示为 Runtime 事实。
 
-Harness 管理的工作应当标识精确 Harness Package、Evaluation Binding、Contract 与 Entry
-Program。Yao Program 或 Program Value 应当使用其规范化验证身份和源码来源，而不是
-无版本的展示字符串。
+Harness 管理的工作应当在认知应用被选择时标识其精确身份，同时标识精确 Harness
+Package、Evaluation Binding、Contract 与 Entry Program。Yao Program 或 Program Value
+应当使用其规范化验证身份和源码来源，而不是无版本的展示字符串。
 
 ## 12. 训练语义
 

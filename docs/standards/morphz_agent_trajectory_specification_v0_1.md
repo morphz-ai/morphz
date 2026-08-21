@@ -269,6 +269,7 @@ revision or derived Bundle; it does not mutate a previously signed artifact.
 Bindings SHOULD use content identities rather than floating names. Where applicable, they include:
 
 - task and Environment Version;
+- exact Cognitive Application identity when one was selected;
 - Agent, Principal, Context, Session, Objective, and Attempt;
 - exact Harness Package and Evaluation Binding;
 - Yao source or validated Program identity;
@@ -424,9 +425,10 @@ explain the omission.
 Private chain-of-thought is not required for any Profile. A model-produced reasoning summary MAY be
 included as non-authoritative model output and MUST NOT be represented as a Runtime fact.
 
-Harness-governed work SHOULD identify the exact Harness Package, Evaluation Binding, Contract, and
-Entry Program. A Yao program or Program Value SHOULD use its canonical validated identity and
-source provenance rather than an unversioned display string.
+Harness-governed work SHOULD identify the exact Cognitive Application identity when one was
+selected, plus the exact Harness Package, Evaluation Binding, Contract, and Entry Program. A Yao
+program or Program Value SHOULD use its canonical validated identity and source provenance rather
+than an unversioned display string.
 
 ## 12. Training semantics
 

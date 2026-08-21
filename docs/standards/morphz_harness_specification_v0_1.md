@@ -27,6 +27,11 @@ Loop. A Harness can determine how an Evaluation reasons, calls tools, gathers ev
 results, and reaches an outcome. The Runtime remains authoritative for identity, scheduling,
 transactions, permissions, physical effects, causality, durability, and recovery.
 
+A Harness is the execution core through which a Cognitive Application can govern an Evaluation.
+Cognitive Application is the product- and ecosystem-level unit that packages reusable cognitive
+practice for an existing Agent. The terms are not synonyms: an Application may include additional
+resources and integrations, while a Harness remains the bounded execution-semantic unit.
+
 This specification defines Harness semantics independently from one source language or filesystem
 layout. The companion HNS Package Format Specification defines the portable `.hns` distribution
 profile. Yao is the source language used by that profile; it is not a synonym for Harness.
@@ -118,6 +123,22 @@ It does not become persistent Agent Mind merely because the Harness is installed
 An Outcome is the terminal result claimed by an Evaluation. A Verifier is a declared procedure or
 external authority capable of checking a stated property of that Outcome against identified
 evidence. A Verifier result is evidence; it does not silently rewrite Agent belief.
+
+### 3.11 Cognitive Application
+
+A Cognitive Application is an independently identifiable and versioned product- and ecosystem-level
+unit that packages reusable cognitive practice for a stable Agent. It is realized through at least
+one Harness and MAY additionally include Skills, Verifiers, default cognitive material, interfaces,
+domain resources, evaluation assets, and integrations when corresponding Profiles define them.
+
+A Cognitive Application is not an Agent, Session, Harness, HNS Package, or external SDK client.
+Installing, selecting, or binding one MUST NOT implicitly create, replace, clone, or merge Agent
+identity. Installation alone grants no Runtime capability or execution authority.
+
+Harness Core v0.1 standardizes one Primary Harness Binding per Evaluation. It does not yet define a
+complete Cognitive Application Manifest, multi-Harness composition, user interface, marketplace,
+commercial policy, or Cognitive Application conformance claim. One HNS Package MAY realize the
+execution content of a minimal Cognitive Application without making the two terms equivalent.
 
 ## 4. Control and authority boundary
 

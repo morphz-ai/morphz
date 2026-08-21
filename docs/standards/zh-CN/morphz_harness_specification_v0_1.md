@@ -27,6 +27,10 @@ Harness 是挂载到一次 Evaluation 上的带版本认知程序与实践契约
 如何推理、调用工具、收集证据、验证结果并形成 Outcome。Runtime 继续对身份、调度、
 事务、权限、物理副作用、因果、持久化和恢复拥有权威控制权。
 
+Harness 是 Cognitive Application（认知应用）管理一次 Evaluation 时使用的执行核心。
+认知应用是面向产品与生态的单元，把可复用认知实践提供给既有 Agent。二者不是同义词：
+Application 可以包含额外资源和集成，Harness 则始终是有边界的执行语义单元。
+
 本规范在不绑定单一源语言或文件系统布局的前提下定义 Harness 语义。配套的 HNS 包格式
 规范定义可移植 `.hns` 分发 Profile。Yao 是该 Profile 使用的源语言，不是 Harness 的
 同义词。
@@ -108,6 +112,21 @@ Default Mind 是 Harness 为已绑定 Evaluation 提供的可选只读认知材�
 
 Outcome 是一次 Evaluation 声明的终态结果。Verifier 是一项声明的过程或外部权威，可以
 依据已识别证据检查 Outcome 的某项性质。Verifier 结果属于证据，不会静默改写 Agent 认知。
+
+### 3.11 Cognitive Application（认知应用）
+
+Cognitive Application 是可独立识别、带版本且面向产品与生态的单元，把可复用认知实践
+提供给稳定 Agent。它通过至少一个 Harness 实现；当相应 Profile 定义这些内容时，还可以
+包含 Skill、Verifier、默认认知材料、交互界面、领域资源、评测资产与外部集成。
+
+认知应用不是 Agent、Session、Harness、HNS Package 或外部 SDK Client。安装、选择或绑定
+认知应用，不得隐式创建、替换、克隆或合并 Agent 身份。仅完成安装不会授予 Runtime
+Capability 或执行权威。
+
+Harness Core v0.1 只规范每次 Evaluation 的一个 Primary Harness Binding；它尚不定义完整
+Cognitive Application Manifest、多 Harness 组合、用户界面、Marketplace、商业策略或
+Cognitive Application 一致性声明。一个 HNS Package 可以实现最小认知应用的执行内容，
+但不会因此让两个术语等价。
 
 ## 4. 控制权与权责边界
 

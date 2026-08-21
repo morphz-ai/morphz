@@ -11,7 +11,8 @@
 > 中文翻译：[zh-CN](zh-CN/README.md)
 
 This directory contains the public technical foundation through which Morphz intends to define,
-implement, and verify Structured Context, Agent Trajectory, portable Harness execution, and Yao.
+implement, and verify Structured Context, Agent Trajectory, Cognitive Applications, portable
+Harness execution, and Yao.
 
 ## Naming roles
 
@@ -19,6 +20,8 @@ implement, and verify Structured Context, Agent Trajectory, portable Harness exe
 - **Morphz Structured Context** is the Newvar-stewarded standards family defined here.
 - **Agent Trajectory** is the portable, causally structured state-transition record of Agent
   experience; it is not a synonym for Event History, an observability Trace, or a chat transcript.
+- **Cognitive Application** is the product- and ecosystem-level unit that packages reusable
+  cognitive practice for an existing Agent; mounting one does not create or replace Agent identity.
 - **Harness** is the portable Evaluation Loop and practice-contract abstraction defined by the
   Morphz Harness Specification.
 - **HNS** is the `.hns` Harness Package distribution profile; **Yao** is its current source language.
