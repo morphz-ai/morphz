@@ -1,4 +1,4 @@
-# Structured Context Draft IPR Status Notice
+# Morphz Draft Standards IPR Status Notice
 
 > Status: Provisional Draft notice; not a final license or patent policy
 >
@@ -12,9 +12,11 @@
 
 ## 1. Purpose
 
-This notice states what readers and contributors may and may not infer while the Structured Context
-documents remain Drafts. It is intended to prevent accidental promises before Newvar adopts final
-source-code, specification-text, patent, contribution, and trademark policies.
+This notice states what readers and contributors may and may not infer while the Morphz technical
+standards remain Drafts. It covers the Structured Context, Agent Trajectory, Harness, HNS, and Yao
+Draft documents unless a particular file states otherwise. It is intended to prevent accidental
+promises before Newvar adopts final source-code, specification-text, patent, contribution, and
+trademark policies.
 
 This notice is not legal advice and is not a substitute for the final policies or professional
 legal review.

@@ -11,12 +11,14 @@
 > 中文翻译：[zh-CN](zh-CN/README.md)
 
 This directory contains the public technical foundation through which Morphz intends to define,
-implement, and verify structured context systems and portable Harness execution.
+implement, and verify Structured Context, Agent Trajectory, portable Harness execution, and Yao.
 
 ## Naming roles
 
 - **Structured Context** is the implementation-neutral technical category.
 - **Morphz Structured Context** is the Newvar-stewarded standards family defined here.
+- **Agent Trajectory** is the portable, causally structured state-transition record of Agent
+  experience; it is not a synonym for Event History, an observability Trace, or a chat transcript.
 - **Harness** is the portable Evaluation Loop and practice-contract abstraction defined by the
   Morphz Harness Specification.
 - **HNS** is the `.hns` Harness Package distribution profile; **Yao** is its current source language.
@@ -38,6 +40,12 @@ category and conformance semantics implementation-independent.
    semantics.
 3. [Morphz Conformance Suite v1](morphz_conformance_suite_v1.md)
    defines how independent implementations demonstrate compatibility.
+
+## Agent Trajectory deliverables
+
+1. [Morphz Agent Trajectory Specification v0.1](morphz_agent_trajectory_specification_v0_1.md)
+   defines the portable state-transition, causal, authority, Outcome, Verifier, Reward, data-rights,
+   evaluation, and training semantics of Agent experience.
 
 ## Harness deliverables
 
@@ -90,6 +98,16 @@ or equivalent governance instrument is adopted:
 5. Morphz Runtime, the official reference implementation;
 6. explanatory architecture documents and examples.
 
+For the Agent Trajectory standards family, conflicts are resolved in this order until a dedicated
+Constitution or equivalent governance instrument is adopted:
+
+1. the current Final Morphz Agent Trajectory Specification;
+2. the matching Agent Trajectory Conformance Suite and Profile documents, which may verify but
+   cannot redefine the Specification;
+3. accepted Standards Track MEPs only after incorporation into a versioned normative release;
+4. Morphz Runtime and its official exporter, as reference implementations;
+5. explanatory architecture documents, datasets, and examples.
+
 An MEP records and approves a change, but becomes normative only after the resulting requirement is
 incorporated into a versioned Constitution or Specification release.
 
@@ -109,6 +127,6 @@ identified English canonical document.
 ## Non-normative roadmap
 
 The [Morphz Standards and Interoperability Roadmap v1](../roadmap/morphz_standards_and_interoperability_roadmap_v1.md)
-describes the planned development of Causal Trace, Outcome and Verifier semantics, reference
+describes the planned development of Agent Trajectory, Outcome and Verifier semantics, reference
 environments, independent implementations, and extension interfaces. It creates no conformance
 obligation and does not override the authority order in this directory.

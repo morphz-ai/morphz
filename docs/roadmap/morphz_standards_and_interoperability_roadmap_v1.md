@@ -6,7 +6,7 @@
 >
 > 项目维护者：新变元（Newvar）
 >
-> 适用范围：Morphz 结构化上下文标准族、参考实现、参考环境与扩展接口
+> 适用范围：Morphz Structured Context 与 Agent Trajectory 标准族、参考实现、参考环境与扩展接口
 
 ## 1. 目的
 
@@ -15,7 +15,7 @@ Morphz 希望让长期运行的 Agent 系统能够在不同模型、进程、存
 本路线图说明项目准备如何逐步建设：
 
 - 实现无关的结构化上下文标准；
-- 可移植的因果实践记录；
+- 可移植的 Agent Trajectory（Agent 执行轨迹）；
 - 可复核的结果与验证契约；
 - 可复现的 Agent 参考环境；
 - Context Storage 与 Execution Target 扩展接口；
@@ -29,6 +29,7 @@ Morphz 采用以下命名边界：
 
 - **结构化上下文（Structured Context）**：实现无关的技术类别；
 - **Morphz 结构化上下文**：由新变元维护的标准族；
+- **Agent Trajectory（Agent 执行轨迹）**：Agent 经验的可移植因果状态转换记录；
 - **Morphz Runtime**：官方参考实现；
 - **Morphz 参考环境**：使用版本化任务、工具、权限、fixture 和验证器运行可复现实践的环境；
 - **兼容实现**：满足相应标准和公开一致性 Profile 的独立实现。
@@ -59,7 +60,8 @@ SC-Core 缓慢演进；Provider、Execution Target、Storage Adapter、Harness�
 
 ### 3.6 数据权利与代码许可分离
 
-代码开源不会改变用户对 Mind、Event、业务内容和实践轨迹的权利。任何遥测、轨迹上传、评测贡献或训练用途都需要明确的范围、授权和数据处理说明。
+代码开源不会改变用户对 Mind、Event、业务内容和 Agent Trajectory 的权利。任何遥测、
+Agent Trajectory 上传、评测贡献或训练用途都需要明确的范围、授权和数据处理说明。
 
 ## 4. 已有公开基础
 
@@ -68,8 +70,10 @@ SC-Core 缓慢演进；Provider、Execution Target、Storage Adapter、Harness�
 1. [《结构化上下文宪法 v1》](../standards/zh-CN/structured_context_constitution_v1.md)：定义技术类别的稳定原则；
 2. [《Morphz 结构化上下文规范 v1》](../standards/zh-CN/morphz_structured_context_specification_v1.md)：定义对象模型、权责边界、事务和可观察语义；
 3. [《Morphz 一致性测试套件 v1》](../standards/zh-CN/morphz_conformance_suite_v1.md)：定义独立实现如何证明兼容；
-4. [项目治理](../../GOVERNANCE.zh-CN.md)：定义新变元、Project Lead、Maintainer 和 Contributor 的公开权责；
-5. [MEP-0001](../meps/zh-CN/MEP-0001-specification-governance.md)：定义标准与参考实现如何演进。
+4. [《Morphz Agent Trajectory 规范 v0.1》](../standards/zh-CN/morphz_agent_trajectory_specification_v0_1.md)：
+   定义 Agent 经验的可移植状态转换、因果、Outcome、Verifier、Reward 与数据权利语义；
+5. [项目治理](../../GOVERNANCE.zh-CN.md)：定义新变元、Project Lead、Maintainer 和 Contributor 的公开权责；
+6. [MEP-0001](../meps/zh-CN/MEP-0001-specification-governance.md)：定义标准与参考实现如何演进。
 
 这些文件当前仍为 Draft。Runtime 源码、数据库契约测试和实现状态文档继续负责说明“现在已经实现了什么”；标准草案负责说明“候选规范希望稳定什么”。
 
@@ -103,11 +107,21 @@ SC-Core 为结构化上下文实现建立最小共同语义：
 - 已知歧义和实现差异具有公开记录；
 - 版本升级与不兼容变更路径可执行。
 
-## 6. 工作流 B：Causal Trace Profile
+## 6. 工作流 B：Agent Trajectory
 
 ### 6.1 目标
 
-不同运行时可以使用不同调度策略，但仍应能够交换和审计一次实践的因果结构。Causal Trace Profile 准备定义：
+不同 Runtime 可以使用不同调度策略，但仍应能够交换、审计和学习一次 Agent 实践的
+结构化状态转换与因果结构。[《Morphz Agent Trajectory 规范 v0.1》](../standards/zh-CN/morphz_agent_trajectory_specification_v0_1.md)
+已经定义 Core、Evaluation 与 Training Profile，并确立以下边界：
+
+- Agent Trajectory 是可移植经验对象；
+- Event History 是权威事实来源；
+- Trace 是可观测性投影，不是 Agent Trajectory 的同义词；
+- Episode 是面向重放、评测或训练的有边界投影；
+- Reward Record 是对事实的带版本解释，不覆盖 Outcome 或 Verifier Result。
+
+Agent Trajectory Profile 定义：
 
 - Agent、Principal、Context 与 Session；
 - Objective、Attempt 与 Evaluation；
@@ -133,9 +147,11 @@ SC-Core 为结构化上下文实现建立最小共同语义：
 
 ### 6.3 内部记录与交换格式
 
-Morphz Event Store 是参考实现的权威记录。公共 Trace Bundle 是跨实现交换格式。二者通过确定性 exporter 连接，而不要求外部实现采用 Morphz 的数据库 Schema。
+Morphz Event Store 是参考实现的权威记录。公共 Agent Trajectory Bundle 是跨实现交换
+格式。二者通过确定性 Exporter 连接，而不要求外部实现采用 Morphz 的数据库 Schema。
 
-公开 Bundle 预计包含：
+v0.1 规范已经定义逻辑 Bundle；机器可读 JSON Schema、规范性 Fixture 与一致性套件仍待
+实现。逻辑 Bundle 包含：
 
 - schema 与 Profile 版本；
 - 来源实现和运行版本；
@@ -194,7 +210,7 @@ Reward Policy 是对结果事实的特定用途映射。SC-Core 保存和传递�
 - Token、时间、成本和资源预算；
 - 时间、随机性和外部服务处理方式；
 - 终止条件和 Verifier Bundle；
-- Trace 导出、脱敏和数据许可策略。
+- Agent Trajectory 导出、脱敏和数据许可策略。
 
 ### 8.2 可比性
 
@@ -207,7 +223,7 @@ Reward Policy 是对结果事实的特定用途映射。SC-Core 保存和传递�
 - Environment Manifest Schema；
 - 最小 fixture 格式；
 - Verifier Bundle；
-- Trace Bundle exporter；
+- Agent Trajectory Bundle Exporter；
 - 官方基线与至少三类对照；
 - 可机器读取、可签名的 Result Bundle；
 - 复现说明、污染声明和 Benchmark gaming 政策。
@@ -305,11 +321,11 @@ Morphz 欢迎不复制官方 Runtime 内部结构的兼容实现。项目计划�
 - 规范、测试和当前实现状态之间建立可追踪关系；
 - 许可证、贡献和商标政策在首次正式开源发布前锁定。
 
-### 阶段 1：Causal Trace 与 Outcome
+### 阶段 1：Agent Trajectory 与 Outcome
 
-- 发布 Causal Trace Candidate Profile；
+- 评审并收敛 Agent Trajectory Candidate Specification；
 - 发布 Outcome / Verifier Candidate Schema；
-- 实现可脱敏 Trace Bundle exporter；
+- 实现可脱敏 Agent Trajectory Bundle Exporter；
 - 用真实并发、恢复和失败记录验证表达能力。
 
 ### 阶段 2：参考环境
@@ -340,7 +356,7 @@ Morphz 欢迎不复制官方 Runtime 内部结构的兼容实现。项目计划�
 
 - 外部实现可以理解并实现核心可观察语义；
 - 相同 Environment Version 能被第三方复跑；
-- 不同实现能够交换和审计 Causal Trace Bundle；
+- 不同实现能够交换和审计 Agent Trajectory Bundle；
 - Verifier Result 可以由第三方复算并保留适用范围；
 - Storage、Target 和其他扩展可以独立演进而不破坏 Core；
 - Contributor 能够沿公开路径获得真实维护责任；
