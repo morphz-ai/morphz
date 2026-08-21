@@ -9899,6 +9899,241 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_runtime_routes_background_session_wake_through_the_dialogue_router() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session_id = "session-live-background-wake";
+        runtime
+            .ensure_session(NewSession {
+                id: session_id.to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Live background wake".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let event = Event::new(
+            "event-live-background-wake".to_string(),
+            "System-TaskMonitor".to_string(),
+            crate::event::TYPE_RUNTIME_WAKE.to_string(),
+            "runtime/background_wake".to_string(),
+            json!({
+                "agent_id": runtime.identity().agent_id,
+                "context_id": runtime.identity().context_id,
+                "session_id": session_id,
+                "wake_kind": "terminal_result",
+                "event": "background_task_terminal",
+                "text": "deliver this terminal background result"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let thread = runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: crate::memory::stable_thread_id(&event.id),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                root_turn_id: event.id.clone(),
+                kind: crate::memory::ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::runtime("dialogue-router"),
+            })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .append_to_thread(event.clone(), &thread.id)
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+
+        runtime
+            .inner
+            .bus
+            .dispatch_persisted(event.clone())
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .expect("a live Runtime Wake must enter the production dialogue router")
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+        let signals = runtime
+            .inner
+            .store
+            .list_context_thread_signals(
+                &runtime.identity().context_id,
+                Some(ThreadSignalStatus::Acknowledged),
+            )
+            .await
+            .unwrap();
+        assert!(signals.iter().any(|signal| signal.event_id == event.id));
+    }
+
+    #[tokio::test]
+    async fn restart_recovers_background_wake_before_following_user_signal_without_starvation() {
+        let database = NamedTempFile::new().unwrap();
+        let config = AppConfig::default();
+        let tool_policy = RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        };
+        let crashed_runtime = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(tool_policy)
+            .build()
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_agent(NewAgent {
+                id: crashed_runtime.identity().agent_id.clone(),
+                title: "Restart background wake agent".to_string(),
+                root_context_id: crashed_runtime.identity().context_id.clone(),
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_context(NewCognitiveContext {
+                id: crashed_runtime.identity().context_id.clone(),
+                agent_id: crashed_runtime.identity().agent_id.clone(),
+                title: "Restart background wake context".to_string(),
+            })
+            .await
+            .unwrap();
+        let session_id = "session-restart-background-wake";
+        crashed_runtime
+            .ensure_session(NewSession {
+                id: session_id.to_string(),
+                agent_id: crashed_runtime.identity().agent_id.clone(),
+                context_id: crashed_runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Restart background wake".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let wake = Event::new(
+            "event-restart-background-wake".to_string(),
+            "System-TaskMonitor".to_string(),
+            crate::event::TYPE_RUNTIME_WAKE.to_string(),
+            "runtime/background_wake".to_string(),
+            json!({
+                "agent_id": crashed_runtime.identity().agent_id,
+                "context_id": crashed_runtime.identity().context_id,
+                "session_id": session_id,
+                "wake_kind": "terminal_result",
+                "event": "background_task_terminal",
+                "text": "recover this terminal background result"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let thread = crashed_runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: crate::memory::stable_thread_id(&wake.id),
+                agent_id: crashed_runtime.identity().agent_id.clone(),
+                context_id: crashed_runtime.identity().context_id.clone(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                root_turn_id: wake.id.clone(),
+                kind: crate::memory::ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::runtime("dialogue-router"),
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .inner
+            .store
+            .append_to_thread(wake.clone(), &thread.id)
+            .await
+            .unwrap();
+        let user_message = Event::new(
+            "event-after-restart-background-wake".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "agent_id": crashed_runtime.identity().agent_id,
+                "context_id": crashed_runtime.identity().context_id,
+                "session_id": session_id,
+                "text": "this later message must not stay behind the Runtime Wake"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        crashed_runtime
+            .inner
+            .store
+            .append_to_thread(user_message.clone(), &thread.id)
+            .await
+            .unwrap();
+        drop(crashed_runtime);
+
+        let recovered_runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(tool_policy)
+            .build()
+            .await
+            .unwrap();
+        let mut replies = recovered_runtime.subscribe("chat/reply", 4);
+        recovered_runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .expect("startup recovery must consume the oldest Runtime Wake")
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+
+        let acknowledged = recovered_runtime
+            .inner
+            .store
+            .list_context_thread_signals(
+                &recovered_runtime.identity().context_id,
+                Some(ThreadSignalStatus::Acknowledged),
+            )
+            .await
+            .unwrap();
+        assert!(acknowledged.iter().any(|signal| signal.event_id == wake.id));
+        assert!(
+            acknowledged
+                .iter()
+                .any(|signal| signal.event_id == user_message.id),
+            "the wake Activation must consume the later mailbox Signal instead of leaving it starved"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), replies.recv())
+                .await
+                .is_err(),
+            "the recovered Signal batch must produce exactly one reply"
+        );
+    }
+
+    #[tokio::test]
     async fn runtime_builder_accepts_one_injected_complete_store() {
         let database = NamedTempFile::new().unwrap();
         let sqlite = Arc::new(

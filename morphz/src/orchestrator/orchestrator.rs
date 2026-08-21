@@ -3804,6 +3804,20 @@ impl Orchestrator {
                 Box::pin(async move { orchestrator.handle_chat_event(event).await })
             }),
         );
+        // Background work whose owning Thread is already terminal escalates
+        // to the Session as a fresh Runtime Wake DialogueTurn. Its topic is
+        // intentionally outside `chat/*`, but it uses the same durable Signal
+        // and Activation router. Without this explicit subscription the
+        // atomically committed Signal remains pending forever, including
+        // across startup and runtime reconciliation redispatches.
+        let orchestrator = Arc::clone(&self);
+        self.bus.subscribe(
+            "runtime/background_wake".to_string(),
+            Arc::new(move |event| {
+                let orchestrator = Arc::clone(&orchestrator);
+                Box::pin(async move { orchestrator.handle_chat_event(event).await })
+            }),
+        );
         let orchestrator = Arc::clone(&self);
         self.bus.subscribe(
             "runtime/action_group_settled".to_string(),
