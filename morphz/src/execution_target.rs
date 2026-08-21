@@ -4898,10 +4898,12 @@ fn shell_command_programs(command: &str) -> Vec<String> {
     let mut escaped = false;
     let mut command_position = true;
     let mut wrapper = false;
+    let mut command_builtin = false;
     let finish_token = |token: &mut String,
                         programs: &mut Vec<String>,
                         command_position: &mut bool,
-                        wrapper: &mut bool| {
+                        wrapper: &mut bool,
+                        command_builtin: &mut bool| {
         if token.is_empty() {
             return;
         }
@@ -4925,13 +4927,26 @@ fn shell_command_programs(command: &str) -> Vec<String> {
                     | "until"
                     | "!"
             );
+            if *command_builtin && matches!(value.as_str(), "-v" | "-V") {
+                // `command -v ssh` and `command -V ssh` inspect shell command
+                // resolution; they do not invoke OpenSSH. End executable
+                // discovery for this shell segment so the inspected name is
+                // not misclassified as an unmanaged connection attempt.
+                *command_position = false;
+                *wrapper = false;
+                *command_builtin = false;
+                return;
+            }
             if assignment || wrapper_word || (*wrapper && value.starts_with('-')) {
                 *wrapper = wrapper_word || *wrapper;
+                *command_builtin =
+                    value == "command" || (*command_builtin && value.starts_with('-'));
                 return;
             }
             programs.push(value);
             *command_position = false;
             *wrapper = false;
+            *command_builtin = false;
         } else {
             token.clear();
         }
@@ -4970,9 +4985,11 @@ fn shell_command_programs(command: &str) -> Vec<String> {
                         &mut programs,
                         &mut command_position,
                         &mut wrapper,
+                        &mut command_builtin,
                     );
                     command_position = true;
                     wrapper = false;
+                    command_builtin = false;
                 }
                 value if value.is_whitespace() => {
                     finish_token(
@@ -4980,6 +4997,7 @@ fn shell_command_programs(command: &str) -> Vec<String> {
                         &mut programs,
                         &mut command_position,
                         &mut wrapper,
+                        &mut command_builtin,
                     );
                 }
                 _ => token.push(character),
@@ -4991,6 +5009,7 @@ fn shell_command_programs(command: &str) -> Vec<String> {
         &mut programs,
         &mut command_position,
         &mut wrapper,
+        &mut command_builtin,
     );
     programs
 }
@@ -6124,6 +6143,23 @@ mod tests {
     use crate::memory::{ExecutionJobStatus, ExecutionRetrySafety};
     use crate::secret_store::{SecretScopeKind, SecretStore, SecretValueBackend};
     use std::sync::Mutex;
+
+    #[test]
+    fn unmanaged_ssh_detection_distinguishes_command_lookup_from_invocation() {
+        let invokes_ssh = |command: &str| {
+            exec_arguments_invoke_ssh(&serde_json::json!({"command": command}).to_string()).unwrap()
+        };
+
+        assert!(!invokes_ssh("command -v ssh"));
+        assert!(!invokes_ssh("command -V scp"));
+        assert!(!invokes_ssh("env command -v sftp"));
+        assert!(!invokes_ssh("type ssh; which scp; command -v sftp"));
+
+        assert!(invokes_ssh("ssh root@example.invalid"));
+        assert!(invokes_ssh("command ssh root@example.invalid"));
+        assert!(invokes_ssh("command -p ssh root@example.invalid"));
+        assert!(invokes_ssh("command -- sftp example.invalid"));
+    }
 
     #[test]
     fn artifact_relay_claimants_are_unique_inside_one_process() {

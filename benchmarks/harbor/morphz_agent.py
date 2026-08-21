@@ -8,6 +8,7 @@ returning control to Harbor's verifier.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 from pathlib import Path
@@ -140,10 +141,33 @@ class MorphzAgent(BaseAgent):
                 "MORPHZ_HARBOR_TIMEOUT_SECS", "21600"
             ),
         }
-        result = await environment.exec(
-            command="/tmp/run-morphz-harbor.sh",
-            env=env,
-        )
+        try:
+            result = await environment.exec(
+                command="/tmp/run-morphz-harbor.sh",
+                env=env,
+            )
+        except asyncio.CancelledError:
+            # Harbor enforces the task deadline outside the custom Agent. A
+            # cancelled `docker compose exec` does not reliably stop the shell
+            # already running inside the task container. Quiesce Morphz before
+            # Harbor starts the shared-environment verifier: preserve services
+            # explicitly declared with keep_running, but terminate unfinished
+            # transient commands so they cannot mutate the answer concurrently
+            # with verification.
+            try:
+                await asyncio.shield(
+                    environment.exec(
+                        command="/tmp/run-morphz-harbor.sh --cancel",
+                        env=env,
+                        timeout_sec=15,
+                    )
+                )
+            except BaseException as cleanup_error:
+                self.logger.error(
+                    "Failed to quiesce Morphz after Harbor cancellation: %s",
+                    cleanup_error,
+                )
+            raise
         if result.return_code != 0:
             raise RuntimeError(
                 "Morphz Harbor run failed: "
