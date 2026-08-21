@@ -30,7 +30,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (eval "Runtime owns the loop and executes a typed plan")
     (infer "model owns the loop while Runtime authority and declared result type remain binding; a model-owned Harness entry explicitly declares requires.tools"))
   (types
-    (builtins Nil Bool Int Float String Bytes Json EvidenceCandidate OutcomeCandidate)
+    (builtins Nil Bool Int Float String Bytes Json EvidenceCandidate OutcomeCandidate ContextTransaction)
     (parameterized "(List T) (Map T) (Option T) (Result OK ERR) (Ref KIND) (Program T (effects ...))")
     (nominal "(types (record NAME (field TYPE)...) (union NAME (variant (field TYPE)...)...))")
     (boundary "Json must be decoded before narrower typed use"))
@@ -39,7 +39,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (meaning "a closed upper bound that narrows, never grants, Runtime authority"))
   (values
     (constructors "(list E...) (dict (KEY E)...) (record TYPE (FIELD E)...) (variant TYPE.VARIANT (FIELD E)...) (some E) (none TYPE) (ok E ERROR-TYPE) (err E OK-TYPE)")
-    (semantic "(evidence (kind E) (value E) (refs REF...)) (outcome (status succeeded|failed|blocked) (value E) (evidence REF...))")
+    (semantic "(evidence (kind E) (value E) (refs REF...)) (outcome (status succeeded|failed|blocked) (value E) (evidence REF...)) (context-transaction (context REF) (transaction (context-tx ...)))")
     (pure "(get E FIELD) (decode TYPE E) (is TYPE E) (eq|ne|lt|le|gt|ge LEFT RIGHT) (and E...) (or E...) (not E) (add E...) (sub LEFT RIGHT) (mul E...) (div LEFT RIGHT)"))
   (control
     (forms "(seq E...) (bind NAME E) (if BOOL THEN ELSE) (fallback PRIMARY BACKUP) (map LIST NAME BODY)")

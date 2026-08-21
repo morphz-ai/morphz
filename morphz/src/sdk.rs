@@ -58,6 +58,13 @@ use crate::runtime::{
     RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus, SchedulerQuery, SchedulerSnapshot,
     SessionMessageOptions, ThreadDetail,
 };
+use crate::trajectory::{
+    derive_training_episode, verify_bundle, verify_training_episode, AgentTrajectoryExporter,
+};
+pub use crate::trajectory::{
+    AgentTrajectoryBundle, CommitRewardRecord, CommitVerifierResult, TrainingEpisode,
+    TrainingEpisodeVerificationReport, TrajectoryExportRequest, TrajectoryVerificationReport,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -607,6 +614,64 @@ impl MorphzSdk {
             assurance: "runtime-default".to_string(),
             display_name: None,
         }
+    }
+
+    /// Export a bounded, portable projection of authoritative Runtime facts.
+    ///
+    /// Like `context_overview`, this is a trusted-host administrative surface.
+    /// Network adapters must authorize Context access before invoking it.
+    pub async fn export_agent_trajectory(
+        &self,
+        request: TrajectoryExportRequest,
+    ) -> SdkResult<AgentTrajectoryBundle> {
+        AgentTrajectoryExporter::export(&self.runtime, request)
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error))
+    }
+
+    /// Validate an untrusted portable Bundle without executing embedded data
+    /// or mutating Runtime state.
+    pub fn verify_agent_trajectory(
+        &self,
+        bundle: &AgentTrajectoryBundle,
+    ) -> TrajectoryVerificationReport {
+        verify_bundle(bundle)
+    }
+
+    pub async fn commit_trajectory_verifier_result(
+        &self,
+        input: CommitVerifierResult,
+    ) -> SdkResult<Event> {
+        self.runtime
+            .commit_trajectory_verifier_result(input)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn commit_trajectory_reward_record(
+        &self,
+        input: CommitRewardRecord,
+    ) -> SdkResult<Event> {
+        self.runtime
+            .commit_trajectory_reward_record(input)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub fn derive_training_episode(
+        &self,
+        bundle: &AgentTrajectoryBundle,
+    ) -> SdkResult<TrainingEpisode> {
+        derive_training_episode(bundle)
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error))
+    }
+
+    /// Validate a derived Training Episode without executing its contents.
+    pub fn verify_training_episode(
+        &self,
+        episode: &TrainingEpisode,
+    ) -> TrainingEpisodeVerificationReport {
+        verify_training_episode(episode)
     }
 
     /// Administrative Context projection shared by CLI, Dashboard and other

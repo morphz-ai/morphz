@@ -135,7 +135,12 @@ The initial Objective operations are:
 ```
 
 They have correspondingly namespaced host effects. They submit typed, revision-aware proposals to
-the Objective authority. The Runtime decides whether to commit a transition. A program cannot set
+the Objective authority. `objective.report` commits an immutable progress fact;
+`objective.propose-wait` validates and applies the wait condition through the Objective Supervisor;
+and `objective.propose-completion` consumes a same-Context committed `Outcome` before preparing the
+completion transition. Each operation returns a typed immutable receipt containing the proposal
+identity and applicable before/after revisions. Recovery of the same admitted proposal MUST replay
+the existing result instead of advancing the Objective revision twice. A program cannot set
 Objective status or revision directly.
 
 ## 8. Context effects
@@ -143,14 +148,21 @@ Objective status or revision directly.
 The initial Context operation is:
 
 ```lisp
-(context.propose TRANSACTION)
+(context.propose
+  (context-transaction
+    (context REF)
+    (transaction (context-tx ...))))
 ```
 
-`TRANSACTION` will become a typed Context transaction value in the Structured Context profile. The
-effect is `(host context.propose)`. In the current Draft implementation the argument is `Json` and
-the operation returns an immutable proposal receipt; it does not directly mutate Context or Mind.
-A later profile revision may define validation of protected Frames, conflict rules, transaction
-budgets, and a narrower typed result.
+`context-transaction` is a sealed `ContextTransaction` value. Source programs can construct it only
+through this form; `decode`, raw JSON, and tagged look-alikes cannot construct it. The enclosing
+`Ref<Context>` is checked against the current Plan authority, and the nested `context-tx` source is
+parsed and committed through the existing Context Authority. The effect is
+`(host context.propose)`. It returns a typed immutable receipt containing the proposal identity,
+transaction identity, committed Context version, and status. Recovery of the same admitted
+proposal MUST return the already committed transaction rather than applying the state change
+twice. Protected Frames, MVCC conflict handling, transaction budgets, and atomic Context/Mind
+changes remain owned by the Context Authority rather than by Yao.
 
 ## 9. Lowering
 
@@ -239,10 +251,14 @@ snapshot. Caller-local bindings do not enter generated Program children, and rem
 budgets are transferred without refill.
 
 Morphz also persists replay-safe Host receipts, authorized immutable views, Evidence/Outcome
-commits, and Objective/Context proposal records. Candidate transport is revalidated at the Host
-boundary, referenced Evidence must be a same-Context Runtime commit, and Objective operations must
-carry the current Objective Ref. These proposal operations currently record intent only: applying
-Objective transitions and Context transactions remains owned by their existing authorities and is
-not yet performed by Yao. ExecutionTarget view injection, cancellation propagation across all
-child Plans, and a narrower typed Context transaction profile remain Draft work; this
-implementation therefore does not yet claim complete v0.1 conformance.
+commits, applied Objective operations, and typed Context transactions. Candidate transport is
+revalidated at the Host boundary, referenced Evidence and Outcome values must be same-Context
+Runtime commits, and Objective operations must carry the current Objective Ref. Objective wait and
+completion proposals are applied only through the Objective Supervisor; Context transactions are
+applied only through Context Authority. Deterministic proposal and transaction identities close
+the crash window between authority commit and Host receipt persistence without duplicate state
+transitions.
+
+ExecutionTarget view injection and cancellation propagation across all child Plans remain Draft
+work. The reference implementation therefore records conformance evidence for the implemented
+surface without claiming complete v0.1 conformance.

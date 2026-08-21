@@ -25,6 +25,8 @@ Harness execution, and Yao.
 - **Harness** is the portable Evaluation Loop and practice-contract abstraction defined by the
   Morphz Harness Specification.
 - **HNS** is the `.hns` Harness Package distribution profile; **Yao** is its current source language.
+- **COA** and `.coa` are reserved candidate names for a future Cognitive Application Package
+  Profile above HNS. No current Draft defines that format or permits a `.coa` compatibility claim.
 - **Morphz Runtime** is Newvar's official reference implementation, not the definition of the
   standard.
 - **Morphz SC Compatible** is a reserved future compatibility mark whose use will require a
@@ -49,6 +51,9 @@ category and conformance semantics implementation-independent.
 1. [Morphz Agent Trajectory Specification v0.1](morphz_agent_trajectory_specification_v0_1.md)
    defines the portable state-transition, causal, authority, Outcome, Verifier, Reward, data-rights,
    evaluation, and training semantics of Agent experience.
+2. [Agent Trajectory Reference Implementation Verification v0.1](morphz_agent_trajectory_reference_implementation_verification_v0_1.md)
+   maps Morphz export, validation, immutable Verifier/Reward facts, recovery, rights enforcement,
+   and Training Episode derivation to executable evidence and reference JSON Schemas.
 
 ## Harness deliverables
 

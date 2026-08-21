@@ -540,7 +540,19 @@ AT-Core 不代表通过 AT-Evaluation 或 AT-Training。
 - 在缺少适用法律和证据框架时，把 Agent Trajectory 直接当作法律证据；
 - 要求独立实现复制 Morphz Runtime 的调度或存储内部结构。
 
-## 附录 A：非规范性紧凑示例
+## 附录 A：参考实现产物
+
+Morphz 参考实现随本 Draft 发布两份非规范性的机器可读序列化 Schema：
+
+- [Agent Trajectory Bundle v0.1 JSON Schema](../schema/morphz_agent_trajectory_bundle_v0_1.schema.json)；
+- [Training Episode v0.1 JSON Schema](../schema/morphz_training_episode_v0_1.schema.json)。
+
+[参考实现验证记录](morphz_agent_trajectory_reference_implementation_verification_v0_1.md)
+把已经实现的 Exporter、Verifier、不可变 Verifier/Reward Fact、权限门禁、Episode 派生与恢复
+行为映射到可执行测试。这些产物描述当前 Morphz 序列化和实现证据，不会让 Draft 自动成为
+Final 标准，也不把 JSON 表示规定成唯一一致编码。
+
+## 附录 B：非规范性紧凑示例
 
 ```json
 {
@@ -634,5 +646,5 @@ AT-Core 不代表通过 AT-Evaluation 或 AT-Training。
 }
 ```
 
-本示例有意不作为完整 Schema Fixture。规范性 Fixture 与机器可读 JSON Schema 应由未来
-的 Agent Trajectory Conformance Suite 提供。
+本示例有意保持紧凑，不作为完整 Fixture。相邻的参考 JSON Schema 描述当前已实现的
+序列化；规范性 Fixture 仍属于未来 Agent Trajectory Conformance Suite 的工作。

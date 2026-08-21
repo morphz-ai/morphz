@@ -585,7 +585,21 @@ This specification does not:
 - treat an Agent Trajectory as legal proof without an applicable legal and evidentiary framework;
 - require independent implementations to copy Morphz Runtime scheduling or storage internals.
 
-## Appendix A. Non-normative compact example
+## Appendix A. Reference implementation artifacts
+
+The Morphz reference implementation publishes two non-normative machine-readable serialization
+schemas alongside this Draft:
+
+- [Agent Trajectory Bundle v0.1 JSON Schema](schema/morphz_agent_trajectory_bundle_v0_1.schema.json);
+- [Training Episode v0.1 JSON Schema](schema/morphz_training_episode_v0_1.schema.json).
+
+The [reference implementation verification record](morphz_agent_trajectory_reference_implementation_verification_v0_1.md)
+maps the implemented exporter, verifier, immutable Verifier/Reward facts, permission gate, Episode
+derivation, and recovery behavior to executable tests. These artifacts describe the current Morphz
+serialization and evidence; they do not turn the Draft into a Final standard or make the JSON
+representation the only conforming encoding.
+
+## Appendix B. Non-normative compact example
 
 ```json
 {
@@ -679,5 +693,6 @@ This specification does not:
 }
 ```
 
-The example is intentionally incomplete as a schema fixture. Normative fixtures and a machine-
-readable JSON Schema belong in the future Agent Trajectory Conformance Suite.
+The example is intentionally compact rather than a complete fixture. The adjacent reference JSON
+Schema describes the implemented serialization. Normative fixtures remain work for a future Agent
+Trajectory Conformance Suite.

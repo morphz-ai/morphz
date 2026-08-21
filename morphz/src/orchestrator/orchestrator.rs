@@ -4703,8 +4703,12 @@ impl Orchestrator {
         let Some(store) = self.plan_store.as_ref() else {
             return Ok(());
         };
-        let coordinator =
-            PlanExecutionCoordinator::new(Arc::clone(store), Arc::clone(&self.registry));
+        let mut coordinator =
+            PlanExecutionCoordinator::new(Arc::clone(store), Arc::clone(&self.registry))
+                .with_context_engine(Arc::clone(&self.context_engine));
+        if let Some(supervisor) = self.objective_supervisor.as_ref() {
+            coordinator = coordinator.with_objective_supervisor(Arc::clone(supervisor));
+        }
         let recovered = coordinator
             .recover_expired_running(None, PLAN_RECONCILE_BATCH)
             .await?;
@@ -12735,8 +12739,12 @@ impl Orchestrator {
             .plan_store
             .as_ref()
             .ok_or("Runtime 没有配置 PlanExecution Store")?;
-        let coordinator =
-            PlanExecutionCoordinator::new(Arc::clone(store), Arc::clone(&self.registry));
+        let mut coordinator =
+            PlanExecutionCoordinator::new(Arc::clone(store), Arc::clone(&self.registry))
+                .with_context_engine(Arc::clone(&self.context_engine));
+        if let Some(supervisor) = self.objective_supervisor.as_ref() {
+            coordinator = coordinator.with_objective_supervisor(Arc::clone(supervisor));
+        }
         let planner = OrchestratorPlanCallPlanner {
             orchestrator: self
                 .self_ref

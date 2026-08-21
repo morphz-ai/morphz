@@ -92,18 +92,29 @@ Candidate Type 是封闭的 Runtime Value。源码只能通过 `evidence`/`outco
 (objective.propose-completion (objective REF) (outcome REF))
 ```
 
-这些操作提交带类型、Revision-aware 的 Proposal，由 Objective Authority 决定是否 Commit。
-程序不能直接设置 Objective Status 或 Revision。
+这些操作向 Objective Authority 提交带类型、Revision-aware 的 Proposal。
+`objective.report` 提交不可变 Progress Fact；`objective.propose-wait` 通过 Objective
+Supervisor 校验并应用等待条件；`objective.propose-completion` 只消费同一 Context 中已提交的
+`Outcome`，再准备完成转换。每个操作都返回带 Proposal Identity 及适用 Before/After Revision
+的类型化不可变 Receipt。同一已准入 Proposal 在恢复时必须重放既有结果，不得让 Objective
+Revision 前进两次。程序不能直接设置 Objective Status 或 Revision。
 
 ## 8. Context Effect
 
 ```lisp
-(context.propose TRANSACTION)
+(context.propose
+  (context-transaction
+    (context REF)
+    (transaction (context-tx ...))))
 ```
 
-Effect 为 `(host context.propose)`。当前草案实现接收 `Json`，返回不可变 Proposal Receipt，
-不会直接修改 Context/Mind。后续 Structured Context Profile 才会定义 Typed Transaction、
-Protected Frame、Conflict Rule、Transaction Budget 与更窄的结果类型。
+`context-transaction` 是封闭的 `ContextTransaction` 值。源码只能通过该语法构造，不能由
+`decode`、Raw JSON 或伪造 Tag 构造。外层 `Ref<Context>` 必须属于当前 Plan Authority；内层
+`context-tx` 源码由既有 Context Authority 解析并提交。Effect 为 `(host context.propose)`，
+返回包含 Proposal Identity、Transaction Identity、已提交 Context Version 与 Status 的类型化
+不可变 Receipt。同一已准入 Proposal 在恢复时必须返回既有提交，不得重复应用状态变化。
+Protected Frame、MVCC Conflict、Transaction Budget 与 Context/Mind 原子修改继续由 Context
+Authority 所有，而不是由 Yao 自行实现。
 
 ## 9. Lowering
 
@@ -163,10 +174,13 @@ Fence 与精确父级恢复、Objective/Context Revision、取消传播、旧 Pr
 Plan 的 Program Value，以及注入的 `$runtime` Snapshot。生成的 Program Child 不继承调用方
 局部绑定，剩余 Program Budget 只转移、不补充。
 
-Morphz 还实现了可安全重放的 Host Receipt、受权 Immutable View、Evidence/Outcome Commit
-及 Objective/Context Proposal Record。Host 边界会重新验证 Candidate Transport；Evidence
-引用必须是同一 Context 中的 Runtime Commit；Objective Operation 必须携带当前 Objective Ref。
-这些 Proposal 目前只记录意图，真正应用 Objective Transition/Context Transaction 仍归既有
-Authority 所有，Yao 不会直接执行。ExecutionTarget View 注入、跨全部 Child Plan 的取消传播、
-以及更窄的 Typed Context Transaction Profile 仍是草案工作，因此当前实现尚不声明完整
-v0.1 Conformance。
+Morphz 还实现了可安全重放的 Host Receipt、受权 Immutable View、Evidence/Outcome Commit、
+实际应用的 Objective Operation 与类型化 Context Transaction。Host 边界会重新验证 Candidate
+Transport；Evidence 与 Outcome 引用必须是同一 Context 中的 Runtime Commit；Objective
+Operation 必须携带当前 Objective Ref。Objective Wait/Completion Proposal 只能经 Objective
+Supervisor 应用，Context Transaction 只能经 Context Authority 应用。确定性的 Proposal 与
+Transaction Identity 封闭了 Authority 已提交而 Host Receipt 尚未持久化的崩溃窗口，并避免
+重复状态转换。
+
+ExecutionTarget View 注入与跨全部 Child Plan 的取消传播仍是草案工作。参考实现只对已经
+落地的 Surface 记录一致性证据，尚不声明完整 v0.1 Conformance。

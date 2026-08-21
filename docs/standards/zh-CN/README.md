@@ -23,6 +23,8 @@ Cognitive Application、可移植 Harness 执行与 Yao 的公开技术基础。
   提供给既有 Agent；挂载认知应用不会创建或替换 Agent 身份；
 - **Harness** 是《Morphz Harness 规范》定义的可移植 Evaluation Loop 与实践契约抽象；
 - **HNS** 是 `.hns` Harness Package 分发 Profile；**Yao** 是其当前源语言；
+- **COA** 与 `.coa` 是 HNS 之上的未来 Cognitive Application Package Profile 保留候选名；
+  当前 Draft 不定义该格式，也不允许作出 `.coa` 兼容性声明；
 - **Morphz Runtime** 是新变元的官方参考实现，不是标准本身；
 - **Morphz SC Compatible** 是保留的未来兼容性标识，只有在商标政策发布且取得符合要求
   的一致性证据后才能使用。
@@ -44,6 +46,9 @@ Cognitive Application、可移植 Harness 执行与 Yao 的公开技术基础。
 1. [《Morphz Agent Trajectory 规范 v0.1》](morphz_agent_trajectory_specification_v0_1.md)
    定义 Agent 经验的可移植状态转换、因果、权威、Outcome、Verifier、Reward、数据权利、
    评测与训练语义。
+2. [《Agent Trajectory 参考实现验证记录 v0.1》](morphz_agent_trajectory_reference_implementation_verification_v0_1.md)
+   把 Morphz 导出、校验、不可变 Verifier/Reward Fact、恢复、权利门禁和 Training Episode
+   派生映射到可执行证据与参考 JSON Schema。
 
 ## Harness 交付物
 

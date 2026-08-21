@@ -6,6 +6,7 @@
 //! Execution Job domain. The Store then commits the child Job and suspended
 //! Plan in one transaction.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::sync::Arc;
 
@@ -18,10 +19,12 @@ use crate::execution::deterministic_job_id;
 use crate::memory::{
     stable_thread_activation_id, ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus,
     ExecutionJobRecord, ExecutionJobStatus, NewActionGroup, NewActionGroupMember, NewExecutionJob,
-    NewPlanExecution, PlanEvaluationCommit, PlanExecutionFilter, PlanExecutionMutation,
-    PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeStore,
-    ThreadActivationStatus,
+    NewPlanExecution, ObjectiveMutation, ObjectiveStatus, ObjectiveWaitCondition,
+    PlanEvaluationCommit, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
+    PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeStore, ThreadActivationStatus,
 };
+use crate::objective::ObjectiveSupervisor;
+use crate::orchestrator::context::{ContextCommit, ContextEngine};
 use crate::sexpr_eval::{
     decode_infer_result, decode_infer_result_with_admission, InferResultKind, PlanAdvance,
     PlanEffect, PlanMachine, Program, ProgramValueProvenance,
@@ -186,11 +189,31 @@ pub struct PlanReconciliationReport {
 pub struct PlanExecutionCoordinator {
     store: Arc<dyn RuntimeStore>,
     registry: Arc<Registry>,
+    context_engine: Option<Arc<ContextEngine>>,
+    objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
 }
 
 impl PlanExecutionCoordinator {
     pub fn new(store: Arc<dyn RuntimeStore>, registry: Arc<Registry>) -> Self {
-        Self { store, registry }
+        Self {
+            store,
+            registry,
+            context_engine: None,
+            objective_supervisor: None,
+        }
+    }
+
+    pub fn with_context_engine(mut self, context_engine: Arc<ContextEngine>) -> Self {
+        self.context_engine = Some(context_engine);
+        self
+    }
+
+    pub fn with_objective_supervisor(
+        mut self,
+        objective_supervisor: Arc<ObjectiveSupervisor>,
+    ) -> Self {
+        self.objective_supervisor = Some(objective_supervisor);
+        self
     }
 
     pub fn store(&self) -> &Arc<dyn RuntimeStore> {
@@ -748,43 +771,344 @@ impl PlanExecutionCoordinator {
                 };
                 Ok(crate::yao::reference_value(kind, event_id))
             }
-            "objective.report" | "objective.propose-wait" => {
+            "objective.report" => {
                 self.require_current_objective_ref(plan, arguments, "objective")?;
-                if operation == "objective.report" {
-                    if let Some(evidence) = arguments.get("evidence") {
-                        let evidence = evidence
-                            .as_array()
-                            .ok_or("objective.report evidence 必须是 Ref<Evidence> 列表")?;
-                        for reference in evidence {
-                            self.require_committed_reference_in_context(
-                                plan, reference, "Evidence",
-                            )
+                if let Some(evidence) = arguments.get("evidence") {
+                    let evidence = evidence
+                        .as_array()
+                        .ok_or("objective.report evidence 必须是 Ref<Evidence> 列表")?;
+                    for reference in evidence {
+                        self.require_committed_reference_in_context(plan, reference, "Evidence")
                             .await?;
-                        }
                     }
                 }
-                Ok(JsonValue::Null)
+                let objective = self.authorized_objective(plan).await?;
+                Ok(objective_transition_result(
+                    event_id,
+                    "recorded",
+                    &objective,
+                    objective.revision,
+                    serde_json::json!({
+                        "progress": arguments.get("progress").cloned().unwrap_or(JsonValue::Null),
+                        "evidence": arguments.get("evidence").cloned().unwrap_or_else(|| JsonValue::Array(Vec::new())),
+                    }),
+                ))
+            }
+            "objective.propose-wait" => {
+                self.require_current_objective_ref(plan, arguments, "objective")?;
+                self.apply_objective_wait_proposal(plan, event_id, arguments)
+                    .await
             }
             "objective.propose-completion" => {
                 self.require_current_objective_ref(plan, arguments, "objective")?;
                 self.require_event_ref_in_context(plan, arguments, "outcome", "Outcome")
                     .await?;
-                Ok(JsonValue::Null)
+                self.apply_objective_completion_proposal(plan, event_id, arguments)
+                    .await
             }
             "context.propose" => {
                 let transaction = arguments
                     .get("transaction")
                     .ok_or("context.propose 缺少 transaction 参数")?;
-                if transaction.is_null() {
-                    return Err("context.propose transaction 不能是 nil".to_string());
+                let transaction = crate::yao::context_transaction_view(transaction)
+                    .ok_or("context.propose transaction 不是合法 ContextTransaction")?;
+                let (kind, context_id) = crate::yao::reference_view(transaction.context)
+                    .ok_or("ContextTransaction context 不是有效 Ref<Context>")?;
+                if kind != "Context" || context_id != plan.context_id {
+                    return Err(
+                        "ContextTransaction Ref 不属于当前 Plan 的 Context authority".to_string(),
+                    );
                 }
-                Ok(serde_json::json!({
-                    "proposal_id": event_id,
-                    "status": "submitted",
-                }))
+                self.apply_context_proposal(plan, event_id, transaction.canonical_source)
+                    .await
             }
             other => Err(format!("未知 Morphz Host operation '{other}'")),
         }
+    }
+
+    async fn apply_context_proposal(
+        &self,
+        plan: &PlanExecutionRecord,
+        proposal_id: &str,
+        transaction: &str,
+    ) -> Result<JsonValue, String> {
+        let context_engine = self
+            .context_engine
+            .as_ref()
+            .ok_or("Runtime 没有配置 Context Authority，不能结算 context.propose")?;
+        let transaction_id = format!("{proposal_id}:context");
+
+        if let Some(existing) = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(transaction_id.clone()),
+                context_id: Some(plan.context_id.clone()),
+                top_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .next()
+        {
+            if existing.actor != "Agent-Context"
+                || existing.topic != "chat/context_tx_committed"
+                || existing
+                    .payload
+                    .get("context_id")
+                    .and_then(JsonValue::as_str)
+                    != Some(plan.context_id.as_str())
+                || existing
+                    .payload
+                    .get("session_id")
+                    .and_then(JsonValue::as_str)
+                    != Some(plan.session_id.as_str())
+            {
+                return Err(format!(
+                    "Yao Context transaction identity '{}' 已被不同因果内容占用",
+                    transaction_id
+                ));
+            }
+            return context_commit_event_result(proposal_id, &existing);
+        }
+
+        let mut protected = BTreeSet::new();
+        if let Some(activation) = self
+            .store
+            .get_thread_activation(&plan.activation_id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            if !activation.root_turn_id.is_empty() {
+                protected.insert(activation.root_turn_id);
+            }
+        }
+
+        match context_engine
+            .apply_context_transaction_protecting_as_principal_with_id(
+                &plan.context_id,
+                &plan.session_id,
+                plan.initiating_principal_id.as_deref(),
+                transaction,
+                &protected,
+                &transaction_id,
+            )
+            .await
+        {
+            Ok(commit) => Ok(context_commit_result(proposal_id, &commit)),
+            Err(error) => {
+                let detail = error.to_string();
+                let status = if detail.contains("冲突") || detail.contains("base-version") {
+                    "conflict"
+                } else {
+                    "rejected"
+                };
+                Ok(context_noncommit_result(proposal_id, status, detail))
+            }
+        }
+    }
+
+    async fn authorized_objective(
+        &self,
+        plan: &PlanExecutionRecord,
+    ) -> Result<crate::memory::ObjectiveRecord, String> {
+        let objective_id = plan
+            .objective_id
+            .as_deref()
+            .ok_or("当前 Plan 没有 Objective authority")?;
+        let objective = self
+            .store
+            .get_objective(objective_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Objective '{objective_id}' 不存在"))?;
+        if objective.context_id != plan.context_id
+            || objective.coordinator_session_id != plan.session_id
+            || objective.agent_id != plan.agent_id
+            || objective.initiating_principal_id != plan.initiating_principal_id
+        {
+            return Err(format!(
+                "Objective '{}' 越过当前 Plan 的 Agent/Context/Session/Principal authority",
+                objective.id
+            ));
+        }
+        if objective.active_evaluation_id.as_deref() != plan.objective_evaluation_id.as_deref() {
+            return Err(format!(
+                "Objective '{}' 的当前 Evaluation 不属于此 Plan",
+                objective.id
+            ));
+        }
+        Ok(objective)
+    }
+
+    async fn apply_objective_wait_proposal(
+        &self,
+        plan: &PlanExecutionRecord,
+        proposal_id: &str,
+        arguments: &serde_json::Map<String, JsonValue>,
+    ) -> Result<JsonValue, String> {
+        let supervisor = self
+            .objective_supervisor
+            .as_ref()
+            .ok_or("Runtime 没有配置 Objective Authority，不能结算 objective.propose-wait")?;
+        let objective = self.authorized_objective(plan).await?;
+        let condition: ObjectiveWaitCondition = serde_json::from_value(
+            arguments
+                .get("condition")
+                .cloned()
+                .ok_or("objective.propose-wait 缺少 condition")?,
+        )
+        .map_err(|error| format!("objective.propose-wait condition 无效: {error}"))?;
+        let reason = arguments
+            .get("reason")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or("objective.propose-wait reason 必须是非空字符串")?;
+        if reason.chars().count() > 10_000 {
+            return Err("objective.propose-wait reason 超过 10,000 字符上限".to_string());
+        }
+
+        if objective.status == ObjectiveStatus::Active
+            && objective.wait_condition.as_ref() == Some(&condition)
+            && objective.status_reason.as_deref() == Some(reason)
+        {
+            return Ok(objective_transition_result(
+                proposal_id,
+                "committed",
+                &objective,
+                objective.revision.saturating_sub(1),
+                serde_json::json!({"wait_condition": condition, "replayed": true}),
+            ));
+        }
+
+        supervisor
+            .validate_wait_condition(&objective, &condition)
+            .await
+            .map_err(|error| error.to_string())?;
+        let before_revision = objective.revision;
+        let mutation = supervisor
+            .update_state(
+                &objective.id,
+                before_revision,
+                ObjectiveStatus::Active,
+                Some(condition.clone()),
+                Some(reason),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(objective_mutation_result(
+            proposal_id,
+            before_revision,
+            mutation,
+            serde_json::json!({"wait_condition": condition}),
+        ))
+    }
+
+    async fn apply_objective_completion_proposal(
+        &self,
+        plan: &PlanExecutionRecord,
+        proposal_id: &str,
+        arguments: &serde_json::Map<String, JsonValue>,
+    ) -> Result<JsonValue, String> {
+        let supervisor = self
+            .objective_supervisor
+            .as_ref()
+            .ok_or("Runtime 没有配置 Objective Authority，不能结算 objective.propose-completion")?;
+        let objective = self.authorized_objective(plan).await?;
+        let outcome_ref = arguments
+            .get("outcome")
+            .ok_or("objective.propose-completion 缺少 outcome")?;
+        let (_, outcome_id) = crate::yao::reference_view(outcome_ref)
+            .ok_or("objective.propose-completion outcome 不是有效 Ref<Outcome>")?;
+        let outcome_event = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(outcome_id.to_string()),
+                context_id: Some(plan.context_id.clone()),
+                top_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|event| event.id == outcome_id)
+            .ok_or_else(|| format!("Outcome Event '{outcome_id}' 不存在"))?;
+        let candidate_value = outcome_event
+            .payload
+            .get("arguments")
+            .and_then(JsonValue::as_object)
+            .and_then(|arguments| arguments.get("candidate"))
+            .ok_or_else(|| format!("Outcome Event '{outcome_id}' 缺少 candidate"))?;
+        let candidate = crate::yao::outcome_candidate_view(candidate_value)
+            .ok_or_else(|| format!("Outcome Event '{outcome_id}' candidate 已损坏"))?;
+        if candidate.status != "succeeded" {
+            return Ok(objective_transition_result(
+                proposal_id,
+                "rejected",
+                &objective,
+                objective.revision,
+                serde_json::json!({
+                    "message": "只有 succeeded Outcome 可以提出 Objective completion",
+                    "outcome_id": outcome_id,
+                    "outcome_status": candidate.status,
+                }),
+            ));
+        }
+        let evidence_refs = candidate
+            .evidence
+            .iter()
+            .map(|reference| {
+                crate::yao::reference_view(reference)
+                    .map(|(_, id)| id.to_string())
+                    .ok_or("Outcome candidate 包含无效 Evidence Ref".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let reason = match candidate.value {
+            JsonValue::String(value) if !value.trim().is_empty() => value.trim().to_string(),
+            value => serde_json::to_string(value)
+                .map_err(|error| format!("Outcome value 无法序列化: {error}"))?,
+        };
+        let evaluation_id = plan
+            .objective_evaluation_id
+            .as_deref()
+            .ok_or("Objective completion Plan 缺少 objective_evaluation_id")?;
+        let activation_id = canonical_plan_activation_id(&plan.activation_id);
+
+        if objective.completion_intent.as_ref().is_some_and(|intent| {
+            intent.evaluation_id == evaluation_id
+                && intent.activation_id == activation_id
+                && intent.reason == reason
+                && intent.evidence_refs == evidence_refs
+        }) {
+            return Ok(objective_transition_result(
+                proposal_id,
+                "completion_prepared",
+                &objective,
+                objective.revision.saturating_sub(1),
+                serde_json::json!({"outcome_id": outcome_id, "replayed": true}),
+            ));
+        }
+
+        let before_revision = objective.revision;
+        let mutation = supervisor
+            .prepare_completion(
+                &objective.id,
+                before_revision,
+                evaluation_id,
+                activation_id,
+                &reason,
+                evidence_refs,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(objective_mutation_result_with_status(
+            proposal_id,
+            before_revision,
+            mutation,
+            "completion_prepared",
+            serde_json::json!({"outcome_id": outcome_id}),
+        ))
     }
 
     fn require_current_objective_ref(
@@ -1985,6 +2309,132 @@ impl PlanExecutionCoordinator {
     }
 }
 
+fn context_commit_result(proposal_id: &str, commit: &ContextCommit) -> JsonValue {
+    serde_json::json!({
+        "status": "committed",
+        "proposal_id": proposal_id,
+        "transaction_id": commit.transaction_id,
+        "before_revision": commit.before_version,
+        "after_revision": commit.after_version,
+        "detail": {
+            "reason": commit.reason,
+            "token_effect": commit.token_effect,
+            "changes": commit.changes,
+        },
+    })
+}
+
+fn context_commit_event_result(proposal_id: &str, event: &Event) -> Result<JsonValue, String> {
+    let required = |name: &str| {
+        event
+            .payload
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("Context commit Event '{}' 缺少 '{name}'", event.id))
+    };
+    Ok(serde_json::json!({
+        "status": "committed",
+        "proposal_id": proposal_id,
+        "transaction_id": event.id,
+        "before_revision": required("before_version")?,
+        "after_revision": required("after_version")?,
+        "detail": {
+            "reason": event.payload.get("reason").cloned().unwrap_or(JsonValue::Null),
+            "token_effect": event.payload.get("token_effect").cloned().unwrap_or(JsonValue::Null),
+            "changes": event.payload.get("changes").cloned().unwrap_or_else(|| JsonValue::Array(Vec::new())),
+            "replayed": true,
+        },
+    }))
+}
+
+fn context_noncommit_result(proposal_id: &str, status: &str, message: String) -> JsonValue {
+    serde_json::json!({
+        "status": status,
+        "proposal_id": proposal_id,
+        "transaction_id": JsonValue::Null,
+        "before_revision": JsonValue::Null,
+        "after_revision": JsonValue::Null,
+        "detail": {"message": message},
+    })
+}
+
+fn canonical_plan_activation_id(activation_id: &str) -> &str {
+    activation_id
+        .split_once("_response_retry_")
+        .map(|(base, _)| base)
+        .unwrap_or(activation_id)
+}
+
+fn objective_transition_result(
+    proposal_id: &str,
+    status: &str,
+    objective: &crate::memory::ObjectiveRecord,
+    before_revision: u64,
+    detail: JsonValue,
+) -> JsonValue {
+    serde_json::json!({
+        "status": status,
+        "proposal_id": proposal_id,
+        "objective_id": objective.id,
+        "before_revision": before_revision,
+        "after_revision": objective.revision,
+        "objective_status": objective.status.as_str(),
+        "detail": detail,
+    })
+}
+
+fn objective_mutation_result(
+    proposal_id: &str,
+    before_revision: u64,
+    mutation: ObjectiveMutation,
+    detail: JsonValue,
+) -> JsonValue {
+    objective_mutation_result_with_status(
+        proposal_id,
+        before_revision,
+        mutation,
+        "committed",
+        detail,
+    )
+}
+
+fn objective_mutation_result_with_status(
+    proposal_id: &str,
+    before_revision: u64,
+    mutation: ObjectiveMutation,
+    committed_status: &str,
+    detail: JsonValue,
+) -> JsonValue {
+    match mutation {
+        ObjectiveMutation::Updated(updated) => objective_transition_result(
+            proposal_id,
+            committed_status,
+            &updated,
+            before_revision,
+            detail,
+        ),
+        ObjectiveMutation::Conflict { current } => objective_transition_result(
+            proposal_id,
+            "conflict",
+            &current,
+            before_revision,
+            serde_json::json!({
+                "message": "Objective revision conflict; re-evaluate from the current authority view",
+                "requested_detail": detail,
+            }),
+        ),
+        ObjectiveMutation::NotFound => serde_json::json!({
+            "status": "not_found",
+            "proposal_id": proposal_id,
+            "objective_id": JsonValue::Null,
+            "before_revision": before_revision,
+            "after_revision": JsonValue::Null,
+            "objective_status": "not_found",
+            "detail": detail,
+        }),
+    }
+}
+
 fn host_event_class(operation: &str) -> (&'static str, &'static str) {
     match operation {
         "evidence.commit" => ("evidence", "runtime/yao/evidence"),
@@ -2688,20 +3138,23 @@ fn updated_or_conflict(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Event, TYPE_TOOL_OUTPUT};
+    use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT};
     use crate::execution_target::DEFAULT_EXECUTION_TARGET_ID;
     use crate::llm::ToolDefinition;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         ActivationStore, EventStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobStore,
-        ExecutionJobTerminal, ExecutionRetrySafety, NewCognitiveContext, NewSession, NewThread,
-        NewThreadActivation, NewThreadSignal, PlanExecutionStore, SessionDirectoryStore,
-        SessionMountKind, ThreadActivationMutation, ThreadKind, ThreadStore,
+        ExecutionJobTerminal, ExecutionRetrySafety, NewCognitiveContext, NewObjective, NewSession,
+        NewThread, NewThreadActivation, NewThreadSignal, ObjectiveStore, PlanExecutionStore,
+        SessionDirectoryStore, SessionMountKind, ThreadActivationMutation, ThreadKind, ThreadStore,
+        TimerStore,
     };
+    use crate::objective::ObjectiveEvaluationRegistry;
     use crate::sexpr_eval::{
         admit_program_value_candidate, validate, AllowList, PlanProgramValue,
         ProgramValueProvenance,
     };
+    use crate::timer::TimerEngine;
     use crate::tool::Tool;
     use chrono::Duration;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -2936,6 +3389,326 @@ mod tests {
             PlanDriveReceipt::Succeeded { value, .. } => assert_eq!(value, first),
             other => panic!("expected completed host Plan, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn typed_context_proposal_commits_once_and_recovers_the_commit_window() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let program = validate(
+            r#"(eval
+                 (context.propose
+                   (context-transaction
+                     (context $runtime.context)
+                     (transaction
+                       (context-tx
+                         (base-version 0)
+                         (reason "Yao typed transaction")
+                         (create yao-fact (fact durable)))))))"#,
+            &registry,
+            &AllowList::new(std::iter::empty::<&str>()),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let event_store: Arc<dyn EventStore> = store.clone();
+        let context_engine = Arc::new(ContextEngine::new(
+            event_store,
+            crate::config::OrchestratorConfig::default(),
+        ));
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry)
+            .with_context_engine(context_engine);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let mut machine: PlanMachine = serde_json::from_value(queued.state_json.clone()).unwrap();
+        let effect = match machine.advance(&coordinator.registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Host { .. }) => effect,
+            other => panic!("expected context.propose Host boundary, got {other:?}"),
+        };
+        let PlanEffect::Host { arguments, .. } = &effect else {
+            unreachable!()
+        };
+        let transaction =
+            crate::yao::context_transaction_view(arguments.get("transaction").unwrap()).unwrap();
+        let proposal_id = deterministic_plan_effect_id(&queued.id, effect.sequence()).unwrap();
+
+        // Call the Authority settlement without writing the outer Host receipt.
+        // The second call models a crash after Context commit and must recover
+        // the existing deterministic transaction rather than applying it twice.
+        let first = coordinator
+            .apply_context_proposal(&queued, &proposal_id, transaction.canonical_source)
+            .await
+            .unwrap();
+        let recovered = coordinator
+            .apply_context_proposal(&queued, &proposal_id, transaction.canonical_source)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::yao::structural_record_field(&first, "status"),
+            None,
+            "Authority settlement returns raw host transport before typed normalization"
+        );
+        assert_eq!(first["status"], "committed");
+        assert_eq!(recovered["status"], "committed");
+        assert_eq!(first["transaction_id"], recovered["transaction_id"]);
+        assert_eq!(first["after_revision"], 1);
+        assert_eq!(recovered["after_revision"], 1);
+        assert_eq!(recovered["detail"]["replayed"], true);
+
+        let transaction_id = first["transaction_id"].as_str().unwrap();
+        let events = store
+            .query(QueryFilter {
+                event_id: Some(transaction_id.to_string()),
+                context_id: Some(queued.context_id.clone()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["after_version"], 1);
+
+        let normalized = coordinator
+            .execute_host_effect(&queued, &effect)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::yao::structural_record_field(&normalized, "status"),
+            Some(&JsonValue::String("committed".to_string()))
+        );
+        assert_eq!(
+            crate::yao::structural_record_field(&normalized, "after_revision"),
+            Some(&JsonValue::from(1))
+        );
+    }
+
+    #[tokio::test]
+    async fn objective_wait_proposal_uses_authority_and_replays_without_a_second_transition() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let mut route = seed_route(&store).await;
+        let objective = store
+            .create_objective(NewObjective {
+                id: "yao-objective-wait".to_string(),
+                agent_id: route.agent_id.clone(),
+                context_id: route.context_id.clone(),
+                coordinator_session_id: route.session_id.clone(),
+                delivery_session_id: route.session_id.clone(),
+                parent_objective_id: None,
+                source_event_id: "yao-objective-source".to_string(),
+                initiating_principal_id: route.initiating_principal_id.clone(),
+                stated_objective: "verify applied Yao Objective transitions".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let evaluation_id = "yao-objective-evaluation";
+        let claimed = match store
+            .claim_objective_evaluation(
+                &objective.id,
+                objective.revision,
+                evaluation_id,
+                Utc::now() + Duration::minutes(10),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(updated) => updated,
+            other => panic!("expected claimed Objective, got {other:?}"),
+        };
+        route.objective_id = Some(claimed.id.clone());
+        route.objective_evaluation_id = Some(evaluation_id.to_string());
+
+        let objective_store: Arc<dyn ObjectiveStore> = store.clone();
+        let audit_store: Arc<dyn EventStore> = store.clone();
+        let timer_store: Arc<dyn TimerStore> = store.clone();
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            objective_store,
+            audit_store,
+            Arc::new(InMemoryEventBus::new()),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(TimerEngine::new(timer_store)),
+            std::time::Duration::from_secs(600),
+        ));
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry)
+            .with_objective_supervisor(supervisor);
+        let program = validate(
+            r#"(eval "objective transition fixture")"#,
+            &coordinator.registry,
+            &AllowList::new(std::iter::empty::<&str>()),
+        )
+        .unwrap();
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let proposal_id = "yao-objective-wait-proposal";
+        let arguments = serde_json::Map::from_iter([
+            (
+                "objective".to_string(),
+                crate::yao::reference_value("Objective", &claimed.id),
+            ),
+            (
+                "condition".to_string(),
+                serde_json::json!({"kind": "user_input", "session_id": queued.session_id}),
+            ),
+            (
+                "reason".to_string(),
+                JsonValue::String("waiting for an explicit user decision".to_string()),
+            ),
+        ]);
+
+        let first = coordinator
+            .apply_objective_wait_proposal(&queued, proposal_id, &arguments)
+            .await
+            .unwrap();
+        let recovered = coordinator
+            .apply_objective_wait_proposal(&queued, proposal_id, &arguments)
+            .await
+            .unwrap();
+        assert_eq!(first["status"], "committed");
+        assert_eq!(recovered["status"], "committed");
+        assert_eq!(recovered["detail"]["replayed"], true);
+        assert_eq!(first["after_revision"], recovered["after_revision"]);
+        let settled = store.get_objective(&claimed.id).await.unwrap().unwrap();
+        assert_eq!(settled.revision, claimed.revision + 1);
+        assert_eq!(settled.status, ObjectiveStatus::Active);
+        assert_eq!(
+            settled.wait_condition,
+            Some(ObjectiveWaitCondition::UserInput {
+                session_id: queued.session_id,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn objective_completion_proposal_consumes_committed_outcome_and_replays_intent() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let mut route = seed_route(&store).await;
+        let objective = store
+            .create_objective(NewObjective {
+                id: "yao-objective-completion".to_string(),
+                agent_id: route.agent_id.clone(),
+                context_id: route.context_id.clone(),
+                coordinator_session_id: route.session_id.clone(),
+                delivery_session_id: route.session_id.clone(),
+                parent_objective_id: None,
+                source_event_id: "yao-objective-completion-source".to_string(),
+                initiating_principal_id: route.initiating_principal_id.clone(),
+                stated_objective: "verify applied Yao Objective completion".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let evaluation_id = "yao-objective-completion-evaluation";
+        let claimed = match store
+            .claim_objective_evaluation(
+                &objective.id,
+                objective.revision,
+                evaluation_id,
+                Utc::now() + Duration::minutes(10),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(updated) => updated,
+            other => panic!("expected claimed Objective, got {other:?}"),
+        };
+        route.objective_id = Some(claimed.id.clone());
+        route.objective_evaluation_id = Some(evaluation_id.to_string());
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            store.clone() as Arc<dyn ObjectiveStore>,
+            store.clone() as Arc<dyn EventStore>,
+            Arc::new(InMemoryEventBus::new()),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(TimerEngine::new(store.clone() as Arc<dyn TimerStore>)),
+            std::time::Duration::from_secs(600),
+        ));
+        let coordinator =
+            PlanExecutionCoordinator::new(store.clone() as Arc<dyn RuntimeStore>, registry)
+                .with_objective_supervisor(supervisor);
+        let program = validate(
+            r#"(eval "objective completion fixture")"#,
+            &coordinator.registry,
+            &AllowList::new(std::iter::empty::<&str>()),
+        )
+        .unwrap();
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let outcome_id = "yao-objective-completion-outcome";
+        let candidate = serde_json::json!({"$yao": {
+            "kind": "outcome_candidate",
+            "status": "succeeded",
+            "value": "all declared work is complete",
+            "evidence": []
+        }});
+        store
+            .append(Event::new(
+                outcome_id.to_string(),
+                "Runtime-Yao".to_string(),
+                "outcome".to_string(),
+                "runtime/yao/outcome".to_string(),
+                serde_json::json!({
+                    "operation": "outcome.commit",
+                    "arguments": {"candidate": candidate},
+                    "context_id": queued.context_id,
+                    "session_id": queued.session_id,
+                    "objective_id": claimed.id,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        let arguments = serde_json::Map::from_iter([
+            (
+                "objective".to_string(),
+                crate::yao::reference_value("Objective", &claimed.id),
+            ),
+            (
+                "outcome".to_string(),
+                crate::yao::reference_value("Outcome", outcome_id),
+            ),
+        ]);
+        let first = coordinator
+            .apply_objective_completion_proposal(&queued, "completion-proposal", &arguments)
+            .await
+            .unwrap();
+        let recovered = coordinator
+            .apply_objective_completion_proposal(&queued, "completion-proposal", &arguments)
+            .await
+            .unwrap();
+        assert_eq!(first["status"], "completion_prepared");
+        assert_eq!(recovered["status"], "completion_prepared");
+        assert_eq!(recovered["detail"]["replayed"], true);
+        assert_eq!(first["after_revision"], recovered["after_revision"]);
+        let settled = store.get_objective(&claimed.id).await.unwrap().unwrap();
+        assert_eq!(settled.revision, claimed.revision + 1);
+        assert_eq!(
+            settled.completion_intent.as_ref().unwrap().reason,
+            "all declared work is complete"
+        );
     }
 
     #[tokio::test]

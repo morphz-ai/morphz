@@ -33,6 +33,15 @@ pub struct OutcomeCandidateView<'a> {
     pub evidence: &'a [JsonValue],
 }
 
+/// Read-only view over a source-constructed, sealed Context transaction.
+/// The Runtime profile remains responsible for validating the embedded
+/// `context-tx` grammar and for authorizing or committing the transaction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextTransactionView<'a> {
+    pub context: &'a JsonValue,
+    pub canonical_source: &'a str,
+}
+
 impl std::fmt::Display for EvalFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -158,6 +167,16 @@ pub fn evaluate_pure(
                     .iter()
                     .map(|reference| evaluate_pure(reference, environment, definitions))
                     .collect::<Result<Vec<_>, _>>()?,
+            }
+        })),
+        HirKind::ContextTransaction {
+            context,
+            canonical_source,
+        } => Ok(json!({
+            YAO_TAG: {
+                "kind": "context_transaction",
+                "context": evaluate_pure(context, environment, definitions)?,
+                "canonical_source": canonical_source,
             }
         })),
         HirKind::Get { value, field } => {
@@ -371,6 +390,7 @@ pub fn decode_value(
         Type::Result { ok, error } => decode_result(ok, error, value, definitions, span),
         Type::EvidenceCandidate if evidence_candidate_view(&value).is_some() => Ok(value),
         Type::OutcomeCandidate if outcome_candidate_view(&value).is_some() => Ok(value),
+        Type::ContextTransaction if context_transaction_view(&value).is_some() => Ok(value),
         Type::Named(name) => decode_named(name, value, definitions, span),
         Type::Ref(kind) => {
             let Some(tag) = yao_object(&value) else {
@@ -745,6 +765,38 @@ pub fn outcome_candidate_view(value: &JsonValue) -> Option<OutcomeCandidateView<
     })
 }
 
+/// Decodes the canonical Context transaction representation. Exact shape,
+/// Context reference kind, parseability, root name, and canonical spelling
+/// are checked because persisted HIR and machine state are untrusted input.
+pub fn context_transaction_view(value: &JsonValue) -> Option<ContextTransactionView<'_>> {
+    if value.as_object()?.len() != 1 {
+        return None;
+    }
+    let tag = yao_object(value)?;
+    if tag.len() != 3 || tag.get("kind")?.as_str()? != "context_transaction" {
+        return None;
+    }
+    let context = tag.get("context")?;
+    if reference_view(context).map(|(kind, _)| kind) != Some("Context") {
+        return None;
+    }
+    let canonical_source = tag.get("canonical_source")?.as_str()?;
+    let expression = crate::parse_one(canonical_source, crate::ParseLimits::default()).ok()?;
+    if expression
+        .as_list()?
+        .first()
+        .and_then(crate::Expr::as_symbol)
+        != Some("context-tx")
+        || crate::canonical_source(&expression) != canonical_source
+    {
+        return None;
+    }
+    Some(ContextTransactionView {
+        context,
+        canonical_source,
+    })
+}
+
 /// Constructs the canonical `Option<Ref<K>>` representation used by host
 /// evaluation environments.
 pub fn optional_reference_value(kind: &str, id: Option<&str>) -> JsonValue {
@@ -1108,6 +1160,52 @@ mod tests {
             span,
         )
         .is_err());
+    }
+
+    #[test]
+    fn evaluates_and_revalidates_sealed_context_transactions() {
+        let source = r#"(eval
+          (context-transaction
+            (context $runtime.context)
+            (transaction
+              (context-tx
+                (base-version 3)
+                (create durable-fact (fact true))))))"#;
+        let profile = StaticProfile {
+            bindings: BTreeMap::from([(
+                "runtime".into(),
+                Type::StructuralRecord(BTreeMap::from([(
+                    "context".into(),
+                    Type::Ref("Context".into()),
+                )])),
+            )]),
+            ..StaticProfile::default()
+        };
+        let program = analyze(source, &profile, AnalysisLimits::default()).unwrap();
+        let mut environment = HashMap::from([(
+            "runtime".to_string(),
+            structural_record_value([("context".to_string(), reference_value("Context", "ctx-1"))]),
+        )]);
+        let value = evaluate_pure(&program.body, &mut environment, &program.types).unwrap();
+        let view = context_transaction_view(&value).unwrap();
+        assert_eq!(reference_view(view.context), Some(("Context", "ctx-1")));
+        assert_eq!(
+            view.canonical_source,
+            "(context-tx (base-version 3) (create durable-fact (fact true)))"
+        );
+        let span = SourceSpan::empty(crate::SourceLocation::start());
+        assert!(decode_value(
+            &Type::ContextTransaction,
+            value.clone(),
+            &BTreeMap::new(),
+            span,
+        )
+        .is_ok());
+
+        let mut forged = value;
+        forged[YAO_TAG]["canonical_source"] =
+            json!(" (context-tx (base-version 3) (create durable-fact (fact true)))");
+        assert!(decode_value(&Type::ContextTransaction, forged, &BTreeMap::new(), span,).is_err());
     }
 
     #[test]

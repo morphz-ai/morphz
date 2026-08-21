@@ -46,6 +46,7 @@ pub mod sexpr_eval;
 pub mod sexpr_vm_contract;
 pub mod timer;
 pub mod tool;
+pub mod trajectory;
 pub mod tui;
 pub mod web;
 

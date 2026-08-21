@@ -26,8 +26,9 @@ use morphz::runtime::{
 use morphz::sdk::{
     AuthorizeExecutionTargetCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
     ExactHarnessRef, ExecutionJobQuery, MorphzSdk, ObjectiveRequestOrigin, SdkErrorCode,
-    SendMessageCommand,
+    SendMessageCommand, TrajectoryExportRequest,
 };
+use morphz::trajectory::{AgentTrajectoryBundle, TrajectoryRights};
 use morphz::web::{Server, ServerDefaults};
 use std::io::IsTerminal;
 use std::io::{BufRead, Write};
@@ -1090,11 +1091,107 @@ async fn dispatch_runtime_command(
         "objective pause" => pause_objective_command(&runtime, &invocation).await,
         "objective resume" => resume_objective_command(&runtime, &invocation).await,
         "objective cancel" => cancel_objective_command(&runtime, &invocation).await,
+        "trajectory export" => export_agent_trajectory(&runtime, &invocation).await,
+        "trajectory verify" => verify_agent_trajectory(&runtime, &invocation),
+        "trajectory episode" => derive_training_episode_command(&runtime, &invocation),
         "job" | "job list" => list_jobs(&runtime, &invocation).await,
         "job cancel" => cancel_job(&runtime, &invocation).await,
         "doctor" => doctor(&runtime, &app_config),
         command => Err(format!("命令尚未实现: {command}").into()),
     }
+}
+
+async fn export_agent_trajectory(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let context_id = option_value(invocation, "context-id")
+        .ok_or("morphz trajectory export 缺少 --context-id")?;
+    let max_events = option_value(invocation, "max-events")
+        .unwrap_or("10000")
+        .parse::<usize>()
+        .map_err(|error| format!("--max-events 无效: {error}"))?;
+    let profile = option_value(invocation, "trajectory-profile")
+        .unwrap_or("AT-Core")
+        .to_string();
+    let allow_training = switch_enabled(invocation, "allow-training")?;
+    if allow_training && profile != "AT-Training" {
+        return Err("--allow-training 只允许与 --trajectory-profile=AT-Training 一起使用".into());
+    }
+    let sdk = MorphzSdk::new(runtime.clone());
+    let bundle = sdk
+        .export_agent_trajectory(TrajectoryExportRequest {
+            context_id: context_id.to_string(),
+            objective_id: option_value(invocation, "objective-id").map(str::to_string),
+            activation_id: None,
+            start_time: None,
+            end_time: None,
+            max_events,
+            profiles: vec![profile],
+            include_payloads: true,
+            include_user_content: switch_enabled(invocation, "include-user-content")?,
+            rights: TrajectoryRights {
+                training: allow_training,
+                ..TrajectoryRights::default()
+            },
+        })
+        .await?;
+    let json = serde_json::to_string_pretty(&bundle)?;
+    if let Some(path) = option_value(invocation, "output") {
+        std::fs::write(path, format!("{json}\n"))?;
+        println!("{}", path);
+    } else {
+        println!("{json}");
+    }
+    Ok(())
+}
+
+fn verify_agent_trajectory(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let path = invocation
+        .prompt_args()
+        .first()
+        .ok_or("morphz trajectory verify 需要 FILE")?;
+    let bytes = std::fs::read(path)?;
+    let bundle: AgentTrajectoryBundle = serde_json::from_slice(&bytes)?;
+    let report = MorphzSdk::new(runtime.clone()).verify_agent_trajectory(&bundle);
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !report.valid {
+        return Err("Agent Trajectory Bundle 校验失败".into());
+    }
+    Ok(())
+}
+
+fn derive_training_episode_command(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let path = invocation
+        .prompt_args()
+        .first()
+        .ok_or("morphz trajectory episode 需要 FILE")?;
+    let bytes = std::fs::read(path)?;
+    let bundle: AgentTrajectoryBundle = serde_json::from_slice(&bytes)?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let verification = sdk.verify_agent_trajectory(&bundle);
+    if !verification.valid {
+        return Err(format!(
+            "Agent Trajectory Bundle 校验失败: {}",
+            verification.errors.join("; ")
+        )
+        .into());
+    }
+    let episode = sdk.derive_training_episode(&bundle)?;
+    let json = serde_json::to_string_pretty(&episode)?;
+    if let Some(output) = option_value(invocation, "output") {
+        std::fs::write(output, format!("{json}\n"))?;
+        println!("{}", output);
+    } else {
+        println!("{json}");
+    }
+    Ok(())
 }
 
 fn edge_credential_path(invocation: &Invocation) -> Result<PathBuf, AppError> {

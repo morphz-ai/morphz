@@ -140,6 +140,12 @@ complete Cognitive Application Manifest, multi-Harness composition, user interfa
 commercial policy, or Cognitive Application conformance claim. One HNS Package MAY realize the
 execution content of a minimal Cognitive Application without making the two terms equivalent.
 
+The candidate name **COA** and suffix `.coa` are reserved for a future Cognitive Application
+Package Profile above HNS. Such a Profile may define an Application Manifest that references one
+or more exact HNS Package identities and packages application-level Skills, Verifiers, interfaces,
+evaluation assets, domain resources, and integrations. This reservation does not define a format,
+require Runtime support, or establish a compatibility claim in Harness Core v0.1.
+
 ## 4. Control and authority boundary
 
 The following separation is normative:

@@ -5304,6 +5304,126 @@ impl MorphzRuntime {
         self.inner.store.query(filter).await
     }
 
+    /// Commit an immutable, versioned verifier fact after proving every
+    /// declared Evidence reference exists in the same Context.
+    pub async fn commit_trajectory_verifier_result(
+        &self,
+        input: crate::trajectory::CommitVerifierResult,
+    ) -> Result<Event, RuntimeError> {
+        for evidence_id in &input.evidence_refs {
+            let exists = self
+                .inner
+                .store
+                .query(QueryFilter {
+                    event_id: Some(evidence_id.clone()),
+                    context_id: Some(input.context_id.clone()),
+                    top_k: Some(1),
+                    ..QueryFilter::default()
+                })
+                .await?
+                .into_iter()
+                .any(|event| event.id == *evidence_id);
+            if !exists {
+                return Err(format!(
+                    "Verifier Result Evidence '{}' does not exist in Context '{}'",
+                    evidence_id, input.context_id
+                )
+                .into());
+            }
+        }
+        let event = crate::trajectory::verifier_result_event(&input)?;
+        self.commit_trajectory_fact(event).await
+    }
+
+    /// Commit a Reward Record as a separate interpretation of existing
+    /// Outcome/Verifier facts. It never mutates the source facts.
+    pub async fn commit_trajectory_reward_record(
+        &self,
+        input: crate::trajectory::CommitRewardRecord,
+    ) -> Result<Event, RuntimeError> {
+        for source_id in &input.sources {
+            let source = self
+                .inner
+                .store
+                .query(QueryFilter {
+                    event_id: Some(source_id.clone()),
+                    context_id: Some(input.context_id.clone()),
+                    top_k: Some(1),
+                    ..QueryFilter::default()
+                })
+                .await?
+                .into_iter()
+                .find(|event| event.id == *source_id)
+                .ok_or_else(|| {
+                    format!(
+                        "Reward source '{}' does not exist in Context '{}'",
+                        source_id, input.context_id
+                    )
+                })?;
+            if !matches!(
+                source.topic.as_str(),
+                "runtime/trajectory/verifier_result"
+                    | "runtime/yao/outcome"
+                    | "runtime/trajectory/reward"
+            ) {
+                return Err(format!(
+                    "Reward source '{}' is not an Outcome, Verifier Result, or Reward Record",
+                    source_id
+                )
+                .into());
+            }
+        }
+        let event = crate::trajectory::reward_record_event(&input)?;
+        self.commit_trajectory_fact(event).await
+    }
+
+    async fn commit_trajectory_fact(&self, event: Event) -> Result<Event, RuntimeError> {
+        if let Some(existing) = self
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(event.id.clone()),
+                context_id: event
+                    .payload
+                    .get("context_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                top_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await?
+            .into_iter()
+            .next()
+        {
+            if existing.actor != event.actor
+                || existing.event_type != event.event_type
+                || existing.topic != event.topic
+                || existing.payload != event.payload
+            {
+                return Err(format!(
+                    "Trajectory fact identity '{}' is occupied by different content",
+                    event.id
+                )
+                .into());
+            }
+            return Ok(existing);
+        }
+        self.inner.store.append(event.clone()).await?;
+        self.inner.bus.dispatch_persisted(event.clone()).await?;
+        Ok(self
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(event.id.clone()),
+                top_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await?
+            .into_iter()
+            .next()
+            .unwrap_or(event))
+    }
+
     pub async fn publish(&self, event: Event) -> Result<(), RuntimeError> {
         self.inner.bus.publish(event).await
     }
@@ -10161,6 +10281,97 @@ mod tests {
             .await
             .unwrap();
         assert!(sqlite.get_agent("injected-agent").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn trajectory_verifier_and_reward_facts_are_durable_idempotent_and_exportable() {
+        let database = NamedTempFile::new().unwrap();
+        let sqlite = Arc::new(
+            SqliteStore::new(database.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .store(
+                "sqlite:trajectory-loop-test",
+                Arc::clone(&sqlite) as Arc<dyn RuntimeStore>,
+            )
+            .build()
+            .await
+            .unwrap();
+        let context_id = "trajectory-loop-context";
+        let evidence = Event::new(
+            "trajectory-loop-evidence".to_string(),
+            "Runtime-Test".to_string(),
+            "evidence".to_string(),
+            "runtime/yao/evidence".to_string(),
+            serde_json::json!({"context_id": context_id})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        sqlite.append(evidence.clone()).await.unwrap();
+        let input = crate::trajectory::CommitVerifierResult {
+            context_id: context_id.to_string(),
+            session_id: None,
+            objective_id: None,
+            verifier: "runtime-test".to_string(),
+            verifier_version: "1".to_string(),
+            checked_property: "evidence exists".to_string(),
+            evidence_refs: vec![evidence.id.clone()],
+            status: "pass".to_string(),
+            output: serde_json::json!({"checked": true}),
+            producer: "Verifier-RuntimeTest".to_string(),
+        };
+        let first = runtime
+            .commit_trajectory_verifier_result(input.clone())
+            .await
+            .unwrap();
+        let replayed = runtime
+            .commit_trajectory_verifier_result(input)
+            .await
+            .unwrap();
+        assert_eq!(first.id, replayed.id);
+
+        let reward = runtime
+            .commit_trajectory_reward_record(crate::trajectory::CommitRewardRecord {
+                context_id: context_id.to_string(),
+                session_id: None,
+                objective_id: None,
+                policy: "binary-verifier".to_string(),
+                policy_version: "1".to_string(),
+                sources: vec![first.id.clone()],
+                scope: context_id.to_string(),
+                attribution_target: evidence.id.clone(),
+                signal_type: "scalar".to_string(),
+                value: serde_json::json!(1.0),
+                aggregation: "identity".to_string(),
+                producer: "RewardPolicy-RuntimeTest".to_string(),
+                timing: "retrospective".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(reward.topic, "runtime/trajectory/reward");
+        let bundle = crate::trajectory::AgentTrajectoryExporter::export(
+            &runtime,
+            crate::trajectory::TrajectoryExportRequest {
+                context_id: context_id.to_string(),
+                objective_id: None,
+                activation_id: None,
+                start_time: None,
+                end_time: None,
+                max_events: 100,
+                profiles: vec!["AT-Core".to_string(), "AT-Evaluation".to_string()],
+                include_payloads: true,
+                include_user_content: false,
+                rights: crate::trajectory::TrajectoryRights::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(bundle.verifier_results.len(), 1);
+        assert_eq!(bundle.reward_records.len(), 1);
+        assert!(bundle.verify().valid);
     }
 
     #[tokio::test]

@@ -1259,6 +1259,14 @@ pub struct ContextEngine {
     capacity_metrics: ContextCapacityMetrics,
 }
 
+#[derive(Clone, Copy)]
+struct ContextTransactionAuthority<'a> {
+    acting_principal_id: Option<&'a str>,
+    allow_runtime_lifecycle_ops: bool,
+    causally_protected_ids: &'a BTreeSet<String>,
+    transaction_id: Option<&'a str>,
+}
+
 struct ContextLockGuard<'a> {
     registry: &'a DashMap<String, Weak<Mutex<()>>>,
     context_id: String,
@@ -1768,10 +1776,13 @@ impl ContextEngine {
         self.apply_context_transaction_authorized(
             context_id,
             acting_session_id,
-            None,
             transaction,
-            false,
-            &BTreeSet::new(),
+            ContextTransactionAuthority {
+                acting_principal_id: None,
+                allow_runtime_lifecycle_ops: false,
+                causally_protected_ids: &BTreeSet::new(),
+                transaction_id: None,
+            },
         )
         .await
     }
@@ -1786,10 +1797,13 @@ impl ContextEngine {
         self.apply_context_transaction_authorized(
             context_id,
             acting_session_id,
-            None,
             transaction,
-            false,
-            causally_protected_ids,
+            ContextTransactionAuthority {
+                acting_principal_id: None,
+                allow_runtime_lifecycle_ops: false,
+                causally_protected_ids,
+                transaction_id: None,
+            },
         )
         .await
     }
@@ -1805,10 +1819,42 @@ impl ContextEngine {
         self.apply_context_transaction_authorized(
             context_id,
             acting_session_id,
-            acting_principal_id,
             transaction,
-            false,
-            causally_protected_ids,
+            ContextTransactionAuthority {
+                acting_principal_id,
+                allow_runtime_lifecycle_ops: false,
+                causally_protected_ids,
+                transaction_id: None,
+            },
+        )
+        .await
+    }
+
+    /// Applies an authorized transaction under a caller-supplied immutable
+    /// identity. Durable Yao Host effects use this to close the crash window
+    /// between the Context commit and the parent Plan checkpoint.
+    pub async fn apply_context_transaction_protecting_as_principal_with_id(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        acting_principal_id: Option<&str>,
+        transaction: &str,
+        causally_protected_ids: &BTreeSet<String>,
+        transaction_id: &str,
+    ) -> Result<ContextCommit, DynError> {
+        if transaction_id.trim().is_empty() {
+            return Err("Context transaction identity 不能为空".into());
+        }
+        self.apply_context_transaction_authorized(
+            context_id,
+            acting_session_id,
+            transaction,
+            ContextTransactionAuthority {
+                acting_principal_id,
+                allow_runtime_lifecycle_ops: false,
+                causally_protected_ids,
+                transaction_id: Some(transaction_id),
+            },
         )
         .await
     }
@@ -1817,10 +1863,8 @@ impl ContextEngine {
         &self,
         context_id: &str,
         acting_session_id: &str,
-        acting_principal_id: Option<&str>,
         transaction: &str,
-        allow_runtime_lifecycle_ops: bool,
-        causally_protected_ids: &BTreeSet<String>,
+        authority: ContextTransactionAuthority<'_>,
     ) -> Result<ContextCommit, DynError> {
         const MAX_PROJECTION_CAS_RETRIES: usize = 64;
 
@@ -1832,10 +1876,8 @@ impl ContextEngine {
                 .apply_context_transaction_authorized_once(
                     context_id,
                     acting_session_id,
-                    acting_principal_id,
                     transaction,
-                    allow_runtime_lifecycle_ops,
-                    causally_protected_ids,
+                    authority,
                 )
                 .await
             {
@@ -1858,14 +1900,12 @@ impl ContextEngine {
         &self,
         context_id: &str,
         acting_session_id: &str,
-        acting_principal_id: Option<&str>,
         transaction: &str,
-        allow_runtime_lifecycle_ops: bool,
-        causally_protected_ids: &BTreeSet<String>,
+        authority: ContextTransactionAuthority<'_>,
     ) -> Result<ContextCommit, DynError> {
         let transaction_started = std::time::Instant::now();
         let mut parsed = parse_transaction(transaction)?;
-        if !allow_runtime_lifecycle_ops
+        if !authority.allow_runtime_lifecycle_ops
             && parsed.operations.iter().any(|operation| {
                 as_list(operation, "context operation")
                     .ok()
@@ -1889,10 +1929,10 @@ impl ContextEngine {
                 format!("Context transaction 仍包含未解析短引用 '{unresolved}'，拒绝提交").into(),
             );
         }
-        reject_causally_protected_retirements(&parsed, causally_protected_ids)?;
+        reject_causally_protected_retirements(&parsed, authority.causally_protected_ids)?;
         let current = self.load_current_mind(context_id, None).await?;
         let requested_base_version = parsed.base_version;
-        if allow_runtime_lifecycle_ops && current.version != requested_base_version {
+        if authority.allow_runtime_lifecycle_ops && current.version != requested_base_version {
             return Err(Box::new(RuntimeContextVersionConflict {
                 requested: requested_base_version,
                 current: current.version,
@@ -1923,7 +1963,7 @@ impl ContextEngine {
         let observation_origins = observation_origins(&referenced_observations);
         let formation = FrameFormationContext {
             enabled: true,
-            formed_principal_id: acting_principal_id,
+            formed_principal_id: authority.acting_principal_id,
             formed_session_id: Some(acting_session_id),
             observation_origins: Some(&observation_origins),
         };
@@ -1952,10 +1992,15 @@ impl ContextEngine {
             restored_event_ids: current.retired.difference(&next.retired).cloned().collect(),
         };
 
-        let tx_id = format!(
-            "ctx_tx_{}_{}",
-            context_id,
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        let tx_id = authority.transaction_id.map_or_else(
+            || {
+                format!(
+                    "ctx_tx_{}_{}",
+                    context_id,
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                )
+            },
+            str::to_string,
         );
         let attention_updates = self
             .prepare_session_attention_updates(context_id, acting_session_id, &parsed, &tx_id)
@@ -1965,7 +2010,10 @@ impl ContextEngine {
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(acting_session_id)),
-            ("principal_id".to_string(), json!(acting_principal_id)),
+            (
+                "principal_id".to_string(),
+                json!(authority.acting_principal_id),
+            ),
             ("frame_provenance_version".to_string(), json!(1)),
             ("transaction_id".to_string(), json!(tx_id)),
             ("transaction".to_string(), json!(&canonical_transaction)),
@@ -3429,10 +3477,13 @@ impl ContextEngine {
                 .apply_context_transaction_authorized(
                     context_id,
                     acting_session_id,
-                    None,
                     &transaction,
-                    true,
-                    &BTreeSet::new(),
+                    ContextTransactionAuthority {
+                        acting_principal_id: None,
+                        allow_runtime_lifecycle_ops: true,
+                        causally_protected_ids: &BTreeSet::new(),
+                        transaction_id: None,
+                    },
                 )
                 .await
             {
@@ -13307,10 +13358,13 @@ mod tests {
             .apply_context_transaction_authorized(
                 "retirement-race-context",
                 "retirement-race-session",
-                None,
                 "(context-tx (base-version 2) (reason runtime) (finalize-retirement old-frame 2 1 8))",
-                true,
-                &BTreeSet::new(),
+                ContextTransactionAuthority {
+                    acting_principal_id: None,
+                    allow_runtime_lifecycle_ops: true,
+                    causally_protected_ids: &BTreeSet::new(),
+                    transaction_id: None,
+                },
             )
             .await
             .unwrap_err();

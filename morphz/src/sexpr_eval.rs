@@ -656,7 +656,7 @@ impl crate::yao::AnalysisProfile for MorphzAnalysisProfile<'_> {
                     ),
                 ]),
                 required: BTreeSet::from(["objective".into(), "progress".into()]),
-                result: Type::Nil,
+                result: objective_transition_result_type(),
             },
             "objective.propose-wait" => crate::yao::ToolSignature {
                 arguments: BTreeMap::from([
@@ -665,7 +665,7 @@ impl crate::yao::AnalysisProfile for MorphzAnalysisProfile<'_> {
                     ("reason".into(), Type::String),
                 ]),
                 required: BTreeSet::from(["objective".into(), "condition".into(), "reason".into()]),
-                result: Type::Nil,
+                result: objective_transition_result_type(),
             },
             "objective.propose-completion" => crate::yao::ToolSignature {
                 arguments: BTreeMap::from([
@@ -673,12 +673,19 @@ impl crate::yao::AnalysisProfile for MorphzAnalysisProfile<'_> {
                     ("outcome".into(), Type::Ref("Outcome".into())),
                 ]),
                 required: BTreeSet::from(["objective".into(), "outcome".into()]),
-                result: Type::Nil,
+                result: objective_transition_result_type(),
             },
             "context.propose" => crate::yao::ToolSignature {
-                arguments: BTreeMap::from([("transaction".into(), Type::Json)]),
+                arguments: BTreeMap::from([("transaction".into(), Type::ContextTransaction)]),
                 required: BTreeSet::from(["transaction".into()]),
-                result: Type::Json,
+                result: Type::StructuralRecord(BTreeMap::from([
+                    ("status".into(), Type::String),
+                    ("proposal_id".into(), Type::String),
+                    ("transaction_id".into(), Type::Json),
+                    ("before_revision".into(), Type::Json),
+                    ("after_revision".into(), Type::Json),
+                    ("detail".into(), Type::Json),
+                ])),
             },
             _ => return None,
         };
@@ -734,6 +741,19 @@ fn yao_type_from_json_schema(schema: &JsonValue) -> crate::yao::Type {
         Some("object") => crate::yao::Type::Map(Box::new(crate::yao::Type::Json)),
         _ => crate::yao::Type::Json,
     }
+}
+
+fn objective_transition_result_type() -> crate::yao::Type {
+    use crate::yao::Type;
+    Type::StructuralRecord(BTreeMap::from([
+        ("status".into(), Type::String),
+        ("proposal_id".into(), Type::String),
+        ("objective_id".into(), Type::Json),
+        ("before_revision".into(), Type::Json),
+        ("after_revision".into(), Type::Json),
+        ("objective_status".into(), Type::String),
+        ("detail".into(), Type::Json),
+    ]))
 }
 
 fn runtime_environment_type() -> crate::yao::Type {

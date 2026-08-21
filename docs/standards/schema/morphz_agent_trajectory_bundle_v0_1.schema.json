@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://newvar.ai/spec/morphz-agent-trajectory-bundle-v0.1.schema.json",
+  "title": "Morphz Agent Trajectory Bundle v0.1 reference serialization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_version", "profiles", "trajectory_id", "source", "scope", "completeness",
+    "bindings", "states", "nodes", "edges", "outcomes", "verifier_results",
+    "reward_records", "transform", "disclosure", "rights", "integrity", "extensions"
+  ],
+  "properties": {
+    "spec_version": { "const": "0.1" },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["AT-Core", "AT-Evaluation", "AT-Training"] }
+    },
+    "trajectory_id": { "type": "string", "minLength": 1 },
+    "source": { "$ref": "#/$defs/source" },
+    "scope": { "$ref": "#/$defs/scope" },
+    "completeness": { "$ref": "#/$defs/completeness" },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": { "type": "string" }
+      }
+    },
+    "states": { "type": "array", "items": { "$ref": "#/$defs/state" } },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+    "outcomes": { "type": "array", "items": { "$ref": "#/$defs/outcome" } },
+    "verifier_results": { "type": "array", "items": { "$ref": "#/$defs/verifierResult" } },
+    "reward_records": { "type": "array", "items": { "$ref": "#/$defs/rewardRecord" } },
+    "transform": { "$ref": "#/$defs/transform" },
+    "disclosure": { "$ref": "#/$defs/disclosure" },
+    "rights": { "$ref": "#/$defs/rights" },
+    "integrity": { "$ref": "#/$defs/integrity" },
+    "extensions": { "type": "object" }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "exporter_version", "authority_domain"],
+      "properties": {
+        "implementation": { "type": "string", "minLength": 1 },
+        "exporter_version": { "type": "string", "minLength": 1 },
+        "authority_domain": { "type": "string", "minLength": 1 },
+        "first_sequence": { "type": "integer", "minimum": 0 },
+        "last_sequence": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_id", "selection", "event_count"],
+      "properties": {
+        "context_id": { "type": "string", "minLength": 1 },
+        "objective_id": { "type": "string", "minLength": 1 },
+        "activation_id": { "type": "string", "minLength": 1 },
+        "selection": { "type": "string", "minLength": 1 },
+        "event_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "completeness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason", "material_omissions"],
+      "properties": {
+        "status": { "enum": ["complete", "partial", "open"] },
+        "reason": { "type": "string" },
+        "material_omissions": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state_id", "context_id", "context_revision", "availability", "source_event_id"],
+      "properties": {
+        "state_id": { "type": "string", "minLength": 1 },
+        "context_id": { "type": "string", "minLength": 1 },
+        "context_revision": { "type": "integer", "minimum": 0 },
+        "availability": { "type": "string", "minLength": 1 },
+        "source_event_id": { "type": "string", "minLength": 1 },
+        "delta": {}
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id", "kind", "source_event_id", "timestamp", "actor", "authority_class",
+        "topic", "status", "external_parents"
+      ],
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "source_event_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "actor": { "type": "string" },
+        "authority_class": { "type": "string", "minLength": 1 },
+        "topic": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "state_before": { "type": "string", "minLength": 1 },
+        "state_after": { "type": "string", "minLength": 1 },
+        "external_parents": { "type": "array", "items": { "$ref": "#/$defs/externalParent" } },
+        "payload": {}
+      }
+    },
+    "externalParent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relation", "source_id", "availability"],
+      "properties": {
+        "relation": { "type": "string", "minLength": 1 },
+        "source_id": { "type": "string", "minLength": 1 },
+        "availability": { "type": "string", "minLength": 1 }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["edge_id", "from", "to", "relation"],
+      "properties": {
+        "edge_id": { "type": "string", "minLength": 1 },
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "relation": { "type": "string", "minLength": 1 }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome_id", "scope", "producer", "authority_class", "status", "terminal",
+        "evidence_refs", "asserted_at_node"
+      ],
+      "properties": {
+        "outcome_id": { "type": "string", "minLength": 1 },
+        "scope": { "type": "string", "minLength": 1 },
+        "producer": { "type": "string" },
+        "authority_class": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "terminal": { "type": "boolean" },
+        "evidence_refs": { "type": "array", "items": { "type": "string" } },
+        "asserted_at_node": { "type": "string", "minLength": 1 },
+        "value": {}
+      }
+    },
+    "verifierResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verifier_result_id", "verifier", "verifier_version", "checked_property",
+        "evidence_refs", "status", "output", "asserted_at_node"
+      ],
+      "properties": {
+        "verifier_result_id": { "type": "string", "minLength": 1 },
+        "verifier": { "type": "string", "minLength": 1 },
+        "verifier_version": { "type": "string", "minLength": 1 },
+        "checked_property": { "type": "string", "minLength": 1 },
+        "evidence_refs": { "type": "array", "items": { "type": "string" } },
+        "status": { "enum": ["pass", "fail", "indeterminate", "error", "invalidated"] },
+        "output": {},
+        "asserted_at_node": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rewardRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reward_id", "policy", "policy_version", "sources", "scope", "attribution_target",
+        "signal_type", "value", "aggregation", "producer", "created_at", "timing"
+      ],
+      "properties": {
+        "reward_id": { "type": "string", "minLength": 1 },
+        "policy": { "type": "string", "minLength": 1 },
+        "policy_version": { "type": "string", "minLength": 1 },
+        "sources": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "scope": { "type": "string", "minLength": 1 },
+        "attribution_target": { "type": "string", "minLength": 1 },
+        "signal_type": { "type": "string", "minLength": 1 },
+        "value": {},
+        "aggregation": { "type": "string", "minLength": 1 },
+        "producer": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "timing": { "enum": ["online", "retrospective"] }
+      }
+    },
+    "transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exporter", "operations"],
+      "properties": {
+        "exporter": { "type": "string", "minLength": 1 },
+        "operations": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "disclosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["private_reasoning", "user_content", "raw_event_payloads", "redacted_fields"],
+      "properties": {
+        "private_reasoning": { "type": "string", "minLength": 1 },
+        "user_content": { "type": "string", "minLength": 1 },
+        "raw_event_payloads": { "type": "string", "minLength": 1 },
+        "redacted_fields": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "rights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "retention", "local_evaluation", "hosted_evaluation", "training",
+        "redistribution_original", "redistribution_transformed"
+      ],
+      "properties": {
+        "retention": { "type": "boolean" },
+        "local_evaluation": { "type": "boolean" },
+        "hosted_evaluation": { "type": "boolean" },
+        "training": { "type": "boolean" },
+        "redistribution_original": { "type": "boolean" },
+        "redistribution_transformed": { "type": "boolean" }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "algorithm", "canonicalization"],
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "not_provided" } } },
+          "then": { "properties": { "digest": false } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "digest_provided" } } },
+          "then": { "required": ["digest"] }
+        }
+      ],
+      "properties": {
+        "status": { "enum": ["not_provided", "digest_provided"] },
+        "algorithm": { "type": "string", "minLength": 1 },
+        "canonicalization": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

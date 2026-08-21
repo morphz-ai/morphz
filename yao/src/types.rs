@@ -22,6 +22,7 @@ pub enum Type {
     },
     EvidenceCandidate,
     OutcomeCandidate,
+    ContextTransaction,
     Ref(String),
     Program {
         output: Box<Type>,

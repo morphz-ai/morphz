@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://newvar.ai/spec/morphz-training-episode-v0.1.schema.json",
+  "title": "Morphz Training Episode v0.1 reference serialization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "episode_version", "episode_id", "source_trajectory_id", "selection", "termination",
+    "transitions", "reward_refs", "rights", "integrity"
+  ],
+  "properties": {
+    "episode_version": { "const": "0.1" },
+    "episode_id": { "type": "string", "minLength": 1 },
+    "source_trajectory_id": { "type": "string", "minLength": 1 },
+    "selection": { "type": "string", "minLength": 1 },
+    "termination": { "enum": ["complete", "partial", "open"] },
+    "transitions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/transition" }
+    },
+    "reward_refs": { "type": "array", "items": { "type": "string" } },
+    "rights": { "$ref": "morphz_agent_trajectory_bundle_v0_1.schema.json#/$defs/rights" },
+    "integrity": { "$ref": "morphz_agent_trajectory_bundle_v0_1.schema.json#/$defs/integrity" }
+  },
+  "$defs": {
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "loss", "availability", "value"],
+      "properties": {
+        "role": { "type": "string", "minLength": 1 },
+        "loss": { "enum": ["included", "excluded"] },
+        "availability": { "type": "string", "minLength": 1 },
+        "value": {}
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transition_id", "source_node_id", "state_view", "action_target",
+        "environment_outputs", "reward_refs"
+      ],
+      "properties": {
+        "transition_id": { "type": "string", "minLength": 1 },
+        "source_node_id": { "type": "string", "minLength": 1 },
+        "state_view": { "$ref": "#/$defs/field" },
+        "action_target": { "$ref": "#/$defs/field" },
+        "environment_outputs": { "type": "array", "items": { "$ref": "#/$defs/field" } },
+        "reward_refs": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

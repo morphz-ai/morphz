@@ -128,6 +128,12 @@ Cognitive Application Manifest、多 Harness 组合、用户界面、Marketplace
 Cognitive Application 一致性声明。一个 HNS Package 可以实现最小认知应用的执行内容，
 但不会因此让两个术语等价。
 
+**COA** 与 `.coa` 被保留为 HNS 之上的未来 Cognitive Application Package Profile 候选
+名称与后缀。该 Profile 将来可以定义 Application Manifest，引用一个或多个精确 HNS
+Package 身份，并打包应用层 Skill、Verifier、交互界面、评测资产、领域资源与外部集成。
+这一保留不定义具体格式，不要求 Runtime 支持，也不会在 Harness Core v0.1 中建立兼容性
+声明。
+
 ## 4. 控制权与权责边界
 
 以下分离具有规范性：

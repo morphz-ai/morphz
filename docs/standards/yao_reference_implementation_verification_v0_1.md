@@ -39,6 +39,8 @@ legacy-source rejection.
 | Typed Harness entry, quote-preserving canonicalization, explicit model Tool upper bound and actual Function Calling narrowing | `typed_program_string_identity_survives_package_normalization`, `model_owned_entry_requires_an_explicit_tool_upper_bound`, Harness and Orchestrator tests | Passing |
 | Runtime environment injection and typed optional projections | `runtime_context_is_injected_*`, `host_view_normalizes_*` | Passing |
 | Host receipt replay, candidate sealing, reference non-forgeability, same-Context Evidence and Objective authority | Host tests in `plan_execution::tests` and candidate tests in `yao::eval::tests` | Passing |
+| Sealed typed `ContextTransaction`, Context Authority commit, deterministic identity, and crash-window replay | `context_transaction_is_sealed_canonical_and_host_typed`, `evaluates_and_revalidates_sealed_context_transactions`, `typed_context_proposal_commits_once_and_recovers_the_commit_window` | Passing |
+| Applied Objective progress, wait, and completion operations through Objective Authority | `objective_wait_proposal_uses_authority_and_replays_without_a_second_transition`, `objective_completion_proposal_consumes_committed_outcome_and_replays_intent` | Passing |
 | SQLite Plan wait migration, indexes, terminal fence trigger and restart lifecycle | SQLite migration and `memory::sqlite::plan_execution::tests` | Passing |
 | Production Runtime, CLI, durable handoff, store conformance, evaluation package and vector extension regressions | the package and integration gates listed below | Passing |
 
@@ -62,11 +64,10 @@ cargo test -p morphz-memory-vector --offline -- --test-threads=1
 cargo clippy --workspace --all-targets --offline -- -D warnings
 ```
 
-The language crate completed 36 tests. The focused Morphz evaluator, Plan and Harness suites
-completed 44, 17 and 25 tests respectively. The gates above completed 1,147 tests with no
-failures; six tests that explicitly require a live external login or manual terminal inspection
-remained ignored by their existing declarations. The shared Language Card also passed its hard
-4,800-character artifact limit and 1,200-estimated-token Context Encoding limit.
+The language crate completed 38 tests. The gates above completed 1,160 tests with no failures; six
+tests that explicitly require a live external login or manual terminal inspection remained ignored
+by their existing declarations. The shared Language Card also passed its hard 4,800-character
+artifact limit and 1,200-estimated-token Context Encoding limit.
 
 Tests that bind local mock servers or exercise Morphz's own macOS sandbox must run outside a
 restrictive parent sandbox. Running them inside another sandbox fails at operating-system setup
@@ -78,7 +79,6 @@ The following normative targets do not yet have complete implementation evidence
 remain Draft:
 
 - parent cancellation propagation through every non-terminal `par` and Program child;
-- applied Objective transitions and typed Context transactions after proposal recording;
 - injected and authorized `ExecutionTargetView` behavior;
 - live PostgreSQL crash-window testing for each new Yao wait boundary;
 - persistent fuzzing of semantic decoding, canonicalization, and Program admission beyond the

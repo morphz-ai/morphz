@@ -351,6 +351,22 @@ The following Package capabilities are intentionally reserved and are not implie
 An experimental implementation MAY support these features under a namespaced extension. It MUST
 NOT present them as HNS Core v0.1 behavior.
 
+### 13.1 Reserved Cognitive Application package layer
+
+**COA** and `.coa` are reserved candidate names for a future Cognitive Application Package layer
+above HNS. A future Profile may define:
+
+- an Application Manifest and application identity;
+- references to one or more exact HNS Package identities;
+- application-level Skills, Verifiers, interfaces, evaluation assets, domain resources, and
+  integrations;
+- dependency, upgrade, signature, provenance, and rights metadata;
+- resolution rules that select one exact Primary Harness Binding for each Evaluation.
+
+HNS Core v0.1 MUST NOT recognize `.coa` as an HNS Package, infer application semantics from the
+suffix, or present `.coa` support as a Core compatibility claim. Reserving the name and suffix does
+not define the future format.
+
 ## 14. Error requirements
 
 A Loader MUST fail visibly and without activation for at least:

@@ -326,6 +326,20 @@ Evaluation Binding 必须使用精确 ID、版本与内容身份。Binding 选�
 
 实验实现可以通过带命名空间扩展支持这些特性，但不得把它们表示为 HNS Core v0.1 行为。
 
+### 13.1 保留的 Cognitive Application 包层
+
+**COA** 与 `.coa` 被保留为 HNS 之上的未来 Cognitive Application Package 层候选名称与
+后缀。未来 Profile 可以定义：
+
+- Application Manifest 与应用身份；
+- 对一个或多个精确 HNS Package 身份的引用；
+- 应用层 Skill、Verifier、交互界面、评测资产、领域资源与外部集成；
+- 依赖、升级、签名、来源与权利元数据；
+- 为每次 Evaluation 选择一个精确 Primary Harness Binding 的解析规则。
+
+HNS Core v0.1 不得把 `.coa` 识别为 HNS Package，不得从该后缀推断应用语义，也不得把
+`.coa` 支持表示为 Core 兼容性声明。保留名称与后缀并不定义未来格式。
+
 ## 14. 错误要求
 
 Loader 至少必须针对以下情况显式失败且不得激活 Package：

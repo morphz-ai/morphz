@@ -57,6 +57,10 @@ const VALUE_OPTIONS: &[&str] = &[
     "context-id",
     "ttl",
     "after",
+    "output",
+    "max-events",
+    "objective-id",
+    "trajectory-profile",
 ];
 
 const SWITCH_OPTIONS: &[&str] = &[
@@ -66,6 +70,8 @@ const SWITCH_OPTIONS: &[&str] = &[
     "include-terminal",
     "tui",
     "plain",
+    "include-user-content",
+    "allow-training",
 ];
 
 const TOP_LEVEL_COMMANDS: &[&str] = &[
@@ -87,6 +93,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "agent",
     "harness",
     "objective",
+    "trajectory",
     "job",
     "config",
     "doctor",
@@ -270,6 +277,7 @@ pub fn morphz_command_for(locale: Locale) -> Command {
             agent_command(locale),
             harness_command(locale),
             objective_command(locale),
+            trajectory_command(locale),
             job_command(locale),
             config_command(locale),
             Command::new("doctor")
@@ -1994,6 +2002,110 @@ fn objective_command(locale: Locale) -> Command {
         ))
 }
 
+fn trajectory_command(locale: Locale) -> Command {
+    Command::new("trajectory")
+        .about(locale.text(
+            "Export and verify portable Agent Trajectory Bundles",
+            "导出和校验可移植的代理执行轨迹包",
+        ))
+        .subcommands([
+            output_examples(
+                locale,
+                Command::new("export")
+                    .about(locale.text(
+                        "Export authoritative Runtime facts as an Agent Trajectory Bundle",
+                        "将运行时权威事实导出为代理执行轨迹包",
+                    ))
+                    .arg(
+                        local_value_arg(
+                            "context-id",
+                            "context-id",
+                            "ID",
+                            locale.text("Context scope", "上下文范围"),
+                        )
+                        .required(true),
+                    )
+                    .arg(local_value_arg(
+                        "objective-id",
+                        "objective-id",
+                        "ID",
+                        locale.text("Optional Objective scope", "可选的目标范围"),
+                    ))
+                    .arg(
+                        local_value_arg(
+                            "max-events",
+                            "max-events",
+                            "N",
+                            locale.text("Maximum exported Events", "最大导出事件数"),
+                        )
+                        .default_value("10000"),
+                    )
+                    .arg(
+                        local_value_arg(
+                            "trajectory-profile",
+                            "trajectory-profile",
+                            "PROFILE",
+                            locale.text("AT-Core, AT-Evaluation, or AT-Training", "AT-Core、AT-Evaluation 或 AT-Training"),
+                        )
+                        .value_parser(["AT-Core", "AT-Evaluation", "AT-Training"])
+                        .default_value("AT-Core"),
+                    )
+                    .arg(local_switch_arg(
+                        "include-user-content",
+                        "include-user-content",
+                        locale.text("Include user message content", "包含用户消息内容"),
+                    ))
+                    .arg(local_switch_arg(
+                        "allow-training",
+                        "allow-training",
+                        locale.text(
+                            "Grant training use in the exported rights declaration",
+                            "在导出权限声明中允许训练用途",
+                        ),
+                    ))
+                    .arg(local_value_arg(
+                        "output",
+                        "output",
+                        "FILE",
+                        locale.text("Write JSON to a file instead of stdout", "将 JSON 写入文件而不是标准输出"),
+                    )),
+                "Example:\n  morphz trajectory export --context-id=context-default --output=trajectory.json",
+            ),
+            output_examples(
+                locale,
+                Command::new("verify")
+                    .about(locale.text(
+                        "Validate an untrusted Agent Trajectory Bundle",
+                        "校验不可信的代理执行轨迹包",
+                    ))
+                    .arg(prompt_arg("FILE", 1, Some(1)).help(locale.text(
+                        "Bundle JSON file",
+                        "轨迹包 JSON 文件",
+                    ))),
+                "Example:\n  morphz trajectory verify trajectory.json",
+            ),
+            output_examples(
+                locale,
+                Command::new("episode")
+                    .about(locale.text(
+                        "Derive a permission-checked training Episode",
+                        "派生经过权限校验的训练片段",
+                    ))
+                    .arg(prompt_arg("FILE", 1, Some(1)).help(locale.text(
+                        "AT-Training Bundle JSON file",
+                        "AT-Training 轨迹包 JSON 文件",
+                    )))
+                    .arg(local_value_arg(
+                        "output",
+                        "output",
+                        "FILE",
+                        locale.text("Write Episode JSON to a file", "将训练片段 JSON 写入文件"),
+                    )),
+                "Example:\n  morphz trajectory episode trajectory.json --output=episode.json",
+            ),
+        ])
+}
+
 fn harness_command(locale: Locale) -> Command {
     Command::new("harness")
         .about(locale.text(
@@ -2365,6 +2477,49 @@ mod tests {
         assert_eq!(cancel.command_path(), ["execution", "cancel"]);
         assert_eq!(cancel.prompt_args(), ["job-a"]);
         assert_eq!(cancel.option("revision").unwrap().last_value(), Some("3"));
+    }
+
+    #[test]
+    fn trajectory_commands_preserve_scope_rights_and_input_file() {
+        let export = parse(&[
+            "trajectory",
+            "export",
+            "--context-id=context-a",
+            "--objective-id=objective-a",
+            "--trajectory-profile=AT-Training",
+            "--max-events=250",
+            "--include-user-content",
+            "--allow-training",
+            "--output=trajectory.json",
+        ]);
+        assert_eq!(export.command_path(), ["trajectory", "export"]);
+        assert_eq!(
+            export.option("context-id").unwrap().last_value(),
+            Some("context-a")
+        );
+        assert_eq!(
+            export.option("objective-id").unwrap().last_value(),
+            Some("objective-a")
+        );
+        assert!(export.option("include-user-content").is_some());
+        assert!(export.option("allow-training").is_some());
+        assert_eq!(
+            export.option("output").unwrap().last_value(),
+            Some("trajectory.json")
+        );
+
+        let verify = parse(&["trajectory", "verify", "trajectory.json"]);
+        assert_eq!(verify.command_path(), ["trajectory", "verify"]);
+        assert_eq!(verify.prompt_args(), ["trajectory.json"]);
+
+        let episode = parse(&[
+            "trajectory",
+            "episode",
+            "trajectory.json",
+            "--output=episode.json",
+        ]);
+        assert_eq!(episode.command_path(), ["trajectory", "episode"]);
+        assert_eq!(episode.prompt_args(), ["trajectory.json"]);
     }
 
     #[test]

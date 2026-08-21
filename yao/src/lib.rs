@@ -16,10 +16,10 @@ pub mod types;
 pub use canonical::{canonical_program, canonical_source, content_hash, program_hash};
 pub use diagnostic::{Diagnostic, DiagnosticCode, SourceLocation, SourceSpan};
 pub use eval::{
-    decode_value, evaluate_pure, evidence_candidate_view, optional_reference_value,
-    outcome_candidate_view, reference_value, reference_view, structural_record_field,
-    structural_record_value, variant_view, EvalFailure, EvidenceCandidateView,
-    OutcomeCandidateView,
+    context_transaction_view, decode_value, evaluate_pure, evidence_candidate_view,
+    optional_reference_value, outcome_candidate_view, reference_value, reference_view,
+    structural_record_field, structural_record_value, variant_view, ContextTransactionView,
+    EvalFailure, EvidenceCandidateView, OutcomeCandidateView,
 };
 pub use language_card::{LANGUAGE_CARD, LANGUAGE_CARD_MAX_CHARS, TYPED_IR_SCHEMA_VERSION};
 pub use sema::{

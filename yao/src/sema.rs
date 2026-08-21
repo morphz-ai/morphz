@@ -270,6 +270,10 @@ pub enum HirKind {
         value: Box<HirExpr>,
         evidence: Vec<HirExpr>,
     },
+    ContextTransaction {
+        context: Box<HirExpr>,
+        canonical_source: String,
+    },
     Get {
         value: Box<HirExpr>,
         field: String,
@@ -512,6 +516,9 @@ impl<'a> Analyzer<'a> {
                     "err" => self.analyze_err(arguments, scope, expression.span(), depth),
                     "evidence" => self.analyze_evidence(arguments, scope, expression.span(), depth),
                     "outcome" => self.analyze_outcome(arguments, scope, expression.span(), depth),
+                    "context-transaction" => {
+                        self.analyze_context_transaction(arguments, scope, expression.span(), depth)
+                    }
                     "get" => self.analyze_get(arguments, scope, expression.span(), depth),
                     "decode" => self.analyze_decode(arguments, scope, expression.span(), depth),
                     "is" => self.analyze_is(arguments, scope, expression.span(), depth),
@@ -1108,6 +1115,101 @@ impl<'a> Analyzer<'a> {
                 evidence,
             },
             Type::OutcomeCandidate,
+            EffectSet::default(),
+            span,
+        ))
+    }
+
+    fn analyze_context_transaction(
+        &mut self,
+        arguments: &[Expr],
+        scope: &mut Scope,
+        span: SourceSpan,
+        depth: usize,
+    ) -> Result<HirExpr, Diagnostic> {
+        let mut context = None;
+        let mut transaction = None;
+        let mut seen = HashSet::new();
+        for clause in arguments {
+            let items = expect_list(
+                clause,
+                "context-transaction fields must be (context EXPR) and (transaction (context-tx ...))",
+            )?;
+            let Some(name) = items.first().and_then(Expr::as_symbol) else {
+                return Err(diag(
+                    DiagnosticCode::TypeMismatch,
+                    "context-transaction field has no name",
+                    clause.span(),
+                ));
+            };
+            if !seen.insert(name) {
+                return Err(duplicate_declaration(name, clause.span()));
+            }
+            match name {
+                "context" => {
+                    let [_, expression] = items else {
+                        return Err(diag(
+                            DiagnosticCode::TypeMismatch,
+                            "context-transaction context requires exactly one Ref<Context>",
+                            clause.span(),
+                        ));
+                    };
+                    let expression = self.analyze_expr(expression, scope, depth + 1)?;
+                    require_pure(&expression, "context-transaction context")?;
+                    require_assignable(
+                        &expression.ty,
+                        &Type::Ref("Context".into()),
+                        expression.span,
+                    )?;
+                    context = Some(expression);
+                }
+                "transaction" => {
+                    let [_, source] = items else {
+                        return Err(diag(
+                            DiagnosticCode::TypeMismatch,
+                            "context-transaction transaction requires exactly one (context-tx ...) form",
+                            clause.span(),
+                        ));
+                    };
+                    let source_items = expect_list(source, "transaction must be (context-tx ...)")?;
+                    if source_items.first().and_then(Expr::as_symbol) != Some("context-tx") {
+                        return Err(diag(
+                            DiagnosticCode::TypeMismatch,
+                            "transaction must start with context-tx",
+                            source.span(),
+                        ));
+                    }
+                    transaction = Some(canonical_source(source));
+                }
+                other => {
+                    return Err(diag(
+                        DiagnosticCode::UnknownName,
+                        format!("unknown context-transaction field '{other}'"),
+                        clause.span(),
+                    ))
+                }
+            }
+        }
+        let context = context.ok_or_else(|| {
+            diag(
+                DiagnosticCode::TypeMismatch,
+                "context-transaction requires (context Ref<Context>)",
+                span,
+            )
+        })?;
+        let canonical_source = transaction.ok_or_else(|| {
+            diag(
+                DiagnosticCode::TypeMismatch,
+                "context-transaction requires (transaction (context-tx ...))",
+                span,
+            )
+        })?;
+        Ok(hir(
+            HirKind::ContextTransaction {
+                context: Box::new(context),
+                canonical_source,
+            },
+            Type::ContextTransaction,
             EffectSet::default(),
             span,
         ))
@@ -2511,6 +2613,7 @@ impl<'a> Analyzer<'a> {
         match ty {
             Type::EvidenceCandidate
             | Type::OutcomeCandidate
+            | Type::ContextTransaction
             | Type::Ref(_)
             | Type::Program { .. } => true,
             Type::List(inner) | Type::Map(inner) | Type::Option(inner) => {
@@ -2578,6 +2681,7 @@ impl<'a> Analyzer<'a> {
                 "Json" => Type::Json,
                 "EvidenceCandidate" => Type::EvidenceCandidate,
                 "OutcomeCandidate" => Type::OutcomeCandidate,
+                "ContextTransaction" => Type::ContextTransaction,
                 other if is_identifier(other) => Type::Named(other.to_string()),
                 other => {
                     return Err(diag(
@@ -2818,6 +2922,9 @@ fn is_builtin_type(value: &str) -> bool {
             | "Result"
             | "Ref"
             | "Program"
+            | "EvidenceCandidate"
+            | "OutcomeCandidate"
+            | "ContextTransaction"
     )
 }
 
@@ -3059,23 +3166,36 @@ mod tests {
                 ),
                 ("search".into(), ToolSignature::dynamic_json()),
             ]),
-            host_operations: BTreeMap::from([(
-                "objective.report".into(),
-                ToolSignature {
-                    arguments: BTreeMap::from([(
-                        "objective".into(),
-                        Type::Ref("Objective".into()),
-                    )]),
-                    required: BTreeSet::from(["objective".into()]),
-                    result: Type::Nil,
-                },
-            )]),
+            host_operations: BTreeMap::from([
+                (
+                    "objective.report".into(),
+                    ToolSignature {
+                        arguments: BTreeMap::from([(
+                            "objective".into(),
+                            Type::Ref("Objective".into()),
+                        )]),
+                        required: BTreeSet::from(["objective".into()]),
+                        result: Type::Nil,
+                    },
+                ),
+                (
+                    "context.propose".into(),
+                    ToolSignature {
+                        arguments: BTreeMap::from([(
+                            "transaction".into(),
+                            Type::ContextTransaction,
+                        )]),
+                        required: BTreeSet::from(["transaction".into()]),
+                        result: Type::Json,
+                    },
+                ),
+            ]),
             bindings: BTreeMap::from([(
                 "runtime".into(),
-                Type::StructuralRecord(BTreeMap::from([(
-                    "objective".into(),
-                    Type::Ref("Objective".into()),
-                )])),
+                Type::StructuralRecord(BTreeMap::from([
+                    ("objective".into(), Type::Ref("Objective".into())),
+                    ("context".into(), Type::Ref("Context".into())),
+                ])),
             )]),
         }
     }
@@ -3197,6 +3317,50 @@ mod tests {
 
         let forged = analyze(
             &typed("(decode EvidenceCandidate (dict (kind \"fake\")))"),
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(forged.code, DiagnosticCode::InvalidType);
+    }
+
+    #[test]
+    fn context_transaction_is_sealed_canonical_and_host_typed() {
+        let program = analyze(
+            &typed(
+                r#"(context.propose
+                     (context-transaction
+                       (context $runtime.context)
+                       (transaction
+                         (context-tx
+                           (base-version 7)
+                           (reason "record verified fact")
+                           (create verified-fact (fact true))))))"#,
+            ),
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+        assert!(program
+            .effects
+            .contains(&Effect::Host("context.propose".into())));
+        let HirKind::Host { arguments, .. } = &program.body.kind else {
+            panic!("expected context.propose Host HIR")
+        };
+        assert_eq!(arguments[0].values[0].ty, Type::ContextTransaction);
+        let HirKind::ContextTransaction {
+            canonical_source, ..
+        } = &arguments[0].values[0].kind
+        else {
+            panic!("expected sealed ContextTransaction HIR")
+        };
+        assert_eq!(
+            canonical_source,
+            "(context-tx (base-version 7) (reason \"record verified fact\") (create verified-fact (fact true)))"
+        );
+
+        let forged = analyze(
+            &typed("(decode ContextTransaction (dict (kind \"context_transaction\")))"),
             &profile(),
             AnalysisLimits::default(),
         )

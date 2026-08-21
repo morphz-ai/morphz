@@ -36,6 +36,8 @@
 | Typed Harness 入口、保留引号的规范化、模型入口显式 Tool 上界与真实 Function Calling 裁剪 | `typed_program_string_identity_survives_package_normalization`、`model_owned_entry_requires_an_explicit_tool_upper_bound`、Harness 与 Orchestrator 测试 | 通过 |
 | Runtime 环境注入与类型化可选字段投影 | `runtime_context_is_injected_*`、`host_view_normalizes_*` | 通过 |
 | Host Receipt 重放、Candidate 封闭性、引用不可伪造、同 Context Evidence 与 Objective 权限 | `plan_execution::tests` 中的 Host 测试和 `yao::eval::tests` 中的 Candidate 测试 | 通过 |
+| 封闭的类型化 `ContextTransaction`、Context Authority 提交、确定性身份与崩溃窗口重放 | `context_transaction_is_sealed_canonical_and_host_typed`、`evaluates_and_revalidates_sealed_context_transactions`、`typed_context_proposal_commits_once_and_recovers_the_commit_window` | 通过 |
+| 经 Objective Authority 实际应用 Progress、Wait 与 Completion Operation | `objective_wait_proposal_uses_authority_and_replays_without_a_second_transition`、`objective_completion_proposal_consumes_committed_outcome_and_replays_intent` | 通过 |
 | SQLite Plan Wait 迁移、索引、终态 Fence Trigger 与重启生命周期 | SQLite 迁移测试及 `memory::sqlite::plan_execution::tests` | 通过 |
 | 生产 Runtime、CLI、持久 Handoff、Store 一致性、评测包与向量扩展回归 | 下列 Package 与集成门禁 | 通过 |
 
@@ -59,10 +61,9 @@ cargo test -p morphz-memory-vector --offline -- --test-threads=1
 cargo clippy --workspace --all-targets --offline -- -D warnings
 ```
 
-语言 crate 完成 36 项测试；Morphz 求值器、Plan 和 Harness 聚焦测试分别完成 44、17 和
-25 项；上述门禁共完成 1,147 项测试、无失败。另有 6 项测试因明确要求真实外部登录或人工
-终端检查，保持其原有 `ignored` 声明。共享 Yao Language Card 同时通过 4,800 字符的硬性
-产物上限和 Context Encoding 中 1,200 估算 Token 的门禁。
+语言 crate 完成 38 项测试；上述门禁共完成 1,160 项测试、无失败。另有 6 项测试因明确要求
+真实外部登录或人工终端检查，保持其原有 `ignored` 声明。共享 Yao Language Card 同时通过
+4,800 字符的硬性产物上限和 Context Encoding 中 1,200 估算 Token 的门禁。
 
 绑定本地 Mock Server 或验证 Morphz 自身 macOS Sandbox 的测试必须在受限父 Sandbox 之外
 运行。在嵌套 Sandbox 内执行时，操作系统会在测试对象运行前以 `Operation not permitted`
@@ -73,7 +74,6 @@ cargo clippy --workspace --all-targets --offline -- -D warnings
 以下规范目标尚未获得完整实现证据，因此继续保持 Draft：
 
 - 父计划取消向所有未终止 `par` 和 Program 子计划的传播；
-- Proposal 记录之后真正应用 Objective 状态变更和类型化 Context Transaction；
 - `ExecutionTargetView` 的注入与授权行为；
 - 每一种新增 Yao Wait Boundary 的 PostgreSQL 真实崩溃窗口测试；
 - 在确定性 Parser 稳健性输入集之外，对语义 Decode、Canonicalization 和 Program 准入进行
