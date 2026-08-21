@@ -478,6 +478,159 @@ fn responses_incomplete_event_is_an_explicit_failure() {
 }
 
 #[test]
+fn responses_completed_rejects_an_embedded_failed_state() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    let error = accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({
+                "type":"response.completed",
+                "response":{
+                    "status":"failed",
+                    "error":{"code":"server_error","message":"upstream failed"}
+                }
+            }),
+            &tx,
+        )
+        .unwrap_err();
+
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
+    assert_eq!(failure.provider_code.as_deref(), Some("server_error"));
+    assert!(failure.message.contains("upstream failed"));
+}
+
+#[test]
+fn responses_zero_token_empty_completion_is_a_provider_failure() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({
+                "type":"response.completed",
+                "response":{
+                    "status":"completed",
+                    "output":[],
+                    "usage":{"input_tokens":143476,"output_tokens":0,"total_tokens":143476}
+                }
+            }),
+            &tx,
+        )
+        .unwrap();
+
+    let error = accumulator.finish(&tx).unwrap_err();
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
+    assert!(failure.message.contains("output_tokens=0"));
+}
+
+#[test]
+fn responses_nonstream_failed_status_preserves_the_provider_error() {
+    let error = parse_openai_responses_response(json!({
+        "status":"failed",
+        "error":{"code":"upstream_failure","message":"gateway failed"},
+        "output":[]
+    }))
+    .unwrap_err();
+
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
+    assert_eq!(failure.provider_code.as_deref(), Some("upstream_failure"));
+    assert!(failure.message.contains("gateway failed"));
+}
+
+#[test]
+fn responses_nonstream_zero_token_empty_completion_is_a_provider_failure() {
+    let error = parse_openai_responses_response(json!({
+        "status":"completed",
+        "output":[],
+        "usage":{"input_tokens":143476,"output_tokens":0,"total_tokens":143476}
+    }))
+    .unwrap_err();
+
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
+    assert!(failure.message.contains("output_tokens=0"));
+}
+
+#[tokio::test]
+async fn responses_done_without_native_terminal_is_a_provider_failure() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = requests.clone();
+    let app = Router::new().route(
+        "/responses",
+        post(move || {
+            let observed = observed.clone();
+            async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                AxumResponse::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from("data: [DONE]\n\n"))
+                    .unwrap()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = client(
+        ModelProtocol::OpenaiResponses,
+        format!("http://{address}"),
+        5,
+    );
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let error = client
+        .create_completion_measured_stream(prompt(), vec![], None, tx)
+        .await
+        .unwrap_err();
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
+    assert!(failure.message.contains("[DONE]"));
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn named_sse_error_without_a_json_type_is_preserved() {
+    let app = Router::new().route(
+        "/responses",
+        post(|| async {
+            AxumResponse::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from(concat!(
+                    "event: error\n",
+                    "data: {\"error\":{\"code\":\"upstream_failure\",\"message\":\"gateway failed\"}}\n\n"
+                )))
+                .unwrap()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = client(
+        ModelProtocol::OpenaiResponses,
+        format!("http://{address}"),
+        1,
+    );
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let error = client
+        .create_completion_measured_stream(prompt(), vec![], None, tx)
+        .await
+        .unwrap_err();
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
+    assert_eq!(failure.provider_code.as_deref(), Some("upstream_failure"));
+    assert!(failure.message.contains("gateway failed"));
+}
+
+#[test]
 fn gemini_parallel_calls_preserve_native_ids_in_both_directions() {
     let parsed = parse_gemini_response(json!({
         "candidates": [{

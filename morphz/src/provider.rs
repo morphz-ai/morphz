@@ -289,6 +289,31 @@ fn boxed_model_failure(failure: ModelFailure) -> ProviderError {
     Box::new(failure)
 }
 
+fn provider_protocol_failure(protocol: ModelProtocol, detail: impl Into<String>) -> ProviderError {
+    boxed_model_failure(ModelFailure::new(
+        ModelFailureKind::ServerUnavailable,
+        format!(
+            "{} Provider 返回了无效的协议响应：{}",
+            protocol.as_str(),
+            detail.into()
+        ),
+    ))
+}
+
+fn provider_stream_error(protocol: ModelProtocol, payload: &str) -> ProviderError {
+    let message = format!("{} Provider 流返回错误事件：{payload}", protocol.as_str());
+    let classified = ModelFailure::classify_message(message.clone());
+    let kind = match classified.kind {
+        ModelFailureKind::Unknown | ModelFailureKind::EmptyResponse => {
+            ModelFailureKind::ServerUnavailable
+        }
+        kind => kind,
+    };
+    boxed_model_failure(
+        ModelFailure::new(kind, message).with_provider_code(provider_error_code(payload)),
+    )
+}
+
 fn retry_after_seconds(headers: &HeaderMap) -> Option<u64> {
     headers
         .get(RETRY_AFTER)
@@ -894,25 +919,11 @@ impl ProtocolClient {
             pending.extend_from_slice(&chunk);
             while let Some((frame, consumed)) = take_sse_frame(&pending) {
                 pending.drain(..consumed);
-                if let Some(data) = sse_data(&frame)? {
-                    if data == "[DONE]" {
-                        accumulator.terminal = true;
-                        continue;
-                    }
-                    let event: Value = serde_json::from_str(&data).map_err(|error| {
-                        format!("{} SSE 事件不是合法 JSON: {error}", self.protocol.as_str())
-                    })?;
-                    accumulator.apply(self.protocol, self.normalize_response(event), stream)?;
-                }
+                self.apply_sse_frame(&frame, &mut accumulator, stream)?;
             }
         }
         if !pending.is_empty() {
-            if let Some(data) = sse_data(&pending)? {
-                if data != "[DONE]" {
-                    let event: Value = serde_json::from_str(&data)?;
-                    accumulator.apply(self.protocol, self.normalize_response(event), stream)?;
-                }
-            }
+            self.apply_sse_frame(&pending, &mut accumulator, stream)?;
         }
         let actual_prompt_tokens = accumulator.prompt_tokens;
         let response = accumulator.finish(stream)?;
@@ -921,6 +932,41 @@ impl ProtocolClient {
             self.observe_completion_usage(model, body, measurement, actual_prompt_tokens);
         }
         Ok(response)
+    }
+
+    fn apply_sse_frame(
+        &self,
+        frame: &[u8],
+        accumulator: &mut StreamAccumulator,
+        stream: &ModelStreamSender,
+    ) -> Result<(), ProviderError> {
+        let frame = parse_sse_frame(frame)?;
+        if frame.event.as_deref() == Some("error") {
+            return Err(provider_stream_error(
+                self.protocol,
+                frame.data.as_deref().unwrap_or("<empty SSE error event>"),
+            ));
+        }
+        let Some(data) = frame.data else {
+            return Ok(());
+        };
+        if data == "[DONE]" {
+            if accumulator.terminal {
+                return Ok(());
+            }
+            if self.protocol == ModelProtocol::OpenaiChat {
+                accumulator.terminal = true;
+                return Ok(());
+            }
+            return Err(provider_protocol_failure(
+                self.protocol,
+                "在原生协议终止事件之前收到 [DONE]",
+            ));
+        }
+        let event: Value = serde_json::from_str(&data).map_err(|error| {
+            provider_protocol_failure(self.protocol, format!("SSE 事件不是合法 JSON: {error}"))
+        })?;
+        accumulator.apply(self.protocol, self.normalize_response(event), stream)
     }
 
     fn observe_completion_usage(
@@ -1488,6 +1534,8 @@ struct StreamAccumulator {
     responses_reasoning_items: BTreeMap<usize, Value>,
     gemini_tool_index: usize,
     terminal: bool,
+    responses_completed: bool,
+    responses_completed_output_tokens: Option<u64>,
     prompt_tokens: Option<u64>,
     usage: ModelUsage,
 }
@@ -1785,6 +1833,39 @@ impl StreamAccumulator {
                 }
             }
             "response.completed" => {
+                let response = event.get("response").unwrap_or(&Value::Null);
+                if let Some(status) = response
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .filter(|status| *status != "completed")
+                {
+                    if let Some(error) = response.get("error").filter(|value| !value.is_null()) {
+                        return Err(provider_stream_error(
+                            ModelProtocol::OpenaiResponses,
+                            &error.to_string(),
+                        ));
+                    }
+                    return Err(provider_protocol_failure(
+                        ModelProtocol::OpenaiResponses,
+                        format!("response.completed 携带非 completed 状态 '{status}'"),
+                    ));
+                }
+                if let Some(error) = response.get("error").filter(|value| !value.is_null()) {
+                    return Err(provider_stream_error(
+                        ModelProtocol::OpenaiResponses,
+                        &error.to_string(),
+                    ));
+                }
+                if let Some(details) = response
+                    .get("incomplete_details")
+                    .filter(|value| !value.is_null())
+                {
+                    return Err(provider_protocol_failure(
+                        ModelProtocol::OpenaiResponses,
+                        format!("response.completed 携带 incomplete_details: {details}"),
+                    ));
+                }
+                self.responses_completed = true;
                 self.terminal = true;
                 for (index, item) in event
                     .pointer("/response/output")
@@ -1798,6 +1879,8 @@ impl StreamAccumulator {
                     }
                 }
                 if let Some(usage) = event.pointer("/response/usage") {
+                    self.responses_completed_output_tokens =
+                        usage.get("output_tokens").and_then(Value::as_u64);
                     let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
                     let cached_input_tokens = usage
                         .pointer("/input_tokens_details/cached_tokens")
@@ -1989,6 +2072,17 @@ impl StreamAccumulator {
         if !self.terminal {
             return Err("Provider 流在协议终止事件之前断开".into());
         }
+        if self.responses_completed
+            && self.responses_completed_output_tokens == Some(0)
+            && self.content.trim().is_empty()
+            && self.tools.is_empty()
+            && self.responses_reasoning_items.is_empty()
+        {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                "response.completed 报告 output_tokens=0，且没有正文、工具调用或可续接推理状态",
+            ));
+        }
         let indices = self.tools.keys().copied().collect::<Vec<_>>();
         for index in indices {
             self.complete_tool(index, stream);
@@ -2040,18 +2134,35 @@ fn take_sse_frame(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
     }
 }
 
+#[cfg(test)]
 fn sse_data(frame: &[u8]) -> Result<Option<String>, ProviderError> {
+    Ok(parse_sse_frame(frame)?.data)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedSseFrame {
+    event: Option<String>,
+    data: Option<String>,
+}
+
+fn parse_sse_frame(frame: &[u8]) -> Result<ParsedSseFrame, ProviderError> {
     let text = std::str::from_utf8(frame)?;
-    let data = text
-        .lines()
-        .filter_map(|line| line.trim_end_matches('\r').strip_prefix("data:"))
-        .map(|line| line.strip_prefix(' ').unwrap_or(line))
-        .collect::<Vec<_>>();
-    if data.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(data.join("\n")))
+    let mut event = None;
+    let mut data = Vec::new();
+    for line in text.lines().map(|line| line.trim_end_matches('\r')) {
+        if let Some(value) = line.strip_prefix("event:") {
+            let value = value.strip_prefix(' ').unwrap_or(value).trim();
+            if !value.is_empty() {
+                event = Some(value.to_string());
+            }
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.strip_prefix(' ').unwrap_or(value));
+        }
     }
+    Ok(ParsedSseFrame {
+        event,
+        data: (!data.is_empty()).then(|| data.join("\n")),
+    })
 }
 
 fn build_request(
@@ -2636,12 +2747,34 @@ fn parse_openai_chat_response(value: Value) -> Result<Response, ProviderError> {
 }
 
 fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderError> {
-    if value.get("status").and_then(Value::as_str) == Some("incomplete") {
+    let status = value.get("status").and_then(Value::as_str);
+    if status == Some("incomplete") {
         return Err(format!(
             "OpenAI Responses 响应不完整: {}",
             value.get("incomplete_details").unwrap_or(&Value::Null)
         )
         .into());
+    }
+    if let Some(error) = value.get("error").filter(|value| !value.is_null()) {
+        return Err(provider_stream_error(
+            ModelProtocol::OpenaiResponses,
+            &error.to_string(),
+        ));
+    }
+    if let Some(status) = status.filter(|status| *status != "completed") {
+        return Err(provider_protocol_failure(
+            ModelProtocol::OpenaiResponses,
+            format!("非流式响应携带非 completed 状态 '{status}'"),
+        ));
+    }
+    if let Some(details) = value
+        .get("incomplete_details")
+        .filter(|value| !value.is_null())
+    {
+        return Err(provider_protocol_failure(
+            ModelProtocol::OpenaiResponses,
+            format!("completed 响应携带 incomplete_details: {details}"),
+        ));
     }
     let mut content = Vec::new();
     let mut tool_calls = Vec::new();
@@ -2686,10 +2819,23 @@ fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderErr
             _ => {}
         }
     }
-    ensure_nonempty(Response {
+    let response = Response {
         content: content.join(""),
         tool_calls,
-    })
+    };
+    if value
+        .pointer("/usage/output_tokens")
+        .and_then(Value::as_u64)
+        == Some(0)
+        && response.content.trim().is_empty()
+        && response.tool_calls.is_empty()
+    {
+        return Err(provider_protocol_failure(
+            ModelProtocol::OpenaiResponses,
+            "completed 非流式响应报告 output_tokens=0，且没有正文或工具调用",
+        ));
+    }
+    ensure_nonempty(response)
 }
 
 fn parse_anthropic_response(value: Value) -> Result<Response, ProviderError> {
