@@ -458,6 +458,7 @@ impl RoutedClient {
             .get(&candidate.model)
             .map(crate::config::ProviderModelConfig::model_input_limits)
             .unwrap_or_default();
+        let protocol = provider.protocol.effective_for_model(&candidate.model);
         Ok(ModelAttemptBinding {
             requested_alias: alias,
             route_id: route_id.to_string(),
@@ -465,7 +466,7 @@ impl RoutedClient {
             provider_instance_id: candidate.provider,
             auth_account_id: account_id,
             physical_model: candidate.model,
-            protocol: provider.protocol.as_str().to_string(),
+            protocol: protocol.as_str().to_string(),
             provider_adapter: provider.adapter.clone(),
             provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
             endpoint: provider.base_url.clone(),
@@ -492,6 +493,7 @@ impl RoutedClient {
             .get(&candidate.model)
             .map(crate::config::ProviderModelConfig::model_input_limits)
             .unwrap_or_default();
+        let protocol = provider.protocol.effective_for_model(&candidate.model);
         ModelAttemptBinding {
             requested_alias: alias.to_string(),
             route_id: route_id.to_string(),
@@ -499,7 +501,7 @@ impl RoutedClient {
             provider_instance_id: candidate.provider,
             auth_account_id: account_id,
             physical_model: candidate.model,
-            protocol: provider.protocol.as_str().to_string(),
+            protocol: protocol.as_str().to_string(),
             provider_adapter: provider.adapter.clone(),
             provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
             endpoint: provider.base_url.clone(),
@@ -1230,6 +1232,7 @@ impl RoutedClient {
             .get(&candidate.model)
             .map(crate::config::ProviderModelConfig::model_input_limits)
             .unwrap_or_default();
+        let protocol = provider.protocol.effective_for_model(&candidate.model);
         Ok(ModelAttemptBinding {
             requested_alias: alias,
             route_id: route_id.to_string(),
@@ -1237,7 +1240,7 @@ impl RoutedClient {
             provider_instance_id: candidate.provider,
             auth_account_id: account_id,
             physical_model: candidate.model,
-            protocol: provider.protocol.as_str().to_string(),
+            protocol: protocol.as_str().to_string(),
             provider_adapter: provider.adapter.clone(),
             provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
             endpoint: provider.base_url.clone(),
@@ -1551,6 +1554,7 @@ impl Client for RoutedClient {
                 .get(&physical_model)
                 .map(crate::config::ProviderModelConfig::model_input_limits)
                 .unwrap_or_default();
+            let protocol = provider.protocol.effective_for_model(&physical_model);
             ModelAttemptBinding {
                 requested_alias: physical_model.clone(),
                 route_id: format!("account:{account_id}"),
@@ -1558,7 +1562,7 @@ impl Client for RoutedClient {
                 provider_instance_id: provider_id.clone(),
                 auth_account_id: account_id.to_string(),
                 physical_model,
-                protocol: provider.protocol.as_str().to_string(),
+                protocol: protocol.as_str().to_string(),
                 provider_adapter: provider.adapter.clone(),
                 provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
                 endpoint: provider.base_url.clone(),
@@ -1703,6 +1707,32 @@ impl Client for RoutedClient {
         result
     }
 
+    async fn create_completion_bound_stream_with_options(
+        &self,
+        binding: &ModelAttemptBinding,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+        options: crate::llm::ModelRequestOptions,
+    ) -> Result<Response, ProviderError> {
+        let _lease = AccountLease::acquire(&binding.auth_account_id, Arc::clone(&self.state))?;
+        let result = self
+            .protocol_client(binding)
+            .await?
+            .create_completion_bound_stream_with_options(
+                binding,
+                messages,
+                tools,
+                measurement,
+                stream,
+                options,
+            )
+            .await;
+        self.record_account_result(binding, &result).await;
+        result
+    }
+
     async fn probe_health(&self) -> Result<(), ProviderError> {
         let binding = self
             .bind_model_attempt(&ModelRequestContext {
@@ -1827,6 +1857,35 @@ mod tests {
             Some(192 * 1024 * 1024)
         );
         assert_eq!(first.auth_account_id, second.auth_account_id);
+    }
+
+    #[tokio::test]
+    async fn claude_binding_records_the_effective_anthropic_protocol() {
+        let mut config = routed_config();
+        let provider = config.provider_instances.get_mut("direct").unwrap();
+        provider
+            .models
+            .insert("claude-opus-5".to_string(), ProviderModelConfig::default());
+        config
+            .model_routes
+            .get_mut("coding-primary")
+            .unwrap()
+            .candidates[0]
+            .model = "claude-opus-5".to_string();
+        let client = RoutedClient::new(&config, "coding".to_string()).unwrap();
+        let binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "context-claude".to_string(),
+                session_id: "session-claude".to_string(),
+                attempt_id: "attempt-claude".to_string(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(binding.physical_model, "claude-opus-5");
+        assert_eq!(binding.protocol, "anthropic-messages");
     }
 
     #[tokio::test]

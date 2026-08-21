@@ -3,10 +3,10 @@ use crate::config::{
     ProviderModelConfig,
 };
 use crate::llm::{
-    model_attachments, provider_continuation, Client, Message, ModelAttachment, ModelFailure,
-    ModelFailureKind, ModelStreamEvent, ModelStreamSender, ModelUsage, PromptTokenAccuracy,
-    PromptTokenCount, ProviderContinuation, ReasoningEffort, Response, ToolCallRepr,
-    ToolDefinition,
+    model_attachments, provider_continuation, Client, Message, ModelAttachment,
+    ModelAttemptBinding, ModelFailure, ModelFailureKind, ModelStreamEvent, ModelStreamSender,
+    ModelUsage, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ReasoningEffort,
+    Response, ToolCallRepr, ToolDefinition,
 };
 use base64::Engine;
 use futures_util::StreamExt;
@@ -299,6 +299,31 @@ fn provider_protocol_failure(protocol: ModelProtocol, detail: impl Into<String>)
     ))
 }
 
+fn provider_empty_response(protocol: ModelProtocol, detail: impl Into<String>) -> ProviderError {
+    boxed_model_failure(ModelFailure::new(
+        ModelFailureKind::EmptyResponse,
+        format!(
+            "{} Provider completed the request without usable output: {}",
+            protocol.as_str(),
+            detail.into()
+        ),
+    ))
+}
+
+fn provider_safety_refusal(protocol: ModelProtocol, detail: impl Into<String>) -> ProviderError {
+    boxed_model_failure(
+        ModelFailure::new(
+            ModelFailureKind::SafetyRefusal,
+            format!(
+                "{} Provider explicitly refused the request at its safety boundary: {}",
+                protocol.as_str(),
+                detail.into()
+            ),
+        )
+        .with_provider_code(Some("refusal".to_string())),
+    )
+}
+
 fn provider_stream_error(protocol: ModelProtocol, payload: &str) -> ProviderError {
     let message = format!(
         "{} Provider stream returned an error event: {payload}",
@@ -565,6 +590,10 @@ impl ProtocolClient {
             .unwrap_or_default()
     }
 
+    fn protocol_for_model(&self, model: &str) -> ModelProtocol {
+        self.protocol.effective_for_model(model)
+    }
+
     fn endpoint_for(&self, streaming: bool, model: &str) -> Result<String, ProviderError> {
         if self.adapter == "google-antigravity" {
             let root = self
@@ -578,7 +607,7 @@ impl ProtocolClient {
             };
             return Ok(format!("{root}/v1internal:{method}"));
         }
-        let endpoint = match self.protocol {
+        let endpoint = match self.protocol_for_model(model) {
             ModelProtocol::OpenaiResponses => format!("{}/responses", self.base_url),
             ModelProtocol::OpenaiChat => format!("{}/chat/completions", self.base_url),
             ModelProtocol::AnthropicMessages => format!("{}/messages", self.base_url),
@@ -602,21 +631,23 @@ impl ProtocolClient {
         Ok(endpoint)
     }
 
-    fn request_for_model(
+    fn request_for_model_with_reasoning(
         &self,
         model: &str,
         messages: &[Message],
         tools: &[ToolDefinition],
+        reasoning_override: Option<Option<ReasoningEffort>>,
     ) -> Value {
-        let reasoning_effort = self
-            .reasoning_effort
-            .read()
-            .map(|effort| *effort)
-            .unwrap_or(None);
+        let reasoning_effort = reasoning_override.unwrap_or_else(|| {
+            self.reasoning_effort
+                .read()
+                .map(|effort| *effort)
+                .unwrap_or(None)
+        });
         let reasoning_effort =
             normalize_reasoning_effort_for_model(self.adapter.as_str(), model, reasoning_effort);
         let request = build_request(
-            self.protocol,
+            self.protocol_for_model(model),
             model,
             self.max_output_tokens,
             reasoning_effort,
@@ -624,6 +655,15 @@ impl ProtocolClient {
             tools,
         );
         self.adapt_request(model, request)
+    }
+
+    fn request_for_model(
+        &self,
+        model: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Value {
+        self.request_for_model_with_reasoning(model, messages, tools, None)
     }
 
     fn adapt_request(&self, model: &str, request: Value) -> Value {
@@ -671,10 +711,14 @@ impl ProtocolClient {
         }
     }
 
-    fn authorize(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    fn authorize(
+        &self,
+        protocol: ModelProtocol,
+        mut request: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
         request = request.headers(self.headers.clone());
         if let Some(secret) = &self.credential {
-            request = match self.protocol {
+            request = match protocol {
                 ModelProtocol::OpenaiResponses | ModelProtocol::OpenaiChat => {
                     request.bearer_auth(secret)
                 }
@@ -683,20 +727,21 @@ impl ProtocolClient {
                     .header("anthropic-version", "2023-06-01"),
                 ModelProtocol::GeminiContent => request.header("x-goog-api-key", secret),
             };
-        } else if self.protocol == ModelProtocol::AnthropicMessages {
+        } else if protocol == ModelProtocol::AnthropicMessages {
             request = request.header("anthropic-version", "2023-06-01");
         }
         request
     }
 
     async fn send(&self, model: &str, body: &Value) -> Result<Value, ProviderError> {
+        let protocol = self.protocol_for_model(model);
         let endpoint = self.endpoint_for(false, model)?;
         let mut attempt = 0;
         let mut backoff = Duration::from_secs(self.initial_backoff_secs);
         loop {
             attempt += 1;
             let mut retry_after = None;
-            let request = self.authorize(self.http.post(&endpoint));
+            let request = self.authorize(protocol, self.http.post(&endpoint));
             let send_result =
                 match tokio::time::timeout(self.stream_idle_timeout, request.json(body).send())
                     .await
@@ -707,7 +752,7 @@ impl ProtocolClient {
                         ModelFailureKind::StreamIdleTimeout,
                         format!(
                             "{} Provider exceeded the {}-second idle timeout while waiting for response headers",
-                            self.protocol.as_str(),
+                            protocol.as_str(),
                             self.stream_idle_timeout.as_secs()
                         ),
                     )),
@@ -731,7 +776,7 @@ impl ProtocolClient {
                                         ModelFailureKind::StreamIdleTimeout,
                                         format!(
                                             "{} Provider response body did not complete within {} seconds",
-                                            self.protocol.as_str(),
+                                            protocol.as_str(),
                                             self.stream_idle_timeout.as_secs()
                                         ),
                                     )));
@@ -745,7 +790,7 @@ impl ProtocolClient {
                     let retryable = failure.kind.is_provider_transient();
                     if retryable && attempt < self.max_retries {
                         tracing::warn!(
-                            protocol = self.protocol.as_str(),
+                            protocol = protocol.as_str(),
                             %status,
                             failure_kind = failure.kind.as_str(),
                             attempt,
@@ -761,7 +806,7 @@ impl ProtocolClient {
                     if failure.kind.is_provider_transient() && attempt < self.max_retries =>
                 {
                     tracing::warn!(
-                        protocol = self.protocol.as_str(),
+                        protocol = protocol.as_str(),
                         error = %failure,
                         failure_kind = failure.kind.as_str(),
                         attempt,
@@ -774,7 +819,7 @@ impl ProtocolClient {
             }
             let delay = provider_retry_delay(backoff, retry_after, attempt);
             tracing::debug!(
-                protocol = self.protocol.as_str(),
+                protocol = protocol.as_str(),
                 attempt,
                 delay_ms = delay.as_millis(),
                 retry_after_secs = retry_after,
@@ -793,12 +838,13 @@ impl ProtocolClient {
         measurement: Option<&PromptTokenCount>,
         stream: &ModelStreamSender,
     ) -> Result<Response, ProviderError> {
+        let protocol = self.protocol_for_model(model);
         let endpoint = self.endpoint_for(true, model)?;
         let mut streaming_body = body.clone();
-        if self.protocol != ModelProtocol::GeminiContent {
+        if protocol != ModelProtocol::GeminiContent {
             streaming_body["stream"] = Value::Bool(true);
         }
-        if self.protocol == ModelProtocol::OpenaiChat {
+        if protocol == ModelProtocol::OpenaiChat {
             streaming_body["stream_options"] = json!({"include_usage": true});
         }
 
@@ -810,7 +856,7 @@ impl ProtocolClient {
         let response = loop {
             attempt += 1;
             let mut retry_after = None;
-            let request = self.authorize(self.http.post(&endpoint));
+            let request = self.authorize(protocol, self.http.post(&endpoint));
             let send_result = match tokio::time::timeout(
                 self.first_byte_timeout,
                 request.json(&streaming_body).send(),
@@ -823,7 +869,7 @@ impl ProtocolClient {
                     ModelFailureKind::FirstByteTimeout,
                     format!(
                         "{} Provider first byte timeout: waited more than {} seconds for HTTP response headers",
-                        self.protocol.as_str(),
+                        protocol.as_str(),
                         self.first_byte_timeout.as_secs()
                     ),
                 )),
@@ -840,7 +886,7 @@ impl ProtocolClient {
                         return Err(boxed_model_failure(failure));
                     }
                     tracing::warn!(
-                        protocol = self.protocol.as_str(),
+                        protocol = protocol.as_str(),
                         %status,
                         failure_kind = failure.kind.as_str(),
                         attempt,
@@ -853,7 +899,7 @@ impl ProtocolClient {
                     if failure.kind.is_provider_transient() && attempt < self.max_retries =>
                 {
                     tracing::warn!(
-                        protocol = self.protocol.as_str(),
+                        protocol = protocol.as_str(),
                         error = %failure,
                         failure_kind = failure.kind.as_str(),
                         attempt,
@@ -866,7 +912,7 @@ impl ProtocolClient {
             }
             let delay = provider_retry_delay(backoff, retry_after, attempt);
             tracing::debug!(
-                protocol = self.protocol.as_str(),
+                protocol = protocol.as_str(),
                 attempt,
                 delay_ms = delay.as_millis(),
                 retry_after_secs = retry_after,
@@ -895,7 +941,7 @@ impl ProtocolClient {
                             ModelFailureKind::StreamStalled,
                             format!(
                                 "{} Provider stream stalled: no additional response body bytes arrived for {} seconds",
-                                self.protocol.as_str(),
+                                protocol.as_str(),
                                 timeout.as_secs()
                             ),
                         )
@@ -904,7 +950,7 @@ impl ProtocolClient {
                             ModelFailureKind::FirstByteTimeout,
                             format!(
                                 "{} Provider first byte timeout: no response body bytes arrived within {} seconds after HTTP response headers",
-                                self.protocol.as_str(),
+                                protocol.as_str(),
                                 timeout.as_secs()
                             ),
                         )
@@ -924,31 +970,41 @@ impl ProtocolClient {
             pending.extend_from_slice(&chunk);
             while let Some((frame, consumed)) = take_sse_frame(&pending) {
                 pending.drain(..consumed);
-                self.apply_sse_frame(&frame, &mut accumulator, stream)?;
+                self.apply_sse_frame(protocol, &frame, &mut accumulator, stream)?;
             }
         }
         if !pending.is_empty() {
-            self.apply_sse_frame(&pending, &mut accumulator, stream)?;
+            self.apply_sse_frame(protocol, &pending, &mut accumulator, stream)?;
         }
         let actual_prompt_tokens = accumulator.prompt_tokens;
         let response = accumulator.finish(stream)?;
         if let (Some(measurement), Some(actual_prompt_tokens)) = (measurement, actual_prompt_tokens)
         {
-            self.observe_completion_usage(model, body, measurement, actual_prompt_tokens);
+            self.observe_completion_usage(protocol, model, body, measurement, actual_prompt_tokens);
         }
         Ok(response)
     }
 
     fn apply_sse_frame(
         &self,
+        protocol: ModelProtocol,
         frame: &[u8],
         accumulator: &mut StreamAccumulator,
         stream: &ModelStreamSender,
     ) -> Result<(), ProviderError> {
         let frame = parse_sse_frame(frame)?;
         if frame.event.as_deref() == Some("error") {
+            if protocol == ModelProtocol::OpenaiResponses
+                && frame
+                    .data
+                    .as_deref()
+                    .and_then(|data| serde_json::from_str::<Value>(data).ok())
+                    .is_some_and(|event| accumulator.accept_reasoning_only_missing_terminal(&event))
+            {
+                return Ok(());
+            }
             return Err(provider_stream_error(
-                self.protocol,
+                protocol,
                 frame.data.as_deref().unwrap_or("<empty SSE error event>"),
             ));
         }
@@ -959,26 +1015,24 @@ impl ProtocolClient {
             if accumulator.terminal {
                 return Ok(());
             }
-            if self.protocol == ModelProtocol::OpenaiChat {
+            if protocol == ModelProtocol::OpenaiChat {
                 accumulator.terminal = true;
                 return Ok(());
             }
             return Err(provider_protocol_failure(
-                self.protocol,
+                protocol,
                 "received [DONE] before the native protocol terminal event",
             ));
         }
         let event: Value = serde_json::from_str(&data).map_err(|error| {
-            provider_protocol_failure(
-                self.protocol,
-                format!("SSE event is not valid JSON: {error}"),
-            )
+            provider_protocol_failure(protocol, format!("SSE event is not valid JSON: {error}"))
         })?;
-        accumulator.apply(self.protocol, self.normalize_response(event), stream)
+        accumulator.apply(protocol, self.normalize_response(event), stream)
     }
 
     fn observe_completion_usage(
         &self,
+        protocol: ModelProtocol,
         model: &str,
         body: &Value,
         measurement: &PromptTokenCount,
@@ -989,7 +1043,7 @@ impl ProtocolClient {
         else {
             return;
         };
-        let actual_shape = prompt_calibration_shape(self.protocol, model, body);
+        let actual_shape = prompt_calibration_shape(protocol, model, body);
         if measurement.accuracy == PromptTokenAccuracy::Exact || calibration_shape != actual_shape {
             return;
         }
@@ -1006,7 +1060,7 @@ impl ProtocolClient {
             );
         }
         tracing::info!(
-            protocol = self.protocol.as_str(),
+            protocol = protocol.as_str(),
             model,
             predicted_prompt_tokens = measurement.tokens,
             actual_prompt_tokens,
@@ -1029,7 +1083,8 @@ impl ProtocolClient {
         }
         let response = tokio::time::timeout(
             self.stream_idle_timeout,
-            self.authorize(self.http.get(endpoint)).send(),
+            self.authorize(self.protocol, self.http.get(endpoint))
+                .send(),
         )
         .await
         .map_err(|_| {
@@ -1239,9 +1294,10 @@ pub async fn probe_provider(
 impl Client for ProtocolClient {
     fn provider_resource_key(&self) -> String {
         let model = self.model_snapshot();
+        let protocol = self.protocol_for_model(&model);
         format!(
             "model-provider:{}:{}:{}",
-            self.protocol.as_str(),
+            protocol.as_str(),
             self.base_url,
             model
         )
@@ -1289,9 +1345,10 @@ impl Client for ProtocolClient {
         tools: &[ToolDefinition],
     ) -> Result<Option<PromptTokenCount>, ProviderError> {
         let model = self.model_snapshot();
+        let protocol = self.protocol_for_model(&model);
         let body = self.request_for_model(&model, messages, tools);
         let base_estimate_tokens = serialized_request_token_estimate(&body);
-        let calibration_shape = prompt_calibration_shape(self.protocol, &model, &body);
+        let calibration_shape = prompt_calibration_shape(protocol, &model, &body);
         let calibration_key = prompt_calibration_key(scope, calibration_shape);
         let anchor = self
             .usage_anchors
@@ -1305,14 +1362,14 @@ impl Client for ProtocolClient {
                     apply_signed_token_delta(anchor.actual_prompt_tokens, delta),
                     format!(
                         "{}-serialized-request-estimate+usage-calibration",
-                        self.protocol.as_str()
+                        protocol.as_str()
                     ),
                     PromptTokenAccuracy::UsageCalibratedEstimate,
                 )
             }
             None => (
                 base_estimate_tokens,
-                format!("{}-serialized-request-estimate", self.protocol.as_str()),
+                format!("{}-serialized-request-estimate", protocol.as_str()),
                 PromptTokenAccuracy::HeuristicEstimate,
             ),
         };
@@ -1333,6 +1390,7 @@ impl Client for ProtocolClient {
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, ProviderError> {
         let model = self.model_snapshot();
+        let protocol = self.protocol_for_model(&model);
         let request = self.request_for_model(&model, &messages, &tools);
         if self.adapter == "openai-codex" {
             // ChatGPT's Codex backend only accepts Responses requests in its
@@ -1343,7 +1401,7 @@ impl Client for ProtocolClient {
             return self.send_stream(&model, &request, None, &stream).await;
         }
         let response = self.send(&model, &request).await?;
-        parse_response(self.protocol, self.normalize_response(response))
+        parse_response(protocol, self.normalize_response(response))
     }
 
     async fn create_completion_measured_stream(
@@ -1373,9 +1431,44 @@ impl Client for ProtocolClient {
         }
     }
 
+    async fn create_completion_bound_stream_with_options(
+        &self,
+        _binding: &ModelAttemptBinding,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+        options: crate::llm::ModelRequestOptions,
+    ) -> Result<Response, ProviderError> {
+        let _ = stream.send(ModelStreamEvent::Started);
+        let model = self.model_snapshot();
+        let request = self.request_for_model_with_reasoning(
+            &model,
+            &messages,
+            &tools,
+            options.reasoning_effort,
+        );
+        match self
+            .send_stream(&model, &request, measurement.as_ref(), &stream)
+            .await
+        {
+            Ok(response) => {
+                let _ = stream.send(ModelStreamEvent::Completed);
+                Ok(response)
+            }
+            Err(error) => {
+                let _ = stream.send(ModelStreamEvent::Failed {
+                    message: error.to_string(),
+                });
+                Err(error)
+            }
+        }
+    }
+
     async fn probe_health(&self) -> Result<(), ProviderError> {
         const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
         let model = self.model_snapshot();
+        let protocol = self.protocol_for_model(&model);
         let messages = [Message {
             role: "user".to_string(),
             content: "Reply with the plain text MORPHZ_OK.".to_string(),
@@ -1388,7 +1481,7 @@ impl Client for ProtocolClient {
         // application's output budget.
         let body = self.adapt_request(
             &model,
-            build_request(self.protocol, &model, Some(64), None, &messages, &[]),
+            build_request(protocol, &model, Some(64), None, &messages, &[]),
         );
         if self.adapter == "openai-codex" {
             let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
@@ -1408,7 +1501,9 @@ impl Client for ProtocolClient {
         let endpoint = self.endpoint_for(false, &model)?;
         let response = tokio::time::timeout(
             HEALTH_PROBE_TIMEOUT,
-            self.authorize(self.http.post(&endpoint)).json(&body).send(),
+            self.authorize(protocol, self.http.post(&endpoint))
+                .json(&body)
+                .send(),
         )
         .await
         .map_err(|_| {
@@ -1442,8 +1537,8 @@ impl Client for ProtocolClient {
         // a schema-valid successful response is sufficient; completeness and
         // instruction following belong to inference tests, not connectivity.
         let normalized = self.normalize_response(value);
-        if !health_response_schema_valid(self.protocol, &normalized) {
-            let _ = parse_response(self.protocol, normalized)?;
+        if !health_response_schema_valid(protocol, &normalized) {
+            let _ = parse_response(protocol, normalized)?;
         }
         Ok(())
     }
@@ -1539,12 +1634,33 @@ fn anthropic_usage(usage: &Value) -> ModelUsage {
     }
 }
 
+fn openai_responses_has_explicit_refusal(response: &Value) -> bool {
+    response.get("stop_reason").and_then(Value::as_str) == Some("refusal")
+        || response
+            .pointer("/status_details/reason")
+            .and_then(Value::as_str)
+            == Some("refusal")
+        || response
+            .get("output")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|item| {
+                item.get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .any(|part| part.get("type").and_then(Value::as_str) == Some("refusal"))
+}
+
 #[derive(Debug, Default)]
 struct StreamAccumulator {
     content: String,
     tools: BTreeMap<usize, StreamingToolCall>,
     chat_reasoning_content: String,
     responses_reasoning_items: BTreeMap<usize, Value>,
+    responses_message_items: BTreeMap<usize, Value>,
     gemini_tool_index: usize,
     terminal: bool,
     responses_completed: bool,
@@ -1653,6 +1769,106 @@ impl StreamAccumulator {
         }
     }
 
+    fn apply_openai_responses_output_item(
+        &mut self,
+        index: usize,
+        item: &Value,
+        authoritative: bool,
+        stream: &ModelStreamSender,
+    ) {
+        match item.get("type").and_then(Value::as_str) {
+            Some("reasoning") => {
+                self.responses_reasoning_items.insert(index, item.clone());
+            }
+            Some("message") => {
+                // Responses-compatible gateways may omit text deltas and only
+                // expose the complete assistant message in output_item.done or
+                // response.completed. Retain the authoritative item so finish
+                // can recover that text without duplicating streamed deltas.
+                self.responses_message_items.insert(index, item.clone());
+            }
+            Some("function_call") => {
+                self.tool(
+                    index,
+                    item.get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_str),
+                    item.get("name").and_then(Value::as_str),
+                    stream,
+                );
+                if authoritative
+                    && self
+                        .tools
+                        .get(&index)
+                        .is_some_and(|tool| tool.arguments.is_empty())
+                {
+                    if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+                        self.arguments(index, arguments, stream);
+                    }
+                }
+                if authoritative {
+                    self.complete_tool(index, stream);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn backfill_openai_responses_message_text(&mut self, stream: &ModelStreamSender) {
+        if !self.content.is_empty() {
+            return;
+        }
+        let content = self
+            .responses_message_items
+            .values()
+            .flat_map(|item| {
+                item.get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<String>();
+        self.text(&content, stream);
+    }
+
+    /// Some Responses compatibility gateways forward every authoritative
+    /// `response.output_item.done` item and then synthesize an error because
+    /// the upstream connection ended before `response.completed`. When the
+    /// completed output is reasoning-only, it is safe and strictly more
+    /// accurate to expose that opaque item as continuation state. Treating the
+    /// gateway's missing envelope as a Provider outage discards the progress
+    /// and makes provider recovery evaluate the same root turn from scratch.
+    ///
+    /// FIXME(cliproxyapi): delete this exact error-envelope compatibility path
+    /// after the proxy guarantees a native terminal following every forwarded
+    /// `response.output_item.done`; retain the regression fixture until that
+    /// behavior is verified against the upgraded proxy.
+    fn accept_reasoning_only_missing_terminal(&mut self, event: &Value) -> bool {
+        let code = event
+            .get("code")
+            .or_else(|| event.pointer("/error/code"))
+            .and_then(Value::as_str);
+        let message = event
+            .get("message")
+            .or_else(|| event.pointer("/error/message"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let missing_terminal_after_done = code == Some("internal_server_error")
+            && message.contains("upstream stream closed before a terminal event")
+            && message.contains("last event: response.output_item.done");
+        if missing_terminal_after_done
+            && self.content.trim().is_empty()
+            && self.tools.is_empty()
+            && !self.responses_reasoning_items.is_empty()
+        {
+            self.terminal = true;
+            return true;
+        }
+        false
+    }
+
     fn usage(&mut self, usage: ModelUsage, stream: &ModelStreamSender) {
         if let Some(input_tokens) = usage.input_tokens {
             self.prompt_tokens = Some(input_tokens);
@@ -1718,6 +1934,12 @@ impl StreamAccumulator {
                         "OpenAI Chat stream was truncated by the output length limit".into(),
                     )
                 }
+                "content_filter" => {
+                    return Err(provider_safety_refusal(
+                        ModelProtocol::OpenaiChat,
+                        "finish_reason=content_filter",
+                    ));
+                }
                 _ => return Err(format!("OpenAI Chat stream did not complete: {reason}").into()),
             }
         }
@@ -1780,18 +2002,7 @@ impl StreamAccumulator {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                if item.get("type").and_then(Value::as_str) == Some("reasoning") {
-                    self.responses_reasoning_items.insert(index, item.clone());
-                } else if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                    self.tool(
-                        index,
-                        item.get("call_id")
-                            .or_else(|| item.get("id"))
-                            .and_then(Value::as_str),
-                        item.get("name").and_then(Value::as_str),
-                        stream,
-                    );
-                }
+                self.apply_openai_responses_output_item(index, item, false, stream);
             }
             "response.function_call_arguments.delta" => {
                 let index = event
@@ -1824,33 +2035,19 @@ impl StreamAccumulator {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                if item.get("type").and_then(Value::as_str) == Some("reasoning") {
-                    // The done item is authoritative and can add opaque fields
-                    // (notably encrypted_content) absent from the added event.
-                    self.responses_reasoning_items.insert(index, item.clone());
-                } else if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                    self.tool(
-                        index,
-                        item.get("call_id")
-                            .or_else(|| item.get("id"))
-                            .and_then(Value::as_str),
-                        item.get("name").and_then(Value::as_str),
-                        stream,
-                    );
-                    if self
-                        .tools
-                        .get(&index)
-                        .is_some_and(|tool| tool.arguments.is_empty())
-                    {
-                        if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
-                            self.arguments(index, arguments, stream);
-                        }
-                    }
-                    self.complete_tool(index, stream);
-                }
+                // The done item is authoritative and can add complete text,
+                // tool arguments, or opaque reasoning fields absent from the
+                // corresponding added event.
+                self.apply_openai_responses_output_item(index, item, true, stream);
             }
             "response.completed" => {
                 let response = event.get("response").unwrap_or(&Value::Null);
+                if openai_responses_has_explicit_refusal(response) {
+                    return Err(provider_safety_refusal(
+                        ModelProtocol::OpenaiResponses,
+                        "response.completed carried an explicit refusal terminal",
+                    ));
+                }
                 if let Some(status) = response
                     .get("status")
                     .and_then(Value::as_str)
@@ -1891,10 +2088,9 @@ impl StreamAccumulator {
                     .flatten()
                     .enumerate()
                 {
-                    if item.get("type").and_then(Value::as_str) == Some("reasoning") {
-                        self.responses_reasoning_items.insert(index, item.clone());
-                    }
+                    self.apply_openai_responses_output_item(index, item, true, stream);
                 }
+                self.backfill_openai_responses_message_text(stream);
                 if let Some(usage) = event.pointer("/response/usage") {
                     self.responses_completed_output_tokens =
                         usage.get("output_tokens").and_then(Value::as_u64);
@@ -1922,6 +2118,7 @@ impl StreamAccumulator {
                     );
                 }
             }
+            "error" if self.accept_reasoning_only_missing_terminal(&event) => {}
             "response.incomplete" | "response.failed" | "error" => {
                 return Err(format!("OpenAI Responses stream failed: {event}").into());
             }
@@ -1986,9 +2183,17 @@ impl StreamAccumulator {
                 self.complete_tool(index, stream);
             }
             "message_delta" => {
-                if event.pointer("/delta/stop_reason").and_then(Value::as_str) == Some("max_tokens")
-                {
-                    return Err("Anthropic stream was truncated by max_tokens".into());
+                match event.pointer("/delta/stop_reason").and_then(Value::as_str) {
+                    Some("max_tokens") => {
+                        return Err("Anthropic stream was truncated by max_tokens".into());
+                    }
+                    Some("refusal") => {
+                        return Err(provider_safety_refusal(
+                            ModelProtocol::AnthropicMessages,
+                            "message_delta.stop_reason=refusal",
+                        ));
+                    }
+                    _ => {}
                 }
                 let usage = event.pointer("/usage").unwrap_or(&Value::Null);
                 self.usage(
@@ -2095,7 +2300,7 @@ impl StreamAccumulator {
             && self.tools.is_empty()
             && self.responses_reasoning_items.is_empty()
         {
-            return Err(provider_protocol_failure(
+            return Err(provider_empty_response(
                 ModelProtocol::OpenaiResponses,
                 "response.completed reported output_tokens=0 without text, tool calls, or resumable reasoning state",
             ));
@@ -2721,6 +2926,12 @@ fn parse_openai_chat_response(value: Value) -> Result<Response, ProviderError> {
     if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
         return Err("OpenAI Chat response was truncated by the output-length limit".into());
     }
+    if choice.get("finish_reason").and_then(Value::as_str) == Some("content_filter") {
+        return Err(provider_safety_refusal(
+            ModelProtocol::OpenaiChat,
+            "finish_reason=content_filter",
+        ));
+    }
     let message = choice
         .get("message")
         .ok_or("OpenAI Chat response is missing message")?;
@@ -2764,6 +2975,12 @@ fn parse_openai_chat_response(value: Value) -> Result<Response, ProviderError> {
 }
 
 fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderError> {
+    if openai_responses_has_explicit_refusal(&value) {
+        return Err(provider_safety_refusal(
+            ModelProtocol::OpenaiResponses,
+            "completed response carried an explicit refusal terminal",
+        ));
+    }
     let status = value.get("status").and_then(Value::as_str);
     if status == Some("incomplete") {
         return Err(format!(
@@ -2847,7 +3064,7 @@ fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderErr
         && response.content.trim().is_empty()
         && response.tool_calls.is_empty()
     {
-        return Err(provider_protocol_failure(
+        return Err(provider_empty_response(
             ModelProtocol::OpenaiResponses,
             "completed non-streaming response reports output_tokens=0 and contains neither content nor tool calls",
         ));
@@ -2856,8 +3073,17 @@ fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderErr
 }
 
 fn parse_anthropic_response(value: Value) -> Result<Response, ProviderError> {
-    if value.get("stop_reason").and_then(Value::as_str) == Some("max_tokens") {
-        return Err("Anthropic response was truncated by max_tokens".into());
+    match value.get("stop_reason").and_then(Value::as_str) {
+        Some("max_tokens") => {
+            return Err("Anthropic response was truncated by max_tokens".into());
+        }
+        Some("refusal") => {
+            return Err(provider_safety_refusal(
+                ModelProtocol::AnthropicMessages,
+                "stop_reason=refusal",
+            ));
+        }
+        _ => {}
     }
     let mut content = Vec::new();
     let mut tool_calls = Vec::new();
@@ -3115,6 +3341,51 @@ mod tests {
                 tool_calls: None,
             },
         ]
+    }
+
+    #[test]
+    fn claude_physical_models_use_native_anthropic_messages_on_compatibility_providers() {
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: "https://provider.invalid/v1".to_string(),
+                ..ProviderConfig::default()
+            },
+            "Claude-Opus-5".to_string(),
+            Some("secret".to_string()),
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            client.protocol_for_model("Claude-Opus-5"),
+            ModelProtocol::AnthropicMessages
+        );
+        assert_eq!(
+            client.endpoint_for(true, "Claude-Opus-5").unwrap(),
+            "https://provider.invalid/v1/messages"
+        );
+        let request = client.request_for_model("Claude-Opus-5", &messages(), &[]);
+        assert_eq!(request["model"], "Claude-Opus-5");
+        assert_eq!(request["system"], "system");
+        assert!(request["messages"].is_array());
+        assert!(request.get("input").is_none());
+
+        let authorized = client
+            .authorize(
+                ModelProtocol::AnthropicMessages,
+                client.http.post("https://provider.invalid/v1/messages"),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(authorized.headers()["x-api-key"], "secret");
+        assert_eq!(authorized.headers()["anthropic-version"], "2023-06-01");
+        assert!(authorized.headers().get("authorization").is_none());
+
+        assert_eq!(
+            client.protocol_for_model("Qwen3.8-27B-FP8"),
+            ModelProtocol::OpenaiResponses
+        );
     }
 
     #[test]
@@ -3751,7 +4022,13 @@ mod tests {
             .unwrap()
             .unwrap();
         let matching_body = client.request_for_model("test-model", &prompt, &[]);
-        client.observe_completion_usage("test-model", &matching_body, &first, 123);
+        client.observe_completion_usage(
+            ModelProtocol::OpenaiChat,
+            "test-model",
+            &matching_body,
+            &first,
+            123,
+        );
 
         let calibrated = client
             .count_prompt_tokens("scope-a", &prompt, &[])
@@ -3779,7 +4056,13 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        client.observe_completion_usage("test-model", &matching_body, &tool_measurement, 999);
+        client.observe_completion_usage(
+            ModelProtocol::OpenaiChat,
+            "test-model",
+            &matching_body,
+            &tool_measurement,
+            999,
+        );
         assert_eq!(
             client
                 .count_prompt_tokens("scope-a", &prompt, &tool_definitions)
@@ -4354,6 +4637,86 @@ mod tests {
             } if reasoning_items.iter().any(|item| {
                 item["id"] == "reasoning-1" && item["encrypted_content"] == "opaque-state"
             })
+        )));
+    }
+
+    #[tokio::test]
+    async fn responses_reasoning_done_before_missing_terminal_continues_without_provider_recovery()
+    {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    sse(concat!(
+                        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"reasoning-recovered\"}}\n\n",
+                        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"completed reasoning progress\"}\n\n",
+                        "data: {\"type\":\"response.reasoning_summary_text.done\"}\n\n",
+                        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"reasoning-recovered\",\"encrypted_content\":\"opaque-recovered\"}}\n\n",
+                        "event: error\n",
+                        "data: {\"type\":\"error\",\"code\":\"internal_server_error\",\"message\":\"upstream stream closed before a terminal event (last event: response.output_item.done)\",\"sequence_number\":0}\n\n"
+                    ))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "glm-5.3".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 5,
+                initial_backoff_secs: 0,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+        let (stream, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let error = client
+            .create_completion_measured_stream(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "continue".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+                None,
+                stream,
+            )
+            .await
+            .unwrap_err();
+
+        let failure = error.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::EmptyResponse);
+        assert!(!failure.kind.uses_provider_recovery());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let events = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ProviderContinuation {
+                continuation: ProviderContinuation::OpenaiResponses { reasoning_items }
+            } if reasoning_items.iter().any(|item| {
+                item["id"] == "reasoning-recovered"
+                    && item["encrypted_content"] == "opaque-recovered"
+            })
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::Failed { message }
+                if message.contains("internal_server_error")
         )));
     }
 

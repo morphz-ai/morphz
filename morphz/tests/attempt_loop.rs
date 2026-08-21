@@ -3,10 +3,10 @@ use morphz::event::{
     Event, InMemoryEventBus, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use morphz::llm::{
-    provider_continuation, Client, Message, ModelAttemptBindingError, ModelFailure,
-    ModelFailureKind, ModelStreamEvent, ModelStreamSender, PromptTokenAccuracy, PromptTokenCount,
-    ProviderContinuation, Response, ToolCallRepr, ToolDefinition,
-    PROVIDER_CONTINUATION_MESSAGE_NAME,
+    provider_continuation, Client, Message, ModelAttemptBinding, ModelAttemptBindingError,
+    ModelFailure, ModelFailureKind, ModelRequestContext, ModelStreamEvent, ModelStreamSender,
+    PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, Response, ToolCallRepr,
+    ToolDefinition, PROVIDER_CONTINUATION_MESSAGE_NAME,
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
@@ -99,9 +99,37 @@ struct InvalidProtocolContinuationClient {
     messages_seen: Mutex<Vec<Vec<Message>>>,
 }
 
-struct EmptyResponseClient {
+struct SafetyRefusalClient {
     calls: AtomicUsize,
     health_probe_calls: AtomicUsize,
+    messages_seen: Mutex<Vec<Vec<Message>>>,
+}
+
+struct SafetyRefusalThenSuccessClient {
+    calls: AtomicUsize,
+    messages_seen: Mutex<Vec<Vec<Message>>>,
+}
+
+struct GenericEmptyResponseClient {
+    calls: AtomicUsize,
+    messages_seen: Mutex<Vec<Vec<Message>>>,
+}
+
+fn anthropic_messages_test_binding() -> ModelAttemptBinding {
+    ModelAttemptBinding {
+        requested_alias: "claude-opus-5".to_string(),
+        route_id: "test-anthropic-route".to_string(),
+        route_revision: "test-v1".to_string(),
+        provider_instance_id: "test-cliproxy".to_string(),
+        auth_account_id: "test-account".to_string(),
+        physical_model: "claude-opus-5".to_string(),
+        protocol: "anthropic-messages".to_string(),
+        provider_adapter: "custom".to_string(),
+        provider_adapter_version: "test".to_string(),
+        endpoint: "http://127.0.0.1:8317/v1".to_string(),
+        capabilities: Vec::new(),
+        model_input_limits: Default::default(),
+    }
 }
 
 struct ProviderStateToolContinuationClient {
@@ -834,9 +862,20 @@ impl Client for InvalidProtocolContinuationClient {
 }
 
 #[async_trait::async_trait]
-impl Client for EmptyResponseClient {
+impl Client for SafetyRefusalClient {
+    fn model(&self) -> Option<String> {
+        Some("claude-opus-5".to_string())
+    }
+
+    async fn bind_model_attempt(
+        &self,
+        _request: &ModelRequestContext,
+    ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+        Ok(anthropic_messages_test_binding())
+    }
+
     fn provider_resource_key(&self) -> String {
-        "model-provider:test-empty-response".to_string()
+        "model-provider:test-safety-refusal".to_string()
     }
 
     fn supports_async_cancellation(&self) -> bool {
@@ -845,19 +884,70 @@ impl Client for EmptyResponseClient {
 
     async fn create_completion(
         &self,
-        _messages: Vec<Message>,
+        messages: Vec<Message>,
         _tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.messages_seen.lock().unwrap().push(messages);
         self.calls.fetch_add(1, Ordering::SeqCst);
         Err(Box::new(ModelFailure::new(
-            ModelFailureKind::EmptyResponse,
-            "completed response was empty",
+            ModelFailureKind::SafetyRefusal,
+            "stop_reason=refusal",
         )))
     }
 
     async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for SafetyRefusalThenSuccessClient {
+    fn model(&self) -> Option<String> {
+        Some("claude-opus-5".to_string())
+    }
+
+    async fn bind_model_attempt(
+        &self,
+        _request: &ModelRequestContext,
+    ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+        Ok(anthropic_messages_test_binding())
+    }
+
+    async fn create_completion(
+        &self,
+        messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.messages_seen.lock().unwrap().push(messages);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            return Err(Box::new(ModelFailure::new(
+                ModelFailureKind::SafetyRefusal,
+                "stop_reason=refusal",
+            )));
+        }
+        Ok(text_reply_response(if call == 1 {
+            "recovered from the recent evidence projection"
+        } else {
+            "full context canary succeeded"
+        }))
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for GenericEmptyResponseClient {
+    async fn create_completion(
+        &self,
+        messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.messages_seen.lock().unwrap().push(messages);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(Box::new(ModelFailure::new(
+            ModelFailureKind::EmptyResponse,
+            "generic model completed with empty output",
+        )))
     }
 }
 
@@ -3099,16 +3189,17 @@ async fn test_response_protocol_fuses_after_two_failed_corrections() {
 }
 
 #[tokio::test]
-async fn typed_empty_response_uses_bounded_protocol_correction_not_provider_recovery() {
-    let session_id = "attempt_typed_empty_response";
+async fn typed_safety_refusal_uses_bounded_projection_not_provider_recovery() {
+    let session_id = "attempt_typed_safety_refusal";
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("typed-empty-response.db");
+    let db_path = tmp.path().join("typed-safety-refusal.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     install_test_session_registry(&bus, &store);
-    let client = Arc::new(EmptyResponseClient {
+    let client = Arc::new(SafetyRefusalClient {
         calls: AtomicUsize::new(0),
         health_probe_calls: AtomicUsize::new(0),
+        messages_seen: Mutex::new(Vec::new()),
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -3126,9 +3217,15 @@ async fn typed_empty_response_uses_bounded_protocol_correction_not_provider_reco
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, session_id, "return a valid terminal response").await;
-    let protocol_errors =
-        wait_for_topic_count(&store, "runtime/response_protocol_error", session_id, 3).await;
-    let fused = wait_for_topic(&store, "runtime/response_protocol_fused", session_id).await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let protocol_errors = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/response_protocol_error".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     let provider_waits = store
         .query(QueryFilter {
             session_id: Some(session_id.to_string()),
@@ -3137,12 +3234,164 @@ async fn typed_empty_response_uses_bounded_protocol_correction_not_provider_reco
         })
         .await
         .unwrap();
+    let recovery_events = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/safety_refusal_recovery".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
 
     assert_eq!(client.calls.load(Ordering::SeqCst), 3);
     assert_eq!(client.health_probe_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(protocol_errors.len(), 3);
-    assert_eq!(fused.len(), 1);
+    assert!(protocol_errors.is_empty());
     assert!(provider_waits.is_empty());
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].payload["runtime_failure_kind"], "safety_refusal");
+    assert_eq!(recovery_events.len(), 2);
+    assert_eq!(
+        recovery_events.last().unwrap().payload["observation_limit"],
+        json!(4)
+    );
+    assert_eq!(recovery_events.last().unwrap().payload["state"], "armed");
+    let messages = client.messages_seen.lock().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert!(!messages[0][1].content.contains("safety-refusal-recovery"));
+    assert!(messages[1][1].content.contains("safety-refusal-recovery"));
+    assert!(messages[2][1].content.contains("safety-refusal-recovery"));
+    assert!(!messages[1][1]
+        .content
+        .contains("The previous model output was rejected"));
+}
+
+#[tokio::test]
+async fn generic_empty_response_does_not_enable_safety_refusal_recovery_projection() {
+    let session_id = "attempt_generic_empty_response";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("generic-empty-response.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(GenericEmptyResponseClient {
+        calls: AtomicUsize::new(0),
+        messages_seen: Mutex::new(Vec::new()),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "return a valid terminal response").await;
+    wait_for_topic(&store, "runtime/response_protocol_fused", session_id).await;
+
+    let recovery_events = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/safety_refusal_recovery".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(recovery_events.is_empty());
+    let messages = client.messages_seen.lock().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert!(!messages[1][1].content.contains("safety-refusal-recovery"));
+    assert!(messages[1][2]
+        .content
+        .contains("The previous model output was rejected"));
+}
+
+#[tokio::test]
+async fn safety_refusal_projection_persists_until_the_failing_evidence_prefix_changes() {
+    let session_id = "attempt_safety_refusal_durable_projection";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("safety-refusal-durable-projection.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(SafetyRefusalThenSuccessClient {
+        calls: AtomicUsize::new(0),
+        messages_seen: Mutex::new(Vec::new()),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        Arc::clone(&engine),
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "first request").await;
+    let replies = wait_for_topic_count(&store, "chat/reply", session_id, 1).await;
+    assert_eq!(replies.len(), 1);
+
+    publish_user(&bus, session_id, "second request while prefix is unchanged").await;
+    let replies = wait_for_topic_count(&store, "chat/reply", session_id, 2).await;
+    assert_eq!(replies.len(), 2);
+
+    let view = engine
+        .build_context_encoding(session_id, session_id, &HashSet::new())
+        .await
+        .unwrap();
+    let first_request = view
+        .observations
+        .iter()
+        .find(|observation| observation.kind == TYPE_USER_MESSAGE)
+        .unwrap();
+    engine
+        .apply_context_transaction(
+            session_id,
+            session_id,
+            &format!(
+                "(context-tx (base-version {}) (reason \"retire known refusal prefix\") (retire {}))",
+                view.state.version, first_request.reference
+            ),
+        )
+        .await
+        .unwrap();
+
+    publish_user(&bus, session_id, "third request after maintenance").await;
+    let replies = wait_for_topic_count(&store, "chat/reply", session_id, 3).await;
+    assert_eq!(replies.len(), 3);
+
+    {
+        let messages = client.messages_seen.lock().unwrap();
+        assert_eq!(messages.len(), 4);
+        assert!(!messages[0][1].content.contains("safety-refusal-recovery"));
+        assert!(messages[1][1].content.contains("safety-refusal-recovery"));
+        assert!(messages[2][1].content.contains("safety-refusal-recovery"));
+        assert!(!messages[3][1].content.contains("safety-refusal-recovery"));
+    }
+
+    let recovery_events = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/safety_refusal_recovery".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(recovery_events.len(), 2);
+    assert_eq!(recovery_events[0].payload["state"], "armed");
+    assert_eq!(recovery_events[1].payload["state"], "cleared");
 }
 
 #[tokio::test]

@@ -18,6 +18,11 @@ use std::path::Path;
 pub struct ProviderControlSnapshot {
     pub generated_at: DateTime<Utc>,
     pub selected_model_alias: String,
+    /// Additional logical routes the Agent may explicitly select for infer or
+    /// scheduled child Evaluations. The selected primary route is authorized
+    /// implicitly and therefore is not duplicated here.
+    #[serde(default)]
+    pub allowed_evaluation_models: Vec<String>,
     pub permission_mode: crate::permission::PermissionMode,
     pub reviewer: crate::permission::ReviewerKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +65,7 @@ pub enum ProviderCatalogObjectKind {
     ProviderInstance,
     AuthAccount,
     ModelRoute,
+    EvaluationModelPolicy,
     PermissionSettings,
 }
 

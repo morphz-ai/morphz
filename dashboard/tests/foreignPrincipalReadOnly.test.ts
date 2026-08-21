@@ -15,3 +15,12 @@ test('Foreign Principal observation cannot retry or cancel that Principal Sessio
   assert.match(appSource, /readOnly=\{observingForeignPrincipal\}/)
   assert.match(appSource, /disabled=\{readOnly\} onClick=\{onCancel\}/)
 })
+
+test('Foreign Principal observation still allows Operator Session model policy control', () => {
+  const modelControl = appSource.slice(
+    appSource.indexOf('className={`composer-model-control'),
+    appSource.indexOf('<span className="connection-status"'),
+  )
+  assert.match(modelControl, /disabled=\{changingModel \|\| !selectedSessionId\}/)
+  assert.doesNotMatch(modelControl, /observingForeignPrincipal|readOnly/)
+})

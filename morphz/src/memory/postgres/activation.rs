@@ -28,6 +28,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS dialogue_lane_released_at TEXT"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
+        r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS reasoning_effort TEXT"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_session_status
            ON thread_activations(session_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_context_status
@@ -187,6 +188,7 @@ pub(super) fn activation_from_row(row: &PgRow) -> Result<ThreadActivationRecord,
         parent_activation_id: row.get("parent_activation_id"),
         root_turn_id: row.get("root_turn_id"),
         model_alias: row.get("model_alias"),
+        reasoning_effort: row.get("reasoning_effort"),
         context_snapshot_version: row
             .get::<Option<i64>, _>("context_snapshot_version")
             .map(u64::try_from)
@@ -1399,6 +1401,26 @@ impl ActivationStore for PostgresStore {
             "UPDATE thread_activations SET model_alias = $1, updated_at = $2 WHERE id = $3 AND model_alias IS NULL",
         )
         .bind(model_alias)
+        .bind(now_text())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.get_thread_activation(id).await
+    }
+
+    async fn bind_thread_activation_reasoning_effort(
+        &self,
+        id: &str,
+        reasoning_effort: &str,
+    ) -> Result<Option<ThreadActivationRecord>, StoreError> {
+        let reasoning_effort = reasoning_effort.trim();
+        if reasoning_effort.is_empty() {
+            return Err("Activation reasoning effort must not be empty".into());
+        }
+        sqlx::query(
+            "UPDATE thread_activations SET reasoning_effort = $1, updated_at = $2 WHERE id = $3 AND reasoning_effort IS NULL",
+        )
+        .bind(reasoning_effort)
         .bind(now_text())
         .bind(id)
         .execute(&self.pool)

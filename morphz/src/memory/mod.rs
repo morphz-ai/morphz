@@ -720,6 +720,11 @@ pub struct SessionRecord {
     /// `None` inherits the Runtime primary model at Evaluation binding time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_alias: Option<String>,
+    /// Optional reasoning-effort override selected for future Evaluations in
+    /// this Session. `None` inherits the Runtime/service default. The value is
+    /// validated at the Runtime boundary before it reaches persistent state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
@@ -837,6 +842,9 @@ pub struct SessionUpdate {
     /// `None` leaves the binding unchanged. `Some(None)` restores Runtime
     /// inheritance; `Some(Some(alias))` selects a concrete enabled route.
     pub model_alias: Option<Option<String>>,
+    /// `None` leaves the override unchanged. `Some(None)` restores service
+    /// inheritance; `Some(Some(level))` freezes a Session-specific level.
+    pub reasoning_effort: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -898,6 +906,10 @@ pub struct ThreadActivationRecord {
     /// before the first physical Provider attempt and survives restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_alias: Option<String>,
+    /// Immutable reasoning policy bound at the same Evaluation boundary.
+    /// `provider_default` means Morphz intentionally emits no override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub status: ThreadActivationStatus,
     pub claimed_by: Option<String>,
     pub lease_expires_at: Option<DateTime<Utc>>,
@@ -5797,6 +5809,12 @@ pub trait ActivationStore: Send + Sync {
         &self,
         id: &str,
         model_alias: &str,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically freezes the configured reasoning policy for this Evaluation.
+    async fn bind_thread_activation_reasoning_effort(
+        &self,
+        id: &str,
+        reasoning_effort: &str,
     ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Exact Activation parents for an already-selected scheduler aggregate.
     async fn list_thread_activations_by_ids(

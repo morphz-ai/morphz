@@ -791,6 +791,7 @@ mod tests {
             parent_activation_id: None,
             root_turn_id: "root-1".into(),
             model_alias: None,
+            reasoning_effort: None,
             context_snapshot_version: None,
             status: ThreadActivationStatus::Running,
             claimed_by: Some("worker-1".into()),

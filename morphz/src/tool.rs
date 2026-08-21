@@ -20,6 +20,7 @@ use crate::memory::{
     ThreadPromotionRequest, ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::TYPE_OBJECTIVE_CONTROL;
+use crate::orchestrator::context::ContextEngine;
 use crate::permission::{
     ApprovalContext, ApprovalRequirement, FilesystemAccess, PermissionBroker, PermissionConfig,
     PermissionProfile, SandboxMode, ShellEnvironmentPolicy,
@@ -3216,6 +3217,7 @@ pub struct ScheduleTxTool {
     objectives: Option<Arc<dyn ObjectiveStore>>,
     kernel: Option<Arc<SchedulerKernel>>,
     allowed_evaluation_models: std::collections::HashSet<String>,
+    evaluation_model_policy: Option<Arc<ContextEngine>>,
 }
 
 impl ScheduleTxTool {
@@ -3226,6 +3228,7 @@ impl ScheduleTxTool {
             objectives: None,
             kernel: None,
             allowed_evaluation_models: std::collections::HashSet::new(),
+            evaluation_model_policy: None,
         }
     }
 
@@ -3243,6 +3246,26 @@ impl ScheduleTxTool {
             .filter(|model| !model.is_empty())
             .collect();
         self
+    }
+
+    /// Bind model authorization to the Runtime's live Evaluation policy.
+    /// Static allowlists remain available for narrow unit fixtures, while the
+    /// production registry observes Dashboard/config edits immediately.
+    pub fn with_evaluation_model_policy(mut self, context_engine: Arc<ContextEngine>) -> Self {
+        self.evaluation_model_policy = Some(context_engine);
+        self
+    }
+
+    fn allowed_evaluation_models(&self) -> std::collections::HashSet<String> {
+        self.evaluation_model_policy
+            .as_ref()
+            .map(|context_engine| {
+                context_engine
+                    .agent_allowed_evaluation_models()
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_else(|| self.allowed_evaluation_models.clone())
     }
 
     pub fn with_objective_store(mut self, objectives: Arc<dyn ObjectiveStore>) -> Self {
@@ -3923,8 +3946,8 @@ impl Tool for ScheduleTxTool {
     fn definition(&self) -> ToolDefinition {
         let objective_binding_schema = schedule_objective_binding_schema();
         let promote_operation_schema = schedule_promote_operation_schema();
-        let mut allowed_models = self
-            .allowed_evaluation_models
+        let allowed_evaluation_models = self.allowed_evaluation_models();
+        let mut allowed_models = allowed_evaluation_models
             .iter()
             .cloned()
             .collect::<Vec<_>>();
@@ -4114,7 +4137,7 @@ impl Tool for ScheduleTxTool {
                         .into(),
                 );
             }
-            if !self.allowed_evaluation_models.contains(requested_model) {
+            if !self.allowed_evaluation_models().contains(requested_model) {
                 return Err(format!(
                     "model route '{requested_model}' is not authorized for the Agent by llm.allowed_evaluation_models"
                 )

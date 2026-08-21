@@ -91,6 +91,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             root_turn_id TEXT NOT NULL,
             context_snapshot_version BIGINT,
             model_alias TEXT,
+            reasoning_effort TEXT,
             admission_rank SMALLINT NOT NULL DEFAULT 3 CHECK(admission_rank BETWEEN 0 AND 4),
             status TEXT NOT NULL,
             claimed_by TEXT,

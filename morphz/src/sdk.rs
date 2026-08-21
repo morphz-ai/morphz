@@ -8,12 +8,12 @@
 use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::config::{
     remove_managed_provider_accounts_at, save_managed_auth_account_at,
-    save_managed_auto_review_model_at, save_managed_model_route_at,
-    save_managed_provider_account_at, save_managed_provider_account_models_at,
-    save_managed_provider_catalog_at, save_managed_provider_instance_at, AppConfig,
-    AuthAccountConfig, CredentialConfig, ModelProtocol, ModelRouteAffinity,
-    ModelRouteCandidateConfig, ModelRouteConfig, ModelRouteSelection, ProviderInstanceConfig,
-    ProviderModelConfig,
+    save_managed_auto_review_model_at, save_managed_evaluation_model_policy_at,
+    save_managed_model_route_at, save_managed_provider_account_at,
+    save_managed_provider_account_models_at, save_managed_provider_catalog_at,
+    save_managed_provider_instance_at, AppConfig, AuthAccountConfig, CredentialConfig,
+    ModelProtocol, ModelRouteAffinity, ModelRouteCandidateConfig, ModelRouteConfig,
+    ModelRouteSelection, ProviderInstanceConfig, ProviderModelConfig,
 };
 use crate::event::Event;
 use crate::execution::JobReceipt;
@@ -1447,6 +1447,107 @@ impl MorphzSdk {
         ))
     }
 
+    /// Replace the Runtime primary model and the extra model routes the Agent
+    /// may choose for its own child Evaluations. This is one policy mutation:
+    /// the managed file never exposes a new primary with an old allowlist (or
+    /// vice versa), and a persistence failure restores the live policy.
+    pub async fn put_evaluation_model_policy(
+        &self,
+        managed_config_path: &Path,
+        primary_model: &str,
+        allowed_evaluation_models: Vec<String>,
+    ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let previous = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        let previous_selected = self.runtime.model();
+
+        let canonicalize = |requested: &str| -> SdkResult<String> {
+            let requested = requested.trim();
+            if requested.is_empty() {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    "evaluation model route must not be empty",
+                ));
+            }
+            if previous.model_routes.contains_key(requested)
+                || previous.llm.model == requested
+                || previous.llm.models.iter().any(|model| model == requested)
+            {
+                return Ok(requested.to_string());
+            }
+            previous
+                .model_routes
+                .iter()
+                .find_map(|(route_id, route)| {
+                    route
+                        .aliases
+                        .iter()
+                        .any(|alias| alias == requested)
+                        .then(|| route_id.clone())
+                })
+                .ok_or_else(|| {
+                    SdkError::new(
+                        SdkErrorCode::InvalidArgument,
+                        format!("model route '{requested}' is not in the configured model catalog"),
+                    )
+                })
+        };
+
+        let primary_model = canonicalize(primary_model)?;
+        let mut allowed = Vec::new();
+        for requested in allowed_evaluation_models {
+            let route = canonicalize(&requested)?;
+            if route != primary_model && !allowed.contains(&route) {
+                allowed.push(route);
+            }
+        }
+        allowed.sort();
+
+        let mut updated = previous.clone();
+        updated.llm.model = primary_model.clone();
+        updated.llm.allowed_evaluation_models = allowed.clone();
+        self.runtime
+            .replace_provider_catalog(updated)
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
+        if let Err(error) = self.runtime.set_model(&primary_model).await {
+            let _ = self
+                .runtime
+                .replace_provider_catalog(previous.clone())
+                .await;
+            let _ = self.runtime.set_model(&previous_selected).await;
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                error.to_string(),
+            ));
+        }
+
+        if let Err(error) =
+            save_managed_evaluation_model_policy_at(managed_config_path, &primary_model, &allowed)
+        {
+            let rollback_catalog = self.runtime.replace_provider_catalog(previous).await;
+            let rollback_model = self.runtime.set_model(&previous_selected).await;
+            let rollback_error = rollback_catalog
+                .err()
+                .map(|error| error.to_string())
+                .or_else(|| rollback_model.err().map(|error| error.to_string()));
+            return Err(SdkError::internal(match rollback_error {
+                Some(rollback_error) => format!(
+                    "{error}; evaluation model policy rollback also failed: {rollback_error}"
+                ),
+                None => error,
+            }));
+        }
+
+        Ok(ProviderCatalogMutationReceipt::new(
+            ProviderCatalogObjectKind::EvaluationModelPolicy,
+            "evaluation-model-policy",
+            managed_config_path,
+        ))
+    }
+
     pub fn put_auto_review_model(
         &self,
         managed_config_path: &Path,
@@ -2131,6 +2232,17 @@ impl MorphzSdk {
         }
         self.runtime
             .context_token_budget(context_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn context_token_budget_for_session(
+        &self,
+        context_id: &str,
+        session_id: &str,
+    ) -> SdkResult<ContextTokenBudget> {
+        self.runtime
+            .context_token_budget_for_session(context_id, session_id)
             .await
             .map_err(SdkError::internal)
     }
@@ -3282,6 +3394,50 @@ impl MorphzSdk {
             })
     }
 
+    /// Change only the Evaluation model policy of a Session from the
+    /// administrative control plane.
+    ///
+    /// This deliberately bypasses participant authorization because it does
+    /// not impersonate a participant or append conversation data. Keep title,
+    /// lifecycle, and every other Session mutation on `update_session`.
+    pub async fn set_session_model_as_operator(
+        &self,
+        session_id: &str,
+        model_alias: Option<String>,
+    ) -> SdkResult<SessionRecord> {
+        self.set_session_evaluation_policy_as_operator(session_id, Some(model_alias), None)
+            .await
+    }
+
+    /// Change only the model-evaluation policy of a Session from the
+    /// administrative control plane. Conversation authorship and lifecycle
+    /// remain protected by participant authorization.
+    pub async fn set_session_evaluation_policy_as_operator(
+        &self,
+        session_id: &str,
+        model_alias: Option<Option<String>>,
+        reasoning_effort: Option<Option<String>>,
+    ) -> SdkResult<SessionRecord> {
+        self.runtime
+            .update_session(
+                session_id,
+                SessionUpdate {
+                    title: None,
+                    status: None,
+                    model_alias,
+                    reasoning_effort,
+                },
+            )
+            .await
+            .map_err(SdkError::internal)?
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::NotFound,
+                    format!("Session '{session_id}' does not exist"),
+                )
+            })
+    }
+
     pub async fn list_sessions(
         &self,
         principal_id: &str,
@@ -3765,6 +3921,7 @@ mod tests {
                 title: None,
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
+                reasoning_effort: None,
             },
         )
         .await

@@ -229,6 +229,22 @@ fn resolve_model_context_capacity(config: &AppConfig, model: &str) -> ModelConte
     }
 }
 
+fn resolve_model_context_capacities(config: &AppConfig) -> HashMap<String, ModelContextCapacity> {
+    let mut models = config.llm.models.clone();
+    models.push(config.llm.model.clone());
+    models.extend(config.model_routes.keys().cloned());
+    models.sort();
+    models.dedup();
+    models
+        .into_iter()
+        .filter(|model| !model.trim().is_empty())
+        .map(|model| {
+            let capacity = resolve_model_context_capacity(config, &model);
+            (model, capacity)
+        })
+        .collect()
+}
+
 static RUNTIME_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RUNTIME_DEFAULT_IDENTITY_PROVIDER_ID: &str = "runtime-default";
 const ARTIFACT_TRANSFER_EXECUTOR_KIND: &str = "artifact_transfer";
@@ -1120,6 +1136,8 @@ impl MorphzRuntimeBuilder {
             &self.config,
             &self.config.llm.model,
         )));
+        let model_context_capacities =
+            Arc::new(RwLock::new(resolve_model_context_capacities(&self.config)));
         let provider_catalog_config = self.config.clone();
         let model_prompt_token_limit_overrides = RwLock::new(HashMap::new());
         let context_engine = Arc::new(
@@ -1130,6 +1148,7 @@ impl MorphzRuntimeBuilder {
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
             .with_principal_first_seen_cues(self.principal_first_seen_cues)
             .with_model_context_capacity(Arc::clone(&model_context_capacity))
+            .with_model_context_capacities(Arc::clone(&model_context_capacities))
             .with_evaluation_model_policy(
                 self.config.llm.model.clone(),
                 self.config.llm.allowed_evaluation_models.clone(),
@@ -1370,18 +1389,9 @@ impl MorphzRuntimeBuilder {
                         )
                     })?;
             }
-            let registration = crate::execution_target::runtime_managed_ssh_registration(
-                target_config,
-                &endpoint,
-                &self.identity.principal_id,
-                &permissions.policy_digest(),
-            )?;
-            store.register_execution_target(registration).await?;
-            runtime_managed_ssh_endpoints
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(target_config.endpoint_ref.clone())
-                .or_insert(endpoint);
+            runtime_managed_ssh_provisioner
+                .register_configured_target(target_config, endpoint)
+                .await?;
         }
         for durable_target in store
             .list_execution_targets(ExecutionTargetFilter {
@@ -1403,6 +1413,15 @@ impl MorphzRuntimeBuilder {
                     && target.status != ExecutionTargetStatus::Disabled
             })
         {
+            if !runtime_managed_ssh_provisioner.belongs_to_current_runtime_host(&durable_target) {
+                tracing::debug!(
+                    target_id = %durable_target.id,
+                    owner_runtime_host_id = ?durable_target.metadata.get("runtime_host_id"),
+                    event_code = "runtime.managed_ssh.foreign_host_route_skipped",
+                    "Skipped a system OpenSSH Target owned by another Runtime host"
+                );
+                continue;
+            }
             match runtime_managed_ssh_provisioner
                 .rehydrate(&durable_target)
                 .await
@@ -1539,6 +1558,7 @@ impl MorphzRuntimeBuilder {
                 registry,
                 harness_registry,
                 model_context_capacity,
+                model_context_capacities,
                 model_prompt_token_limit_overrides,
                 context_engine,
                 orchestrator,
@@ -1649,7 +1669,8 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         .with_allowed_evaluation_models(
             std::iter::once(config.llm.model.clone())
                 .chain(config.llm.allowed_evaluation_models.iter().cloned()),
-        ),
+        )
+        .with_evaluation_model_policy(Arc::clone(context_engine)),
     ));
     registry.register(Arc::new(PrincipalTool::new(
         context_engine
@@ -1736,6 +1757,7 @@ struct RuntimeInner {
     registry: Arc<Registry>,
     harness_registry: Arc<DomainHarnessRegistry>,
     model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
+    model_context_capacities: Arc<RwLock<HashMap<String, ModelContextCapacity>>>,
     /// Operator changes are applied immediately and also persisted by the
     /// embedding surface. Keeping the in-process overlay means switching away
     /// from a model and back does not temporarily restore stale startup data.
@@ -1840,7 +1862,25 @@ impl MorphzRuntime {
             config.llm.allowed_evaluation_models.clone(),
         );
         config.permissions.auto_review_model = self.inner.permissions.auto_review_model();
-        let capacity = resolve_model_context_capacity(&config, &self.model());
+        let selected_model = self.model();
+        let fallback_capacity = resolve_model_context_capacity(&config, &selected_model);
+        let mut capacities = resolve_model_context_capacities(&config);
+        for (model, limit) in self
+            .inner
+            .model_prompt_token_limit_overrides
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+        {
+            if let Some(model_capacity) = capacities.get_mut(model) {
+                model_capacity.prompt_token_limit = *limit;
+                model_capacity.source = "managed-provider-model-override".to_string();
+            }
+        }
+        let capacity = capacities
+            .get(&selected_model)
+            .cloned()
+            .unwrap_or(fallback_capacity);
         {
             let mut current = self
                 .inner
@@ -1853,7 +1893,12 @@ impl MorphzRuntime {
             .inner
             .model_context_capacity
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity.clone();
+        *self
+            .inner
+            .model_context_capacities
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacities;
         self.publish_model_configuration_changed("provider_catalog_replaced")
             .await?;
         Ok(())
@@ -2659,6 +2704,7 @@ impl MorphzRuntime {
         Ok(ProviderControlSnapshot {
             generated_at: chrono::Utc::now(),
             selected_model_alias: self.model(),
+            allowed_evaluation_models: config.llm.allowed_evaluation_models.clone(),
             permission_mode: self.inner.permissions.profile().mode,
             reviewer: self.inner.permissions.profile().reviewer,
             auto_review_model: self.auto_review_model(),
@@ -3183,7 +3229,12 @@ impl MorphzRuntime {
             .inner
             .model_context_capacity
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = capacity.clone();
+        self.inner
+            .model_context_capacities
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(model.to_string(), capacity);
         self.publish_model_configuration_changed("selected_model_changed")
             .await?;
         Ok(())
@@ -3218,8 +3269,16 @@ impl MorphzRuntime {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(model.to_string(), prompt_token_limit);
+        let catalog = self.provider_catalog_config()?;
+        let mut model_capacity = resolve_model_context_capacity(&catalog, model);
+        model_capacity.prompt_token_limit = prompt_token_limit;
+        model_capacity.source = "managed-provider-model-override".to_string();
+        self.inner
+            .model_context_capacities
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(model.to_string(), model_capacity);
         if self.model() == model {
-            let catalog = self.provider_catalog_config()?;
             let mut capacity = resolve_model_context_capacity(&catalog, model);
             capacity.prompt_token_limit = prompt_token_limit;
             capacity.source = "managed-provider-model-override".to_string();
@@ -3241,6 +3300,30 @@ impl MorphzRuntime {
         self.inner
             .context_engine
             .context_token_budget(context_id)
+            .await
+    }
+
+    pub async fn context_token_budget_for_session(
+        &self,
+        context_id: &str,
+        session_id: &str,
+    ) -> Result<ContextTokenBudget, RuntimeError> {
+        let session = self
+            .inner
+            .store
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
+        if session.context_id != context_id {
+            return Err(format!(
+                "Session '{session_id}' does not belong to Context '{context_id}'"
+            )
+            .into());
+        }
+        let model = session.model_alias.unwrap_or_else(|| self.model());
+        self.inner
+            .context_engine
+            .context_token_budget_for_model(context_id, Some(&model))
             .await
     }
 
@@ -9127,6 +9210,7 @@ mod tests {
             title: "Background work".to_string(),
             status: SessionStatus::Active,
             model_alias: None,
+            reasoning_effort: None,
             created_at: now,
             updated_at: now,
             last_activity_at: now,

@@ -930,6 +930,30 @@ impl ModelProtocol {
             Self::GeminiContent => "gemini-content",
         }
     }
+
+    /// Temporary CLIProxyAPI compatibility workaround for Claude models.
+    ///
+    /// Its OpenAI-compatible Responses path currently loses two pieces of
+    /// Anthropic protocol truth observed in production: an upstream
+    /// `stop_reason=refusal` can become an empty successful response, and a
+    /// completed reasoning output item can be followed by a synthesized
+    /// missing-terminal error. The same gateway's native Messages path
+    /// preserves both boundaries, so Claude physical models use that path even
+    /// when the Provider instance was configured as OpenAI-compatible.
+    ///
+    /// FIXME(cliproxyapi): remove this model-name override once the Responses
+    /// translator (1) preserves an explicit refusal terminal and (2) always
+    /// emits a valid terminal envelope after authoritative output-item events.
+    /// Keep the native refusal/parser tests when removing it so a proxy upgrade
+    /// cannot silently reintroduce empty responses or reasoning replay loops.
+    pub fn effective_for_model(self, model: &str) -> Self {
+        let model = model.trim().to_ascii_lowercase();
+        let is_claude = model == "claude" || model.starts_with("claude-");
+        match self {
+            Self::OpenaiResponses | Self::OpenaiChat if is_claude => Self::AnthropicMessages,
+            configured => configured,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1893,6 +1917,42 @@ pub fn save_managed_model(provider_id: &str, model: &str) -> Result<PathBuf, Str
     )?;
     write_managed_value(&path, &root)?;
     Ok(path)
+}
+
+/// Atomically persist the Runtime primary model route and the additional
+/// routes an Agent may explicitly select for child Evaluations. The primary
+/// route is deliberately omitted from `allowed_evaluation_models`: it is
+/// always authorized by policy and storing it twice obscures that invariant.
+pub fn save_managed_evaluation_model_policy_at(
+    path: &Path,
+    primary_model: &str,
+    allowed_evaluation_models: &[String],
+) -> Result<(), String> {
+    let primary_model = primary_model.trim();
+    if primary_model.is_empty() {
+        return Err("primary evaluation model must not be empty".to_string());
+    }
+    let mut allowed = allowed_evaluation_models
+        .iter()
+        .map(|model| model.trim())
+        .filter(|model| !model.is_empty() && *model != primary_model)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    allowed.sort();
+    allowed.dedup();
+
+    let mut root = read_managed_value(path)?;
+    insert_managed_value(
+        &mut root,
+        &["llm", "model"],
+        toml::Value::String(primary_model.to_string()),
+    )?;
+    insert_managed_value(
+        &mut root,
+        &["llm", "allowed_evaluation_models"],
+        toml::Value::Array(allowed.into_iter().map(toml::Value::String).collect()),
+    )?;
+    write_managed_value(path, &root)
 }
 
 /// Persist one Provider Instance in the operator-owned managed layer.
@@ -3593,6 +3653,47 @@ mod tests {
         let restored: AppConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(restored.permissions.mode, PermissionMode::AutoReview);
         assert_eq!(restored.permissions.auto_review_model, None);
+    }
+
+    #[test]
+    fn managed_evaluation_model_policy_is_canonical_and_preserves_catalog() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("models.toml");
+        std::fs::write(
+            &path,
+            "[llm]\nmodel = 'old-primary'\n\n[models.worker]\nservice = 'service-a'\nphysical_model = 'worker-v1'\n",
+        )
+        .unwrap();
+
+        save_managed_evaluation_model_policy_at(
+            &path,
+            "primary",
+            &[
+                " worker ".to_string(),
+                "primary".to_string(),
+                "worker".to_string(),
+                "reviewer".to_string(),
+                String::new(),
+            ],
+        )
+        .unwrap();
+
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        let value: toml::Value = toml::from_str(&persisted).unwrap();
+        assert_eq!(value["llm"]["model"].as_str(), Some("primary"));
+        assert_eq!(
+            value["llm"]["allowed_evaluation_models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            vec!["reviewer", "worker"]
+        );
+        assert_eq!(
+            value["models"]["worker"]["physical_model"].as_str(),
+            Some("worker-v1")
+        );
     }
 
     #[test]

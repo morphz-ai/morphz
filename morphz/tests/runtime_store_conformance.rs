@@ -594,6 +594,7 @@ where
                 title: Some("Archived Session".to_string()),
                 status: Some(SessionStatus::Archived),
                 model_alias: Some(Some("session-route-a".to_string())),
+                reasoning_effort: Some(Some("high".to_string())),
             },
         )
         .await
@@ -601,6 +602,7 @@ where
         .unwrap();
     assert_eq!(archived.status, SessionStatus::Archived);
     assert_eq!(archived.model_alias.as_deref(), Some("session-route-a"));
+    assert_eq!(archived.reasoning_effort.as_deref(), Some("high"));
     let inherited = store
         .update_session(
             &race_session.id,
@@ -608,6 +610,7 @@ where
                 title: None,
                 status: None,
                 model_alias: Some(None),
+                reasoning_effort: Some(None),
             },
         )
         .await
@@ -616,6 +619,10 @@ where
     assert_eq!(
         inherited.model_alias, None,
         "clearing a Session model must restore Runtime inheritance"
+    );
+    assert_eq!(
+        inherited.reasoning_effort, None,
+        "clearing Session reasoning must restore Provider-default inference"
     );
     assert!(!store
         .list_context_sessions("conformance-context", false)
@@ -1072,6 +1079,22 @@ where
         replayed_binding.model_alias.as_deref(),
         Some("evaluation-route-a"),
         "an Evaluation model is immutable after the first durable binding"
+    );
+    let first_reasoning = store
+        .bind_thread_activation_reasoning_effort(&first.id, "high")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_reasoning.reasoning_effort.as_deref(), Some("high"));
+    let replayed_reasoning = store
+        .bind_thread_activation_reasoning_effort(&first.id, "low")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        replayed_reasoning.reasoning_effort.as_deref(),
+        Some("high"),
+        "an Evaluation reasoning policy is immutable after its first durable binding"
     );
     let clock = store
         .get_context_cognitive_clock("conformance-context")
@@ -3025,6 +3048,7 @@ where
                 title: None,
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
+                reasoning_effort: None,
             },
         )
         .await
@@ -3116,6 +3140,7 @@ where
                 title: None,
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
+                reasoning_effort: None,
             },
         )
         .await
@@ -3462,6 +3487,7 @@ where
                 title: None,
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
+                reasoning_effort: None,
             },
         )
         .await
@@ -7112,6 +7138,7 @@ where
                 title: None,
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
+                reasoning_effort: None,
             },
         )
         .await

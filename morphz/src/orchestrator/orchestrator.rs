@@ -1133,16 +1133,26 @@ const CRITICAL_MAINTENANCE_PROMPT: &str = r#"The Runtime has entered critical-ma
 - objective_update remains available for a bound active Objective. If completion evidence already exists, submit completed and enter finalizing in this Activation rather than stranding completed work for Context maintenance.
 - Calling a tool not provided in this request is rejected with an explicit result under its tool_call_id."#;
 
+const SAFETY_REFUSAL_RECOVERY_PROMPT: &str = r#"The previous physical model request ended with an explicit Provider safety refusal. Replaying the identical historical Inbox cannot make progress.
+- This is a request-local recovery Projection. It retains the current causal root and signals plus the newest recent observations. Omitted older observations remain durable and recallable; they were not deleted or retired.
+- The reduced Projection persists across Activations while the known failing historical evidence prefix is unchanged. A new message alone does not restore the full Inbox. After a context_tx retires at least one stale Observation from that prefix (normally after deriving its still-needed conclusion into Mind), Runtime submits one full-Context canary; only a valid canary clears recovery.
+- Address only the current root input. Do not repeat an older action merely because it appears in historical state, and do not reconstruct omitted sensitive details from memory.
+- If the current request is safe and answerable from Mind and the visible evidence, finish it normally. Use recall only for a narrow, necessary fact whose exact source is known.
+- Return one valid response boundary: non-empty ordinary text, required tool calls, or exactly one no_reply call."#;
+
 const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and this turn's ordinary context_tx allowance is exhausted. To prevent an impossible maintenance loop, this Evaluation is forced into final-reply. Return ordinary text that honestly delivers completed status, the latest reliable verification, and remaining work; call no_reply exclusively only when no message is truly needed. For a bound active Objective, objective_update is the only additional control tool: submit completed first when evidence is sufficient to enter finalizing in this Activation; otherwise preserve the true state and let the Supervisor continue."#;
 
 const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime hides context_tx for this request to stop consecutive housekeeping. End the Evaluation with ordinary text, call no_reply exclusively, or perform only physical actions truly required by the current task. context_tx returns after a new user or tool observation."#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
+const SAFETY_REFUSAL_RECOVERY_OBSERVATIONS: usize = 8;
+const SAFETY_REFUSAL_RECOVERY_TOPIC: &str = "runtime/safety_refusal_recovery";
 // Emergency maintenance is separate from the ordinary per-turn housekeeping
 // budget. Syntax and transaction semantics must decide whether maintenance is
 // valid; this high ceiling remains only a last-resort incident fuse.
 const CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT: usize = 256;
 const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
+const MAX_SAFETY_REFUSAL_RECOVERY_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const RESPONSE_PROTOCOL_CONTENT_PREVIEW_CHARS: usize = 2_048;
 const RESPONSE_PROTOCOL_TOOL_CALL_LIMIT: usize = 8;
@@ -1160,6 +1170,47 @@ enum ContextTxReceipt {
     None,
     Committed,
     Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SafetyRefusalRecoveryState {
+    model_alias: String,
+    observation_limit: usize,
+    failure_max_sequence: u64,
+    failure_prefix_fingerprint: String,
+}
+
+fn observation_prefix_fingerprint(context: &ContextView, max_sequence: u64) -> String {
+    let mut digest = Sha256::new();
+    for observation in context
+        .observations
+        .iter()
+        .filter(|observation| observation.sequence <= max_sequence)
+    {
+        digest.update(observation.sequence.to_le_bytes());
+        digest.update((observation.id.len() as u64).to_le_bytes());
+        digest.update(observation.id.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn safety_refusal_recovery_state(
+    context: &ContextView,
+    observation_limit: usize,
+    model_alias: &str,
+) -> SafetyRefusalRecoveryState {
+    let failure_max_sequence = context
+        .observations
+        .iter()
+        .map(|observation| observation.sequence)
+        .max()
+        .unwrap_or(0);
+    SafetyRefusalRecoveryState {
+        model_alias: model_alias.to_string(),
+        observation_limit: observation_limit.max(1),
+        failure_max_sequence,
+        failure_prefix_fingerprint: observation_prefix_fingerprint(context, failure_max_sequence),
+    }
 }
 
 #[derive(Debug)]
@@ -1336,6 +1387,11 @@ struct ActivationRoute {
     /// Logical model alias frozen durably on the Activation before its first
     /// physical request. Every retry and post-restart continuation reuses it.
     model_alias: String,
+    /// Configured reasoning policy frozen with the Evaluation. The sentinel
+    /// `provider_default` means the request deliberately carries no override.
+    reasoning_effort: String,
+    /// Exact scalar Context budget compiled for this Evaluation.
+    context_token_budget: Option<crate::orchestrator::context::ContextTokenBudget>,
     thread_kind: &'static str,
     /// Events that continue an internal Plan infer Thread must not queue
     /// behind the parent handler that is synchronously waiting for that Plan.
@@ -5970,6 +6026,7 @@ impl Orchestrator {
                                 title: None,
                                 status: Some(SessionStatus::Archived),
                                 model_alias: None,
+                                reasoning_effort: None,
                             },
                         )
                         .await?;
@@ -7819,6 +7876,13 @@ impl Orchestrator {
         let stream_attempt_id = attempt_id.to_string();
         let mut stream_route = Vec::new();
         self.append_activation_route(attempt_id, &mut stream_route);
+        let configured_reasoning_effort = self
+            .activation_route(attempt_id)
+            .map(|route| route.reasoning_effort)
+            .unwrap_or_else(|| "provider_default".to_string());
+        let request_reasoning_effort = (configured_reasoning_effort != "provider_default")
+            .then(|| crate::llm::ReasoningEffort::parse(&configured_reasoning_effort))
+            .flatten();
         let objective_id = stream_route.iter().find_map(|(key, value)| {
             (key == "objective_id")
                 .then(|| value.as_str().map(ToOwned::to_owned))
@@ -7852,6 +7916,17 @@ impl Orchestrator {
             .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
         }
         let model_request_started_at = Utc::now();
+        let effective_reasoning_effort = crate::provider::normalize_reasoning_effort_for_model(
+            &model_binding.provider_adapter,
+            &model_binding.physical_model,
+            request_reasoning_effort,
+        );
+        stream_route.push((
+            "effective_reasoning_effort".to_string(),
+            effective_reasoning_effort
+                .map(|effort| json!(effort.as_str()))
+                .unwrap_or(serde_json::Value::Null),
+        ));
         let effective_model_input_limits =
             host_model_input_limits.stricter(model_binding.model_input_limits);
         stream_route.push(("model_binding".to_string(), json!(&model_binding)));
@@ -8067,12 +8142,15 @@ impl Orchestrator {
             // Protocol-native clients are fully asynchronous. Keeping their
             // future in this task means timeout/cancellation drops the reqwest
             // future itself and therefore closes the underlying HTTP request.
-            let completion = client.create_completion_bound_stream(
+            let completion = client.create_completion_bound_stream_with_options(
                 &model_binding,
                 messages,
                 tools,
                 prompt_measurement,
                 stream_tx,
+                crate::llm::ModelRequestOptions {
+                    reasoning_effort: Some(request_reasoning_effort),
+                },
             );
             if let Some((deadline, seconds)) = model_hard_deadline {
                 match tokio::time::timeout_at(deadline, completion).await {
@@ -8152,12 +8230,15 @@ impl Orchestrator {
                         .build()
                         .map_err(|error| Box::new(error) as DynError)
                         .and_then(|runtime| {
-                            runtime.block_on(client.create_completion_bound_stream(
+                            runtime.block_on(client.create_completion_bound_stream_with_options(
                                 &thread_model_binding,
                                 messages,
                                 tools,
                                 prompt_measurement,
                                 stream_tx,
+                                crate::llm::ModelRequestOptions {
+                                    reasoning_effort: Some(request_reasoning_effort),
+                                },
                             ))
                         });
                     let _ = model_tx.send(result);
@@ -9220,10 +9301,10 @@ impl Orchestrator {
                     .filter(|model| !model.is_empty())
                     .map(ToOwned::to_owned)
             });
-        let session_model_alias = session_store
-            .get_session(session_id)
-            .await?
-            .and_then(|session| session.model_alias);
+        let session_record = session_store.get_session(session_id).await?;
+        let session_model_alias = session_record
+            .as_ref()
+            .and_then(|session| session.model_alias.clone());
         let desired_model_alias = activation
             .model_alias
             .clone()
@@ -9247,6 +9328,35 @@ impl Orchestrator {
         let activation_model_alias = bound_activation.model_alias.ok_or_else(|| {
             format!(
                 "Thread Activation '{}' failed to persist its model binding",
+                activation.id
+            )
+        })?;
+        let desired_reasoning_effort = activation
+            .reasoning_effort
+            .clone()
+            .or_else(|| {
+                session_record
+                    .as_ref()
+                    .and_then(|session| session.reasoning_effort.clone())
+            })
+            .or_else(|| {
+                self.client
+                    .reasoning_effort()
+                    .map(|effort| effort.as_str().to_string())
+            })
+            .unwrap_or_else(|| "provider_default".to_string());
+        let bound_activation = session_store
+            .bind_thread_activation_reasoning_effort(&activation.id, &desired_reasoning_effort)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Thread Activation '{}' disappeared while binding its reasoning policy",
+                    activation.id
+                )
+            })?;
+        let activation_reasoning_effort = bound_activation.reasoning_effort.ok_or_else(|| {
+            format!(
+                "Thread Activation '{}' failed to persist its reasoning policy",
                 activation.id
             )
         })?;
@@ -9280,7 +9390,9 @@ impl Orchestrator {
                 trigger_sequence: activation.trigger_sequence,
                 initiating_principal_id: activation.initiating_principal_id.clone(),
                 context_snapshot_version: activation.context_snapshot_version,
-                model_alias: activation_model_alias,
+                model_alias: activation_model_alias.clone(),
+                reasoning_effort: activation_reasoning_effort,
+                context_token_budget: None,
                 thread_kind,
                 internal_child_handoff: thread.executor_kind == "plan_infer",
                 delivery_thread_ids,
@@ -9334,8 +9446,16 @@ impl Orchestrator {
         // outputs remain ordinary observations and are never replayed here.
         let mut context = self
             .context_engine
-            .build_context_encoding_for_activation(&context_id, activation, &HashSet::new())
+            .build_context_encoding_for_activation_with_model(
+                &context_id,
+                activation,
+                &HashSet::new(),
+                Some(&activation_model_alias),
+            )
             .await?;
+        if let Some(mut route) = self.activation_routes.get_mut(&attempt_id) {
+            route.context_token_budget = Some(context.token_budget_policy.clone());
+        }
         let continuation = self
             .tool_continuation_for_trigger(
                 session_id,
@@ -9349,10 +9469,11 @@ impl Orchestrator {
         if !continuation.delivered_output_ids.is_empty() {
             context = self
                 .context_engine
-                .build_context_encoding_for_activation(
+                .build_context_encoding_for_activation_with_model(
                     &context_id,
                     activation,
                     &continuation.delivered_output_ids,
+                    Some(&activation_model_alias),
                 )
                 .await?;
         }
@@ -9426,6 +9547,58 @@ impl Orchestrator {
         } else {
             None
         };
+        let mut safety_refusal_recovery_limit = None;
+        let mut safety_refusal_recovery_canary = None;
+        let mut safety_refusal_recovery_active = false;
+        if let Some(state) = self
+            .load_safety_refusal_recovery_state(&context_id, session_id)
+            .await?
+        {
+            if state.model_alias != activation_model_alias {
+                tracing::debug!(
+                    context_id = %context_id,
+                    session_id,
+                    activation_id = %activation.id,
+                    recovery_model_alias = %state.model_alias,
+                    activation_model_alias = %activation_model_alias,
+                    event_code = "orchestrator.safety_refusal.recovery_model_mismatch",
+                    "Ignoring a safety-refusal recovery projection for a different logical model"
+                );
+            } else {
+                let current_fingerprint =
+                    observation_prefix_fingerprint(&context, state.failure_max_sequence);
+                if current_fingerprint == state.failure_prefix_fingerprint {
+                    let (total, visible) = self
+                        .context_engine
+                        .apply_safety_refusal_recovery_projection(
+                            &mut context,
+                            state.observation_limit,
+                            CRITICAL_MAINTENANCE_PREVIEW_CHARS,
+                        );
+                    safety_refusal_recovery_limit = Some(state.observation_limit);
+                    safety_refusal_recovery_active = true;
+                    tracing::info!(
+                        context_id = %context_id,
+                        session_id,
+                        activation_id = %activation.id,
+                        total_active_observations = total,
+                        projected_observations = visible,
+                        projection_limit = state.observation_limit,
+                        event_code = "orchestrator.safety_refusal.recovery_projection_restored",
+                        "Restored the durable safety-refusal recovery projection because the known failing historical evidence prefix is unchanged"
+                    );
+                } else {
+                    safety_refusal_recovery_canary = Some(state);
+                    tracing::info!(
+                        context_id = %context_id,
+                        session_id,
+                        activation_id = %activation.id,
+                        event_code = "orchestrator.safety_refusal.full_projection_canary",
+                        "Historical evidence changed after safety-refusal recovery; submitting one full-Context canary before clearing the durable projection"
+                    );
+                }
+            }
+        }
         let (_prompt_mode, stable_system_prompt) = configured_system_prompt()?;
         let context_message_prefix = "The Runtime provides the current Context Encoding below. It is not an ordinary user message. Execute the final evaluate entry and decide from protocol, inbox, and the current state that follows.";
 
@@ -9433,9 +9606,13 @@ impl Orchestrator {
         // current Context can continue normal work, so even if measurement leads to maintenance or
         // reply-only mode, thresholds still use the full work toolset. This avoids oscillation caused
         // by measuring a reduced toolset near a boundary.
-        let measurement_directive = match context.turn_budget.phase.as_str() {
-            "soft-checkpoint" => Some(("soft-checkpoint", SOFT_CHECKPOINT_PROMPT)),
-            _ => None,
+        let measurement_directive = if safety_refusal_recovery_active {
+            Some(("safety-refusal-recovery", SAFETY_REFUSAL_RECOVERY_PROMPT))
+        } else {
+            match context.turn_budget.phase.as_str() {
+                "soft-checkpoint" => Some(("soft-checkpoint", SOFT_CHECKPOINT_PROMPT)),
+                _ => None,
+            }
         };
         let measurement_overlay = EvaluationContextOverlay {
             evaluation_profile: harness_context.as_ref().map(|item| item.profile.as_str()),
@@ -9513,7 +9690,8 @@ impl Orchestrator {
         if recovering_completion_intent {
             effective_phase = "objective-finalization".to_string();
         }
-        let mut bounded_critical_projection = context.pressure.level == "critical";
+        let mut bounded_critical_projection =
+            context.pressure.level == "critical" && !safety_refusal_recovery_active;
         let mut recovery_observation_limit = 1usize;
         let mut critical_recovery_source = None;
         if bounded_critical_projection {
@@ -9550,19 +9728,28 @@ impl Orchestrator {
         let context_tx_cooldown = effective_phase != "final-reply"
             && context.pressure.level != "critical"
             && context_tx_receipt == ContextTxReceipt::Committed;
-        let phase_prompt = match effective_phase.as_str() {
-            "final-reply" if maintenance_budget_exhausted => {
-                Some(MAINTENANCE_BUDGET_EXHAUSTED_PROMPT)
+        let runtime_directive = if safety_refusal_recovery_active {
+            Some(("safety-refusal-recovery", SAFETY_REFUSAL_RECOVERY_PROMPT))
+        } else {
+            match effective_phase.as_str() {
+                "final-reply" if maintenance_budget_exhausted => Some((
+                    effective_phase.as_str(),
+                    MAINTENANCE_BUDGET_EXHAUSTED_PROMPT,
+                )),
+                "critical-maintenance" => {
+                    Some((effective_phase.as_str(), CRITICAL_MAINTENANCE_PROMPT))
+                }
+                "soft-checkpoint" => Some((effective_phase.as_str(), SOFT_CHECKPOINT_PROMPT)),
+                _ if context_tx_cooldown => {
+                    Some((effective_phase.as_str(), CONTEXT_TX_COOLDOWN_PROMPT))
+                }
+                _ => None,
             }
-            "critical-maintenance" => Some(CRITICAL_MAINTENANCE_PROMPT),
-            "soft-checkpoint" => Some(SOFT_CHECKPOINT_PROMPT),
-            _ if context_tx_cooldown => Some(CONTEXT_TX_COOLDOWN_PROMPT),
-            _ => None,
         };
         let request_overlay = EvaluationContextOverlay {
             evaluation_profile: harness_context.as_ref().map(|item| item.profile.as_str()),
             harness_binding: harness_context.as_ref().map(|item| item.binding.as_str()),
-            runtime_directive: phase_prompt.map(|prompt| (effective_phase.as_str(), prompt)),
+            runtime_directive,
         };
         let mut messages = vec![
             Message {
@@ -9856,6 +10043,7 @@ impl Orchestrator {
         let mut context_maintenance_owner = None;
         let mut context_maintenance_gate = None;
         let mut protocol_errors = 0usize;
+        let mut safety_refusal_retries = 0usize;
         let mut model_request_index = restored_reasoning.physical_continuations;
         let mut reasoning_continuations = restored_reasoning.continuation_count;
         let mut stalled_reasoning_continuations = restored_reasoning.stalled_count;
@@ -10290,6 +10478,104 @@ impl Orchestrator {
                     )?;
                     continue;
                 }
+                Err(error) if error.failure().kind == ModelFailureKind::SafetyRefusal => {
+                    let failure = error.failure();
+                    self.record_model_attempt_terminal_state(
+                        session_id,
+                        &model_attempt_id,
+                        "safety_refusal",
+                        Some(&failure.to_string()),
+                    )
+                    .await?;
+                    safety_refusal_retries = safety_refusal_retries.saturating_add(1);
+                    if safety_refusal_retries > MAX_SAFETY_REFUSAL_RECOVERY_RETRIES {
+                        return Box::pin(self.publish_runtime_failure(
+                            session_id,
+                            &model_attempt_id,
+                            "safety_refusal",
+                            &failure,
+                            context.parent_session_id.as_deref(),
+                            error.model_configuration_snapshot(),
+                        ))
+                        .await;
+                    }
+
+                    let recovery_limit = safety_refusal_recovery_limit
+                        .map(|limit: usize| (limit / 2).max(1))
+                        .unwrap_or(SAFETY_REFUSAL_RECOVERY_OBSERVATIONS);
+                    safety_refusal_recovery_limit = Some(recovery_limit);
+                    let mut recovery_context = self
+                        .context_engine
+                        .build_context_encoding_for_activation(
+                            &context_id,
+                            activation,
+                            &HashSet::new(),
+                        )
+                        .await?;
+                    let recovery_model_alias = error
+                        .model_configuration_snapshot()
+                        .map(|(_, binding)| binding.requested_alias.as_str())
+                        .unwrap_or(activation_model_alias.as_str());
+                    let recovery_state = safety_refusal_recovery_state(
+                        &recovery_context,
+                        recovery_limit,
+                        recovery_model_alias,
+                    );
+                    self.record_safety_refusal_recovery_state(
+                        session_id,
+                        &model_attempt_id,
+                        &recovery_state,
+                        false,
+                    )
+                    .await?;
+                    safety_refusal_recovery_canary = None;
+                    let (total, visible) = self
+                        .context_engine
+                        .apply_safety_refusal_recovery_projection(
+                            &mut recovery_context,
+                            recovery_limit,
+                            CRITICAL_MAINTENANCE_PREVIEW_CHARS,
+                        );
+                    context = recovery_context;
+                    let recovery_overlay = EvaluationContextOverlay {
+                        evaluation_profile: harness_context
+                            .as_ref()
+                            .map(|item| item.profile.as_str()),
+                        harness_binding: harness_context.as_ref().map(|item| item.binding.as_str()),
+                        runtime_directive: Some((
+                            "safety-refusal-recovery",
+                            SAFETY_REFUSAL_RECOVERY_PROMPT,
+                        )),
+                    };
+                    base_protocol_messages[1].content = compose_context_message(
+                        context_message_prefix,
+                        &context.sexpr,
+                        recovery_overlay,
+                    )?;
+                    protocol_messages = base_protocol_messages.clone();
+                    request_prompt_measurement = self
+                        .count_projected_prompt_tokens(&context, &protocol_messages, &tools)
+                        .await;
+                    visible_routed_input_ids.clear();
+                    reasoning_continuations = 0;
+                    stalled_reasoning_continuations = 0;
+                    previous_reasoning_summary = None;
+                    reasoning_history.clear();
+                    reasoning_provider_continuations.clear();
+                    interrupted_public_text.clear();
+                    tracing::warn!(
+                        context_id = %context_id,
+                        session_id,
+                        activation_id = %activation.id,
+                        total_active_observations = total,
+                        projected_observations = visible,
+                        projection_limit = recovery_limit,
+                        refusal_retry = safety_refusal_retries,
+                        event_code = "orchestrator.safety_refusal.recovery_projection_enabled",
+                        "Provider explicitly refused this evidence combination; retrying from the current causal root and recent evidence instead of replaying the identical historical Inbox"
+                    );
+                    continue;
+                }
                 Err(error) if error.failure().kind == ModelFailureKind::EmptyResponse => {
                     self.record_model_attempt_terminal_state(
                         session_id,
@@ -10540,6 +10826,23 @@ impl Orchestrator {
                 }
             }
         };
+
+        if let Some(state) = safety_refusal_recovery_canary.take() {
+            self.record_safety_refusal_recovery_state(
+                session_id,
+                &terminal_model_attempt_id,
+                &state,
+                true,
+            )
+            .await?;
+            tracing::info!(
+                context_id = %context_id,
+                session_id,
+                activation_id = %activation.id,
+                event_code = "orchestrator.safety_refusal.recovery_cleared",
+                "Full-Context canary produced a valid response boundary; cleared the durable safety-refusal recovery projection"
+            );
+        }
 
         if let Some(decision) = terminal_decision {
             let active_root_tasks = self
@@ -10809,6 +11112,124 @@ impl Orchestrator {
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false)
         }))
+    }
+
+    async fn load_safety_refusal_recovery_state(
+        &self,
+        context_id: &str,
+        session_id: &str,
+    ) -> Result<Option<SafetyRefusalRecoveryState>, DynError> {
+        let events = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                session_id: Some(session_id.to_string()),
+                topic: Some(SAFETY_REFUSAL_RECOVERY_TOPIC.to_string()),
+                latest_k: Some(64),
+                ..Default::default()
+            })
+            .await?;
+        let mut active = None;
+        for event in events {
+            let model_alias = event
+                .payload
+                .get("model_alias")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or("Safety-refusal recovery Event is missing model_alias")?
+                .to_string();
+            let observation_limit = event
+                .payload
+                .get("observation_limit")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .ok_or("Safety-refusal recovery Event has an invalid observation_limit")?;
+            let failure_max_sequence = event
+                .payload
+                .get("failure_max_sequence")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("Safety-refusal recovery Event is missing failure_max_sequence")?;
+            let failure_prefix_fingerprint = event
+                .payload
+                .get("failure_prefix_fingerprint")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or("Safety-refusal recovery Event is missing failure_prefix_fingerprint")?
+                .to_string();
+            let state = SafetyRefusalRecoveryState {
+                model_alias,
+                observation_limit,
+                failure_max_sequence,
+                failure_prefix_fingerprint,
+            };
+            match event
+                .payload
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("armed") => active = Some(state),
+                Some("cleared") => {
+                    if active.as_ref().is_some_and(|candidate| {
+                        candidate.model_alias == state.model_alias
+                            && candidate.failure_max_sequence == state.failure_max_sequence
+                            && candidate.failure_prefix_fingerprint
+                                == state.failure_prefix_fingerprint
+                    }) {
+                        active = None;
+                    }
+                }
+                _ => return Err("Safety-refusal recovery Event has an invalid state".into()),
+            }
+        }
+        Ok(active)
+    }
+
+    async fn record_safety_refusal_recovery_state(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        state: &SafetyRefusalRecoveryState,
+        cleared: bool,
+    ) -> Result<(), DynError> {
+        let context_id = self.context_id_for_session(session_id)?;
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("model_alias".to_string(), json!(state.model_alias)),
+            (
+                "state".to_string(),
+                json!(if cleared { "cleared" } else { "armed" }),
+            ),
+            (
+                "observation_limit".to_string(),
+                json!(state.observation_limit),
+            ),
+            (
+                "failure_max_sequence".to_string(),
+                json!(state.failure_max_sequence),
+            ),
+            (
+                "failure_prefix_fingerprint".to_string(),
+                json!(state.failure_prefix_fingerprint),
+            ),
+        ];
+        self.append_activation_route(attempt_id, &mut payload);
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "safety_refusal_recovery_{}_{}",
+                    if cleared { "cleared" } else { "armed" },
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                SAFETY_REFUSAL_RECOVERY_TOPIC.to_string(),
+                payload.into_iter().collect(),
+            ))
+            .await?;
+        Ok(())
     }
 
     async fn record_response_protocol_error(
@@ -12432,7 +12853,9 @@ impl Orchestrator {
         let should_notify_user = incident.should_notify_user
             || matches!(
                 failure.kind,
-                ModelFailureKind::InvalidModelOrRequest | ModelFailureKind::QuotaExhausted
+                ModelFailureKind::InvalidModelOrRequest
+                    | ModelFailureKind::QuotaExhausted
+                    | ModelFailureKind::SafetyRefusal
             );
         let ordinary_provider_wait = failure.kind.uses_provider_recovery()
             && self.activation_route(attempt_id).is_some_and(|route| {
@@ -12546,6 +12969,9 @@ impl Orchestrator {
             }
             ModelFailureKind::ReasoningContinuationExhausted => {
                 "The model repeatedly returned only reasoning progress without producing final content or tool calls within the Runtime's configured safety boundary. This turn was stopped safely rather than misclassified as a Provider failure and retried indefinitely.".to_string()
+            }
+            ModelFailureKind::SafetyRefusal => {
+                "The model explicitly refused this request at its safety boundary. The Runtime tried a bounded recent-evidence recovery and then stopped without treating the refusal as a Provider outage; the Session, Mind state, and committed changes were preserved.".to_string()
             }
             kind if kind.uses_provider_recovery() => {
                 "The model request failed. The Runtime preserved the current task and entered Provider backoff; it will continue automatically when the Provider becomes available.".to_string()
@@ -15948,12 +16374,19 @@ impl Orchestrator {
                 json!(route.trigger_sequence),
             ),
             ("thread_kind".to_string(), json!(route.thread_kind)),
+            (
+                "configured_reasoning_effort".to_string(),
+                json!(route.reasoning_effort),
+            ),
         ]);
         if let Some(principal_id) = route.initiating_principal_id {
             payload.push(("principal_id".to_string(), json!(principal_id)));
         }
         if let Some(version) = route.context_snapshot_version {
             payload.push(("context_snapshot_version".to_string(), json!(version)));
+        }
+        if let Some(token_budget) = route.context_token_budget {
+            payload.push(("context_token_budget".to_string(), json!(token_budget)));
         }
         if !payload.iter().any(|(key, _)| key == "caused_by") {
             payload.push(("caused_by".to_string(), json!(route.trigger_event_id)));
@@ -19108,6 +19541,7 @@ mod tests {
             parent_activation_id: None,
             root_turn_id: "root".to_string(),
             model_alias: None,
+            reasoning_effort: None,
             context_snapshot_version: None,
             status,
             claimed_by: Some("runtime:999".to_string()),

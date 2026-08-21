@@ -502,7 +502,7 @@ fn responses_completed_rejects_an_embedded_failed_state() {
 }
 
 #[test]
-fn responses_zero_token_empty_completion_is_a_provider_failure() {
+fn responses_zero_token_empty_completion_is_request_scoped() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut accumulator = StreamAccumulator::default();
     accumulator
@@ -522,8 +522,98 @@ fn responses_zero_token_empty_completion_is_a_provider_failure() {
 
     let error = accumulator.finish(&tx).unwrap_err();
     let failure = error.downcast_ref::<ModelFailure>().unwrap();
-    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
+    assert_eq!(failure.kind, ModelFailureKind::EmptyResponse);
+    assert!(!failure.kind.is_provider_transient());
+    assert!(!failure.kind.uses_provider_recovery());
     assert!(failure.message.contains("output_tokens=0"));
+}
+
+#[test]
+fn responses_completed_backfills_terminal_only_text() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({
+                "type":"response.completed",
+                "response":{
+                    "status":"completed",
+                    "output":[{
+                        "type":"message",
+                        "role":"assistant",
+                        "status":"completed",
+                        "content":[{"type":"output_text","text":"terminal answer"}]
+                    }],
+                    "usage":{"input_tokens":143476,"output_tokens":0,"total_tokens":143476}
+                }
+            }),
+            &tx,
+        )
+        .unwrap();
+
+    assert_eq!(accumulator.finish(&tx).unwrap().content, "terminal answer");
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|event| {
+        matches!(event, ModelStreamEvent::TextDelta { text } if text == "terminal answer")
+    }));
+}
+
+#[test]
+fn responses_completed_backfills_terminal_only_function_call() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({
+                "type":"response.completed",
+                "response":{
+                    "status":"completed",
+                    "output":[{
+                        "type":"function_call",
+                        "call_id":"call-terminal",
+                        "name":"lookup",
+                        "arguments":"{\"id\":7}"
+                    }],
+                    "usage":{"input_tokens":143476,"output_tokens":0,"total_tokens":143476}
+                }
+            }),
+            &tx,
+        )
+        .unwrap();
+
+    let response = accumulator.finish(&tx).unwrap();
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].id, "call-terminal");
+    assert_eq!(response.tool_calls[0].func_name, "lookup");
+    assert_eq!(response.tool_calls[0].arguments, "{\"id\":7}");
+}
+
+#[test]
+fn responses_completed_does_not_duplicate_streamed_text() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    for event in [
+        json!({"type":"response.output_text.delta","delta":"streamed answer"}),
+        json!({
+            "type":"response.completed",
+            "response":{
+                "status":"completed",
+                "output":[{
+                    "type":"message",
+                    "role":"assistant",
+                    "status":"completed",
+                    "content":[{"type":"output_text","text":"streamed answer"}]
+                }]
+            }
+        }),
+    ] {
+        accumulator
+            .apply(ModelProtocol::OpenaiResponses, event, &tx)
+            .unwrap();
+    }
+
+    assert_eq!(accumulator.finish(&tx).unwrap().content, "streamed answer");
 }
 
 #[test]
@@ -542,7 +632,7 @@ fn responses_nonstream_failed_status_preserves_the_provider_error() {
 }
 
 #[test]
-fn responses_nonstream_zero_token_empty_completion_is_a_provider_failure() {
+fn responses_nonstream_zero_token_empty_completion_is_request_scoped() {
     let error = parse_openai_responses_response(json!({
         "status":"completed",
         "output":[],
@@ -551,8 +641,49 @@ fn responses_nonstream_zero_token_empty_completion_is_a_provider_failure() {
     .unwrap_err();
 
     let failure = error.downcast_ref::<ModelFailure>().unwrap();
-    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
+    assert_eq!(failure.kind, ModelFailureKind::EmptyResponse);
+    assert!(!failure.kind.is_provider_transient());
+    assert!(!failure.kind.uses_provider_recovery());
     assert!(failure.message.contains("output_tokens=0"));
+}
+
+#[test]
+fn anthropic_refusal_terminal_is_typed_and_request_scoped() {
+    let error = parse_anthropic_response(json!({
+        "id":"msg-refused",
+        "type":"message",
+        "role":"assistant",
+        "content":[],
+        "stop_reason":"refusal"
+    }))
+    .unwrap_err();
+
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::SafetyRefusal);
+    assert_eq!(failure.provider_code.as_deref(), Some("refusal"));
+    assert!(!failure.kind.uses_provider_recovery());
+}
+
+#[test]
+fn anthropic_stream_refusal_terminal_is_typed_and_request_scoped() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    let error = accumulator
+        .apply(
+            ModelProtocol::AnthropicMessages,
+            json!({
+                "type":"message_delta",
+                "delta":{"stop_reason":"refusal"},
+                "usage":{"output_tokens":0}
+            }),
+            &tx,
+        )
+        .unwrap_err();
+
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::SafetyRefusal);
+    assert_eq!(failure.provider_code.as_deref(), Some("refusal"));
+    assert!(!failure.kind.uses_provider_recovery());
 }
 
 #[tokio::test]
@@ -774,7 +905,7 @@ fn native_protocol_authentication_headers_are_exact() {
         )
         .unwrap();
         let request = client
-            .authorize(client.http.post("https://provider.invalid/test"))
+            .authorize(protocol, client.http.post("https://provider.invalid/test"))
             .build()
             .unwrap();
         assert_eq!(request.headers()[header].to_str().unwrap(), expected);

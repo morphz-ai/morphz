@@ -7335,6 +7335,7 @@ mod tests {
             title: title.to_string(),
             status: SessionStatus::Active,
             model_alias: None,
+            reasoning_effort: None,
             created_at: now,
             updated_at: now,
             last_activity_at: now + chrono::Duration::seconds(activity_offset_seconds),

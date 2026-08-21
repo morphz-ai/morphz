@@ -12,6 +12,7 @@ use std::path::{Component, Path};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -103,6 +104,75 @@ pub struct ManagedSshEndpoint {
     pub private_key_passphrase_secret: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_secret: Option<String>,
+}
+
+const RUNTIME_MANAGED_SSH_PROTOCOL_VERSION: u64 = 4;
+
+fn runtime_managed_ssh_host_id() -> &'static str {
+    static HOST_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST_ID.get_or_init(|| {
+        let explicit = std::env::var("MORPHZ_RUNTIME_HOST_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let hostname = std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "unknown-host".to_string());
+        let user = std::env::var("USER")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "unknown-user".to_string());
+        let morphz_home = crate::config::morphz_home_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unknown-home".to_string());
+        let material = explicit.unwrap_or_else(|| format!("{hostname}\0{user}\0{morphz_home}"));
+        let digest = format!("{:x}", Sha256::digest(material.as_bytes()));
+        format!("runtime-host-{}", &digest[..24])
+    })
+}
+
+fn managed_ssh_uses_host_openssh(endpoint: &ManagedSshEndpoint) -> bool {
+    endpoint.auth_mode == ManagedSshAuthMode::KeyOnly
+        && endpoint.private_key_secret.is_none()
+        && endpoint.private_key_passphrase_secret.is_none()
+        && endpoint.password_secret.is_none()
+}
+
+fn managed_ssh_target_uses_host_openssh(target: &ExecutionTargetRecord) -> bool {
+    target.kind == ExecutionTargetKind::ManagedSsh
+        && target.provider_node_id.is_none()
+        && target
+            .metadata
+            .get("execution_location")
+            .and_then(serde_json::Value::as_str)
+            == Some("runtime")
+        && target
+            .metadata
+            .get("auth_mode")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|mode| mode == ManagedSshAuthMode::KeyOnly.as_str())
+        && target
+            .metadata
+            .get("private_key_secret")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        && target
+            .metadata
+            .get("password_secret")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+}
+
+fn managed_ssh_target_runtime_host_id(target: &ExecutionTargetRecord) -> Option<&str> {
+    target
+        .metadata
+        .get("runtime_host_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
 }
 
 fn default_ssh_port() -> u16 {
@@ -934,13 +1004,6 @@ pub fn prepare_managed_ssh_exec_arguments(
         )
         .into());
     }
-    if endpoint.destination.is_none()
-        && std::env::var_os("SSH_AUTH_SOCK").is_none_or(|value| value.is_empty())
-        && endpoint.auth_mode.uses_keys()
-        && endpoint.private_key_secret.is_none()
-    {
-        return Err("Static Managed SSH endpoint requires Runtime SSH_AUTH_SOCK".into());
-    }
     if endpoint.auth_mode.uses_password() || endpoint.private_key_secret.is_some() {
         return Err("Managed SSH Secret authentication must be resolved and executed by the Runtime Secret Store".into());
     }
@@ -1013,7 +1076,11 @@ fn build_managed_ssh_exec_arguments(
                 .unwrap_or_else(|| endpoint.host.clone())
         }
     };
-    ssh.extend(["--".to_string(), destination, remote_command]);
+    ssh.extend([
+        "--".to_string(),
+        destination,
+        managed_ssh_posix_remote_command(&remote_command),
+    ]);
     let ssh = ssh
         .iter()
         .map(|part| shell_quote(part))
@@ -2603,6 +2670,16 @@ impl ExecutionTargetBackend for ManagedSshBackend {
         if context.target.provider_node_id.is_some() {
             return self.edge.execute(context, tool, arguments).await;
         }
+        if managed_ssh_target_uses_host_openssh(&context.target)
+            && managed_ssh_target_runtime_host_id(&context.target)
+                .is_some_and(|owner| owner != runtime_managed_ssh_host_id())
+        {
+            return Err(format!(
+                "Runtime Managed SSH Target '{}' belongs to a different Runtime host's system OpenSSH environment",
+                context.target.id
+            )
+            .into());
+        }
         if context.target.status != ExecutionTargetStatus::Online {
             return Err(format!(
                 "Runtime Managed SSH Target '{}' is currently {} and cannot execute",
@@ -2994,13 +3071,6 @@ fn validate_managed_ssh_endpoint_for_transfer(
         )
         .into());
     }
-    if endpoint.destination.is_none()
-        && std::env::var_os("SSH_AUTH_SOCK").is_none_or(|value| value.is_empty())
-        && endpoint.auth_mode.uses_keys()
-        && endpoint.private_key_secret.is_none()
-    {
-        return Err("Static Managed SSH endpoint requires Runtime SSH_AUTH_SOCK".into());
-    }
     Ok(())
 }
 
@@ -3017,6 +3087,15 @@ fn validate_remote_artifact_path(path: &str) -> Result<(), TargetExecutionError>
 struct PreparedManagedSshCommand {
     command: tokio::process::Command,
     _credentials: ManagedSshCredentialMaterial,
+}
+
+fn managed_ssh_posix_remote_command(remote_command: &str) -> String {
+    // The SSH server always gives the command string to the account's login
+    // shell first. Runtime-generated commands use POSIX syntax, while the
+    // account may use fish/csh. Keep the outer command deliberately minimal
+    // and enter `sh` explicitly before interpreting any Runtime or user
+    // command.
+    format!("exec sh -c {}", shell_quote(remote_command))
 }
 
 fn managed_ssh_command(
@@ -3072,7 +3151,7 @@ fn managed_ssh_command(
     command
         .arg("--")
         .arg(destination)
-        .arg(remote_command)
+        .arg(managed_ssh_posix_remote_command(remote_command))
         .kill_on_drop(true);
     Ok(PreparedManagedSshCommand {
         command,
@@ -4451,14 +4530,9 @@ async fn execute_managed_ssh_file_tool(
 
 fn managed_ssh_file_tool_command() -> String {
     let script = shell_quote(MANAGED_SSH_FILE_TOOL_SCRIPT);
-    let bootstrap = format!(
+    format!(
         "if command -v python3 >/dev/null 2>&1; then exec python3 -c {script}; elif command -v python >/dev/null 2>&1; then exec python -c {script}; else echo 'Managed SSH Target requires Python 3 to execute core file tools' >&2; exit 127; fi"
-    );
-    // OpenSSH gives the remote command to the account's login shell.  The
-    // account may use fish, csh, or another non-POSIX shell, while the
-    // bootstrap above deliberately uses portable POSIX syntax.  Enter an
-    // explicit sh before evaluating it instead of assuming the user's shell.
-    format!("sh -lc {}", shell_quote(&bootstrap))
+    )
 }
 
 async fn run_managed_ssh_output_with_input(
@@ -5067,6 +5141,22 @@ pub fn runtime_managed_ssh_registration(
     default_owner_principal_id: &str,
     permission_policy_digest: &str,
 ) -> Result<ExecutionTargetRegistration, TargetExecutionError> {
+    runtime_managed_ssh_registration_for_host(
+        config,
+        endpoint,
+        default_owner_principal_id,
+        permission_policy_digest,
+        runtime_managed_ssh_host_id(),
+    )
+}
+
+fn runtime_managed_ssh_registration_for_host(
+    config: &ManagedSshTargetConfig,
+    endpoint: &ManagedSshEndpoint,
+    default_owner_principal_id: &str,
+    permission_policy_digest: &str,
+    runtime_host_id: &str,
+) -> Result<ExecutionTargetRegistration, TargetExecutionError> {
     let id = config.id.trim();
     if id.is_empty() || id == DEFAULT_EXECUTION_TARGET_ID {
         return Err(
@@ -5158,6 +5248,18 @@ pub fn runtime_managed_ssh_registration(
     if let Some(config_digest) = endpoint.config_digest.as_deref() {
         digest.update(config_digest.as_bytes());
     }
+    if managed_ssh_uses_host_openssh(endpoint) {
+        digest.update(b"\0host-openssh\0");
+        digest.update(runtime_host_id.as_bytes());
+    }
+
+    let credential_source = if managed_ssh_uses_host_openssh(endpoint) {
+        "host_openssh"
+    } else {
+        "secret_store"
+    };
+    let bound_runtime_host_id =
+        managed_ssh_uses_host_openssh(endpoint).then(|| runtime_host_id.to_string());
 
     Ok(ExecutionTargetRegistration {
         id: id.to_string(),
@@ -5191,11 +5293,32 @@ pub fn runtime_managed_ssh_registration(
             "private_key_passphrase_secret_configured": endpoint.private_key_passphrase_secret.is_some(),
             "password_secret": endpoint.password_secret,
             "password_secret_configured": endpoint.password_secret.is_some(),
-            "protocol_version": 3
+            "credential_source": credential_source,
+            "runtime_host_id": bound_runtime_host_id,
+            "protocol_version": RUNTIME_MANAGED_SSH_PROTOCOL_VERSION
         }),
         policy_digest: format!("sha256:{:x}", digest.finalize()),
         last_seen_at: Some(Utc::now()),
     })
+}
+
+fn runtime_managed_ssh_target_id(
+    principal_id: &str,
+    requested_host: &str,
+    endpoint: &ManagedSshEndpoint,
+    runtime_host_id: &str,
+) -> String {
+    let mut identity_material = format!(
+        "{principal_id}\0{requested_host}\0{}\0{}",
+        endpoint.user.as_deref().unwrap_or_default(),
+        endpoint.port
+    );
+    if managed_ssh_uses_host_openssh(endpoint) {
+        identity_material.push('\0');
+        identity_material.push_str(runtime_host_id);
+    }
+    let identity_hash = format!("{:x}", Sha256::digest(identity_material.as_bytes()));
+    format!("target-ssh-{}", &identity_hash[..24])
 }
 
 fn target_visible_to_active_principal(target: &ExecutionTargetRecord) -> bool {
@@ -5364,6 +5487,45 @@ pub struct RuntimeManagedSshProvisioner {
     secret_store: Arc<crate::secret_store::SecretStore>,
     default_principal_id: String,
     permission_policy_digest: String,
+    runtime_host_id: String,
+    availability_probe: Arc<dyn ManagedSshAvailabilityProbe>,
+}
+
+#[async_trait::async_trait]
+trait ManagedSshAvailabilityProbe: Send + Sync {
+    async fn authenticate(&self, endpoint: &ManagedSshEndpoint)
+        -> Result<(), TargetExecutionError>;
+}
+
+struct SystemOpenSshAvailabilityProbe;
+
+#[async_trait::async_trait]
+impl ManagedSshAvailabilityProbe for SystemOpenSshAvailabilityProbe {
+    async fn authenticate(
+        &self,
+        endpoint: &ManagedSshEndpoint,
+    ) -> Result<(), TargetExecutionError> {
+        let authentication = ManagedSshAuthentication::default();
+        let check = run_managed_ssh_output(endpoint, &authentication, "exit 0");
+        let output = tokio::time::timeout(Duration::from_secs(12), check)
+            .await
+            .map_err(|_| {
+                format!(
+                    "Timed out while verifying system OpenSSH authentication for '{}'",
+                    endpoint.destination.as_deref().unwrap_or(&endpoint.host)
+                )
+            })??;
+        if output.status.success() {
+            return Ok(());
+        }
+        let detail = String::from_utf8_lossy(&output.stderr);
+        Err(format!(
+            "System OpenSSH on this Runtime host cannot authenticate to '{}': {}",
+            endpoint.destination.as_deref().unwrap_or(&endpoint.host),
+            detail.trim()
+        )
+        .into())
+    }
 }
 
 struct RuntimeManagedSshProvisionRequest<'a> {
@@ -5392,7 +5554,74 @@ impl RuntimeManagedSshProvisioner {
             secret_store,
             default_principal_id,
             permission_policy_digest,
+            runtime_host_id: runtime_managed_ssh_host_id().to_string(),
+            availability_probe: Arc::new(SystemOpenSshAvailabilityProbe),
         }
+    }
+
+    #[cfg(test)]
+    fn with_test_host_and_probe(
+        mut self,
+        runtime_host_id: &str,
+        availability_probe: Arc<dyn ManagedSshAvailabilityProbe>,
+    ) -> Self {
+        self.runtime_host_id = runtime_host_id.to_string();
+        self.availability_probe = availability_probe;
+        self
+    }
+
+    pub fn belongs_to_current_runtime_host(&self, target: &ExecutionTargetRecord) -> bool {
+        !managed_ssh_target_uses_host_openssh(target)
+            || managed_ssh_target_runtime_host_id(target)
+                .is_none_or(|owner| owner == self.runtime_host_id.as_str())
+    }
+
+    async fn verify_availability(
+        &self,
+        endpoint: &ManagedSshEndpoint,
+    ) -> Result<(), TargetExecutionError> {
+        if managed_ssh_uses_host_openssh(endpoint) {
+            self.availability_probe.authenticate(endpoint).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn register_configured_target(
+        &self,
+        config: &ManagedSshTargetConfig,
+        endpoint: ManagedSshEndpoint,
+    ) -> Result<ExecutionTargetRecord, TargetExecutionError> {
+        self.validate_secret_bindings(&endpoint)?;
+        let availability_error = self.verify_availability(&endpoint).await.err();
+        let mut registration = runtime_managed_ssh_registration_for_host(
+            config,
+            &endpoint,
+            &self.default_principal_id,
+            &self.permission_policy_digest,
+            &self.runtime_host_id,
+        )?;
+        if availability_error.is_some() {
+            // A configured remote being temporarily unreachable or missing a
+            // local ssh-agent identity must not prevent the Runtime itself
+            // from starting. Persist the descriptor truthfully as offline;
+            // resolve_target can authenticate and restore it later.
+            registration.status = ExecutionTargetStatus::Offline;
+            registration.last_seen_at = None;
+        }
+        let target = self.targets.register_execution_target(registration).await?;
+        self.endpoints
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(config.endpoint_ref.clone(), endpoint);
+        if let Some(error) = availability_error {
+            tracing::warn!(
+                target_id = %target.id,
+                error = %error,
+                event_code = "runtime.managed_ssh.configured_route_offline",
+                "Configured Runtime Managed SSH Target could not authenticate from this host; startup continues with the route offline"
+            );
+        }
+        Ok(target)
     }
 
     async fn provision(
@@ -5433,14 +5662,10 @@ impl RuntimeManagedSshProvisioner {
                 "On-demand Managed SSH Target creation is missing the current Principal".into(),
             );
         }
-        let identity_material = format!(
-            "{principal_id}\0{host}\0{}\0{}",
-            endpoint.user.as_deref().unwrap_or_default(),
-            endpoint.port
-        );
-        let identity_hash = format!("{:x}", Sha256::digest(identity_material.as_bytes()));
-        let target_id = format!("target-ssh-{}", &identity_hash[..24]);
-        let endpoint_ref = format!("runtime_ssh_{}", &identity_hash[..24]);
+        self.verify_availability(&endpoint).await?;
+        let target_id =
+            runtime_managed_ssh_target_id(&principal_id, host, &endpoint, &self.runtime_host_id);
+        let endpoint_ref = target_id.replacen("target-ssh-", "runtime_ssh_", 1);
         let display_destination = endpoint
             .user
             .as_deref()
@@ -5454,11 +5679,12 @@ impl RuntimeManagedSshProvisioner {
             platform,
             workspace_root,
         };
-        let registration = runtime_managed_ssh_registration(
+        let registration = runtime_managed_ssh_registration_for_host(
             &config,
             &endpoint,
             &principal_id,
             &self.permission_policy_digest,
+            &self.runtime_host_id,
         )?;
         let target = self.targets.register_execution_target(registration).await?;
         if target.status != ExecutionTargetStatus::Online {
@@ -5610,6 +5836,18 @@ impl RuntimeManagedSshProvisioner {
             },
         )?;
         self.validate_secret_bindings(&endpoint)?;
+        if managed_ssh_uses_host_openssh(&endpoint) {
+            if let Some(owner_runtime_host_id) = managed_ssh_target_runtime_host_id(target) {
+                if owner_runtime_host_id != self.runtime_host_id.as_str() {
+                    return Err(format!(
+                        "Managed SSH Target '{}' uses system OpenSSH owned by Runtime host '{}'; current Runtime host '{}' must not rehydrate it",
+                        target.id, owner_runtime_host_id, self.runtime_host_id
+                    )
+                    .into());
+                }
+            }
+            self.verify_availability(&endpoint).await?;
+        }
         let config = ManagedSshTargetConfig {
             id: target.id.clone(),
             name: target.name.clone(),
@@ -5618,11 +5856,12 @@ impl RuntimeManagedSshProvisioner {
             platform: target.platform.clone(),
             workspace_root: target.workspace_root.clone(),
         };
-        let registration = runtime_managed_ssh_registration(
+        let registration = runtime_managed_ssh_registration_for_host(
             &config,
             &endpoint,
             owner_principal_id,
             &self.permission_policy_digest,
+            &self.runtime_host_id,
         )?;
         let target = self.targets.register_execution_target(registration).await?;
         if target.status != ExecutionTargetStatus::Online {
@@ -5659,6 +5898,19 @@ fn target_runtime_availability(target: &ExecutionTargetRecord) -> serde_json::Va
         });
     }
     if target.kind == ExecutionTargetKind::ManagedSsh && target.provider_node_id.is_none() {
+        if managed_ssh_target_uses_host_openssh(target)
+            && managed_ssh_target_runtime_host_id(target)
+                .is_some_and(|owner| owner != runtime_managed_ssh_host_id())
+        {
+            return serde_json::json!({
+                "availability": "owned_by_another_runtime_host",
+                "usable_now": false,
+                "recoverable": true,
+                "connection_model": "host_openssh",
+                "status_explanation": "this Target depends on system OpenSSH state owned by another Runtime host",
+                "recommended_action": "execute through the owning Runtime host, or explicitly bind a portable Secret Store credential"
+            });
+        }
         if target.status == ExecutionTargetStatus::Online {
             return serde_json::json!({
                 "availability": "ready_on_demand",
@@ -5922,11 +6174,25 @@ impl Tool for ResolveTargetTool {
                 )
                 .into());
             }
-            if args.auth_mode.is_some()
+            let has_auth_override = args.auth_mode.is_some()
                 || args.private_key_secret.is_some()
                 || args.private_key_passphrase_secret.is_some()
-                || args.password_secret.is_some()
+                || args.password_secret.is_some();
+            if !has_auth_override
+                && self
+                    .runtime_managed_ssh
+                    .as_ref()
+                    .is_some_and(|provisioner| {
+                        !provisioner.belongs_to_current_runtime_host(&target)
+                    })
             {
+                return Err(format!(
+                    "Execution Target '{}' uses system OpenSSH owned by another Runtime host and cannot be selected here",
+                    target.id
+                )
+                .into());
+            }
+            if has_auth_override {
                 self.runtime_managed_ssh
                     .as_ref()
                     .ok_or("Current Runtime has not enabled on-demand Managed SSH Targets")?
@@ -5991,6 +6257,11 @@ impl Tool for ResolveTargetTool {
                 .await?
                 .into_iter()
                 .filter(target_visible_to_active_principal)
+                .filter(|target| {
+                    self.runtime_managed_ssh.as_ref().is_none_or(|provisioner| {
+                        provisioner.belongs_to_current_runtime_host(target)
+                    })
+                })
                 .filter(|target| {
                     target.status == ExecutionTargetStatus::Online
                         || (args.allow_offline_queue
@@ -6143,6 +6414,48 @@ mod tests {
     use crate::memory::{ExecutionJobStatus, ExecutionRetrySafety};
     use crate::secret_store::{SecretScopeKind, SecretStore, SecretValueBackend};
     use std::sync::Mutex;
+
+    struct AlwaysAvailableManagedSshProbe;
+
+    #[async_trait::async_trait]
+    impl ManagedSshAvailabilityProbe for AlwaysAvailableManagedSshProbe {
+        async fn authenticate(
+            &self,
+            _endpoint: &ManagedSshEndpoint,
+        ) -> Result<(), TargetExecutionError> {
+            Ok(())
+        }
+    }
+
+    struct UnavailableManagedSshProbe;
+
+    #[async_trait::async_trait]
+    impl ManagedSshAvailabilityProbe for UnavailableManagedSshProbe {
+        async fn authenticate(
+            &self,
+            _endpoint: &ManagedSshEndpoint,
+        ) -> Result<(), TargetExecutionError> {
+            Err("test authentication failure".into())
+        }
+    }
+
+    fn test_runtime_managed_ssh_provisioner(
+        store: Arc<dyn ExecutionTargetStore>,
+        endpoints: Arc<RwLock<HashMap<String, ManagedSshEndpoint>>>,
+        secrets: Arc<SecretStore>,
+    ) -> RuntimeManagedSshProvisioner {
+        RuntimeManagedSshProvisioner::new(
+            store,
+            endpoints,
+            secrets,
+            "principal-default".to_string(),
+            "policy-a".to_string(),
+        )
+        .with_test_host_and_probe(
+            runtime_managed_ssh_host_id(),
+            Arc::new(AlwaysAvailableManagedSshProbe),
+        )
+    }
 
     #[test]
     fn unmanaged_ssh_detection_distinguishes_command_lookup_from_invocation() {
@@ -6399,7 +6712,11 @@ mod tests {
             registration.metadata["private_key_passphrase_secret_configured"],
             false
         );
-        assert_eq!(registration.metadata["protocol_version"], 3);
+        assert_eq!(registration.metadata["credential_source"], "host_openssh");
+        assert!(registration.metadata["runtime_host_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("runtime-host-")));
+        assert_eq!(registration.metadata["protocol_version"], 4);
     }
 
     #[test]
@@ -6445,6 +6762,7 @@ mod tests {
             private_key_passphrase_secret: None,
             password_secret: None,
         };
+        validate_managed_ssh_endpoint_for_transfer("server", &endpoint).unwrap();
 
         let prepared = build_managed_ssh_exec_arguments(
             "server",
@@ -6471,16 +6789,24 @@ mod tests {
         assert!(command.contains("'ServerAliveCountMax=2'"));
         assert!(command.contains("'StrictHostKeyChecking=yes'"));
         assert!(command.contains("'deploy@server.example'"));
-        assert!(command.contains("'cd -- '\\''/srv/app dir'\\'' && printf"));
+        let expected_remote =
+            managed_ssh_posix_remote_command("cd -- '/srv/app dir' && printf '%s' \"$TOKEN\"");
+        assert!(command.contains(&shell_quote(&expected_remote)));
         assert_eq!(prepared["sandbox_permissions"], "require_escalated");
         assert_eq!(prepared["requested_permissions"]["network"], true);
         assert_eq!(
             prepared["requested_permissions"]["read_paths"][0],
             known_hosts.to_string_lossy().as_ref()
         );
+        let expected_secret_env =
+            if std::env::var_os("SSH_AUTH_SOCK").is_some_and(|value| !value.is_empty()) {
+                serde_json::json!(["SSH_AUTH_SOCK"])
+            } else {
+                serde_json::json!([])
+            };
         assert_eq!(
-            prepared["requested_permissions"]["secret_env"][0],
-            "SSH_AUTH_SOCK"
+            prepared["requested_permissions"]["secret_env"],
+            expected_secret_env
         );
         assert!(prepared["requested_permissions"]
             .get("write_paths")
@@ -6767,6 +7093,163 @@ mod tests {
     }
 
     #[test]
+    fn system_openssh_target_identity_is_scoped_to_the_runtime_host() {
+        let endpoint = managed_ssh_endpoint_from_expanded(
+            "mini-m4.local",
+            "host mini-m4.local\nhostname mini-m4.local\nuser shafreeck\nport 22\n",
+        )
+        .unwrap();
+        let first = runtime_managed_ssh_target_id(
+            "principal-a",
+            "mini-m4.local",
+            &endpoint,
+            "runtime-host-mini-m2",
+        );
+        let second = runtime_managed_ssh_target_id(
+            "principal-a",
+            "mini-m4.local",
+            &endpoint,
+            "runtime-host-mbp",
+        );
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn secret_backed_ssh_target_identity_is_portable_between_runtime_hosts() {
+        let mut endpoint = managed_ssh_endpoint_from_expanded(
+            "mini-m4.local",
+            "host mini-m4.local\nhostname mini-m4.local\nuser shafreeck\nport 22\n",
+        )
+        .unwrap();
+        endpoint.private_key_secret = Some("SCNET_SSH_KEY".to_string());
+        let first = runtime_managed_ssh_target_id(
+            "principal-a",
+            "mini-m4.local",
+            &endpoint,
+            "runtime-host-mini-m2",
+        );
+        let second = runtime_managed_ssh_target_id(
+            "principal-a",
+            "mini-m4.local",
+            &endpoint,
+            "runtime-host-mbp",
+        );
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn configured_system_openssh_auth_failure_is_offline_not_startup_failure() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(temp.path().join("configured-ssh.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let endpoints = Arc::new(RwLock::new(HashMap::new()));
+        let provisioner = RuntimeManagedSshProvisioner::new(
+            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+            Arc::clone(&endpoints),
+            test_secret_store(temp.path()),
+            "principal-default".to_string(),
+            "policy-a".to_string(),
+        )
+        .with_test_host_and_probe("runtime-host-test-a", Arc::new(UnavailableManagedSshProbe));
+        let endpoint = managed_ssh_endpoint_from_expanded(
+            "mini-m4.local",
+            "host mini-m4.local\nhostname mini-m4.local\nuser shafreeck\nport 22\n",
+        )
+        .unwrap();
+        let config = ManagedSshTargetConfig {
+            id: "target-configured-mini-m4".to_string(),
+            name: "mini-m4".to_string(),
+            endpoint_ref: "runtime_alias".to_string(),
+            owner_principal_id: Some("principal-default".to_string()),
+            platform: None,
+            workspace_root: None,
+        };
+
+        let target = provisioner
+            .register_configured_target(&config, endpoint)
+            .await
+            .unwrap();
+
+        assert_eq!(target.status, ExecutionTargetStatus::Offline);
+        assert_eq!(target.metadata["credential_source"], "host_openssh");
+        assert_eq!(target.metadata["runtime_host_id"], "runtime-host-test-a");
+        assert!(target.last_seen_at.is_none());
+        assert!(endpoints.read().unwrap().contains_key("runtime_alias"));
+    }
+
+    #[tokio::test]
+    async fn system_openssh_target_cannot_be_rehydrated_by_another_runtime_host() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(temp.path().join("foreign-ssh.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let endpoints = Arc::new(RwLock::new(HashMap::new()));
+        let endpoint = managed_ssh_endpoint_from_expanded(
+            "localhost",
+            "host localhost\nhostname localhost\nuser shafreeck\nport 22\n",
+        )
+        .unwrap();
+        let config = ManagedSshTargetConfig {
+            id: "target-owned-by-a".to_string(),
+            name: "localhost".to_string(),
+            endpoint_ref: "runtime_alias".to_string(),
+            owner_principal_id: Some("principal-default".to_string()),
+            platform: None,
+            workspace_root: None,
+        };
+        let registration = runtime_managed_ssh_registration_for_host(
+            &config,
+            &endpoint,
+            "principal-default",
+            "policy-a",
+            "runtime-host-test-a",
+        )
+        .unwrap();
+        let target = store.register_execution_target(registration).await.unwrap();
+        let provisioner = RuntimeManagedSshProvisioner::new(
+            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+            endpoints,
+            test_secret_store(temp.path()),
+            "principal-default".to_string(),
+            "policy-a".to_string(),
+        )
+        .with_test_host_and_probe(
+            "runtime-host-test-b",
+            Arc::new(AlwaysAvailableManagedSshProbe),
+        );
+
+        assert!(!provisioner.belongs_to_current_runtime_host(&target));
+        let error = provisioner.rehydrate(&target).await.unwrap_err();
+        assert!(error.to_string().contains("must not rehydrate"));
+    }
+
+    #[test]
+    fn managed_ssh_commands_enter_posix_sh_before_runtime_syntax() {
+        let wrapped = managed_ssh_posix_remote_command(
+            "if test -f /tmp/example; then printf file; else printf absent; fi",
+        );
+        assert!(wrapped.starts_with("exec sh -c "));
+        if std::process::Command::new("fish")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            let output = std::process::Command::new("fish")
+                .arg("-c")
+                .arg(&wrapped)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), "absent");
+        }
+    }
+
+    #[test]
     fn managed_ssh_preflight_always_requests_network_approval() {
         let now = Utc::now();
         let target = ExecutionTargetRecord {
@@ -6811,12 +7294,10 @@ mod tests {
                 .unwrap(),
         );
         let endpoints = Arc::new(RwLock::new(HashMap::new()));
-        let provisioner = RuntimeManagedSshProvisioner::new(
+        let provisioner = test_runtime_managed_ssh_provisioner(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
             Arc::clone(&endpoints),
             test_secret_store(temp.path()),
-            "principal-default".to_string(),
-            "policy-a".to_string(),
         );
         let tool = ResolveTargetTool::new(Arc::clone(&store) as Arc<dyn ExecutionTargetStore>)
             .with_runtime_managed_ssh(provisioner);
@@ -6933,12 +7414,10 @@ mod tests {
             )
             .unwrap();
         let endpoints = Arc::new(RwLock::new(HashMap::new()));
-        let provisioner = RuntimeManagedSshProvisioner::new(
+        let provisioner = test_runtime_managed_ssh_provisioner(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
             Arc::clone(&endpoints),
             Arc::clone(&secrets),
-            "principal-default".to_string(),
-            "policy-a".to_string(),
         );
         let tool = ResolveTargetTool::new(Arc::clone(&store) as Arc<dyn ExecutionTargetStore>)
             .with_runtime_managed_ssh(provisioner);
@@ -7042,12 +7521,10 @@ mod tests {
             )
             .unwrap();
         let endpoints = Arc::new(RwLock::new(HashMap::new()));
-        let provisioner = RuntimeManagedSshProvisioner::new(
+        let provisioner = test_runtime_managed_ssh_provisioner(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
             Arc::clone(&endpoints),
             Arc::clone(&secrets),
-            "principal-default".to_string(),
-            "policy-a".to_string(),
         );
         let tool = ResolveTargetTool::new(Arc::clone(&store) as Arc<dyn ExecutionTargetStore>)
             .with_runtime_managed_ssh(provisioner);
@@ -7239,9 +7716,10 @@ mod tests {
 
     #[test]
     fn managed_ssh_file_tool_bootstrap_does_not_depend_on_the_login_shell() {
-        let command = managed_ssh_file_tool_command();
-        assert!(command.starts_with("sh -lc "));
-        assert!(!command.starts_with("if "));
+        let bootstrap = managed_ssh_file_tool_command();
+        let command = managed_ssh_posix_remote_command(&bootstrap);
+        assert!(bootstrap.starts_with("if "));
+        assert!(command.starts_with("exec sh -c "));
 
         if std::process::Command::new("fish")
             .arg("--version")

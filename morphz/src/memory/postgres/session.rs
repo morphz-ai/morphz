@@ -15,7 +15,7 @@ const CONTEXT_COLUMNS: &str = "id, agent_id, title, status, created_at, updated_
 seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection, \
 requested_hard_token_limit, token_budget_revision";
 const SESSION_COLUMNS: &str = "id, agent_id, context_id, parent_session_id, title, status, \
-model_alias, created_at, updated_at, last_activity_at, attention_state, attention_revision, \
+model_alias, reasoning_effort, created_at, updated_at, last_activity_at, attention_state, attention_revision, \
 attention_reason, attention_changed_at, attention_event_id";
 
 fn parse_status(value: &str) -> Result<SessionStatus, StoreError> {
@@ -77,6 +77,7 @@ fn session_from_row(row: &PgRow) -> Result<SessionRecord, StoreError> {
         title: row.get("title"),
         status: parse_status(&row.get::<String, _>("status"))?,
         model_alias: row.get("model_alias"),
+        reasoning_effort: row.get("reasoning_effort"),
         created_at: parse_time(&row.get::<String, _>("created_at"))?,
         updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
         last_activity_at: parse_time(&row.get::<String, _>("last_activity_at"))?,
@@ -1117,7 +1118,11 @@ impl SessionDirectoryStore for PostgresStore {
         id: &str,
         update: SessionUpdate,
     ) -> Result<Option<SessionRecord>, StoreError> {
-        if update.title.is_none() && update.status.is_none() && update.model_alias.is_none() {
+        if update.title.is_none()
+            && update.status.is_none()
+            && update.model_alias.is_none()
+            && update.reasoning_effort.is_none()
+        {
             return self.get_session(id).await;
         }
         let Some(existing) = self.get_session(id).await? else {
@@ -1126,12 +1131,14 @@ impl SessionDirectoryStore for PostgresStore {
         let title = update.title.unwrap_or(existing.title);
         let status = update.status.unwrap_or(existing.status);
         let model_alias = update.model_alias.unwrap_or(existing.model_alias);
+        let reasoning_effort = update.reasoning_effort.unwrap_or(existing.reasoning_effort);
         sqlx::query(
-            "UPDATE sessions SET title = $1, status = $2, model_alias = $3, updated_at = $4 WHERE id = $5",
+            "UPDATE sessions SET title = $1, status = $2, model_alias = $3, reasoning_effort = $4, updated_at = $5 WHERE id = $6",
         )
             .bind(title)
             .bind(status.as_str())
             .bind(model_alias)
+            .bind(reasoning_effort)
             .bind(now_text())
             .bind(id)
             .execute(&self.pool)

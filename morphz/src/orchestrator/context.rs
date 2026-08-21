@@ -943,6 +943,8 @@ pub struct SessionWorkingSetView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextView {
     pub context_id: String,
+    /// Exact budget policy used to compile this projection.
+    pub token_budget_policy: ContextTokenBudget,
     pub active_session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_principal_id: Option<String>,
@@ -1272,6 +1274,7 @@ pub struct ContextEngine {
     principal_first_seen_cues: bool,
     config: OrchestratorConfig,
     model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
+    model_context_capacities: Arc<RwLock<HashMap<String, ModelContextCapacity>>>,
     evaluation_model_policy: Arc<RwLock<EvaluationModelPolicy>>,
     context_locks: DashMap<String, Weak<Mutex<()>>>,
     capacity_metrics: ContextCapacityMetrics,
@@ -1334,6 +1337,7 @@ impl ContextEngine {
             principal_first_seen_cues: false,
             config,
             model_context_capacity: Arc::new(RwLock::new(fallback_capacity)),
+            model_context_capacities: Arc::new(RwLock::new(HashMap::new())),
             evaluation_model_policy: Arc::new(RwLock::new(EvaluationModelPolicy::default())),
             context_locks: DashMap::new(),
             capacity_metrics: ContextCapacityMetrics::default(),
@@ -1358,6 +1362,14 @@ impl ContextEngine {
         model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
     ) -> Self {
         self.model_context_capacity = model_context_capacity;
+        self
+    }
+
+    pub fn with_model_context_capacities(
+        mut self,
+        capacities: Arc<RwLock<HashMap<String, ModelContextCapacity>>>,
+    ) -> Self {
+        self.model_context_capacities = capacities;
         self
     }
 
@@ -1395,9 +1407,30 @@ impl ContextEngine {
         };
     }
 
+    /// Return the complete, current set of model routes the Agent may select
+    /// for a child Evaluation. The primary route is included implicitly by
+    /// [`set_evaluation_model_policy`]. Runtime tools read this projection at
+    /// definition and execution time so an operator policy edit takes effect
+    /// without rebuilding the tool registry.
+    pub fn agent_allowed_evaluation_models(&self) -> Vec<String> {
+        self.evaluation_model_policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .agent_allowed
+            .clone()
+    }
+
     pub async fn context_token_budget(
         &self,
         context_id: &str,
+    ) -> Result<ContextTokenBudget, DynError> {
+        self.context_token_budget_for_model(context_id, None).await
+    }
+
+    pub async fn context_token_budget_for_model(
+        &self,
+        context_id: &str,
+        model_alias: Option<&str>,
     ) -> Result<ContextTokenBudget, DynError> {
         let context = match &self.session_store {
             Some(store) => store.get_context(context_id).await?,
@@ -1408,6 +1441,7 @@ impl ContextEngine {
         }
         Ok(self.resolve_context_token_budget(
             context_id,
+            model_alias,
             context
                 .as_ref()
                 .and_then(|record| record.requested_hard_token_limit),
@@ -1420,14 +1454,24 @@ impl ContextEngine {
     fn resolve_context_token_budget(
         &self,
         context_id: &str,
+        model_alias: Option<&str>,
         requested_hard_token_limit: Option<u64>,
         token_budget_revision: u64,
     ) -> ContextTokenBudget {
-        let capacity = self
-            .model_context_capacity
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+        let capacity = model_alias
+            .and_then(|model| {
+                self.model_context_capacities
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(model)
+                    .cloned()
+            })
+            .unwrap_or_else(|| {
+                self.model_context_capacity
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
+            });
         let requested = requested_hard_token_limit
             .and_then(|value| usize::try_from(value).ok())
             .filter(|value| *value > 0);
@@ -1466,8 +1510,11 @@ impl ContextEngine {
     async fn effective_budget_config(
         &self,
         context_id: &str,
+        model_alias: Option<&str>,
     ) -> Result<(OrchestratorConfig, ContextTokenBudget), DynError> {
-        let budget = self.context_token_budget(context_id).await?;
+        let budget = self
+            .context_token_budget_for_model(context_id, model_alias)
+            .await?;
         let mut config = self.config.clone();
         config.context_hard_token_limit = budget.effective_hard_token_limit;
         config.context_soft_token_limit = budget.soft_token_limit;
@@ -2590,7 +2637,9 @@ impl ContextEngine {
         target_session_id: &str,
         additional_prompt: &str,
     ) -> Result<SessionProjectionSeedPlan, DynError> {
-        let (budget_config, _) = self.effective_budget_config(source_context_id).await?;
+        let (budget_config, _) = self
+            .effective_budget_config(source_context_id, None)
+            .await?;
         let projection_store = self.session_projection_store.as_ref().ok_or(
             "current_session delegation requires SessionProjectionStore; full Event replay fallback is forbidden",
         )?;
@@ -2763,6 +2812,7 @@ impl ContextEngine {
             active_session_id,
             excluded_observation_ids,
             None,
+            None,
             true,
         )
         .await
@@ -2784,6 +2834,7 @@ impl ContextEngine {
             active_session_id,
             excluded_observation_ids,
             None,
+            None,
             false,
         )
         .await
@@ -2795,11 +2846,28 @@ impl ContextEngine {
         activation: &ThreadActivationRecord,
         excluded_observation_ids: &HashSet<String>,
     ) -> Result<ContextView, DynError> {
+        self.build_context_encoding_for_activation_with_model(
+            context_id,
+            activation,
+            excluded_observation_ids,
+            activation.model_alias.as_deref(),
+        )
+        .await
+    }
+
+    pub async fn build_context_encoding_for_activation_with_model(
+        &self,
+        context_id: &str,
+        activation: &ThreadActivationRecord,
+        excluded_observation_ids: &HashSet<String>,
+        model_alias: Option<&str>,
+    ) -> Result<ContextView, DynError> {
         self.build_context_encoding_for_session(
             context_id,
             &activation.session_id,
             excluded_observation_ids,
             Some(activation),
+            model_alias,
             true,
         )
         .await
@@ -2811,9 +2879,14 @@ impl ContextEngine {
         active_session_id: &str,
         excluded_observation_ids: &HashSet<String>,
         activation_record: Option<&ThreadActivationRecord>,
+        evaluation_model_alias: Option<&str>,
         include_encoding: bool,
     ) -> Result<ContextView, DynError> {
-        let (budget_config, _) = self.effective_budget_config(context_id).await?;
+        let model_alias = evaluation_model_alias
+            .or_else(|| activation_record.and_then(|activation| activation.model_alias.as_deref()));
+        let (budget_config, token_budget_policy) = self
+            .effective_budget_config(context_id, model_alias)
+            .await?;
         self.finalize_due_frame_retirements(context_id, active_session_id)
             .await?;
         let cognitive_clock = match &self.cognitive_clock_store {
@@ -3474,6 +3547,7 @@ impl ContextEngine {
 
         Ok(ContextView {
             context_id: context_id.to_string(),
+            token_budget_policy,
             active_session_id: active_session_id.to_string(),
             active_principal_id,
             parent_session_id,
@@ -3738,6 +3812,87 @@ impl ContextEngine {
         }
         let visible = projected.len();
         view.observations = projected;
+        self.rerender_context_view(view);
+        (total, visible)
+    }
+
+    /// Replace the Inbox after an explicit Provider safety refusal with a
+    /// request-local recent-evidence slice.
+    ///
+    /// Replaying the identical historical Inbox cannot recover from that
+    /// prompt-specific terminal. This projection
+    /// always retains the current causal root and signals, fills the remaining
+    /// capacity with the newest observations, and leaves durable Context state
+    /// untouched. Unlike critical maintenance, the current causal observations
+    /// keep their complete preview because they are the task being evaluated.
+    pub fn apply_safety_refusal_recovery_projection(
+        &self,
+        view: &mut ContextView,
+        max_observations: usize,
+        max_preview_chars: usize,
+    ) -> (usize, usize) {
+        let total = view.observations.len();
+        let mut required_ids = HashSet::<String>::new();
+        if let Some(activation) = &view.activation {
+            required_ids.insert(activation.root_event_id.clone());
+            required_ids.insert(activation.trigger_event_id.clone());
+            required_ids.extend(
+                activation
+                    .signal_batch
+                    .iter()
+                    .map(|signal| signal.event_id.clone()),
+            );
+        }
+
+        let limit = max_observations.max(required_ids.len()).max(1);
+        let mut selected_ids = view
+            .observations
+            .iter()
+            .filter(|observation| required_ids.contains(observation.id.as_str()))
+            .map(|observation| observation.id.clone())
+            .collect::<HashSet<_>>();
+        let mut candidates = view
+            .observations
+            .iter()
+            .filter(|observation| !selected_ids.contains(observation.id.as_str()))
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|observation| std::cmp::Reverse(observation.sequence));
+        for observation in candidates {
+            if selected_ids.len() >= limit {
+                break;
+            }
+            selected_ids.insert(observation.id.clone());
+        }
+
+        let preview_limit = max_preview_chars.max(128);
+        let mut projected = view
+            .observations
+            .iter()
+            .filter(|observation| selected_ids.contains(observation.id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        projected.sort_by_key(|observation| observation.sequence);
+        for observation in &mut projected {
+            if required_ids.contains(observation.id.as_str()) {
+                continue;
+            }
+            let (preview, truncated) =
+                bounded_maintenance_preview(&observation.preview, preview_limit);
+            if truncated {
+                observation.preview = preview;
+                observation.truncated = true;
+                observation.representation = "preview".to_string();
+                observation.visible_chars = observation.preview.chars().count();
+                observation.retrievable = true;
+            }
+        }
+        let visible = projected.len();
+        view.observations = projected;
+        self.rerender_context_view(view);
+        (total, visible)
+    }
+
+    fn rerender_context_view(&self, view: &mut ContextView) {
         view.sexpr = render_context(ContextRenderInput {
             context_id: &view.context_id,
             active_session_id: &view.active_session_id,
@@ -3768,7 +3923,6 @@ impl ContextEngine {
             wake: &view.wake,
             references: &view.references,
         });
-        (total, visible)
     }
 
     pub async fn find_event(
@@ -4523,6 +4677,7 @@ impl ContextEngine {
                 title: id.clone(),
                 status: crate::memory::SessionStatus::Active,
                 model_alias: None,
+                reasoning_effort: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 last_activity_at: Utc::now(),
@@ -10485,6 +10640,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_token_budget_uses_the_selected_model_capacity_without_mutating_context_policy()
+    {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("model-token-budgets.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "budget-context".to_string(),
+                agent_id: "budget-agent".to_string(),
+                title: "Budget Context".to_string(),
+            })
+            .await
+            .unwrap();
+        let default_capacity = Arc::new(RwLock::new(ModelContextCapacity {
+            provider: Some("proxy".to_string()),
+            model: "default-model".to_string(),
+            prompt_token_limit: 128_000,
+            context_window_tokens: Some(160_000),
+            max_output_tokens: Some(32_000),
+            source: "provider-model-config".to_string(),
+        }));
+        let capacities = Arc::new(RwLock::new(HashMap::from([
+            (
+                "small-model".to_string(),
+                ModelContextCapacity {
+                    provider: Some("proxy".to_string()),
+                    model: "small-model".to_string(),
+                    prompt_token_limit: 64_000,
+                    context_window_tokens: Some(80_000),
+                    max_output_tokens: Some(16_000),
+                    source: "provider-model-config".to_string(),
+                },
+            ),
+            (
+                "large-model".to_string(),
+                ModelContextCapacity {
+                    provider: Some("proxy".to_string()),
+                    model: "large-model".to_string(),
+                    prompt_token_limit: 512_000,
+                    context_window_tokens: Some(576_000),
+                    max_output_tokens: Some(64_000),
+                    source: "provider-model-config".to_string(),
+                },
+            ),
+        ])));
+        let engine = ContextEngine::new(store.clone(), OrchestratorConfig::default())
+            .with_session_store(store.clone())
+            .with_model_context_capacity(default_capacity)
+            .with_model_context_capacities(capacities);
+
+        assert!(matches!(
+            store
+                .update_context_token_budget("budget-context", Some(240_000), 0)
+                .await
+                .unwrap(),
+            crate::memory::ContextTokenBudgetMutation::Updated(_)
+        ));
+
+        let small = engine
+            .context_token_budget_for_model("budget-context", Some("small-model"))
+            .await
+            .unwrap();
+        let large = engine
+            .context_token_budget_for_model("budget-context", Some("large-model"))
+            .await
+            .unwrap();
+
+        assert_eq!(small.requested_hard_token_limit, Some(240_000));
+        assert_eq!(small.effective_hard_token_limit, 64_000);
+        assert_eq!(small.model, "small-model");
+        assert_eq!(large.requested_hard_token_limit, Some(240_000));
+        assert_eq!(large.effective_hard_token_limit, 240_000);
+        assert_eq!(large.model, "large-model");
+        assert_eq!(small.token_budget_revision, large.token_budget_revision);
+    }
+
+    #[tokio::test]
     async fn actual_context_encoding_anchors_active_and_observation_principals() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(
@@ -11265,6 +11500,7 @@ mod tests {
             title: id,
             status: SessionStatus::Active,
             model_alias: None,
+            reasoning_effort: None,
             created_at: last_activity_at,
             updated_at: last_activity_at,
             last_activity_at,
@@ -14755,7 +14991,7 @@ mod tests {
         assert_eq!(view.pressure.level, full_pressure.level);
         assert_eq!(view.pressure.active_observations, 542);
 
-        let rebuilt = engine
+        let mut rebuilt = engine
             .build_context_encoding(session_id, session_id, &HashSet::new())
             .await
             .unwrap();
@@ -14763,6 +14999,19 @@ mod tests {
             rebuilt.observations.len(),
             542,
             "bounded recovery is a request projection and must not retire persisted Event observations"
+        );
+
+        let (total, visible) =
+            engine.apply_safety_refusal_recovery_projection(&mut rebuilt, 3, 128);
+        assert_eq!((total, visible), (542, 3));
+        assert_eq!(
+            rebuilt
+                .observations
+                .iter()
+                .map(|observation| observation.sequence)
+                .collect::<Vec<_>>(),
+            vec![540, 541, 542],
+            "empty-response recovery should keep the newest evidence instead of replaying the stale prefix"
         );
     }
 

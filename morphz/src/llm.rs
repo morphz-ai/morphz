@@ -44,6 +44,11 @@ pub enum ModelFailureKind {
     /// The Orchestrator may continue it when reasoning progress exists, or
     /// request one bounded protocol correction otherwise.
     EmptyResponse,
+    /// The Provider explicitly refused the request at its safety/content
+    /// policy boundary. This is request- and prompt-scoped: it must not poison
+    /// shared Provider health, and compatibility gateways must not normalize
+    /// it into a successful empty completion.
+    SafetyRefusal,
     StreamIdleTimeout,
     Unknown,
 }
@@ -64,6 +69,7 @@ impl ModelFailureKind {
             Self::ProviderQueueTimeout => "provider_queue_timeout",
             Self::ReasoningContinuationExhausted => "reasoning_continuation_exhausted",
             Self::EmptyResponse => "empty_response",
+            Self::SafetyRefusal => "safety_refusal",
             Self::StreamIdleTimeout => "stream_idle_timeout",
             Self::Unknown => "unknown",
         }
@@ -111,6 +117,7 @@ impl ModelFailureKind {
                 | Self::ProviderQueueTimeout
                 | Self::ReasoningContinuationExhausted
                 | Self::EmptyResponse
+                | Self::SafetyRefusal
         )
     }
 
@@ -182,6 +189,16 @@ impl ModelFailure {
             ],
         ) {
             ModelFailureKind::ContextLimit
+        } else if contains_any(
+            &normalized,
+            &[
+                "stop_reason=refusal",
+                "stop reason refusal",
+                "safety refusal",
+                "content filter refusal",
+            ],
+        ) {
+            ModelFailureKind::SafetyRefusal
         } else if contains_any(
             &normalized,
             &[
@@ -341,6 +358,15 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Max,
+}
+
+/// Immutable controls frozen for one physical model Attempt.
+///
+/// The outer `Option` distinguishes "this caller did not bind a policy" from
+/// an explicit `None`, which means preserve the Provider/model default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModelRequestOptions {
+    pub reasoning_effort: Option<Option<ReasoningEffort>>,
 }
 
 impl ReasoningEffort {
@@ -566,6 +592,7 @@ mod tests {
         assert!(!ModelFailureKind::ProviderQueueTimeout.uses_provider_recovery());
         assert!(!ModelFailureKind::ReasoningContinuationExhausted.uses_provider_recovery());
         assert!(!ModelFailureKind::EmptyResponse.uses_provider_recovery());
+        assert!(!ModelFailureKind::SafetyRefusal.uses_provider_recovery());
         assert!(ModelFailureKind::Authentication.uses_provider_recovery());
         assert!(ModelFailureKind::TransientNetwork.uses_provider_recovery());
         assert!(ModelFailureKind::ServerUnavailable.uses_provider_recovery());
@@ -1049,6 +1076,22 @@ pub trait Client: Send + Sync {
         stream: ModelStreamSender,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         self.create_completion_measured_stream(messages, tools, measurement, stream)
+            .await
+    }
+
+    /// Execute against a persisted binding and an immutable Evaluation policy.
+    /// The default preserves compatibility with custom Clients that do not
+    /// expose native reasoning controls.
+    async fn create_completion_bound_stream_with_options(
+        &self,
+        binding: &ModelAttemptBinding,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+        _options: ModelRequestOptions,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.create_completion_bound_stream(binding, messages, tools, measurement, stream)
             .await
     }
 

@@ -169,6 +169,13 @@ struct UpdateAutoReviewModelRequest {
     model: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct UpdateEvaluationModelPolicyRequest {
+    primary_model: String,
+    #[serde(default)]
+    allowed_evaluation_models: Vec<String>,
+}
+
 #[derive(Default, serde::Deserialize)]
 struct SessionListQuery {
     #[serde(default)]
@@ -263,6 +270,7 @@ struct UpdateSessionRequest {
     title: Option<String>,
     status: Option<SessionStatus>,
     model_alias: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -984,6 +992,10 @@ impl Server {
             .route(
                 "/api/runtime/permissions/auto-review-model",
                 axum::routing::put(handle_update_auto_review_model),
+            )
+            .route(
+                "/api/runtime/evaluation-model-policy",
+                axum::routing::put(handle_update_evaluation_model_policy),
             )
             .route(
                 "/api/runtime/providers/accounts/:account_id/oauth/start",
@@ -2089,6 +2101,35 @@ async fn handle_update_auto_review_model(
         );
     };
     match state.sdk.put_auto_review_model(path, request.model) {
+        Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_update_evaluation_model_policy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<UpdateEvaluationModelPolicyRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "cannot determine Morphz managed model configuration path",
+        );
+    };
+    match state
+        .sdk
+        .put_evaluation_model_policy(
+            path,
+            &request.primary_model,
+            request.allowed_evaluation_models,
+        )
+        .await
+    {
         Ok(receipt) => Json(receipt).into_response(),
         Err(error) => sdk_error_response(error),
     }
@@ -5208,7 +5249,15 @@ async fn handle_get_context_token_budget(
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    match state.sdk.context_token_budget(&context_id).await {
+    let budget = if let Some(session_id) = query.session_id.as_deref() {
+        state
+            .sdk
+            .context_token_budget_for_session(&context_id, session_id)
+            .await
+    } else {
+        state.sdk.context_token_budget(&context_id).await
+    };
+    match budget {
         Ok(budget) => Json(budget).into_response(),
         Err(error) => sdk_error_response(error),
     }
@@ -5418,10 +5467,6 @@ async fn handle_update_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let principal = match request_principal(&state, &headers, None) {
-        Ok(principal) => principal,
-        Err(error) => return sdk_error_response(error),
-    };
     let title = request
         .title
         .map(|title| title.trim().chars().take(200).collect::<String>());
@@ -5451,6 +5496,102 @@ async fn handle_update_session(
             Some(Some(model))
         }
     };
+    let reasoning_effort = match request.reasoning_effort {
+        None => None,
+        Some(value)
+            if value.trim().is_empty()
+                || value.trim() == "provider_default"
+                || value.trim() == "default" =>
+        {
+            Some(None)
+        }
+        Some(value) => {
+            let normalized = crate::llm::ReasoningEffort::parse(&value)
+                .map(|effort| effort.as_str().to_string());
+            let Some(normalized) = normalized else {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("unsupported reasoning effort '{value}'"),
+                );
+            };
+            Some(Some(normalized))
+        }
+    };
+    if model_alias.is_some() || reasoning_effort.is_some() {
+        let existing = match state.runtime.get_session(&session_id).await {
+            Ok(Some(session)) => session,
+            Ok(None) => {
+                return error_response(
+                    StatusCode::NOT_FOUND,
+                    format!("Session '{session_id}' does not exist"),
+                )
+            }
+            Err(error) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        };
+        let effective_model = match &model_alias {
+            Some(Some(model)) => model.clone(),
+            Some(None) => state.runtime.model(),
+            None => existing
+                .model_alias
+                .clone()
+                .unwrap_or_else(|| state.runtime.model()),
+        };
+        let effective_reasoning = match &reasoning_effort {
+            Some(Some(reasoning)) => Some(reasoning.as_str()),
+            Some(None) => None,
+            None => existing.reasoning_effort.as_deref(),
+        };
+        if let Some(reasoning) = effective_reasoning {
+            let options = match state.runtime.inference_model_options().await {
+                Ok(options) => options,
+                Err(error) => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("failed to read the discovered and enabled model catalog: {error}"),
+                    )
+                }
+            };
+            if let Some(supported) = options
+                .iter()
+                .find(|option| option.id == effective_model)
+                .and_then(|option| option.supported_reasoning_efforts.as_ref())
+            {
+                if !supported.iter().any(|candidate| candidate == reasoning) {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "reasoning effort '{reasoning}' is not supported by model '{effective_model}'"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let status = request.status;
+    if is_operator_authorized(&state, &headers, query.token.as_deref())
+        && title.is_none()
+        && status.is_none()
+        && (model_alias.is_some() || reasoning_effort.is_some())
+    {
+        return match state
+            .sdk
+            .set_session_evaluation_policy_as_operator(
+                &session_id,
+                model_alias.clone(),
+                reasoning_effort.clone(),
+            )
+            .await
+        {
+            Ok(session) => Json(session).into_response(),
+            Err(error) => sdk_error_response(error),
+        };
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
     match state
         .sdk
         .update_session(
@@ -5458,8 +5599,9 @@ async fn handle_update_session(
             &session_id,
             SessionUpdate {
                 title,
-                status: request.status,
+                status,
                 model_alias,
+                reasoning_effort,
             },
         )
         .await
@@ -8217,6 +8359,52 @@ mod tests {
         .into_response();
         assert_eq!(operator_read.status(), StatusCode::OK);
 
+        // A Dashboard Operator may change the Session's Evaluation model as
+        // control-plane policy without impersonating its participant.
+        let operator_model_update = handle_update_session(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: None,
+                status: None,
+                model_alias: Some("fixture-model".to_string()),
+                reasoning_effort: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(operator_model_update.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_session("gateway-session-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .model_alias
+                .as_deref(),
+            Some("fixture-model")
+        );
+
+        // The exception is intentionally narrow: participant-owned metadata
+        // remains read-only to the observing Operator.
+        let operator_title_update = handle_update_session(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: Some("Operator must not rewrite this".to_string()),
+                status: None,
+                model_alias: None,
+                reasoning_effort: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(operator_title_update.status(), StatusCode::FORBIDDEN);
+
         // Observation scope is intentionally ignored by write endpoints. An
         // Operator may inspect a Principal's Session, but may not send a
         // message while impersonating that Principal.
@@ -10315,6 +10503,76 @@ account = "xai-account"
     }
 
     #[tokio::test]
+    async fn dashboard_evaluation_model_policy_updates_runtime_and_managed_config_atomically() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp);
+        let mut config = AppConfig::default();
+        config.llm.provider = Some("fixture-provider".to_string());
+        config.llm.model = "primary-model".to_string();
+        config.llm.models = vec!["primary-model".to_string(), "worker-model".to_string()];
+        let mut provider = crate::config::ProviderConfig {
+            protocol: crate::config::ModelProtocol::OpenaiResponses,
+            base_url: "http://localhost:8317/v1".to_string(),
+            ..crate::config::ProviderConfig::default()
+        };
+        provider.models.insert(
+            "primary-model".to_string(),
+            crate::config::ProviderModelConfig::default(),
+        );
+        provider.models.insert(
+            "worker-model".to_string(),
+            crate::config::ProviderModelConfig::default(),
+        );
+        config
+            .providers
+            .insert("fixture-provider".to_string(), provider);
+        let (state, runtime) =
+            test_state_at_with_config_auth_and_secrets(&path, true, config, None, None).await;
+
+        let response = handle_update_evaluation_model_policy(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateEvaluationModelPolicyRequest {
+                primary_model: "worker-model".to_string(),
+                allowed_evaluation_models: vec![
+                    "primary-model".to_string(),
+                    "worker-model".to_string(),
+                    "primary-model".to_string(),
+                ],
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(runtime.model(), "worker-model");
+        let snapshot = runtime.provider_control_snapshot().await.unwrap();
+        assert_eq!(snapshot.selected_model_alias, "worker-model");
+        assert_eq!(
+            snapshot.allowed_evaluation_models,
+            vec!["primary-model".to_string()]
+        );
+        let managed_path = state.managed_config_path.as_ref().unwrap();
+        let persisted: toml::Value = toml::from_str(
+            &std::fs::read_to_string(managed_path)
+                .expect("evaluation model policy should be persisted"),
+        )
+        .unwrap();
+        assert_eq!(persisted["llm"]["model"].as_str(), Some("worker-model"));
+        assert_eq!(
+            persisted["llm"]["allowed_evaluation_models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            vec!["primary-model"]
+        );
+    }
+
+    #[tokio::test]
     async fn dashboard_session_model_control_is_scoped_reversible_and_catalog_validated() {
         let (state, runtime) = test_state().await;
         let session_id = "session-model-scope";
@@ -10339,6 +10597,7 @@ account = "xai-account"
                 title: None,
                 status: None,
                 model_alias: Some("fixture-model".to_string()),
+                reasoning_effort: None,
             }),
         )
         .await
@@ -10356,6 +10615,32 @@ account = "xai-account"
         );
         assert_eq!(runtime.model(), "fixture-model");
 
+        let reasoning = handle_update_session(
+            State(Arc::clone(&state)),
+            Path(session_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: None,
+                status: None,
+                model_alias: None,
+                reasoning_effort: Some("high".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(reasoning.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .reasoning_effort
+                .as_deref(),
+            Some("high")
+        );
+
         let rejected = handle_update_session(
             State(Arc::clone(&state)),
             Path(session_id.to_string()),
@@ -10365,6 +10650,7 @@ account = "xai-account"
                 title: None,
                 status: None,
                 model_alias: Some("missing-model".to_string()),
+                reasoning_effort: None,
             }),
         )
         .await
@@ -10390,6 +10676,7 @@ account = "xai-account"
                 title: None,
                 status: None,
                 model_alias: Some(String::new()),
+                reasoning_effort: Some("provider_default".to_string()),
             }),
         )
         .await
@@ -10402,6 +10689,15 @@ account = "xai-account"
                 .unwrap()
                 .unwrap()
                 .model_alias,
+            None
+        );
+        assert_eq!(
+            runtime
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .reasoning_effort,
             None
         );
     }

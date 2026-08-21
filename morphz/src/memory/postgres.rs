@@ -550,6 +550,7 @@ impl PostgresStore {
                     CONSTRAINT sessions_status_domain
                     CHECK(status IN ('active', 'archived')),
                 model_alias TEXT,
+                reasoning_effort TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_activity_at TEXT NOT NULL,
@@ -571,6 +572,7 @@ impl PostgresStore {
             r#"CREATE INDEX IF NOT EXISTS idx_pg_sessions_context_activity
                ON sessions(context_id, last_activity_at DESC, id)"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
+            r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS reasoning_effort TEXT"#,
             r#"CREATE TABLE IF NOT EXISTS principals (
                 id TEXT PRIMARY KEY,
                 provider_id TEXT NOT NULL,

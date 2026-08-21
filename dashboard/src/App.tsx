@@ -565,6 +565,7 @@ function initialConversationLayout(): ConversationLayout {
 
 function useStoredDisclosure(key: string, fallback: boolean) {
   const [open, setOpen] = useState(() => initialBooleanPreference(key, fallback))
+
   useEffect(() => {
     try {
       window.localStorage.setItem(key, String(open))
@@ -909,6 +910,7 @@ interface SessionRecord {
   title: string
   status: 'active' | 'archived'
   model_alias?: string | null
+  reasoning_effort?: ReasoningEffortSetting | null
   attention_state?: string
   attention_revision?: number
   attention_reason?: string
@@ -3042,10 +3044,8 @@ export default function App() {
   const [changingModel, setChangingModel] = useState(false)
   const [contextTokenBudget, setContextTokenBudget] = useState<ContextTokenBudget | null>(null)
   const [contextTokenBudgetDraft, setContextTokenBudgetDraft] = useState('')
-  const [modelPromptTokenLimitDraft, setModelPromptTokenLimitDraft] = useState('')
   const [contextTokenBudgetOpen, setContextTokenBudgetOpen] = useState(false)
   const [changingContextTokenBudget, setChangingContextTokenBudget] = useState(false)
-  const [changingModelPromptTokenLimit, setChangingModelPromptTokenLimit] = useState(false)
   const [pausingObjectiveId, setPausingObjectiveId] = useState('')
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
   const [editingObjectiveId, setEditingObjectiveId] = useState('')
@@ -3742,25 +3742,25 @@ export default function App() {
     }
   }, [])
 
-  const loadContextTokenBudget = useCallback(async (contextId: string) => {
+  const loadContextTokenBudget = useCallback(async (contextId: string, sessionId = '') => {
     if (!contextId) {
       setContextTokenBudget(null)
       setContextTokenBudgetDraft('')
-      setModelPromptTokenLimitDraft('')
       return
     }
     try {
+      const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
       const budget = await DASHBOARD_API.get<ContextTokenBudget>(
-        `/api/contexts/${encodeURIComponent(contextId)}/token-budget`,
+        `/api/contexts/${encodeURIComponent(contextId)}/token-budget${query}`,
       )
-      if (selectedScopeRef.current.contextId !== contextId) return
+      if (selectedScopeRef.current.contextId !== contextId
+        || (sessionId && selectedScopeRef.current.sessionId !== sessionId)) return
       setContextTokenBudget(budget)
       setContextTokenBudgetDraft(
         budget.requested_hard_token_limit == null
           ? ''
           : String(budget.requested_hard_token_limit),
       )
-      setModelPromptTokenLimitDraft(String(budget.physical_prompt_token_limit))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
@@ -4173,12 +4173,25 @@ export default function App() {
     }
   }, [loadExecutionJobs, loadRuntimeOverview, view])
 
+  const selectedSession = sessions.find(item => item.id === selectedSessionId)
+
   useEffect(() => {
     if (view === 'overview' && !route.contextId) return
     const contextId = selectedContextId
-    const timer = window.setTimeout(() => void loadContextTokenBudget(contextId), 0)
+    const timer = window.setTimeout(
+      () => void loadContextTokenBudget(contextId, selectedSessionId),
+      0,
+    )
     return () => window.clearTimeout(timer)
-  }, [loadContextTokenBudget, route.contextId, selectedContextId, status?.model, view])
+  }, [
+    loadContextTokenBudget,
+    route.contextId,
+    selectedContextId,
+    selectedSession?.model_alias,
+    selectedSessionId,
+    status?.model,
+    view,
+  ])
 
   useEffect(() => {
     if (view !== 'cognition' || !selectedContextId || !selectedSessionId) return
@@ -4639,7 +4652,6 @@ export default function App() {
     themeMenuOpen,
   ])
 
-  const selectedSession = sessions.find(item => item.id === selectedSessionId)
   const selectedContext = contexts.find(item => item.id === selectedContextId)
   const selectedAgent = agents.find(item => item.id === selectedAgentId)
   const parsedContextTokenBudgetDraft = contextTokenBudgetDraft.trim() === ''
@@ -4649,11 +4661,6 @@ export default function App() {
     || (Number.isSafeInteger(parsedContextTokenBudgetDraft) && parsedContextTokenBudgetDraft > 0)
   const contextTokenBudgetChanged = contextTokenBudgetDraftValid
     && parsedContextTokenBudgetDraft !== (contextTokenBudget?.requested_hard_token_limit ?? null)
-  const parsedModelPromptTokenLimitDraft = Number(modelPromptTokenLimitDraft)
-  const modelPromptTokenLimitDraftValid = Number.isSafeInteger(parsedModelPromptTokenLimitDraft)
-    && parsedModelPromptTokenLimitDraft > 0
-  const modelPromptTokenLimitChanged = modelPromptTokenLimitDraftValid
-    && parsedModelPromptTokenLimitDraft !== contextTokenBudget?.physical_prompt_token_limit
   const contextTokenBudgetSliderMax = Math.max(
     1_024,
     contextTokenBudget?.physical_prompt_token_limit ?? 1_024,
@@ -5995,17 +6002,15 @@ export default function App() {
   }, [selectedSessionId, t])
 
   const changeReasoningEffort = async (value: string) => {
-    if (changingReasoning) return
+    if (changingReasoning || !selectedSessionId) return
     setChangingReasoning(true)
     try {
-      const inference = await DASHBOARD_API.command<{ reasoning_effort?: ReasoningEffortSetting | null }>(
-        '/api/runtime/inference',
-        'PUT',
-        {
-          reasoning_effort: value,
-        },
+      const updated = await DASHBOARD_API.command<SessionRecord>(
+        `/api/sessions/${encodeURIComponent(selectedSessionId)}`,
+        'PATCH',
+        { reasoning_effort: value },
       )
-      setStatus(current => current ? { ...current, reasoning_effort: inference.reasoning_effort } : current)
+      setSessions(current => current.map(session => session.id === updated.id ? updated : session))
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -6026,30 +6031,12 @@ export default function App() {
         { model_alias: modelAlias },
       )
       setSessions(current => current.map(session => session.id === updated.id ? updated : session))
+      await loadContextTokenBudget(updated.context_id, updated.id)
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setChangingModel(false)
-    }
-  }
-
-  const changeModelPromptTokenLimit = async () => {
-    if (!selectedContextId
-      || changingModelPromptTokenLimit
-      || !modelPromptTokenLimitDraftValid
-      || !modelPromptTokenLimitChanged) return
-    setChangingModelPromptTokenLimit(true)
-    try {
-      await DASHBOARD_API.command('/api/runtime/inference', 'PUT', {
-        prompt_token_limit: parsedModelPromptTokenLimitDraft,
-      })
-      await loadContextTokenBudget(selectedContextId)
-      setError('')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setChangingModelPromptTokenLimit(false)
     }
   }
 
@@ -6073,15 +6060,19 @@ export default function App() {
           expected_revision: contextTokenBudget.token_budget_revision,
         },
       )
-      setContextTokenBudget(response.budget)
-      setContextTokenBudgetDraft(
-        response.budget.requested_hard_token_limit == null
-          ? ''
-          : String(response.budget.requested_hard_token_limit),
-      )
+      if (selectedSessionId) {
+        await loadContextTokenBudget(selectedContextId, selectedSessionId)
+      } else {
+        setContextTokenBudget(response.budget)
+        setContextTokenBudgetDraft(
+          response.budget.requested_hard_token_limit == null
+            ? ''
+            : String(response.budget.requested_hard_token_limit),
+        )
+      }
       setError('')
     } catch (reason) {
-      await loadContextTokenBudget(selectedContextId)
+      await loadContextTokenBudget(selectedContextId, selectedSessionId)
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setChangingContextTokenBudget(false)
@@ -6761,12 +6752,11 @@ export default function App() {
   const modelOptions = status?.model_options ?? []
   const effectiveSessionModel = selectedSession?.model_alias ?? status?.model
   const selectedModelOption = resolveSelectedModelOption(modelOptions, effectiveSessionModel)
-  const selectedModelLabel = selectedModelOption?.label ?? t('model.unavailable')
   const reasoningEffortOptions = selectedModelOption?.supported_reasoning_efforts
     ?? (['none', 'low', 'medium', 'high', 'max'] satisfies ReasoningEffortSetting[])
-  const selectedReasoningEffort = status?.reasoning_effort
-    && reasoningEffortOptions.includes(status.reasoning_effort)
-    ? status.reasoning_effort
+  const selectedReasoningEffort = selectedSession?.reasoning_effort
+    && reasoningEffortOptions.includes(selectedSession.reasoning_effort)
+    ? selectedSession.reasoning_effort
     : 'default'
   const contextBudgetModelLabel = resolveSelectedModelOption(
     modelOptions,
@@ -6978,173 +6968,6 @@ export default function App() {
                 </div>
               )}
             </div>
-            {modelOptions.length > 0 ? (
-              <label className="model-control" title={t('model.selectorTitle')}>
-                <Bot size={15} />
-                <span>{t('model.selector').toUpperCase()}</span>
-                <select
-                  aria-label={t('model.selector')}
-                  disabled={changingModel || !selectedSessionId}
-                  value={selectedSession?.model_alias ?? '__runtime__'}
-                  onChange={event => void changeModel(event.target.value)}
-                >
-                  <option value="__runtime__">{t('model.runtimeDefault', { model: status?.model ?? '—' })}</option>
-                  {!selectedModelOption && selectedSession?.model_alias && <option value={selectedSession.model_alias} disabled>{t('model.chooseAvailable')}</option>}
-                  {modelOptions.map(option => (
-                    <option key={option.id} value={option.id}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <button
-                className="model-control model-control-empty"
-                type="button"
-                title={status?.model_catalog_error || t('model.manageModelsHint')}
-                onClick={() => setView('providers')}
-              >
-                <Bot size={15} />
-                <span>{t('model.manageModels').toUpperCase()}</span>
-              </button>
-            )}
-            <div className="context-budget-selector" ref={contextTokenBudgetRef}>
-              <button
-                className={`theme-button context-budget-button ${contextTokenBudgetOpen ? 'is-active' : ''}`}
-                type="button"
-                aria-expanded={contextTokenBudgetOpen}
-                disabled={!selectedContextId}
-                title={t('contextBudget.title')}
-                onClick={() => setContextTokenBudgetOpen(open => !open)}
-              >
-                <CircleDot size={15} />
-                <span>{contextTokenBudget ? compactTokens(contextTokenBudget.effective_hard_token_limit) : '—'}</span>
-              </button>
-              {contextTokenBudgetOpen && contextTokenBudget && (
-                <div className="context-budget-popover">
-                  <header>
-                    <span>
-                      <small>{t('contextBudget.eyebrow').toUpperCase()}</small>
-                      <strong>{t('contextBudget.title')}</strong>
-                    </span>
-                    <em>{shortId(contextTokenBudget.context_id, 22)}</em>
-                  </header>
-                  <p>{t('contextBudget.description')}</p>
-                  <div className="context-budget-capacity">
-                    <label>
-                      <span>
-                        <strong>{t('contextBudget.modelCapacity')}</strong>
-                        <small>{t('contextBudget.modelCapacityHint', { model: contextTokenBudget.model })}</small>
-                      </span>
-                      <input
-                        aria-label={t('contextBudget.modelCapacity')}
-                        inputMode="numeric"
-                        min="1"
-                        type="number"
-                        value={modelPromptTokenLimitDraft}
-                        onChange={event => setModelPromptTokenLimitDraft(event.target.value)}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      disabled={!modelPromptTokenLimitChanged || changingModelPromptTokenLimit}
-                      onClick={() => void changeModelPromptTokenLimit()}
-                    >
-                      {changingModelPromptTokenLimit
-                        ? t('contextBudget.savingModelCapacity')
-                        : t('contextBudget.saveModelCapacity')}
-                    </button>
-                  </div>
-                  {!modelPromptTokenLimitDraftValid && (
-                    <p className="context-budget-validation">{t('contextBudget.modelCapacityInvalid')}</p>
-                  )}
-                  <div className="context-budget-divider"><span>{t('contextBudget.contextPolicy')}</span></div>
-                  <div className="context-budget-mode">
-                    <button
-                      className={contextTokenBudgetDraft.trim() === '' ? 'is-selected' : ''}
-                      type="button"
-                      onClick={() => setContextTokenBudgetDraft('')}
-                    >
-                      {t('contextBudget.auto')}
-                    </button>
-                    {contextTokenBudgetPresets.map(value => (
-                      <button
-                        className={parsedContextTokenBudgetDraft === value ? 'is-selected' : ''}
-                        key={value}
-                        type="button"
-                        onClick={() => setContextTokenBudgetDraft(String(value))}
-                      >
-                        {compactTokens(value)}
-                      </button>
-                    ))}
-                  </div>
-                  <input
-                    aria-label={t('contextBudget.slider')}
-                    type="range"
-                    min={Math.min(1_024, contextTokenBudgetSliderMax)}
-                    max={contextTokenBudgetSliderMax}
-                    step={1_024}
-                    value={contextTokenBudgetSliderValue}
-                    onChange={event => setContextTokenBudgetDraft(event.target.value)}
-                  />
-                  <label className="context-budget-exact">
-                    <span>{t('contextBudget.requested')}</span>
-                    <input
-                      inputMode="numeric"
-                      min="1"
-                      placeholder={t('contextBudget.autoPlaceholder')}
-                      type="number"
-                      value={contextTokenBudgetDraft}
-                      onChange={event => setContextTokenBudgetDraft(event.target.value)}
-                    />
-                  </label>
-                  <div className="context-budget-metrics">
-                    <span><small>{t('contextBudget.effective')}</small><strong>{compactTokens(contextTokenBudget.effective_hard_token_limit)}</strong></span>
-                    <span><small>{t('contextBudget.physical')}</small><strong>{compactTokens(contextTokenBudget.physical_prompt_token_limit)}</strong></span>
-                    <span><small>{t('contextBudget.soft')}</small><strong>{compactTokens(contextTokenBudget.soft_token_limit)}</strong></span>
-                    <span><small>{t('contextBudget.reserve')}</small><strong>{compactTokens(contextTokenBudget.maintenance_reserve_tokens)}</strong></span>
-                  </div>
-                  <div className="context-budget-source">
-                    <span>{contextTokenBudget.provider ?? t('runtime.providerUnknown')} · {contextBudgetModelLabel}</span>
-                    <code>{contextTokenBudget.capacity_source}</code>
-                  </div>
-                  {!contextTokenBudgetDraftValid && (
-                    <p className="context-budget-validation">{t('contextBudget.invalid')}</p>
-                  )}
-                  {parsedContextTokenBudgetDraft !== null
-                    && parsedContextTokenBudgetDraft > contextTokenBudget.physical_prompt_token_limit && (
-                    <p className="context-budget-warning">{t('contextBudget.clamped', {
-                      physical: compactTokens(contextTokenBudget.physical_prompt_token_limit),
-                    })}</p>
-                  )}
-                  <footer>
-                    <small>{t('contextBudget.nextEvaluation')}</small>
-                    <button
-                      type="button"
-                      disabled={!contextTokenBudgetChanged || changingContextTokenBudget}
-                      onClick={() => void changeContextTokenBudget(parsedContextTokenBudgetDraft)}
-                    >
-                      {changingContextTokenBudget ? t('contextBudget.saving') : t('contextBudget.save')}
-                    </button>
-                  </footer>
-                </div>
-              )}
-            </div>
-            <label className="reasoning-control" title={t('reasoning.title')}>
-              <Gauge size={15} />
-              <span>{t('reasoning.label').toUpperCase()}</span>
-              <select
-                aria-label={t('reasoning.label')}
-                disabled={changingReasoning}
-                value={selectedReasoningEffort}
-                onChange={event => void changeReasoningEffort(event.target.value)}
-              >
-                <option value="default">{t('reasoning.defaultUnknown')}</option>
-                {reasoningEffortOptions.includes('none') && <option value="none">{t('reasoning.off')}</option>}
-                {reasoningEffortOptions.includes('low') && <option value="low">{t('reasoning.low')}</option>}
-                {reasoningEffortOptions.includes('medium') && <option value="medium">{t('reasoning.medium')}</option>}
-                {reasoningEffortOptions.includes('high') && <option value="high">{t('reasoning.high')}</option>}
-                {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
-              </select>
-            </label>
             <button
               className={`theme-button reasoning-summary-toggle ${showReasoningSummary ? 'is-active' : ''}`}
               type="button"
@@ -8823,7 +8646,141 @@ export default function App() {
                     : t('model.costUnavailable'),
                 ].join(' · ')}
               >Σ {compactTokens(modelUsagePage?.totals.total_tokens)}</span>
-              <span className={`model-status ${selectedModelOption ? 'ok' : ''}`}>{selectedModelLabel}</span>
+              <div className="context-budget-selector" ref={contextTokenBudgetRef}>
+                <button
+                  className={`composer-policy-control context-budget-button ${contextTokenBudgetOpen ? 'is-active' : ''}`}
+                  type="button"
+                  aria-expanded={contextTokenBudgetOpen}
+                  disabled={!selectedContextId}
+                  title={t('contextBudget.title')}
+                  onClick={() => setContextTokenBudgetOpen(open => !open)}
+                >
+                  <CircleDot size={11} />
+                  <span>{contextTokenBudget ? compactTokens(contextTokenBudget.effective_hard_token_limit) : '—'}</span>
+                </button>
+                {contextTokenBudgetOpen && contextTokenBudget && (
+                  <div className="context-budget-popover">
+                    <header>
+                      <span>
+                        <small>{t('contextBudget.eyebrow').toUpperCase()}</small>
+                        <strong>{t('contextBudget.title')}</strong>
+                      </span>
+                      <em>{shortId(selectedSessionId || contextTokenBudget.context_id, 22)}</em>
+                    </header>
+                    <p>{t('contextBudget.description')}</p>
+                    <div className="context-budget-mode">
+                      <button
+                        className={contextTokenBudgetDraft.trim() === '' ? 'is-selected' : ''}
+                        type="button"
+                        onClick={() => setContextTokenBudgetDraft('')}
+                      >
+                        {t('contextBudget.auto')}
+                      </button>
+                      {contextTokenBudgetPresets.map(value => (
+                        <button
+                          className={parsedContextTokenBudgetDraft === value ? 'is-selected' : ''}
+                          key={value}
+                          type="button"
+                          onClick={() => setContextTokenBudgetDraft(String(value))}
+                        >
+                          {compactTokens(value)}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      aria-label={t('contextBudget.slider')}
+                      type="range"
+                      min={Math.min(1_024, contextTokenBudgetSliderMax)}
+                      max={contextTokenBudgetSliderMax}
+                      step={1_024}
+                      value={contextTokenBudgetSliderValue}
+                      onChange={event => setContextTokenBudgetDraft(event.target.value)}
+                    />
+                    <label className="context-budget-exact">
+                      <span>{t('contextBudget.requested')}</span>
+                      <input
+                        inputMode="numeric"
+                        min="1"
+                        placeholder={t('contextBudget.autoPlaceholder')}
+                        type="number"
+                        value={contextTokenBudgetDraft}
+                        onChange={event => setContextTokenBudgetDraft(event.target.value)}
+                      />
+                    </label>
+                    <div className="context-budget-metrics">
+                      <span><small>{t('contextBudget.effective')}</small><strong>{compactTokens(contextTokenBudget.effective_hard_token_limit)}</strong></span>
+                      <span><small>{t('contextBudget.physical')}</small><strong>{compactTokens(contextTokenBudget.physical_prompt_token_limit)}</strong></span>
+                      <span><small>{t('contextBudget.soft')}</small><strong>{compactTokens(contextTokenBudget.soft_token_limit)}</strong></span>
+                      <span><small>{t('contextBudget.reserve')}</small><strong>{compactTokens(contextTokenBudget.maintenance_reserve_tokens)}</strong></span>
+                    </div>
+                    <div className="context-budget-source">
+                      <span>{contextTokenBudget.provider ?? t('runtime.providerUnknown')} · {contextBudgetModelLabel}</span>
+                      <code>{contextTokenBudget.capacity_source}</code>
+                    </div>
+                    {!contextTokenBudgetDraftValid && (
+                      <p className="context-budget-validation">{t('contextBudget.invalid')}</p>
+                    )}
+                    {parsedContextTokenBudgetDraft !== null
+                      && parsedContextTokenBudgetDraft > contextTokenBudget.physical_prompt_token_limit && (
+                      <p className="context-budget-warning">{t('contextBudget.clamped', {
+                        physical: compactTokens(contextTokenBudget.physical_prompt_token_limit),
+                      })}</p>
+                    )}
+                    <footer>
+                      <small>{t('contextBudget.nextEvaluation')}</small>
+                      <button
+                        type="button"
+                        disabled={!contextTokenBudgetChanged || changingContextTokenBudget}
+                        onClick={() => void changeContextTokenBudget(parsedContextTokenBudgetDraft)}
+                      >
+                        {changingContextTokenBudget ? t('contextBudget.saving') : t('contextBudget.save')}
+                      </button>
+                    </footer>
+                  </div>
+                )}
+              </div>
+              {modelOptions.length > 0 ? (
+                <label className={`composer-model-control ${selectedModelOption ? 'ok' : ''}`} title={t('model.sessionSelectorTitle')}>
+                  <Bot size={11} />
+                  <select
+                    aria-label={t('model.sessionSelector')}
+                    disabled={changingModel || !selectedSessionId}
+                    value={selectedSession?.model_alias ?? '__runtime__'}
+                    onChange={event => void changeModel(event.target.value)}
+                  >
+                    <option value="__runtime__">{t('model.runtimeDefault', { model: status?.model ?? '—' })}</option>
+                    {!selectedModelOption && selectedSession?.model_alias && <option value={selectedSession.model_alias} disabled>{t('model.chooseAvailable')}</option>}
+                    {modelOptions.map(option => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <button
+                  className="composer-model-control is-empty"
+                  type="button"
+                  title={status?.model_catalog_error || t('model.manageModelsHint')}
+                  onClick={() => setView('providers')}
+                >
+                  <Bot size={11} />{t('model.manageModels')}
+                </button>
+              )}
+              <label className="composer-reasoning-control" title={t('reasoning.title')}>
+                <Gauge size={11} />
+                <select
+                  aria-label={t('reasoning.label')}
+                  disabled={changingReasoning || !selectedSessionId}
+                  value={selectedReasoningEffort}
+                  onChange={event => void changeReasoningEffort(event.target.value)}
+                >
+                  <option value="default">{t('reasoning.defaultUnknown')}</option>
+                  {reasoningEffortOptions.includes('none') && <option value="none">{t('reasoning.off')}</option>}
+                  {reasoningEffortOptions.includes('low') && <option value="low">{t('reasoning.low')}</option>}
+                  {reasoningEffortOptions.includes('medium') && <option value="medium">{t('reasoning.medium')}</option>}
+                  {reasoningEffortOptions.includes('high') && <option value="high">{t('reasoning.high')}</option>}
+                  {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
+                </select>
+              </label>
               <span className="connection-status" title={t('nav.connection')}><i className={`status-dot ${wsStatus === 'connected' ? '' : wsStatus === 'connecting' ? 'connecting' : 'disconnected'}`} />{t(`connection.${wsStatus}`)}</span>
             </div>
           </div>

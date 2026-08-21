@@ -112,6 +112,7 @@ interface ModelRouteConfig {
 interface ProviderControlSnapshot {
   generated_at: string
   selected_model_alias: string
+  allowed_evaluation_models: string[]
   permission_mode: string
   reviewer: string
   auto_review_model?: string
@@ -299,6 +300,7 @@ const API_PROTOCOLS = [
 const EMPTY_SNAPSHOT: ProviderControlSnapshot = {
   generated_at: '',
   selected_model_alias: '',
+  allowed_evaluation_models: [],
   permission_mode: '',
   reviewer: '',
   auth_adapters: [],
@@ -418,6 +420,9 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
   const [modelDiscoveryError, setModelDiscoveryError] = useState('')
   const [reviewerModel, setReviewerModel] = useState('')
   const [savingReviewerModel, setSavingReviewerModel] = useState(false)
+  const [primaryModel, setPrimaryModel] = useState('')
+  const [allowedEvaluationModels, setAllowedEvaluationModels] = useState<string[]>([])
+  const [savingEvaluationModelPolicy, setSavingEvaluationModelPolicy] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -435,6 +440,13 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
       ])
       setSnapshot(nextSnapshot)
       setReviewerModel(resolvedRouteId(nextSnapshot.model_routes, nextSnapshot.auto_review_model))
+      const nextPrimary = resolvedRouteId(nextSnapshot.model_routes, nextSnapshot.selected_model_alias)
+      setPrimaryModel(nextPrimary)
+      setAllowedEvaluationModels(Array.from(new Set(
+        nextSnapshot.allowed_evaluation_models
+          .map(model => resolvedRouteId(nextSnapshot.model_routes, model))
+          .filter(model => model && model !== nextPrimary),
+      )).sort())
       setAttempts(nextAttempts)
       setOAuthSetupServices(nextOAuthServices.data?.services ?? [])
       setOAuthServicesError(nextOAuthServices.error)
@@ -1170,6 +1182,50 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
     ? modelRouteDisplayLabel(selectedRoute[1])
     : snapshot.selected_model_alias
   const effectiveReviewerModel = resolvedRouteId(snapshot.model_routes, snapshot.auto_review_model)
+  const effectivePrimaryModel = resolvedRouteId(snapshot.model_routes, snapshot.selected_model_alias)
+  const effectiveAllowedEvaluationModels = Array.from(new Set(
+    snapshot.allowed_evaluation_models
+      .map(model => resolvedRouteId(snapshot.model_routes, model))
+      .filter(model => model && model !== effectivePrimaryModel),
+  )).sort()
+  const evaluationModelPolicyChanged = primaryModel !== effectivePrimaryModel
+    || allowedEvaluationModels.join('\u0000') !== effectiveAllowedEvaluationModels.join('\u0000')
+
+  const selectPrimaryModel = (model: string) => {
+    setPrimaryModel(model)
+    setAllowedEvaluationModels(current => current.filter(candidate => candidate !== model))
+  }
+
+  const toggleAllowedEvaluationModel = (model: string) => {
+    if (model === primaryModel) return
+    setAllowedEvaluationModels(current => (
+      current.includes(model)
+        ? current.filter(candidate => candidate !== model)
+        : [...current, model].sort()
+    ))
+  }
+
+  const saveEvaluationModelPolicy = async () => {
+    if (savingEvaluationModelPolicy || !primaryModel) return
+    setSavingEvaluationModelPolicy(true)
+    setError('')
+    try {
+      const receipt = await api.command<CatalogMutationReceipt>(
+        '/api/runtime/evaluation-model-policy',
+        'PUT',
+        {
+          primary_model: primaryModel,
+          allowed_evaluation_models: allowedEvaluationModels,
+        },
+      )
+      setCatalogNotice(t('providers.evaluationModelPolicySaved', { path: receipt.managed_config_path }))
+      await Promise.all([refresh(), onModelCatalogChanged?.()])
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setSavingEvaluationModelPolicy(false)
+    }
+  }
 
   const saveReviewerModel = async () => {
     if (savingReviewerModel) return
@@ -1208,10 +1264,73 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
       {error && <p className="provider-control-error">{error}</p>}
       {catalogNotice && <p className="provider-control-notice">{catalogNotice}</p>}
 
-      <section className="provider-selected-alias">
-        <Route size={17} />
-        <span><small>{t('providers.selectedAlias')}</small><strong>{selectedModelLabel || '—'}</strong></span>
-        <code>{localDate(snapshot.generated_at)}</code>
+      <section className="provider-model-policy">
+        <header>
+          <Route size={17} />
+          <span>
+            <strong>{t('providers.evaluationModelPolicy')}</strong>
+            <small>{t('providers.evaluationModelPolicyHint')}</small>
+          </span>
+          <code>{localDate(snapshot.generated_at)}</code>
+        </header>
+        <div className="provider-model-policy-primary">
+          <label>
+            <span><strong>{t('providers.primaryModel')}</strong><small>{t('providers.primaryModelHint')}</small></span>
+            <select
+              aria-label={t('providers.primaryModel')}
+              disabled={savingEvaluationModelPolicy || routes.length === 0}
+              value={primaryModel}
+              onChange={event => selectPrimaryModel(event.target.value)}
+            >
+              {primaryModel && !snapshot.model_routes[primaryModel] && (
+                <option value={primaryModel}>{selectedModelLabel || primaryModel}</option>
+              )}
+              {routes.map(([routeId, route]) => (
+                <option value={routeId} key={routeId}>
+                  {modelRouteDisplayLabel(route) || routeId} · {routeId}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="provider-model-policy-agent">
+          <div>
+            <strong>{t('providers.agentModels')}</strong>
+            <small>{t('providers.agentModelsHint')}</small>
+          </div>
+          <div className="provider-model-policy-options">
+            {routes.map(([routeId, route]) => {
+              const isPrimary = routeId === primaryModel
+              const selected = isPrimary || allowedEvaluationModels.includes(routeId)
+              const physicalModels = Array.from(new Set(route.candidates.map(candidate => candidate.model)))
+              return (
+                <label className={isPrimary ? 'is-primary' : ''} key={routeId}>
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    disabled={savingEvaluationModelPolicy || isPrimary}
+                    onChange={() => toggleAllowedEvaluationModel(routeId)}
+                  />
+                  <span>
+                    <strong>{modelRouteDisplayLabel(route) || routeId}</strong>
+                    <small>{routeId} · {physicalModels.join(' / ')}</small>
+                  </span>
+                  {isPrimary && <em>{t('providers.primaryAlwaysAllowed')}</em>}
+                </label>
+              )
+            })}
+          </div>
+        </div>
+        <footer>
+          <small>{t('providers.agentModelsBoundary')}</small>
+          <button
+            type="button"
+            disabled={savingEvaluationModelPolicy || !primaryModel || !evaluationModelPolicyChanged}
+            onClick={() => void saveEvaluationModelPolicy()}
+          >
+            <Save size={13} /> {savingEvaluationModelPolicy ? t('providers.busy') : t('providers.saveEvaluationModelPolicy')}
+          </button>
+        </footer>
       </section>
 
       {snapshot.reviewer === 'auto_review' && (

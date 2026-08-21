@@ -140,9 +140,9 @@ test('provider capacity is copied from catalog fields without speculative copy',
 test('conversation selector renders the catalog display label, never the route control id', () => {
   assert.match(appSource, /status\?\.model_options/)
   assert.match(appSource, /<option key=\{option\.id\} value=\{option\.id\}>\{option\.label\}<\/option>/)
-  assert.match(appSource, /className=\{`model-status \$\{selectedModelOption \? 'ok' : ''\}`\}>\{selectedModelLabel\}/)
+  assert.match(appSource, /className=\{`composer-model-control \$\{selectedModelOption \? 'ok' : ''\}`\}/)
   assert.match(appSource, /contextBudgetModelLabel/)
-  assert.doesNotMatch(appSource, /className=\{`model-status[^\n]*\}>\{status\?\.model/)
+  assert.doesNotMatch(appSource, /className="model-control"/)
   assert.doesNotMatch(appSource, /\(status\?\.models \?\? \(status\?\.model/)
   assert.match(appSource, /model\.manageModels/)
   assert.match(appSource, /setView\('providers'\)/)
@@ -158,10 +158,21 @@ test('conversation model selection is persisted on the Session instead of mutati
   assert.match(appSource, /model\.runtimeDefault/)
 })
 
+test('evaluation model policy configures one default and an explicit Agent allowlist', () => {
+  assert.match(providersSource, /\/api\/runtime\/evaluation-model-policy/)
+  assert.match(providersSource, /primary_model: primaryModel/)
+  assert.match(providersSource, /allowed_evaluation_models: allowedEvaluationModels/)
+  assert.match(providersSource, /model === primaryModel/)
+  assert.match(providersSource, /disabled=\{savingEvaluationModelPolicy \|\| isPrimary\}/)
+  assert.match(providersSource, /providers\.primaryAlwaysAllowed/)
+  assert.match(providersSource, /physicalModels\.join\(' \/ '\)/)
+  assert.match(providersSource, /Promise\.all\(\[refresh\(\), onModelCatalogChanged\?\.\(\)\]\)/)
+})
+
 test('reasoning selector follows the selected model native capability list', () => {
   assert.match(appSource, /selectedModelOption\?\.supported_reasoning_efforts/)
   assert.match(appSource, /reasoningEffortOptions\.includes\('high'\)/)
-  assert.match(appSource, /const selectedReasoningEffort = status\?\.reasoning_effort/)
+  assert.match(appSource, /const selectedReasoningEffort = selectedSession\?\.reasoning_effort/)
   assert.doesNotMatch(appSource, /function inferredProviderReasoningEffort/)
   assert.doesNotMatch(appSource, /inferredProviderReasoningEffort\(/)
 })
