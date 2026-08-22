@@ -249,6 +249,19 @@ test('runtime overview follows the dashboard card typography hierarchy', () => {
   )
 })
 
+test('global attention uses the Runtime overview authority and opens its matching surface', () => {
+  assert.match(
+    appSource,
+    /const globalAttentionCount = runtimeOverview\?\.summary\.attention_required \?\? attentionCount/,
+    'the global header badge must share the Runtime overview attention count instead of recomputing one Context',
+  )
+  assert.match(
+    appSource,
+    /className=\{`theme-button global-attention[^`]+`\}[\s\S]*?onClick=\{\(\) => setView\('runtime'\)\}[\s\S]*?globalAttentionCount > 0 && <em>\{globalAttentionCount\}<\/em>/,
+    'the global attention action must open the Runtime-wide surface represented by its badge',
+  )
+})
+
 test('runtime monitor exposes revision-fenced work controls without conflating steering and replacement', () => {
   assert.match(
     runtimeMonitorSource,
@@ -427,5 +440,23 @@ test('runtime overview reveals regular Sessions and only collapses managed deleg
     runtimeOverviewSource,
     /item\.attention_count === 0 && item\.running_activation_count === 0/,
     'idle regular Contexts must still reveal their Session cards on the overview',
+  )
+})
+
+test('runtime overview exposes the Operator-owned Session history sharing policy honestly', () => {
+  assert.match(
+    runtimeOverviewSource,
+    /item\.session\.context_sharing === 'isolated'/,
+    'Session cards must render the authoritative persisted sharing policy',
+  )
+  assert.match(
+    runtimeOverviewSource,
+    /onChangeContextSharing\(isolated \? 'shared' : 'isolated'\)/,
+    'the card control must explicitly toggle between shared and isolated history',
+  )
+  assert.match(
+    appSource,
+    /DASHBOARD_API\.command<SessionRecord>\(\s*`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}`,[\s\S]*?'PATCH',[\s\S]*?\{ context_sharing: contextSharing \}/,
+    'the Dashboard must persist the policy through the Session control-plane endpoint',
   )
 })

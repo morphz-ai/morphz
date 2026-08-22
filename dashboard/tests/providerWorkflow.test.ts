@@ -5,10 +5,39 @@ import {
   buildAccountModelOptions,
   buildEnabledModelSelections,
   buildProviderCatalogSetupPayload,
+  filterAccountModelOptions,
   ProviderWorkflowValidationError,
   resolveAccountDiagnosticPresentation,
   type AccountModelOption,
 } from '../src/app/providerWorkflow.ts'
+
+const modelOptions: AccountModelOption[] = [
+  {
+    id: 'claude-sonnet-4-5',
+    enabled: true,
+    alias: 'Writing',
+    contextWindowTokens: '',
+    maxInputTokens: '',
+    maxOutputTokens: '',
+  },
+  {
+    id: 'gpt-5.6-sol',
+    enabled: false,
+    alias: 'Coding Primary',
+    contextWindowTokens: '',
+    maxInputTokens: '',
+    maxOutputTokens: '',
+  },
+]
+
+test('model catalog search matches physical model names and aliases without mutating options', () => {
+  assert.deepEqual(filterAccountModelOptions(modelOptions, 'SONNET'), [modelOptions[0]])
+  assert.deepEqual(filterAccountModelOptions(modelOptions, 'coding primary'), [modelOptions[1]])
+  assert.deepEqual(filterAccountModelOptions(modelOptions, '  '), modelOptions)
+  assert.deepEqual(filterAccountModelOptions(modelOptions, 'missing'), [])
+  assert.equal(modelOptions[0].enabled, true)
+  assert.equal(modelOptions[1].enabled, false)
+})
 
 test('API setup preserves exact physical names and existing capacity metadata', () => {
   const payload = buildProviderCatalogSetupPayload(

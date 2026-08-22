@@ -3,8 +3,8 @@ use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, ContextSessionCount,
     ContextTokenBudgetMutation, ContextUpdate, NewAgent, NewCognitiveContext, NewPrincipal,
     NewSession, PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
-    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
-    SessionPrincipalBinding, SessionRecord, SessionStatus, SessionUpdate,
+    SessionAttentionState, SessionAttentionUpdate, SessionContextSharing, SessionDirectoryStore,
+    SessionMountKind, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgRow;
@@ -15,7 +15,7 @@ const CONTEXT_COLUMNS: &str = "id, agent_id, title, status, created_at, updated_
 seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection, \
 requested_hard_token_limit, token_budget_revision";
 const SESSION_COLUMNS: &str = "id, agent_id, context_id, parent_session_id, title, status, \
-model_alias, reasoning_effort, created_at, updated_at, last_activity_at, attention_state, attention_revision, \
+model_alias, reasoning_effort, context_sharing, created_at, updated_at, last_activity_at, attention_state, attention_revision, \
 attention_reason, attention_changed_at, attention_event_id";
 
 fn parse_status(value: &str) -> Result<SessionStatus, StoreError> {
@@ -31,6 +31,14 @@ fn parse_attention(value: &str) -> Result<SessionAttentionState, StoreError> {
         "active" => Ok(SessionAttentionState::Active),
         "retired" => Ok(SessionAttentionState::Retired),
         other => Err(format!("未知 Session attention 状态: {other}").into()),
+    }
+}
+
+fn parse_context_sharing(value: &str) -> Result<SessionContextSharing, StoreError> {
+    match value {
+        "shared" => Ok(SessionContextSharing::Shared),
+        "isolated" => Ok(SessionContextSharing::Isolated),
+        other => Err(format!("未知 Session context sharing 状态: {other}").into()),
     }
 }
 
@@ -78,6 +86,7 @@ fn session_from_row(row: &PgRow) -> Result<SessionRecord, StoreError> {
         status: parse_status(&row.get::<String, _>("status"))?,
         model_alias: row.get("model_alias"),
         reasoning_effort: row.get("reasoning_effort"),
+        context_sharing: parse_context_sharing(&row.get::<String, _>("context_sharing"))?,
         created_at: parse_time(&row.get::<String, _>("created_at"))?,
         updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
         last_activity_at: parse_time(&row.get::<String, _>("last_activity_at"))?,
@@ -309,7 +318,7 @@ impl SessionDirectoryStore for PostgresStore {
     ) -> Result<Vec<SessionRecord>, StoreError> {
         let rows = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
-                      s.status, s.model_alias, s.reasoning_effort,
+                      s.status, s.model_alias, s.reasoning_effort, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       s.attention_state, s.attention_revision, s.attention_reason,
                       s.attention_changed_at, s.attention_event_id, s.mount_kind
@@ -1155,6 +1164,24 @@ impl SessionDirectoryStore for PostgresStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn set_session_context_sharing(
+        &self,
+        id: &str,
+        sharing: SessionContextSharing,
+    ) -> Result<Option<SessionRecord>, StoreError> {
+        let result =
+            sqlx::query("UPDATE sessions SET context_sharing = $1, updated_at = $2 WHERE id = $3")
+                .bind(sharing.as_str())
+                .bind(now_text())
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get_session(id).await
     }
 
     async fn update_session_attention(

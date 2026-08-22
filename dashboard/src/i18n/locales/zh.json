@@ -125,6 +125,11 @@
     "manageModels": "管理模型",
     "manageAccountModels": "管理“{{account}}”的模型",
     "modelManagerHint": "Morphz 会先从服务读取模型目录。勾选的模型会出现在对话右上角；未勾选的模型不会参与路由。",
+    "searchModels": "搜索模型",
+    "searchModelsPlaceholder": "搜索真实模型名或别名…",
+    "clearModelSearch": "清空模型搜索",
+    "modelSearchCount": "显示 {{visible}} / {{total}} 个模型",
+    "noMatchingModels": "没有匹配“{{query}}”的模型。",
     "loadingAccountModels": "正在连接服务并刷新模型目录…",
     "modelCatalogRefreshFailed": "未能刷新模型目录",
     "modelCatalogRefreshFailedHint": "下面仍保留上次已启用的模型；请检查账号状态或网络后再试。",
@@ -398,6 +403,24 @@
     "empty": "没有匹配的运行状态",
     "emptyHint": "调整搜索词或筛选条件后重试。",
     "bounded": "还有更早的上下文未显示。",
+    "model": {
+      "bound": "会话绑定",
+      "inherited": "继承服务默认",
+      "boundHint": "此会话显式绑定该模型；可在这里直接切换",
+      "inheritedHint": "此会话未单独绑定模型，使用服务默认模型",
+      "selector": "切换会话 {{session}} 的模型",
+      "saveFailed": "保存失败"
+    },
+    "contextSharing": {
+      "shared": "共享会话历史",
+      "isolated": "独占上下文",
+      "sharedHint": "此会话的历史可自动进入同一上下文中其他会话的工作集",
+      "isolatedHint": "此会话的历史不会自动进入其他会话；共享 Mind 与显式 Recall 不受影响",
+      "selector": "切换会话 {{session}} 的历史共享方式",
+      "makeIsolated": "设为独占",
+      "enableSharing": "恢复共享",
+      "saveFailed": "保存失败"
+    },
     "states": {
       "needs_attention": "需要关注",
       "waiting_user": "等待用户",

@@ -725,6 +725,12 @@ pub struct SessionRecord {
     /// validated at the Runtime boundary before it reaches persistent state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Whether this Session's conversation history may enter another
+    /// Session's automatic Context working set. The current Session always
+    /// sees its own history; shared Mind and explicit Recall remain
+    /// Context-scoped.
+    #[serde(default)]
+    pub context_sharing: SessionContextSharing,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
@@ -739,6 +745,23 @@ pub struct SessionRecord {
     pub attention_changed_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionContextSharing {
+    #[default]
+    Shared,
+    Isolated,
+}
+
+impl SessionContextSharing {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Isolated => "isolated",
+        }
+    }
 }
 
 /// Runtime-authoritative identity. A Principal is stable across Sessions and
@@ -1287,8 +1310,9 @@ pub enum DeliveryFlushCommit {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageDispatchMode {
-    /// Replace a still-thinking DialogueTurn. Once the preceding turn has
-    /// crossed into physical Execution, the new turn proceeds concurrently.
+    /// Replace a still-thinking DialogueTurn, including one suspended at a
+    /// durable Provider-recovery boundary. Once the preceding turn has crossed
+    /// into physical Execution, the new turn proceeds concurrently.
     Interrupt,
     /// Start an independent DialogueTurn without acquiring the Session's
     /// ordinary serial dialogue lane.
@@ -5613,6 +5637,14 @@ pub trait SessionDirectoryStore: Send + Sync {
         &self,
         id: &str,
         update: SessionUpdate,
+    ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Operator-owned sharing policy. This does not archive the Session or
+    /// change shared Mind; it only controls automatic cross-Session history
+    /// projection.
+    async fn set_session_context_sharing(
+        &self,
+        id: &str,
+        sharing: SessionContextSharing,
     ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn touch_session(
         &self,

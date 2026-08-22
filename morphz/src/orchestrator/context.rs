@@ -924,6 +924,9 @@ pub struct ProjectedSession {
 pub struct SessionWorkingSetExclusions {
     pub archived: usize,
     pub retired: usize,
+    /// Non-current Sessions whose conversation history is intentionally kept
+    /// out of this automatic Context working set.
+    pub isolated: usize,
     pub outside_window: usize,
     pub over_count: usize,
     pub token_budget: usize,
@@ -1149,6 +1152,11 @@ fn select_session_working_set(
 
     for session in registry_sessions {
         let is_current = ready.contains(&session.id);
+        if session.context_sharing == crate::memory::SessionContextSharing::Isolated && !is_current
+        {
+            excluded.isolated += 1;
+            continue;
+        }
         if session.status == SessionStatus::Archived && !is_current {
             excluded.archived += 1;
             continue;
@@ -1216,6 +1224,11 @@ fn select_session_working_set(
         if full_ids.contains(&session.id) {
             continue;
         }
+        if session.context_sharing == crate::memory::SessionContextSharing::Isolated
+            && !ready.contains(&session.id)
+        {
+            continue;
+        }
         let active_activation_ids = work_by_session.remove(&session.id).unwrap_or_default();
         let active_objective_ids = objectives_by_session
             .remove(&session.id)
@@ -1250,7 +1263,7 @@ fn select_session_working_set(
             full_session_ids,
             metadata_only_session_ids,
             excluded,
-            selection: "current first; then last_activity desc; session_id tie-break".to_string(),
+            selection: "current first; exclude non-current isolated sessions; then last_activity desc; session_id tie-break".to_string(),
         },
     )
 }
@@ -4678,6 +4691,7 @@ impl ContextEngine {
                 status: crate::memory::SessionStatus::Active,
                 model_alias: None,
                 reasoning_effort: None,
+                context_sharing: crate::memory::SessionContextSharing::Shared,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 last_activity_at: Utc::now(),
@@ -7414,6 +7428,10 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                     pair(
                         "retired",
                         atom(session_working_set.excluded.retired.to_string()),
+                    ),
+                    pair(
+                        "isolated",
+                        atom(session_working_set.excluded.isolated.to_string()),
                     ),
                     pair(
                         "outside-window",
@@ -11501,6 +11519,7 @@ mod tests {
             status: SessionStatus::Active,
             model_alias: None,
             reasoning_effort: None,
+            context_sharing: crate::memory::SessionContextSharing::Shared,
             created_at: last_activity_at,
             updated_at: last_activity_at,
             last_activity_at,
@@ -11595,6 +11614,49 @@ mod tests {
         assert_eq!(projected.len(), 1);
         assert_eq!(view.excluded.outside_window, 9_998);
         assert_eq!(view.excluded.over_count, 1);
+    }
+
+    #[test]
+    fn working_set_excludes_isolated_session_unless_it_is_current() {
+        let now = Utc::now();
+        let config = crate::config::SessionWorkingSetConfig {
+            active_window: crate::config::HumanDuration::from_secs(86_400),
+            max_sessions: 50,
+        };
+        let shared = working_set_session("session-shared", now);
+        let mut isolated = working_set_session("session-isolated", now);
+        isolated.context_sharing = crate::memory::SessionContextSharing::Isolated;
+        let sessions = vec![shared, isolated];
+
+        let (projected, view) = select_session_working_set(
+            &sessions,
+            &["session-shared".to_string()],
+            now,
+            &config,
+            &[],
+            &[],
+        );
+        assert_eq!(view.excluded.isolated, 1);
+        assert!(!projected
+            .iter()
+            .any(|entry| entry.session.id == "session-isolated"));
+
+        let (projected, view) = select_session_working_set(
+            &sessions,
+            &["session-isolated".to_string()],
+            now,
+            &config,
+            &[],
+            &[],
+        );
+        assert_eq!(view.excluded.isolated, 0);
+        assert_eq!(
+            view.full_session_ids.first().map(String::as_str),
+            Some("session-isolated")
+        );
+        assert!(projected.iter().any(|entry| {
+            entry.session.id == "session-isolated" && entry.projection == SessionProjection::Full
+        }));
     }
 
     #[tokio::test]

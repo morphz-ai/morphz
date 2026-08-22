@@ -290,6 +290,16 @@ export function buildAccountModelOptions(input: {
   })
 }
 
+export function filterAccountModelOptions(
+  options: AccountModelOption[],
+  query: string,
+): AccountModelOption[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  if (!normalizedQuery) return options
+  return options.filter(option => [option.id, option.alias]
+    .some(value => value.toLocaleLowerCase().includes(normalizedQuery)))
+}
+
 function optionalPositiveInteger(value: string): number | undefined {
   if (!value.trim()) return undefined
   const parsed = Number(value)

@@ -15,6 +15,7 @@ import {
   Plus,
   RefreshCw,
   Route,
+  Search,
   Server,
   ShieldCheck,
   Smartphone,
@@ -36,6 +37,7 @@ import {
   buildAccountModelOptions,
   buildEnabledModelSelections,
   buildProviderCatalogSetupPayload,
+  filterAccountModelOptions,
   ProviderWorkflowValidationError,
   resolveAccountDiagnosticPresentation,
   type AccountModelOption,
@@ -410,6 +412,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
   const [diagnosticAccountId, setDiagnosticAccountId] = useState('')
   const [diagnosticError, setDiagnosticError] = useState('')
   const [modelEditor, setModelEditor] = useState<AccountModelEditorState | null>(null)
+  const [modelSearchQuery, setModelSearchQuery] = useState('')
   const [savingModels, setSavingModels] = useState(false)
   const [setup, setSetup] = useState<ProviderSetupState | null>(() => (
     startInSetup ? defaultSetup() : null
@@ -1087,6 +1090,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
       setError(t('providers.modelProviderMissing'))
       return
     }
+    setModelSearchQuery('')
     setModelEditor({
       accountId,
       providerId,
@@ -1132,6 +1136,11 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
       errorKind: '',
     } : current)
   }
+
+  const visibleAccountModels = filterAccountModelOptions(
+    modelEditor?.options ?? [],
+    modelSearchQuery,
+  )
 
   const saveAccountModels = async () => {
     if (!modelEditor || savingModels) return
@@ -1627,6 +1636,29 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
               <button type="button" disabled={savingModels} onClick={() => setModelEditor(null)} aria-label={t('providers.cancel')}><X size={15} /></button>
             </header>
             <p>{t('providers.modelManagerHint')}</p>
+            <div className="provider-model-manager-search">
+              <Search aria-hidden="true" size={15} />
+              <input
+                type="search"
+                autoFocus
+                value={modelSearchQuery}
+                onChange={event => setModelSearchQuery(event.target.value)}
+                placeholder={t('providers.searchModelsPlaceholder')}
+                aria-label={t('providers.searchModels')}
+              />
+              <small>{t('providers.modelSearchCount', {
+                visible: visibleAccountModels.length,
+                total: modelEditor.options.length,
+              })}</small>
+              {modelSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setModelSearchQuery('')}
+                  aria-label={t('providers.clearModelSearch')}
+                  title={t('providers.clearModelSearch')}
+                ><X size={13} /></button>
+              )}
+            </div>
             {modelEditor.loading && (
               <div className="provider-model-manager-loading"><RefreshCw className="is-spinning" size={14} /> {t('providers.loadingAccountModels')}</div>
             )}
@@ -1649,7 +1681,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
               </div>
             )}
             <div className="provider-model-manager-list">
-              {modelEditor.options.map(option => (
+              {visibleAccountModels.map(option => (
                 <article className={option.enabled ? 'is-enabled' : ''} key={option.id}>
                   <label>
                     <input type="checkbox" checked={option.enabled} onChange={event => updateAccountModel(option.id, { enabled: event.target.checked })} />
@@ -1678,6 +1710,9 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
                 </article>
               ))}
               {!modelEditor.loading && modelEditor.options.length === 0 && <p className="provider-empty">{t('providers.noAccountModels')}</p>}
+              {!modelEditor.loading && modelEditor.options.length > 0 && visibleAccountModels.length === 0 && (
+                <p className="provider-empty">{t('providers.noMatchingModels', { query: modelSearchQuery.trim() })}</p>
+              )}
             </div>
             <footer>
               <button type="button" disabled={savingModels} onClick={() => setModelEditor(null)}>{t('providers.cancel')}</button>

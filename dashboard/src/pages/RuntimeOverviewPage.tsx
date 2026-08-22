@@ -9,12 +9,16 @@ import {
   Layers3,
   MessageSquare,
   Network,
+  Bot,
+  LockKeyhole,
   RefreshCw,
   Search,
+  Share2,
   UserRound,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { resolveSelectedModelOption } from '../app/modelSelection'
 
 export type RuntimeOverviewSessionState =
   | 'needs_attention'
@@ -93,6 +97,8 @@ export interface RuntimeOverviewSession {
     context_id: string
     title: string
     status: string
+    model_alias?: string | null
+    context_sharing?: 'shared' | 'isolated'
     last_activity_at: string
   }
   principal_ids: string[]
@@ -158,6 +164,12 @@ export interface RuntimeOverview {
 
 type RuntimeOverviewFilter = 'all' | 'attention' | 'active' | 'idle'
 
+export interface RuntimeOverviewModelOption {
+  id: string
+  label: string
+  aliases?: string[]
+}
+
 interface RuntimeOverviewPageProps {
   overview: RuntimeOverview | null
   loading: boolean
@@ -166,6 +178,13 @@ interface RuntimeOverviewPageProps {
   onOpenContext: (contextId: string) => void
   onOpenSession: (contextId: string, sessionId: string) => void
   onExpandSessions: (contextId: string) => Promise<void>
+  modelOptions: RuntimeOverviewModelOption[]
+  runtimeDefaultModel: string
+  onChangeSessionModel: (sessionId: string, model: string) => Promise<void>
+  onChangeSessionContextSharing: (
+    sessionId: string,
+    sharing: 'shared' | 'isolated',
+  ) => Promise<void>
 }
 
 function ago(timestamp: string, language: string): string {
@@ -194,6 +213,7 @@ function matchesQuery(context: RuntimeOverviewContext, query: string): boolean {
       session.current_objective?.id,
       session.current_objective?.stated_objective,
       session.current_thread?.id,
+      session.session.model_alias,
     ]),
   ]
   return values.some(value => value?.toLocaleLowerCase().includes(query))
@@ -225,13 +245,33 @@ function SessionCard({
   item,
   language,
   onOpen,
+  modelOptions,
+  runtimeDefaultModel,
+  changingModel,
+  modelError,
+  onChangeModel,
+  changingContextSharing,
+  contextSharingError,
+  onChangeContextSharing,
 }: {
   item: RuntimeOverviewSession
   language: string
   onOpen: () => void
+  modelOptions: RuntimeOverviewModelOption[]
+  runtimeDefaultModel: string
+  changingModel: boolean
+  modelError: string
+  onChangeModel: (model: string) => Promise<void>
+  changingContextSharing: boolean
+  contextSharingError: string
+  onChangeContextSharing: (sharing: 'shared' | 'isolated') => Promise<void>
 }) {
   const { t } = useTranslation()
   const principal = item.principal_ids[0]
+  const explicitModel = item.session.model_alias?.trim() ?? ''
+  const selectedModel = resolveSelectedModelOption(modelOptions, explicitModel || runtimeDefaultModel)
+  const currentModelLabel = selectedModel?.label || explicitModel || runtimeDefaultModel || t('model.unavailable')
+  const isolated = item.session.context_sharing === 'isolated'
   return (
     <article className={`runtime-overview-session state-${item.state}`}>
       <button className="runtime-overview-session-open" type="button" onClick={onOpen}>
@@ -275,6 +315,57 @@ function SessionCard({
           )}
         </footer>
       </button>
+      <div
+        className={`runtime-overview-session-model ${explicitModel ? 'is-bound' : 'is-inherited'}`}
+        title={t(explicitModel ? 'runtimeOverview.model.boundHint' : 'runtimeOverview.model.inheritedHint')}
+        onClick={event => event.stopPropagation()}
+      >
+        <Bot size={11} />
+        <span>
+          <small>{t(explicitModel ? 'runtimeOverview.model.bound' : 'runtimeOverview.model.inherited')}</small>
+          <strong>{currentModelLabel}</strong>
+        </span>
+        <select
+          aria-label={t('runtimeOverview.model.selector', { session: item.session.title })}
+          disabled={changingModel || modelOptions.length === 0}
+          value={explicitModel || '__runtime__'}
+          onChange={event => void onChangeModel(event.target.value)}
+        >
+          <option value="__runtime__">{t('model.runtimeDefault', { model: runtimeDefaultModel || '—' })}</option>
+          {explicitModel && !resolveSelectedModelOption(modelOptions, explicitModel) && (
+            <option value={explicitModel} disabled>{explicitModel} · {t('model.unavailable')}</option>
+          )}
+          {modelOptions.map(option => (
+            <option key={option.id} value={option.id}>{option.label}</option>
+          ))}
+        </select>
+        {changingModel && <RefreshCw className="is-spinning" size={11} />}
+        {modelError && <em title={modelError}><AlertCircle size={11} />{t('runtimeOverview.model.saveFailed')}</em>}
+      </div>
+      <button
+        className={`runtime-overview-session-sharing ${isolated ? 'is-isolated' : 'is-shared'}`}
+        type="button"
+        disabled={changingContextSharing}
+        title={t(isolated
+          ? 'runtimeOverview.contextSharing.isolatedHint'
+          : 'runtimeOverview.contextSharing.sharedHint')}
+        aria-label={t('runtimeOverview.contextSharing.selector', { session: item.session.title })}
+        onClick={() => void onChangeContextSharing(isolated ? 'shared' : 'isolated')}
+      >
+        {isolated ? <LockKeyhole size={11} /> : <Share2 size={11} />}
+        <span>{t(isolated
+          ? 'runtimeOverview.contextSharing.isolated'
+          : 'runtimeOverview.contextSharing.shared')}</span>
+        <small>{t(isolated
+          ? 'runtimeOverview.contextSharing.enableSharing'
+          : 'runtimeOverview.contextSharing.makeIsolated')}</small>
+        {changingContextSharing && <RefreshCw className="is-spinning" size={11} />}
+        {contextSharingError && (
+          <em title={contextSharingError}>
+            <AlertCircle size={11} />{t('runtimeOverview.contextSharing.saveFailed')}
+          </em>
+        )}
+      </button>
     </article>
   )
 }
@@ -288,6 +379,14 @@ function ContextGroup({
   onOpenContext,
   onOpenSession,
   onExpandSessions,
+  modelOptions,
+  runtimeDefaultModel,
+  changingModelSessionIds,
+  modelErrors,
+  onChangeSessionModel,
+  changingContextSharingSessionIds,
+  contextSharingErrors,
+  onChangeSessionContextSharing,
   revealChildren = false,
 }: {
   item: RuntimeOverviewContext
@@ -298,6 +397,17 @@ function ContextGroup({
   onOpenContext: (contextId: string) => void
   onOpenSession: (contextId: string, sessionId: string) => void
   onExpandSessions: (contextId: string) => Promise<void>
+  modelOptions: RuntimeOverviewModelOption[]
+  runtimeDefaultModel: string
+  changingModelSessionIds: Set<string>
+  modelErrors: Record<string, string>
+  onChangeSessionModel: (sessionId: string, model: string) => Promise<void>
+  changingContextSharingSessionIds: Set<string>
+  contextSharingErrors: Record<string, string>
+  onChangeSessionContextSharing: (
+    sessionId: string,
+    sharing: 'shared' | 'isolated',
+  ) => Promise<void>
   revealChildren?: boolean
 }) {
   const { t } = useTranslation()
@@ -340,6 +450,16 @@ function ContextGroup({
                 item={session}
                 language={language}
                 onOpen={() => onOpenSession(item.context.id, session.session.id)}
+                modelOptions={modelOptions}
+                runtimeDefaultModel={runtimeDefaultModel}
+                changingModel={changingModelSessionIds.has(session.session.id)}
+                modelError={modelErrors[session.session.id] ?? ''}
+                onChangeModel={model => onChangeSessionModel(session.session.id, model)}
+                changingContextSharing={changingContextSharingSessionIds.has(session.session.id)}
+                contextSharingError={contextSharingErrors[session.session.id] ?? ''}
+                onChangeContextSharing={sharing => (
+                  onChangeSessionContextSharing(session.session.id, sharing)
+                )}
               />
             ))}
             {item.sessions.length === 0 && (
@@ -386,6 +506,14 @@ function ContextGroup({
                       onOpenContext={onOpenContext}
                       onOpenSession={onOpenSession}
                       onExpandSessions={onExpandSessions}
+                      modelOptions={modelOptions}
+                      runtimeDefaultModel={runtimeDefaultModel}
+                      changingModelSessionIds={changingModelSessionIds}
+                      modelErrors={modelErrors}
+                      onChangeSessionModel={onChangeSessionModel}
+                      changingContextSharingSessionIds={changingContextSharingSessionIds}
+                      contextSharingErrors={contextSharingErrors}
+                      onChangeSessionContextSharing={onChangeSessionContextSharing}
                     />
                   ))}
                 </div>
@@ -406,11 +534,19 @@ export function RuntimeOverviewPage({
   onOpenContext,
   onOpenSession,
   onExpandSessions,
+  modelOptions,
+  runtimeDefaultModel,
+  onChangeSessionModel,
+  onChangeSessionContextSharing,
 }: RuntimeOverviewPageProps) {
   const { t, i18n } = useTranslation()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<RuntimeOverviewFilter>('all')
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [changingModelSessionIds, setChangingModelSessionIds] = useState<Set<string>>(() => new Set())
+  const [modelErrors, setModelErrors] = useState<Record<string, string>>({})
+  const [changingContextSharingSessionIds, setChangingContextSharingSessionIds] = useState<Set<string>>(() => new Set())
+  const [contextSharingErrors, setContextSharingErrors] = useState<Record<string, string>>({})
   const collapseInitialized = useRef(false)
   const normalizedQuery = query.trim().toLocaleLowerCase()
 
@@ -477,6 +613,55 @@ export function RuntimeOverviewPage({
     })
   }
 
+  const changeSessionModel = async (sessionId: string, model: string) => {
+    setChangingModelSessionIds(current => new Set(current).add(sessionId))
+    setModelErrors(current => {
+      const next = { ...current }
+      delete next[sessionId]
+      return next
+    })
+    try {
+      await onChangeSessionModel(sessionId, model)
+    } catch (reason) {
+      setModelErrors(current => ({
+        ...current,
+        [sessionId]: reason instanceof Error ? reason.message : String(reason),
+      }))
+    } finally {
+      setChangingModelSessionIds(current => {
+        const next = new Set(current)
+        next.delete(sessionId)
+        return next
+      })
+    }
+  }
+
+  const changeSessionContextSharing = async (
+    sessionId: string,
+    sharing: 'shared' | 'isolated',
+  ) => {
+    setChangingContextSharingSessionIds(current => new Set(current).add(sessionId))
+    setContextSharingErrors(current => {
+      const next = { ...current }
+      delete next[sessionId]
+      return next
+    })
+    try {
+      await onChangeSessionContextSharing(sessionId, sharing)
+    } catch (reason) {
+      setContextSharingErrors(current => ({
+        ...current,
+        [sessionId]: reason instanceof Error ? reason.message : String(reason),
+      }))
+    } finally {
+      setChangingContextSharingSessionIds(current => {
+        const next = new Set(current)
+        next.delete(sessionId)
+        return next
+      })
+    }
+  }
+
   return (
     <section className="runtime-overview-view">
       <header className="workspace-heading runtime-overview-heading">
@@ -539,6 +724,14 @@ export function RuntimeOverviewPage({
               onOpenContext={onOpenContext}
               onOpenSession={onOpenSession}
               onExpandSessions={onExpandSessions}
+              modelOptions={modelOptions}
+              runtimeDefaultModel={runtimeDefaultModel}
+              changingModelSessionIds={changingModelSessionIds}
+              modelErrors={modelErrors}
+              onChangeSessionModel={changeSessionModel}
+              changingContextSharingSessionIds={changingContextSharingSessionIds}
+              contextSharingErrors={contextSharingErrors}
+              onChangeSessionContextSharing={changeSessionContextSharing}
               revealChildren={Boolean(normalizedQuery)}
             />
           ))}

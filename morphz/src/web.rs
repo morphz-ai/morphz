@@ -271,6 +271,7 @@ struct UpdateSessionRequest {
     status: Option<SessionStatus>,
     model_alias: Option<String>,
     reasoning_effort: Option<String>,
+    context_sharing: Option<crate::memory::SessionContextSharing>,
 }
 
 #[derive(serde::Deserialize)]
@@ -5473,6 +5474,7 @@ async fn handle_update_session(
     if title.as_deref() == Some("") {
         return error_response(StatusCode::BAD_REQUEST, "title must not be empty");
     }
+    let context_sharing = request.context_sharing;
     let model_alias = match request.model_alias {
         None => None,
         Some(model) if model.trim().is_empty() => Some(None),
@@ -5570,23 +5572,56 @@ async fn handle_update_session(
         }
     }
     let status = request.status;
-    if is_operator_authorized(&state, &headers, query.token.as_deref())
+    let operator_authorized = is_operator_authorized(&state, &headers, query.token.as_deref());
+    if context_sharing.is_some() && (title.is_some() || status.is_some()) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "context_sharing cannot be combined with participant-owned title or status changes",
+        );
+    }
+    if operator_authorized
         && title.is_none()
         && status.is_none()
-        && (model_alias.is_some() || reasoning_effort.is_some())
+        && (model_alias.is_some() || reasoning_effort.is_some() || context_sharing.is_some())
     {
-        return match state
-            .sdk
-            .set_session_evaluation_policy_as_operator(
-                &session_id,
-                model_alias.clone(),
-                reasoning_effort.clone(),
-            )
-            .await
-        {
-            Ok(session) => Json(session).into_response(),
-            Err(error) => sdk_error_response(error),
+        if model_alias.is_some() || reasoning_effort.is_some() {
+            if let Err(error) = state
+                .sdk
+                .set_session_evaluation_policy_as_operator(
+                    &session_id,
+                    model_alias.clone(),
+                    reasoning_effort.clone(),
+                )
+                .await
+            {
+                return sdk_error_response(error);
+            }
+        }
+        return if let Some(sharing) = context_sharing {
+            match state
+                .sdk
+                .set_session_context_sharing_as_operator(&session_id, sharing)
+                .await
+            {
+                Ok(session) => Json(session).into_response(),
+                Err(error) => sdk_error_response(error),
+            }
+        } else {
+            match state.runtime.get_session(&session_id).await {
+                Ok(Some(session)) => Json(session).into_response(),
+                Ok(None) => error_response(
+                    StatusCode::NOT_FOUND,
+                    format!("Session '{session_id}' does not exist"),
+                ),
+                Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+            }
         };
+    }
+    if context_sharing.is_some() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "only the Operator may change Session context sharing",
+        );
     }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
@@ -8371,6 +8406,7 @@ mod tests {
                 status: None,
                 model_alias: Some("fixture-model".to_string()),
                 reasoning_effort: None,
+                context_sharing: None,
             }),
         )
         .await
@@ -8410,6 +8446,51 @@ mod tests {
             .unwrap();
         assert_eq!(refreshed["model_alias"], "fixture-model");
 
+        // Session context sharing is also an Operator-owned control-plane
+        // policy. It may be changed while observing another Principal without
+        // granting authorship over that Session.
+        let operator_sharing_update = handle_update_session(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: None,
+                status: None,
+                model_alias: None,
+                reasoning_effort: None,
+                context_sharing: Some(crate::memory::SessionContextSharing::Isolated),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(operator_sharing_update.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_session("gateway-session-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .context_sharing,
+            crate::memory::SessionContextSharing::Isolated
+        );
+        let participant_sharing_update = handle_update_session(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            gateway_headers(Some("site-user-1")),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: None,
+                status: None,
+                model_alias: None,
+                reasoning_effort: None,
+                context_sharing: Some(crate::memory::SessionContextSharing::Shared),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(participant_sharing_update.status(), StatusCode::FORBIDDEN);
+
         // The exception is intentionally narrow: participant-owned metadata
         // remains read-only to the observing Operator.
         let operator_title_update = handle_update_session(
@@ -8422,6 +8503,7 @@ mod tests {
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
+                context_sharing: None,
             }),
         )
         .await
@@ -10621,6 +10703,7 @@ account = "xai-account"
                 status: None,
                 model_alias: Some("fixture-model".to_string()),
                 reasoning_effort: None,
+                context_sharing: None,
             }),
         )
         .await
@@ -10648,6 +10731,7 @@ account = "xai-account"
                 status: None,
                 model_alias: None,
                 reasoning_effort: Some("high".to_string()),
+                context_sharing: None,
             }),
         )
         .await
@@ -10674,6 +10758,7 @@ account = "xai-account"
                 status: None,
                 model_alias: Some("missing-model".to_string()),
                 reasoning_effort: None,
+                context_sharing: None,
             }),
         )
         .await
@@ -10700,6 +10785,7 @@ account = "xai-account"
                 status: None,
                 model_alias: Some(String::new()),
                 reasoning_effort: Some("provider_default".to_string()),
+                context_sharing: None,
             }),
         )
         .await

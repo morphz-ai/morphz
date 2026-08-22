@@ -3438,6 +3438,26 @@ impl MorphzSdk {
             })
     }
 
+    /// Change whether a Session's conversation history participates in other
+    /// Sessions' automatic Context working sets. This is an administrative
+    /// privacy control, not participant-authored conversation content.
+    pub async fn set_session_context_sharing_as_operator(
+        &self,
+        session_id: &str,
+        sharing: crate::memory::SessionContextSharing,
+    ) -> SdkResult<SessionRecord> {
+        self.runtime
+            .set_session_context_sharing(session_id, sharing)
+            .await
+            .map_err(SdkError::internal)?
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::NotFound,
+                    format!("Session '{session_id}' does not exist"),
+                )
+            })
+    }
+
     pub async fn list_sessions(
         &self,
         principal_id: &str,

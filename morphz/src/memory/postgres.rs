@@ -551,6 +551,9 @@ impl PostgresStore {
                     CHECK(status IN ('active', 'archived')),
                 model_alias TEXT,
                 reasoning_effort TEXT,
+                context_sharing TEXT NOT NULL DEFAULT 'shared'
+                    CONSTRAINT sessions_context_sharing_domain
+                    CHECK(context_sharing IN ('shared', 'isolated')),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_activity_at TEXT NOT NULL,
@@ -573,6 +576,7 @@ impl PostgresStore {
                ON sessions(context_id, last_activity_at DESC, id)"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS reasoning_effort TEXT"#,
+            r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_sharing TEXT NOT NULL DEFAULT 'shared'"#,
             r#"CREATE TABLE IF NOT EXISTS principals (
                 id TEXT PRIMARY KEY,
                 provider_id TEXT NOT NULL,
@@ -1468,6 +1472,11 @@ impl PostgresStore {
                 "sessions",
                 "sessions_attention_state_domain",
                 "attention_state IN ('active', 'retired')",
+            ),
+            (
+                "sessions",
+                "sessions_context_sharing_domain",
+                "context_sharing IN ('shared', 'isolated')",
             ),
             (
                 "sessions",

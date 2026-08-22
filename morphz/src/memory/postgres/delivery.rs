@@ -212,7 +212,7 @@ async fn interrupt_dialogue_turn_in_tx(
     session_id: &str,
     event: &Event,
 ) -> Result<Option<InterruptedDialogueTurn>, StoreError> {
-    let Some(row) = sqlx::query(
+    let running = sqlx::query(
         r#"WITH predecessor AS (
              SELECT request.event_id
              FROM session_message_requests request
@@ -244,9 +244,86 @@ async fn interrupt_dialogue_turn_in_tx(
     .bind(session_id)
     .bind(&event.id)
     .fetch_optional(&mut **tx)
-    .await?
-    else {
-        return Ok(None);
+    .await?;
+    let (row, provider_wait) = if let Some(row) = running {
+        (row, false)
+    } else {
+        // A Provider wait terminalizes only the physical Activation. The
+        // logical DialogueTurn remains open behind a durable Resource
+        // dependency, so a running-only interrupt would let recovery replay
+        // an obsolete user turn after newer turns have completed.
+        //
+        // Include an already-satisfied dependency to fence the narrow race in
+        // which recovery wrote its direct Signal before this transaction
+        // acquired the dependency/Thread row locks. Execution that has
+        // released the dialogue lane remains deliberately out of scope.
+        let Some(row) = sqlx::query(
+            r#"WITH predecessor AS (
+                 SELECT request.event_id
+                 FROM session_message_requests request
+                 WHERE request.session_id = $1 AND request.event_id != $2
+                 ORDER BY request.created_at DESC, request.event_id DESC
+                 LIMIT 1
+               )
+               SELECT COALESCE(
+                        (
+                          SELECT current.id
+                          FROM thread_activations current
+                          WHERE current.root_turn_id = thread.root_turn_id
+                            AND current.generation = thread.generation
+                            AND current.status IN ('queued', 'running')
+                            AND current.dialogue_lane_released_at IS NULL
+                          ORDER BY CASE current.status WHEN 'running' THEN 0 ELSE 1 END,
+                                   current.created_at DESC, current.id
+                          LIMIT 1
+                        ),
+                        dependency.metadata_json ->> 'activation_id'
+                      ) AS activation_id,
+                      waiting_activation.root_turn_id AS root_turn_id,
+                      thread.id AS thread_id,
+                      thread.generation AS thread_generation
+               FROM predecessor
+               JOIN thread_signals signal ON signal.event_id = predecessor.event_id
+               JOIN threads thread
+                 ON thread.id = signal.thread_id
+                AND thread.generation = signal.thread_generation
+               JOIN scheduler_dependencies dependency
+                 ON dependency.owner_kind = 'thread'
+                AND dependency.owner_id = thread.id
+                AND dependency.owner_generation = thread.generation
+                AND dependency.dependency_kind = 'resource'
+                AND dependency.required = TRUE
+                AND dependency.status IN ('pending', 'satisfied')
+                AND dependency.metadata_json ->> 'source' = 'provider_wait'
+               JOIN thread_activations waiting_activation
+                 ON waiting_activation.id = dependency.metadata_json ->> 'activation_id'
+                AND waiting_activation.root_turn_id = thread.root_turn_id
+                AND waiting_activation.generation = thread.generation
+               WHERE thread.session_id = $1
+                 AND thread.kind = 'dialogue_turn'
+                 AND thread.status = 'open'
+                 AND thread.control_state = 'active'
+                 AND waiting_activation.status = 'completed'
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM thread_activations released
+                   WHERE released.root_turn_id = thread.root_turn_id
+                     AND released.generation = thread.generation
+                     AND released.dialogue_lane_released_at IS NOT NULL
+                 )
+               ORDER BY CASE dependency.status WHEN 'pending' THEN 0 ELSE 1 END,
+                        dependency.created_at DESC, dependency.id
+               LIMIT 1
+               FOR UPDATE OF dependency, thread, signal, waiting_activation"#,
+        )
+        .bind(session_id)
+        .bind(&event.id)
+        .fetch_optional(&mut **tx)
+        .await?
+        else {
+            return Ok(None);
+        };
+        (row, true)
     };
 
     let interrupted = InterruptedDialogueTurn {
@@ -282,19 +359,50 @@ async fn interrupt_dialogue_turn_in_tx(
     .execute(&mut **tx)
     .await?;
 
-    let activation = sqlx::query(
-        r#"UPDATE thread_activations
-           SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
-               lease_expires_at = NULL, updated_at = $1
-           WHERE id = $2 AND status = 'running'
-             AND dialogue_lane_released_at IS NULL"#,
-    )
-    .bind(&now)
-    .bind(&interrupted.activation_id)
-    .execute(&mut **tx)
-    .await?;
-    if activation.rows_affected() != 1 {
-        return Err("DialogueTurn crossed the Execution boundary while being interrupted".into());
+    if provider_wait {
+        // Retire every still-local recovery Activation and pending dependency
+        // in the same transaction as the logical Thread cancellation.
+        sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
+                   lease_expires_at = NULL, updated_at = $1
+               WHERE root_turn_id = $2 AND generation = $3
+                 AND status IN ('queued', 'running')
+                 AND dialogue_lane_released_at IS NULL"#,
+        )
+        .bind(&now)
+        .bind(&interrupted.root_turn_id)
+        .bind(thread_generation)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE scheduler_dependencies
+               SET status = 'cancelled', updated_at = $1
+               WHERE owner_kind = 'thread' AND owner_id = $2
+                 AND owner_generation = $3 AND status = 'pending'"#,
+        )
+        .bind(&now)
+        .bind(&interrupted.thread_id)
+        .bind(thread_generation)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        let activation = sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
+                   lease_expires_at = NULL, updated_at = $1
+               WHERE id = $2 AND status = 'running'
+                 AND dialogue_lane_released_at IS NULL"#,
+        )
+        .bind(&now)
+        .bind(&interrupted.activation_id)
+        .execute(&mut **tx)
+        .await?;
+        if activation.rows_affected() != 1 {
+            return Err(
+                "DialogueTurn crossed the Execution boundary while being interrupted".into(),
+            );
+        }
     }
     let thread = sqlx::query(
         r#"UPDATE threads
@@ -313,14 +421,12 @@ async fn interrupt_dialogue_turn_in_tx(
 
     sqlx::query(
         r#"DELETE FROM activation_signals
-           WHERE activation_id = $1
-             AND signal_id IN (
+           WHERE signal_id IN (
                SELECT id FROM thread_signals
-               WHERE thread_id = $2 AND thread_generation = $3
+               WHERE thread_id = $1 AND thread_generation = $2
                  AND kind = 'chat/user_message'
              )"#,
     )
-    .bind(&interrupted.activation_id)
     .bind(&interrupted.thread_id)
     .bind(thread_generation)
     .execute(&mut **tx)
@@ -331,7 +437,8 @@ async fn interrupt_dialogue_turn_in_tx(
                claimed_at = NULL, acknowledged_at = NULL,
                parent_activation_id = NULL
            WHERE thread_id = $2 AND thread_generation = $3
-             AND kind = 'chat/user_message' AND status = 'claimed'"#,
+             AND kind = 'chat/user_message'
+             AND status IN ('claimed', 'acknowledged')"#,
     )
     .bind(&replacement_thread_id)
     .bind(&interrupted.thread_id)

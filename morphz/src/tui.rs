@@ -7336,6 +7336,7 @@ mod tests {
             status: SessionStatus::Active,
             model_alias: None,
             reasoning_effort: None,
+            context_sharing: crate::memory::SessionContextSharing::Shared,
             created_at: now,
             updated_at: now,
             last_activity_at: now + chrono::Duration::seconds(activity_offset_seconds),

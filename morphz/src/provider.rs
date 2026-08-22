@@ -2617,7 +2617,11 @@ fn build_anthropic_request(
         .collect::<Vec<_>>()
         .join("\n\n");
     let mut converted: Vec<Value> = Vec::new();
-    for message in messages.iter().filter(|message| message.role != "system") {
+    let mut messages = messages
+        .iter()
+        .filter(|message| message.role != "system")
+        .peekable();
+    while let Some(message) = messages.next() {
         if let Some(attachments) = model_attachments(message) {
             let content = attachments
                 .iter()
@@ -2629,14 +2633,33 @@ fn build_anthropic_request(
             continue;
         }
         let (role, mut content) = if message.role == "tool" {
-            (
-                "user",
-                vec![json!({
+            let mut attachment_content = Vec::new();
+            while let Some(attachments) = messages
+                .peek()
+                .and_then(|message| model_attachments(message))
+            {
+                attachment_content.extend(attachments.iter().map(anthropic_attachment_block));
+                messages.next();
+            }
+            let result = if attachment_content.is_empty() {
+                json!({
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id,
                     "content": message.content,
-                })],
-            )
+                })
+            } else {
+                let mut result_content = Vec::with_capacity(attachment_content.len() + 1);
+                if !message.content.is_empty() {
+                    result_content.push(json!({"type": "text", "text": message.content}));
+                }
+                result_content.append(&mut attachment_content);
+                json!({
+                    "type": "tool_result",
+                    "tool_use_id": message.tool_call_id,
+                    "content": result_content,
+                })
+            };
+            ("user", vec![result])
         } else {
             let role = if message.role == "assistant" {
                 "assistant"
@@ -3779,6 +3802,80 @@ mod tests {
             gemini["contents"][1]["parts"][0]["inlineData"]["data"],
             "aW1hZ2U="
         );
+    }
+
+    #[test]
+    fn anthropic_parallel_tool_results_keep_their_attachments_in_one_reply() {
+        let tool_call = |id: &str, path: &str| ToolCall {
+            id: id.to_string(),
+            r#type: "function".to_string(),
+            function: FunctionCall {
+                name: "read".to_string(),
+                arguments: json!({"path": path}).to_string(),
+            },
+        };
+        let tool_result = |id: &str, content: &str| Message {
+            role: "tool".to_string(),
+            content: content.to_string(),
+            name: Some("read".to_string()),
+            tool_call_id: Some(id.to_string()),
+            tool_calls: None,
+        };
+        let attachment = |name: &str, data: &str| {
+            attachment_message(vec![ModelAttachment {
+                name: name.to_string(),
+                media_type: "image/jpeg".to_string(),
+                data_base64: data.to_string(),
+            }])
+            .expect("attachment marker must serialize")
+        };
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: "Compare both images.".to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: String::new(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(vec![
+                    tool_call("toolu_first", "/tmp/first.jpg"),
+                    tool_call("toolu_second", "/tmp/second.jpg"),
+                ]),
+            },
+            tool_result("toolu_first", "first image loaded"),
+            attachment("first.jpg", "Zmlyc3Q="),
+            tool_result("toolu_second", "second image loaded"),
+            attachment("second.jpg", "c2Vjb25k"),
+        ];
+
+        let request = build_request(
+            ModelProtocol::AnthropicMessages,
+            "m",
+            None,
+            None,
+            &messages,
+            &[],
+        );
+
+        assert_eq!(request["messages"].as_array().map(Vec::len), Some(3));
+        let results = request["messages"][2]["content"]
+            .as_array()
+            .expect("parallel tool results must share the immediate user message");
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|block| block["type"] == "tool_result"));
+        assert_eq!(results[0]["tool_use_id"], "toolu_first");
+        assert_eq!(results[0]["content"][0]["type"], "text");
+        assert_eq!(results[0]["content"][1]["type"], "image");
+        assert_eq!(results[0]["content"][1]["source"]["data"], "Zmlyc3Q=");
+        assert_eq!(results[1]["tool_use_id"], "toolu_second");
+        assert_eq!(results[1]["content"][0]["type"], "text");
+        assert_eq!(results[1]["content"][1]["type"], "image");
+        assert_eq!(results[1]["content"][1]["source"]["data"], "c2Vjb25k");
     }
 
     #[test]

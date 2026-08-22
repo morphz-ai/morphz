@@ -31,10 +31,10 @@ use morphz::memory::{
     ObjectiveWaitCondition, PairExecutionNode, ProviderAccountStateStore, ProviderAccountStatus,
     QueryFilter, RecallDocument, RecallDocumentKind, RecallProjectionStore, RuntimeTimerKind,
     RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore, SessionAttentionState,
-    SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation, SessionProjectionStore,
-    SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxStatus, StorageMaintenanceStore,
-    ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction, ThreadGroupStore,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore,
+    SessionAttentionUpdate, SessionContextSharing, SessionMountKind, SessionProjectionMutation,
+    SessionProjectionStore, SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxStatus,
+    StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction,
+    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore,
     ThreadSupervision, TimerStore, TransientStorageRetention,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
@@ -529,6 +529,23 @@ where
     let second = second.await.unwrap().unwrap();
     assert_eq!(first.id, second.id);
     assert_eq!(first.context_id, "conformance-context");
+    assert_eq!(first.context_sharing, SessionContextSharing::Shared);
+    let isolated = store
+        .set_session_context_sharing(&race_session.id, SessionContextSharing::Isolated)
+        .await
+        .unwrap()
+        .expect("new Session should remain available for context sharing policy updates");
+    assert_eq!(isolated.context_sharing, SessionContextSharing::Isolated);
+    assert_eq!(
+        store
+            .get_session(&race_session.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_sharing,
+        SessionContextSharing::Isolated,
+        "context sharing policy must survive a fresh authoritative read"
+    );
     store
         .bind_session_principal(&race_session.id, "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat")
         .await
@@ -617,6 +634,7 @@ where
         .expect("Principal Session projection must include the bound Session");
     assert_eq!(projected.model_alias.as_deref(), Some("session-route-a"));
     assert_eq!(projected.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(projected.context_sharing, SessionContextSharing::Isolated);
     let inherited = store
         .update_session(
             &race_session.id,
@@ -2117,6 +2135,255 @@ where
         .dialogue_turn_activation_runnable(&parallel_activation.id)
         .await
         .unwrap());
+
+    // A Provider wait ends the physical Activation but intentionally leaves
+    // the logical DialogueTurn open. An interrupt must replace that suspended
+    // turn just like an in-flight model call; otherwise a later Provider
+    // health/configuration recovery can replay the obsolete user message long
+    // after newer messages have completed.
+    let wait_session_id = "conformance-dialogue-provider-wait-interruption";
+    store
+        .create_session(NewSession {
+            id: wait_session_id.to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            parent_session_id: Some("conformance-session".to_string()),
+            title: "Provider wait interruption conformance".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    store
+        .bind_session_principal(wait_session_id, "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat")
+        .await
+        .unwrap();
+    let wait_message = |id: &str, text: &str| {
+        Event::new(
+            id.to_string(),
+            "Store-Conformance".to_string(),
+            morphz::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": "conformance-context",
+                "session_id": wait_session_id,
+                "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+                "text": text
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    };
+    let waiting_message = wait_message(
+        "conformance-provider-wait-interrupt-event-a",
+        "obsolete waiting input",
+    );
+    store
+        .claim_message(
+            wait_session_id,
+            "conformance-provider-wait-interrupt-client-a",
+            &waiting_message,
+            MessageDispatchMode::FollowUp,
+        )
+        .await
+        .unwrap();
+    let waiting_thread = store
+        .get_thread_by_root(&waiting_message.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let waiting_signal = store
+        .next_pending_thread_signal(&waiting_thread.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let waiting_activation = store
+        .claim_thread_signal_batch(
+            NewThreadSignal {
+                id: stable_thread_signal_id(&waiting_message.id),
+                thread_id: waiting_thread.id.clone(),
+                thread_generation: waiting_thread.generation,
+                event_id: waiting_message.id.clone(),
+                principal_id: None,
+                sequence: waiting_signal.sequence,
+                kind: waiting_message.topic.clone(),
+                parent_activation_id: None,
+            },
+            NewThreadActivation {
+                id: "conformance-provider-wait-interrupt-activation-a".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: wait_session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: waiting_message.id.clone(),
+                trigger_sequence: waiting_signal.sequence,
+                trigger_kind: waiting_message.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: waiting_message.id.clone(),
+            },
+            32,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let waiting_activation = match store
+        .update_thread_activation(
+            &waiting_activation.id,
+            waiting_activation.revision,
+            ThreadActivationStatus::Running,
+            Some("conformance-provider-wait-worker"),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadActivationMutation::Updated(record) => record,
+        other => panic!("unexpected Provider-wait Activation mutation: {other:?}"),
+    };
+    let wait_outcome = Event::new(
+        "conformance-provider-wait-outcome-a".to_string(),
+        "Store-Conformance".to_string(),
+        "agent_reply".to_string(),
+        "runtime/provider_wait".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": wait_session_id,
+            "thread_id": waiting_thread.id,
+            "root_turn_id": waiting_thread.root_turn_id,
+            "disposition": "provider_wait",
+            "provider_resource": "model-route:conformance-provider-wait",
+            "provider_wait_generation": 1
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let dependency_id = match store
+        .commit_activation_outcome(&waiting_activation.id, &wait_outcome)
+        .await
+        .unwrap()
+    {
+        ActivationOutcomeCommit::Suspended { dependency_id } => dependency_id,
+        other => panic!("Provider wait must suspend the DialogueTurn: {other:?}"),
+    };
+    assert_eq!(
+        store
+            .get_thread_activation(&waiting_activation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ThreadActivationStatus::Succeeded
+    );
+    assert_eq!(
+        store
+            .get_thread(&waiting_thread.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        ThreadLifecycle::Open
+    );
+
+    let interrupting_message = wait_message(
+        "conformance-provider-wait-interrupt-event-b",
+        "new replacement input",
+    );
+    let interrupted = match store
+        .claim_message(
+            wait_session_id,
+            "conformance-provider-wait-interrupt-client-b",
+            &interrupting_message,
+            MessageDispatchMode::Interrupt,
+        )
+        .await
+        .unwrap()
+    {
+        MessageClaim::Accepted {
+            interrupted: Some(interrupted),
+            ..
+        } => interrupted,
+        other => panic!("Provider wait must be atomically interrupted: {other:?}"),
+    };
+    assert_eq!(interrupted.activation_id, waiting_activation.id);
+    assert_eq!(interrupted.thread_id, waiting_thread.id);
+    assert_eq!(
+        store
+            .get_thread(&waiting_thread.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        ThreadLifecycle::Cancelled
+    );
+    let dependency = store
+        .get_scheduler_dependency(&dependency_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(dependency.status, SchedulerDependencyStatus::Cancelled);
+
+    let replacement = store
+        .get_thread_by_root(&interrupting_message.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let pending = store
+        .list_context_thread_signals("conformance-context", Some(ThreadSignalStatus::Pending))
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|signal| signal.thread_id == replacement.id)
+        .map(|signal| signal.event_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pending,
+        vec![waiting_message.id.clone(), interrupting_message.id.clone()],
+        "the interrupted input remains context for the replacement turn without retaining an independently recoverable obligation"
+    );
+
+    // Model a later startup/provider recovery using only durable state. The
+    // cancelled dependency must reject the wake atomically and the recovery
+    // Event must not be appended, so a restart cannot reanimate the old turn.
+    let recovery_event = Event::new(
+        "conformance-provider-wait-recovery-after-interrupt".to_string(),
+        "Runtime-ProviderRecovery".to_string(),
+        morphz::event::TYPE_TOOL_OUTPUT.to_string(),
+        "runtime/provider_recovered".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": wait_session_id,
+            "thread_id": waiting_thread.id,
+            "root_turn_id": waiting_thread.root_turn_id,
+            "thread_generation": waiting_thread.generation,
+            "resource": dependency.dependency_id,
+            "dependency_id": dependency.id,
+            "runtime_force_evaluation": true,
+            "wake_policy": "direct_signal"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(store
+        .satisfy_thread_resource_dependency(
+            &dependency.id,
+            dependency.owner_generation,
+            dependency.dependency_generation,
+            "conformance-provider-recovery-fact-after-interrupt",
+            &recovery_event,
+        )
+        .await
+        .is_err());
+    assert!(store
+        .query(QueryFilter {
+            event_id: Some(recovery_event.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 async fn assert_principal_first_seen_conformance<S>(store: Arc<S>)

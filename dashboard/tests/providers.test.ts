@@ -129,6 +129,15 @@ test('authenticated accounts discover and explicitly enable models outside the l
   assert.match(appSource, /setStatus\(await DASHBOARD_API\.get<RuntimeStatus>\('\/api\/status'\)\)/)
 })
 
+test('account model manager searches physical names and aliases without changing the saved option set', () => {
+  assert.match(providersSource, /filterAccountModelOptions\(/)
+  assert.match(providersSource, /providers\.searchModelsPlaceholder/)
+  assert.match(providersSource, /providers\.modelSearchCount/)
+  assert.match(providersSource, /visibleAccountModels\.map/)
+  assert.match(providersSource, /buildEnabledModelSelections\(modelEditor\.options\)/)
+  assert.match(providersSource, /providers\.noMatchingModels/)
+})
+
 test('provider capacity is copied from catalog fields without speculative copy', () => {
   assert.match(providersSource, /discovered_model_profiles/)
   assert.match(providersSource, /result\.discovered_model_profiles \?\? \{\}/)
@@ -156,6 +165,19 @@ test('conversation model selection is persisted on the Session instead of mutati
     /`\/api\/sessions\/\$\{encodeURIComponent\(selectedSessionId\)\}`,[\s\S]*?'PATCH',[\s\S]*?\{ model_alias: modelAlias \}/,
   )
   assert.match(appSource, /model\.runtimeDefault/)
+})
+
+test('global overview exposes and directly persists each Session model policy', () => {
+  const overviewSource = readFileSync(
+    new URL('../src/pages/RuntimeOverviewPage.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(overviewSource, /model_alias\?: string \| null/)
+  assert.match(overviewSource, /runtime-overview-session-model/)
+  assert.match(overviewSource, /value=\{explicitModel \|\| '__runtime__'\}/)
+  assert.match(overviewSource, /onChangeSessionModel\(sessionId, model\)/)
+  assert.match(appSource, /session\.session\.id === updated\.id \? \{ \.\.\.session, session: updated \} : session/)
+  assert.match(appSource, /onChangeSessionModel=\{persistSessionModel\}/)
 })
 
 test('evaluation model policy configures one default and an explicit Agent allowlist', () => {

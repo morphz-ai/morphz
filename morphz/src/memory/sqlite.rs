@@ -46,17 +46,17 @@ use crate::memory::{
     RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
     RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
     ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
-    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
-    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionSignalClaim,
-    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, StorageMaintenanceReport,
-    StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
-    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
-    ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime,
-    ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord,
-    ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore,
-    ThreadSupervision, ThreadSupervisorKind, TimerStore, TransientStorageRetention,
-    DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    SessionAttentionUpdate, SessionContextSharing, SessionDirectoryStore, SessionMountKind,
+    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
+    SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus,
+    StorageMaintenanceReport, StorageMaintenanceStore, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
+    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy,
+    ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle,
+    ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
+    ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
@@ -534,6 +534,8 @@ impl SqliteStore {
             status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
             model_alias TEXT,
             reasoning_effort TEXT,
+            context_sharing TEXT NOT NULL DEFAULT 'shared'
+                CHECK(context_sharing IN ('shared', 'isolated')),
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             last_activity_at TEXT NOT NULL,
@@ -1575,6 +1577,13 @@ impl SqliteStore {
                 .execute(&pool)
                 .await?;
         }
+        if !session_columns.contains("context_sharing") {
+            sqlx::query(
+                "ALTER TABLE sessions ADD COLUMN context_sharing TEXT NOT NULL DEFAULT 'shared' CHECK(context_sharing IN ('shared', 'isolated'))",
+            )
+            .execute(&pool)
+            .await?;
+        }
         for (name, definition) in [
             (
                 "attention_state",
@@ -2029,6 +2038,8 @@ async fn migrate_directory_foreign_keys(
                 status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
                 model_alias TEXT,
                 reasoning_effort TEXT,
+                context_sharing TEXT NOT NULL DEFAULT 'shared'
+                    CHECK(context_sharing IN ('shared', 'isolated')),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_activity_at TEXT NOT NULL,
@@ -2042,7 +2053,7 @@ async fn migrate_directory_foreign_keys(
         sqlx::query(
             r#"INSERT INTO sessions_directory_fk_migration
                SELECT id, agent_id, context_id, parent_session_id, title, status, model_alias,
-                      reasoning_effort,
+                      reasoning_effort, context_sharing,
                       created_at, updated_at, last_activity_at
                FROM sessions"#,
         )
@@ -4300,6 +4311,13 @@ fn parse_session_attention_state(value: &str) -> SessionAttentionState {
     }
 }
 
+fn parse_session_context_sharing(value: &str) -> SessionContextSharing {
+    match value {
+        "isolated" => SessionContextSharing::Isolated,
+        _ => SessionContextSharing::Shared,
+    }
+}
+
 fn parse_thread_activation_status(
     value: &str,
 ) -> Result<ThreadActivationStatus, Box<dyn std::error::Error + Send + Sync>> {
@@ -4501,6 +4519,7 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
         status: parse_session_status(row.get::<String, _>("status").as_str()),
         model_alias: row.get("model_alias"),
         reasoning_effort: row.get("reasoning_effort"),
+        context_sharing: parse_session_context_sharing(&row.get::<String, _>("context_sharing")),
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
         last_activity_at: parse_time(&row.get::<String, _>("last_activity_at")),
@@ -5801,7 +5820,7 @@ async fn interrupt_dialogue_turn_in_transaction(
     session: &SessionRecord,
     event: &Event,
 ) -> Result<Option<InterruptedDialogueTurn>, Box<dyn std::error::Error + Send + Sync>> {
-    let Some(row) = sqlx::query(
+    let running = sqlx::query(
         r#"WITH predecessor AS (
              SELECT request.event_id
              FROM session_message_requests request
@@ -5833,9 +5852,92 @@ async fn interrupt_dialogue_turn_in_transaction(
     .bind(&event.id)
     .bind(&session.id)
     .fetch_optional(&mut **tx)
-    .await?
-    else {
-        return Ok(None);
+    .await?;
+    let (row, provider_wait) = if let Some(row) = running {
+        (row, false)
+    } else {
+        // A Provider wait terminalizes only the physical Activation. The
+        // logical DialogueTurn deliberately remains open behind a durable
+        // Resource dependency, so looking only for `status = 'running'`
+        // makes a later interrupt miss it. A subsequent health/configuration
+        // recovery can then replay the obsolete turn long after newer user
+        // messages have completed.
+        //
+        // Treat that suspended handoff as still-thinking only while no
+        // Activation in this Thread generation has released the dialogue lane
+        // to physical Execution. A satisfied dependency is included to close
+        // the narrow race where recovery wrote its direct Signal immediately
+        // before this message acquired SQLite's writer slot.
+        let Some(row) = sqlx::query(
+            r#"WITH predecessor AS (
+                 SELECT request.event_id
+                 FROM session_message_requests request
+                 WHERE request.session_id = ? AND request.event_id != ?
+                 ORDER BY request.created_at DESC, request.event_id DESC
+                 LIMIT 1
+               )
+               SELECT COALESCE(
+                        (
+                          SELECT current.id
+                          FROM thread_activations current
+                          WHERE current.root_turn_id = thread.root_turn_id
+                            AND current.generation = thread.generation
+                            AND current.status IN ('queued', 'running')
+                            AND current.dialogue_lane_released_at IS NULL
+                          ORDER BY CASE current.status WHEN 'running' THEN 0 ELSE 1 END,
+                                   current.created_at DESC, current.id
+                          LIMIT 1
+                        ),
+                        json_extract(dependency.metadata_json, '$.activation_id')
+                      ) AS activation_id,
+                      waiting_activation.root_turn_id AS root_turn_id,
+                      thread.id AS thread_id,
+                      thread.generation AS thread_generation
+               FROM predecessor
+               JOIN thread_signals signal ON signal.event_id = predecessor.event_id
+               JOIN threads thread
+                 ON thread.id = signal.thread_id
+                AND thread.generation = signal.thread_generation
+               JOIN scheduler_dependencies dependency
+                 ON dependency.owner_kind = 'thread'
+                AND dependency.owner_id = thread.id
+                AND dependency.owner_generation = thread.generation
+                AND dependency.dependency_kind = 'resource'
+                AND dependency.required = 1
+                AND dependency.status IN ('pending', 'satisfied')
+                AND json_extract(dependency.metadata_json, '$.source') = 'provider_wait'
+               JOIN thread_activations waiting_activation
+                 ON waiting_activation.id = json_extract(
+                      dependency.metadata_json,
+                      '$.activation_id'
+                    )
+                AND waiting_activation.root_turn_id = thread.root_turn_id
+                AND waiting_activation.generation = thread.generation
+               WHERE thread.session_id = ?
+                 AND thread.kind = 'dialogue_turn'
+                 AND thread.status = 'open'
+                 AND thread.control_state = 'active'
+                 AND waiting_activation.status = 'completed'
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM thread_activations released
+                   WHERE released.root_turn_id = thread.root_turn_id
+                     AND released.generation = thread.generation
+                     AND released.dialogue_lane_released_at IS NOT NULL
+                 )
+               ORDER BY CASE dependency.status WHEN 'pending' THEN 0 ELSE 1 END,
+                        dependency.created_at DESC, dependency.id
+               LIMIT 1"#,
+        )
+        .bind(&session.id)
+        .bind(&event.id)
+        .bind(&session.id)
+        .fetch_optional(&mut **tx)
+        .await?
+        else {
+            return Ok(None);
+        };
+        (row, true)
     };
 
     let interrupted = InterruptedDialogueTurn {
@@ -5875,19 +5977,51 @@ async fn interrupt_dialogue_turn_in_transaction(
     .execute(&mut **tx)
     .await?;
 
-    let activation = sqlx::query(
-        r#"UPDATE thread_activations
-           SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
-               lease_expires_at = NULL, updated_at = ?
-           WHERE id = ? AND status = 'running'
-             AND dialogue_lane_released_at IS NULL"#,
-    )
-    .bind(&now)
-    .bind(&interrupted.activation_id)
-    .execute(&mut **tx)
-    .await?;
-    if activation.rows_affected() != 1 {
-        return Err("DialogueTurn 在原子打断期间越过了 Execution 边界".into());
+    if provider_wait {
+        // Fence every still-local recovery Activation and retire every pending
+        // dependency in the same transaction as the Thread cancellation. A
+        // concurrent recovery either wins before this transaction (and is
+        // cancelled below) or observes the cancelled dependency/Thread; it
+        // can never leave an executable wake for the obsolete turn.
+        sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
+                   lease_expires_at = NULL, updated_at = ?
+               WHERE root_turn_id = ? AND generation = ?
+                 AND status IN ('queued', 'running')
+                 AND dialogue_lane_released_at IS NULL"#,
+        )
+        .bind(&now)
+        .bind(&interrupted.root_turn_id)
+        .bind(thread_generation)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE scheduler_dependencies
+               SET status = 'cancelled', updated_at = ?
+               WHERE owner_kind = 'thread' AND owner_id = ?
+                 AND owner_generation = ? AND status = 'pending'"#,
+        )
+        .bind(&now)
+        .bind(&interrupted.thread_id)
+        .bind(thread_generation)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        let activation = sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
+                   lease_expires_at = NULL, updated_at = ?
+               WHERE id = ? AND status = 'running'
+                 AND dialogue_lane_released_at IS NULL"#,
+        )
+        .bind(&now)
+        .bind(&interrupted.activation_id)
+        .execute(&mut **tx)
+        .await?;
+        if activation.rows_affected() != 1 {
+            return Err("DialogueTurn 在原子打断期间越过了 Execution 边界".into());
+        }
     }
     let thread = sqlx::query(
         r#"UPDATE threads
@@ -5907,16 +6041,16 @@ async fn interrupt_dialogue_turn_in_transaction(
     // activation_signals.signal_id is globally unique. Remove the obsolete
     // claim before replaying the same durable Signals into the replacement
     // Thread; the old Activation remains auditable through its trigger Event.
+    // Provider-wait inputs have already been acknowledged, while an actively
+    // interrupted model still owns claimed inputs, so both states rearm here.
     sqlx::query(
         r#"DELETE FROM activation_signals
-           WHERE activation_id = ?
-             AND signal_id IN (
+           WHERE signal_id IN (
                SELECT id FROM thread_signals
                WHERE thread_id = ? AND thread_generation = ?
                  AND kind = 'chat/user_message'
              )"#,
     )
-    .bind(&interrupted.activation_id)
     .bind(&interrupted.thread_id)
     .bind(thread_generation)
     .execute(&mut **tx)
@@ -5927,7 +6061,8 @@ async fn interrupt_dialogue_turn_in_transaction(
                claimed_at = NULL, acknowledged_at = NULL,
                parent_activation_id = NULL
            WHERE thread_id = ? AND thread_generation = ?
-             AND kind = 'chat/user_message' AND status = 'claimed'"#,
+             AND kind = 'chat/user_message'
+             AND status IN ('claimed', 'acknowledged')"#,
     )
     .bind(&replacement_thread_id)
     .bind(&interrupted.thread_id)
@@ -7112,7 +7247,7 @@ impl SessionDirectoryStore for SqliteStore {
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
-                      s.status, s.model_alias, s.reasoning_effort,
+                      s.status, s.model_alias, s.reasoning_effort, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -7783,7 +7918,7 @@ impl SessionDirectoryStore for SqliteStore {
         id: &str,
     ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let row = sqlx::query(
-            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort,
+            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -7802,7 +7937,7 @@ impl SessionDirectoryStore for SqliteStore {
         include_archived: bool,
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_archived {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.context_sharing,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -7812,7 +7947,7 @@ impl SessionDirectoryStore for SqliteStore {
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.context_sharing,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -7832,7 +7967,7 @@ impl SessionDirectoryStore for SqliteStore {
         include_archived: bool,
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_archived {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.context_sharing,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -7844,7 +7979,7 @@ impl SessionDirectoryStore for SqliteStore {
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.context_sharing,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -7873,7 +8008,7 @@ impl SessionDirectoryStore for SqliteStore {
             .map_err(|_| "Session 每 Context 查询上限超出 SQLite INTEGER 范围")?;
         let rows = sqlx::query(
             r#"WITH ranked AS (
-                 SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.model_alias, s.reasoning_effort,
+                 SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.model_alias, s.reasoning_effort, s.context_sharing,
                         s.status, s.created_at, s.updated_at, s.last_activity_at,
                         sm.attention_state, sm.attention_revision, sm.attention_reason,
                         sm.attention_changed_at, sm.attention_event_id,
@@ -7921,7 +8056,7 @@ impl SessionDirectoryStore for SqliteStore {
                  WHERE s.context_id IN (SELECT value FROM json_each(?))
                    AND (? OR s.status = 'active')
                )
-               SELECT id, agent_id, context_id, parent_session_id, title, status, model_alias, reasoning_effort,
+               SELECT id, agent_id, context_id, parent_session_id, title, status, model_alias, reasoning_effort, context_sharing,
                       created_at, updated_at, last_activity_at, attention_state,
                       attention_revision, attention_reason, attention_changed_at,
                       attention_event_id
@@ -8026,6 +8161,25 @@ impl SessionDirectoryStore for SqliteStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn set_session_context_sharing(
+        &self,
+        id: &str,
+        sharing: SessionContextSharing,
+    ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result =
+            sqlx::query("UPDATE sessions SET context_sharing = ?, updated_at = ? WHERE id = ?")
+                .bind(sharing.as_str())
+                .bind(now)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get_session(id).await
     }
 
     async fn update_session_attention(
@@ -14742,7 +14896,7 @@ impl DeliveryIngressStore for SqliteStore {
         }
         let session_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
-                      s.model_alias, s.reasoning_effort,
+                      s.model_alias, s.reasoning_effort, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -15090,7 +15244,7 @@ impl DeliveryIngressStore for SqliteStore {
         }
         let target_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
-                      s.model_alias, s.reasoning_effort,
+                      s.model_alias, s.reasoning_effort, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -15507,7 +15661,7 @@ impl DeliveryIngressStore for SqliteStore {
         }
         let target_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
-                      s.model_alias, s.reasoning_effort,
+                      s.model_alias, s.reasoning_effort, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id

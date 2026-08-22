@@ -125,6 +125,11 @@
     "manageModels": "Manage models",
     "manageAccountModels": "Manage models for {{account}}",
     "modelManagerHint": "Morphz first loads the provider's model catalog. Checked models appear in the conversation model selector; unchecked models do not participate in routing.",
+    "searchModels": "Search models",
+    "searchModelsPlaceholder": "Search physical model name or alias…",
+    "clearModelSearch": "Clear model search",
+    "modelSearchCount": "{{visible}} of {{total}} models",
+    "noMatchingModels": "No models match “{{query}}”.",
     "loadingAccountModels": "Connecting to the service and refreshing its model catalog…",
     "modelCatalogRefreshFailed": "Could not refresh the model catalog",
     "modelCatalogRefreshFailedHint": "Previously enabled models remain available below. Check the account or network and try again.",
@@ -398,6 +403,24 @@
     "empty": "No matching runtime state",
     "emptyHint": "Try another search term or filter.",
     "bounded": "This command board shows a bounded recent Context set; search and drill-down do not scan complete Event History.",
+    "model": {
+      "bound": "Session binding",
+      "inherited": "Runtime default",
+      "boundHint": "This Session explicitly binds this model; switch it directly here",
+      "inheritedHint": "This Session has no explicit binding and inherits the Runtime default model",
+      "selector": "Switch the model for Session {{session}}",
+      "saveFailed": "Save failed"
+    },
+    "contextSharing": {
+      "shared": "Shared Context",
+      "isolated": "Isolated Context",
+      "sharedHint": "This Session's history may enter other Sessions' automatic working sets in the same Context",
+      "isolatedHint": "This Session's history stays out of other Sessions' automatic working sets; shared Mind and explicit Recall are unchanged",
+      "selector": "Change Context sharing for Session {{session}}",
+      "makeIsolated": "Make isolated",
+      "enableSharing": "Restore sharing",
+      "saveFailed": "Save failed"
+    },
     "states": {
       "needs_attention": "Needs attention",
       "waiting_user": "Waiting for you",

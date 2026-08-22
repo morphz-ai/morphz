@@ -3155,6 +3155,27 @@ impl Orchestrator {
             let commit = match commit_result {
                 Ok(commit) => commit,
                 Err(error) => {
+                    // An interrupt can atomically retire a suspended Provider
+                    // wait after this handler listed it but before the wake
+                    // command commits. That is successful obsolescence, not a
+                    // transient delivery failure: retrying this Event forever
+                    // would keep attempting to resurrect a user turn that a
+                    // newer interrupt has already replaced.
+                    let cancelled = matches!(
+                        store.get_scheduler_dependency(&dependency.id).await,
+                        Ok(Some(current))
+                            if current.status == SchedulerDependencyStatus::Cancelled
+                    );
+                    if cancelled {
+                        tracing::info!(
+                            dependency_id = %dependency.id,
+                            thread_id = %dependency.owner_id,
+                            recovery_event_id = %event.id,
+                            event_code = "orchestrator.provider_recovery.obsolete_wait_cancelled",
+                            "Provider recovery lost to a newer Dialogue interrupt; the obsolete wake remains cancelled"
+                        );
+                        continue;
+                    }
                     deferred_errors.push(format!("{}: {error}", dependency.id));
                     tracing::warn!(
                         dependency_id = %dependency.id,

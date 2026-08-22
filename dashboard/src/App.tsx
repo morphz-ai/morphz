@@ -911,6 +911,7 @@ interface SessionRecord {
   status: 'active' | 'archived'
   model_alias?: string | null
   reasoning_effort?: ReasoningEffortSetting | null
+  context_sharing?: 'shared' | 'isolated'
   attention_state?: string
   attention_revision?: number
   attention_reason?: string
@@ -5282,6 +5283,10 @@ export default function App() {
     + failedSchedulerJobs.length
     + failedDeliveries.length
     + waitingUserObjectives.length
+  // The header action is Runtime-wide. Its badge must use the same bounded,
+  // authoritative projection as the global Overview instead of recomputing
+  // the currently selected Context's Scheduler attention.
+  const globalAttentionCount = runtimeOverview?.summary.attention_required ?? attentionCount
   const contextDelegations = delegations.filter(item => item.parent_context_id === selectedContextId)
   const liveDelegations = contextDelegations.filter(item => !terminalTaskStatuses.has(item.status))
   const runningDelegations = liveDelegations.filter(item => item.status === 'queued' || item.status === 'running')
@@ -6046,19 +6051,58 @@ export default function App() {
     }
   }
 
+  const persistSessionModel = async (sessionId: string, model: string) => {
+    const modelAlias = model === '__runtime__' ? '' : model
+    const currentSession = sessions.find(session => session.id === sessionId)
+    if ((currentSession?.model_alias ?? '') === modelAlias) return
+    const updated = await DASHBOARD_API.command<SessionRecord>(
+      `/api/sessions/${encodeURIComponent(sessionId)}`,
+      'PATCH',
+      { model_alias: modelAlias },
+    )
+    setSessions(current => current.map(session => session.id === updated.id ? updated : session))
+    setRuntimeOverview(current => current ? {
+      ...current,
+      contexts: current.contexts.map(context => ({
+        ...context,
+        sessions: context.sessions.map(session => (
+          session.session.id === updated.id ? { ...session, session: updated } : session
+        )),
+      })),
+    } : current)
+    if (selectedSessionId === updated.id) {
+      await loadContextTokenBudget(updated.context_id, updated.id)
+    }
+  }
+
+  const persistSessionContextSharing = async (
+    sessionId: string,
+    contextSharing: 'shared' | 'isolated',
+  ) => {
+    const currentSession = sessions.find(session => session.id === sessionId)
+    if ((currentSession?.context_sharing ?? 'shared') === contextSharing) return
+    const updated = await DASHBOARD_API.command<SessionRecord>(
+      `/api/sessions/${encodeURIComponent(sessionId)}`,
+      'PATCH',
+      { context_sharing: contextSharing },
+    )
+    setSessions(current => current.map(session => session.id === updated.id ? updated : session))
+    setRuntimeOverview(current => current ? {
+      ...current,
+      contexts: current.contexts.map(context => ({
+        ...context,
+        sessions: context.sessions.map(session => (
+          session.session.id === updated.id ? { ...session, session: updated } : session
+        )),
+      })),
+    } : current)
+  }
+
   const changeModel = async (model: string) => {
     if (changingModel || !selectedSessionId) return
-    const modelAlias = model === '__runtime__' ? '' : model
-    if ((selectedSession?.model_alias ?? '') === modelAlias) return
     setChangingModel(true)
     try {
-      const updated = await DASHBOARD_API.command<SessionRecord>(
-        `/api/sessions/${encodeURIComponent(selectedSessionId)}`,
-        'PATCH',
-        { model_alias: modelAlias },
-      )
-      setSessions(current => current.map(session => session.id === updated.id ? updated : session))
-      await loadContextTokenBudget(updated.context_id, updated.id)
+      await persistSessionModel(selectedSessionId, model)
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -7037,14 +7081,14 @@ export default function App() {
               <span>{t('reasoningSummary.toggle')}</span>
             </button>
             <button
-              className={`theme-button global-attention ${attentionCount > 0 ? 'has-attention' : ''}`}
+              className={`theme-button global-attention ${globalAttentionCount > 0 ? 'has-attention' : ''}`}
               type="button"
               title={t('header.globalAttention')}
-              onClick={() => setView('scheduler')}
+              onClick={() => setView('runtime')}
             >
               <Bell size={15} />
               <span>{t('header.attention')}</span>
-              {attentionCount > 0 && <em>{attentionCount}</em>}
+              {globalAttentionCount > 0 && <em>{globalAttentionCount}</em>}
             </button>
             <button
               className="theme-button language-toggle"
@@ -7274,6 +7318,10 @@ export default function App() {
                 navigate(dashboardPath('dialogue', contextId, sessionId))
               }}
               onExpandSessions={expandRuntimeOverviewSessions}
+              modelOptions={status?.model_options ?? []}
+              runtimeDefaultModel={status?.model ?? ''}
+              onChangeSessionModel={persistSessionModel}
+              onChangeSessionContextSharing={persistSessionContextSharing}
             />
           )}
           {view === 'overview' && Boolean(route.contextId) && (

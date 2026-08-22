@@ -50,12 +50,12 @@ use crate::memory::{
     NewObjective, NewPrincipal, NewSession, NewThread, NewThreadActivation, ObjectiveMutation,
     ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
     PrincipalDirectoryPage, QueryFilter, RecallDocumentKind, RecallProjectionStore, RuntimeStore,
-    ScheduleMutation, ScheduleRecord, SessionPrincipalBinding, SessionRecord, SessionStatus,
-    SessionStore, SessionUpdate, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadControlAction, ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord,
-    ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
-    TransientStorageRetention,
+    ScheduleMutation, ScheduleRecord, SessionContextSharing, SessionPrincipalBinding,
+    SessionRecord, SessionStatus, SessionStore, SessionUpdate, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
+    ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
+    ThreadSupervisorKind, TimerStore, TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -4979,6 +4979,17 @@ impl MorphzRuntime {
         self.inner.store.update_session(id, update).await
     }
 
+    pub async fn set_session_context_sharing(
+        &self,
+        id: &str,
+        sharing: SessionContextSharing,
+    ) -> Result<Option<SessionRecord>, RuntimeError> {
+        self.inner
+            .store
+            .set_session_context_sharing(id, sharing)
+            .await
+    }
+
     pub async fn touch_session(
         &self,
         id: &str,
@@ -9211,6 +9222,7 @@ mod tests {
             status: SessionStatus::Active,
             model_alias: None,
             reasoning_effort: None,
+            context_sharing: crate::memory::SessionContextSharing::Shared,
             created_at: now,
             updated_at: now,
             last_activity_at: now,
