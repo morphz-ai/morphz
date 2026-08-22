@@ -5356,6 +5356,7 @@ mod tests {
                                 Some(crate::tool::ToolCausalRoute {
                                     thread_id: "thread-unrelated-dialogue".to_string(),
                                     activation_id: "activation-directed-interrupt".to_string(),
+                                    model_attempt_id: None,
                                     root_turn_id: "turn-unrelated-dialogue".to_string(),
                                     trigger_event_id: "event-unrelated-dialogue".to_string(),
                                     trigger_sequence: 1,
@@ -5518,6 +5519,7 @@ mod tests {
                                 Some(crate::tool::ToolCausalRoute {
                                     thread_id: dialogue_thread.id,
                                     activation_id: "dialogue-amendment-activation".to_string(),
+                                    model_attempt_id: None,
                                     root_turn_id: source_event.id.clone(),
                                     trigger_event_id: source_event.id.clone(),
                                     trigger_sequence: 1,

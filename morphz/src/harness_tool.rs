@@ -258,6 +258,7 @@ mod tests {
                                 Some(crate::tool::ToolCausalRoute {
                                     thread_id: "thread-1".to_string(),
                                     activation_id: "activation-1".to_string(),
+                                    model_attempt_id: None,
                                     root_turn_id: "turn-1".to_string(),
                                     trigger_event_id: "message-1".to_string(),
                                     trigger_sequence: 1,
@@ -281,6 +282,7 @@ mod tests {
                                 Some(crate::tool::ToolCausalRoute {
                                     thread_id: "thread-1".to_string(),
                                     activation_id: "activation-1".to_string(),
+                                    model_attempt_id: None,
                                     root_turn_id: "turn-1".to_string(),
                                     trigger_event_id: "message-1".to_string(),
                                     trigger_sequence: 1,

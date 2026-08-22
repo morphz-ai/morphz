@@ -3,6 +3,7 @@ use crate::event::{
     Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_RUNTIME_WAKE,
     TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
+use crate::llm::ModelAttemptBinding;
 use crate::memory::{
     CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventAppend, EventStore,
     ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
@@ -1299,6 +1300,21 @@ struct ContextTransactionAuthority<'a> {
     allow_runtime_lifecycle_ops: bool,
     causally_protected_ids: &'a BTreeSet<String>,
     transaction_id: Option<&'a str>,
+    attribution: Option<&'a ContextTransactionAttribution>,
+}
+
+/// Runtime-owned causal identity attached to one model-authored Context
+/// transaction. These fields are audit facts, not model-supplied arguments.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContextTransactionAttribution {
+    pub model_attempt_id: Option<String>,
+    pub model_binding: Option<ModelAttemptBinding>,
+    pub thread_id: Option<String>,
+    pub activation_id: Option<String>,
+    pub root_turn_id: Option<String>,
+    pub trigger_event_id: Option<String>,
+    pub trigger_sequence: Option<u64>,
+    pub context_snapshot_version: Option<u64>,
 }
 
 struct ContextLockGuard<'a> {
@@ -1906,6 +1922,7 @@ impl ContextEngine {
                 allow_runtime_lifecycle_ops: false,
                 causally_protected_ids: &BTreeSet::new(),
                 transaction_id: None,
+                attribution: None,
             },
         )
         .await
@@ -1927,6 +1944,7 @@ impl ContextEngine {
                 allow_runtime_lifecycle_ops: false,
                 causally_protected_ids,
                 transaction_id: None,
+                attribution: None,
             },
         )
         .await
@@ -1949,6 +1967,35 @@ impl ContextEngine {
                 allow_runtime_lifecycle_ops: false,
                 causally_protected_ids,
                 transaction_id: None,
+                attribution: None,
+            },
+        )
+        .await
+    }
+
+    /// Applies a model-authored Context transaction while binding the commit
+    /// directly to the physical Model Attempt and Activation that selected
+    /// the tool call. The Runtime constructs this attribution; it is never
+    /// accepted from model-authored `context_tx` arguments.
+    pub async fn apply_context_transaction_protecting_as_principal_with_attribution(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        acting_principal_id: Option<&str>,
+        transaction: &str,
+        causally_protected_ids: &BTreeSet<String>,
+        attribution: &ContextTransactionAttribution,
+    ) -> Result<ContextCommit, DynError> {
+        self.apply_context_transaction_authorized(
+            context_id,
+            acting_session_id,
+            transaction,
+            ContextTransactionAuthority {
+                acting_principal_id,
+                allow_runtime_lifecycle_ops: false,
+                causally_protected_ids,
+                transaction_id: None,
+                attribution: Some(attribution),
             },
         )
         .await
@@ -1978,6 +2025,7 @@ impl ContextEngine {
                 allow_runtime_lifecycle_ops: false,
                 causally_protected_ids,
                 transaction_id: Some(transaction_id),
+                attribution: None,
             },
         )
         .await
@@ -2169,6 +2217,37 @@ impl ContextEngine {
         ]
         .into_iter()
         .collect::<serde_json::Map<_, _>>();
+        if let Some(attribution) = authority.attribution {
+            payload.insert("attribution_schema_version".to_string(), json!(1));
+            if let Some(model_attempt_id) = attribution.model_attempt_id.as_deref() {
+                payload.insert("model_attempt_id".to_string(), json!(model_attempt_id));
+            }
+            if let Some(binding) = attribution.model_binding.as_ref() {
+                payload.insert("model_binding".to_string(), json!(binding));
+                payload.insert("model".to_string(), json!(&binding.physical_model));
+                payload.insert(
+                    "requested_model".to_string(),
+                    json!(&binding.requested_alias),
+                );
+                payload.insert("model_route_id".to_string(), json!(&binding.route_id));
+            }
+            for (key, value) in [
+                ("thread_id", attribution.thread_id.as_deref()),
+                ("activation_id", attribution.activation_id.as_deref()),
+                ("root_turn_id", attribution.root_turn_id.as_deref()),
+                ("trigger_event_id", attribution.trigger_event_id.as_deref()),
+            ] {
+                if let Some(value) = value {
+                    payload.insert(key.to_string(), json!(value));
+                }
+            }
+            if let Some(sequence) = attribution.trigger_sequence {
+                payload.insert("trigger_sequence".to_string(), json!(sequence));
+            }
+            if let Some(version) = attribution.context_snapshot_version {
+                payload.insert("context_snapshot_version".to_string(), json!(version));
+            }
+        }
         // Legacy stores have no durable Projection and therefore retain the
         // historical full-state receipt. Projection-backed production writes
         // use hashes plus periodic/explicit snapshots instead.
@@ -3647,6 +3726,7 @@ impl ContextEngine {
                         allow_runtime_lifecycle_ops: true,
                         causally_protected_ids: &BTreeSet::new(),
                         transaction_id: None,
+                        attribution: None,
                     },
                 )
                 .await
@@ -13866,6 +13946,7 @@ mod tests {
                     allow_runtime_lifecycle_ops: true,
                     causally_protected_ids: &BTreeSet::new(),
                     transaction_id: None,
+                    attribution: None,
                 },
             )
             .await

@@ -3,7 +3,8 @@ use crate::llm::ToolDefinition;
 use crate::memory::ExecutionRetrySafety;
 use crate::orchestrator::context::{
     context_tx_parameter_description, context_tx_tool_description, ContextEngine,
-    ContextRecallService, FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
+    ContextRecallService, ContextTransactionAttribution, FrameRecallDirection, FrameRecallRequest,
+    RecallSearchRequest,
 };
 use crate::tool::{
     Tool, ToolExecutionClass, CURRENT_CAUSAL_ROUTE, CURRENT_CONTEXT_ID, CURRENT_PRINCIPAL_ID,
@@ -68,25 +69,59 @@ impl Tool for ContextTxTool {
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .map_err(|_| "context_tx is missing the Runtime-injected cognitive context")?;
-        let delivery_protected = CURRENT_CAUSAL_ROUTE
-            .try_with(|route| {
-                route
-                    .as_ref()
-                    .map(|route| route.root_turn_id.clone())
-                    .filter(|id| !id.is_empty())
-                    .into_iter()
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
+        let causal_route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
+        let delivery_protected = causal_route
+            .as_ref()
+            .map(|route| route.root_turn_id.clone())
+            .filter(|id| !id.is_empty())
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         let principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
+        let model_attempt_id = causal_route
+            .as_ref()
+            .and_then(|route| route.model_attempt_id.clone());
+        let model_binding = match model_attempt_id.as_deref() {
+            Some(model_attempt_id) => self
+                .context_engine
+                .find_event(&context_id, &format!("model_usage_{model_attempt_id}"))
+                .await?
+                .and_then(|event| event.payload.get("model_binding").cloned())
+                .and_then(|value| serde_json::from_value(value).ok()),
+            None => None,
+        };
+        let context_snapshot_version =
+            match (self.context_engine.session_store(), causal_route.as_ref()) {
+                (Some(session_store), Some(route)) => session_store
+                    .get_thread_activation(&route.activation_id)
+                    .await?
+                    .and_then(|activation| activation.context_snapshot_version),
+                _ => None,
+            };
+        let attribution = ContextTransactionAttribution {
+            model_attempt_id,
+            model_binding,
+            thread_id: causal_route.as_ref().map(|route| route.thread_id.clone()),
+            activation_id: causal_route
+                .as_ref()
+                .map(|route| route.activation_id.clone()),
+            root_turn_id: causal_route
+                .as_ref()
+                .map(|route| route.root_turn_id.clone()),
+            trigger_event_id: causal_route
+                .as_ref()
+                .map(|route| route.trigger_event_id.clone()),
+            trigger_sequence: causal_route.as_ref().map(|route| route.trigger_sequence),
+            context_snapshot_version,
+        };
         let commit = self
             .context_engine
-            .apply_context_transaction_protecting_as_principal(
+            .apply_context_transaction_protecting_as_principal_with_attribution(
                 &context_id,
                 &session_id,
                 principal_id.as_deref(),
                 &args.transaction,
                 &delivery_protected,
+                &attribution,
             )
             .await?;
         Ok(serde_json::to_string_pretty(&serde_json::json!({
@@ -428,6 +463,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_tx_tool_persists_direct_model_and_causal_attribution() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("context-tool-attribution.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        let model_binding = serde_json::json!({
+            "requested_alias": "requested-model",
+            "route_id": "route-actual",
+            "route_revision": "revision-7",
+            "provider_instance_id": "provider-actual",
+            "auth_account_id": "account-actual",
+            "physical_model": "physical-model-actual",
+            "protocol": "openai-responses",
+            "provider_adapter": "protocol-compatible",
+            "provider_adapter_version": "1",
+            "endpoint": "https://provider.invalid/v1",
+            "capabilities": []
+        });
+        store
+            .append(Event::new(
+                "model_usage_provider-attempt-1".to_string(),
+                "Model-Provider".to_string(),
+                "runtime_control".to_string(),
+                "runtime/model_usage".to_string(),
+                vec![
+                    ("context_id".to_string(), serde_json::json!("context_test")),
+                    ("session_id".to_string(), serde_json::json!("session_test")),
+                    (
+                        "attempt_id".to_string(),
+                        serde_json::json!("provider-attempt-1"),
+                    ),
+                    ("model_binding".to_string(), model_binding.clone()),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+        let engine = Arc::new(ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        ));
+        let tool = ContextTxTool::new(Arc::clone(&engine));
+        let route = crate::tool::ToolCausalRoute {
+            thread_id: "thread-attributed".to_string(),
+            activation_id: "activation-attributed".to_string(),
+            model_attempt_id: Some("provider-attempt-1".to_string()),
+            root_turn_id: "root-attributed".to_string(),
+            trigger_event_id: "trigger-attributed".to_string(),
+            trigger_sequence: 42,
+        };
+        let result = CURRENT_CONTEXT_ID
+            .scope(
+                "context_test".to_string(),
+                CURRENT_SESSION_ID.scope(
+                    "session_test".to_string(),
+                    CURRENT_CAUSAL_ROUTE.scope(
+                        Some(route),
+                        tool.execute(
+                            &serde_json::json!({
+                                "transaction": "(context-tx (base-version 0) (create attributed (status verified)))"
+                            })
+                            .to_string(),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let transaction_id = result["transaction_id"].as_str().unwrap();
+        let committed = engine
+            .find_event("context_test", transaction_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.payload["attribution_schema_version"], 1);
+        assert_eq!(committed.payload["model_attempt_id"], "provider-attempt-1");
+        assert_eq!(
+            committed.payload["model_binding"], model_binding,
+            "the immutable physical binding must be copied from model_usage"
+        );
+        assert_eq!(committed.payload["model"], "physical-model-actual");
+        assert_eq!(committed.payload["requested_model"], "requested-model");
+        assert_eq!(committed.payload["model_route_id"], "route-actual");
+        assert_eq!(committed.payload["thread_id"], "thread-attributed");
+        assert_eq!(committed.payload["activation_id"], "activation-attributed");
+        assert_eq!(committed.payload["root_turn_id"], "root-attributed");
+        assert_eq!(committed.payload["trigger_event_id"], "trigger-attributed");
+        assert_eq!(committed.payload["trigger_sequence"], 42);
+    }
+
+    #[tokio::test]
     async fn context_tx_tool_rejects_retiring_the_active_root_request() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("context-causal-fence.db");
@@ -472,6 +600,7 @@ mod tests {
         let route = crate::tool::ToolCausalRoute {
             thread_id: "thread-a".to_string(),
             activation_id: "activation-a".to_string(),
+            model_attempt_id: None,
             root_turn_id: "event:active-user-request".to_string(),
             trigger_event_id: "event:delivery-trigger".to_string(),
             trigger_sequence: 2,
@@ -561,6 +690,7 @@ mod tests {
         let route = crate::tool::ToolCausalRoute {
             thread_id: "thread-a".to_string(),
             activation_id: "activation-tool-output".to_string(),
+            model_attempt_id: None,
             root_turn_id: "event:active-user-request".to_string(),
             trigger_event_id: "event:fresh-tool-output".to_string(),
             trigger_sequence: 2,

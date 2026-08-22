@@ -386,6 +386,9 @@ impl Tool for PrincipalTool {
 pub struct ToolCausalRoute {
     pub thread_id: String,
     pub activation_id: String,
+    /// Physical Provider request that selected this tool call. This remains
+    /// distinct from `activation_id`, which owns persistence and recovery.
+    pub model_attempt_id: Option<String>,
     pub root_turn_id: String,
     pub trigger_event_id: String,
     pub trigger_sequence: u64,
@@ -9914,6 +9917,7 @@ Body
         let route = Some(ToolCausalRoute {
             thread_id: "thread-session-signal-a".to_string(),
             activation_id: "activation-session-signal-a".to_string(),
+            model_attempt_id: None,
             root_turn_id: "root-session-signal-a".to_string(),
             trigger_event_id: "trigger-session-signal-a".to_string(),
             trigger_sequence: 7,
@@ -10050,6 +10054,7 @@ Body
         let route = Some(ToolCausalRoute {
             thread_id: "thread-current".to_string(),
             activation_id: "work-current".to_string(),
+            model_attempt_id: None,
             root_turn_id: "root-current".to_string(),
             trigger_event_id: "user-current".to_string(),
             trigger_sequence: 7,
@@ -10178,6 +10183,7 @@ Body
         let route = Some(ToolCausalRoute {
             thread_id: "thread-model-batch-current".to_string(),
             activation_id: "activation-model-batch".to_string(),
+            model_attempt_id: None,
             root_turn_id: "root-model-batch-current".to_string(),
             trigger_event_id: "trigger-model-batch".to_string(),
             trigger_sequence: 1,
@@ -10316,6 +10322,7 @@ Body
         let route = Some(ToolCausalRoute {
             thread_id: "thread-objective-schedule-current".to_string(),
             activation_id: "evaluation-objective-schedule".to_string(),
+            model_attempt_id: None,
             root_turn_id: "root-objective-schedule-current".to_string(),
             trigger_event_id: "user-objective-schedule".to_string(),
             trigger_sequence: 9,
@@ -10490,6 +10497,7 @@ Body
         let route = Some(ToolCausalRoute {
             thread_id: "thread-existing-objective-current".to_string(),
             activation_id: "evaluation-existing-objective".to_string(),
+            model_attempt_id: None,
             root_turn_id: "root-existing-objective-current".to_string(),
             trigger_event_id: "user-existing-objective".to_string(),
             trigger_sequence: 11,
@@ -10603,6 +10611,7 @@ Body
         let spawn_route = ToolCausalRoute {
             thread_id: "thread-thread-promotion-parent".to_string(),
             activation_id: "evaluation-thread-promotion".to_string(),
+            model_attempt_id: None,
             root_turn_id: "root-thread-promotion".to_string(),
             trigger_event_id: "user-thread-promotion".to_string(),
             trigger_sequence: 3,
@@ -11048,6 +11057,7 @@ Body
         let route = Some(ToolCausalRoute {
             thread_id: "thread-control-tool".to_string(),
             activation_id: "activation-control-tool".to_string(),
+            model_attempt_id: None,
             root_turn_id: "root-control-tool".to_string(),
             trigger_event_id: "event-control-tool".to_string(),
             trigger_sequence: 1,
@@ -13487,6 +13497,7 @@ Body
                                 Some(ToolCausalRoute {
                                     thread_id: parent.thread_id.clone(),
                                     activation_id: parent.activation_id.clone(),
+                                    model_attempt_id: None,
                                     root_turn_id: "root-durable-background".to_string(),
                                     trigger_event_id: "trigger-durable-background".to_string(),
                                     trigger_sequence: 7,
@@ -14416,6 +14427,7 @@ Body
         let route = ToolCausalRoute {
             thread_id: "thread-causal-background".to_string(),
             activation_id: "work-causal-background".to_string(),
+            model_attempt_id: None,
             root_turn_id: "root-causal-background".to_string(),
             trigger_event_id: "trigger-causal-background".to_string(),
             trigger_sequence: 42,
@@ -14543,6 +14555,7 @@ Body
             task.causal_route = Some(ToolCausalRoute {
                 thread_id: "wait-rearm-thread".to_string(),
                 activation_id: "wait-rearm-activation".to_string(),
+                model_attempt_id: None,
                 root_turn_id: "wait-rearm-root".to_string(),
                 trigger_event_id: "wait-rearm-trigger".to_string(),
                 trigger_sequence: 1,

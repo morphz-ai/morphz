@@ -1224,6 +1224,9 @@ struct ToolExecutionOptions {
     continuation_tool_calls: Option<Vec<crate::llm::ToolCall>>,
     allowed_tool_names: HashSet<String>,
     record_assistant_call: bool,
+    /// Durable physical Model Attempt whose response selected these tools.
+    /// `None` means the tools were dispatched by the Runtime rather than by a
+    /// Provider response.
     model_attempt_id: Option<String>,
     provider_continuation: Option<ProviderContinuation>,
 }
@@ -2537,11 +2540,28 @@ async fn persist_model_usage(
         ("session_id".to_string(), json!(session_id)),
         ("attempt_id".to_string(), json!(attempt_id)),
         ("usage".to_string(), serde_json::to_value(&usage)?),
-        ("usage_schema_version".to_string(), json!(1)),
+        ("usage_schema_version".to_string(), json!(2)),
     ];
+    let model_binding = route
+        .iter()
+        .find(|(key, _)| key == "model_binding")
+        .and_then(|(_, value)| serde_json::from_value::<ModelAttemptBinding>(value.clone()).ok());
+    if let Some(binding) = model_binding.as_ref() {
+        payload.extend([
+            ("model".to_string(), json!(&binding.physical_model)),
+            (
+                "requested_model".to_string(),
+                json!(&binding.requested_alias),
+            ),
+            ("model_route_id".to_string(), json!(&binding.route_id)),
+        ]);
+    }
     if let Some(measurement) = measurement {
         payload.extend([
-            ("model".to_string(), json!(&measurement.model)),
+            (
+                "prompt_measurement_model".to_string(),
+                json!(&measurement.model),
+            ),
             (
                 "predicted_input_tokens".to_string(),
                 json!(measurement.tokens),
@@ -8516,7 +8536,11 @@ impl Orchestrator {
             })
             .await?;
         let anchor = events.into_iter().rev().find_map(|event| {
-            let event_model = event.payload.get("model")?.as_str()?;
+            let event_model = event
+                .payload
+                .get("prompt_measurement_model")
+                .or_else(|| event.payload.get("model"))?
+                .as_str()?;
             let event_source = event.payload.get("counter_source")?.as_str()?;
             if event_model != model || local_counter_source(event_source) != counter_source {
                 return None;
@@ -14913,6 +14937,7 @@ impl Orchestrator {
             .map(|route| crate::tool::ToolCausalRoute {
                 thread_id: route.thread_id.clone(),
                 activation_id: route.activation_id.clone(),
+                model_attempt_id: None,
                 root_turn_id: route.root_turn_id.clone(),
                 trigger_event_id: route.trigger_event_id.clone(),
                 trigger_sequence: route.trigger_sequence,
@@ -15584,6 +15609,7 @@ impl Orchestrator {
                     .map(|route| crate::tool::ToolCausalRoute {
                         thread_id: route.thread_id.clone(),
                         activation_id: route.activation_id.clone(),
+                        model_attempt_id: options.model_attempt_id.clone(),
                         root_turn_id: route.root_turn_id.clone(),
                         trigger_event_id: route.trigger_event_id.clone(),
                         trigger_sequence: route.trigger_sequence,
@@ -19146,8 +19172,8 @@ mod tests {
     };
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
     use crate::llm::{
-        FunctionCall, ModelAttemptBindingError, ModelFailureKind, ModelUsage, PromptTokenAccuracy,
-        PromptTokenCount, ProviderContinuation, ToolCall, ToolDefinition,
+        FunctionCall, ModelAttemptBinding, ModelAttemptBindingError, ModelFailureKind, ModelUsage,
+        PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ToolCall, ToolDefinition,
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
@@ -20063,12 +20089,27 @@ mod tests {
         let measurement = PromptTokenCount {
             tokens: 990,
             source: "openai-responses-serialized-request-estimate".to_string(),
-            model: "fixture-model".to_string(),
+            model: "measurement-tokenizer".to_string(),
             accuracy: PromptTokenAccuracy::HeuristicEstimate,
             base_estimate_tokens: 990,
             calibration_key: Some(7),
             calibration_shape: Some(9),
         };
+        let binding = ModelAttemptBinding {
+            requested_alias: "requested-route".to_string(),
+            route_id: "route-actual".to_string(),
+            route_revision: "r7".to_string(),
+            provider_instance_id: "provider-1".to_string(),
+            auth_account_id: "account-1".to_string(),
+            physical_model: "actual-physical-model".to_string(),
+            protocol: "openai-responses".to_string(),
+            provider_adapter: "fixture".to_string(),
+            provider_adapter_version: "1".to_string(),
+            endpoint: "https://provider.invalid/v1".to_string(),
+            capabilities: Vec::new(),
+            model_input_limits: Default::default(),
+        };
+        let route = vec![("model_binding".to_string(), json!(binding))];
 
         for _ in 0..2 {
             persist_model_usage(
@@ -20076,7 +20117,7 @@ mod tests {
                 "context-1",
                 "session-1",
                 "attempt-usage-1",
-                &[],
+                &route,
                 &accumulator,
                 Some(&measurement),
             )
@@ -20089,7 +20130,14 @@ mod tests {
         assert_eq!(events[0].id, "model_usage_attempt-usage-1");
         assert_eq!(events[0].payload["usage"]["input_tokens"], 1_000);
         assert_eq!(events[0].payload["usage"]["cached_input_tokens"], 800);
-        assert_eq!(events[0].payload["model"], "fixture-model");
+        assert_eq!(events[0].payload["usage_schema_version"], 2);
+        assert_eq!(events[0].payload["model"], "actual-physical-model");
+        assert_eq!(events[0].payload["requested_model"], "requested-route");
+        assert_eq!(events[0].payload["model_route_id"], "route-actual");
+        assert_eq!(
+            events[0].payload["prompt_measurement_model"],
+            "measurement-tokenizer"
+        );
         assert_eq!(events[0].payload["local_base_estimate_tokens"], 990);
     }
 
