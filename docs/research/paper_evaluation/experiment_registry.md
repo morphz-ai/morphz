@@ -60,6 +60,15 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- Terminal-Bench 2.1 已迁移到 OpenAI 支持地区的海外节点 `8.221.120.170`；Codex
+  设备授权成功，CLIProxyAPI 发布精确 `gpt-5.6-sol`，正式在线 `preflight` 已核对
+  Harbor 0.21.0、Docker、固定 Runtime/Watcher、`max` 与 `full_access` 并全部通过；
+- 海外节点 89/89 官方任务 digest 已缓存，固定 5 题 Pilot `install-only` 为 5/5
+  完成、0 错误，adapter 测试 7/7 通过；当前允许在用户明确授权后启动 5 题单次
+  真实 Pilot，但尚未在新节点调用模型或产生新成绩；
+- 修正 Linux Runtime 可复现身份：构建时显式注入 v4 完整 commit，两次导出均得到
+  `f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67`；基础设施
+  commit 更新为 `30a9f1fae1aebc155a550eededbb9bd9ccb39d88`；
 - Terminal-Bench 2.1 中国区云节点已完成无模型门禁：89 题官方数据集已缓存，固定
   5 题 Pilot `install-only` 为 5/5 完成、0 错误，Harbor adapter 云端全量测试
   7/7 通过；详见
