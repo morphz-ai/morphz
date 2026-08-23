@@ -349,6 +349,16 @@ test('System Prompt and Mind Frames use the shared S-expression reader', () => {
     /\.sexpr-reader\s*\{[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto/s,
     'the shared reader must reserve a scrollable body between stable metadata and actions',
   )
+  assert.match(
+    appCss,
+    /\.frame-library\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*flex-direction:\s*column/s,
+    'the Mind Frame library must stretch with the inspector while constraining its list viewport',
+  )
+  assert.match(
+    appCss,
+    /\.frame-list\s*\{[^}]*min-height:\s*0;[^}]*max-height:\s*none;[^}]*overflow-y:\s*auto;[^}]*flex:\s*1 1 0/s,
+    'the Mind Frame list must consume the full aligned card height before it scrolls',
+  )
 })
 
 test('the initial generating state stays visible above the composer in both conversation layouts', () => {
@@ -400,8 +410,13 @@ test('stopping a reply targets its exact DialogueTurn instead of cancelling a Se
   )
   assert.match(
     appSource,
-    /dialogueStreamingAttempts\.map[\s\S]*?activeDialogueThreadById\.get\(attempt\.threadId\)[\s\S]*?className="turn-stop-button"[\s\S]*?stopDialogueTurn\(dialogueThread\)/s,
-    'each live reply must expose its own stop control beside the streaming status',
+    /dialogueStreamingAttempts\.map[\s\S]*?className="stream-control-line"[\s\S]*?className="turn-stop-button"[\s\S]*?stopDialogueTurn\(dialogueThread\)[\s\S]*?<ReasoningSummaryBlock/s,
+    'each live reply must keep its stop control in the fixed metadata row before growing streamed content',
+  )
+  assert.match(
+    appCss,
+    /\.stream-control-line\s*\{[^}]*justify-content:\s*flex-start[^}]*\}[\s\S]*?\.stream-control-line \.turn-stop-button\s*\{[^}]*flex:\s*0 0 auto[^}]*padding:\s*3px 6px[^}]*font:\s*600 8px\/1 var\(--mono\)/s,
+    'the streaming control row keeps a compact stop action reachable while the reply grows',
   )
   assert.match(
     appCss,
@@ -413,11 +428,11 @@ test('stopping a reply targets its exact DialogueTurn instead of cancelling a Se
 test('composer runtime metadata reserves green for actual health', () => {
   assert.match(
     appCss,
-    /\.composer-runtime-meta \.token-usage\s*\{[^}]*color:\s*var\(--text-soft\)/s,
+    /\.composer-telemetry \.token-usage\s*\{[^}]*color:\s*var\(--text-soft\)/s,
   )
   assert.match(
     appCss,
-    /\.composer-runtime-meta \.token-usage\.exact-usage\s*\{[^}]*color:\s*var\(--faint\)/s,
+    /\.composer-telemetry \.token-usage\.exact-usage\s*\{[^}]*color:\s*var\(--faint\)/s,
   )
   assert.match(
     appCss,
@@ -427,6 +442,31 @@ test('composer runtime metadata reserves green for actual health', () => {
     appCss,
     /\.connection-status \.status-dot\s*\{[^}]*background:\s*var\(--green\)/s,
     'green remains a health signal on the actual connection indicator',
+  )
+})
+
+test('composer separates stable policy controls from read-only telemetry', () => {
+  assert.match(
+    appSource,
+    /className="composer-policy-controls"[\s\S]*?composer-model-control[\s\S]*?className="composer-reasoning-control"[\s\S]*?className="context-budget-selector"[\s\S]*?<Composer[\s\S]*?className="composer-footer-row"[\s\S]*?className="shortcut-row"[\s\S]*?className="composer-telemetry"[\s\S]*?token-usage[\s\S]*?connection-status/s,
+    'adjustable model, reasoning and context controls follow their decision order above the composer while shortcuts and telemetry share one footer row',
+  )
+  assert.match(
+    appCss,
+    /\.composer-model-control\s*\{[^}]*width:\s*clamp\(156px, 15vw, 205px\)[^}]*overflow:\s*hidden/s,
+    'the model selector reserves a stable width and truncates long labels instead of shifting adjacent controls',
+  )
+  assert.match(
+    appCss,
+    /\.composer-footer-row\s*\{[^}]*justify-content:\s*space-between[^}]*\}[\s\S]*?\.composer-telemetry\s*\{[^}]*flex:\s*0 0 auto[^}]*justify-content:\s*flex-end[^}]*\}/s,
+    'shortcuts stay left while read-only token and connection status share the right edge on the same row',
+  )
+})
+
+test('composer activity dots cannot collapse under long task text', () => {
+  assert.match(
+    appCss,
+    /\.composer-task-status i\s*\{[^}]*flex:\s*0 0 7px[^}]*border-radius:\s*50%/s,
   )
 })
 

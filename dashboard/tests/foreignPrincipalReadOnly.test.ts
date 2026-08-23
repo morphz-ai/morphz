@@ -23,9 +23,10 @@ test('Foreign Principal observation cannot retry or stop that Principal Dialogue
 })
 
 test('Foreign Principal observation still allows Operator Session model policy control', () => {
+  const modelControlStart = appSource.indexOf('className={`composer-model-control')
   const modelControl = appSource.slice(
-    appSource.indexOf('className={`composer-model-control'),
-    appSource.indexOf('<span className="connection-status"'),
+    modelControlStart,
+    appSource.indexOf('<Composer', modelControlStart),
   )
   assert.match(modelControl, /disabled=\{changingModel \|\| !selectedSessionId\}/)
   assert.doesNotMatch(modelControl, /observingForeignPrincipal|readOnly/)

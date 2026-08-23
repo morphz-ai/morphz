@@ -7657,7 +7657,23 @@ export default function App() {
                     : undefined
                   return (
                   <article className={`message-row agent streaming ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyleForLineage(lineage)} key={`stream-${attempt.attemptId}`} aria-live="polite">
-                    <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
+                    <div className="stream-control-line">
+                      <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
+                      {dialogueThread && attempt.status !== 'failed' && (
+                        <button
+                          className="turn-stop-button"
+                          type="button"
+                          disabled={Boolean(mutatingThreadId)}
+                          title={t('conversation.stopCurrentResponseHint')}
+                          aria-label={t('conversation.stopCurrentResponse')}
+                          onClick={() => void stopDialogueTurn(dialogueThread)}
+                        >
+                          <Square size={10} /> {mutatingThreadId === dialogueThread.id
+                            ? t('conversation.stoppingCurrentResponse')
+                            : t('conversation.stopCurrentResponse')}
+                        </button>
+                      )}
+                    </div>
                     <ReasoningSummaryBlock
                       summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
                       live
@@ -7683,20 +7699,6 @@ export default function App() {
                           : attempt.runtimeState === 'queued'
                             ? t('conversation.waitingForModel')
                             : t('conversation.streaming')}</span>
-                      {dialogueThread && attempt.status !== 'failed' && (
-                        <button
-                          className="turn-stop-button"
-                          type="button"
-                          disabled={Boolean(mutatingThreadId)}
-                          title={t('conversation.stopCurrentResponseHint')}
-                          aria-label={t('conversation.stopCurrentResponse')}
-                          onClick={() => void stopDialogueTurn(dialogueThread)}
-                        >
-                          <Square size={10} /> {mutatingThreadId === dialogueThread.id
-                            ? t('conversation.stoppingCurrentResponse')
-                            : t('conversation.stopCurrentResponse')}
-                        </button>
-                      )}
                     </div>
                   </article>
                   )
@@ -8724,7 +8726,7 @@ export default function App() {
         </div>
 
         <footer className="composer-area">
-          <div className={`composer-status ${composerPendingApprovals.length > 0 ? 'has-approval' : ''}`}>
+          <div className={`composer-control-strip ${composerPendingApprovals.length > 0 ? 'has-approval' : ''}`}>
             <button className={`composer-task-status ${taskStrip.state}`} type="button" onClick={() => setView(current => current === 'scheduler' ? 'dialogue' : 'scheduler')} title={t('nav.toggleTasks')}>
               <i className={composerActivations.length || turnPending ? 'busy' : taskStrip.state} />
               <strong>{turnPending ? turnStatus : taskStrip.label}</strong>
@@ -8758,31 +8760,49 @@ export default function App() {
                 </button>
               </div>
             )}
-            <div className="composer-runtime-meta">
-              <span
-                className={`token-usage pressure-${contextView?.pressure.level ?? contextOverview?.pressure?.level ?? 'normal'}`}
-                title={t('model.pressureTokens', { used: compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens), limit: compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit), source: contextView?.pressure.token_source ?? contextOverview?.pressure?.token_source ?? '—' })}
-              >
-                ≈ {compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens)} / {compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit)}
-              </span>
-              <span
-                className="token-usage exact-usage"
-                title={[
-                  t('model.actualUsageTitle', {
-                    attempts: modelUsagePage?.totals.attempts ?? 0,
-                    input: compactTokens(modelUsagePage?.totals.input_tokens),
-                    output: compactTokens(modelUsagePage?.totals.output_tokens),
-                    cached: compactTokens(modelUsagePage?.totals.cached_input_tokens),
-                  }),
-                  modelUsagePage?.cost_totals?.[0]
-                    ? t('model.actualCost', {
-                        amount: modelUsagePage.cost_totals[0].amount.toFixed(6),
-                        currency: modelUsagePage.cost_totals[0].currency,
-                        version: modelUsagePage.cost_totals[0].pricing_version,
-                      })
-                    : t('model.costUnavailable'),
-                ].join(' · ')}
-              >Σ {compactTokens(modelUsagePage?.totals.total_tokens)}</span>
+            <div className="composer-policy-controls">
+              {modelOptions.length > 0 ? (
+                <label className={`composer-model-control ${selectedModelOption ? 'ok' : ''}`} title={t('model.sessionSelectorTitle')}>
+                  <Bot size={11} />
+                  <select
+                    aria-label={t('model.sessionSelector')}
+                    disabled={changingModel || !selectedSessionId}
+                    value={selectedSession?.model_alias ?? '__runtime__'}
+                    onChange={event => void changeModel(event.target.value)}
+                  >
+                    <option value="__runtime__">{t('model.runtimeDefault', { model: status?.model ?? '—' })}</option>
+                    {!selectedModelOption && selectedSession?.model_alias && <option value={selectedSession.model_alias} disabled>{t('model.chooseAvailable')}</option>}
+                    {modelOptions.map(option => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <button
+                  className="composer-model-control is-empty"
+                  type="button"
+                  title={status?.model_catalog_error || t('model.manageModelsHint')}
+                  onClick={() => setView('providers')}
+                >
+                  <Bot size={11} />{t('model.manageModels')}
+                </button>
+              )}
+              <label className="composer-reasoning-control" title={t('reasoning.title')}>
+                <Gauge size={11} />
+                <select
+                  aria-label={t('reasoning.label')}
+                  disabled={changingReasoning || !selectedSessionId}
+                  value={selectedReasoningEffort}
+                  onChange={event => void changeReasoningEffort(event.target.value)}
+                >
+                  <option value="default">{t('reasoning.defaultUnknown')}</option>
+                  {reasoningEffortOptions.includes('none') && <option value="none">{t('reasoning.off')}</option>}
+                  {reasoningEffortOptions.includes('low') && <option value="low">{t('reasoning.low')}</option>}
+                  {reasoningEffortOptions.includes('medium') && <option value="medium">{t('reasoning.medium')}</option>}
+                  {reasoningEffortOptions.includes('high') && <option value="high">{t('reasoning.high')}</option>}
+                  {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
+                </select>
+              </label>
               <div className="context-budget-selector" ref={contextTokenBudgetRef}>
                 <button
                   className={`composer-policy-control context-budget-button ${contextTokenBudgetOpen ? 'is-active' : ''}`}
@@ -8881,49 +8901,6 @@ export default function App() {
                   </div>
                 )}
               </div>
-              {modelOptions.length > 0 ? (
-                <label className={`composer-model-control ${selectedModelOption ? 'ok' : ''}`} title={t('model.sessionSelectorTitle')}>
-                  <Bot size={11} />
-                  <select
-                    aria-label={t('model.sessionSelector')}
-                    disabled={changingModel || !selectedSessionId}
-                    value={selectedSession?.model_alias ?? '__runtime__'}
-                    onChange={event => void changeModel(event.target.value)}
-                  >
-                    <option value="__runtime__">{t('model.runtimeDefault', { model: status?.model ?? '—' })}</option>
-                    {!selectedModelOption && selectedSession?.model_alias && <option value={selectedSession.model_alias} disabled>{t('model.chooseAvailable')}</option>}
-                    {modelOptions.map(option => (
-                      <option key={option.id} value={option.id}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-              ) : (
-                <button
-                  className="composer-model-control is-empty"
-                  type="button"
-                  title={status?.model_catalog_error || t('model.manageModelsHint')}
-                  onClick={() => setView('providers')}
-                >
-                  <Bot size={11} />{t('model.manageModels')}
-                </button>
-              )}
-              <label className="composer-reasoning-control" title={t('reasoning.title')}>
-                <Gauge size={11} />
-                <select
-                  aria-label={t('reasoning.label')}
-                  disabled={changingReasoning || !selectedSessionId}
-                  value={selectedReasoningEffort}
-                  onChange={event => void changeReasoningEffort(event.target.value)}
-                >
-                  <option value="default">{t('reasoning.defaultUnknown')}</option>
-                  {reasoningEffortOptions.includes('none') && <option value="none">{t('reasoning.off')}</option>}
-                  {reasoningEffortOptions.includes('low') && <option value="low">{t('reasoning.low')}</option>}
-                  {reasoningEffortOptions.includes('medium') && <option value="medium">{t('reasoning.medium')}</option>}
-                  {reasoningEffortOptions.includes('high') && <option value="high">{t('reasoning.high')}</option>}
-                  {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
-                </select>
-              </label>
-              <span className="connection-status" title={t('nav.connection')}><i className={`status-dot ${wsStatus === 'connected' ? '' : wsStatus === 'connecting' ? 'connecting' : 'disconnected'}`} />{t(`connection.${wsStatus}`)}</span>
             </div>
           </div>
           <Composer
@@ -8944,7 +8921,36 @@ export default function App() {
             currentAgentId={selectedAgentId}
             currentContextId={selectedContextId}
           />
-          <div className="shortcut-row"><span>{t('composer.shortcuts.send')}</span><span>{t('composer.shortcuts.newline')}</span><span>{t('composer.shortcuts.tasks')}</span><span>{t('composer.shortcuts.mind')}</span><span>{t('composer.shortcuts.back')}</span></div>
+          <div className="composer-footer-row">
+            <div className="shortcut-row"><span>{t('composer.shortcuts.send')}</span><span>{t('composer.shortcuts.newline')}</span><span>{t('composer.shortcuts.tasks')}</span><span>{t('composer.shortcuts.mind')}</span><span>{t('composer.shortcuts.back')}</span></div>
+            <div className="composer-telemetry" aria-label={t('nav.runtime')}>
+              <span
+                className={`token-usage pressure-${contextView?.pressure.level ?? contextOverview?.pressure?.level ?? 'normal'}`}
+                title={t('model.pressureTokens', { used: compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens), limit: compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit), source: contextView?.pressure.token_source ?? contextOverview?.pressure?.token_source ?? '—' })}
+              >
+                ≈ {compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens)} / {compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit)}
+              </span>
+              <span
+                className="token-usage exact-usage"
+                title={[
+                  t('model.actualUsageTitle', {
+                    attempts: modelUsagePage?.totals.attempts ?? 0,
+                    input: compactTokens(modelUsagePage?.totals.input_tokens),
+                    output: compactTokens(modelUsagePage?.totals.output_tokens),
+                    cached: compactTokens(modelUsagePage?.totals.cached_input_tokens),
+                  }),
+                  modelUsagePage?.cost_totals?.[0]
+                    ? t('model.actualCost', {
+                        amount: modelUsagePage.cost_totals[0].amount.toFixed(6),
+                        currency: modelUsagePage.cost_totals[0].currency,
+                        version: modelUsagePage.cost_totals[0].pricing_version,
+                      })
+                    : t('model.costUnavailable'),
+                ].join(' · ')}
+              >Σ {compactTokens(modelUsagePage?.totals.total_tokens)}</span>
+              <span className="connection-status" title={t('nav.connection')}><i className={`status-dot ${wsStatus === 'connected' ? '' : wsStatus === 'connecting' ? 'connecting' : 'disconnected'}`} />{t(`connection.${wsStatus}`)}</span>
+            </div>
+          </div>
           {error && (
             <div className="error-banner" role="alert">
               <span>{error}</span>
