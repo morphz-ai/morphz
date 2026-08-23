@@ -24,7 +24,10 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from benchmarks.harbor.benchmark_integrity import audit_job
+if __package__:
+    from .benchmark_integrity import audit_job
+else:
+    from benchmark_integrity import audit_job
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

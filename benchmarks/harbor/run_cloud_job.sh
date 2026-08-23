@@ -46,6 +46,7 @@ fi
 
 export PATH="$harbor_root/bin:/usr/local/bin:/usr/bin:/bin"
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$repo_root"
 exec /usr/bin/python3 benchmarks/harbor/run_benchmark.py "$mode"
