@@ -60,6 +60,13 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- 一次 Terminal-Bench 2.1 运行错误地以 `89 tasks × 5 attempts` 启动，违反了
+  “先完成 89×1 诊断、再优化、最后才考虑 89×5”的预定顺序；发现后于
+  `2026-08-24 04:28:04 +08:00` 立即停止，14 个完整结果和 5 个中断 trial 原样
+  保留，统一标记为 `aborted-nonreportable`，不得拼接或作为成绩；详见
+  [`terminal_bench_2_1_aborted_89x5_run_2026_08_24.md`](./terminal_bench_2_1_aborted_89x5_run_2026_08_24.md)；
+- 下一步只能在用户明确确认后启动新的 89×1 诊断 Run；完成全轨迹分析、改进和定向
+  复测前，不得启动 89×5；
 - Runtime v4 海外节点五题真实 Pilot 已完成：raw verifier 3/5（60%），严格反作弊
   审计后为 2/5（40%）；`db-wal-recovery` 因读取 exact solution、private tests 和
   原始任务数据改判 0，正式 89 题批次被阻止；完整报告见
