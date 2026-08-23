@@ -31,6 +31,11 @@ if [[ ! -x "$harbor_root/bin/harbor" ]]; then
   exit 1
 fi
 
+if [[ ! -x "$harbor_root/bin/python" ]]; then
+  echo "pinned Harbor Python is missing: $harbor_root/bin/python" >&2
+  exit 1
+fi
+
 for variable in MORPHZ_PROVIDER_BASE_URL MORPHZ_PROVIDER_PROTOCOL MORPHZ_PROVIDER_API_KEY; do
   if [[ -z ${!variable:-} ]]; then
     echo "required provider setting is missing: $variable" >&2
@@ -50,7 +55,7 @@ export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$repo_root"
 if [[ "$mode" == "failed-five" ]]; then
-  exec /usr/bin/python3 benchmarks/harbor/run_benchmark.py full \
+  exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py full \
     --task dna-assembly \
     --task mteb-leaderboard \
     --task pypi-server \
@@ -61,4 +66,4 @@ if [[ "$mode" == "failed-five" ]]; then
     --expect-trials 5
 fi
 
-exec /usr/bin/python3 benchmarks/harbor/run_benchmark.py "$mode"
+exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py "$mode"

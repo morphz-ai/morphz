@@ -57,6 +57,11 @@ class HarnessBindingSetupTest(unittest.TestCase):
         wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
         source = wrapper.read_text(encoding="utf-8")
         self.assertIn('if [[ "$mode" == "failed-five" ]]', source)
+        self.assertEqual(
+            source.count('exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py'),
+            2,
+        )
+        self.assertNotIn("exec /usr/bin/python3", source)
         self.assertIn("--attempts 1", source)
         self.assertIn("--concurrency 5", source)
         self.assertIn("--expect-trials 5", source)
