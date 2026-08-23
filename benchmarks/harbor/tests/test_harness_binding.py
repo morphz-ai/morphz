@@ -53,6 +53,22 @@ class HarnessBindingSetupTest(unittest.TestCase):
         self.assertLess(install, binding)
         self.assertLess(binding, send)
 
+    def test_cloud_failed_five_mode_is_an_exact_guarded_selection(self) -> None:
+        wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
+        source = wrapper.read_text(encoding="utf-8")
+        self.assertIn('if [[ "$mode" == "failed-five" ]]', source)
+        self.assertIn("--attempts 1", source)
+        self.assertIn("--concurrency 5", source)
+        self.assertIn("--expect-trials 5", source)
+        for task in (
+            "dna-assembly",
+            "mteb-leaderboard",
+            "pypi-server",
+            "pytorch-model-recovery",
+            "torch-pipeline-parallelism",
+        ):
+            self.assertEqual(source.count(f"--task {task}"), 1)
+
     def test_setup_uploads_the_digest_locked_terminal_task_harness(self) -> None:
         async def scenario(root: Path) -> None:
             (root / "logs").mkdir()

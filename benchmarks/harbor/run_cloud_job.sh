@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 {preflight|install-only|smoke|full}" >&2
+  echo "usage: $0 {preflight|install-only|smoke|full|failed-five}" >&2
   exit 2
 }
 
@@ -13,7 +13,7 @@ fi
 
 mode=$1
 case "$mode" in
-  preflight | install-only | smoke | full) ;;
+  preflight | install-only | smoke | full | failed-five) ;;
   *) usage ;;
 esac
 
@@ -49,4 +49,16 @@ export PYTHONUNBUFFERED=1
 export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$repo_root"
+if [[ "$mode" == "failed-five" ]]; then
+  exec /usr/bin/python3 benchmarks/harbor/run_benchmark.py full \
+    --task dna-assembly \
+    --task mteb-leaderboard \
+    --task pypi-server \
+    --task pytorch-model-recovery \
+    --task torch-pipeline-parallelism \
+    --attempts 1 \
+    --concurrency 5 \
+    --expect-trials 5
+fi
+
 exec /usr/bin/python3 benchmarks/harbor/run_benchmark.py "$mode"

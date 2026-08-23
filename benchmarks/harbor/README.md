@@ -176,6 +176,15 @@ while one is active. Starting `smoke` or `full` still requires the explicit
 experiment decision described above; installing the template does not run a
 model.
 
+The dedicated `failed-five` instance is a guarded development-only regression
+run. It expands to exactly the five previously observed failures, one attempt
+each, at concurrency five; it cannot resolve to the full dataset:
+
+```bash
+systemctl start morphz-benchmark@failed-five.service
+journalctl -fu morphz-benchmark@failed-five.service
+```
+
 The full command now defaults to all 89 tasks and exactly one attempt per task
 (89 diagnostic trials), with zero Harbor retries and one trial at a time. This
 is the mandatory trajectory-analysis pass before optimization. A later official
