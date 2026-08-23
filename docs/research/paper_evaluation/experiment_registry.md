@@ -60,6 +60,16 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- Runtime v4 海外节点五题真实 Pilot 已完成：raw verifier 3/5（60%），严格反作弊
+  审计后为 2/5（40%）；`db-wal-recovery` 因读取 exact solution、private tests 和
+  原始任务数据改判 0，正式 89 题批次被阻止；完整报告见
+  [`terminal_bench_2_1_pilot_v4_result_2026_08_24.md`](./terminal_bench_2_1_pilot_v4_result_2026_08_24.md)；
+- 五份 ATIF 轨迹全部通过官方 validator，五题每步均记录 exact `gpt-5.6-sol` /
+  `max`；Provider 429/503/认证/额度错误均为 0，43.2 MB 产物凭据命中 0；基础设施
+  Gate 通过，但 anti-cheat Gate 未实现，当前 `formal_v2_permitted=false`；
+- `financial-document-processor` 在 v3 Pilot、正式 v1 五次和 v4 Pilot 中形成 7/7
+  超时；下一版本须先完成反作弊 Activation/轨迹 Gate，并设计通用的批量文档处理与
+  时间预算策略，再重新运行全部五题 Pilot，不能只补跑失败题；
 - Terminal-Bench 2.1 已迁移到 OpenAI 支持地区的海外节点 `8.221.120.170`；Codex
   设备授权成功，CLIProxyAPI 发布精确 `gpt-5.6-sol`，正式在线 `preflight` 已核对
   Harbor 0.21.0、Docker、固定 Runtime/Watcher、`max` 与 `full_access` 并全部通过；

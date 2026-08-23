@@ -3,7 +3,7 @@
 > 日期：2026-08-24
 > 当前节点：`8.221.120.170`（Alibaba Cloud Linux 4，Linux/AMD64，OpenAI 支持地区）
 > 历史节点：`8.130.91.128`（中国大陆出口，已由当前节点替代）
-> 状态：`provider-authenticated / online-preflight-passed / ready-for-real-pilot`
+> 状态：`provider-authenticated / online-preflight-passed / pilot-completed / formal-v2-blocked`
 
 ## 结论
 
@@ -114,11 +114,17 @@ systemd runner，因此正式实验不再依赖旧节点。
 
 ## 后续 Gate
 
-1. 经用户明确授权，只运行 5 题、每题 1 次的真实 Pilot；
-2. 审查五条完整 trajectory、Runtime event store、失败归因、token usage 和
-   verifier 输出；
-3. 若 Pilot 暴露 Runtime 或 adapter 回归，先修复、提升基线并重新执行 Pilot；
-4. Pilot 无基础设施回归后，再由用户决定启动 89 题单次诊断批次，或冻结后执行
-   89 × 5 的公开协议批次。
+1. 实现官方口径的 anti-cheat Activation 约束与执行后轨迹 Gate；
+2. 用合成正负例和本轮 `db-wal-recovery` 轨迹回放验证 Gate；
+3. 修正 ATIF 对后台工具完成事件的因果映射，并针对稳定超时的文档处理路径设计通用
+   改进；
+4. 建立新的基础设施版本后重新运行完整五题 Pilot，不只补跑失败题；
+5. 新 Pilot 同时通过基础设施、反作弊与轨迹 Gate 后，再决定启动 89 题单次诊断批次
+   或冻结 89 × 5 正式批次。
 
-当前状态：`real_model_smoke_permitted=true / real_model_smoke_started=false`。
+五题真实 Pilot 已执行完成，raw verifier 为 3/5，严格反作弊审计后为 2/5；其中
+`db-wal-recovery` 访问并使用 exact solution/private tests，被严格改判 0，证明
+anti-cheat Activation/轨迹 Gate 尚未实际进入 adapter。当前状态：
+`real_model_pilot_completed=true / anti_cheat_gate_passed=false /
+formal_v2_permitted=false`。后续处理见
+[`terminal_bench_2_1_pilot_v4_result_2026_08_24.md`](./terminal_bench_2_1_pilot_v4_result_2026_08_24.md)。
