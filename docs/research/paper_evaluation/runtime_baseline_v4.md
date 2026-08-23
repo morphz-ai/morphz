@@ -15,7 +15,8 @@
 | Commit subject | `fix(runtime): isolate provider recovery and stabilize execution` |
 | Commit time | `2026-08-24T00:14:22+08:00` |
 | Author / committer | `fearless <shafreeck@gmail.com>` |
-| Linux/AMD64 binary SHA-256 | `960a7d49089969bb0bbd6517307561fa2d83fd5a4bad68856b47fc8a75eb68ac` |
+| Linux/AMD64 reproducible binary SHA-256 | `f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67` |
+| Superseded pre-migration binary SHA-256 | `960a7d49089969bb0bbd6517307561fa2d83fd5a4bad68856b47fc8a75eb68ac` |
 | Harbor watcher SHA-256 | `d41c6c5789421d0b957d78269d886a638c1def323b8b2098763fbfadee8f9063` |
 
 该提交是 2026-08-24 之后新启动的论文实验、路演真实能力验证和公开
@@ -59,8 +60,17 @@ Benchmark 稳定性，因此 v3 与 v4 结果不得静默混合。已经完成�
 
 Linux/AMD64 二进制使用固定的
 `rust:1.97.1-bullseye@sha256:02d78ca3f928195c2a907543de778adfd728ad7e2a24fdc6aef582b7c77842e0`
-构建。中国区节点使用 RSProxy 传输 Rustup 组件和 Cargo sparse index；Rustup、
-Cargo.lock 和最终二进制哈希仍承担内容校验，镜像不改变冻结版本。
+构建。境外冻结节点使用 Rust 官方分发端点获取固定 Rustup 组件，并继续使用已检入
+配置的 Cargo sparse index；Rustup、Cargo.lock 和最终二进制哈希仍承担内容校验，
+传输路径不改变冻结版本。
+
+2026-08-24 迁移时在全新节点发现：旧 Dockerfile 将 `.git` 排除出构建上下文，却未将
+Runtime commit 显式传给 `morphz/build.rs`；挂载的 Cargo target cache 可能沿用历史
+build-script 输出。因此旧 artifact 虽对应同一源码树，其自报构建身份不可由干净节点
+可靠重现。修订后的 Dockerfile 强制要求
+`MORPHZ_BUILD_GIT_COMMIT=5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；替换 artifact
+自报该完整 commit，并以相同冻结参数二次导出、逐字节一致。旧哈希仅保留作审计，
+不得用于新 Run。该修订不改变 Runtime 源码和 v4 tag，只修正 artifact 身份冻结。
 
 ## 4. 使用规则
 

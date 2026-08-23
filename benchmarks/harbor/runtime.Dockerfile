@@ -4,6 +4,7 @@ FROM rust:1.97.1-bullseye@sha256:02d78ca3f928195c2a907543de778adfd728ad7e2a24fdc
 WORKDIR /src
 ARG RUSTUP_DIST_SERVER=https://rsproxy.cn
 ARG RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+ARG MORPHZ_BUILD_GIT_COMMIT
 # Morphz intentionally puts the newer hotbundle SQLite archive before SQLx's
 # bundled archive. Rust's x86_64 self-contained LLD rejects those duplicate
 # symbols unless the same first-definition-wins policy is made explicit.
@@ -18,7 +19,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target-static \
-    export OPENSSL_LIB_DIR="/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
+    test -n "$MORPHZ_BUILD_GIT_COMMIT" \
+    && export OPENSSL_LIB_DIR="/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
     && cargo build --locked --release -p morphz --bin morphz \
     && ! ldd /src/target-static/release/morphz | grep -E 'libssl|libcrypto' \
     && cc -O2 -Wall -Wextra -Werror \

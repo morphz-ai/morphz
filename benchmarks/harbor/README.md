@@ -17,9 +17,10 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
 - Morphz `paper-eval-runtime-v4`;
 - Rust `1.97.1` on the pinned Bullseye builder image, with OpenSSL linked
   statically so the binary also runs on the dataset's oldest glibc base;
-- China-region builds use RSProxy for Rustup components and Cargo's sparse
-  index. Rustup and Cargo still verify the pinned toolchain and Cargo.lock
-  checksums; only the transfer path changes;
+- the frozen overseas artifact uses the official Rustup distribution endpoint
+  and the checked-in RSProxy Cargo sparse-index configuration. Rustup and Cargo
+  still verify the pinned toolchain and Cargo.lock checksums; only transfer
+  paths differ;
 - Linux/AMD64 task containers and Runtime, using Docker Desktop emulation on
   Apple Silicon rather than changing the benchmark architecture to ARM64;
 - physical model `gpt-5.6-sol`, reasoning effort `max`, no fallback;
@@ -66,10 +67,23 @@ Docker Desktop must be running. BuildKit exports the binary outside an image:
 docker build \
   --platform linux/amd64 \
   --file benchmarks/harbor/runtime.Dockerfile \
+  --build-arg MORPHZ_BUILD_GIT_COMMIT=5e4b0ffcd89245f19d84ec3569605ae27a44e02b \
+  --build-arg RUSTUP_DIST_SERVER=https://static.rust-lang.org \
+  --build-arg RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup \
   --target export \
   --output type=local,dest=.codex-work/harbor-runtime \
   .
 ```
+
+The commit argument is mandatory because `.git` is intentionally excluded from
+the Docker build context. Omitting it would make the Runtime report `git
+unknown`; allowing a warm Cargo target cache to supply stale build-script output
+would make the artifact identity non-reproducible.
+
+The superseded pre-migration artifact hash is retained in the lock file for
+audit only. It was generated before the mandatory commit argument existed and
+must not be used for new runs. The replacement artifact reports the full v4
+commit at runtime and was exported twice with identical bytes.
 
 The Dockerfile defaults `RUSTUP_DIST_SERVER` and `RUSTUP_UPDATE_ROOT` to
 RSProxy and installs the checked-in sparse-index Cargo configuration. Override

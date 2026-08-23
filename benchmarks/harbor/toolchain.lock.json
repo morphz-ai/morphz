@@ -19,11 +19,14 @@
     "rust_toolchain": "1.97.1",
     "builder_image": "rust:1.97.1-bullseye",
     "builder_image_digest": "sha256:02d78ca3f928195c2a907543de778adfd728ad7e2a24fdc6aef582b7c77842e0",
-    "rustup_dist_server": "https://rsproxy.cn",
+    "rustup_dist_server": "https://static.rust-lang.org",
+    "rustup_update_root": "https://static.rust-lang.org/rustup",
     "cargo_registry": "sparse+https://rsproxy.cn/index/",
+    "build_git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
     "target": "x86_64-unknown-linux-gnu",
     "container_platform": "linux/amd64",
-    "binary_sha256": "960a7d49089969bb0bbd6517307561fa2d83fd5a4bad68856b47fc8a75eb68ac",
+    "binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
+    "superseded_cache_affected_binary_sha256": "960a7d49089969bb0bbd6517307561fa2d83fd5a4bad68856b47fc8a75eb68ac",
     "watcher_sha256": "d41c6c5789421d0b957d78269d886a638c1def323b8b2098763fbfadee8f9063"
   },
   "model": {
