@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 
-POLICY_VERSION = "terminal-bench-integrity-v1"
+POLICY_VERSION = "terminal-bench-integrity-v2"
 POLICY_MARKER = f"<{POLICY_VERSION}>"
 
 BENCHMARK_INTEGRITY_POLICY = f"""
@@ -57,6 +57,17 @@ _BENCHMARK_REPOSITORY = re.compile(
 _SECRET_SHAPE = re.compile(
     r"(?i)(authorization|api[_-]?key|token|secret)(\s*[:=]\s*)([^\s,;\"']+)"
 )
+
+_RESOURCE_ACCESS_TOOLS = {
+    "browser",
+    "exec",
+    "fetch",
+    "list_files",
+    "read",
+    "search",
+    "web_search",
+    "write",
+}
 
 
 def append_integrity_policy(instruction: str) -> str:
@@ -121,6 +132,12 @@ def audit_trajectory_data(
             tool_name = str(
                 tool_call.get("function_name") or tool_call.get("name") or "unknown"
             )
+            if tool_name.lower() not in _RESOURCE_ACCESS_TOOLS:
+                # Cognitive/state tools such as context_tx can quote the task or
+                # the integrity policy, but cannot access files or the network.
+                # Treating quoted paths as I/O would make policy preservation a
+                # false-positive disqualification.
+                continue
             payload = _tool_payload(tool_call)
             lowered = payload.lower()
             task_named = bool(slug) and any(value in lowered for value in slug_variants)

@@ -13,14 +13,16 @@ from benchmarks.harbor.benchmark_integrity import (
 )
 
 
-def trajectory_with_command(command: str) -> dict[str, object]:
+def trajectory_with_command(
+    command: str, *, tool_name: str = "exec"
+) -> dict[str, object]:
     return {
         "steps": [
             {
                 "source": "agent",
                 "tool_calls": [
                     {
-                        "function_name": "exec",
+                        "function_name": tool_name,
                         "arguments": {"command": command, "cwd": "/app"},
                     }
                 ],
@@ -51,6 +53,16 @@ class BenchmarkIntegrityTest(unittest.TestCase):
                 "curl -k https://localhost:8443/index.html"
             ),
             task_name="terminal-bench/git-multibranch",
+        )
+        self.assertFalse(audit["disqualified"])
+
+    def test_allows_context_transaction_that_preserves_policy_paths(self) -> None:
+        audit = audit_trajectory_data(
+            trajectory_with_command(
+                "(context-tx (rule \"Do not read /tests or /logs/verifier\"))",
+                tool_name="context_tx",
+            ),
+            task_name="terminal-bench/financial-document-processor",
         )
         self.assertFalse(audit["disqualified"])
 
