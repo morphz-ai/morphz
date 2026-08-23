@@ -55,7 +55,7 @@ def _alive(pid: int) -> bool:
     if stat_path.is_file():
         try:
             fields = stat_path.read_text().split()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             # The process may exit between is_file() and read_text(). That is
             # exactly the terminal state this helper is waiting to observe.
             return False
