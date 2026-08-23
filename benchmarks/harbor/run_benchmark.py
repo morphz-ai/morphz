@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run the pinned Harbor/TB2.1 configuration without exposing credentials.
 
-The launcher resolves the already-configured Morphz `custom` provider on the
-host, injects only the resulting credential into the Harbor process
-environment, and never writes that value to argv, a profile, or a job manifest.
+The launcher accepts an explicitly injected provider endpoint and credential
+on an isolated experiment node. For backward compatibility it can also resolve
+the existing host Morphz `custom` provider. In either mode, the credential is
+kept out of argv, profiles and job manifests.
 """
 
 from __future__ import annotations
@@ -57,6 +58,35 @@ def provider_config(config: dict[str, object]) -> tuple[str, str, str | None]:
     ).strip()
     credential_ref = provider.get("credential") or "custom"
     return base_url, protocol, str(credential_ref) if credential_ref else None
+
+
+def runtime_provider_config() -> tuple[str, str, str]:
+    """Resolve one explicit cloud route or the legacy host-configured route."""
+    direct_base_url = os.environ.get("MORPHZ_PROVIDER_BASE_URL", "").strip()
+    if direct_base_url:
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        protocol = os.environ.get(
+            "MORPHZ_PROVIDER_PROTOCOL",
+            str(lock["model"]["provider_protocol"]),
+        ).strip()
+        credential = os.environ.get("MORPHZ_PROVIDER_API_KEY")
+        if credential is None:
+            raise RuntimeError(
+                "MORPHZ_PROVIDER_API_KEY must be exported when "
+                "MORPHZ_PROVIDER_BASE_URL is supplied"
+            )
+        return direct_base_url, protocol, credential
+
+    config = load_host_config()
+    base_url, protocol, credential_ref = provider_config(config)
+    provider_host = urlparse(base_url).hostname or ""
+    credential = resolve_credential(config, credential_ref, provider_host)
+    return base_url, protocol, credential
+
+
+def runtime_version(lock: dict[str, object]) -> str:
+    runtime = lock["runtime"]
+    return f'{runtime["git_tag"]}@{runtime["git_commit"]}'
 
 
 def resolve_minim4_proxy_credential(host: str) -> str:
@@ -358,12 +388,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    config = load_host_config()
-    base_url, protocol, credential_ref = provider_config(config)
+    base_url, protocol, credential = runtime_provider_config()
     if protocol != "openai-responses":
         raise RuntimeError(f"Expected openai-responses, got {protocol}")
     effective_base_url, provider_host, provider_address = provider_ipv4_base_url(base_url)
-    credential = resolve_credential(config, credential_ref, provider_host)
     preflight(
         args.binary,
         args.watcher,
@@ -385,12 +413,13 @@ def main() -> int:
         return 0
 
     environment = os.environ.copy()
+    runtime_identity = runtime_version(lock)
     environment.update(
         {
             "PYTHONPATH": str(REPO_ROOT),
             "MORPHZ_HARBOR_BINARY": str(args.binary.resolve()),
             "MORPHZ_HARBOR_WATCHER": str(args.watcher.resolve()),
-            "MORPHZ_HARBOR_VERSION": "paper-eval-runtime-v3@f875b93869282a14b738edec2f3a4069fd003600",
+            "MORPHZ_HARBOR_VERSION": runtime_identity,
             "MORPHZ_PROVIDER_PROTOCOL": protocol,
             "MORPHZ_PROVIDER_BASE_URL": effective_base_url,
             "MORPHZ_PROVIDER_MODEL": "gpt-5.6-sol",

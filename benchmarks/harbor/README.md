@@ -26,6 +26,15 @@ The launcher resolves and pins the node's IPv4 address for each job because the
 current mDNS IPv6 path returns a gateway error. Both the logical hostname and
 the resolved IPv4 address are recorded by preflight.
 
+On an isolated cloud experiment node, CLIProxyAPI may instead run on that same
+node. Export `MORPHZ_PROVIDER_BASE_URL`, `MORPHZ_PROVIDER_PROTOCOL` and
+`MORPHZ_PROVIDER_API_KEY` before invoking the launcher; no host Morphz config is
+then required. The base URL must use an address reachable from Harbor task
+containers (normally the node's private IPv4 address), not `127.0.0.1`, because
+loopback inside a task container refers to that container. Keep port 8317 closed
+in the public security group and authenticate the proxy with a non-example API
+key.
+
 The current Terminal-Bench 2.1 repository states that community leaderboard
 submissions are closed. These runs are still reproducible benchmark results and
 can be uploaded to Harbor Hub, but they must not be described as an accepted
@@ -72,6 +81,8 @@ binding. The benchmark-only profile in
 secrets are not copied into it. When the credential environment variable is not
 exported, the launcher reads the configured CLIProxyAPI key over the existing
 SSH connection to `mini-m4.local`; the value remains in process memory only.
+For a cloud-local proxy, export the endpoint and credential explicitly instead;
+the launcher passes the credential only through the Harbor process environment.
 
 Run the non-inference gates first:
 
