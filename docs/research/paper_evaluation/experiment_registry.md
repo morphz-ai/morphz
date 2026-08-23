@@ -66,9 +66,11 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   完整记录见
   [`terminal_bench_2_1_diagnostic_20x1_result_2026_08_24.md`](./terminal_bench_2_1_diagnostic_20x1_result_2026_08_24.md)；
 - 五个失败中，`pypi-server` 确认为 Harbor 适配层在 verifier 前关闭
-  `keep_running` 服务的生命周期错误；已完成最小修复，下一步只允许该题 1×1 定向验证，
-  不得把补跑结果拼入 15/20；另外四题目前归因为模型方案、资料判断或缺少实际验证，
-  未发现 Runtime/Harness 异常；
+  `keep_running` 服务 I/O 所有者的生命周期错误；第一版“保留服务、终止 Runtime”修复的
+  1×1 定向复测仍为 0，证明只保留进程组不够，结果不得拼入 15/20；第二版改为冻结
+  Runtime 直至 Harbor 销毁容器，以保留服务输出管道，云端真实 HTTP verifier 边界集成
+  测试通过，连同相关测试共 15 项通过；第二版尚未再次调用模型；另外四题目前归因为
+  模型方案、资料判断或缺少实际验证，未发现 Runtime/Harness exception；
 - 修正严格审计对任务指定的公开 MTEB 上游 URL 的误报；原始审计必须保留，修正结果
   以带新审计器 commit 的独立派生产物保存。该更正不改变 `mteb-leaderboard` 的 0 分，
   批次仍为 15/20；

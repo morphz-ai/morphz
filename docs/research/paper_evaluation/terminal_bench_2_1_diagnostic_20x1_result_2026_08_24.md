@@ -11,7 +11,7 @@
 
 - 完成：20/20；
 - 官方 verifier 通过：15/20，原始通过率 **75%**；
-- Runtime/Harness error：0；
+- Runtime/Harness exception：0；
 - Provider 429/503：0；
 - 输入 Token：9,181,663；缓存 Token：862,208；输出 Token：269,405；
 - 运行时长约 55 分 46 秒；
@@ -84,28 +84,42 @@
 带审计器新 commit 的独立派生产物，不静默覆盖原记录。本更正不改变该题 verifier 0 分，
 因此原始与修正后的批次分数均为 15/20（75%）。
 
-## 5. 已完成的最小修复
+## 5. 定向复测与根因收敛
 
-`run_morphz_harbor.sh` 的正常完成路径不再向 Runtime 发送普通 `exit`，而是在返回 Harbor
-verifier 前使用与取消路径相同的 quiesce 边界：
+第一版修复仅保留 `keep_running=true` 的进程组，并在 verifier 前终止 Runtime。随后只对
+`pypi-server` 做了 1 题 × 1 次、并发 1、无重试的定向复测：Agent 再次成功完成建包、
+PEP 503 索引、HTTP 服务和从该索引安装后的函数断言，但官方 verifier 仍为 0。该结果
+不得拼入前 20 题分数。
+
+复测轨迹与 Agent 自有服务日志证明，服务在 Agent 内部测试阶段正常；verifier 阶段没有
+留下新的 HTTP 请求记录。进一步检查发现：HTTP 服务的 stdout/stderr 仍连接到 Runtime
+持有的读取管道。第一版虽然保留了服务进程，却终止了 Runtime，服务在 verifier 首次
+请求写访问日志时会遇到断开的管道。因此根因不是模型没有完成任务，而是
+**Agent 返回边界没有同时保留服务及其 I/O 所有者**。
+
+第二版边界改为：
 
 1. 冻结 Runtime；
 2. 保留显式 `keep_running=true` 的后台服务；
 3. 终止未完成的临时命令；
-4. 仅终止 Runtime；
-5. 让 Harbor verifier 在同一容器内继续访问所需服务。
+4. 在 Harbor 销毁任务容器前不终止被冻结的 Runtime，使其继续持有服务输出管道；
+5. 让 Harbor verifier 在同一容器内访问所需服务，随后由容器生命周期统一清理。
 
-该修改已通过 shell 语法检查、diff check 和相关审计单元测试；仍须在 Linux/Harbor
-环境定向重跑一次 `pypi-server`，证明服务确实跨过 Agent 返回边界。该定向结果只验证
-修复，不计入本批次 15/20。
+云端 Linux 集成测试会启动一个 stdout 连接到模拟 Runtime 的真实 HTTP 服务，冻结
+Runtime 后再发出模拟 verifier 请求；请求成功，服务仍存活。连同取消、进程组和审计
+测试共 15 项通过。新 watcher SHA-256 为
+`9873d7945f8a86b583ba5ed8884bc286db51da9292d3f8569e8d8582c19785bb`。
+
+第二版尚未再次调用模型；是否再花一次额度复测 `pypi-server`，由用户明确决定。
 
 ## 6. 停止条件与后续顺序
 
 当前只允许：
 
-1. 保存原始严格审计与 public gate，生成显式标注审计器版本的修正派生产物；
-2. 在新基础设施 commit 上定向运行 `pypi-server` 1 题 × 1 次；
-3. 若通过，确认适配层修复；若失败，只分析该题，不扩大样本；
-4. 汇总 20 题轨迹中可泛化的 Runtime/认知策略改进，再由用户决定是否启动 89×1。
+1. 原始严格审计与 public gate 已原样恢复并保留；r2 修正派生产物的 integrity/public
+   gate 均通过，分数仍为 75%；
+2. 第一版 `pypi-server` 定向复测已保留为 0 分诊断结果，不拼接；
+3. 第二版已通过无模型 Linux HTTP 集成测试；再次真实复测须由用户明确确认；
+4. 继续汇总 20 题轨迹中可泛化的 Runtime/认知策略改进，再决定是否启动 89×1。
 
 未经用户再次明确确认，禁止启动剩余 69 题、89×1 或 89×5。

@@ -4,12 +4,15 @@ set -euo pipefail
 fifo=/tmp/morphz-harbor-input
 runner_pid_file=/tmp/morphz-harbor-runner.pid
 runtime_pid_file=/tmp/morphz-harbor-runtime.pid
+verifier_ready_file=/tmp/morphz-harbor-verifier-ready
 
 if [[ "${1:-}" == "--cancel" ]]; then
   if [[ -r "$runtime_pid_file" ]]; then
     runtime_pid=$(<"$runtime_pid_file")
-    /tmp/morphz-harbor-wait --quiesce \
-      "${MORPHZ_STORAGE_SQLITE_PATH}" "$runtime_pid" || true
+    if /tmp/morphz-harbor-wait --prepare-verifier \
+      "${MORPHZ_STORAGE_SQLITE_PATH}" "$runtime_pid"; then
+      : >"$verifier_ready_file"
+    fi
   fi
   if [[ -r "$runner_pid_file" ]]; then
     runner_pid=$(<"$runner_pid_file")
@@ -28,6 +31,7 @@ if [[ -r "$runner_pid_file" ]] && kill -0 "$(<"$runner_pid_file")" 2>/dev/null; 
   exit 2
 fi
 printf '%s\n' "$$" >"$runner_pid_file"
+rm -f "$verifier_ready_file"
 
 rm -f "$fifo"
 mkfifo "$fifo"
@@ -35,13 +39,14 @@ exec 3<>"$fifo"
 
 morphz_pid=""
 cleanup() {
-  if [[ -n "$morphz_pid" ]] && kill -0 "$morphz_pid" 2>/dev/null; then
+  if [[ -n "$morphz_pid" ]] && kill -0 "$morphz_pid" 2>/dev/null \
+    && [[ ! -e "$verifier_ready_file" ]]; then
     printf 'exit\n' >&3 || true
     sleep 2
     kill "$morphz_pid" 2>/dev/null || true
   fi
   exec 3>&- || true
-  rm -f "$fifo" "$runner_pid_file" "$runtime_pid_file"
+  rm -f "$fifo" "$runner_pid_file" "$runtime_pid_file" "$verifier_ready_file"
 }
 trap cleanup EXIT INT TERM
 
@@ -65,15 +70,14 @@ printf '%s\n' "$morphz_pid" >"$runtime_pid_file"
 /tmp/morphz-harbor-wait "$MORPHZ_STORAGE_SQLITE_PATH" "$morphz_pid" \
   "${MORPHZ_HARBOR_TIMEOUT_SECS:-21600}" 20
 
-# Harbor verifies in the same task container after the Agent returns.  A
-# service explicitly launched with keep_running must therefore outlive the
-# Morphz process.  Reuse the cancellation quiesce boundary: freeze the Runtime,
-# preserve declared services, terminate unfinished transient commands, and
-# then kill only the Runtime.  A normal `exit` would run ProcessGroupGuard
-# cleanup and take the required service down before verification begins.
-/tmp/morphz-harbor-wait --quiesce \
+# Harbor verifies in the same task container after the Agent returns. Keep the
+# Runtime frozen until Harbor destroys the container: it owns the read ends of
+# persistent-service output pipes, so killing it would make an otherwise live
+# service fail on its first verifier request. The helper also terminates
+# unfinished transient commands, while preserving declared keep_running groups.
+/tmp/morphz-harbor-wait --prepare-verifier \
   "$MORPHZ_STORAGE_SQLITE_PATH" "$morphz_pid"
-wait "$morphz_pid" || true
+: >"$verifier_ready_file"
 morphz_pid=""
 trap - EXIT INT TERM
 cleanup

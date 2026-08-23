@@ -208,7 +208,11 @@ static void append_child_processes(
     closedir(tasks);
 }
 
-static int quiesce_runtime(const char *database_path, pid_t runtime_pid) {
+static int isolate_runtime_for_verifier(
+    const char *database_path,
+    pid_t runtime_pid,
+    int terminate_runtime
+) {
     if (runtime_pid <= 1 || runtime_pid == getpid()) {
         fprintf(stderr, "refusing to quiesce invalid Runtime pid %ld\n", (long)runtime_pid);
         return 2;
@@ -231,9 +235,13 @@ static int quiesce_runtime(const char *database_path, pid_t runtime_pid) {
     if (preserved_result < 0) {
         fprintf(
             stderr,
-            "could not inspect persistent background services; terminating only the frozen Runtime\n"
+            "could not inspect persistent background services\n"
         );
-        kill(runtime_pid, SIGKILL);
+        if (terminate_runtime) {
+            kill(runtime_pid, SIGKILL);
+        } else {
+            kill(runtime_pid, SIGCONT);
+        }
         return 5;
     }
     size_t preserved_count = (size_t)preserved_result;
@@ -266,13 +274,16 @@ static int quiesce_runtime(const char *database_path, pid_t runtime_pid) {
             kill(-terminated[index], SIGKILL);
         }
     }
-    if (kill(runtime_pid, SIGKILL) != 0 && errno != ESRCH) {
-        perror("failed to terminate Morphz Runtime");
-        return 4;
+    if (terminate_runtime) {
+        if (kill(runtime_pid, SIGKILL) != 0 && errno != ESRCH) {
+            perror("failed to terminate Morphz Runtime");
+            return 4;
+        }
     }
     fprintf(
         stderr,
-        "quiesced Morphz Runtime pid=%ld; preserved=%zu persistent groups; terminated=%zu transient groups\n",
+        "%s Morphz Runtime pid=%ld; preserved=%zu persistent groups; terminated=%zu transient groups\n",
+        terminate_runtime ? "quiesced" : "prepared verifier with frozen",
         (long)runtime_pid,
         preserved_count,
         terminated_count
@@ -282,16 +293,26 @@ static int quiesce_runtime(const char *database_path, pid_t runtime_pid) {
 
 int main(int argc, char **argv) {
     if (argc == 4 && strcmp(argv[1], "--quiesce") == 0) {
-        return quiesce_runtime(
+        return isolate_runtime_for_verifier(
             argv[2],
-            (pid_t)positive_long(argv[3], "pid")
+            (pid_t)positive_long(argv[3], "pid"),
+            1
+        );
+    }
+    if (argc == 4 && strcmp(argv[1], "--prepare-verifier") == 0) {
+        return isolate_runtime_for_verifier(
+            argv[2],
+            (pid_t)positive_long(argv[3], "pid"),
+            0
         );
     }
     if (argc < 4 || argc > 5) {
         fprintf(
             stderr,
             "usage: %s DB_PATH PID TIMEOUT_SECS [IDLE_GRACE_SECS]\n"
-            "       %s --quiesce DB_PATH PID\n",
+            "       %s --quiesce DB_PATH PID\n"
+            "       %s --prepare-verifier DB_PATH PID\n",
+            argv[0],
             argv[0],
             argv[0]
         );

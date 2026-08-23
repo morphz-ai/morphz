@@ -27,7 +27,7 @@
     "container_platform": "linux/amd64",
     "binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
     "superseded_cache_affected_binary_sha256": "960a7d49089969bb0bbd6517307561fa2d83fd5a4bad68856b47fc8a75eb68ac",
-    "watcher_sha256": "d41c6c5789421d0b957d78269d886a638c1def323b8b2098763fbfadee8f9063"
+    "watcher_sha256": "9873d7945f8a86b583ba5ed8884bc286db51da9292d3f8569e8d8582c19785bb"
   },
   "model": {
     "requested_alias": "gpt-5.6-sol",

@@ -5,12 +5,14 @@ import json
 import os
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import urllib.request
 from pathlib import Path
 
 class _ExecResult:
@@ -209,6 +211,145 @@ class RuntimeCancellationTests(unittest.TestCase):
                     os.killpg(keep_pid, signal.SIGKILL)
                 if "transient_pid" in locals() and _alive(transient_pid):
                     os.killpg(transient_pid, signal.SIGKILL)
+
+    @unittest.skipUnless(sys.platform == "linux", "verifier boundary uses Linux /proc")
+    def test_prepare_verifier_keeps_service_output_pipe_open(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler unavailable")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            tmp_path = Path(temporary_directory)
+            helper = tmp_path / "morphz-harbor-wait"
+            source = Path(__file__).parents[1] / "harbor_wait.c"
+            compile_result = subprocess.run(
+                [
+                    compiler,
+                    "-O2",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    str(source),
+                    "-lsqlite3",
+                    "-o",
+                    str(helper),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if compile_result.returncode != 0:
+                self.skipTest(
+                    f"could not compile harbor_wait.c: {compile_result.stderr}"
+                )
+
+            (tmp_path / "index.html").write_text("verifier-ready\n")
+            service_pid_path = tmp_path / "service.pid"
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+
+            runtime_script = """
+import pathlib
+import subprocess
+import sys
+import time
+
+service = subprocess.Popen(
+    [
+        sys.executable,
+        "-m",
+        "http.server",
+        sys.argv[2],
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        sys.argv[3],
+    ],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+)
+pathlib.Path(sys.argv[1]).write_text(str(service.pid))
+while True:
+    time.sleep(60)
+"""
+            runtime = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    runtime_script,
+                    str(service_pid_path),
+                    str(port),
+                    str(tmp_path),
+                ]
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not service_pid_path.is_file():
+                    time.sleep(0.01)
+                service_pid = int(service_pid_path.read_text())
+                url = f"http://127.0.0.1:{port}/"
+                deadline = time.monotonic() + 5
+                while True:
+                    try:
+                        with urllib.request.urlopen(url, timeout=0.5) as response:
+                            self.assertEqual(response.read(), b"verifier-ready\n")
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.05)
+
+                database = tmp_path / "morphz.db"
+                with sqlite3.connect(database) as connection:
+                    connection.execute(
+                        "CREATE TABLE execution_jobs "
+                        "(id TEXT PRIMARY KEY, status TEXT, request_json TEXT)"
+                    )
+                    connection.execute(
+                        "INSERT INTO execution_jobs "
+                        "(id, status, request_json) VALUES (?, ?, ?)",
+                        (
+                            "service",
+                            "running",
+                            json.dumps(
+                                {
+                                    "kind": "background_exec",
+                                    "process_group_id": service_pid,
+                                    "keep_running": True,
+                                }
+                            ),
+                        ),
+                    )
+
+                result = subprocess.run(
+                    [
+                        str(helper),
+                        "--prepare-verifier",
+                        str(database),
+                        str(runtime.pid),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(_alive(runtime.pid))
+                runtime_status = Path(f"/proc/{runtime.pid}/status").read_text()
+                self.assertIn("State:\tT", runtime_status)
+                self.assertTrue(_alive(service_pid))
+
+                # Simulate Harbor's verifier request after the Agent command
+                # returned. The frozen Runtime still owns the pipe read end.
+                with urllib.request.urlopen(url, timeout=2) as response:
+                    self.assertEqual(response.read(), b"verifier-ready\n")
+                self.assertTrue(_alive(service_pid))
+            finally:
+                if "service_pid" in locals() and _alive(service_pid):
+                    os.killpg(service_pid, signal.SIGKILL)
+                if runtime.poll() is None:
+                    runtime.kill()
+                    runtime.wait()
 
 
 if __name__ == "__main__":
