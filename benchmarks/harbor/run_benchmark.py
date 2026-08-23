@@ -25,8 +25,10 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 if __package__:
+    from .benchmark_gate import audit_gate
     from .benchmark_integrity import audit_job
 else:
+    from benchmark_gate import audit_gate
     from benchmark_integrity import audit_job
 
 
@@ -557,14 +559,39 @@ def main() -> int:
         attempts_per_task=args.attempts,
         run_identity=run_identity,
     )
+    public_gate_path = new_jobs[0] / "public_run_gate.json"
+    try:
+        public_gate = audit_gate(
+            new_jobs[0],
+            expected_trials=expected_trial_count,
+            credential=credential,
+        )
+    except Exception as error:
+        public_gate = {
+            "gate_version": "terminal-bench-public-run-gate-v1",
+            "job_dir": str(new_jobs[0].resolve()),
+            "expected_trials": expected_trial_count,
+            "gate_passed": False,
+            "audit_error": f"{type(error).__name__}: {error}",
+        }
+    public_gate_path.write_text(
+        json.dumps(public_gate, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     print("integrity_policy=" + str(integrity["policy_version"]))
     print("integrity_gate_passed=" + str(integrity["integrity_gate_passed"]).lower())
     print("raw_mean_reward=" + str(integrity["raw_mean_reward"]))
     print("strict_mean_reward=" + str(integrity["strict_mean_reward"]))
     print("strict_result=" + str(new_jobs[0] / "strict_result.json"))
+    print("public_run_gate=" + str(public_gate["gate_passed"]).lower())
+    print("public_run_gate_result=" + str(public_gate_path))
     if return_code != 0:
         return return_code
-    return 0 if integrity["integrity_gate_passed"] else 3
+    return (
+        0
+        if integrity["integrity_gate_passed"] and public_gate["gate_passed"]
+        else 3
+    )
 
 
 if __name__ == "__main__":

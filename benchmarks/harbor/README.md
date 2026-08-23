@@ -74,6 +74,15 @@ A positive raw reward without an auditable trajectory fails the integrity Gate.
 Any high-confidence integrity violation also makes the launcher exit non-zero;
 the raw artifacts are retained for investigation and are never rewritten.
 
+Before a Pilot or public job is accepted, run `benchmark_gate.py` with the exact
+expected trial count and the provider credential present only in the process
+environment. It additionally verifies official ATIF validity, exact model and
+reasoning binding, full-access metadata, unique Context/Session/SQLite identity,
+background observation causality, Provider error counts, and absence of
+persisted credentials. Provider errors are reported but do not by themselves
+disqualify an otherwise complete trial. The launcher writes
+`public_run_gate.json` without writing the credential.
+
 ## Build the pinned Linux Runtime
 
 Docker Desktop must be running. BuildKit exports the binary outside an image:
