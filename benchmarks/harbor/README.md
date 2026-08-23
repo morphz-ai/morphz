@@ -25,6 +25,9 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
   paths differ;
 - Linux/AMD64 task containers and Runtime, using Docker Desktop emulation on
   Apple Silicon rather than changing the benchmark architecture to ARM64;
+- the watcher is linked against the pinned Bullseye static SQLite archive;
+  the superseded dynamically linked watcher is retained by hash for audit but
+  is forbidden because minimal task images may not provide `libsqlite3.so.0`;
 - physical model `gpt-5.6-sol`, reasoning effort `max`, no fallback;
 - CLIProxyAPI `7.2.140` on the same isolated cloud node, bound only to the
   Docker host bridge.
