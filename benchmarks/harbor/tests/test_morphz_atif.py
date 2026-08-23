@@ -56,6 +56,20 @@ class MorphzAtifTest(unittest.TestCase):
                 },
             )
             add(
+                "harness-binding-1",
+                "Runtime-HarnessRegistry",
+                "harness_binding",
+                "runtime/evaluation_harness_binding",
+                {
+                    "context_id": "ctx",
+                    "evaluation_id": "evaluation-1",
+                    "harness_id": "terminal-task",
+                    "harness_version": "0.1.0",
+                    "artifact_hash": "sha256:terminal-task-test",
+                    "scope": "evaluation",
+                },
+            )
+            add(
                 "usage-1",
                 "Model-Provider",
                 "runtime_control",
@@ -164,6 +178,12 @@ class MorphzAtifTest(unittest.TestCase):
             self.assertEqual(trajectory.schema_version, "ATIF-v1.7")
             self.assertEqual(trajectory.agent.model_name, "gpt-5.6-sol")
             self.assertEqual(trajectory.agent.extra["permission_mode"], "full_access")
+            self.assertEqual(trajectory.agent.extra["harness"]["id"], "terminal-task")
+            self.assertEqual(
+                trajectory.agent.extra["harness"]["artifact_hash"],
+                "sha256:terminal-task-test",
+            )
+            self.assertEqual(trajectory.extra["harness"]["binding_count"], 1)
             self.assertEqual(trajectory.final_metrics.total_prompt_tokens, 120)
             self.assertEqual(trajectory.final_metrics.total_completion_tokens, 30)
             agent_step = next(step for step in trajectory.steps if step.source == "agent")

@@ -25,6 +25,19 @@ class BenchmarkGateTest(unittest.TestCase):
                     "extra": {
                         "context_id": "context-one",
                         "permission_mode": "full_access",
+                        "harness": {
+                            "id": "terminal-task",
+                            "version": "0.1.0",
+                            "artifact_hash": "sha256:test-harness",
+                            "binding_count": 1,
+                            "package_identity_count": 1,
+                            "bindings": [
+                                {
+                                    "evaluation_id": "evaluation-one",
+                                    "scope": "evaluation",
+                                }
+                            ],
+                        },
                     }
                 },
                 "steps": [
@@ -73,7 +86,15 @@ class BenchmarkGateTest(unittest.TestCase):
                 json.dumps(
                     {
                         "integrity_gate_passed": True,
-                        "run_identity": {"model": "gpt-5.6-sol"},
+                        "run_identity": {
+                            "model": "gpt-5.6-sol",
+                            "harness": {
+                                "id": "terminal-task",
+                                "version": "0.1.0",
+                                "artifact_hash": "sha256:test-harness",
+                                "source_sha256": "sha256:test-source",
+                            },
+                        },
                         "trials": [
                             {
                                 "trial": trial_name,

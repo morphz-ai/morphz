@@ -417,6 +417,7 @@ def frozen_run_identity(
     dataset = lock["terminal_bench"]
     model = lock["model"]
     permissions = lock["permissions"]
+    harness = lock["harness"]
     identity.update(
         {
             "runtime_tag": runtime["git_tag"],
@@ -430,6 +431,12 @@ def frozen_run_identity(
             "reasoning_effort": model["reasoning_effort"],
             "fallback": model["fallback"],
             "permission_mode": permissions["mode"],
+            "harness": {
+                "id": harness["id"],
+                "version": harness["version"],
+                "artifact_hash": harness["artifact_hash"],
+                "source_sha256": harness["source_sha256"],
+            },
             "attempts": args.attempts,
             "concurrency": args.concurrency,
             "max_retries": 0,
@@ -596,6 +603,15 @@ def main() -> int:
             "MORPHZ_HARBOR_BINARY": str(args.binary.resolve()),
             "MORPHZ_HARBOR_WATCHER": str(args.watcher.resolve()),
             "MORPHZ_HARBOR_VERSION": runtime_identity,
+            "MORPHZ_HARBOR_HARNESS": str(
+                (REPO_ROOT / str(lock["harness"]["path"])).resolve()
+            ),
+            "MORPHZ_HARNESS_REF": (
+                f"{lock['harness']['id']}@{lock['harness']['version']}"
+            ),
+            "MORPHZ_HARNESS_SOURCE_SHA256": str(
+                lock["harness"]["source_sha256"]
+            ),
             "MORPHZ_PROVIDER_PROTOCOL": protocol,
             "MORPHZ_PROVIDER_BASE_URL": effective_base_url,
             "MORPHZ_PROVIDER_MODEL": "gpt-5.6-sol",
@@ -642,7 +658,7 @@ def main() -> int:
         )
     except Exception as error:
         public_gate = {
-            "gate_version": "terminal-bench-public-run-gate-v1",
+            "gate_version": "terminal-bench-public-run-gate-v2",
             "job_dir": str(new_jobs[0].resolve()),
             "expected_trials": expected_trial_count,
             "gate_passed": False,

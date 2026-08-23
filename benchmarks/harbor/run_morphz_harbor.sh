@@ -56,7 +56,18 @@ if [[ -e "${MORPHZ_STORAGE_SQLITE_PATH}" ]]; then
     "${MORPHZ_STORAGE_SQLITE_PATH}" >&2
   exit 2
 fi
+
+# Registration validates the exact package and persists its content-addressed
+# identity before the model can see it. Installation does not activate the
+# Harness or grant capabilities; the explicit --harness binding below governs
+# only the first real Evaluation created by this fresh benchmark trial.
+/tmp/morphz --config-file /tmp/morphz-harbor.toml \
+  harness install /tmp/terminal-task.hns \
+  > /logs/agent/harness-install.stdout.log \
+  2> /logs/agent/harness-install.stderr.log
+
 /tmp/morphz --config-file /tmp/morphz-harbor.toml --plain \
+  --harness="${MORPHZ_HARNESS_REF:?MORPHZ_HARNESS_REF is required}" \
   <"$fifo" > /logs/agent/morphz.stdout.log 2> /logs/agent/morphz.stderr.log &
 morphz_pid=$!
 printf '%s\n' "$morphz_pid" >"$runtime_pid_file"

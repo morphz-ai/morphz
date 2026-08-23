@@ -116,6 +116,8 @@ def audit_gate(
 ) -> dict[str, Any]:
     atif_validator = atif_validator or validate_atif
     strict = _json(job_dir / "strict_result.json")
+    run_identity = strict.get("run_identity") or {}
+    expected_harness = run_identity.get("harness") or {}
     trials: list[dict[str, Any]] = []
     context_ids: list[str] = []
     session_ids: list[str] = []
@@ -173,6 +175,21 @@ def audit_gate(
         if unmatched_observations:
             errors.append("unmatched_tool_observation")
         errors.extend(model_errors)
+        harness = trajectory.get("agent", {}).get("extra", {}).get("harness") or {}
+        if not expected_harness:
+            errors.append("run_identity_harness_missing")
+        else:
+            for actual_key, expected_key in (
+                ("id", "id"),
+                ("version", "version"),
+                ("artifact_hash", "artifact_hash"),
+            ):
+                if harness.get(actual_key) != expected_harness.get(expected_key):
+                    errors.append(f"harness_{actual_key}")
+        if harness.get("binding_count", 0) < 1:
+            errors.append("harness_binding_missing")
+        if harness.get("package_identity_count") != 1:
+            errors.append("harness_package_identity_count")
 
         context_ids.append(context_id)
         session_ids.append(session_id)
@@ -188,6 +205,7 @@ def audit_gate(
                 "database_sha256": _sha256(db_path),
                 "trajectory_sha256": _sha256(trajectory_path),
                 "unmatched_tool_observations": unmatched_observations,
+                "harness": harness,
                 "errors": errors,
                 "passed": not errors,
             }
@@ -218,11 +236,11 @@ def audit_gate(
         "credential_not_persisted",
     ]
     return {
-        "gate_version": "terminal-bench-public-run-gate-v1",
+        "gate_version": "terminal-bench-public-run-gate-v2",
         "integrity_policy_version": POLICY_VERSION,
         "job_dir": str(job_dir.resolve()),
         "expected_trials": expected_trials,
-        "run_identity": strict.get("run_identity") or {},
+        "run_identity": run_identity,
         "checks": checks,
         "required_checks": required_checks,
         "isolation": isolation,

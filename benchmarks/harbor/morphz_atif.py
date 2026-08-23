@@ -194,6 +194,47 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _harness_identity(events: list[EventRecord]) -> dict[str, Any] | None:
+    bindings: list[dict[str, Any]] = []
+    for event in events:
+        if event.topic != "runtime/evaluation_harness_binding":
+            continue
+        payload = event.payload
+        identity = {
+            key: payload.get(key)
+            for key in (
+                "harness_id",
+                "harness_version",
+                "artifact_hash",
+                "evaluation_id",
+                "objective_id",
+                "inherited_from_objective_id",
+                "scope",
+            )
+            if payload.get(key) is not None
+        }
+        identity["event_id"] = event.event_id
+        bindings.append(identity)
+    if not bindings:
+        return None
+    package_identities = {
+        (
+            str(binding.get("harness_id") or ""),
+            str(binding.get("harness_version") or ""),
+            str(binding.get("artifact_hash") or ""),
+        )
+        for binding in bindings
+    }
+    return {
+        "id": str(bindings[0].get("harness_id") or ""),
+        "version": str(bindings[0].get("harness_version") or ""),
+        "artifact_hash": str(bindings[0].get("artifact_hash") or ""),
+        "binding_count": len(bindings),
+        "package_identity_count": len(package_identities),
+        "bindings": bindings,
+    }
+
+
 def build_trajectory(
     db_path: Path,
     *,
@@ -206,6 +247,7 @@ def build_trajectory(
     permission_mode: str = "full_access",
 ) -> Trajectory:
     events = _read_events(db_path)
+    harness_identity = _harness_identity(events)
 
     usage_by_attempt: dict[str, dict[str, Any]] = {}
     reasoning_by_attempt: dict[str, str] = {}
@@ -463,6 +505,7 @@ def build_trajectory(
                 "context_id": context_id,
                 "reasoning_effort": reasoning_effort,
                 "permission_mode": permission_mode,
+                "harness": harness_identity,
             },
         ),
         steps=steps,
@@ -482,6 +525,7 @@ def build_trajectory(
             "event_store_sha256": _sha256(db_path),
             "event_count": len(events),
             "context_id": context_id,
+            "harness": harness_identity,
         },
     )
 

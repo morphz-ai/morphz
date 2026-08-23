@@ -230,6 +230,12 @@ class HarborCommandTest(unittest.TestCase):
                 "fallback": False,
             },
             "permissions": {"mode": "full_access"},
+            "harness": {
+                "id": "terminal-task",
+                "version": "0.1.0",
+                "artifact_hash": "sha256:harness",
+                "source_sha256": "sha256:source",
+            },
         }
 
         identity = frozen_run_identity(args, lock)
@@ -240,6 +246,10 @@ class HarborCommandTest(unittest.TestCase):
         self.assertEqual(identity["model"], "gpt-5.6-sol")
         self.assertEqual(identity["concurrency"], 5)
         self.assertEqual(identity["max_retries"], 0)
+        self.assertEqual(identity["harness"]["id"], "terminal-task")
+        self.assertEqual(
+            identity["harness"]["artifact_hash"], "sha256:harness"
+        )
         self.assertEqual(
             identity["task_filters"], ["db-wal-recovery", "git-multibranch"]
         )

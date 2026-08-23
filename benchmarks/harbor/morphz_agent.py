@@ -9,6 +9,7 @@ returning control to Harbor's verifier.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import shlex
 from pathlib import Path
@@ -22,6 +23,15 @@ from benchmarks.harbor.benchmark_integrity import (
     audit_trajectory,
 )
 from benchmarks.harbor.morphz_atif import write_trajectory
+
+
+DEFAULT_HARNESS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "morphz-evals"
+    / "harnesses"
+    / "terminal-task.hns"
+)
+DEFAULT_HARNESS_REF = "terminal-task@0.1.0"
 
 
 class MorphzAgent(BaseAgent):
@@ -53,6 +63,24 @@ class MorphzAgent(BaseAgent):
         ).expanduser().resolve()
         if not watcher.is_file():
             raise FileNotFoundError(f"MORPHZ_HARBOR_WATCHER does not exist: {watcher}")
+        harness = Path(
+            self._setting("MORPHZ_HARBOR_HARNESS", str(DEFAULT_HARNESS_PATH))
+        ).expanduser().resolve()
+        if not harness.is_file():
+            raise FileNotFoundError(f"MORPHZ_HARBOR_HARNESS does not exist: {harness}")
+        expected_harness_sha256 = self._setting("MORPHZ_HARNESS_SOURCE_SHA256")
+        actual_harness_sha256 = hashlib.sha256(harness.read_bytes()).hexdigest()
+        if actual_harness_sha256 != expected_harness_sha256:
+            raise ValueError(
+                "Terminal-Bench Harness source digest mismatch: "
+                f"expected {expected_harness_sha256}, got {actual_harness_sha256}"
+            )
+        harness_ref = self._setting("MORPHZ_HARNESS_REF", DEFAULT_HARNESS_REF)
+        if harness_ref != DEFAULT_HARNESS_REF:
+            raise ValueError(
+                "The candidate Terminal-Bench profile requires "
+                f"MORPHZ_HARNESS_REF={DEFAULT_HARNESS_REF}"
+            )
 
         protocol = self._setting("MORPHZ_PROVIDER_PROTOCOL", "openai-responses")
         base_url = self._setting("MORPHZ_PROVIDER_BASE_URL")
@@ -108,6 +136,7 @@ class MorphzAgent(BaseAgent):
         runner = Path(__file__).with_name("run_morphz_harbor.sh")
         await environment.upload_file(binary, "/tmp/morphz")
         await environment.upload_file(watcher, "/tmp/morphz-harbor-wait")
+        await environment.upload_file(harness, "/tmp/terminal-task.hns")
         await environment.upload_file(config, "/tmp/morphz-harbor.toml")
         await environment.upload_file(runner, "/tmp/run-morphz-harbor.sh")
         result = await environment.exec(
@@ -142,6 +171,9 @@ class MorphzAgent(BaseAgent):
             "MORPHZ_STORAGE_SQLITE_PATH": "/logs/agent/morphz.db",
             "MORPHZ_CODING_EVAL_MODE": "true",
             "MORPHZ_PERMISSION_MODE": "full_access",
+            "MORPHZ_HARNESS_REF": self._setting(
+                "MORPHZ_HARNESS_REF", DEFAULT_HARNESS_REF
+            ),
             "MORPHZ_HARBOR_TIMEOUT_SECS": self._setting(
                 "MORPHZ_HARBOR_TIMEOUT_SECS", "21600"
             ),
