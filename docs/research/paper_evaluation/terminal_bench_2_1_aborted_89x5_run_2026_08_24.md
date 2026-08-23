@@ -71,6 +71,10 @@ upload = false
 4. 启动后首个状态回执再次核对 `n_attempts=1`；
 5. 完成 89×1 的全轨迹分析、改进和定向复测前，不得启动 89×5。
 
+Runner 随后增加了机械防呆：`full` 默认改为 89×1；任何多次模型运行默认拒绝，只有
+完整、无过滤的 89×5 在同时显式传入 `--attempts 5 --confirm-89x5-formal` 时才允许
+进入 Provider 预检。该确认参数不能用于 smoke、任务过滤、limit 或其他 attempts 值。
+
 ## 原始证据保留
 
 远端 Job 目录及 systemd journal 原样保留，不删除、不覆盖。该批次不得进入排行榜提交、路演成绩或论文定量结果；后续报告可以引用它说明协议偏差与停止处置，但必须使用 `aborted-nonreportable` 标签。

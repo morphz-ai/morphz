@@ -466,17 +466,60 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--public", action="store_true")
+    parser.add_argument(
+        "--confirm-89x5-formal",
+        action="store_true",
+        help=(
+            "Required acknowledgement before a full 89-task, five-attempt "
+            "formal run. This guard prevents an accidental 445-trial launch."
+        ),
+    )
     args = parser.parse_args()
     if args.mode in {"install-only", "smoke"}:
         args.limit = args.limit or 1
         args.attempts = args.attempts or 1
     elif args.mode in {"full", "print-command"}:
-        args.attempts = args.attempts or 5
+        # A complete one-attempt diagnostic pass is the safe default.  The
+        # expensive 89x5 confirmatory run must be selected and acknowledged
+        # explicitly after the diagnostic/optimization gate.
+        args.attempts = args.attempts or 1
     else:
         args.attempts = args.attempts or 1
     if args.public and not args.upload:
         parser.error("--public requires --upload")
+    intent_error = formal_run_intent_error(args)
+    if intent_error is not None:
+        parser.error(intent_error)
     return args
+
+
+def formal_run_intent_error(args: argparse.Namespace) -> str | None:
+    """Reject accidental multi-attempt model runs before Provider preflight.
+
+    The only supported multi-attempt full-dataset shape is the frozen official
+    89x5 protocol, and it requires a dedicated acknowledgement.  Diagnostics
+    remain 89x1 by default; filtered pilots and smoke runs remain one attempt.
+    """
+
+    confirmed = bool(getattr(args, "confirm_89x5_formal", False))
+    attempts = int(args.attempts)
+    if attempts <= 0:
+        return "--attempts must be a positive integer"
+    if confirmed:
+        if args.mode not in {"full", "print-command"}:
+            return "--confirm-89x5-formal is valid only with full or print-command"
+        if attempts != 5 or args.task or args.limit is not None:
+            return (
+                "--confirm-89x5-formal requires the complete unfiltered "
+                "89-task dataset with --attempts 5"
+            )
+        return None
+    if args.mode in {"smoke", "full"} and attempts > 1:
+        return (
+            "multi-attempt model runs are blocked by default; the complete "
+            "89x5 formal run requires --attempts 5 --confirm-89x5-formal"
+        )
+    return None
 
 
 def main() -> int:

@@ -151,7 +151,7 @@ logs and ATIF trajectory before starting the full batch:
 
 ```bash
 python3 benchmarks/harbor/run_benchmark.py smoke
-python3 benchmarks/harbor/run_benchmark.py full
+python3 benchmarks/harbor/run_benchmark.py full --attempts 1
 ```
 
 On the isolated Linux benchmark node, install the checked-in systemd template
@@ -174,8 +174,12 @@ while one is active. Starting `smoke` or `full` still requires the explicit
 experiment decision described above; installing the template does not run a
 model.
 
-The full command defaults to all 89 tasks, exactly five attempts per task (445
-trials), zero Harbor retries and one trial at a time. It explicitly records
+The full command now defaults to all 89 tasks and exactly one attempt per task
+(89 diagnostic trials), with zero Harbor retries and one trial at a time. This
+is the mandatory trajectory-analysis pass before optimization. A later official
+89×5 run is deliberately blocked unless the command contains both
+`--attempts 5` and `--confirm-89x5-formal`; filtered tasks, limits, smoke runs,
+and other attempt counts cannot use that acknowledgement. It explicitly records
 `reasoning_effort=max` in Harbor's agent kwargs because leaderboard CI groups
 and validates that field. Inline upload is deliberately rejected: first finish
 the run, inspect `strict_result.json` and the trajectories, then perform any
