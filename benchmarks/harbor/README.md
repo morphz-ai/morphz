@@ -226,8 +226,9 @@ Harness ID, version and normalized artifact hash in the frozen run identity.
 The adapter separately checks the raw `.hns` source digest before uploading it,
 so source drift fails before any model call.
 
-`terminal-task@0.2.0` is currently a candidate optimization, not part of any
-previously reported Terminal-Bench result. Its first precommitted diagnostic is
-one attempt of `torch-pipeline-parallelism`, as defined by
+`terminal-task@0.2.0` is a closed development candidate, not part of any
+reportable Terminal-Bench result. Its only precommitted diagnostic was one
+attempt of `torch-pipeline-parallelism`, as defined by
 [`terminal_bench_2_1_harness_trial_protocol_v0_2.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_trial_protocol_v0_2.md).
-No larger run is permitted until that trajectory and reward are reviewed.
+It improved evidence acquisition but timed out with reward zero; no larger v0.2
+run is permitted.

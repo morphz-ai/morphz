@@ -1,6 +1,6 @@
 # Terminal-Bench 2.1 Harness Trial Protocol v0.2
 
-> Status: candidate; no model run permitted until all no-model gates pass
+> Status: closed; the single precommitted run completed with reward 0 and `AgentTimeoutError`
 >
 > Date: 2026-08-24
 >
@@ -67,3 +67,7 @@ After the run, compare reward and trajectory with v0.1:
 If the task passes with a materially better evidence path, keep v0.2 frozen and decide whether to
 run `dna-assembly` next. If it fails but the trajectory exposes a new general deficiency, close the
 round before editing the Harness. Do not silently mutate v0.2 and splice results together.
+
+The run is recorded in
+[`terminal_bench_2_1_harness_v0_2_torch_result_2026_08_24.md`](terminal_bench_2_1_harness_v0_2_torch_result_2026_08_24.md).
+No other task was run under v0.2.
