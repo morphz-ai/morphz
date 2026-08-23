@@ -3092,8 +3092,22 @@ impl Orchestrator {
                 ..Default::default()
             })
             .await?;
+        let targeted_thread_ids = event.payload.get("thread_ids").and_then(|value| {
+            value.as_array().map(|ids| {
+                ids.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+        });
         let mut deferred_errors = Vec::new();
         for dependency in dependencies {
+            if targeted_thread_ids
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(&dependency.owner_id))
+            {
+                continue;
+            }
             let Some(thread) = session_store.get_thread(&dependency.owner_id).await? else {
                 tracing::warn!(
                     dependency_id = %dependency.id,
@@ -17677,17 +17691,46 @@ struct OrchestratorPlanExecutor {
     route: PlanExecutionRoute,
 }
 
+/// Keeps a spawned PlanExecution subordinate to the model tool call that
+/// created it. `JoinHandle` normally detaches on drop; durable plans must not
+/// continue executing after their owning Evaluation has been cancelled.
+struct AbortPlanTaskOnDrop(Option<tokio::task::AbortHandle>);
+
+impl Drop for AbortPlanTaskOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::sexpr_eval::RuntimePlanExecutor for OrchestratorPlanExecutor {
     async fn execute_plan(
         &self,
         program: crate::sexpr_eval::Program,
     ) -> PlanExecutionResult<serde_json::Value> {
-        self.orchestrator
+        let orchestrator = self
+            .orchestrator
             .upgrade()
-            .ok_or("Runtime is shut down and cannot continue PlanExecution")?
-            .execute_durable_plan(self.route.clone(), program)
+            .ok_or("Runtime is shut down and cannot continue PlanExecution")?;
+        let route = self.route.clone();
+
+        // A Runtime-owned eval may itself execute tools. Running that durable
+        // plan inline would poll its complete tool pipeline below the already
+        // scoped outer tool pipeline. Besides coupling two scheduler layers,
+        // the resulting nested async state exhausts Tokio's default worker
+        // stack for otherwise small programs. A task boundary gives the Plan
+        // its own scheduler stack while this abort guard preserves structured
+        // cancellation instead of detaching it from the owning Evaluation.
+        let task =
+            tokio::spawn(async move { orchestrator.execute_durable_plan(route, program).await });
+        let mut abort_on_drop = AbortPlanTaskOnDrop(Some(task.abort_handle()));
+        let result = task
             .await
+            .map_err(|error| format!("PlanExecution task failed: {error}"))?;
+        abort_on_drop.0.take();
+        result
     }
 }
 

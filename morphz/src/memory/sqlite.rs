@@ -40,23 +40,24 @@ use crate::memory::{
     ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
     PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
-    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
-    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
-    SessionAttentionUpdate, SessionContextSharing, SessionDirectoryStore, SessionMountKind,
-    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
-    SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus,
-    StorageMaintenanceReport, StorageMaintenanceStore, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
-    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy,
-    ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle,
-    ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
-    ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
-    TransientStorageRetention, DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+    ProviderAccountStateMutation, ProviderAccountStateRecord, ProviderAccountStateStore,
+    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
+    ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord, QueryFilter, RecallDocument,
+    RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability,
+    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus,
+    ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
+    SessionContextSharing, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
+    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionSignalClaim,
+    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, StorageMaintenanceReport,
+    StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
+    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
+    ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime,
+    ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord,
+    ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore,
+    ThreadSupervision, ThreadSupervisorKind, TimerStore, TransientStorageRetention,
+    DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
@@ -141,8 +142,7 @@ impl SqliteStore {
             .busy_timeout(std::time::Duration::from_secs(5)); // 5秒锁重试
 
         // Enable connection-pool concurrency to use WAL's single-writer, multiple-reader model.
-        let pool = SqlitePoolOptions::new()
-            .max_connections(config.max_connections.max(1))
+        let pool = runtime_sqlite_pool_options(config.max_connections)
             .connect_with(options)
             .await?;
 
@@ -159,6 +159,7 @@ impl SqliteStore {
         tracing::info!(
             sqlite_version = %sqlite_version,
             max_connections = config.max_connections.max(1),
+            automatic_connection_retirement = false,
             event_code = "memory.sqlite.wal_storage.enabled",
             "SQLite WAL Storage enabled"
         );
@@ -375,6 +376,29 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_provider_account_states_status
             ON provider_account_states(status, cooldown_until, last_used_at);
+
+        CREATE TABLE IF NOT EXISTS provider_route_account_states (
+            route_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK(revision >= 0),
+            status TEXT NOT NULL,
+            cooldown_until TEXT,
+            last_error_kind TEXT,
+            last_used_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(route_id, account_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_route_account_states_status
+            ON provider_route_account_states(route_id, status, cooldown_until, last_used_at);
+
+        -- Older releases stored route-local throttling in the account-global row.
+        -- Route-scoped state is authoritative now, so discard only those transient
+        -- legacy statuses while preserving operator and authentication decisions.
+        UPDATE provider_account_states
+        SET status = 'ready',
+            cooldown_until = NULL,
+            last_error_kind = NULL
+        WHERE status IN ('rate_limited', 'quota_exhausted', 'cooldown');
 
         CREATE TABLE IF NOT EXISTS provider_account_affinities (
             route_id TEXT NOT NULL,
@@ -1755,6 +1779,20 @@ impl SqliteStore {
     }
 }
 
+fn runtime_sqlite_pool_options(max_connections: u32) -> SqlitePoolOptions {
+    // SQLx retires connections after 30 minutes (or 10 idle minutes) by default. A long-lived
+    // SQLite WAL Runtime does not need server-side session recycling, and synchronized pool
+    // turnover repeatedly takes SQLite through its last-detach/first-attach `-shm` lifecycle.
+    // On macOS that can expose an mmap page-in window while the WAL index is being truncated and
+    // rebuilt, which terminates the process with SIGBUS before Rust can report an error. Keep
+    // healthy connections for the Runtime lifetime; SQLx still discards broken connections and
+    // `Pool::close()` still closes everything during an orderly shutdown.
+    SqlitePoolOptions::new()
+        .max_connections(max_connections.max(1))
+        .max_lifetime(None)
+        .idle_timeout(None)
+}
+
 const ATTENTION_PROJECTION_BACKFILL_MIGRATION: &str =
     "20260723_01_attention_acknowledgement_projection";
 const LEGACY_OBJECTIVE_THREAD_KIND_MIGRATION: &str = "20260815_04_legacy_objective_thread_kind";
@@ -3109,6 +3147,25 @@ fn provider_account_state_from_sqlite_row(
     })
 }
 
+fn provider_route_account_state_from_sqlite_row(
+    row: &SqliteRow,
+) -> Result<ProviderRouteAccountStateRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ProviderRouteAccountStateRecord {
+        route_id: row.get("route_id"),
+        account_id: row.get("account_id"),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        status: ProviderAccountStatus::parse(&row.get::<String, _>("status"))?,
+        cooldown_until: row
+            .get::<Option<String>, _>("cooldown_until")
+            .map(|value| parse_time(&value)),
+        last_error_kind: row.get("last_error_kind"),
+        last_used_at: row
+            .get::<Option<String>, _>("last_used_at")
+            .map(|value| parse_time(&value)),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
 fn provider_account_affinity_from_sqlite_row(
     row: &SqliteRow,
 ) -> Result<ProviderAccountAffinityRecord, Box<dyn std::error::Error + Send + Sync>> {
@@ -3373,11 +3430,102 @@ impl ProviderAccountStateStore for SqliteStore {
         provider_account_state_from_sqlite_row(&row)
     }
 
+    async fn get_provider_route_account_state(
+        &self,
+        route_id: &str,
+        account_id: &str,
+    ) -> Result<Option<ProviderRouteAccountStateRecord>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let row = sqlx::query(
+            "SELECT * FROM provider_route_account_states WHERE route_id = ? AND account_id = ?",
+        )
+        .bind(route_id)
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref()
+            .map(provider_route_account_state_from_sqlite_row)
+            .transpose()
+    }
+
+    async fn compare_and_set_provider_route_account_state(
+        &self,
+        route_id: &str,
+        account_id: &str,
+        mutation: ProviderAccountStateMutation,
+    ) -> Result<ProviderRouteAccountStateRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if route_id.trim().is_empty() || account_id.trim().is_empty() {
+            return Err("Model Route 与 Provider Account ID 不能为空".into());
+        }
+        let ProviderAccountStateMutation {
+            expected_revision,
+            status,
+            cooldown_until,
+            last_error_kind,
+            mark_used,
+        } = mutation;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let cooldown =
+            cooldown_until.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let row = if let Some(expected_revision) = expected_revision {
+            sqlx::query(
+                r#"UPDATE provider_route_account_states SET
+                     revision = revision + 1,
+                     status = ?, cooldown_until = ?, last_error_kind = ?,
+                     last_used_at = CASE WHEN ? THEN ? ELSE last_used_at END,
+                     updated_at = ?
+                   WHERE route_id = ? AND account_id = ? AND revision = ?
+                   RETURNING *"#,
+            )
+            .bind(status.as_str())
+            .bind(cooldown)
+            .bind(last_error_kind.as_deref())
+            .bind(mark_used)
+            .bind(&now)
+            .bind(&now)
+            .bind(route_id)
+            .bind(account_id)
+            .bind(i64::try_from(expected_revision)?)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"INSERT INTO provider_route_account_states
+                   (route_id, account_id, revision, status, cooldown_until,
+                    last_error_kind, last_used_at, updated_at)
+                   VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+                   ON CONFLICT(route_id, account_id) DO NOTHING
+                   RETURNING *"#,
+            )
+            .bind(route_id)
+            .bind(account_id)
+            .bind(status.as_str())
+            .bind(cooldown)
+            .bind(last_error_kind.as_deref())
+            .bind(&now)
+            .bind(&now)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let Some(row) = row else {
+            return Err(format!(
+                "Model Route '{route_id}' 的 Provider Account '{account_id}' revision 冲突：期望 {:?}",
+                expected_revision
+            )
+            .into());
+        };
+        provider_route_account_state_from_sqlite_row(&row)
+    }
+
     async fn delete_provider_account_records(
         &self,
         account_id: &str,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM provider_route_account_states WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM provider_account_affinities WHERE account_id = ?")
             .bind(account_id)
             .execute(&mut *tx)
@@ -11958,6 +12106,32 @@ impl ThreadStore for SqliteStore {
         rows.iter().map(thread_from_row).collect()
     }
 
+    async fn list_session_threads(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = if include_terminal {
+            sqlx::query(
+                "SELECT * FROM threads WHERE context_id = ? AND session_id = ? ORDER BY created_at, id",
+            )
+            .bind(context_id)
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT * FROM threads WHERE context_id = ? AND session_id = ? AND status = 'open' ORDER BY created_at, id",
+            )
+            .bind(context_id)
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter().map(thread_from_row).collect()
+    }
+
     async fn list_context_threads_bounded(
         &self,
         context_id: &str,
@@ -16492,6 +16666,28 @@ impl ObjectiveStore for SqliteStore {
             .bind(context_id)
             .fetch_all(&self.pool)
             .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn list_session_objectives(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let lifecycle = if include_terminal {
+            ""
+        } else {
+            " AND status IN ('active', 'paused', 'blocked')"
+        };
+        let rows = sqlx::query(&format!(
+            "{OBJECTIVE_SELECT} WHERE context_id = ? AND (coordinator_session_id = ? OR delivery_session_id = ?){lifecycle} ORDER BY updated_at DESC"
+        ))
+        .bind(context_id)
+        .bind(session_id)
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(objective_from_row).collect()
     }
 
@@ -23188,6 +23384,18 @@ mod tests {
         assert!(sqlite_has_wal_reset_fix("3.51.3"));
         assert!(sqlite_has_wal_reset_fix("3.53.3"));
         assert!(!sqlite_has_wal_reset_fix("invalid"));
+    }
+
+    #[test]
+    fn runtime_sqlite_pool_keeps_healthy_connections_until_shutdown() {
+        let options = runtime_sqlite_pool_options(8);
+
+        assert_eq!(options.get_max_connections(), 8);
+        assert_eq!(options.get_max_lifetime(), None);
+        assert_eq!(options.get_idle_timeout(), None);
+
+        let clamped = runtime_sqlite_pool_options(0);
+        assert_eq!(clamped.get_max_connections(), 1);
     }
 
     #[tokio::test]
@@ -35108,6 +35316,58 @@ mod tests {
             .release_provider_refresh_lease("account-a", first.generation, "worker-a")
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn startup_migrates_legacy_global_throttling_without_reviving_disabled_accounts() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        {
+            let store = SqliteStore::new(path).await.unwrap();
+            store
+                .put_provider_account_state(
+                    "legacy-rate-limited",
+                    None,
+                    ProviderAccountStatus::RateLimited,
+                    Some(Utc::now() + chrono::Duration::hours(1)),
+                    Some("rate_limit"),
+                    false,
+                )
+                .await
+                .unwrap();
+            store
+                .put_provider_account_state(
+                    "operator-disabled",
+                    None,
+                    ProviderAccountStatus::Disabled,
+                    None,
+                    Some("operator_disabled"),
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+
+        let reopened = SqliteStore::new(path).await.unwrap();
+        let migrated = reopened
+            .get_provider_account_state("legacy-rate-limited")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated.status, ProviderAccountStatus::Ready);
+        assert!(migrated.cooldown_until.is_none());
+        assert!(migrated.last_error_kind.is_none());
+
+        let disabled = reopened
+            .get_provider_account_state("operator-disabled")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(disabled.status, ProviderAccountStatus::Disabled);
+        assert_eq!(
+            disabled.last_error_kind.as_deref(),
+            Some("operator_disabled")
+        );
     }
 
     #[tokio::test]

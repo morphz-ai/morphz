@@ -28,13 +28,14 @@ use morphz::memory::{
     NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
     NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer, NewSession, NewThread,
     NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, PairExecutionNode, ProviderAccountStateStore, ProviderAccountStatus,
-    QueryFilter, RecallDocument, RecallDocumentKind, RecallProjectionStore, RuntimeTimerKind,
-    RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore, SessionAttentionState,
-    SessionAttentionUpdate, SessionContextSharing, SessionMountKind, SessionProjectionMutation,
-    SessionProjectionStore, SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxStatus,
-    StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction,
-    ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore,
+    ObjectiveWaitCondition, PairExecutionNode, ProviderAccountStateMutation,
+    ProviderAccountStateStore, ProviderAccountStatus, QueryFilter, RecallDocument,
+    RecallDocumentKind, RecallProjectionStore, RuntimeTimerKind, RuntimeTimerStatus,
+    ScheduleMutation, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
+    SessionContextSharing, SessionMountKind, SessionProjectionMutation, SessionProjectionStore,
+    SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxStatus, StorageMaintenanceStore,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadControlAction, ThreadGroupStore,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore,
     ThreadSupervision, TimerStore, TransientStorageRetention,
 };
 use morphz::permission::{PermissionMode, ReviewerKind};
@@ -8620,6 +8621,60 @@ where
         .unwrap();
     assert_eq!(disabled.revision, 2);
     assert_eq!(disabled.status, ProviderAccountStatus::Disabled);
+
+    let route_a = store
+        .compare_and_set_provider_route_account_state(
+            "route-a",
+            account_id,
+            ProviderAccountStateMutation {
+                expected_revision: None,
+                status: ProviderAccountStatus::QuotaExhausted,
+                cooldown_until: None,
+                last_error_kind: Some("quota_exhausted".to_string()),
+                mark_used: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(route_a.revision, 1);
+    assert_eq!(route_a.route_id, "route-a");
+    assert_eq!(route_a.account_id, account_id);
+    assert_eq!(route_a.status, ProviderAccountStatus::QuotaExhausted);
+    assert!(store
+        .get_provider_route_account_state("route-b", account_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .compare_and_set_provider_route_account_state(
+            "route-a",
+            account_id,
+            ProviderAccountStateMutation {
+                expected_revision: None,
+                status: ProviderAccountStatus::Ready,
+                cooldown_until: None,
+                last_error_kind: None,
+                mark_used: false,
+            },
+        )
+        .await
+        .is_err());
+    let recovered = store
+        .compare_and_set_provider_route_account_state(
+            "route-a",
+            account_id,
+            ProviderAccountStateMutation {
+                expected_revision: Some(route_a.revision),
+                status: ProviderAccountStatus::Ready,
+                cooldown_until: None,
+                last_error_kind: None,
+                mark_used: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(recovered.revision, 2);
+    assert_eq!(recovered.status, ProviderAccountStatus::Ready);
 }
 
 #[tokio::test]

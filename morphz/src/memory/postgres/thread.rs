@@ -401,6 +401,32 @@ impl ThreadStore for PostgresStore {
         rows.iter().map(thread_from_row).collect()
     }
 
+    async fn list_session_threads(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        let rows = if include_terminal {
+            sqlx::query(
+                "SELECT * FROM threads WHERE context_id = $1 AND session_id = $2 ORDER BY created_at, id",
+            )
+            .bind(context_id)
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT * FROM threads WHERE context_id = $1 AND session_id = $2 AND status = 'open' ORDER BY created_at, id",
+            )
+            .bind(context_id)
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter().map(thread_from_row).collect()
+    }
+
     async fn list_context_threads_bounded(
         &self,
         context_id: &str,

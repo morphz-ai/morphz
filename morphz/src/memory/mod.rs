@@ -6359,6 +6359,21 @@ pub trait ThreadStore: Send + Sync {
         context_id: &str,
         include_terminal: bool,
     ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Threads owned by one Session. Production stores override this with an
+    /// indexed query; the default keeps alternate stores source-compatible.
+    async fn list_session_threads(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_context_threads(context_id, include_terminal)
+            .await?
+            .into_iter()
+            .filter(|thread| thread.session_id == session_id)
+            .collect())
+    }
     async fn list_context_threads_bounded(
         &self,
         context_id: &str,
@@ -6843,6 +6858,24 @@ pub trait ObjectiveStore: Send + Sync {
         context_id: &str,
         include_terminal: bool,
     ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Objectives coordinated or delivered by one Session. Production stores
+    /// override this with indexed coordinator/delivery lookups.
+    async fn list_session_objectives(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_context_objectives(context_id, include_terminal)
+            .await?
+            .into_iter()
+            .filter(|objective| {
+                objective.coordinator_session_id == session_id
+                    || objective.delivery_session_id == session_id
+            })
+            .collect())
+    }
     async fn list_context_objectives_bounded(
         &self,
         context_id: &str,
@@ -7085,6 +7118,33 @@ pub struct ProviderAccountStateRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Runtime health observed for one Auth Account on one Model Route.
+///
+/// Authentication and operator authority remain account-global in
+/// `ProviderAccountStateRecord`. Rate limits, model quota and transient
+/// cooldowns belong here so one physical model cannot fence every other
+/// model that happens to share the same gateway credential.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderRouteAccountStateRecord {
+    pub route_id: String,
+    pub account_id: String,
+    pub revision: u64,
+    pub status: ProviderAccountStatus,
+    pub cooldown_until: Option<DateTime<Utc>>,
+    pub last_error_kind: Option<String>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAccountStateMutation {
+    pub expected_revision: Option<u64>,
+    pub status: ProviderAccountStatus,
+    pub cooldown_until: Option<DateTime<Utc>>,
+    pub last_error_kind: Option<String>,
+    pub mark_used: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderAccountAffinityRecord {
     pub route_id: String,
@@ -7171,6 +7231,17 @@ pub trait ProviderAccountStateStore: Send + Sync {
         last_error_kind: Option<&str>,
         mark_used: bool,
     ) -> Result<ProviderAccountStateRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_provider_route_account_state(
+        &self,
+        route_id: &str,
+        account_id: &str,
+    ) -> Result<Option<ProviderRouteAccountStateRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn compare_and_set_provider_route_account_state(
+        &self,
+        route_id: &str,
+        account_id: &str,
+        mutation: ProviderAccountStateMutation,
+    ) -> Result<ProviderRouteAccountStateRecord, Box<dyn std::error::Error + Send + Sync>>;
     /// Delete every durable row owned by an Auth Account. OAuth setup uses
     /// this only to migrate records created by older, pre-commit flows.
     async fn delete_provider_account_records(

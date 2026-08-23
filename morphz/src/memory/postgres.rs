@@ -15,13 +15,14 @@ use crate::memory::{
     MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, NewThread,
     ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveReadinessCounts, ObjectiveRecord,
     ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    ProviderAccountAffinityRecord, ProviderAccountStateRecord, ProviderAccountStateStore,
-    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
-    ProviderRefreshLeaseRecord, QueryFilter, RecallDocument, RecallDocumentKind,
-    RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
-    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
-    RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore,
-    StorageMaintenanceReport, StorageMaintenanceStore, TimerStore, TransientStorageRetention,
+    ProviderAccountAffinityRecord, ProviderAccountStateMutation, ProviderAccountStateRecord,
+    ProviderAccountStateStore, ProviderAccountStatus, ProviderModelCatalogRecord,
+    ProviderModelCatalogStore, ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord,
+    QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
+    SessionProjectionMutation, SessionProjectionStore, StorageMaintenanceReport,
+    StorageMaintenanceStore, TimerStore, TransientStorageRetention,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -444,6 +445,24 @@ impl PostgresStore {
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_provider_account_states_status
                 ON provider_account_states(status, cooldown_until, last_used_at)"#,
+            r#"CREATE TABLE IF NOT EXISTS provider_route_account_states (
+                route_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                revision BIGINT NOT NULL CHECK(revision >= 0),
+                status TEXT NOT NULL,
+                cooldown_until TEXT,
+                last_error_kind TEXT,
+                last_used_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(route_id, account_id)
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_provider_route_account_states_status
+                ON provider_route_account_states(route_id, status, cooldown_until, last_used_at)"#,
+            r#"UPDATE provider_account_states
+                SET status = 'ready',
+                    cooldown_until = NULL,
+                    last_error_kind = NULL
+                WHERE status IN ('rate_limited', 'quota_exhausted', 'cooldown')"#,
             r#"CREATE TABLE IF NOT EXISTS provider_account_affinities (
                 route_id TEXT NOT NULL,
                 scope_key TEXT NOT NULL,
@@ -1783,6 +1802,27 @@ fn provider_account_state_from_pg_row(
     })
 }
 
+fn provider_route_account_state_from_pg_row(
+    row: &PgRow,
+) -> Result<ProviderRouteAccountStateRecord, StoreError> {
+    Ok(ProviderRouteAccountStateRecord {
+        route_id: row.get("route_id"),
+        account_id: row.get("account_id"),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        status: ProviderAccountStatus::parse(&row.get::<String, _>("status"))?,
+        cooldown_until: row
+            .get::<Option<String>, _>("cooldown_until")
+            .map(|value| parse_time(&value))
+            .transpose()?,
+        last_error_kind: row.get("last_error_kind"),
+        last_used_at: row
+            .get::<Option<String>, _>("last_used_at")
+            .map(|value| parse_time(&value))
+            .transpose()?,
+        updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+    })
+}
+
 fn provider_account_affinity_from_pg_row(
     row: &PgRow,
 ) -> Result<ProviderAccountAffinityRecord, StoreError> {
@@ -2039,8 +2079,96 @@ impl ProviderAccountStateStore for PostgresStore {
         provider_account_state_from_pg_row(&row)
     }
 
+    async fn get_provider_route_account_state(
+        &self,
+        route_id: &str,
+        account_id: &str,
+    ) -> Result<Option<ProviderRouteAccountStateRecord>, StoreError> {
+        let row = sqlx::query(
+            "SELECT * FROM provider_route_account_states WHERE route_id = $1 AND account_id = $2",
+        )
+        .bind(route_id)
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref()
+            .map(provider_route_account_state_from_pg_row)
+            .transpose()
+    }
+
+    async fn compare_and_set_provider_route_account_state(
+        &self,
+        route_id: &str,
+        account_id: &str,
+        mutation: ProviderAccountStateMutation,
+    ) -> Result<ProviderRouteAccountStateRecord, StoreError> {
+        if route_id.trim().is_empty() || account_id.trim().is_empty() {
+            return Err("Model Route 与 Provider Account ID 不能为空".into());
+        }
+        let ProviderAccountStateMutation {
+            expected_revision,
+            status,
+            cooldown_until,
+            last_error_kind,
+            mark_used,
+        } = mutation;
+        let now = now_text();
+        let cooldown =
+            cooldown_until.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let row = if let Some(expected_revision) = expected_revision {
+            sqlx::query(
+                r#"UPDATE provider_route_account_states SET
+                     revision = revision + 1,
+                     status = $1, cooldown_until = $2, last_error_kind = $3,
+                     last_used_at = CASE WHEN $4 THEN $5 ELSE last_used_at END,
+                     updated_at = $5
+                   WHERE route_id = $6 AND account_id = $7 AND revision = $8
+                   RETURNING *"#,
+            )
+            .bind(status.as_str())
+            .bind(cooldown)
+            .bind(last_error_kind.as_deref())
+            .bind(mark_used)
+            .bind(&now)
+            .bind(route_id)
+            .bind(account_id)
+            .bind(i64::try_from(expected_revision)?)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"INSERT INTO provider_route_account_states
+                   (route_id, account_id, revision, status, cooldown_until,
+                    last_error_kind, last_used_at, updated_at)
+                   VALUES ($1, $2, 1, $3, $4, $5, $6, $6)
+                   ON CONFLICT(route_id, account_id) DO NOTHING
+                   RETURNING *"#,
+            )
+            .bind(route_id)
+            .bind(account_id)
+            .bind(status.as_str())
+            .bind(cooldown)
+            .bind(last_error_kind.as_deref())
+            .bind(&now)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let Some(row) = row else {
+            return Err(format!(
+                "Model Route '{route_id}' 的 Provider Account '{account_id}' revision 冲突：期望 {:?}",
+                expected_revision
+            )
+            .into());
+        };
+        provider_route_account_state_from_pg_row(&row)
+    }
+
     async fn delete_provider_account_records(&self, account_id: &str) -> Result<bool, StoreError> {
         let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM provider_route_account_states WHERE account_id = $1")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM provider_account_affinities WHERE account_id = $1")
             .bind(account_id)
             .execute(&mut *tx)
@@ -4263,6 +4391,27 @@ impl ObjectiveStore for PostgresStore {
             .bind(context_id)
             .fetch_all(&self.pool)
             .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn list_session_objectives(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ObjectiveRecord>, StoreError> {
+        let lifecycle = if include_terminal {
+            ""
+        } else {
+            " AND status IN ('active', 'paused', 'blocked')"
+        };
+        let rows = sqlx::query(&format!(
+            "{OBJECTIVE_SELECT} WHERE context_id = $1 AND (coordinator_session_id = $2 OR delivery_session_id = $2){lifecycle} ORDER BY updated_at DESC"
+        ))
+        .bind(context_id)
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(objective_from_row).collect()
     }
 

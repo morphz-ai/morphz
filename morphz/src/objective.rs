@@ -25,6 +25,7 @@ use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value as JsonValue};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{watch, Mutex, Notify};
@@ -3163,7 +3164,21 @@ impl ObjectiveSupervisor {
             .store
             .list_context_objectives(context_id, false)
             .await?;
+        let targeted_objective_ids = event.payload.get("objective_ids").and_then(|value| {
+            value.as_array().map(|ids| {
+                ids.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+        });
         for objective in objectives {
+            if targeted_objective_ids
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(&objective.id))
+            {
+                continue;
+            }
             if objective.status != ObjectiveStatus::Active {
                 continue;
             }
@@ -5400,11 +5415,20 @@ mod tests {
             .get_for_activation("activation-directed-interrupt-stale")
             .is_none());
 
-        tokio::time::sleep(std::time::Duration::from_millis(180)).await;
-        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
-        assert!(evaluations
-            .cancelled_activation("activation-directed-interrupt")
-            .is_some());
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                timers.dispatch_due_once().await.unwrap();
+                if evaluations
+                    .cancelled_activation("activation-directed-interrupt")
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the supervisor dispatcher must expire the interrupt Evaluation");
         let expired = store.get_objective(&waiting.id).await.unwrap().unwrap();
         assert_eq!(
             expired.wait_condition, waiting.wait_condition,

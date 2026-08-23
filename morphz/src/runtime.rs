@@ -1423,32 +1423,23 @@ impl MorphzRuntimeBuilder {
                 continue;
             }
             match runtime_managed_ssh_provisioner
-                .rehydrate(&durable_target)
+                .restore_route(&durable_target)
                 .await
             {
-                Ok(target) => {
+                Ok(()) => {
                     tracing::debug!(
-                        target_id = %target.id,
-                        host = ?target.metadata.get("host"),
-                        event_code = "runtime.managed_ssh.route_rebuilt",
-                        "Rebuilt the on-demand Runtime Managed SSH route from its persistent Target"
+                        target_id = %durable_target.id,
+                        host = ?durable_target.metadata.get("host"),
+                        event_code = "runtime.managed_ssh.route_restored",
+                        "Restored the process-local Managed SSH route descriptor without dialing the remote host"
                     );
                 }
                 Err(error) => {
-                    if durable_target.status == ExecutionTargetStatus::Online {
-                        let _ = store
-                            .set_execution_target_status(
-                                &durable_target.id,
-                                durable_target.revision,
-                                ExecutionTargetStatus::Offline,
-                            )
-                            .await?;
-                    }
                     tracing::warn!(
                         target_id = %durable_target.id,
                         error = %error,
-                        event_code = "runtime.managed_ssh.route_rebuild_deferred",
-                        "Runtime Managed SSH route was not rebuilt; remote availability remains unknown and can be retried with resolve_target(target_id)"
+                        event_code = "runtime.managed_ssh.route_restore_deferred",
+                        "Runtime Managed SSH route descriptor was not restored; it can be retried with resolve_target(target_id)"
                     );
                 }
             }
@@ -2088,6 +2079,174 @@ impl MorphzRuntime {
                         (
                             "recovery_reason".to_string(),
                             json!("operator_selected_or_reconfigured_model"),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Wake only durable model waiters owned by one Session after its
+    /// evaluation policy changes. The failed resource remains the dependency
+    /// key for deterministic satisfaction, while the next Activation resolves
+    /// the Session's current model and reasoning settings afresh.
+    async fn publish_session_evaluation_policy_changed(
+        &self,
+        previous: &SessionRecord,
+        current: &SessionRecord,
+    ) -> Result<(), RuntimeError> {
+        let changed = Event::new(
+            format!(
+                "session_model_configuration_changed_{}_{}_{}",
+                current.id,
+                current.updated_at.timestamp_micros(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            ),
+            "Runtime-SessionModelConfiguration".to_string(),
+            "runtime_control".to_string(),
+            TYPE_MODEL_CONFIGURATION_CHANGED.to_string(),
+            [
+                (
+                    "resource".to_string(),
+                    json!(format!("session-model-configuration:{}", current.id)),
+                ),
+                ("context_id".to_string(), json!(&current.context_id)),
+                ("session_id".to_string(), json!(&current.id)),
+                (
+                    "reason".to_string(),
+                    json!("session_evaluation_policy_changed"),
+                ),
+                ("previous_model".to_string(), json!(&previous.model_alias)),
+                ("selected_model".to_string(), json!(&current.model_alias)),
+                (
+                    "previous_reasoning_effort".to_string(),
+                    json!(&previous.reasoning_effort),
+                ),
+                (
+                    "reasoning_effort".to_string(),
+                    json!(&current.reasoning_effort),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        self.inner.bus.publish(changed.clone()).await?;
+
+        let threads = self
+            .inner
+            .store
+            .list_session_threads(&current.context_id, &current.id, false)
+            .await?;
+        let thread_by_id = threads
+            .into_iter()
+            .map(|thread| (thread.id.clone(), thread))
+            .collect::<BTreeMap<_, _>>();
+        let objectives = self
+            .inner
+            .store
+            .list_session_objectives(&current.context_id, &current.id, false)
+            .await?;
+        let objective_by_id = objectives
+            .into_iter()
+            .map(|objective| (objective.id.clone(), objective))
+            .collect::<BTreeMap<_, _>>();
+        let mut provider_waits = BTreeMap::<String, (Vec<String>, Vec<String>)>::new();
+        for (owner_kind, owner_ids) in [
+            (
+                SchedulerDependencyOwnerKind::Thread,
+                thread_by_id.keys().cloned().collect::<Vec<_>>(),
+            ),
+            (
+                SchedulerDependencyOwnerKind::Objective,
+                objective_by_id.keys().cloned().collect::<Vec<_>>(),
+            ),
+        ] {
+            let dependencies = self
+                .inner
+                .store
+                .list_scheduler_dependencies_for_owners(owner_kind, &owner_ids)
+                .await?;
+            for dependency in dependencies {
+                if dependency.status != SchedulerDependencyStatus::Pending
+                    || dependency.dependency_kind != SchedulerDependencyKind::Resource
+                    || !dependency.required
+                    || (!dependency.dependency_id.starts_with("model-route:")
+                        && !dependency.dependency_id.starts_with("model-provider:"))
+                {
+                    continue;
+                }
+                match dependency.owner_kind {
+                    SchedulerDependencyOwnerKind::Thread => {
+                        let Some(thread) = thread_by_id.get(&dependency.owner_id) else {
+                            continue;
+                        };
+                        if thread.lifecycle != ThreadLifecycle::Open
+                            || thread.generation != dependency.owner_generation
+                        {
+                            continue;
+                        }
+                        provider_waits
+                            .entry(dependency.dependency_id)
+                            .or_default()
+                            .1
+                            .push(thread.id.clone());
+                    }
+                    SchedulerDependencyOwnerKind::Objective => {
+                        let Some(objective) = objective_by_id.get(&dependency.owner_id) else {
+                            continue;
+                        };
+                        if objective.status != ObjectiveStatus::Active
+                            || objective.generation != dependency.owner_generation
+                            || !matches!(
+                                objective.wait_condition,
+                                Some(ObjectiveWaitCondition::ResourceAvailable {
+                                    ref resource
+                                }) if resource == &dependency.dependency_id
+                            )
+                        {
+                            continue;
+                        }
+                        provider_waits
+                            .entry(dependency.dependency_id)
+                            .or_default()
+                            .0
+                            .push(objective.id.clone());
+                    }
+                    SchedulerDependencyOwnerKind::Plan
+                    | SchedulerDependencyOwnerKind::Schedule
+                    | SchedulerDependencyOwnerKind::Delivery => continue,
+                }
+            }
+        }
+
+        for (index, (resource, (objective_ids, thread_ids))) in
+            provider_waits.into_iter().enumerate()
+        {
+            self.inner
+                .bus
+                .publish(Event::new(
+                    format!("session_model_available_{}_{}", changed.id, index),
+                    "Runtime-SessionModelConfiguration".to_string(),
+                    "runtime_control".to_string(),
+                    "runtime/resource_available".to_string(),
+                    [
+                        ("context_id".to_string(), json!(&current.context_id)),
+                        ("session_id".to_string(), json!(&current.id)),
+                        ("resource".to_string(), json!(resource)),
+                        ("configuration_event_id".to_string(), json!(&changed.id)),
+                        ("selected_model".to_string(), json!(&current.model_alias)),
+                        ("objective_ids".to_string(), json!(objective_ids)),
+                        ("thread_ids".to_string(), json!(thread_ids)),
+                        (
+                            "recovery_phase".to_string(),
+                            json!("session_evaluation_policy_changed"),
+                        ),
+                        (
+                            "recovery_reason".to_string(),
+                            json!("operator_changed_session_model_or_reasoning"),
                         ),
                     ]
                     .into_iter()
@@ -4976,7 +5135,17 @@ impl MorphzRuntime {
         id: &str,
         update: SessionUpdate,
     ) -> Result<Option<SessionRecord>, RuntimeError> {
-        self.inner.store.update_session(id, update).await
+        let previous = self.inner.store.get_session(id).await?;
+        let updated = self.inner.store.update_session(id, update).await?;
+        if let (Some(previous), Some(current)) = (previous.as_ref(), updated.as_ref()) {
+            if previous.model_alias != current.model_alias
+                || previous.reasoning_effort != current.reasoning_effort
+            {
+                self.publish_session_evaluation_policy_changed(previous, current)
+                    .await?;
+            }
+        }
+        Ok(updated)
     }
 
     pub async fn set_session_context_sharing(
@@ -9533,6 +9702,162 @@ mod tests {
         assert_eq!(
             epochs[0].payload.get("resource").and_then(Value::as_str),
             Some(MODEL_CONFIGURATION_RESOURCE)
+        );
+    }
+
+    #[tokio::test]
+    async fn session_model_change_wakes_only_that_sessions_provider_waiters() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let session_a = "session-model-switch-a";
+        let session_b = "session-model-switch-b";
+        runtime
+            .inner
+            .store
+            .create_agent_bundle(
+                NewAgent {
+                    id: runtime.identity().agent_id.clone(),
+                    title: "Session model switch agent".to_string(),
+                    root_context_id: runtime.identity().context_id.clone(),
+                },
+                NewCognitiveContext {
+                    id: runtime.identity().context_id.clone(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    title: "Session model switch context".to_string(),
+                },
+                NewSession {
+                    id: session_a.to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    parent_session_id: None,
+                    title: "Session A".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .create_session(NewSession {
+                id: session_b.to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Session B".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let resource = "model-route:exhausted-session-a-route";
+        let mut dependency_ids = Vec::new();
+        let mut thread_ids = Vec::new();
+        for (suffix, session_id) in [("a", session_a), ("b", session_b)] {
+            let thread = runtime
+                .inner
+                .store
+                .ensure_thread(NewThread {
+                    id: format!("thread-model-switch-{suffix}"),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: session_id.to_string(),
+                    initiating_principal_id: None,
+                    root_turn_id: format!("root-model-switch-{suffix}"),
+                    kind: ThreadKind::Execution,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: ThreadSupervision::legacy(),
+                })
+                .await
+                .unwrap();
+            let dependency_id = crate::scheduler::stable_scheduler_dependency_id(
+                SchedulerDependencyOwnerKind::Thread,
+                &thread.id,
+                thread.generation,
+                SchedulerDependencyKind::Resource,
+                resource,
+                1,
+            );
+            runtime
+                .inner
+                .store
+                .register_scheduler_dependency(crate::scheduler::NewSchedulerDependency {
+                    id: dependency_id.clone(),
+                    owner_kind: SchedulerDependencyOwnerKind::Thread,
+                    owner_id: thread.id.clone(),
+                    owner_generation: thread.generation,
+                    dependency_kind: SchedulerDependencyKind::Resource,
+                    dependency_id: resource.to_string(),
+                    dependency_generation: 1,
+                    required: true,
+                    metadata: json!({"source": "provider_wait"}),
+                })
+                .await
+                .unwrap();
+            dependency_ids.push(dependency_id);
+            thread_ids.push(thread.id);
+        }
+
+        Arc::clone(&runtime.inner.orchestrator)
+            .start()
+            .await
+            .unwrap();
+        let mut available = runtime.subscribe("runtime/resource_available", 4);
+        runtime
+            .update_session(
+                session_a,
+                SessionUpdate {
+                    model_alias: Some(Some(runtime.model())),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), available.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.payload["resource"], json!(resource));
+        assert_eq!(event.payload["session_id"], json!(session_a));
+        assert_eq!(event.payload["thread_ids"], json!([thread_ids[0].clone()]));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if runtime
+                    .inner
+                    .store
+                    .get_scheduler_dependency(&dependency_ids[0])
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status
+                    == SchedulerDependencyStatus::Satisfied
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the selected Session's stale route dependency must be satisfied");
+        assert_eq!(
+            runtime
+                .inner
+                .store
+                .get_scheduler_dependency(&dependency_ids[1])
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SchedulerDependencyStatus::Pending,
+            "changing Session A must not wake Session B's unrelated waiter"
         );
     }
 
@@ -16007,9 +16332,13 @@ mod tests {
             .unwrap();
         let mut replies = recovered.subscribe("chat/reply", 4);
         recovered.start().await.unwrap();
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+        // Recovery is event-driven; this timeout reports a hang rather than
+        // defining its semantics. Keep enough headroom for the fully parallel
+        // lib suite: the invariant under test is takeover before the persisted
+        // ten-minute lease expires, not completion within three wall seconds.
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(15), replies.recv())
             .await
-            .unwrap()
+            .expect("a provably exited same-host owner must recover before lease expiry")
             .unwrap();
         assert_eq!(reply.payload["text"], "runtime-ok");
         let activation = recovered
@@ -18778,10 +19107,42 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        runtime
-            .request_execution_job_cancel(&running.id, running.revision, Some("test cancellation"))
-            .await
-            .unwrap();
+        let cancelled = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let mut expected = running.clone();
+            loop {
+                match runtime
+                    .request_execution_job_cancel(
+                        &expected.id,
+                        expected.revision,
+                        Some("test cancellation"),
+                    )
+                    .await
+                    .unwrap()
+                {
+                    JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => {
+                        break job;
+                    }
+                    JobReceipt::Conflict { current, .. } => {
+                        // The worker heartbeat is allowed to win the optimistic
+                        // revision fence. Retry the operator command against the
+                        // returned authoritative revision instead of pretending
+                        // the stale cancellation was accepted.
+                        expected = current;
+                    }
+                    JobReceipt::Rejected {
+                        current, reason, ..
+                    } => panic!(
+                        "Artifact Transfer cancellation was rejected: {reason}; {current:#?}"
+                    ),
+                    JobReceipt::NotFound { .. } => {
+                        panic!("Artifact Transfer disappeared before cancellation")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("Artifact Transfer cancellation CAS should converge");
+        assert!(cancelled.cancel_requested_at.is_some());
         let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let current = runtime
@@ -18795,8 +19156,18 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         })
-        .await
-        .expect("cancelled Artifact Transfer should durably close");
+        .await;
+        let terminal = match terminal {
+            Ok(terminal) => terminal,
+            Err(_) => {
+                let current = runtime
+                    .get_execution_job(&running.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                panic!("cancelled Artifact Transfer should durably close: {current:#?}");
+            }
+        };
         assert_eq!(terminal.status, ExecutionJobStatus::Cancelled);
         assert!(terminal.cancel_requested_at.is_some());
         assert!(terminal.side_effect_started_at.is_none());

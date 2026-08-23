@@ -16,7 +16,9 @@ use crate::llm::{
     ModelRequestContext, ModelRouteDiagnostic, ModelStreamSender, PromptTokenCount,
     ProviderAccountDiagnostic, ReasoningEffort, Response, ToolDefinition,
 };
-use crate::memory::{ProviderAccountStateStore, ProviderAccountStatus};
+use crate::memory::{
+    ProviderAccountStateMutation, ProviderAccountStateStore, ProviderAccountStatus,
+};
 use chrono::{Duration as ChronoDuration, Utc};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
@@ -337,7 +339,7 @@ struct AccountRuntimeState {
 struct DurableAccountAvailability {
     healthy: bool,
     recoverable_static_failure: bool,
-    revision: Option<u64>,
+    route_revision: Option<u64>,
     status: Option<ProviderAccountStatus>,
     cooldown_until: Option<chrono::DateTime<Utc>>,
     last_error_kind: Option<String>,
@@ -739,30 +741,30 @@ impl RoutedClient {
 
     async fn account_availability(
         store: &dyn ProviderAccountStateStore,
+        route_id: &str,
         account_id: &str,
         config: &AuthAccountConfig,
     ) -> Result<DurableAccountAvailability, ModelAttemptBindingError> {
-        let state = store
-            .get_provider_account_state(account_id)
+        let account_state =
+            store
+                .get_provider_account_state(account_id)
+                .await
+                .map_err(|error| {
+                    ModelAttemptBindingError::runtime(format!(
+                        "failed to read Provider Account '{account_id}' state: {error}"
+                    ))
+                })?;
+        let route_state = store
+            .get_provider_route_account_state(route_id, account_id)
             .await
             .map_err(|error| {
                 ModelAttemptBindingError::runtime(format!(
-                    "failed to read Provider Account '{account_id}' state: {error}"
+                    "failed to read Model Route '{route_id}' Provider Account '{account_id}' state: {error}"
                 ))
             })?;
-        let Some(state) = state else {
-            return Ok(DurableAccountAvailability {
-                healthy: config.enabled,
-                recoverable_static_failure: false,
-                revision: None,
-                status: None,
-                cooldown_until: None,
-                last_error_kind: None,
-                last_used: 0,
-            });
-        };
-        let last_used = state
-            .last_used_at
+        let last_used = route_state
+            .as_ref()
+            .and_then(|state| state.last_used_at)
             .map(|value| value.timestamp_millis())
             .unwrap_or_default();
         // A non-OAuth credential may be changed outside the Runtime (env,
@@ -773,17 +775,63 @@ impl RoutedClient {
         // until their explicit login/refresh authority marks them Ready.
         let recoverable_static_failure = config.enabled
             && !config.auth_adapter.ends_with("-oauth")
-            && ((state.status == ProviderAccountStatus::Invalid
-                && state.last_error_kind.as_deref()
-                    == Some(ModelFailureKind::Authentication.as_str()))
-                || state.status == ProviderAccountStatus::QuotaExhausted);
+            && (account_state.as_ref().is_some_and(|state| {
+                state.status == ProviderAccountStatus::Invalid
+                    && state.last_error_kind.as_deref()
+                        == Some(ModelFailureKind::Authentication.as_str())
+            }) || route_state.as_ref().is_some_and(|state| {
+                (state.status == ProviderAccountStatus::Invalid
+                    && state.last_error_kind.as_deref()
+                        == Some(ModelFailureKind::Authentication.as_str()))
+                    || state.status == ProviderAccountStatus::QuotaExhausted
+            }));
+        let now = Utc::now();
+        let account_healthy = account_state.as_ref().is_none_or(|state| {
+            match state.status {
+                ProviderAccountStatus::Ready => true,
+                ProviderAccountStatus::Refreshing
+                | ProviderAccountStatus::Invalid
+                | ProviderAccountStatus::Revoked
+                | ProviderAccountStatus::Disabled => false,
+                // These statuses belonged to the legacy account-global
+                // health model. They are deliberately ignored here even
+                // before the startup migration cleans them up: throttling
+                // and physical-model quota are route-local facts.
+                ProviderAccountStatus::RateLimited
+                | ProviderAccountStatus::QuotaExhausted
+                | ProviderAccountStatus::Cooldown => true,
+            }
+        });
+        let route_healthy = route_state
+            .as_ref()
+            .is_none_or(|state| state.status.is_selectable(state.cooldown_until, now));
+        let diagnostic_state = route_state.as_ref().filter(|state| {
+            state.status != ProviderAccountStatus::Ready || state.last_error_kind.is_some()
+        });
+        let status = diagnostic_state
+            .map(|state| state.status)
+            .or_else(|| account_state.as_ref().map(|state| state.status));
+        let cooldown_until = diagnostic_state
+            .and_then(|state| state.cooldown_until)
+            .or_else(|| {
+                account_state
+                    .as_ref()
+                    .and_then(|state| state.cooldown_until)
+            });
+        let last_error_kind = diagnostic_state
+            .and_then(|state| state.last_error_kind.clone())
+            .or_else(|| {
+                account_state
+                    .as_ref()
+                    .and_then(|state| state.last_error_kind.clone())
+            });
         Ok(DurableAccountAvailability {
-            healthy: state.status.is_selectable(state.cooldown_until, Utc::now()),
+            healthy: config.enabled && account_healthy && route_healthy,
             recoverable_static_failure,
-            revision: Some(state.revision),
-            status: Some(state.status),
-            cooldown_until: state.cooldown_until,
-            last_error_kind: state.last_error_kind,
+            route_revision: route_state.as_ref().map(|state| state.revision),
+            status,
+            cooldown_until,
+            last_error_kind,
             last_used,
         })
     }
@@ -825,6 +873,7 @@ impl RoutedClient {
                     {
                         let availability = Self::account_availability(
                             store.as_ref(),
+                            route_id,
                             &affinity.account_id,
                             account,
                         )
@@ -837,13 +886,16 @@ impl RoutedClient {
                             continue;
                         }
                         if store
-                            .compare_and_set_provider_account_state(
+                            .compare_and_set_provider_route_account_state(
+                                route_id,
                                 &affinity.account_id,
-                                availability.revision,
-                                ProviderAccountStatus::Ready,
-                                None,
-                                None,
-                                true,
+                                ProviderAccountStateMutation {
+                                    expected_revision: availability.route_revision,
+                                    status: ProviderAccountStatus::Ready,
+                                    cooldown_until: None,
+                                    last_error_kind: None,
+                                    mark_used: true,
+                                },
                             )
                             .await
                             .is_ok()
@@ -875,7 +927,8 @@ impl RoutedClient {
                     .get(account_id)
                     .expect("validated route account");
                 let availability =
-                    Self::account_availability(store.as_ref(), account_id, account).await?;
+                    Self::account_availability(store.as_ref(), route_id, account_id, account)
+                        .await?;
                 if !availability.selectable() {
                     unavailable.push(availability.summary(account_id, account.enabled));
                     continue;
@@ -888,7 +941,7 @@ impl RoutedClient {
                     local.last_used,
                     candidate.clone(),
                     account_id.to_string(),
-                    availability.revision,
+                    availability.route_revision,
                 );
                 if availability.recoverable_static_failure {
                     recovery_choices.push(choice);
@@ -928,13 +981,16 @@ impl RoutedClient {
                 ))
             })?;
         let usage_update = store
-            .compare_and_set_provider_account_state(
+            .compare_and_set_provider_route_account_state(
+                route_id,
                 &account_id,
-                expected_revision,
-                ProviderAccountStatus::Ready,
-                None,
-                None,
-                true,
+                ProviderAccountStateMutation {
+                    expected_revision,
+                    status: ProviderAccountStatus::Ready,
+                    cooldown_until: None,
+                    last_error_kind: None,
+                    mark_used: true,
+                },
             )
             .await;
         if let Err(error) = usage_update {
@@ -947,7 +1003,7 @@ impl RoutedClient {
                 .get(&account_id)
                 .expect("validated route account");
             let refreshed =
-                Self::account_availability(store.as_ref(), &account_id, account).await?;
+                Self::account_availability(store.as_ref(), route_id, &account_id, account).await?;
             if !refreshed.healthy {
                 return Err(ModelAttemptBindingError::runtime(format!(
                     "failed to update Provider Account '{account_id}' usage state: {error}"
@@ -1065,31 +1121,174 @@ impl RoutedClient {
         );
     }
 
+    async fn record_route_account_state_observation(
+        &self,
+        route_id: &str,
+        account_id: &str,
+        status: ProviderAccountStatus,
+        cooldown_until: Option<chrono::DateTime<Utc>>,
+        error_kind: Option<&str>,
+        mark_used: bool,
+    ) {
+        let Some(store) = self.account_store() else {
+            return;
+        };
+        let mut last_conflict = None;
+        for _ in 0..3 {
+            let current = match store
+                .get_provider_route_account_state(route_id, account_id)
+                .await
+            {
+                Ok(current) => current,
+                Err(error) => {
+                    tracing::warn!(
+                        route_id,
+                        account_id,
+                        error = %error,
+                        event_code = "provider.route_account_state.observation_read_failed",
+                        "Failed to read the Model Route account state while recording an observation"
+                    );
+                    return;
+                }
+            };
+            let expected_revision = current.as_ref().map(|state| state.revision);
+            match store
+                .compare_and_set_provider_route_account_state(
+                    route_id,
+                    account_id,
+                    ProviderAccountStateMutation {
+                        expected_revision,
+                        status,
+                        cooldown_until,
+                        last_error_kind: error_kind.map(ToOwned::to_owned),
+                        mark_used,
+                    },
+                )
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => last_conflict = Some(error.to_string()),
+            }
+        }
+        tracing::warn!(
+            route_id,
+            account_id,
+            error = last_conflict.as_deref().unwrap_or("unknown CAS conflict"),
+            event_code = "provider.route_account_state.observation_cas_exhausted",
+            "Model Route account observation was not persisted after bounded CAS retries"
+        );
+    }
+
+    async fn recover_legacy_static_account_state_after_success(&self, account_id: &str) {
+        let Some(store) = self.account_store() else {
+            return;
+        };
+        let mut last_conflict = None;
+        for _ in 0..3 {
+            let current = match store.get_provider_account_state(account_id).await {
+                Ok(Some(current)) => current,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(
+                        account_id,
+                        error = %error,
+                        event_code = "provider.account_state.legacy_recovery_read_failed",
+                        "Failed to read legacy account-global Provider health after a successful static request"
+                    );
+                    return;
+                }
+            };
+            let is_legacy_transient = matches!(
+                current.status,
+                ProviderAccountStatus::RateLimited
+                    | ProviderAccountStatus::QuotaExhausted
+                    | ProviderAccountStatus::Cooldown
+            ) || (current.status == ProviderAccountStatus::Invalid
+                && current.last_error_kind.as_deref()
+                    == Some(ModelFailureKind::Authentication.as_str()));
+            if !is_legacy_transient {
+                return;
+            }
+            match store
+                .compare_and_set_provider_account_state(
+                    account_id,
+                    Some(current.revision),
+                    ProviderAccountStatus::Ready,
+                    None,
+                    None,
+                    false,
+                )
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => last_conflict = Some(error.to_string()),
+            }
+        }
+        tracing::warn!(
+            account_id,
+            error = last_conflict.as_deref().unwrap_or("unknown CAS conflict"),
+            event_code = "provider.account_state.legacy_recovery_cas_exhausted",
+            "Legacy account-global Provider health was not cleared after bounded CAS retries"
+        );
+    }
+
+    async fn record_binding_observation(
+        &self,
+        binding: &ModelAttemptBinding,
+        account: Option<&AuthAccountConfig>,
+        result: Result<(), &ProviderError>,
+    ) {
+        let failure = result
+            .err()
+            .and_then(|error| error.downcast_ref::<ModelFailure>());
+        let (status, cooldown_until, error_kind) = if result.is_ok() {
+            (ProviderAccountStatus::Ready, None, None)
+        } else {
+            Self::account_state_after_failure(account, failure)
+        };
+        let oauth_authentication_failure = failure.is_some_and(|failure| {
+            failure.kind == ModelFailureKind::Authentication
+                && account.is_some_and(|config| config.auth_adapter.ends_with("-oauth"))
+        });
+        if oauth_authentication_failure {
+            self.record_account_state_observation(
+                &binding.auth_account_id,
+                status,
+                cooldown_until,
+                error_kind,
+                false,
+            )
+            .await;
+        } else {
+            if result.is_ok()
+                && account.is_some_and(|config| !config.auth_adapter.ends_with("-oauth"))
+            {
+                self.recover_legacy_static_account_state_after_success(&binding.auth_account_id)
+                    .await;
+            }
+            self.record_route_account_state_observation(
+                &binding.route_id,
+                &binding.auth_account_id,
+                status,
+                cooldown_until,
+                error_kind,
+                false,
+            )
+            .await;
+        }
+    }
+
     async fn record_account_result(
         &self,
         binding: &ModelAttemptBinding,
         result: &Result<Response, ProviderError>,
     ) {
-        let (status, cooldown_until, error_kind) = match result {
-            Ok(_) => (ProviderAccountStatus::Ready, None, None),
-            Err(error) => {
-                let account = self.catalog().ok().and_then(|catalog| {
-                    catalog.auth_accounts.get(&binding.auth_account_id).cloned()
-                });
-                Self::account_state_after_failure(
-                    account.as_ref(),
-                    error.downcast_ref::<ModelFailure>(),
-                )
-            }
-        };
-        self.record_account_state_observation(
-            &binding.auth_account_id,
-            status,
-            cooldown_until,
-            error_kind,
-            false,
-        )
-        .await;
+        let account = self
+            .catalog()
+            .ok()
+            .and_then(|catalog| catalog.auth_accounts.get(&binding.auth_account_id).cloned());
+        self.record_binding_observation(binding, account.as_ref(), result.as_ref().map(|_| ()))
+            .await;
     }
 
     fn auth_manager(&self) -> Option<Arc<ProviderAuthManager>> {
@@ -1467,19 +1666,10 @@ impl Client for RoutedClient {
                 .catalog()
                 .ok()
                 .and_then(|catalog| catalog.auth_accounts.get(&binding.auth_account_id).cloned());
-            let (status, cooldown_until, error_kind) = match health_result.as_ref() {
-                Ok(()) => (ProviderAccountStatus::Ready, None, None),
-                Err(error) => Self::account_state_after_failure(
-                    account.as_ref(),
-                    error.downcast_ref::<ModelFailure>(),
-                ),
-            };
-            self.record_account_state_observation(
-                &binding.auth_account_id,
-                status,
-                cooldown_until,
-                error_kind,
-                false,
+            self.record_binding_observation(
+                &binding,
+                account.as_ref(),
+                health_result.as_ref().map(|_| ()),
             )
             .await;
         }
@@ -1605,21 +1795,44 @@ impl Client for RoutedClient {
         if let (true, Some(health_result)) =
             (self.account_store().is_some(), health_result.as_ref())
         {
-            let (status, cooldown_until, error_kind) = match health_result {
-                Ok(()) => (ProviderAccountStatus::Ready, None, None),
-                Err(error) => Self::account_state_after_failure(
+            let physical_model = probed_model
+                .clone()
+                .unwrap_or_else(|| initial_model.clone());
+            let matching_routes = catalog
+                .model_routes
+                .iter()
+                .filter(|(_, route)| {
+                    route.candidates.iter().any(|candidate| {
+                        candidate.provider == provider_id
+                            && candidate.model == physical_model
+                            && (candidate.account.as_deref() == Some(account_id)
+                                || (candidate.account.is_none()
+                                    && provider.accounts.iter().any(|id| id == account_id)))
+                    })
+                })
+                .map(|(route_id, _)| route_id.clone())
+                .collect::<Vec<_>>();
+            if matching_routes.is_empty() {
+                let diagnostic_binding = binding_for(physical_model);
+                self.record_binding_observation(
+                    &diagnostic_binding,
                     Some(account),
-                    error.downcast_ref::<ModelFailure>(),
-                ),
-            };
-            self.record_account_state_observation(
-                account_id,
-                status,
-                cooldown_until,
-                error_kind,
-                false,
-            )
-            .await;
+                    health_result.as_ref().map(|_| ()),
+                )
+                .await;
+            } else {
+                for route_id in matching_routes {
+                    let mut diagnostic_binding = binding_for(physical_model.clone());
+                    diagnostic_binding.requested_alias = route_id.clone();
+                    diagnostic_binding.route_id = route_id;
+                    self.record_binding_observation(
+                        &diagnostic_binding,
+                        Some(account),
+                        health_result.as_ref().map(|_| ()),
+                    )
+                    .await;
+                }
+            }
         }
         let (health_verified, health_error) = match health_result {
             Some(Ok(())) => (true, None),
@@ -2281,6 +2494,24 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .status,
+            ProviderAccountStatus::Invalid
+        );
+        client
+            .record_account_result(
+                &binding,
+                &Ok(Response {
+                    content: "credential recovered".to_string(),
+                    tool_calls: Vec::new(),
+                }),
+            )
+            .await;
+        assert_eq!(
+            store
+                .get_provider_account_state("account-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
             ProviderAccountStatus::Ready
         );
     }
@@ -2328,7 +2559,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quota_exhaustion_fails_over_then_allows_static_gateway_reprobe() {
+    async fn quota_exhaustion_fails_over_then_route_success_recovers_account() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
@@ -2346,14 +2577,22 @@ mod tests {
         };
         let first = client.bind_model_attempt(&request).await.unwrap();
         assert_eq!(first.auth_account_id, "account-a");
+        let selected_state = store
+            .get_provider_route_account_state("coding-primary", "account-a")
+            .await
+            .unwrap()
+            .unwrap();
         store
-            .put_provider_account_state(
+            .compare_and_set_provider_route_account_state(
+                "coding-primary",
                 "account-a",
-                None,
-                ProviderAccountStatus::QuotaExhausted,
-                None,
-                Some(ModelFailureKind::QuotaExhausted.as_str()),
-                false,
+                ProviderAccountStateMutation {
+                    expected_revision: Some(selected_state.revision),
+                    status: ProviderAccountStatus::QuotaExhausted,
+                    cooldown_until: None,
+                    last_error_kind: Some(ModelFailureKind::QuotaExhausted.as_str().to_string()),
+                    mark_used: false,
+                },
             )
             .await
             .unwrap();
@@ -2386,6 +2625,117 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(third.auth_account_id, "account-a");
+        client
+            .record_account_result(
+                &third,
+                &Ok(Response {
+                    content: "route recovered".to_string(),
+                    tool_calls: Vec::new(),
+                }),
+            )
+            .await;
+        assert_eq!(
+            store
+                .get_provider_route_account_state("coding-primary", "account-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ProviderAccountStatus::Ready
+        );
+    }
+
+    #[tokio::test]
+    async fn route_failure_does_not_fence_sibling_route_sharing_account() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let mut config = routed_config();
+        config
+            .model_routes
+            .get_mut("coding-primary")
+            .unwrap()
+            .candidates[0]
+            .account = Some("account-a".to_string());
+        config
+            .provider_instances
+            .get_mut("direct")
+            .unwrap()
+            .models
+            .insert(
+                "physical-model-beta".to_string(),
+                ProviderModelConfig::default(),
+            );
+        config.model_routes.insert(
+            "review-primary".to_string(),
+            ModelRouteConfig {
+                aliases: vec!["review".to_string()],
+                candidates: vec![ModelRouteCandidateConfig {
+                    provider: "direct".to_string(),
+                    account: Some("account-a".to_string()),
+                    model: "physical-model-beta".to_string(),
+                    priority: 10,
+                    ..ModelRouteCandidateConfig::default()
+                }],
+                ..ModelRouteConfig::default()
+            },
+        );
+        store
+            .compare_and_set_provider_route_account_state(
+                "coding-primary",
+                "account-a",
+                ProviderAccountStateMutation {
+                    expected_revision: None,
+                    status: ProviderAccountStatus::RateLimited,
+                    cooldown_until: Some(Utc::now() + ChronoDuration::minutes(5)),
+                    last_error_kind: Some(ModelFailureKind::RateLimited.as_str().to_string()),
+                    mark_used: false,
+                },
+            )
+            .await
+            .unwrap();
+        let client = RoutedClient::new(&config, "coding".to_string()).unwrap();
+        client.attach_provider_account_state_store(store.clone());
+        let request = ModelRequestContext {
+            context_id: "context-route-isolation".into(),
+            session_id: "session-route-isolation".into(),
+            attempt_id: "attempt-route-isolation".into(),
+            objective_id: None,
+            required_capabilities: Vec::new(),
+        };
+
+        assert!(matches!(
+            client.bind_model_attempt(&request).await.unwrap_err(),
+            ModelAttemptBindingError::AccountUnavailable(_)
+        ));
+        let review = client
+            .bind_requested_model_attempt(&request, Some("review"))
+            .await
+            .unwrap();
+        assert_eq!(review.route_id, "review-primary");
+        assert_eq!(review.auth_account_id, "account-a");
+        assert_eq!(review.physical_model, "physical-model-beta");
+        assert_eq!(
+            store
+                .get_provider_route_account_state("coding-primary", "account-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ProviderAccountStatus::RateLimited
+        );
+        assert_eq!(
+            store
+                .get_provider_route_account_state("review-primary", "account-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ProviderAccountStatus::Ready
+        );
     }
 
     #[tokio::test]

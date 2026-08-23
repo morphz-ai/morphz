@@ -5592,35 +5592,22 @@ impl RuntimeManagedSshProvisioner {
         endpoint: ManagedSshEndpoint,
     ) -> Result<ExecutionTargetRecord, TargetExecutionError> {
         self.validate_secret_bindings(&endpoint)?;
-        let availability_error = self.verify_availability(&endpoint).await.err();
-        let mut registration = runtime_managed_ssh_registration_for_host(
+        // A configured Managed SSH Target is a durable, dial-on-demand route.
+        // Registering its descriptor must not turn Runtime startup into a
+        // serial network health check. Authentication still happens when the
+        // route is explicitly resolved or first used.
+        let registration = runtime_managed_ssh_registration_for_host(
             config,
             &endpoint,
             &self.default_principal_id,
             &self.permission_policy_digest,
             &self.runtime_host_id,
         )?;
-        if availability_error.is_some() {
-            // A configured remote being temporarily unreachable or missing a
-            // local ssh-agent identity must not prevent the Runtime itself
-            // from starting. Persist the descriptor truthfully as offline;
-            // resolve_target can authenticate and restore it later.
-            registration.status = ExecutionTargetStatus::Offline;
-            registration.last_seen_at = None;
-        }
         let target = self.targets.register_execution_target(registration).await?;
         self.endpoints
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(config.endpoint_ref.clone(), endpoint);
-        if let Some(error) = availability_error {
-            tracing::warn!(
-                target_id = %target.id,
-                error = %error,
-                event_code = "runtime.managed_ssh.configured_route_offline",
-                "Configured Runtime Managed SSH Target could not authenticate from this host; startup continues with the route offline"
-            );
-        }
         Ok(target)
     }
 
@@ -5739,6 +5726,24 @@ impl RuntimeManagedSshProvisioner {
             .await
     }
 
+    /// Restores only the process-local route descriptor for a durable Target.
+    /// This is the startup path: it deliberately performs no remote network
+    /// or authentication probe. Managed SSH is dial-on-demand, so remote
+    /// availability is established by an actual resolve or execution.
+    pub async fn restore_route(
+        &self,
+        target: &ExecutionTargetRecord,
+    ) -> Result<(), TargetExecutionError> {
+        let (endpoint, config, _) = self
+            .recover_route_descriptor(target, None, None, None, None)
+            .await?;
+        self.endpoints
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(config.endpoint_ref, endpoint);
+        Ok(())
+    }
+
     async fn rehydrate_with_auth(
         &self,
         target: &ExecutionTargetRecord,
@@ -5747,6 +5752,47 @@ impl RuntimeManagedSshProvisioner {
         private_key_passphrase_secret: Option<&str>,
         password_secret: Option<&str>,
     ) -> Result<ExecutionTargetRecord, TargetExecutionError> {
+        let (endpoint, config, owner_principal_id) = self
+            .recover_route_descriptor(
+                target,
+                auth_mode,
+                private_key_secret,
+                private_key_passphrase_secret,
+                password_secret,
+            )
+            .await?;
+        self.verify_availability(&endpoint).await?;
+        let registration = runtime_managed_ssh_registration_for_host(
+            &config,
+            &endpoint,
+            &owner_principal_id,
+            &self.permission_policy_digest,
+            &self.runtime_host_id,
+        )?;
+        let target = self.targets.register_execution_target(registration).await?;
+        if target.status != ExecutionTargetStatus::Online {
+            return Err(format!(
+                "Managed SSH Target '{}' remains {} after route recovery",
+                target.id,
+                target.status.as_str()
+            )
+            .into());
+        }
+        self.endpoints
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(config.endpoint_ref, endpoint);
+        Ok(target)
+    }
+
+    async fn recover_route_descriptor(
+        &self,
+        target: &ExecutionTargetRecord,
+        auth_mode: Option<ManagedSshAuthMode>,
+        private_key_secret: Option<&str>,
+        private_key_passphrase_secret: Option<&str>,
+        password_secret: Option<&str>,
+    ) -> Result<(ManagedSshEndpoint, ManagedSshTargetConfig, String), TargetExecutionError> {
         if target.kind != ExecutionTargetKind::ManagedSsh
             || target.provider_node_id.is_some()
             || target
@@ -5846,7 +5892,6 @@ impl RuntimeManagedSshProvisioner {
                     .into());
                 }
             }
-            self.verify_availability(&endpoint).await?;
         }
         let config = ManagedSshTargetConfig {
             id: target.id.clone(),
@@ -5856,27 +5901,7 @@ impl RuntimeManagedSshProvisioner {
             platform: target.platform.clone(),
             workspace_root: target.workspace_root.clone(),
         };
-        let registration = runtime_managed_ssh_registration_for_host(
-            &config,
-            &endpoint,
-            owner_principal_id,
-            &self.permission_policy_digest,
-            &self.runtime_host_id,
-        )?;
-        let target = self.targets.register_execution_target(registration).await?;
-        if target.status != ExecutionTargetStatus::Online {
-            return Err(format!(
-                "Managed SSH Target '{}' remains {} after route recovery",
-                target.id,
-                target.status.as_str()
-            )
-            .into());
-        }
-        self.endpoints
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(endpoint_ref.to_string(), endpoint);
-        Ok(target)
+        Ok((endpoint, config, owner_principal_id.to_string()))
     }
 }
 
@@ -7138,7 +7163,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_system_openssh_auth_failure_is_offline_not_startup_failure() {
+    async fn configured_system_openssh_registration_does_not_probe_remote() {
         let temp = tempfile::TempDir::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(temp.path().join("configured-ssh.db").to_str().unwrap())
@@ -7173,11 +7198,65 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(target.status, ExecutionTargetStatus::Offline);
+        // The injected probe always fails. Online proves registration did not
+        // invoke it: configured routes are dialed only when actually used.
+        assert_eq!(target.status, ExecutionTargetStatus::Online);
         assert_eq!(target.metadata["credential_source"], "host_openssh");
         assert_eq!(target.metadata["runtime_host_id"], "runtime-host-test-a");
-        assert!(target.last_seen_at.is_none());
+        assert!(target.last_seen_at.is_some());
         assert!(endpoints.read().unwrap().contains_key("runtime_alias"));
+    }
+
+    #[tokio::test]
+    async fn durable_system_openssh_route_restore_does_not_probe_remote() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(temp.path().join("restored-ssh.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let endpoint = managed_ssh_endpoint_from_expanded(
+            "mini-m4.local",
+            "host mini-m4.local\nhostname mini-m4.local\nuser shafreeck\nport 22\n",
+        )
+        .unwrap();
+        let config = ManagedSshTargetConfig {
+            id: "target-restored-mini-m4".to_string(),
+            name: "mini-m4".to_string(),
+            endpoint_ref: "runtime_alias".to_string(),
+            owner_principal_id: Some("principal-default".to_string()),
+            platform: None,
+            workspace_root: None,
+        };
+        let registration = runtime_managed_ssh_registration_for_host(
+            &config,
+            &endpoint,
+            "principal-default",
+            "policy-a",
+            "runtime-host-test-a",
+        )
+        .unwrap();
+        let target = store.register_execution_target(registration).await.unwrap();
+        let endpoints = Arc::new(RwLock::new(HashMap::new()));
+        let provisioner = RuntimeManagedSshProvisioner::new(
+            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+            Arc::clone(&endpoints),
+            test_secret_store(temp.path()),
+            "principal-default".to_string(),
+            "policy-a".to_string(),
+        )
+        .with_test_host_and_probe("runtime-host-test-a", Arc::new(UnavailableManagedSshProbe));
+
+        provisioner.restore_route(&target).await.unwrap();
+
+        assert!(endpoints.read().unwrap().contains_key("runtime_alias"));
+        let persisted = store
+            .get_execution_target(&target.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.status, ExecutionTargetStatus::Online);
+        assert_eq!(persisted.revision, target.revision);
     }
 
     #[tokio::test]
