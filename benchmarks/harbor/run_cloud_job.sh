@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 {preflight|install-only|smoke|full|failed-five}" >&2
+  echo "usage: $0 {preflight|install-only|smoke|full|failed-five|harness-torch}" >&2
   exit 2
 }
 
@@ -13,7 +13,7 @@ fi
 
 mode=$1
 case "$mode" in
-  preflight | install-only | smoke | full | failed-five) ;;
+  preflight | install-only | smoke | full | failed-five | harness-torch) ;;
   *) usage ;;
 esac
 
@@ -54,6 +54,14 @@ export PYTHONUNBUFFERED=1
 export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$repo_root"
+if [[ "$mode" == "harness-torch" ]]; then
+  exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py full \
+    --task torch-pipeline-parallelism \
+    --attempts 1 \
+    --concurrency 1 \
+    --expect-trials 1
+fi
+
 if [[ "$mode" == "failed-five" ]]; then
   exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py full \
     --task dna-assembly \

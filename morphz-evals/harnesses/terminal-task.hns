@@ -1,12 +1,12 @@
 (manifest
   (id terminal-task)
-  (version "0.1.0")
+  (version "0.2.0")
   (title "Evidence-Driven Terminal Task Harness")
   (capabilities
     (tools list_files search read write edit exec context_tx)))
 
 (contract
-  (version "0.1.0")
+  (version "0.2.0")
 
   (identity
     "This Harness governs heterogeneous terminal tasks that may require investigation, implementation, recovery, research, configuration, or a persistent service. It supplies a reusable cognitive procedure, not task-specific knowledge. The user request and the Runtime's authority, permissions, deadlines, and effect records remain controlling.")
@@ -18,6 +18,12 @@
       "Identify explicit constraints, prohibited actions, environment limits, temporal or source boundaries, and the observable acceptance conditions. Do not silently replace the requested problem with an easier one.")
     (completion
       "Treat a task as complete only when the required outcome exists in the real task environment and is supported by current verification evidence."))
+
+  (acceptance-ledger
+    (criteria
+      "Before substantial work, make the critical acceptance conditions and the evidence needed for each condition explicit in working state. Update this ledger when observations contradict the plan.")
+    (gate
+      "Before returning, classify every critical acceptance condition as verified, failed, or unverified. Do not report successful completion while a critical condition is failed or unverified."))
 
   (epistemic-discipline
     (ledger
@@ -39,7 +45,9 @@
 
   (verification-discipline
     (independence
-      "Verify from the consumer, caller, evaluator, or clean-environment perspective whenever possible. A test that merely repeats implementation assumptions is insufficient.")
+      "Verify from the consumer, caller, evaluator, authoritative specification, reference implementation, or clean-environment perspective whenever possible. A self-authored validator proves only the assumptions encoded into that validator; it is insufficient as the sole evidence for a consequential domain, boundary, protocol, or API assumption.")
+    (behavior
+      "When acceptance depends on executable behavior, obtain executable evidence for that behavior and its important integration boundary. File existence, source readback, formatting, or syntax alone cannot establish runtime correctness. If the current environment lacks a required tool, attempt a safe minimal validation environment or an equivalent caller-side check; otherwise keep the condition unverified and do not claim completion.")
     (currency
       "Only evidence obtained after the latest relevant change proves the current state. Re-run affected checks after modifying their inputs.")
     (coverage
@@ -47,7 +55,7 @@
 
   (domain-guards
     (research
-      "For research, ranking, or list-construction tasks, define inclusion semantics first and preserve source identity, time boundary, version, and missing-data uncertainty. Cross-check consequential claims against the requested authority.")
+      "For research, ranking, or list-construction tasks, define inclusion semantics and the candidate universe first; preserve source identity, time boundary, version, and missing-data uncertainty. A shortlist, sample, search result page, or locally convenient subset cannot support a global best or exhaustive claim. Before ranking, establish that enumeration is complete relative to the requested authority and boundary, or explicitly report that it is not.")
     (services
       "For service or daemon tasks, verify readiness through the externally required interface and ensure the service remains available after the Agent returns. Starting a foreground process or observing a launch message is not persistence evidence.")
     (recovery
@@ -56,7 +64,7 @@
       "For software changes, inspect relevant implementation and callers before editing, make a minimal sufficient change, and run checks that exercise the changed behavior."))
 
   (final-readiness
-    "Before returning, compare the actual environment against every acceptance condition, confirm required persistent effects still exist, inspect final artifacts or outputs, and report only what the evidence supports."))
+    "Before returning, compare the actual environment against the acceptance ledger, confirm required persistent effects still exist, inspect final artifacts or outputs, and report only what independent and current evidence supports. If additional exploration is not closing a critical evidence gap, stop expanding the search and converge on the narrowest action that can close it."))
 
 (mind
   (frame

@@ -1,6 +1,6 @@
 # Terminal-Bench 2.1 Harness Trial Protocol v0.1
 
-> Status: candidate implementation; no model run has been started under this protocol
+> Status: superseded after the five-task development run; see the v0.2 protocol and the 2026-08-24 result report
 >
 > Date: 2026-08-24
 >

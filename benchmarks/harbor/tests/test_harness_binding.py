@@ -38,7 +38,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
         lock_path = Path(__file__).parents[1] / "toolchain.lock.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
         self.assertEqual(lock["harness"]["id"], "terminal-task")
-        self.assertEqual(lock["harness"]["version"], "0.1.0")
+        self.assertEqual(lock["harness"]["version"], "0.2.0")
         self.assertEqual(
             hashlib.sha256(DEFAULT_HARNESS_PATH.read_bytes()).hexdigest(),
             lock["harness"]["source_sha256"],
@@ -59,12 +59,15 @@ class HarnessBindingSetupTest(unittest.TestCase):
         self.assertIn('if [[ "$mode" == "failed-five" ]]', source)
         self.assertEqual(
             source.count('exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py'),
-            2,
+            3,
         )
         self.assertNotIn("exec /usr/bin/python3", source)
-        self.assertIn("--attempts 1", source)
-        self.assertIn("--concurrency 5", source)
-        self.assertIn("--expect-trials 5", source)
+        failed_five = source.split(
+            'if [[ "$mode" == "failed-five" ]]', maxsplit=1
+        )[1].split("\nfi", maxsplit=1)[0]
+        self.assertIn("--attempts 1", failed_five)
+        self.assertIn("--concurrency 5", failed_five)
+        self.assertIn("--expect-trials 5", failed_five)
         for task in (
             "dna-assembly",
             "mteb-leaderboard",
@@ -72,7 +75,25 @@ class HarnessBindingSetupTest(unittest.TestCase):
             "pytorch-model-recovery",
             "torch-pipeline-parallelism",
         ):
-            self.assertEqual(source.count(f"--task {task}"), 1)
+            self.assertEqual(failed_five.count(f"--task {task}"), 1)
+
+    def test_cloud_harness_torch_mode_runs_only_one_trial(self) -> None:
+        wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
+        source = wrapper.read_text(encoding="utf-8")
+        harness_torch = source.split(
+            'if [[ "$mode" == "harness-torch" ]]', maxsplit=1
+        )[1].split("\nfi", maxsplit=1)[0]
+        self.assertEqual(harness_torch.count("--task torch-pipeline-parallelism"), 1)
+        self.assertIn("--attempts 1", harness_torch)
+        self.assertIn("--concurrency 1", harness_torch)
+        self.assertIn("--expect-trials 1", harness_torch)
+        for unrelated in (
+            "dna-assembly",
+            "mteb-leaderboard",
+            "pypi-server",
+            "pytorch-model-recovery",
+        ):
+            self.assertNotIn(unrelated, harness_torch)
 
     def test_setup_uploads_the_digest_locked_terminal_task_harness(self) -> None:
         async def scenario(root: Path) -> None:

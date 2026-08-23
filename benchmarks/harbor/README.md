@@ -15,7 +15,7 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
 - reportable runs use the exact Harbor registry dataset digest required by the
   leaderboard CI, rather than the local Git checkout used during development;
 - Morphz `paper-eval-runtime-v4`;
-- exact model-owned Harness `terminal-task@0.1.0`, installed from the checked-in
+- exact model-owned Harness `terminal-task@0.2.0`, installed from the checked-in
   `.hns` package and bound to the first real Evaluation of every trial;
 - Rust `1.97.1` on the pinned Bullseye builder image, with OpenSSL linked
   statically so the binary also runs on the dataset's oldest glibc base;
@@ -226,7 +226,8 @@ Harness ID, version and normalized artifact hash in the frozen run identity.
 The adapter separately checks the raw `.hns` source digest before uploading it,
 so source drift fails before any model call.
 
-`terminal-task@0.1.0` is currently a candidate optimization, not part of any
-previously reported Terminal-Bench result. Its five known-failure development
-run and the precommitted unseen validation run must complete before a new
-reportable Runtime/Agent/Harness identity is frozen.
+`terminal-task@0.2.0` is currently a candidate optimization, not part of any
+previously reported Terminal-Bench result. Its first precommitted diagnostic is
+one attempt of `torch-pipeline-parallelism`, as defined by
+[`terminal_bench_2_1_harness_trial_protocol_v0_2.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_trial_protocol_v0_2.md).
+No larger run is permitted until that trajectory and reward are reviewed.

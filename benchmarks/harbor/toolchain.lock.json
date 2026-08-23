@@ -50,10 +50,10 @@
   },
   "harness": {
     "id": "terminal-task",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "path": "morphz-evals/harnesses/terminal-task.hns",
-    "source_sha256": "09c1e5039ae65e2f4afb2626ea2583abae72b1731bba8fc17de226a0f756cb1f",
-    "artifact_hash": "sha256:1d996a61459b7ffe3567f0d33fb5f8bf4a24d8d3c3fb8bd881a62ddb35a92741",
+    "source_sha256": "8ed270e268692d205cd6ba6c5d75b95f4ef88a11e99cc2b35accb6f2cce059d8",
+    "artifact_hash": "sha256:f5461dae8a8ff9c72c5c44da888c88f9602d6a00fda64ab26e67467a6a6c3c73",
     "evaluation_owner": "model",
     "status": "candidate"
   },
