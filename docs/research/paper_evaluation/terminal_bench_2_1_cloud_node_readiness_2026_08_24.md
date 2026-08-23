@@ -2,15 +2,15 @@
 
 > 日期：2026-08-24  
 > 节点：`8.130.91.128`（Alibaba Cloud Linux 4，Linux/AMD64）  
-> 状态：`infrastructure-ready / awaiting-provider-device-login`
+> 状态：`infrastructure-ready / blocked-by-provider-region-egress`
 
 ## 结论
 
 云节点已经完成不调用模型的基础设施门禁。固定的 5 题 Pilot 环境全部安装成功，
 Harbor adapter 全量测试 7/7 通过，89 题官方数据集已经缓存，Runtime、等待器、
 Harbor、Docker、Compose 和 CLIProxyAPI 的身份均已核对。当前唯一未完成的必要门槛
-是 CLIProxyAPI 的 Codex 设备登录，以及登录后对物理模型 `gpt-5.6-sol`、
-`reasoning_effort=max` 和 `fallback=false` 的在线预检。
+是为 CLIProxyAPI 提供 OpenAI 支持地区的稳定上游出口，随后完成 Codex 设备登录及
+物理模型 `gpt-5.6-sol`、`reasoning_effort=max` 和 `fallback=false` 的在线预检。
 
 本轮没有调用模型、没有执行 verifier、没有产生可报告 Benchmark 分数，也没有消耗
 模型额度。
@@ -88,13 +88,37 @@ Compose v2.40.3 后才执行上述成功门禁，失败尝试不会混入任何�
 
 ## 后续 Gate
 
-1. 进行一次 Codex device login，重启 CLIProxyAPI；
-2. 运行在线 `preflight`，确认 API 实际广告并接受精确物理模型
+### Provider 地域门禁
+
+在节点本机执行 `-codex-device-login -no-browser` 时，设备码请求被 Provider 明确拒绝：
+
+```text
+403 unsupported_country_region_territory
+```
+
+这不是扫码、账号额度、CLIProxy 配置或镜像下载故障，继续从当前中国大陆公网出口重试
+没有意义。失败后 `cliproxyapi.service` 已自动恢复，仍只监听 Docker bridge；授权模型
+列表为空，没有启动任何 Benchmark。
+
+因此后续只能选择以下一种稳定路径：
+
+1. 把实验节点迁移到 OpenAI 支持地区；或
+2. 为当前节点提供稳定、可审计的境外 HTTP/SOCKS 上游出口，并让设备认证和正式模型
+   调用使用同一条出口。
+
+临时依赖开发机反向隧道虽然技术上可行，但会重新引入本地在线状态和跨境链路变量，
+不作为正式 Benchmark 推荐方案。
+
+### 恢复顺序
+
+1. 冻结支持地区节点或稳定上游出口；
+2. 进行一次 Codex device login，重启 CLIProxyAPI；
+3. 运行在线 `preflight`，确认 API 实际广告并接受精确物理模型
    `gpt-5.6-sol`，不允许别名漂移和 fallback；
-3. 经用户明确授权后，只运行 5 题、每题 1 次的真实 Pilot；
-4. 审查五条完整 trajectory、Runtime event store、失败归因、token usage 和
+4. 经用户明确授权后，只运行 5 题、每题 1 次的真实 Pilot；
+5. 审查五条完整 trajectory、Runtime event store、失败归因、token usage 和
    verifier 输出；
-5. Pilot 无基础设施回归后，再由用户决定是否启动正式 89 题单次诊断批次或
+6. Pilot 无基础设施回归后，再由用户决定是否启动正式 89 题单次诊断批次或
    89 × 5 的公开协议批次。
 
 设备登录和在线预检完成前，`real_model_smoke_permitted=false`。

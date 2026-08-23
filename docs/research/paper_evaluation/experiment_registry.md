@@ -65,8 +65,10 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   7/7 通过；详见
   [`terminal_bench_2_1_cloud_node_readiness_2026_08_24.md`](./terminal_bench_2_1_cloud_node_readiness_2026_08_24.md)；
 - 云节点 CLIProxyAPI 只监听 Docker bridge，长运行由 systemd 托管并通过文件锁防止
-  重复启动；尚待一次 Codex device login 和精确 `gpt-5.6-sol` 在线预检，本轮没有
-  调用模型、没有消耗额度；
+  重复启动；中国大陆出口的 Codex device-code 请求被 Provider 以
+  `403 unsupported_country_region_territory` 明确拒绝，须先迁移到支持地区节点或提供
+  稳定境外上游出口，再完成精确 `gpt-5.6-sol` 在线预检；本轮没有调用模型、没有消耗
+  额度；
 - 将尚未启动的新论文、路演与公开 Benchmark 实验默认基线提升为
   `paper-eval-runtime-v4` / `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；
 - v4 纳入 Session 模型切换后的定向恢复、`路由 × 账户` Provider 健康隔离、
