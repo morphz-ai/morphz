@@ -2242,8 +2242,8 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .provider-model-manager-error details { color: var(--faint); font-size: 8px; }
 .provider-model-manager-error summary { width: fit-content; cursor: pointer; }
 .provider-model-manager-error code { display: block; margin-top: 6px; overflow-wrap: anywhere; color: var(--danger); font: 8px/1.45 var(--mono); }
-.provider-model-manager-list { display: grid; min-height: 0; overflow-y: auto; gap: 7px; padding: 6px 17px 16px; }
-.provider-model-manager-list > article { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
+.provider-model-manager-list { display: flex; min-height: 0; flex: 1 1 auto; overflow-y: auto; flex-direction: column; gap: 7px; padding: 6px 17px 16px; }
+.provider-model-manager-list > article { flex: 0 0 auto; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
 .provider-model-manager-list > article.is-enabled { border-color: color-mix(in srgb, var(--accent) 36%, var(--line)); }
 .provider-model-manager-list > article > label { display: flex; align-items: center; gap: 10px; padding: 11px 12px; cursor: pointer; }
 .provider-model-manager-list > article > label input { accent-color: var(--accent); }

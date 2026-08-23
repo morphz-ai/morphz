@@ -470,6 +470,19 @@ test('composer activity dots cannot collapse under long task text', () => {
   )
 })
 
+test('provider model manager scrolls without collapsing catalog rows', () => {
+  assert.match(
+    appCss,
+    /\.provider-model-manager-list\s*\{[^}]*display:\s*flex[^}]*flex:\s*1 1 auto[^}]*overflow-y:\s*auto[^}]*flex-direction:\s*column[^}]*\}/s,
+    'the model catalog owns the remaining dialog height and scrolls as a vertical list',
+  )
+  assert.match(
+    appCss,
+    /\.provider-model-manager-list > article\s*\{[^}]*flex:\s*0 0 auto[^}]*overflow:\s*hidden[^}]*\}/s,
+    'model cards must retain their content height instead of shrinking into border lines',
+  )
+})
+
 test('runtime overview reveals regular Sessions and only collapses managed delegation Contexts', () => {
   assert.match(
     runtimeOverviewSource,
