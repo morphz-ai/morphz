@@ -53,7 +53,12 @@ def _alive(pid: int) -> bool:
     # counts as quiesced for this integration test.
     stat_path = Path(f"/proc/{pid}/stat")
     if stat_path.is_file():
-        fields = stat_path.read_text().split()
+        try:
+            fields = stat_path.read_text().split()
+        except FileNotFoundError:
+            # The process may exit between is_file() and read_text(). That is
+            # exactly the terminal state this helper is waiting to observe.
+            return False
         if len(fields) > 2 and fields[2] == "Z":
             return False
     return True
