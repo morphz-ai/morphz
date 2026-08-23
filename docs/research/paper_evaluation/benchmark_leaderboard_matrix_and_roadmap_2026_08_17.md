@@ -6,7 +6,7 @@
 >
 > 当前约束：2026-08-27 路演优先；本阶段只做调研、选榜、协议审计与低风险适配评估，不启动大规模模型运行
 >
-> 未来 Pilot 默认 Runtime 基线：`paper-eval-runtime-v3` / `f875b93869282a14b738edec2f3a4069fd003600`；已有 readiness 文档和历史运行不追改
+> 未来 Pilot 默认 Runtime 基线：`paper-eval-runtime-v4` / `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；已有 readiness 文档和历史运行不追改
 >
 > 统一运行条件：`gpt-5.6-sol` / `max` / CLIProxyAPI；隔离节点使用 `full-access`；每个 arm/run 使用独立 Morphz 节点状态、数据库与 Context，且不得绕过榜单官方 sandbox 规则
 

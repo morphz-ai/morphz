@@ -14,17 +14,21 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
 - Terminal-Bench `2.1`, 89 tasks, pinned to the official repository commit;
 - reportable runs use the exact Harbor registry dataset digest required by the
   leaderboard CI, rather than the local Git checkout used during development;
-- Morphz `paper-eval-runtime-v3`;
+- Morphz `paper-eval-runtime-v4`;
 - Rust `1.97.1` on the pinned Bullseye builder image, with OpenSSL linked
   statically so the binary also runs on the dataset's oldest glibc base;
+- China-region builds use RSProxy for Rustup components and Cargo's sparse
+  index. Rustup and Cargo still verify the pinned toolchain and Cargo.lock
+  checksums; only the transfer path changes;
 - Linux/AMD64 task containers and Runtime, using Docker Desktop emulation on
   Apple Silicon rather than changing the benchmark architecture to ARM64;
 - physical model `gpt-5.6-sol`, reasoning effort `max`, no fallback;
-- CLIProxyAPI endpoint on `mini-m4.local`.
+- CLIProxyAPI `7.2.140` on the same isolated cloud node, bound only to the
+  Docker host bridge.
 
-The launcher resolves and pins the node's IPv4 address for each job because the
-current mDNS IPv6 path returns a gateway error. Both the logical hostname and
-the resolved IPv4 address are recorded by preflight.
+The launcher resolves and pins the provider's IPv4 address for each job. Both
+the logical provider host and the effective IPv4 address are recorded by
+preflight.
 
 On an isolated cloud experiment node, CLIProxyAPI may instead run on that same
 node. Export `MORPHZ_PROVIDER_BASE_URL`, `MORPHZ_PROVIDER_PROTOCOL` and
@@ -66,6 +70,11 @@ docker build \
   --output type=local,dest=.codex-work/harbor-runtime \
   .
 ```
+
+The Dockerfile defaults `RUSTUP_DIST_SERVER` and `RUSTUP_UPDATE_ROOT` to
+RSProxy and installs the checked-in sparse-index Cargo configuration. Override
+the two build arguments only when the build node has a better path to the
+official Rust distribution servers.
 
 Confirm its checksum matches `toolchain.lock.json`:
 

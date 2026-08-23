@@ -14,25 +14,35 @@
     "leaderboard_submission_policy_checked_at": "2026-08-20"
   },
   "runtime": {
-    "git_tag": "paper-eval-runtime-v3",
-    "git_commit": "f875b93869282a14b738edec2f3a4069fd003600",
+    "git_tag": "paper-eval-runtime-v4",
+    "git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
     "rust_toolchain": "1.97.1",
     "builder_image": "rust:1.97.1-bullseye",
     "builder_image_digest": "sha256:02d78ca3f928195c2a907543de778adfd728ad7e2a24fdc6aef582b7c77842e0",
+    "rustup_dist_server": "https://rsproxy.cn",
+    "cargo_registry": "sparse+https://rsproxy.cn/index/",
     "target": "x86_64-unknown-linux-gnu",
     "container_platform": "linux/amd64",
-    "binary_sha256": "ba9b2e648037917d41b9a4623969fc6c28d473627f5422ca0f4fd2f061b38586",
-    "watcher_sha256": "8d016553b42548363444e86796dfee98291af25895b5bf806ea6202141696dce"
+    "binary_sha256": "960a7d49089969bb0bbd6517307561fa2d83fd5a4bad68856b47fc8a75eb68ac",
+    "watcher_sha256": "d41c6c5789421d0b957d78269d886a638c1def323b8b2098763fbfadee8f9063"
   },
   "model": {
     "requested_alias": "gpt-5.6-sol",
     "physical_model": "gpt-5.6-sol",
     "reasoning_effort": "max",
     "provider_protocol": "openai-responses",
-    "provider_host": "mini-m4.local",
-    "provider_base_url": "http://mini-m4.local:8317/v1",
-    "address_policy": "resolve and pin an IPv4 address at launch",
+    "provider_host": "cloud-local-docker-bridge",
+    "provider_base_url": "http://172.17.0.1:8317/v1",
+    "address_policy": "bind only to the Docker host bridge; no public 8317 ingress",
     "fallback": false
+  },
+  "provider_runtime": {
+    "implementation": "CLIProxyAPI",
+    "version": "7.2.140",
+    "git_commit": "a7e3596b",
+    "release_archive_sha256": "334b8417f0c24d2744700d63c10023c5b5d7c7c5b43b1609456432813ce713bf",
+    "listen_address": "172.17.0.1:8317",
+    "public_ingress": false
   },
   "permissions": {
     "mode": "full_access",

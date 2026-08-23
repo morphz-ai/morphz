@@ -1,6 +1,6 @@
 # Morphz 主流榜单与市场热度 Watchlist
 
-> 未来 Pilot 默认 Runtime 基线：`paper-eval-runtime-v3` / `f875b93869282a14b738edec2f3a4069fd003600`；本文件中的既有调研证据日期不因基线迁移而改变
+> 未来 Pilot 默认 Runtime 基线：`paper-eval-runtime-v4` / `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；本文件中的既有调研证据日期不因基线迁移而改变
 
 > 调研日期：2026-08-17
 >

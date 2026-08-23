@@ -1,11 +1,11 @@
 # Morphz 论文实验总账
 
-> 最后更新：2026-08-21
+> 最后更新：2026-08-24
 > 维护规则：任何状态、协议或结果变化都更新本表；不得删除已执行实验的历史记录。
 
 ## Runtime 基线
 
-论文、路演和公开 Benchmark 的新实验当前默认 Runtime 源码基线为 [`paper-eval-runtime-v3`](./runtime_baseline_v3.md)，对应完整 commit `f875b93869282a14b738edec2f3a4069fd003600`。历史 v2 继续对应 [`03a32f864a3c38026672b4076855137e0bbb5627`](./runtime_baseline_v2.md)，历史 v1 对应 [`cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`](./runtime_baseline_v1.md)。每个 Run 必须记录实际 Runtime 与实验包 commit；后续修复不得静默改写既有基线或追改历史结果。
+论文、路演和公开 Benchmark 的新实验当前默认 Runtime 源码基线为 [`paper-eval-runtime-v4`](./runtime_baseline_v4.md)，对应完整 commit `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`。历史 v3 继续对应 [`f875b93869282a14b738edec2f3a4069fd003600`](./runtime_baseline_v3.md)，历史 v2 对应 [`03a32f864a3c38026672b4076855137e0bbb5627`](./runtime_baseline_v2.md)，历史 v1 对应 [`cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`](./runtime_baseline_v1.md)。每个 Run 必须记录实际 Runtime 与实验包 commit；后续修复不得静默改写既有基线或追改历史结果。
 
 ## 新实验统一运行约束
 
@@ -57,6 +57,18 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 | Harbor、π-Bench adapter | 通用能力 | F | 附录/系统案例；不替代 ME-07 |
 
 ## 状态更新记录
+
+### 2026-08-24
+
+- 将尚未启动的新论文、路演与公开 Benchmark 实验默认基线提升为
+  `paper-eval-runtime-v4` / `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；
+- v4 纳入 Session 模型切换后的定向恢复、`路由 × 账户` Provider 健康隔离、
+  持久 Plan 的异步任务边界，以及多项并发取消/恢复测试的确定性收口；
+- 默认环境完整 `morphz --lib` Gate 为 984 passed、0 failed、6 ignored，Clippy、
+  Store conformance、全目标检查和 Dashboard 160 项测试均通过；
+- Linux/AMD64 正式二进制已在固定 Rust `1.97.1` builder 上生成；中国区构建只把
+  Rustup/Cargo 传输路径切换到 RSProxy，工具链、Cargo.lock 和最终 SHA-256 仍固定；
+- Terminal-Bench 2.1 历史 v1 结果继续保留 v3 身份，不追写为 v4。
 
 ### 2026-08-21
 
