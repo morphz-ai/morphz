@@ -75,6 +75,21 @@ Runner 随后增加了机械防呆：`full` 默认改为 89×1；任何多次模
 完整、无过滤的 89×5 在同时显式传入 `--attempts 5 --confirm-89x5-formal` 时才允许
 进入 Provider 预检。该确认参数不能用于 smoke、任务过滤、limit 或其他 attempts 值。
 
+防呆的本地实现 commit 为 `5e7ba36`；海外节点实现 commit 为
+`22c1d9025f0123066f8eeb6de5c24fbef78aa71a`，标签为
+`terminal-bench-2.1-diagnostic-89x1-cloud-r1`。海外节点 Harbor adapter 完整测试为
+28 passed；无模型 `print-command` 预检再次确认实际参数为：
+
+```text
+--n-attempts 1
+--n-concurrent 5
+--max-retries 0
+--dataset terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a
+```
+
+该预检只查询 Provider `/models` 并核对二进制、Watcher、Harbor 和数据集身份，没有
+启动任务容器或调用推理模型。
+
 ## 原始证据保留
 
 远端 Job 目录及 systemd journal 原样保留，不删除、不覆盖。该批次不得进入排行榜提交、路演成绩或论文定量结果；后续报告可以引用它说明协议偏差与停止处置，但必须使用 `aborted-nonreportable` 标签。
