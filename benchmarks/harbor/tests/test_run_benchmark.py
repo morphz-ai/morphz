@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from benchmarks.harbor.run_benchmark import (
+    expected_trial_count_error,
     expected_job_shape,
     formal_run_intent_error,
     frozen_run_identity,
@@ -18,11 +19,30 @@ from benchmarks.harbor.run_benchmark import (
 
 
 class HarborCommandTest(unittest.TestCase):
+    def test_model_run_requires_acknowledged_trial_count(self) -> None:
+        args = argparse.Namespace(mode="full", expect_trials=None)
+        self.assertIn(
+            "require --expect-trials",
+            expected_trial_count_error(args, 20) or "",
+        )
+
+    def test_acknowledged_trial_count_must_match_resolution(self) -> None:
+        args = argparse.Namespace(mode="full", expect_trials=20)
+        self.assertIn(
+            "resolved 89",
+            expected_trial_count_error(args, 89) or "",
+        )
+
+    def test_matching_trial_count_is_accepted(self) -> None:
+        args = argparse.Namespace(mode="full", expect_trials=20)
+        self.assertIsNone(expected_trial_count_error(args, 20))
+
     @patch("sys.argv", ["run_benchmark.py", "full"])
     def test_full_parser_defaults_to_single_diagnostic_attempt(self) -> None:
         args = parse_args()
         self.assertEqual(args.attempts, 1)
         self.assertFalse(args.confirm_89x5_formal)
+        self.assertIsNone(args.expect_trials)
 
     @patch(
         "sys.argv",

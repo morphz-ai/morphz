@@ -464,6 +464,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--attempts", type=int)
     parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument(
+        "--expect-trials",
+        type=int,
+        help=(
+            "Required for model-running smoke/full modes; the launcher refuses "
+            "to start unless the frozen task selection resolves to this count."
+        ),
+    )
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--public", action="store_true")
     parser.add_argument(
@@ -522,6 +530,25 @@ def formal_run_intent_error(args: argparse.Namespace) -> str | None:
     return None
 
 
+def expected_trial_count_error(
+    args: argparse.Namespace, resolved_trial_count: int
+) -> str | None:
+    requested = getattr(args, "expect_trials", None)
+    if args.mode in {"smoke", "full"} and requested is None:
+        return (
+            "model-running smoke/full modes require --expect-trials so the "
+            "resolved trial count is acknowledged before launch"
+        )
+    if requested is not None and requested <= 0:
+        return "--expect-trials must be a positive integer"
+    if requested is not None and requested != resolved_trial_count:
+        return (
+            "Resolved trial count does not match --expect-trials: "
+            f"expected {requested}, resolved {resolved_trial_count}"
+        )
+    return None
+
+
 def main() -> int:
     args = parse_args()
     base_url, protocol, credential = runtime_provider_config()
@@ -543,6 +570,10 @@ def main() -> int:
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     command = harbor_command(args, lock)
     expected_trial_count, expected_tasks = expected_job_shape(args, lock)
+    count_error = expected_trial_count_error(args, expected_trial_count)
+    if count_error is not None:
+        raise RuntimeError(count_error)
+    print("expected_trial_count=" + str(expected_trial_count))
     if args.mode == "install-only":
         command.append("--install-only")
     if args.mode == "print-command":

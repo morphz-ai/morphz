@@ -150,8 +150,8 @@ Then run one real-model trial and inspect its `result.json`, SQLite event store,
 logs and ATIF trajectory before starting the full batch:
 
 ```bash
-python3 benchmarks/harbor/run_benchmark.py smoke
-python3 benchmarks/harbor/run_benchmark.py full --attempts 1
+python3 benchmarks/harbor/run_benchmark.py smoke --expect-trials 1
+python3 benchmarks/harbor/run_benchmark.py full --attempts 1 --expect-trials 89
 ```
 
 On the isolated Linux benchmark node, install the checked-in systemd template
@@ -185,6 +185,16 @@ and validates that field. Inline upload is deliberately rejected: first finish
 the run, inspect `strict_result.json` and the trajectories, then perform any
 Harbor Hub upload as a separate, explicit post-audit action. This prevents an
 unreviewed raw verifier result from being published accidentally.
+
+Every model-running `smoke` or `full` invocation must also supply
+`--expect-trials N`. The launcher resolves the frozen dataset, filters, limit,
+and attempts, then refuses to call Harbor unless the result is exactly `N`.
+For example, the fixed-order first-20 diagnostic pass is:
+
+```bash
+python3 benchmarks/harbor/run_benchmark.py full \
+  --limit 20 --attempts 1 --concurrency 5 --expect-trials 20
+```
 
 ## ATIF support
 
