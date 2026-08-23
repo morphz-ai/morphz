@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from benchmarks.harbor.run_benchmark import (
     expected_job_shape,
+    frozen_run_identity,
     harbor_command,
     runtime_provider_config,
     runtime_version,
@@ -102,6 +103,54 @@ class HarborCommandTest(unittest.TestCase):
         )
         self.assertEqual(count, 445)
         self.assertIsNone(tasks)
+
+    @patch(
+        "benchmarks.harbor.run_benchmark.infrastructure_identity",
+        return_value={
+            "infrastructure_git_commit": "infra123",
+            "infrastructure_git_tags": ["pilot-v5"],
+            "infrastructure_tracked_clean": True,
+        },
+    )
+    def test_frozen_run_identity_records_every_result_variable(
+        self, _identity: object
+    ) -> None:
+        args = argparse.Namespace(
+            attempts=1,
+            concurrency=5,
+            task=["db-wal-recovery", "git-multibranch"],
+        )
+        lock = {
+            "runtime": {
+                "git_tag": "paper-eval-runtime-v4",
+                "git_commit": "runtime123",
+                "binary_sha256": "binary-sha",
+                "watcher_sha256": "watcher-sha",
+            },
+            "terminal_bench": {
+                "dataset": "terminal-bench/terminal-bench-2-1",
+                "registry_ref": "sha256:dataset",
+                "source_commit": "dataset123",
+            },
+            "model": {
+                "physical_model": "gpt-5.6-sol",
+                "reasoning_effort": "max",
+                "fallback": False,
+            },
+            "permissions": {"mode": "full_access"},
+        }
+
+        identity = frozen_run_identity(args, lock)
+
+        self.assertEqual(identity["infrastructure_git_commit"], "infra123")
+        self.assertEqual(identity["runtime_git_commit"], "runtime123")
+        self.assertEqual(identity["dataset_registry_ref"], "sha256:dataset")
+        self.assertEqual(identity["model"], "gpt-5.6-sol")
+        self.assertEqual(identity["concurrency"], 5)
+        self.assertEqual(identity["max_retries"], 0)
+        self.assertEqual(
+            identity["task_filters"], ["db-wal-recovery", "git-multibranch"]
+        )
 
 
 if __name__ == "__main__":

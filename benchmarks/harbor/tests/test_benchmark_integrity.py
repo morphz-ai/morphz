@@ -138,11 +138,15 @@ class BenchmarkIntegrityTest(unittest.TestCase):
                 expected_trial_count=1,
                 expected_tasks={"db-wal-recovery"},
                 attempts_per_task=1,
+                run_identity={"infrastructure_git_commit": "abc123"},
             )
 
             self.assertEqual(summary["raw_mean_reward"], 1.0)
             self.assertEqual(summary["strict_mean_reward"], 0.0)
             self.assertFalse(summary["integrity_gate_passed"])
+            self.assertEqual(
+                summary["run_identity"]["infrastructure_git_commit"], "abc123"
+            )
             raw_result = json.loads((trial / "result.json").read_text())
             self.assertEqual(raw_result["verifier_result"]["rewards"]["reward"], 1.0)
             self.assertTrue((job / "strict_result.json").is_file())

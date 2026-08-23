@@ -368,6 +368,72 @@ def expected_job_shape(
     return task_count * args.attempts, exact_tasks
 
 
+def infrastructure_identity() -> dict[str, object]:
+    """Require a frozen tracked worktree and return its immutable Git identity."""
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    tracked_status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if tracked_status:
+        raise RuntimeError(
+            "Reportable benchmark runs require a clean tracked worktree; "
+            "commit the benchmark infrastructure before starting"
+        )
+    raw_tags = subprocess.run(
+        ["git", "tag", "--points-at", commit],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return {
+        "infrastructure_git_commit": commit,
+        "infrastructure_git_tags": sorted(raw_tags.splitlines()),
+        "infrastructure_tracked_clean": True,
+    }
+
+
+def frozen_run_identity(
+    args: argparse.Namespace, lock: dict[str, object]
+) -> dict[str, object]:
+    identity = infrastructure_identity()
+    runtime = lock["runtime"]
+    dataset = lock["terminal_bench"]
+    model = lock["model"]
+    permissions = lock["permissions"]
+    identity.update(
+        {
+            "runtime_tag": runtime["git_tag"],
+            "runtime_git_commit": runtime["git_commit"],
+            "runtime_binary_sha256": runtime["binary_sha256"],
+            "runtime_watcher_sha256": runtime["watcher_sha256"],
+            "dataset": dataset["dataset"],
+            "dataset_registry_ref": dataset["registry_ref"],
+            "dataset_source_commit": dataset["source_commit"],
+            "model": model["physical_model"],
+            "reasoning_effort": model["reasoning_effort"],
+            "fallback": model["fallback"],
+            "permission_mode": permissions["mode"],
+            "attempts": args.attempts,
+            "concurrency": args.concurrency,
+            "max_retries": 0,
+            "task_filters": sorted(args.task or []),
+        }
+    )
+    return identity
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -441,6 +507,8 @@ def main() -> int:
             "strict_result.json, then upload the audited job explicitly."
         )
 
+    run_identity = frozen_run_identity(args, lock)
+
     environment = os.environ.copy()
     runtime_identity = runtime_version(lock)
     environment.update(
@@ -484,6 +552,7 @@ def main() -> int:
         expected_trial_count=expected_trial_count,
         expected_tasks=expected_tasks,
         attempts_per_task=args.attempts,
+        run_identity=run_identity,
     )
     print("integrity_policy=" + str(integrity["policy_version"]))
     print("integrity_gate_passed=" + str(integrity["integrity_gate_passed"]).lower())

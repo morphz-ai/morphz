@@ -181,6 +181,7 @@ def audit_job(
     expected_trial_count: int | None = None,
     expected_tasks: set[str] | None = None,
     attempts_per_task: int | None = None,
+    run_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Audit every trial in a finished Harbor job without mutating raw rewards."""
 
@@ -269,6 +270,7 @@ def audit_job(
     summary = {
         "policy_version": POLICY_VERSION,
         "job_dir": str(job_dir.resolve()),
+        "run_identity": run_identity or {},
         "trial_count": count,
         "expected_trial_count": expected_trial_count,
         "trial_count_matches": trial_count_matches,
