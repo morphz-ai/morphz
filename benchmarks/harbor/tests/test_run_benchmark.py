@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from benchmarks.harbor.run_benchmark import (
+    expected_job_shape,
     harbor_command,
     runtime_provider_config,
     runtime_version,
@@ -81,6 +82,26 @@ class HarborCommandTest(unittest.TestCase):
             filters,
             ["terminal-bench/git-multibranch", "terminal-bench/db-wal-recovery"],
         )
+
+    def test_expected_job_shape_requires_every_fixed_pilot_trial(self) -> None:
+        args = argparse.Namespace(
+            attempts=1,
+            limit=None,
+            task=["git-multibranch", "db-wal-recovery"],
+        )
+        count, tasks = expected_job_shape(
+            args, {"terminal_bench": {"task_count": 89}}
+        )
+        self.assertEqual(count, 2)
+        self.assertEqual(tasks, {"git-multibranch", "db-wal-recovery"})
+
+    def test_expected_job_shape_uses_locked_full_dataset_count(self) -> None:
+        args = argparse.Namespace(attempts=5, limit=None, task=[])
+        count, tasks = expected_job_shape(
+            args, {"terminal_bench": {"task_count": 89}}
+        )
+        self.assertEqual(count, 445)
+        self.assertIsNone(tasks)
 
 
 if __name__ == "__main__":

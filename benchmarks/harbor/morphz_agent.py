@@ -17,6 +17,10 @@ from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
+from benchmarks.harbor.benchmark_integrity import (
+    append_integrity_policy,
+    audit_trajectory,
+)
 from benchmarks.harbor.morphz_atif import write_trajectory
 
 
@@ -118,6 +122,7 @@ class MorphzAgent(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
+        instruction = append_integrity_policy(instruction)
         instruction_path = self.logs_dir / "instruction.md"
         instruction_path.write_text(instruction)
         await environment.upload_file(instruction_path, "/tmp/morphz-instruction.md")
@@ -197,6 +202,13 @@ class MorphzAgent(BaseAgent):
             reasoning_effort="max",
             permission_mode="full_access",
         )
+        task_name = str(self.session_id or "harbor-task").split("__", maxsplit=1)[0]
+        integrity = audit_trajectory(
+            self.logs_dir / "trajectory.json",
+            task_name=task_name,
+            output_path=self.logs_dir / "benchmark_integrity.json",
+        )
+        context.metadata = {"benchmark_integrity": integrity}
         if trajectory.final_metrics is None:
             return
         metrics = trajectory.final_metrics

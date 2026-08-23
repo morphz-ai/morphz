@@ -59,6 +59,21 @@ disposable Harbor task container:
 - the host credential is resolved at launch and passed only in process
   environment, never written to a profile, command line or job manifest.
 
+Internet access does not permit access to benchmark answers. The adapter
+appends a frozen integrity notice to every task instruction: ordinary public
+technical documentation is allowed, while exact task-name searches, benchmark
+task repositories, solutions, private tests, hidden references, verifier and
+reward files are prohibited. After execution, `benchmark_integrity.py` audits
+agent-authored tool calls and writes two immutable views:
+
+- Harbor's original `result.json` remains the raw verifier result;
+- each trial receives `benchmark_integrity.json`, and the job receives
+  `strict_result.json` with disqualified rewards set to zero.
+
+A positive raw reward without an auditable trajectory fails the integrity Gate.
+Any high-confidence integrity violation also makes the launcher exit non-zero;
+the raw artifacts are retained for investigation and are never rewritten.
+
 ## Build the pinned Linux Runtime
 
 Docker Desktop must be running. BuildKit exports the binary outside an image:
@@ -153,8 +168,10 @@ model.
 The full command defaults to all 89 tasks, exactly five attempts per task (445
 trials), zero Harbor retries and one trial at a time. It explicitly records
 `reasoning_effort=max` in Harbor's agent kwargs because leaderboard CI groups
-and validates that field. Upload is deliberately opt-in (`--upload`, optionally
-`--public`).
+and validates that field. Inline upload is deliberately rejected: first finish
+the run, inspect `strict_result.json` and the trajectories, then perform any
+Harbor Hub upload as a separate, explicit post-audit action. This prevents an
+unreviewed raw verifier result from being published accidentally.
 
 ## ATIF support
 

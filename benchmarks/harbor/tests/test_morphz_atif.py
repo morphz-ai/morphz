@@ -111,6 +111,19 @@ class MorphzAtifTest(unittest.TestCase):
                 },
             )
             add(
+                "background-output-1",
+                "System-TaskMonitor",
+                "tool_output",
+                "chat/tool_output",
+                {
+                    "attempt_id": "activation-1",
+                    "caused_by": "tool-1:background",
+                    "tool_name": "exec",
+                    "tool_status": "success",
+                    "text": "background task finished",
+                },
+            )
+            add(
                 "tx-1",
                 "Agent-Context",
                 "context_transaction",
@@ -160,6 +173,13 @@ class MorphzAtifTest(unittest.TestCase):
             self.assertEqual(
                 agent_step.observation.results[0].source_call_id,
                 "tool-1",
+            )
+            self.assertEqual(
+                agent_step.observation.results[1].source_call_id,
+                "tool-1",
+            )
+            self.assertFalse(
+                any("unmatched tool observation" in step.message for step in trajectory.steps)
             )
             self.assertTrue(
                 any(

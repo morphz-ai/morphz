@@ -24,6 +24,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
+from benchmarks.harbor.benchmark_integrity import audit_job
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCK_PATH = Path(__file__).with_name("toolchain.lock.json")
@@ -346,6 +348,26 @@ def harbor_command(args: argparse.Namespace, lock: dict[str, object]) -> list[st
     return command
 
 
+def expected_job_shape(
+    args: argparse.Namespace, lock: dict[str, object]
+) -> tuple[int, set[str] | None]:
+    """Return the reportable trial count and exact task set when available."""
+
+    exact_tasks: set[str] | None = None
+    if args.task:
+        if any(any(marker in task for marker in "*?[") for task in args.task):
+            raise RuntimeError(
+                "Reportable benchmark task filters must be exact names, not globs"
+            )
+        exact_tasks = {task.rsplit("/", maxsplit=1)[-1] for task in args.task}
+        task_count = len(exact_tasks)
+    elif args.limit is not None:
+        task_count = args.limit
+    else:
+        task_count = int(lock["terminal_bench"]["task_count"])
+    return task_count * args.attempts, exact_tasks
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -406,11 +428,18 @@ def main() -> int:
         raise RuntimeError(f"Local Terminal-Bench task directory is missing: {args.dataset_path}")
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     command = harbor_command(args, lock)
+    expected_trial_count, expected_tasks = expected_job_shape(args, lock)
     if args.mode == "install-only":
         command.append("--install-only")
     if args.mode == "print-command":
         print(" ".join(command))
         return 0
+
+    if args.upload:
+        raise RuntimeError(
+            "Upload is a separate post-audit action; run without --upload, verify "
+            "strict_result.json, then upload the audited job explicitly."
+        )
 
     environment = os.environ.copy()
     runtime_identity = runtime_version(lock)
@@ -428,7 +457,42 @@ def main() -> int:
             "DOCKER_DEFAULT_PLATFORM": "linux/amd64",
         }
     )
-    return subprocess.run(command, cwd=REPO_ROOT, env=environment, check=False).returncode
+    before = {
+        path.resolve()
+        for path in args.jobs_dir.iterdir()
+        if path.is_dir()
+    } if args.jobs_dir.is_dir() else set()
+    return_code = subprocess.run(
+        command, cwd=REPO_ROOT, env=environment, check=False
+    ).returncode
+    if args.mode not in {"smoke", "full"}:
+        return return_code
+
+    after = {
+        path.resolve()
+        for path in args.jobs_dir.iterdir()
+        if path.is_dir()
+    } if args.jobs_dir.is_dir() else set()
+    new_jobs = sorted(after - before)
+    if len(new_jobs) != 1:
+        raise RuntimeError(
+            "Expected exactly one new Harbor job for integrity audit, got "
+            f"{len(new_jobs)}"
+        )
+    integrity = audit_job(
+        new_jobs[0],
+        expected_trial_count=expected_trial_count,
+        expected_tasks=expected_tasks,
+        attempts_per_task=args.attempts,
+    )
+    print("integrity_policy=" + str(integrity["policy_version"]))
+    print("integrity_gate_passed=" + str(integrity["integrity_gate_passed"]).lower())
+    print("raw_mean_reward=" + str(integrity["raw_mean_reward"]))
+    print("strict_mean_reward=" + str(integrity["strict_mean_reward"]))
+    print("strict_result=" + str(new_jobs[0] / "strict_result.json"))
+    if return_code != 0:
+        return return_code
+    return 0 if integrity["integrity_gate_passed"] else 3
 
 
 if __name__ == "__main__":

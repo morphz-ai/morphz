@@ -90,6 +90,21 @@ def _attempt_id(payload: dict[str, Any]) -> str | None:
     return str(value) if value else None
 
 
+def _source_tool_call_id(payload: dict[str, Any]) -> str | None:
+    """Resolve immediate and durable-background observations to one tool call.
+
+    Runtime background completion events preserve the originating call id by
+    appending ``:background``.  ATIF expects the observation to cite the actual
+    tool call id, not the Runtime's delivery-channel suffix.
+    """
+
+    value = payload.get("tool_call_id") or payload.get("caused_by")
+    if not value:
+        return None
+    call_id = str(value)
+    return call_id.removesuffix(":background")
+
+
 def _integer(value: Any) -> int | None:
     if value is None or isinstance(value, bool):
         return None
@@ -315,16 +330,16 @@ def build_trajectory(
         if event.topic != "chat/tool_output":
             continue
         payload = event.payload
-        tool_call_id = payload.get("tool_call_id") or payload.get("caused_by")
+        tool_call_id = _source_tool_call_id(payload)
         if not tool_call_id:
             continue
-        draft = assistant_by_tool_call.get(str(tool_call_id))
+        draft = assistant_by_tool_call.get(tool_call_id)
         if draft is None:
             continue
         content = payload.get("text")
         draft.observation_results.append(
             ObservationResult(
-                source_call_id=str(tool_call_id),
+                source_call_id=tool_call_id,
                 content=content if isinstance(content, str) else json.dumps(content),
                 extra={
                     "morphz_topic": event.topic,
