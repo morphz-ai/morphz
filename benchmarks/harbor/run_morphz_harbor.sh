@@ -65,7 +65,15 @@ printf '%s\n' "$morphz_pid" >"$runtime_pid_file"
 /tmp/morphz-harbor-wait "$MORPHZ_STORAGE_SQLITE_PATH" "$morphz_pid" \
   "${MORPHZ_HARBOR_TIMEOUT_SECS:-21600}" 20
 
-printf 'exit\n' >&3
+# Harbor verifies in the same task container after the Agent returns.  A
+# service explicitly launched with keep_running must therefore outlive the
+# Morphz process.  Reuse the cancellation quiesce boundary: freeze the Runtime,
+# preserve declared services, terminate unfinished transient commands, and
+# then kill only the Runtime.  A normal `exit` would run ProcessGroupGuard
+# cleanup and take the required service down before verification begins.
+/tmp/morphz-harbor-wait --quiesce \
+  "$MORPHZ_STORAGE_SQLITE_PATH" "$morphz_pid"
 wait "$morphz_pid" || true
+morphz_pid=""
 trap - EXIT INT TERM
 cleanup

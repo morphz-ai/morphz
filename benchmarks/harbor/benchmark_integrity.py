@@ -54,6 +54,19 @@ _NETWORK_OR_SEARCH = re.compile(
 _BENCHMARK_REPOSITORY = re.compile(
     r"(?:terminal[-_]bench(?:-1)?|original[-_]tasks)", re.IGNORECASE
 )
+_EXTERNAL_SEARCH_ENDPOINT = re.compile(
+    r"https?://(?:www\.)?(?:"
+    r"google\.[^/]+/search|bing\.com/search|"
+    r"(?:html\.)?duckduckgo\.com/(?:html|lite)|"
+    r"search\.brave\.com/search|github\.com/search|"
+    r"huggingface\.co/search"
+    r")",
+    re.IGNORECASE,
+)
+_TASK_ANSWER_MATERIAL = re.compile(
+    r"(?:solution|answer|writeup|walkthrough|hint|reference[_-]?(?:answer|solution))",
+    re.IGNORECASE,
+)
 _SECRET_SHAPE = re.compile(
     r"(?i)(authorization|api[_-]?key|token|secret)(\s*[:=]\s*)([^\s,;\"']+)"
 )
@@ -145,7 +158,21 @@ def audit_trajectory_data(
             if _PRIVATE_LOCAL_PATH.search(payload):
                 add("private_local_evaluation_path", step_index, tool_name, payload)
 
-            if _NETWORK_OR_SEARCH.search(payload) and task_named:
+            # A task slug may also be the canonical name of the ordinary
+            # upstream resource the task explicitly asks the agent to inspect
+            # (for example, the public MTEB leaderboard).  Treat only explicit
+            # searches for the exact task, benchmark-repository access, or an
+            # answer-shaped URL as high-confidence task-specific material.
+            # Direct upstream documentation remains allowed by the policy.
+            if (
+                _NETWORK_OR_SEARCH.search(payload)
+                and task_named
+                and (
+                    _EXTERNAL_SEARCH_ENDPOINT.search(payload)
+                    or _BENCHMARK_REPOSITORY.search(payload)
+                    or _TASK_ANSWER_MATERIAL.search(payload)
+                )
+            ):
                 add("task_specific_external_material", step_index, tool_name, payload)
 
             if (

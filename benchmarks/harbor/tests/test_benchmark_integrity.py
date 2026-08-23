@@ -102,6 +102,27 @@ class BenchmarkIntegrityTest(unittest.TestCase):
             audit["findings"][0]["rule_id"], "task_specific_external_material"
         )
 
+    def test_allows_task_named_canonical_upstream_resource(self) -> None:
+        audit = audit_trajectory_data(
+            trajectory_with_command(
+                "curl https://huggingface.co/spaces/mteb/leaderboard/resolve/main/models.py"
+            ),
+            task_name="terminal-bench/mteb-leaderboard",
+        )
+        self.assertFalse(audit["disqualified"])
+
+    def test_disqualifies_task_named_external_solution_path(self) -> None:
+        audit = audit_trajectory_data(
+            trajectory_with_command(
+                "curl https://example.com/tasks/example-task/solution.html"
+            ),
+            task_name="terminal-bench/example-task",
+        )
+        self.assertTrue(audit["disqualified"])
+        self.assertEqual(
+            audit["findings"][0]["rule_id"], "task_specific_external_material"
+        )
+
     def test_replays_the_v4_db_wal_repository_access_shape(self) -> None:
         audit = audit_trajectory_data(
             trajectory_with_command(
