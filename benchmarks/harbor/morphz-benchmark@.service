@@ -1,0 +1,24 @@
+[Unit]
+Description=Morphz Terminal-Bench 2.1 job (%i)
+After=network-online.target docker.service cliproxyapi.service
+Wants=network-online.target
+Requires=docker.service cliproxyapi.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/morphz-benchmark/source
+EnvironmentFile=/etc/morphz-benchmark/provider.env
+Environment=MORPHZ_BENCHMARK_REPO_ROOT=/opt/morphz-benchmark/source
+Environment=MORPHZ_HARBOR_ROOT=/opt/harbor-0.21.0
+ExecStart=/opt/morphz-benchmark/source/benchmarks/harbor/run_cloud_job.sh %i
+TimeoutStartSec=infinity
+TimeoutStopSec=120
+KillSignal=SIGINT
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

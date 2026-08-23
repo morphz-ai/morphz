@@ -60,6 +60,13 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- Terminal-Bench 2.1 中国区云节点已完成无模型门禁：89 题官方数据集已缓存，固定
+  5 题 Pilot `install-only` 为 5/5 完成、0 错误，Harbor adapter 云端全量测试
+  7/7 通过；详见
+  [`terminal_bench_2_1_cloud_node_readiness_2026_08_24.md`](./terminal_bench_2_1_cloud_node_readiness_2026_08_24.md)；
+- 云节点 CLIProxyAPI 只监听 Docker bridge，长运行由 systemd 托管并通过文件锁防止
+  重复启动；尚待一次 Codex device login 和精确 `gpt-5.6-sol` 在线预检，本轮没有
+  调用模型、没有消耗额度；
 - 将尚未启动的新论文、路演与公开 Benchmark 实验默认基线提升为
   `paper-eval-runtime-v4` / `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；
 - v4 纳入 Session 模型切换后的定向恢复、`路由 × 账户` Provider 健康隔离、

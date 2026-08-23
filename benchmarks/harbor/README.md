@@ -116,6 +116,26 @@ python3 benchmarks/harbor/run_benchmark.py smoke
 python3 benchmarks/harbor/run_benchmark.py full
 ```
 
+On the isolated Linux benchmark node, install the checked-in systemd template
+so a long run survives an SSH disconnect:
+
+```bash
+install -m 0755 benchmarks/harbor/run_cloud_job.sh \
+  /opt/morphz-benchmark/source/benchmarks/harbor/run_cloud_job.sh
+install -m 0644 benchmarks/harbor/morphz-benchmark@.service \
+  /etc/systemd/system/morphz-benchmark@.service
+systemctl daemon-reload
+systemctl start morphz-benchmark@preflight.service
+journalctl -fu morphz-benchmark@preflight.service
+```
+
+The wrapper accepts only the four frozen launcher modes, reads the root-only
+provider environment through systemd, and holds a node-wide file lock. It does
+not print the provider credential and refuses to start a second benchmark job
+while one is active. Starting `smoke` or `full` still requires the explicit
+experiment decision described above; installing the template does not run a
+model.
+
 The full command defaults to all 89 tasks, exactly five attempts per task (445
 trials), zero Harbor retries and one trial at a time. It explicitly records
 `reasoning_effort=max` in Harbor's agent kwargs because leaderboard CI groups
