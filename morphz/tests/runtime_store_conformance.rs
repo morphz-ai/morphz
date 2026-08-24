@@ -3835,7 +3835,14 @@ where
 
 async fn assert_delegation_store_conformance<S>(store: Arc<S>)
 where
-    S: DelegationStore + EventStore + SessionDirectoryStore + Send + Sync + 'static,
+    S: DelegationStore
+        + EventStore
+        + SessionDirectoryStore
+        + ThreadStore
+        + ActivationStore
+        + Send
+        + Sync
+        + 'static,
 {
     let scaffold_context_id = "conformance-delegation-scaffold-context";
     let scaffold_session_id = "conformance-delegation-scaffold-session";
@@ -4083,6 +4090,127 @@ where
             .unwrap()
             .len(),
         1
+    );
+
+    // An attached Delegation is a suspended continuation of the exact
+    // scheduler Thread which invoked it. Its terminal result must not become
+    // a fresh delegation-router root: doing so strands Objective/Thread Group
+    // ownership even though the Sub Agent and detached continuation finish.
+    let routed_context_id = "conformance-attached-delegation-context";
+    let routed_session_id = "conformance-attached-delegation-session";
+    store
+        .ensure_context(NewCognitiveContext {
+            id: routed_context_id.to_string(),
+            agent_id: "conformance-agent".to_string(),
+            title: "Attached Delegation Child".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .create_session(NewSession {
+            id: routed_session_id.to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: routed_context_id.to_string(),
+            parent_session_id: None,
+            title: "Attached Delegation Child".to_string(),
+            mount_kind: SessionMountKind::DelegationProjection,
+        })
+        .await
+        .unwrap();
+    let routed = store
+        .create_delegation(NewDelegation {
+            id: "conformance-attached-delegation".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            parent_context_id: "conformance-context".to_string(),
+            parent_session_id: "conformance-session".to_string(),
+            child_context_id: routed_context_id.to_string(),
+            child_session_id: routed_session_id.to_string(),
+            initiating_principal_id: None,
+            task: "return to the exact scheduled Thread".to_string(),
+            success_when: None,
+            context_scope: "current_session".to_string(),
+        })
+        .await
+        .unwrap();
+    let routed = store
+        .update_delegation_status(&routed.id, DelegationStatus::Running, None)
+        .await
+        .unwrap()
+        .unwrap();
+    let return_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-attached-return-thread".to_string(),
+            agent_id: routed.agent_id.clone(),
+            context_id: routed.parent_context_id.clone(),
+            session_id: routed.parent_session_id.clone(),
+            initiating_principal_id: None,
+            root_turn_id: "conformance-attached-return-root".to_string(),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::runtime("scheduled-objective-regression"),
+        })
+        .await
+        .unwrap();
+    let return_activation = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "conformance-attached-return-activation".to_string(),
+            agent_id: return_thread.agent_id.clone(),
+            context_id: return_thread.context_id.clone(),
+            session_id: return_thread.session_id.clone(),
+            initiating_principal_id: None,
+            trigger_event_id: "conformance-attached-return-trigger".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "chat/schedule_due".to_string(),
+            parent_activation_id: None,
+            root_turn_id: return_thread.root_turn_id.clone(),
+        })
+        .await
+        .unwrap();
+    let routed_result = Event::new(
+        "conformance-attached-delegation-result".to_string(),
+        "Store-Conformance".to_string(),
+        "delegation_result".to_string(),
+        "chat/tool_output".to_string(),
+        json!({
+            "context_id": routed.parent_context_id,
+            "session_id": routed.parent_session_id,
+            "delegation_id": routed.id,
+            "thread_id": return_thread.id,
+            "root_turn_id": return_thread.root_turn_id,
+            "activation_id": return_activation.id,
+            "parent_activation_id": return_activation.id,
+            "text": "attached result"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(store
+        .commit_delegation_result(&routed.id, &routed_result)
+        .await
+        .unwrap());
+    let routed_signals = store
+        .list_context_thread_signals("conformance-context", None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|signal| signal.event_id == routed_result.id)
+        .collect::<Vec<_>>();
+    assert_eq!(routed_signals.len(), 1);
+    assert_eq!(routed_signals[0].thread_id, return_thread.id);
+    assert_eq!(
+        routed_signals[0].parent_activation_id.as_deref(),
+        Some(return_activation.id.as_str())
+    );
+    assert!(
+        store
+            .get_thread(&stable_thread_id(&routed_result.id))
+            .await
+            .unwrap()
+            .is_none(),
+        "attached Delegation result must not create a detached delegation-router Thread"
     );
 }
 

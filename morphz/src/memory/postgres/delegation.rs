@@ -396,6 +396,68 @@ impl DelegationStore for PostgresStore {
                 format!("Delegation '{id}' 结果 Event 路由到错误的父 Context/Session").into(),
             );
         }
+        if let Some(return_thread_id) = event.payload.get("thread_id").and_then(JsonValue::as_str) {
+            let return_root_turn_id = event
+                .payload
+                .get("root_turn_id")
+                .and_then(JsonValue::as_str)
+                .ok_or("Attached Delegation 结果 Event 缺少 root_turn_id")?;
+            let return_activation_id = event
+                .payload
+                .get("parent_activation_id")
+                .and_then(JsonValue::as_str)
+                .ok_or("Attached Delegation 结果 Event 缺少 parent_activation_id")?;
+            let thread = sqlx::query(
+                "SELECT agent_id, context_id, session_id, root_turn_id, status FROM threads WHERE id = $1 FOR UPDATE",
+            )
+            .bind(return_thread_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Attached Delegation '{id}' return Thread '{return_thread_id}' 不存在"
+                )
+            })?;
+            if thread.get::<String, _>("agent_id") != delegation.agent_id
+                || thread.get::<String, _>("context_id") != delegation.parent_context_id
+                || thread.get::<String, _>("session_id") != delegation.parent_session_id
+                || thread.get::<String, _>("root_turn_id") != return_root_turn_id
+            {
+                tx.rollback().await?;
+                return Err(format!(
+                    "Attached Delegation '{id}' 结果 Event 的 return Thread 路由冲突"
+                )
+                .into());
+            }
+            let activation = sqlx::query(
+                "SELECT context_id, session_id, root_turn_id FROM thread_activations WHERE id = $1 FOR SHARE",
+            )
+            .bind(return_activation_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Attached Delegation '{id}' return Activation '{return_activation_id}' 不存在"
+                )
+            })?;
+            if activation.get::<String, _>("context_id") != delegation.parent_context_id
+                || activation.get::<String, _>("session_id") != delegation.parent_session_id
+                || activation.get::<String, _>("root_turn_id") != return_root_turn_id
+            {
+                tx.rollback().await?;
+                return Err(format!(
+                    "Attached Delegation '{id}' 结果 Event 的 return Activation 路由冲突"
+                )
+                .into());
+            }
+            append_event_in_tx(&mut tx, event).await?;
+            let thread_status: String = thread.get("status");
+            if !matches!(thread_status.as_str(), "completed" | "failed" | "cancelled") {
+                append_direct_thread_signal_in_tx(&mut tx, event, return_thread_id).await?;
+            }
+            tx.commit().await?;
+            return Ok(true);
+        }
         let thread = ensure_thread_in_tx(
             &mut tx,
             &NewThread {

@@ -12,11 +12,11 @@ use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     ActionGroupFilter, ActionGroupStatus, ActionGroupStore as _, ActivationStore as _,
     DelegationFilter, DelegationStatus, DelegationStore as _, EventStore, ExecutionJobStore as _,
-    ExecutionRetrySafety, NewAgent, NewCognitiveContext, NewExecutionJob, NewSession, NewThread,
-    NewThreadActivation, QueryFilter, SessionDirectoryStore as _, SessionMountKind,
-    SessionProjectionStore, SessionStore, SessionUpdate, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadSignalStatus, ThreadStore as _,
-    TimerStore,
+    ExecutionRetrySafety, NewAgent, NewCognitiveContext, NewDelegation, NewExecutionJob,
+    NewSession, NewThread, NewThreadActivation, QueryFilter, SessionDirectoryStore as _,
+    SessionMountKind, SessionProjectionStore, SessionStore, SessionUpdate,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle,
+    ThreadSignalStatus, ThreadStore as _, ThreadSupervision, TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -6121,6 +6121,255 @@ async fn attached_delegate_waits_for_result_without_model_polling() {
             .and_then(|value| value.as_str())
             .is_some_and(|text| text.contains("CHILD-DONE"))
     }));
+    let queued_receipt = delegate_outputs
+        .iter()
+        .find(|event| {
+            event
+                .payload
+                .get("wake_policy")
+                .and_then(|value| value.as_str())
+                == Some("delegation_result")
+        })
+        .unwrap();
+    let completed_result = delegate_outputs
+        .iter()
+        .find(|event| {
+            event
+                .payload
+                .get("text")
+                .and_then(|value| value.as_str())
+                .is_some_and(|text| text.contains("CHILD-DONE"))
+                && event
+                    .payload
+                    .get("wake_policy")
+                    .and_then(|value| value.as_str())
+                    != Some("delegation_result")
+        })
+        .unwrap();
+    assert_eq!(
+        completed_result.payload.get("thread_id"),
+        queued_receipt.payload.get("thread_id"),
+        "attached result must resume the exact Thread which invoked delegate"
+    );
+    assert_eq!(
+        completed_result.payload.get("root_turn_id"),
+        queued_receipt.payload.get("root_turn_id")
+    );
+    assert_eq!(
+        completed_result.payload.get("parent_activation_id"),
+        queued_receipt.payload.get("activation_id")
+    );
+}
+
+#[tokio::test]
+async fn startup_recovers_legacy_attached_result_misrouted_to_a_detached_thread() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("legacy-attached-delegate.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: "legacy-attached-agent".to_string(),
+                title: "Legacy attached agent".to_string(),
+                root_context_id: "legacy-attached-context".to_string(),
+            },
+            NewCognitiveContext {
+                id: "legacy-attached-context".to_string(),
+                agent_id: "legacy-attached-agent".to_string(),
+                title: "Legacy attached context".to_string(),
+            },
+            NewSession {
+                id: "legacy-attached-parent".to_string(),
+                agent_id: "legacy-attached-agent".to_string(),
+                context_id: "legacy-attached-context".to_string(),
+                parent_session_id: None,
+                title: "Legacy attached parent".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .create_context(NewCognitiveContext {
+            id: "legacy-attached-child-context".to_string(),
+            agent_id: "legacy-attached-agent".to_string(),
+            title: "Legacy attached child".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .create_session(NewSession {
+            id: "legacy-attached-child-session".to_string(),
+            agent_id: "legacy-attached-agent".to_string(),
+            context_id: "legacy-attached-child-context".to_string(),
+            parent_session_id: None,
+            title: "Legacy attached child".to_string(),
+            mount_kind: SessionMountKind::DelegationProjection,
+        })
+        .await
+        .unwrap();
+    let return_thread = store
+        .ensure_thread(NewThread {
+            id: "legacy-attached-return-thread".to_string(),
+            agent_id: "legacy-attached-agent".to_string(),
+            context_id: "legacy-attached-context".to_string(),
+            session_id: "legacy-attached-parent".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: "legacy-attached-return-root".to_string(),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::runtime("scheduled-objective-regression"),
+        })
+        .await
+        .unwrap();
+    let return_activation = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "legacy-attached-return-activation".to_string(),
+            agent_id: return_thread.agent_id.clone(),
+            context_id: return_thread.context_id.clone(),
+            session_id: return_thread.session_id.clone(),
+            initiating_principal_id: None,
+            trigger_event_id: "legacy-attached-trigger".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "chat/schedule_due".to_string(),
+            parent_activation_id: None,
+            root_turn_id: return_thread.root_turn_id.clone(),
+        })
+        .await
+        .unwrap();
+    let return_activation = match store
+        .update_thread_activation(
+            &return_activation.id,
+            return_activation.revision,
+            ThreadActivationStatus::Succeeded,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadActivationMutation::Updated(activation) => activation,
+        mutation => panic!("expected terminal parent activation, got {mutation:?}"),
+    };
+    let request = Event::new(
+        "delegate_request_legacy".to_string(),
+        "Parent-Agent".to_string(),
+        morphz::event::TYPE_AGENT_CALL.to_string(),
+        "chat/delegate".to_string(),
+        json!({
+            "context_id": "legacy-attached-context",
+            "session_id": "legacy-attached-parent",
+            "parent_context_id": "legacy-attached-context",
+            "parent_session_id": "legacy-attached-parent",
+            "delegation_id": "delegation_legacy",
+            "child_context_id": "legacy-attached-child-context",
+            "child_session_id": "legacy-attached-child-session",
+            "context_scope": "current_session",
+            "mode": "attached",
+            "thread_id": return_thread.id,
+            "activation_id": return_activation.id,
+            "root_turn_id": return_thread.root_turn_id,
+            "text": "Delegation requested"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store.append(request).await.unwrap();
+    let delegation = store
+        .create_delegation(NewDelegation {
+            id: "delegation_legacy".to_string(),
+            agent_id: "legacy-attached-agent".to_string(),
+            parent_context_id: "legacy-attached-context".to_string(),
+            parent_session_id: "legacy-attached-parent".to_string(),
+            child_context_id: "legacy-attached-child-context".to_string(),
+            child_session_id: "legacy-attached-child-session".to_string(),
+            initiating_principal_id: None,
+            task: "legacy attached task".to_string(),
+            success_when: None,
+            context_scope: "current_session".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .update_delegation_status(&delegation.id, DelegationStatus::Running, None)
+        .await
+        .unwrap();
+    let legacy_result = Event::new(
+        "delegation_result_legacy".to_string(),
+        "Sub-Agent".to_string(),
+        TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        json!({
+            "context_id": "legacy-attached-context",
+            "session_id": "legacy-attached-parent",
+            "delegation_id": delegation.id,
+            "tool_name": "delegate",
+            "tool_status": "success",
+            "text": "LEGACY-CHILD-DONE"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(store
+        .commit_delegation_result(&delegation.id, &legacy_result)
+        .await
+        .unwrap());
+
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>),
+    );
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: "legacy detached continuation closed".to_string(),
+            tool_calls: Vec::new(),
+        },
+        Response {
+            content: "legacy scheduled continuation closed".to_string(),
+            tool_calls: Vec::new(),
+        },
+    ]));
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        client as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    Arc::clone(&orchestrator).start().await.unwrap();
+
+    let recovery_id = "delegation_result_route_recovery_delegation_legacy";
+    let recovery = store
+        .query(QueryFilter {
+            event_id: Some(recovery_id.to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(recovery.len(), 1);
+    assert_eq!(recovery[0].payload["thread_id"], return_thread.id);
+    let recovery_signals = store
+        .list_context_thread_signals("legacy-attached-context", None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|signal| signal.event_id == recovery_id)
+        .collect::<Vec<_>>();
+    assert_eq!(recovery_signals.len(), 1);
+    assert_eq!(recovery_signals[0].thread_id, return_thread.id);
+    assert_eq!(
+        recovery_signals[0].parent_activation_id.as_deref(),
+        Some(return_activation.id.as_str())
+    );
 }
 
 #[tokio::test]

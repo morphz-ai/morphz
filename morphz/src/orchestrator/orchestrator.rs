@@ -77,6 +77,53 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DelegationReturnRoute {
+    thread_id: String,
+    activation_id: String,
+    root_turn_id: String,
+}
+
+impl DelegationReturnRoute {
+    fn apply(&self, payload: &mut serde_json::Map<String, serde_json::Value>) {
+        payload.insert("thread_id".to_string(), json!(&self.thread_id));
+        payload.insert("activation_id".to_string(), json!(&self.activation_id));
+        payload.insert(
+            "parent_activation_id".to_string(),
+            json!(&self.activation_id),
+        );
+        payload.insert("root_turn_id".to_string(), json!(&self.root_turn_id));
+    }
+}
+
+fn attached_delegation_return_route(
+    request: &Event,
+) -> Result<Option<DelegationReturnRoute>, DynError> {
+    if request.payload.get("mode").and_then(|value| value.as_str()) != Some("attached") {
+        return Ok(None);
+    }
+    let required = |key: &str| {
+        request
+            .payload
+            .get(key)
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| -> DynError {
+                format!(
+                    "Attached Delegation request '{}' is missing its durable {key} return route",
+                    request.id
+                )
+                .into()
+            })
+    };
+    Ok(Some(DelegationReturnRoute {
+        thread_id: required("thread_id")?,
+        activation_id: required("activation_id")?,
+        root_turn_id: required("root_turn_id")?,
+    }))
+}
+
 async fn dispatch_persisted_tool_handoff(
     bus: &InMemoryEventBus,
     event: Event,
@@ -5984,6 +6031,232 @@ impl Orchestrator {
                 break;
             }
         }
+        self.recover_misrouted_attached_delegation_results(session_store.as_ref())
+            .await?;
+        Ok(())
+    }
+
+    async fn delegation_return_route(
+        &self,
+        delegation: &crate::memory::DelegationRecord,
+    ) -> Result<Option<DelegationReturnRoute>, DynError> {
+        let Some(suffix) = delegation.id.strip_prefix("delegation_") else {
+            return Ok(None);
+        };
+        let request_id = format!("delegate_request_{suffix}");
+        let Some(request) = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(request_id.clone()),
+                context_id: Some(delegation.parent_context_id.clone()),
+                session_id: Some(delegation.parent_session_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(|event| event.id == request_id)
+        else {
+            // Programmatic/legacy Delegations created outside the delegate
+            // Tool have no attached return route and retain the ordinary
+            // Session-level result Thread behavior.
+            return Ok(None);
+        };
+        if request.topic != "chat/delegate"
+            || request
+                .payload
+                .get("delegation_id")
+                .and_then(|value| value.as_str())
+                != Some(delegation.id.as_str())
+            || request
+                .payload
+                .get("parent_context_id")
+                .and_then(|value| value.as_str())
+                != Some(delegation.parent_context_id.as_str())
+            || request
+                .payload
+                .get("parent_session_id")
+                .and_then(|value| value.as_str())
+                != Some(delegation.parent_session_id.as_str())
+        {
+            return Err(format!(
+                "Delegation '{}' request Event '{}' does not match its durable parent route",
+                delegation.id, request.id
+            )
+            .into());
+        }
+        attached_delegation_return_route(&request)
+    }
+
+    async fn publish_delegation_return_event(
+        &self,
+        mut event: Event,
+        return_route: Option<&DelegationReturnRoute>,
+    ) -> Result<(), DynError> {
+        let Some(route) = return_route else {
+            self.bus.publish(event).await?;
+            return Ok(());
+        };
+        route.apply(&mut event.payload);
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Attached Delegation return requires a persistent SessionStore")?;
+        let thread = session_store
+            .get_thread(&route.thread_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Attached Delegation return Thread '{}' does not exist",
+                    route.thread_id
+                )
+            })?;
+        if thread.root_turn_id != route.root_turn_id {
+            return Err(format!(
+                "Attached Delegation return Thread '{}' belongs to root '{}', not '{}'",
+                route.thread_id, thread.root_turn_id, route.root_turn_id
+            )
+            .into());
+        }
+        if thread.lifecycle.is_terminal() {
+            // Cancellation/terminalization fences an attached child result.
+            // Keep the immutable result fact without creating a fresh Session
+            // root which could replay an interrupted turn much later.
+            event
+                .payload
+                .insert("wake_policy".to_string(), json!("none"));
+            self.store.append(event).await?;
+            return Ok(());
+        }
+        self.store
+            .append_to_thread(event.clone(), &route.thread_id)
+            .await?;
+        self.bus.dispatch_persisted(event).await?;
+        Ok(())
+    }
+
+    async fn recover_misrouted_attached_delegation_results(
+        &self,
+        session_store: &dyn SessionStore,
+    ) -> Result<(), DynError> {
+        const PAGE_SIZE: usize = 128;
+        let mut cursor: Option<(chrono::DateTime<Utc>, String)> = None;
+        let mut recovered = 0usize;
+        loop {
+            let page = session_store
+                .list_delegations(DelegationFilter {
+                    statuses: vec![DelegationStatus::Completed, DelegationStatus::Failed],
+                    include_terminal: true,
+                    newest_first: false,
+                    after_updated_at: cursor.as_ref().map(|(updated_at, _)| *updated_at),
+                    after_id: cursor.as_ref().map(|(_, id)| id.clone()),
+                    limit: Some(PAGE_SIZE),
+                    ..Default::default()
+                })
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            cursor = page
+                .last()
+                .map(|delegation| (delegation.updated_at, delegation.id.clone()));
+            let page_len = page.len();
+            for delegation in page {
+                let Some(result_event_id) = delegation.result_event_id.as_deref() else {
+                    continue;
+                };
+                let Some(result) = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(result_event_id.to_string()),
+                        context_id: Some(delegation.parent_context_id.clone()),
+                        session_id: Some(delegation.parent_session_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|event| event.id == result_event_id)
+                else {
+                    continue;
+                };
+                // Fixed builds persist the attached return route on the
+                // original result Event. Only legacy results which became a
+                // detached delegation-router root need a compensating wake.
+                if result
+                    .payload
+                    .get("thread_id")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+                {
+                    continue;
+                }
+                let Some(route) = self.delegation_return_route(&delegation).await? else {
+                    continue;
+                };
+                let Some(thread) = session_store.get_thread(&route.thread_id).await? else {
+                    return Err(format!(
+                        "Attached Delegation '{}' return Thread '{}' does not exist",
+                        delegation.id, route.thread_id
+                    )
+                    .into());
+                };
+                if thread.agent_id != delegation.agent_id
+                    || thread.context_id != delegation.parent_context_id
+                    || thread.session_id != delegation.parent_session_id
+                    || thread.root_turn_id != route.root_turn_id
+                {
+                    return Err(format!(
+                        "Attached Delegation '{}' return Thread route conflicts with its durable parent",
+                        delegation.id
+                    )
+                    .into());
+                }
+                if thread.lifecycle.is_terminal() {
+                    continue;
+                }
+                let recovery_event_id =
+                    format!("delegation_result_route_recovery_{}", delegation.id);
+                if self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(recovery_event_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .any(|event| event.id == recovery_event_id)
+                {
+                    continue;
+                }
+                let mut payload = result.payload.clone();
+                route.apply(&mut payload);
+                payload.insert(
+                    "recovered_from_event_id".to_string(),
+                    json!(result_event_id),
+                );
+                payload.insert("delegation_route_recovered".to_string(), json!(true));
+                let recovery = Event::new(
+                    recovery_event_id,
+                    "Runtime-DelegationRecovery".to_string(),
+                    TYPE_TOOL_OUTPUT.to_string(),
+                    "chat/tool_output".to_string(),
+                    payload,
+                );
+                self.store
+                    .append_to_thread(recovery, &route.thread_id)
+                    .await?;
+                recovered = recovered.saturating_add(1);
+            }
+            if page_len < PAGE_SIZE {
+                break;
+            }
+        }
+        if recovered > 0 {
+            tracing::warn!(
+                recovered,
+                event_code = "orchestrator.delegation.attached_return_route_recovered",
+                "Recovered legacy attached Delegation results which had been delivered to detached Session roots"
+            );
+        }
         Ok(())
     }
 
@@ -6030,46 +6303,49 @@ impl Orchestrator {
             .update_delegation_status(&delegation.id, DelegationStatus::Failed, Some(&failure_id))
             .await?;
         let mut failure_event = Event::new(
-                    failure_id,
-                    "System-Delegation".to_string(),
-                    TYPE_TOOL_OUTPUT.to_string(),
-                    "chat/tool_output".to_string(),
-                    vec![
-                        (
-                            "context_id".to_string(),
-                            json!(delegation.parent_context_id),
-                        ),
-                        (
-                            "session_id".to_string(),
-                            json!(delegation.parent_session_id),
-                        ),
-                        ("delegation_id".to_string(), json!(delegation.id)),
-                        ("tool_name".to_string(), json!("delegate")),
-                        ("tool_status".to_string(), json!("error")),
-                        (
-                            "text".to_string(),
-                            json!(json!({
-                                "delegation_id": delegation.id,
-                                "status": "failed",
-                                "error": "No active Evaluation or committed terminal result was found after Runtime restart; the stale running state was reclaimed without repeating external actions."
-                            })
-                            .to_string()),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
-                );
+            failure_id,
+            "System-Delegation".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                (
+                    "context_id".to_string(),
+                    json!(delegation.parent_context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    json!(delegation.parent_session_id),
+                ),
+                ("delegation_id".to_string(), json!(delegation.id)),
+                ("tool_name".to_string(), json!("delegate")),
+                ("tool_status".to_string(), json!("error")),
+                (
+                    "text".to_string(),
+                    json!(json!({
+                        "delegation_id": delegation.id,
+                        "status": "failed",
+                        "error": "No active Evaluation or committed terminal result was found after Runtime restart; the stale running state was reclaimed without repeating external actions."
+                    })
+                    .to_string()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
         if let Some(principal_id) = &delegation.initiating_principal_id {
             failure_event
                 .payload
                 .insert("principal_id".to_string(), json!(principal_id));
         }
-        self.bus.publish(failure_event).await?;
+        let return_route = self.delegation_return_route(&delegation).await?;
+        self.publish_delegation_return_event(failure_event, return_route.as_ref())
+            .await?;
         Ok(())
     }
 
     async fn handle_delegate_event(&self, event: Event) -> Result<(), DynError> {
         if let Err(error) = self.start_delegation(&event).await {
+            let return_route = attached_delegation_return_route(&event).ok().flatten();
             let Some(parent_context_id) = event
                 .payload
                 .get("parent_context_id")
@@ -6117,36 +6393,36 @@ impl Orchestrator {
                         .await?;
                 }
             }
-            self.bus
-                .publish(Event::new(
-                    format!(
-                        "delegation_failed_{}_{}",
-                        delegation_id,
-                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            let failure = Event::new(
+                format!(
+                    "delegation_failed_{}_{}",
+                    delegation_id,
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "System-Delegation".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(parent_context_id)),
+                    ("session_id".to_string(), json!(parent_session_id)),
+                    ("delegation_id".to_string(), json!(delegation_id)),
+                    ("source_event_id".to_string(), json!(event.id)),
+                    ("tool_name".to_string(), json!("delegate")),
+                    ("tool_status".to_string(), json!("error")),
+                    (
+                        "text".to_string(),
+                        json!(json!({
+                            "delegation_id": delegation_id,
+                            "status": "failed",
+                            "error": error.to_string()
+                        })
+                        .to_string()),
                     ),
-                    "System-Delegation".to_string(),
-                    TYPE_TOOL_OUTPUT.to_string(),
-                    "chat/tool_output".to_string(),
-                    vec![
-                        ("context_id".to_string(), json!(parent_context_id)),
-                        ("session_id".to_string(), json!(parent_session_id)),
-                        ("delegation_id".to_string(), json!(delegation_id)),
-                        ("source_event_id".to_string(), json!(event.id)),
-                        ("tool_name".to_string(), json!("delegate")),
-                        ("tool_status".to_string(), json!("error")),
-                        (
-                            "text".to_string(),
-                            json!(json!({
-                                "delegation_id": delegation_id,
-                                "status": "failed",
-                                "error": error.to_string()
-                            })
-                            .to_string()),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ))
+                ]
+                .into_iter()
+                .collect(),
+            );
+            self.publish_delegation_return_event(failure, return_route.as_ref())
                 .await?;
         }
         Ok(())
@@ -6168,6 +6444,7 @@ impl Orchestrator {
             .map(ToOwned::to_owned);
         let task = required_payload_str(event, "task")?.trim().to_string();
         let context_scope = required_payload_str(event, "context_scope")?.to_string();
+        let return_route = attached_delegation_return_route(event)?;
         let success_when = event
             .payload
             .get("success_when")
@@ -6205,6 +6482,39 @@ impl Orchestrator {
                 parent_session_id, parent.context_id, parent_context_id
             )
             .into());
+        }
+        if let Some(route) = return_route.as_ref() {
+            let thread = session_store
+                .get_thread(&route.thread_id)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "delegate attached return Thread '{}' does not exist",
+                        route.thread_id
+                    )
+                })?;
+            let activation = session_store
+                .get_thread_activation(&route.activation_id)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "delegate attached return Activation '{}' does not exist",
+                        route.activation_id
+                    )
+                })?;
+            if thread.agent_id != parent.agent_id
+                || thread.context_id != parent_context_id
+                || thread.session_id != parent_session_id
+                || thread.root_turn_id != route.root_turn_id
+                || activation.agent_id != parent.agent_id
+                || activation.context_id != parent_context_id
+                || activation.session_id != parent_session_id
+                || activation.root_turn_id != route.root_turn_id
+            {
+                return Err(
+                    "delegate attached return route conflicts with its parent Session".into(),
+                );
+            }
         }
         let active_limit = self
             .orchestrator_config
@@ -6518,6 +6828,7 @@ impl Orchestrator {
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string();
+        let return_route = self.delegation_return_route(&delegation).await?;
         let mut result_payload = vec![
             (
                 "context_id".to_string(),
@@ -6556,6 +6867,10 @@ impl Orchestrator {
         if let Some(principal_id) = &delegation.initiating_principal_id {
             result_payload.push(("principal_id".to_string(), json!(principal_id)));
         }
+        let mut result_payload = result_payload.into_iter().collect();
+        if let Some(route) = return_route.as_ref() {
+            route.apply(&mut result_payload);
+        }
         let result_event = Event::new(
             format!(
                 "delegation_result_{}_{}",
@@ -6565,13 +6880,22 @@ impl Orchestrator {
             format!("Sub-Agent-{}", delegation.child_session_id),
             TYPE_TOOL_OUTPUT.to_string(),
             "chat/tool_output".to_string(),
-            result_payload.into_iter().collect(),
+            result_payload,
         );
         if session_store
             .commit_delegation_result(&delegation.id, &result_event)
             .await?
         {
-            self.bus.dispatch_persisted(result_event).await?;
+            let should_dispatch = match return_route.as_ref() {
+                Some(route) => session_store
+                    .get_thread(&route.thread_id)
+                    .await?
+                    .is_some_and(|thread| !thread.lifecycle.is_terminal()),
+                None => true,
+            };
+            if should_dispatch {
+                self.bus.dispatch_persisted(result_event).await?;
+            }
         }
         Ok(true)
     }
@@ -19183,13 +19507,13 @@ mod tests {
 
     use super::{
         action_group_reconcile_id, activation_admission_class, apply_prompt_estimate_delta,
-        baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
-        completed_objective_update_call, compose_context_encoding,
-        critical_maintenance_transaction_available, decide_provider_circuit_admission,
-        derived_thread_kind, durable_activation_revocation_reason,
-        durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
-        harness_entry_callable_tools, infer_tool_status, legacy_plan_effect_sequence,
-        model_binding_completion_error, model_harness_tool_scope,
+        attached_delegation_return_route, baseline_system_prompt, classify_terminal_response,
+        cognitive_sexpr_vm_system_prompt, completed_objective_update_call,
+        compose_context_encoding, critical_maintenance_transaction_available,
+        decide_provider_circuit_admission, derived_thread_kind,
+        durable_activation_revocation_reason, durable_reasoning_continuation_state_from_events,
+        extend_exec_output_facts, harness_entry_callable_tools, infer_tool_status,
+        legacy_plan_effect_sequence, model_binding_completion_error, model_harness_tool_scope,
         model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
         persistent_provider_wait_contexts, plan_infer_tool_scope,
@@ -19255,6 +19579,37 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::{Barrier, Mutex};
+
+    #[test]
+    fn attached_delegation_preserves_the_exact_causal_return_route() {
+        let request = Event::new(
+            "delegate_request_1".to_string(),
+            "Parent-Agent".to_string(),
+            crate::event::TYPE_AGENT_CALL.to_string(),
+            "chat/delegate".to_string(),
+            json!({
+                "mode": "attached",
+                "thread_id": "scheduled-thread",
+                "activation_id": "scheduled-activation",
+                "root_turn_id": "scheduled-root"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let route = attached_delegation_return_route(&request).unwrap().unwrap();
+        assert_eq!(route.thread_id, "scheduled-thread");
+        assert_eq!(route.activation_id, "scheduled-activation");
+        assert_eq!(route.root_turn_id, "scheduled-root");
+
+        let mut detached = request;
+        detached
+            .payload
+            .insert("mode".to_string(), json!("detached"));
+        assert!(attached_delegation_return_route(&detached)
+            .unwrap()
+            .is_none());
+    }
 
     fn contains_cjk(text: &str) -> bool {
         text.chars().any(|character| {
